@@ -573,12 +573,7 @@ async def get_cluster_registry(
     cluster_registry = mcp_handler.cluster_registry(cluster_user.cluster)
     if cluster_registry is None:
         return None
-    return {100: cluster_registry}
-
-
-# Type alias for destination tuples
-# Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
-DestinationTupleList = List[Tuple[int, str, McpBridgeRegistry]]
+    return cluster_registry
 
 
 async def sync_model_route_mapper(
@@ -587,8 +582,8 @@ async def sync_model_route_mapper(
     event_type: EventType,
     ingress_name: str,
     route_name: str,
-    destinations: DestinationTupleList,
-    fallback_destinations: DestinationTupleList,
+    destinations: mcp_handler.DestinationTupleList,
+    fallback_destinations: mcp_handler.DestinationTupleList,
 ):
     """
     Synchronize the model route mapper.
@@ -647,8 +642,8 @@ async def ensure_route_ai_proxy_config(
     cfg: Config,
     model_route_id: int,
     extensions_api: ExtensionsHigressIoV1Api,
-    route_destinations: DestinationTupleList,
-    fallback_destinations: DestinationTupleList,
+    route_destinations: mcp_handler.DestinationTupleList,
+    fallback_destinations: mcp_handler.DestinationTupleList,
 ):
     service_namespace_prefix = cfg.get_namespace() + "/"
     if cfg.get_namespace() == cfg.gateway_namespace:
@@ -657,7 +652,7 @@ async def ensure_route_ai_proxy_config(
     ingress_name = mcp_handler.model_route_ingress_name(model_route_id)
     fallback_ingress_name = mcp_handler.fallback_ingress_name(ingress_name)
 
-    def destination_contains_provider(input: DestinationTupleList) -> bool:
+    def destination_contains_provider(input: mcp_handler.DestinationTupleList) -> bool:
         for _, _, registry in input:
             # the provider registry starts with the provider id prefix
             if registry.name.startswith(mcp_handler.provider_id_prefix):
@@ -795,14 +790,14 @@ async def sync_gateway(
 
 
 def flatten_destinations(
-    weight_to_count: List[Tuple[int, int, DestinationTupleList]],
+    weight_to_count: List[Tuple[int, int, mcp_handler.DestinationTupleList]],
     max_weight: Optional[int] = 0,
-) -> DestinationTupleList:
+) -> mcp_handler.DestinationTupleList:
     persentage_list = mcp_handler.hamilton_calculate_weight(
         [(weight, count) for weight, count, _ in weight_to_count],
         max_weight=max_weight,
     )
-    flatten_registry_list: DestinationTupleList = []
+    flatten_registry_list: mcp_handler.DestinationTupleList = []
     index = 0
     for _, _, registry_list_part in weight_to_count:
         for count, model_name, registry in registry_list_part:
@@ -816,17 +811,19 @@ def flatten_destinations(
 async def calculate_destinations(
     session: AsyncSession,
     model_route: ModelRoute,
-) -> Tuple[DestinationTupleList, DestinationTupleList]:
+) -> Tuple[mcp_handler.DestinationTupleList, mcp_handler.DestinationTupleList]:
     """
     return persentage Tuple for each registry with model name and the fallback registry
     """
-    weight_to_count: List[Tuple[int, int, DestinationTupleList]] = []
-    fallback_weight_to_count: DestinationTupleList = []
+    weight_to_count: List[Tuple[int, int, mcp_handler.DestinationTupleList]] = []
+    fallback_weight_to_count: List[
+        Tuple[int, int, mcp_handler.DestinationTupleList]
+    ] = []
     targets = await ModelRouteTarget.all_by_field(session, "route_id", model_route.id)
     for target in targets:
         if target.state != TargetStateEnum.ACTIVE:
             continue
-        to_extend: DestinationTupleList = []
+        to_extend: mcp_handler.DestinationTupleList = []
         if target.model_id is not None:
             model = await Model.one_by_id(session, target.model_id)
             if model is None:
@@ -866,7 +863,7 @@ async def provider_destinations(
     session: AsyncSession,
     provider_id: int,
     provider_model_name: str,
-) -> List[Tuple[int, str, McpBridgeRegistry]]:
+) -> mcp_handler.DestinationTupleList:
     """
     return count dict for provider registry
     """
@@ -879,14 +876,14 @@ async def provider_destinations(
 async def calculate_model_destinations(
     session: AsyncSession,
     model: Model,
-) -> List[Tuple[int, str, McpBridgeRegistry]]:
+) -> mcp_handler.DestinationTupleList:
     """
     return count dict for each registry
     """
     # find out is handling default cluster's model
     cluster_registry = await get_cluster_registry(session, model.cluster_id)
     if cluster_registry is not None:
-        return cluster_registry
+        return [(1, model.name, cluster_registry)]
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
     # registry_dict is ip to instances
@@ -908,7 +905,7 @@ async def calculate_model_destinations(
         extra_conditions=[Worker.id.in_(list(instances_by_worker_id.keys()))],
     )
 
-    registry_list: List[Tuple[int, str, McpBridgeRegistry]] = []
+    registry_list: mcp_handler.DestinationTupleList = []
     for worker in instances_related_workers:
         instances = instances_by_worker_id.get(worker.id, [])
         if (
