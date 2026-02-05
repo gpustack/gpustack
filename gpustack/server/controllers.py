@@ -43,7 +43,6 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.config import (
     GatewayModeEnum,
-    ModelInstanceProxyModeEnum,
     SensitivePredefinedConfig,
 )
 from gpustack.schemas.workers import (
@@ -179,12 +178,18 @@ class ModelInstanceController:
                 model_deleting = model.deleted_at is not None
 
                 if not self._disable_gateway:
+                    worker = (
+                        await Worker.one_by_id(session, model_instance.worker_id)
+                        if model_instance.worker_id
+                        else None
+                    )
                     await mcp_handler.ensure_model_instance_mcp_bridge(
                         event_type=event.type,
                         model_instance=model_instance,
                         networking_higress_api=self._higress_network_api,
                         namespace=self._config.gateway_namespace,
                         cluster_id=model.cluster_id,
+                        worker=worker,
                     )
 
                 if event.type == EventType.DELETED:
@@ -886,37 +891,32 @@ async def calculate_model_destinations(
         return [(1, model.name, cluster_registry)]
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
-    # registry_dict is ip to instances
-    instances_by_worker_id: Dict[int, List[ModelInstance]] = {}
-    for instance in instances:
-        if (
-            instance.worker_ip is None
-            or instance.worker_ip == ""
-            or instance.port is None
-            or instance.state != ModelInstanceStateEnum.RUNNING
-        ):
-            continue
-        if instance.worker_id not in instances_by_worker_id:
-            instances_by_worker_id[instance.worker_id] = []
-        instances_by_worker_id[instance.worker_id].append(instance)
-
-    instances_related_workers = await Worker.all_by_fields(
+    instances = [
+        instance
+        for instance in instances
+        if instance.worker_ip is not None
+        and instance.port is not None
+        and instance.worker_ip != ""
+        and instance.state == ModelInstanceStateEnum.RUNNING
+    ]
+    worker_list = await Worker.all_by_fields(
         session=session,
-        extra_conditions=[Worker.id.in_(list(instances_by_worker_id.keys()))],
+        fields={
+            "cluster_id": model.cluster_id,
+            "deleted_at": None,
+        },
+        extra_conditions=[
+            Worker.id.in_(
+                [
+                    instance.worker_id
+                    for instance in instances
+                    if instance.worker_id is not None
+                ]
+            )
+        ],
     )
-
-    registry_list: mcp_handler.DestinationTupleList = []
-    for worker in instances_related_workers:
-        instances = instances_by_worker_id.get(worker.id, [])
-        if (
-            worker.proxy_mode is None
-            or worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER
-        ):
-            registry = mcp_handler.worker_registry(worker)
-            if registry is not None:
-                registry_list.append((len(instances), model.name, registry))
-        else:
-            registry_list.extend(mcp_handler.model_instances_registry_list(instances))
+    workers = {worker.id: worker for worker in worker_list}
+    registry_list = mcp_handler.model_instances_registry_list(instances, workers)
 
     return registry_list
 
@@ -1988,38 +1988,18 @@ class ClusterController:
                 )
                 await cluster.update(session=session, auto_commit=True)
 
-    async def _get_worker_registries(
-        self, session: AsyncSession, cluster_id: int
-    ) -> List[McpBridgeRegistry]:
-        workers = await Worker.all_by_field(
-            session,
-            "cluster_id",
-            cluster_id,
-        )
-        workers = [
-            worker
-            for worker in workers
-            if worker.deleted_at is None
-            and (worker.advertise_address or worker.ip) != ""
-            and worker.port is not None
-        ]
-        worker_registry_list = [
-            mcp_handler.worker_registry(worker)
-            for worker in workers
-            if mcp_handler.worker_registry(worker) is not None
-        ]
-        worker_registry_list.sort(key=lambda r: r.name or "")
-        return worker_registry_list
-
     async def _ensure_worker_mcp_bridge(self, event: Event):
+        """
+        The worker registry list for cluster is no longer needed.
+        Use empty list to trigger MCPBridge controller to clean up the worker registries
+        and proxies when cluster is created or deleted.
+        """
         if self._cfg.gateway_mode == GatewayModeEnum.disabled:
             return
         cluster: Cluster = event.data
-        mcp_resource_name = mcp_handler.cluster_mcp_bridge_name(cluster.id)
+        mcp_resource_name = mcp_handler.default_mcp_bridge_name
         desired_registries = []
         to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster.id)
-        async with async_session() as session:
-            desired_registries = await self._get_worker_registries(session, cluster.id)
         try:
             await mcp_handler.ensure_mcp_bridge(
                 client=self._higress_network_api,

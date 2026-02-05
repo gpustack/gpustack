@@ -182,8 +182,12 @@ def model_instance_prefix(
 
 
 def model_instance_registry(
-    model_instance: Union[ModelInstance, ModelInstancePublic]
+    model_instance: Union[ModelInstance, ModelInstancePublic],
+    worker: Optional[Worker] = None,
 ) -> Optional[McpBridgeRegistry]:
+    name = model_instance_prefix(model_instance)
+    if worker is not None and worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER:
+        return worker_registry(worker, name_override=name)
     address = model_instance.worker_advertise_address or model_instance.worker_ip
     if address is None or address == "" or model_instance.port is None:
         return None
@@ -197,13 +201,15 @@ def model_instance_registry(
     return McpBridgeRegistry(
         domain=domain,
         port=port,
-        name=model_instance_prefix(model_instance),
+        name=name,
         protocol="http",
         type=registry_type,
     )
 
 
-def worker_registry(worker: Worker) -> Optional[McpBridgeRegistry]:
+def worker_registry(
+    worker: Worker, name_override: Optional[str] = None
+) -> Optional[McpBridgeRegistry]:
     address = worker.advertise_address or worker.ip
     if (
         address is None
@@ -222,7 +228,7 @@ def worker_registry(worker: Worker) -> Optional[McpBridgeRegistry]:
     return McpBridgeRegistry(
         domain=domain,
         port=port,
-        name=f"{cluster_worker_prefix(worker.cluster_id)}{worker.id}",
+        name=name_override or f"{cluster_worker_prefix(worker.cluster_id)}{worker.id}",
         protocol="http",
         type=registry_type,
     )
@@ -637,11 +643,17 @@ def hamilton_calculate_weight(
 
 
 def model_instances_registry_list(
-    model_instances: List[Union[ModelInstance, ModelInstancePublic]]
+    model_instances: List[Union[ModelInstance, ModelInstancePublic]],
+    workers: Optional[Dict[int, Worker]] = None,
 ) -> DestinationTupleList:
     registries: DestinationTupleList = []
     for model_instance in model_instances:
-        registry = model_instance_registry(model_instance)
+        worker = (
+            (workers or {}).get(model_instance.worker_id)
+            if model_instance.worker_id
+            else None
+        )
+        registry = model_instance_registry(model_instance, worker=worker)
         if registry is not None:
             registries.append((1, model_instance.model_name, registry))
     return registries
@@ -882,13 +894,14 @@ async def ensure_model_instance_mcp_bridge(
     networking_higress_api: NetworkingHigressIoV1Api,
     namespace: str,
     cluster_id: int,
+    worker: Optional[Worker] = None,
 ) -> List[McpBridgeRegistry]:
     desired_registry: List[McpBridgeRegistry] = []
     to_delete_prefix: Optional[str] = None
     if event_type == EventType.DELETED:
         to_delete_prefix = model_instance_prefix(model_instance)
     else:
-        registry = model_instance_registry(model_instance)
+        registry = model_instance_registry(model_instance, worker=worker)
         if registry is not None:
             desired_registry.append(registry)
     await ensure_mcp_bridge(
