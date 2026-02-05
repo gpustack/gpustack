@@ -51,6 +51,10 @@ model_route_ingress_prefix = "ai-route-route-"
 model_route_selector = {"gpustack.ai/route": "true"}
 provider_id_prefix = "provider-"
 
+# Type alias for destination tuples
+# Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
+DestinationTupleList = List[Tuple[int, str, McpBridgeRegistry]]
+
 
 @dataclass
 class RoutePrefix:
@@ -634,12 +638,12 @@ def hamilton_calculate_weight(
 
 def model_instances_registry_list(
     model_instances: List[Union[ModelInstance, ModelInstancePublic]]
-) -> List[Tuple[int, McpBridgeRegistry]]:
-    registries: List[Tuple[int, McpBridgeRegistry]] = []
+) -> DestinationTupleList:
+    registries: DestinationTupleList = []
     for model_instance in model_instances:
         registry = model_instance_registry(model_instance)
         if registry is not None:
-            registries.append((1, registry))
+            registries.append((1, model_instance.model_name, registry))
     return registries
 
 
@@ -648,7 +652,7 @@ async def ensure_model_ingress(
     ingress_name: str,
     route_name: str,
     namespace: str,
-    destinations: List[Tuple[int, str, McpBridgeRegistry]],
+    destinations: DestinationTupleList,
     event_type: EventType,
     networking_api: k8s_client.NetworkingV1Api,
     included_generic_route: Optional[bool] = False,
@@ -661,7 +665,7 @@ async def ensure_model_ingress(
     Parameters:
         ingress_name (str): The name of the ingress resource.
         namespace (str): The Kubernetes namespace for the ingress resource.
-        destinations (List[Tuple[int, str, McpBridgeRegistry]]): Weighted list of MCP Bridge registries for traffic routing.
+        destinations (DestinationTupleList): Weighted list of MCP Bridge registries for traffic routing.
         route_name (str): The name of the model route for which ingress is managed.
         event_type (EventType): The event type (CREATED, UPDATED, DELETED) triggering reconciliation.
         networking_api (k8s_client.NetworkingV1Api): The Kubernetes networking API client.
