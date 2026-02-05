@@ -44,11 +44,16 @@ class ActiveConfig(BaseModel):
     activeProviderId: Optional[str] = Field(default=None)
 
 
+class FailoverConfig(EnableState):
+    healthCheckModel: Optional[str] = None
+    failureThreshold: int = Field(default=1)
+
+
 class AIProxyDefaultConfig(CustomConfig):
     id: str
     apiTokens: List[str] = Field(
         default_factory=list,
     )
-    failover: EnableState = Field(default_factory=EnableState)
+    failover: FailoverConfig = Field(default_factory=FailoverConfig)
     retryOnFailure: EnableState = Field(default_factory=EnableState)
     type: ModelProviderTypeEnum

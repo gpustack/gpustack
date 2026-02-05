@@ -306,8 +306,20 @@ def provider_proxy_plugin_spec(
             **provider.config.model_dump(exclude={"type"}, exclude_none=True),
             "type": provider.config.type.value,
         }
-        if len(provider.api_tokens) > 1:
-            default_config_data["failover"] = ai_proxy_types.EnableState(enabled=True)
+        accessible_llm_model = next(
+            (
+                model.name
+                for model in provider.models or []
+                if model.accessible and model.category == "llm"
+            ),
+            None,
+        )
+        # Failover has more config
+        if accessible_llm_model and len(provider.api_tokens) > 1:
+            default_config_data["failover"] = ai_proxy_types.FailoverConfig(
+                enabled=True,
+                healthCheckModel=accessible_llm_model,
+            )
         default_config = ai_proxy_types.AIProxyDefaultConfig.model_validate(
             default_config_data
         )

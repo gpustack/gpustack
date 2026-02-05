@@ -1,6 +1,6 @@
 import httpx
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -63,6 +63,31 @@ async def get_model_providers(
     )
 
 
+def validate_provider(provider: Union[ModelProviderCreate, ModelProviderUpdate]):
+    if provider.config is not None and len(provider.config.model_extra or {}) > 0:
+        raise InvalidException(
+            message=f"fields {', '.join(provider.config.model_extra.keys())} are not allowed in {provider.config.type.value} config"
+        )
+    try:
+        provider.config.check_required_fields()
+    except ValueError as e:
+        raise InvalidException(message=f"{e}")
+
+    if len(provider.api_tokens) > 1:
+        accessible_llm_model = next(
+            (
+                model
+                for model in provider.models or []
+                if model.accessible and model.category == "llm"
+            ),
+            None,
+        )
+        if not accessible_llm_model:
+            raise InvalidException(
+                message="At least one accessible llm model is required when api_tokens has more than 1 token for failover"
+            )
+
+
 @router.post("", response_model=ModelProviderPublic, response_model_exclude_none=True)
 async def create_model_provider(session: SessionDep, input: ModelProviderCreate):
     existing = await ModelProvider.one_by_fields(
@@ -71,10 +96,7 @@ async def create_model_provider(session: SessionDep, input: ModelProviderCreate)
     )
     if existing:
         raise AlreadyExistsException(message=f"provider {input.name} already exists")
-    if input.config is not None and len(input.config.model_extra or {}) > 0:
-        raise InvalidException(
-            message=f"fields {', '.join(input.config.model_extra.keys())} are not allowed in {input.config.type.value} config"
-        )
+    validate_provider(input)
     try:
         return await ModelProvider.create(session=session, source=input)
     except Exception as e:
@@ -102,6 +124,7 @@ async def update_model_provider(
     provider = await ModelProvider.one_by_id(session=session, id=id)
     if not provider:
         raise NotFoundException(message=f"provider {id} not found")
+    validate_provider(input)
     try:
         await provider.update(session=session, source=input)
     except Exception as e:
