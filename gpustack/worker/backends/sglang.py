@@ -196,6 +196,8 @@ class SGLangServer(InferenceServer):
             host_network=True,
             shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=[run_container],
+            run_as_user=container_config.user,
+            run_as_group=container_config.group,
         )
         create_workload(self._transform_workload_plan(workload_plan))
 

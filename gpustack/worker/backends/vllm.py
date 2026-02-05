@@ -213,6 +213,8 @@ class VLLMServer(InferenceServer):
                 if not sidecar_container
                 else [run_container, sidecar_container]
             ),
+            run_as_user=container_config.user,
+            run_as_group=container_config.group,
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
