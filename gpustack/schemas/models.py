@@ -647,7 +647,6 @@ def is_omni_model(model: Model) -> bool:
     OMNI_CATEGORIES = (
         CategoryEnum.IMAGE,
         CategoryEnum.TEXT_TO_SPEECH,
-        CategoryEnum.SPEECH_TO_TEXT,
     )
     return any(cat in model.categories for cat in OMNI_CATEGORIES)
 
