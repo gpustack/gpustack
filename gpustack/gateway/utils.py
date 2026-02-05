@@ -969,12 +969,14 @@ def get_model_route_mapper_config(
             )
         )
     for model_name, service_names in fallback_model_name_to_registries.items():
+        # the fallback mapping should include both normal ingress and fallback ingress
+        # as the normal ingress may not exist when only fallback model is set
         fallback_name = fallback_ingress_name(ingress_name)
         config = {"modelMapping": {route_name: model_name}}
         match_list.append(
             WasmPluginMatchRule(
                 config=config,
-                ingress=[fallback_name],
+                ingress=[ingress_name, fallback_name],
                 configDisable=False,
                 service=service_names,
             )

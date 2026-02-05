@@ -748,6 +748,8 @@ async def sync_gateway(
         destinations=destinations,
         fallback_destinations=fallback_destinations,
     )
+    if event_type != EventType.DELETED and len(destinations) == 0:
+        destinations = fallback_destinations
     await mcp_handler.ensure_model_ingress(
         event_type=event_type,
         ingress_name=ingress_name,
