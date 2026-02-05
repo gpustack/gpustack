@@ -127,6 +127,7 @@ _TEXT_GENERATION_MODELS = [
     "SeedOssForCausalLM",
     "Step1ForCausalLM",
     "Step3TextForCausalLM",
+    "Step3p5ForCausalLM",
     "StableLMEpochForCausalLM",
     "StableLmForCausalLM",
     "Starcoder2ForCausalLM",
@@ -215,12 +216,10 @@ _MULTIMODAL_MODELS = [
     "FuyuForCausalLM",
     "Gemma3ForConditionalGeneration",
     "Gemma3nForConditionalGeneration",
-    "GlmAsrForConditionalGeneration",
     "GLM4VForCausalLM",
     "Glm4vForConditionalGeneration",
     "Glm4v_moeForConditionalGeneration",
     "Glm4vMoeForConditionalGeneration",  # Note: New class for "Glm4v_moeForConditionalGeneration"
-    "GraniteSpeechForConditionalGeneration",
     "H2OVLChatModel",
     "HunYuanVLForConditionalGeneration",
     "StepVLForConditionalGeneration",
@@ -276,7 +275,6 @@ _MULTIMODAL_MODELS = [
     "Step3VLForConditionalGeneration",
     "TarsierForConditionalGeneration",
     "Tarsier2ForConditionalGeneration",
-    "VoxtralForConditionalGeneration",
     "VoxtralStreamingGeneration",
     # [Encoder-decoder]
     "Florence2ForConditionalGeneration",
@@ -284,7 +282,17 @@ _MULTIMODAL_MODELS = [
     "Llama4ForConditionalGeneration",
     "SkyworkR1VChatModel",
     "NemotronParseForConditionalGeneration",
+]
+
+_SPEECH_TO_TEXT_MODELS = [
+    "GlmAsrForConditionalGeneration",
+    "GraniteSpeechForConditionalGeneration",
+    "VoxtralForConditionalGeneration",
     "WhisperForConditionalGeneration",
+]
+
+_TEXT_TO_SPEECH_MODELS = [
+    "Qwen3TTSForConditionalGeneration",
 ]
 
 _TRANSFORMERS_SUPPORTED_MODELS = [
@@ -347,6 +355,10 @@ def detect_model_type(architectures: List[str]) -> CategoryEnum:
             return CategoryEnum.EMBEDDING
         if architecture in _RERANKER_MODELS:
             return CategoryEnum.RERANKER
+        if architecture in _SPEECH_TO_TEXT_MODELS:
+            return CategoryEnum.SPEECH_TO_TEXT
+        if architecture in _TEXT_TO_SPEECH_MODELS:
+            return CategoryEnum.TEXT_TO_SPEECH
         if architecture in _LLM_MODELS:
             return CategoryEnum.LLM
     return CategoryEnum.UNKNOWN

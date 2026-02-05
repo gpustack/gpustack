@@ -39,43 +39,10 @@ def get_meta_from_running_instance(
         else:
             model_meta = parse_v1_models_meta(response_json)
 
-        mutate_model_meta(model, model_meta)
         return model_meta
     except Exception as e:
         logger.warning(f"Failed to get meta from running instance {mi.name}: {e}")
         return {}
-
-
-def mutate_model_meta(model: Model, meta: Dict[str, Any]) -> None:
-    """
-    Mutate the model's meta information with the provided meta dictionary.
-    """
-    readable_source = model.readable_source.lower()
-    if "qwen3-tts" in readable_source:
-        # Special handling for Qwen3-TTS model
-        # Refs:
-        # - https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/examples/online_serving/qwen3_tts/
-        # - https://github.com/QwenLM/Qwen3-TTS
-        qwen3_tts_meta = {
-            "voices": [
-                "Vivian",
-                "Serena",
-                "Uncle_Fu",
-                "Dylan",
-                "Eric",
-                "Ryan",
-                "Aiden",
-                "Ono_Anna",
-                "Sohee",
-            ],
-            "languages": ["Auto", "Chinese", "English", "Japanese", "Korean"],
-        }
-        QWEN3_TTS_TASK_TYPES = ["CustomVoice", "VoiceDesign", "Base"]
-        for task_type in QWEN3_TTS_TASK_TYPES:
-            if task_type.lower() in readable_source:
-                qwen3_tts_meta["task_type"] = task_type
-                break
-        meta.update(qwen3_tts_meta)
 
 
 def parse_v1_models_meta(response_json: Dict[str, Any]) -> Dict[str, Any]:

@@ -157,11 +157,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             "Qwen3VLForConditionalGeneration",  # Qwen3-VL-Embedding & Qwen3-VL-Reranker
         }
 
-        if CategoryEnum.LLM not in self._model.categories:
-            # Disable for non-LLM models unless they are in the exception list
-            return not any(arch in NON_LLM_GMU_EXCEPTIONS for arch in architectures)
+        use_gmu_categories = [CategoryEnum.LLM, CategoryEnum.SPEECH_TO_TEXT]
+        if any(cat in self._model.categories for cat in use_gmu_categories):
+            return False
 
-        return False
+        # Disable for non-LLM models unless they are in the exception list
+        return not any(arch in NON_LLM_GMU_EXCEPTIONS for arch in architectures)
 
     def _set_model_parameters(self):
         super()._set_model_parameters()
