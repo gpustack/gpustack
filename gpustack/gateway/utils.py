@@ -1129,7 +1129,7 @@ def ai_proxy_openai_provider_config(id: str) -> Dict[str, Any]:
     return ai_proxy_types.AIProxyDefaultConfig(
         type=ModelProviderTypeEnum.OPENAI,
         id=id,
-        failover=ai_proxy_types.EnableState(enabled=False),
+        failover=ai_proxy_types.FailoverConfig(enabled=False),
         retryOnFailure=ai_proxy_types.EnableState(enabled=False),
     ).model_dump(exclude_none=True, exclude_unset=True)
 

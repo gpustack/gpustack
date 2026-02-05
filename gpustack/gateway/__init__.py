@@ -6,6 +6,7 @@ import logging
 import yaml
 import copy
 from typing import Any, Dict, Tuple, List, Optional, Literal
+from pydantic import BaseModel
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
 from kubernetes_asyncio.config.kube_config import KubeConfigLoader, KubeConfigMerger
@@ -419,29 +420,70 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     return resource_name, expected_spec
 
 
+class HeaderRule(BaseModel):
+    key: Optional[str] = None
+    newKey: Optional[str] = None
+    oldKey: Optional[str] = None
+    fromKey: Optional[str] = None
+    toKey: Optional[str] = None
+    value: Optional[str] = None
+    newValue: Optional[str] = None
+    appendValue: Optional[str] = None
+    value_type: Optional[Literal["object", "bool", "number", "string"]] = None
+    strategy: Optional[Literal["RETAIN_FIRST", "RETAIN_LAST", "RETAIN_UNIQUE"]] = None
+    host_pattern: Optional[str] = None
+    path_pattern: Optional[str] = None
+
+
+def transform_header(
+    operate: Literal["remove", "rename", "replace", "add", "append", "map", "dedupe"],
+    *rules: HeaderRule,
+) -> Dict[str, Any]:
+    # TODO: add validation in the future
+    return {
+        "headers": [rule.model_dump(exclude_none=True) for rule in rules],
+        "operate": operate,
+    }
+
+
 def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-header-transformer"
     expected_spec = WasmPluginSpec(
         defaultConfig={
             "reqRules": [
-                {
-                    "headers": [
-                        {
-                            "newKey": "x-higress-llm-model",
-                            "oldKey": router_header_key,
-                        }
-                    ],
-                    "operate": "rename",
-                },
-                {
-                    "headers": [
-                        {
-                            "key": "x-higress-llm-model",
-                            "strategy": "RETAIN_FIRST",
-                        }
-                    ],
-                    "operate": "dedupe",
-                },
+                transform_header(
+                    "rename",
+                    HeaderRule(
+                        newKey="x-higress-llm-model",
+                        oldKey="x-gpustack-model",
+                    ),
+                    HeaderRule(
+                        oldKey="x-gpustack-original-path",
+                        newKey=":path",
+                    ),
+                ),
+                transform_header(
+                    "dedupe",
+                    HeaderRule(
+                        key="x-gpustack-model",
+                        strategy="RETAIN_FIRST",
+                    ),
+                    HeaderRule(
+                        key="x-higress-llm-model",
+                        strategy="RETAIN_FIRST",
+                    ),
+                    HeaderRule(
+                        key=":path",
+                        strategy="RETAIN_LAST",
+                    ),
+                ),
+                transform_header(
+                    "map",
+                    HeaderRule(
+                        fromKey=':path',
+                        toKey='x-gpustack-original-path',
+                    ),
+                ),
             ],
         },
         defaultConfigDisable=False,
@@ -449,7 +491,7 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         imagePullPolicy="UNSPECIFIED_POLICY",
         matchRules=[],
         phase="AUTHN",
-        priority=410,
+        priority=810,
         url=get_plugin_url_with_name_and_version(
             name="transformer", version="2.0.0", cfg=cfg
         ),
