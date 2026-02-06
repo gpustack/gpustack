@@ -554,16 +554,13 @@ class ModelProviderListParams(ListParams):
 
 
 class ProviderModelsInput(BaseModel):
-    api_token: str
-    config: ProviderConfigType
+    api_token: Optional[str] = None
+    config: Optional[ProviderConfigType] = None
+    proxy_url: Optional[str] = None
 
 
-class TestModelForExistingProviderInput(BaseModel):
+class TestProviderModelInput(ProviderModelsInput):
     model_name: str
-
-
-class TestProviderModelInput(ProviderModelsInput, TestModelForExistingProviderInput):
-    pass
 
 
 class TestProviderModelResult(BaseModel):
