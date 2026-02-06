@@ -42,6 +42,7 @@ dependencies = [
     "pywin32>=308; platform_system == 'Windows'",
     "packaging>=24.1",
     "psycopg2-binary>=2.9.10",
+    "PyYAML>=6.0,<7.0",
     "tenacity>=9.0.0",
     "aiocache>=0.12.3",
     "aiofiles>=23.2.1",
