@@ -1,3 +1,4 @@
+import hashlib
 from typing import Tuple
 from urllib.parse import urlparse
 from enum import Enum
@@ -438,13 +439,28 @@ class ProviderModel(BaseModel):
     category: Optional[str] = None
 
 
-class ModelProviderUpdate(SQLModel):
+class MaskedAPIToken(BaseModel):
+    input: Optional[str] = None
+    hash: Optional[str] = None
+
+    @model_validator(mode="after")
+    def check_fields(self):
+        if self.input is None and self.hash is None:
+            raise ValueError(
+                "Either 'input' or 'hash' must be provided for a masked API token."
+            )
+        if self.input is not None and self.hash is not None:
+            raise ValueError(
+                "Only one of 'input' or 'hash' can be provided for a masked API token."
+            )
+        if self.input is not None and not self.input.strip():
+            raise ValueError("API token input cannot be empty or just whitespace.")
+        return self
+
+
+class ModelProviderBase(SQLModel):
     name: str = Field(index=True, nullable=False, unique=True)
     description: Optional[str] = Field(default=None, nullable=True)
-    api_tokens: List[str] = Field(
-        sa_column=Column(JSON, nullable=False),
-        default=[],
-    )
     timeout: int = Field(default=120, nullable=False)
     config: ProviderConfigType = Field(
         description="provider specific configuration",
@@ -477,14 +493,17 @@ class ModelProviderUpdate(SQLModel):
             raise ValueError("proxy_url must be set when proxy_timeout is set")
         return self
 
+
+class ModelProviderUpdate(ModelProviderBase):
+    api_tokens: List[MaskedAPIToken] = PydanticField(
+        default=[],
+    )
+
     @field_validator("api_tokens")
     def check_api_tokens(cls, v):
         if v is not None:
             if not isinstance(v, list) or len(v) == 0:
                 raise ValueError("api_tokens must be a non-empty list")
-            for token in v:
-                if not isinstance(token, str) or len(token.strip()) == 0:
-                    raise ValueError("each api_token must be a non-empty string")
         return v
 
 
@@ -492,20 +511,33 @@ class ModelProviderCreate(ModelProviderUpdate):
     pass
 
 
-class ModelProviderBase(ModelProviderCreate):
-    pass
-
-
 class ModelProvider(ModelProviderBase, BaseModelMixin, table=True):
     __tablename__ = "model_providers"
     id: Optional[int] = Field(default=None, primary_key=True)
+    api_tokens: List[str] = Field(
+        sa_column=Column(JSON, nullable=False),
+        default=[],
+    )
     model_route_targets: List["ModelRouteTarget"] = Relationship(
         back_populates="provider",
         sa_relationship_kwargs={"lazy": "noload", "cascade": "delete"},
     )
 
+    @classmethod
+    def _convert_to_public_class(cls, data) -> "ModelProviderPublic":
+        dict_data = data if isinstance(data, dict) else data.model_dump()
+        current_tokens: List[str] = dict_data.pop("api_tokens", None)
+        masked_tokens: List[MaskedAPIToken] = []
+        if current_tokens:
+            masked_tokens = [
+                {"hash": hashlib.sha256(token.encode()).hexdigest()}
+                for token in current_tokens
+            ]
+        dict_data["api_tokens"] = masked_tokens
+        return ModelProviderPublic.model_validate(dict_data)
 
-class ModelProviderPublic(ModelProviderBase, PublicFields):
+
+class ModelProviderPublic(ModelProviderUpdate, PublicFields):
     pass
 
 
