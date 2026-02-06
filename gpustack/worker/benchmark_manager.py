@@ -3,7 +3,7 @@ import multiprocessing
 import setproctitle
 import os
 import time
-from typing import Dict, Iterable, Optional, Callable, Union
+from typing import Dict, Optional, Callable
 import logging
 from collections import deque
 
@@ -518,35 +518,12 @@ class BenchmarkManager:
             )
             return
 
-        log_file_path = f"{self._benchmark_log_dir}/{benchmark.id}_workload.log"
-        try:
-            if os.path.exists(log_file_path):
-                os.remove(log_file_path)
-        except Exception as e:
-            logger.warning(
-                f"Failed to remove old log file {log_file_path} for benchmark {benchmark.name}(id={benchmark.id}): {e}"
-            )
-
-        with open(log_file_path, "ab") as f:
-            _write_logs(logs, f)
-
-
-def _write_logs(
-    logs: Union[str, bytes, Iterable[str | bytes]],
-    f,
-):
-    if isinstance(logs, (str, bytes)):
-        f.write(_to_bytes(logs))
-        if not logs.endswith(b"\n" if isinstance(logs, bytes) else "\n"):
-            f.write(b"\n")
-        return
-
-    for chunk in logs:
-        f.write(_to_bytes(chunk))
-
-
-def _to_bytes(data: str | bytes) -> bytes:
-    if isinstance(data, bytes):
-        return data
-    else:
-        return str(data).encode("utf-8", errors="replace")
+        log_file_path = f"{self._benchmark_log_dir}/{benchmark.id}.log"
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            log_str = logs
+            if isinstance(log_str, bytes):
+                log_str = log_str.decode("utf-8", errors="replace")
+            log_str = str(log_str)
+            f.write(log_str)
+            if not log_str.endswith("\n"):
+                f.write("\n")
