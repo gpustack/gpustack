@@ -431,7 +431,6 @@ async def get_benchmark_logs(
 ):
     log_dir = request.app.state.config.log_dir
     main_log_path = Path(log_dir) / "benchmarks" / f"{id}.log"
-    workload_log_path = Path(log_dir) / "benchmarks" / f"{id}_workload.log"
 
     try:
         file.check_file_with_retries(main_log_path)
@@ -442,7 +441,7 @@ async def get_benchmark_logs(
     return StreamingResponse(
         combined_log_generator(
             str(main_log_path),
-            str(workload_log_path),
+            "",
             log_options,
             benchmark_name,
             file_log_exists,
