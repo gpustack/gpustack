@@ -15,7 +15,6 @@ from gpustack.schemas.model_provider import (
     ModelProviderListParams,
     ProviderModelsInput,
     ModelProviderTypeEnum,
-    TestModelForExistingProviderInput,
     TestProviderModelInput,
     TestProviderModelResult,
 )
@@ -223,6 +222,11 @@ class CustomOAIModel(OAIModel):
 async def get_models_from_provider(
     input: ProviderModelsInput,
 ):
+    if input.api_token is None or input.config is None:
+        raise InvalidException(
+            message="api_token and config are required to fetch models from provider"
+        )
+
     result = SyncPage[CustomOAIModel](data=[], object="list")
     try:
         input.config.check_required_fields()
@@ -236,7 +240,11 @@ async def get_models_from_provider(
         )
         return result
     data = []
-    async with httpx.AsyncClient(base_url=base_url) as client:
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        proxy=input.proxy_url,
+        trust_env=True,
+    ) as client:
         headers = {}
         if input.config.type == ModelProviderTypeEnum.CLAUDE:
             headers["X-API-Key"] = input.api_token
@@ -276,10 +284,11 @@ async def get_models_from_provider(
     return result
 
 
-@router.get("/{id}/models")
+@router.post("/{id}/get-models")
 async def get_models_from_specific_provider(
     session: SessionDep,
     id: int,
+    input: ProviderModelsInput,
 ):
     provider = await ModelProvider.one_by_id(session=session, id=id)
     if not provider or provider.deleted_at is not None:
@@ -290,8 +299,9 @@ async def get_models_from_specific_provider(
         )
     return await get_models_from_provider(
         ProviderModelsInput(
-            api_token=provider.api_tokens[0],
-            config=provider.config,
+            api_token=input.api_token or provider.api_tokens[0],
+            config=input.config or provider.config,
+            proxy_url=input.proxy_url or provider.proxy_url,
         )
     )
 
@@ -304,6 +314,11 @@ async def get_models_from_specific_provider(
 async def try_model_with_provider(
     input: TestProviderModelInput,
 ):
+    if input.api_token is None or input.config is None:
+        raise InvalidException(
+            message="api_token and config are required to fetch models from provider"
+        )
+
     if input.config.type not in [
         ModelProviderTypeEnum.QWEN,
         ModelProviderTypeEnum.DEEPSEEK,
@@ -329,7 +344,12 @@ async def try_model_with_provider(
         "messages": [{"role": "user", "content": "Ping"}],
         **max_output_token_dict,
     }
-    async with httpx.AsyncClient(base_url=f"{endpoint}/{prefix}") as client:
+
+    async with httpx.AsyncClient(
+        base_url=f"{endpoint}/{prefix}",
+        proxy=input.proxy_url,
+        trust_env=True,
+    ) as client:
         headers = {}
         if input.config.type == ModelProviderTypeEnum.CLAUDE:
             headers["X-API-Key"] = input.api_token
@@ -364,7 +384,7 @@ async def try_model_with_provider(
 async def try_model_with_specific_provider(
     session: SessionDep,
     id: int,
-    input: TestModelForExistingProviderInput,
+    input: TestProviderModelInput,
 ):
     provider = await ModelProvider.one_by_id(session=session, id=id)
     if not provider or provider.deleted_at is not None:
@@ -375,8 +395,9 @@ async def try_model_with_specific_provider(
         )
     return await try_model_with_provider(
         TestProviderModelInput(
-            api_token=provider.api_tokens[0],
-            config=provider.config,
+            api_token=input.api_token or provider.api_tokens[0],
+            config=input.config or provider.config,
+            proxy_url=input.proxy_url or provider.proxy_url,
             model_name=input.model_name,
         )
     )
