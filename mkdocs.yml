@@ -107,9 +107,6 @@ nav:
           - Model File management: user-guide/model-file-management.md
           - Cluster Management: user-guide/cluster-management.md
           - Cloud Credential Management: user-guide/cloud-credential-management.md
-          - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
-          - Image Generation APIs: user-guide/image-generation-apis.md
-          - Rerank API: user-guide/rerank-api.md
           - API Key Management: user-guide/api-key-management.md
           - User Management: user-guide/user-management.md
           - Single Sign-On (SSO) Authentication: user-guide/sso.md
@@ -131,7 +128,8 @@ nav:
           - Adding a GPU Cluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
           - Adding a GPU Cluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
       - Integrations:
-          - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
+          - Inference APIs: integrations/inference-apis.md
+          - Integrate with Claude Code: integrations/integrate-with-claude-code.md
           - Integrate with Dify: integrations/integrate-with-dify.md
           - Integrate with RAGFlow: integrations/integrate-with-ragflow.md
           - Integrate with CherryStudio: integrations/integrate-with-cherrystudio.md
