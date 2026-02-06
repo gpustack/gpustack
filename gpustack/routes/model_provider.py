@@ -1,10 +1,12 @@
 import httpx
 import logging
+import hashlib
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from gpustack.schemas.model_provider import (
+    MaskedAPIToken,
     ModelProvider,
     ModelProviderCreate,
     ModelProviderUpdate,
@@ -53,7 +55,7 @@ async def get_model_providers(
             media_type="text/event-stream",
         )
 
-    return await ModelProvider.paginated_by_query(
+    provider_list = await ModelProvider.paginated_by_query(
         session=session,
         fields=fields,
         fuzzy_fields=fuzzy_fields,
@@ -61,6 +63,12 @@ async def get_model_providers(
         per_page=params.perPage,
         order_by=params.order_by,
     )
+    provider_list.items = [
+        ModelProvider._convert_to_public_class(provider)
+        for provider in provider_list.items
+    ]
+
+    return provider_list
 
 
 def validate_provider(provider: Union[ModelProviderCreate, ModelProviderUpdate]):
@@ -86,6 +94,25 @@ def validate_provider(provider: Union[ModelProviderCreate, ModelProviderUpdate])
         raise InvalidException(message="At least one model is required for a provider")
 
 
+def parse_api_tokens(
+    existing_tokens: List[str], api_tokens: List[MaskedAPIToken]
+) -> List[str]:
+    target_tokens = []
+    hashed_token_dict = {
+        hashlib.sha256(token.encode()).hexdigest(): token for token in existing_tokens
+    }
+    for index, api_token in enumerate(api_tokens):
+        token_value = api_token.input
+        if api_token.hash is not None:
+            token_value = hashed_token_dict.get(api_token.hash)
+        if not token_value or not token_value.strip():
+            raise InvalidException(
+                message=f"API token at index {index} is invalid, empty, or does not match any existing token"
+            )
+        target_tokens.append(token_value)
+    return target_tokens
+
+
 @router.post("", response_model=ModelProviderPublic, response_model_exclude_none=True)
 async def create_model_provider(session: SessionDep, input: ModelProviderCreate):
     existing = await ModelProvider.one_by_fields(
@@ -96,7 +123,12 @@ async def create_model_provider(session: SessionDep, input: ModelProviderCreate)
         raise AlreadyExistsException(message=f"provider {input.name} already exists")
     validate_provider(input)
     try:
-        return await ModelProvider.create(session=session, source=input)
+        input_dict = input.model_dump(exclude={"api_tokens"})
+        input_dict["api_tokens"] = parse_api_tokens(
+            existing_tokens=[], api_tokens=input.api_tokens
+        )
+        created = await ModelProvider.create(session=session, source=input_dict)
+        return ModelProvider._convert_to_public_class(created)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to create provider {input.name}: {e}"
@@ -110,7 +142,7 @@ async def get_model_provider(session: SessionDep, id: int):
     provider = await ModelProvider.one_by_id(session=session, id=id)
     if not provider:
         raise NotFoundException(message=f"provider {id} not found")
-    return provider
+    return ModelProvider._convert_to_public_class(provider)
 
 
 @router.put(
@@ -124,12 +156,19 @@ async def update_model_provider(
         raise NotFoundException(message=f"provider {id} not found")
     validate_provider(input)
     try:
-        await provider.update(session=session, source=input)
+        input_dict = input.model_dump(exclude={"api_tokens"})
+        if input.api_tokens is not None:
+            input_dict["api_tokens"] = parse_api_tokens(
+                existing_tokens=provider.api_tokens or [],
+                api_tokens=input.api_tokens,
+            )
+        await provider.update(session=session, source=input_dict)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update provider {id}: {e}"
         )
-    return await ModelProvider.one_by_id(session=session, id=id)
+    updated_provider = await ModelProvider.one_by_id(session=session, id=id)
+    return ModelProvider._convert_to_public_class(updated_provider)
 
 
 @router.delete("/{id}")
