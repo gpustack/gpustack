@@ -127,7 +127,9 @@ class ModelSource(BaseModel):
 
     @property
     def model_source_index(self) -> str:
-        values = []
+        # Include source type to differentiate between different sources
+        values = [str(self.source)]
+
         if self.source == SourceEnum.HUGGING_FACE:
             values.extend([self.huggingface_repo_id, self.huggingface_filename])
         elif self.source == SourceEnum.MODEL_SCOPE:
@@ -135,7 +137,10 @@ class ModelSource(BaseModel):
         elif self.source == SourceEnum.LOCAL_PATH:
             values.extend([self.local_path])
 
-        return hashlib.sha256(self.readable_source.encode()).hexdigest()
+        # Filter out None values and join
+        filtered_values = [v for v in values if v is not None]
+        source_string = "/".join(filtered_values)
+        return hashlib.sha256(source_string.encode()).hexdigest()
 
     @model_validator(mode="after")
     def check_huggingface_fields(self):

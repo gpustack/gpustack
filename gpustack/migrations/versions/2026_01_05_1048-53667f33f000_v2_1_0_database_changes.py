@@ -12,6 +12,8 @@ from alembic import op
 import sqlalchemy as sa
 import sqlmodel
 import json
+import hashlib
+
 import gpustack
 from sqlalchemy.dialects import postgresql
 from gpustack.migrations.utils import table_exists
@@ -117,6 +119,9 @@ def upgrade() -> None:
     with op.batch_alter_table('benchmarks', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_benchmarks_name'), ['name'], unique=True)
 
+    add_inference_backend_source_and_metadata()
+    recalculate_source_index_for_sources()
+
 
 def downgrade() -> None:
     public_maas_integration_downgrade()
@@ -131,7 +136,10 @@ def downgrade() -> None:
     )
     
     _migrate_model_gpu_selector(DOWNGRADE_GPU_TYPE_MAPPING)
-        
+
+    reverse_recalculate_source_index_for_sources()
+    remove_inference_backend_source_and_metadata()
+
     with op.batch_alter_table('benchmarks', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_benchmarks_name'))
     op.drop_table('benchmarks')
@@ -352,3 +360,135 @@ def public_maas_integration_downgrade():
         pass
     # Drop model_providers table
     op.drop_table('model_providers', if_exists=True)
+
+
+def add_inference_backend_source_and_metadata():
+    """Add backend_source, enabled, icon, default_env columns and change description to Text."""
+    with op.batch_alter_table('inference_backends', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('backend_source', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(sa.Column('enabled', sa.Boolean(), nullable=True))
+        batch_op.add_column(sa.Column('icon', sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column('default_env', sa.JSON(), nullable=True))
+        batch_op.alter_column('description',
+                              existing_type=sa.String(length=255),
+                              type_=sa.Text(),
+                              existing_nullable=True)
+
+
+def remove_inference_backend_source_and_metadata():
+    """Remove backend_source, enabled, icon, default_env columns and revert description to String(255)."""
+    with op.batch_alter_table('inference_backends', schema=None) as batch_op:
+        batch_op.drop_column('backend_source')
+        batch_op.drop_column('enabled')
+        batch_op.drop_column('icon')
+        batch_op.drop_column('default_env')
+        batch_op.alter_column('description',
+                              existing_type=sa.Text(),
+                              type_=sa.String(length=255),
+                              existing_nullable=True)
+
+
+def recalculate_source_index_for_sources():
+    """Recalculate source_index to include source type for different sources."""
+    conn = op.get_bind()
+
+    def calc_source_index(source, hf_repo_id, hf_filename, ms_model_id, ms_file_path, local_path, include_source):
+        values = []
+        if include_source:
+            values.append(str(source))
+
+        if source == 'HUGGING_FACE':
+            if hf_repo_id:
+                values.append(hf_repo_id)
+            if hf_filename:
+                values.append(hf_filename)
+        elif source == 'MODEL_SCOPE':
+            if ms_model_id:
+                values.append(ms_model_id)
+            if ms_file_path:
+                values.append(ms_file_path)
+        elif source == 'LOCAL_PATH':
+            if local_path:
+                values.append(local_path)
+
+        filtered_values = [v for v in values if v is not None]
+        source_string = "/".join(filtered_values)
+        return hashlib.sha256(source_string.encode()).hexdigest()
+
+    result = conn.execute(sa.text("""
+        SELECT id, source, huggingface_repo_id, huggingface_filename,
+               model_scope_model_id, model_scope_file_path, local_path
+        FROM model_files
+        WHERE deleted_at IS NULL
+    """))
+
+    for row in result:
+        new_source_index = calc_source_index(
+            row.source,
+            row.huggingface_repo_id,
+            row.huggingface_filename,
+            row.model_scope_model_id,
+            row.model_scope_file_path,
+            row.local_path,
+            True
+        )
+
+        conn.execute(
+            sa.text("UPDATE model_files SET source_index = :new_index WHERE id = :id"),
+            {"new_index": new_source_index, "id": row.id}
+        )
+
+    conn.commit()
+
+
+def reverse_recalculate_source_index_for_sources():
+    """Recalculate source_index with old logic (without source type prefix)."""
+    conn = op.get_bind()
+
+    def calc_source_index(source, hf_repo_id, hf_filename, ms_model_id, ms_file_path, local_path, include_source):
+        values = []
+        if include_source:
+            values.append(str(source))
+
+        if source == 'HUGGING_FACE':
+            if hf_repo_id:
+                values.append(hf_repo_id)
+            if hf_filename:
+                values.append(hf_filename)
+        elif source == 'MODEL_SCOPE':
+            if ms_model_id:
+                values.append(ms_model_id)
+            if ms_file_path:
+                values.append(ms_file_path)
+        elif source == 'LOCAL_PATH':
+            if local_path:
+                values.append(local_path)
+
+        filtered_values = [v for v in values if v is not None]
+        source_string = "/".join(filtered_values)
+        return hashlib.sha256(source_string.encode()).hexdigest()
+
+    result = conn.execute(sa.text("""
+        SELECT id, source, huggingface_repo_id, huggingface_filename,
+               model_scope_model_id, model_scope_file_path, local_path
+        FROM model_files
+        WHERE deleted_at IS NULL
+    """))
+
+    for row in result:
+        old_source_index = calc_source_index(
+            row.source,
+            row.huggingface_repo_id,
+            row.huggingface_filename,
+            row.model_scope_model_id,
+            row.model_scope_file_path,
+            row.local_path,
+            False
+        )
+
+        conn.execute(
+            sa.text("UPDATE model_files SET source_index = :old_index WHERE id = :id"),
+            {"old_index": old_source_index, "id": row.id}
+        )
+
+    conn.commit()
