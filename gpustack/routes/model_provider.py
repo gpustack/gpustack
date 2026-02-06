@@ -82,6 +82,8 @@ def validate_provider(provider: Union[ModelProviderCreate, ModelProviderUpdate])
             raise InvalidException(
                 message="At least one llm model is required when api_tokens has more than 1 token for failover"
             )
+    if len(provider.models or []) == 0:
+        raise InvalidException(message="At least one model is required for a provider")
 
 
 @router.post("", response_model=ModelProviderPublic, response_model_exclude_none=True)
