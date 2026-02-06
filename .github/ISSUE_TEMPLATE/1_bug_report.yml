@@ -82,3 +82,12 @@ body:
         Output(wrap with code block or file attachment)
     validations:
       required: false
+
+  - type: textarea
+    id: additional-info
+    attributes:
+      label: Additional Information
+      description: |
+        If you have any other information that might be helpful in diagnosing the issue, please provide it here.
+    validations:
+      required: false
