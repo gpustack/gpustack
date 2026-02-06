@@ -317,11 +317,7 @@ def provider_proxy_plugin_spec(
             "type": provider.config.type.value,
         }
         accessible_llm_model = next(
-            (
-                model.name
-                for model in provider.models or []
-                if model.accessible and model.category == "llm"
-            ),
+            (model.name for model in provider.models or [] if model.category == "llm"),
             None,
         )
         # Failover has more config

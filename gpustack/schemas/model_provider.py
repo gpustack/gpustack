@@ -436,7 +436,6 @@ ProviderConfigType = Union[
 class ProviderModel(BaseModel):
     name: str
     category: Optional[str] = None
-    accessible: Optional[bool] = None
 
 
 class ModelProviderUpdate(SQLModel):
