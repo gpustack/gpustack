@@ -74,17 +74,13 @@ def validate_provider(provider: Union[ModelProviderCreate, ModelProviderUpdate])
         raise InvalidException(message=f"{e}")
 
     if len(provider.api_tokens) > 1:
-        accessible_llm_model = next(
-            (
-                model
-                for model in provider.models or []
-                if model.accessible and model.category == "llm"
-            ),
+        llm_model = next(
+            (model for model in provider.models or [] if model.category == "llm"),
             None,
         )
-        if not accessible_llm_model:
+        if not llm_model:
             raise InvalidException(
-                message="At least one accessible llm model is required when api_tokens has more than 1 token for failover"
+                message="At least one llm model is required when api_tokens has more than 1 token for failover"
             )
 
 
@@ -180,7 +176,6 @@ def determine_model_category(
 
 class CustomOAIModel(OAIModel):
     categories: Optional[List[str]] = None
-    accessible: Optional[bool] = None
 
 
 @router.post("/get-models")
@@ -235,9 +230,6 @@ async def get_models_from_provider(
             object=item.get("object") or "model",
             owned_by=item.get("owned_by") or input.config.type.value,
             categories=categories,
-            accessible=(
-                None if input.config.type == ModelProviderTypeEnum.DOUBAO else True
-            ),
         )
         result.data.append(model)
     return result
