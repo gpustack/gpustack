@@ -229,13 +229,19 @@ class GatewayMetricsCollector:
                 validated_model_names.update(model_to_provider_id.keys())
                 validated_user_ids = {u.id for u in users}
                 for metric in metrics:
-                    logger.debug(f"Storing metric: {metric}")
                     if metric.model not in validated_model_names:
+                        logger.debug(
+                            f"Model {metric.model} not found in database, skipping metric: {metric}"
+                        )
                         continue
+                    logger.debug(f"Storing metric: {metric}")
                     if (
                         metric.user_id is not None
                         and metric.user_id not in validated_user_ids
                     ):
+                        logger.debug(
+                            f"User ID {metric.user_id} not found in database, skipping metric: {metric}"
+                        )
                         continue
 
                     model_usage = ModelUsage(
