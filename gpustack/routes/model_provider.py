@@ -3,6 +3,7 @@ import logging
 import hashlib
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timezone
+from sqlalchemy.orm import selectinload
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from gpustack.schemas.model_provider import (
@@ -172,7 +173,11 @@ async def update_model_provider(
 
 @router.delete("/{id}")
 async def delete_model_provider(session: SessionDep, id: int):
-    existing = await ModelProvider.one_by_id(session=session, id=id)
+    existing = await ModelProvider.one_by_id(
+        session=session,
+        id=id,
+        options=[selectinload(ModelProvider.model_route_targets)],
+    )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(message=f"provider {id} not found")
     try:
