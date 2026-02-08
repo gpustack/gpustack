@@ -653,19 +653,9 @@ model_sets:
         vendor_variant: "910b"
       source: model_scope
       model_scope_model_id: gpustack/DeepSeek-R1-0528-w8a8
-      backend: vLLM
+      backend: MindIE
       backend_parameters:
-        - --max-model-len=65536
-        - --gpu-memory-utilization=0.92
-        - --trust-remote-code
-        - --max-num-seqs=16
-        - --max-num-batched-tokens=4096
-        - '--compilation-config={"cudagraph_capture_sizes":[4,16,32,48,64], "cudagraph_mode": "FULL_DECODE_ONLY"}'
-        - --tensor-parallel-size=4
-        - --data-parallel-size=4
-        - --data-parallel-size-local=2
-        - --enable-expert-parallel
-        - --quantization=ascend
+        - --max-seq-len=65536
     - mode: throughput
       quantization: FP8
       gpu_filters:
