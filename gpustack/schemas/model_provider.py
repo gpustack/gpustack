@@ -508,7 +508,7 @@ class ModelProviderUpdate(ModelProviderBase):
 
 
 class ModelProviderCreate(ModelProviderUpdate):
-    pass
+    clone_from_id: Optional[int] = PydanticField(default=None)
 
 
 class ModelProvider(ModelProviderBase, BaseModelMixin, table=True):
