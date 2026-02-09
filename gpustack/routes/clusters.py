@@ -2,7 +2,7 @@ import math
 import secrets
 from typing import Any, Callable, Optional, Union
 from urllib.parse import urlencode
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request, Response, Query
 from fastapi.responses import RedirectResponse, StreamingResponse
 from enum import Enum
 from sqlalchemy.orm import selectinload
@@ -39,6 +39,7 @@ from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import get_global_config, get_cluster_image_name
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack_runtime.detector import ManufacturerEnum
 
 CLUSTER_LOAD_OPTIONS = [
     selectinload(Cluster.cluster_workers),
@@ -407,7 +408,14 @@ async def get_registration_token(request: Request, session: SessionDep, id: int)
 
 
 @router.get("/{id}/manifests")
-async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
+async def get_cluster_manifests(
+    request: Request,
+    session: SessionDep,
+    id: int,
+    runtime: Optional[ManufacturerEnum] = Query(
+        None, description="Optional runtime to include in the manifest"
+    ),
+):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
@@ -419,6 +427,7 @@ async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
         registration=get_registration_from_cluster(request, cluster),
         cluster_suffix=cluster.hashed_suffix,
         namespace=getattr(cluster.worker_config, "namespace", None),
+        runtime_enum=runtime,
     )
     yaml_content = config.render()
     return Response(
