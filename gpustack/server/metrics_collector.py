@@ -5,7 +5,7 @@ from datetime import date
 from aiohttp import ClientSession as aiohttp_client, ClientTimeout
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Set
 from dataclasses import dataclass
 from prometheus_client.parser import text_string_to_metric_families
 from prometheus_client.samples import Sample
@@ -16,6 +16,7 @@ from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
 from gpustack.schemas.model_provider import ModelProvider
 from tenacity import retry, stop_after_attempt, wait_fixed
+from gpustack import envs
 
 
 gateway_metrics_port = 15020
@@ -41,6 +42,8 @@ class ModelUsageMetrics:
     total_token: int = 0
     request_count: int = 0
     user_id: Optional[int] = None
+    model_id: Optional[int] = None
+    provider_id: Optional[int] = None
     access_key: Optional[str] = None
 
 
@@ -63,9 +66,14 @@ def parse_token_metrics(metrics_text) -> Dict[str, ModelUsageMetrics]:
                 continue
             key = ".".join(
                 [
-                    str(part)
-                    for part in [metrics.model, metrics.user_id, metrics.access_key]
-                    if part is not None
+                    str(part or "")
+                    for part in [
+                        metrics.model_id,
+                        metrics.provider_id,
+                        metrics.model,
+                        metrics.user_id,
+                        metrics.access_key,
+                    ]
                 ]
             )
             existing_metrics = metrics_by_model_user_access_key.get(key, None)
@@ -101,10 +109,39 @@ def parse_sample_label_to_usage(sample: Sample) -> Optional[ModelUsageMetrics]:
             user_id = int(user[len("gpustack-") :])
         if len(consumer_parts) == 2:
             access_key = consumer_parts[0]
+    ai_cluster = labels.get("ai_cluster", None)
+    model_id = None
+    provider_id = None
+    if ai_cluster is not None:
+        cluster_parts = ai_cluster.split("|", 3)
+        if len(cluster_parts) != 4:
+            logger.debug(
+                f"Unexpected ai_cluster format: {ai_cluster}, expected 4 parts separated by '|', skipping sample: {sample}"
+            )
+            return None
+        target = cluster_parts[3]
+        if target.startswith("model-"):
+            # extra id `1` from model-1-2.static
+            model_split = target.split("-", 2)
+            if len(model_split) == 3:
+                try:
+                    model_id = int(model_split[1])
+                except ValueError:
+                    logger.debug(f"Invalid model_id in ai_cluster target: {target}")
+        if target.startswith("provider-"):
+            # extra id `1` from provider-1.dns
+            provider_split = target.removeprefix("provider-").split(".", 1)
+            if len(provider_split) == 2:
+                try:
+                    provider_id = int(provider_split[0])
+                except ValueError:
+                    logger.debug(f"Invalid provider_id in ai_cluster target: {target}")
 
     value = int(sample.value)
     rtn = ModelUsageMetrics(
         model=model,
+        model_id=model_id,
+        provider_id=provider_id,
         user_id=user_id,
         access_key=access_key,
     )
@@ -149,8 +186,25 @@ class GatewayMetricsCollector:
     def __init__(self, cfg: Config, interval=60):
         self._interval = interval
         self._config = cfg
-        self._disabled_collection = cfg.gateway_mode != GatewayModeEnum.embedded
+        self._disabled_collection = cfg.gateway_mode not in [
+            GatewayModeEnum.embedded,
+            GatewayModeEnum.external,
+        ]
         self._client = aiohttp_client(timeout=ClientTimeout(total=10))
+        if (
+            cfg.gateway_mode == GatewayModeEnum.external
+            and envs.GATEWAY_EXTERNAL_METRICS_URL is None
+        ):
+            logger.warning(
+                "Gateway is in external mode but GPUSTACK_GATEWAY_EXTERNAL_METRICS_URL is not set, skipped metrics collection."
+            )
+            self._disabled_collection = True
+
+    @property
+    def gateway_metrics_url(self):
+        if self._config.gateway_mode == GatewayModeEnum.external:
+            return envs.GATEWAY_EXTERNAL_METRICS_URL
+        return self._embedded_gateway_metrics_url
 
     def _metrics_delta(
         self, metrics: Dict[str, ModelUsageMetrics]
@@ -158,7 +212,7 @@ class GatewayMetricsCollector:
         """
         Calculate the delta (increment) of model usage metrics since the last collection.
 
-        For each key (model+user+access_key), compare the current metrics with the cached previous metrics.
+        For each key (model_id+provider_id+model+user+access_key), compare the current metrics with the cached previous metrics.
         - If cached exists, subtract previous values to get the delta.
         - If no cache, use the current value as the delta.
         - If all delta values are zero, skip (no change).
@@ -166,7 +220,7 @@ class GatewayMetricsCollector:
         - Otherwise, append the delta metrics and update the cache.
 
         Args:
-            metrics (Dict[str, ModelUsageMetrics]): Current metrics snapshot, keyed by model+user+access_key.
+            metrics (Dict[str, ModelUsageMetrics]): Current metrics snapshot, keyed by model_id+provider_id+model+user+access_key.
 
         Returns:
             List[ModelUsageMetrics]: List of delta metrics to be stored/reported.
@@ -205,6 +259,43 @@ class GatewayMetricsCollector:
             self.cached_dict[key] = metric
         return rtn
 
+    def _validate_metrics(
+        self,
+        metric: ModelUsageMetrics,
+        models: Dict[int, Model],
+        providers: Dict[int, ModelProvider],
+        user_ids: Set[int],
+    ) -> bool:
+        if metric.model_id is None and metric.provider_id is None:
+            logger.debug(
+                f"Both model_id and provider_id are None for metric: {metric}, skipping."
+            )
+            return False
+        if metric.model_id is not None:
+            model = models.get(metric.model_id)
+            if not model:
+                logger.debug(f"Model ID {metric.model_id} not found in database.")
+                return False
+            if model.name != metric.model:
+                logger.debug(
+                    f"Model name {metric.model} does not match database record {model.name} for model ID {metric.model_id}."
+                )
+                return False
+        if metric.provider_id is not None:
+            provider = providers.get(metric.provider_id)
+            if not provider:
+                logger.debug(f"Provider ID {metric.provider_id} not found in database.")
+                return False
+            if metric.model not in {m.name for m in provider.models}:
+                logger.debug(
+                    f"Model name {metric.model} not found for provider ID {metric.provider_id} in database."
+                )
+                return False
+        if metric.user_id is not None and metric.user_id not in user_ids:
+            logger.debug(f"User ID {metric.user_id} not found in database.")
+            return False
+        return True
+
     async def _store_metrics(self, metrics: List[ModelUsageMetrics]):
         dedup_model_names = {m.model for m in metrics}
         dedup_user_ids = {m.user_id for m in metrics if m.user_id is not None}
@@ -219,38 +310,22 @@ class GatewayMetricsCollector:
                     session=session,
                     fields={},
                 )
-                model_to_provider_id = {
-                    m.name: p.id for p in providers for m in p.models
-                }
                 users = await User.all_by_fields(
                     session=session,
                     fields={},
                     extra_conditions=[User.id.in_(dedup_user_ids)],
                 )
-                validated_model_names = {m.name for m in models}
-                validated_model_names.update(model_to_provider_id.keys())
                 validated_user_ids = {u.id for u in users}
+                model_by_id = {m.id: m for m in models}
+                provider_by_id = {p.id: p for p in providers}
                 for metric in metrics:
-                    if metric.model not in validated_model_names:
-                        logger.debug(
-                            f"Model {metric.model} not found in database, skipping metric: {metric}"
-                        )
-                        continue
-                    logger.debug(f"Storing metric: {metric}")
-                    if (
-                        metric.user_id is not None
-                        and metric.user_id not in validated_user_ids
+                    if not self._validate_metrics(
+                        metric, model_by_id, provider_by_id, validated_user_ids
                     ):
-                        logger.debug(
-                            f"User ID {metric.user_id} not found in database, skipping metric: {metric}"
-                        )
                         continue
-
                     model_usage = ModelUsage(
-                        model_id=next(
-                            (m.id for m in models if m.name == metric.model), None
-                        ),
-                        provider_id=model_to_provider_id.get(metric.model, None),
+                        model_id=metric.model_id,
+                        provider_id=metric.provider_id,
                         model_name=metric.model,
                         user_id=metric.user_id,
                         access_key=metric.access_key,
@@ -273,7 +348,7 @@ class GatewayMetricsCollector:
 
         @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
         async def retry_connect() -> str:
-            async with self._client.get(self._embedded_gateway_metrics_url) as resp:
+            async with self._client.get(self.gateway_metrics_url) as resp:
                 if resp.status != 200:
                     raise ConnectionError(
                         f"Failed to connect to gateway metrics endpoint, status: {resp.status}"
@@ -284,7 +359,7 @@ class GatewayMetricsCollector:
             try:
                 logger.debug(
                     "Collecting gateway metrics from %s",
-                    self._embedded_gateway_metrics_url,
+                    self.gateway_metrics_url,
                 )
                 text = await retry_connect()
                 metrics = parse_token_metrics(text)

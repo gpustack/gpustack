@@ -284,7 +284,10 @@ class Server:
         logger.debug("Worker instance cleaner started.")
 
     def _start_gateway_metrics_collector(self):
-        if self._config.gateway_mode != GatewayModeEnum.embedded:
+        if self._config.gateway_mode not in [
+            GatewayModeEnum.embedded,
+            GatewayModeEnum.external,
+        ]:
             return
         collector = GatewayMetricsCollector(cfg=self._config)
 
