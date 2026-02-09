@@ -121,6 +121,8 @@ async def create_or_update_model_usage(
         fields={
             "model_id": metric.model_id,
             "user_id": metric.user_id,
+            "provider_id": metric.provider_id,
+            "model_name": metric.model_name,
             "access_key": metric.access_key,
             "date": metric.date,
         },
