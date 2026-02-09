@@ -51,6 +51,7 @@ class ResourceClaim(BaseModel):
 class ModelSummary(BaseModel):
     id: Optional[int] = None
     provider_id: Optional[int] = None
+    provider_name: Optional[str] = None
     name: str
     resource_claim: Optional[ResourceClaim] = None
     instance_count: int
