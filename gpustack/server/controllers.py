@@ -2016,6 +2016,13 @@ class ClusterController:
 async def notify_model_route_target(session: AsyncSession, model: Model, event: Event):
     if event.type == EventType.DELETED:
         return
+    should_notify = False
+    if event.changed_fields is not None:
+        related_fields = ["ready_replicas", "replicas"]
+        for field in related_fields:
+            if field in event.changed_fields:
+                should_notify = True
+                break
     model: Model = await Model.one_by_id(
         session=session,
         id=model.id,
@@ -2027,18 +2034,24 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
         return
     targets = model.model_route_targets
     for target in targets:
-        target_state = (
-            TargetStateEnum.ACTIVE
-            if model.ready_replicas > 0
-            else TargetStateEnum.UNAVAILABLE
-        )
-        if target.state != target_state:
+        if should_notify:
             target_copy = ModelRouteTarget(**target.model_dump())
             await event_bus.publish(
                 target_copy.__class__.__name__.lower(),
                 Event(
                     type=EventType.UPDATED,
                     data=target_copy,
+                    changed_fields={
+                        "model": (
+                            {},
+                            {
+                                "id": model.id,
+                                "name": model.name,
+                                "ready_replicas": model.ready_replicas,
+                                "replicas": model.replicas,
+                            },
+                        )
+                    },
                 ),
             )
 
@@ -2196,6 +2209,7 @@ class ModelRouteTargetController:
             "provider_id",
             "model_id",
             "provider_model_name",
+            "model",
         ]
         should_notify = event.type == EventType.DELETED
         if not should_notify:
