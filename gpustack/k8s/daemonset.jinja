@@ -1,0 +1,237 @@
+---
+# DaemonSet
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app: gpustack-worker
+  name: gpustack-worker
+  namespace: {{ config.namespace }}
+spec:
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: gpustack-worker
+  template:
+    metadata:
+      labels:
+        app: gpustack-worker
+    spec:
+      containers:
+        - env:
+            - name: GPUSTACK_SERVER_URL
+              value: {{ config.server_url }}
+            - name: GPUSTACK_WORKER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: GPUSTACK_WORKER_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.hostIP
+            - name: GPUSTACK_RUNTIME_DEPLOY
+              value: "Kubernetes"
+            - name: GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
+              value: "true"
+            - name: GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GPUSTACK_RUNTIME_KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {%- if config.runtime == 'hygon' %}
+            - name: ROCM_PATH
+              value: /opt/dtk
+            - name: ROCM_SMI_LIB_PATH
+              value: /opt/hyhal/lib
+            {%- endif %}
+          envFrom:
+            - secretRef:
+                name: registration-token
+                optional: false
+          {%- if config.args and config.args|length > 0 %}
+          args:
+          {%- for arg in config.args %}
+            - {{ arg }}
+          {%- endfor %}
+          {%- endif %}
+          image: {{ config.image }}
+          imagePullPolicy: IfNotPresent
+          name: gpustack-worker
+          resources: {}
+          securityContext:
+            allowPrivilegeEscalation: true
+            capabilities: {}
+            privileged: true
+            readOnlyRootFilesystem: false
+            runAsNonRoot: false
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - name: gpustack-data-dir
+              mountPath: /var/lib/gpustack
+            - name: cdi
+              mountPath: /var/run/cdi
+            - name: kubelet-device-plugins
+              mountPath: /var/lib/kubelet/device-plugins
+            {%- if config.runtime == 'amd' %}
+            - name: gpustack-amd-driver
+              mountPath: /opt/rocm
+              readOnly: true
+            {%- endif %}
+            {%- if config.runtime == 'ascend' %}
+            - name: gpustack-ascend-driver
+              mountPath: /usr/local/Ascend/driver
+              readOnly: true
+            - name: gpustack-ascend-toolkit
+              mountPath: /usr/local/Ascend/ascend-toolkit
+              readOnly: true
+            {%- endif %}
+            {%- if config.runtime == 'hygon' %}
+            - name: gpustack-hygon-driver
+              mountPath: /opt/hyhal
+              readOnly: true
+            - name: gpustack-hygon-toolkit
+              mountPath: /opt/dtk
+              readOnly: true
+            {%- endif %}
+            {%- if config.runtime == 'metax' %}
+            - name: gpustack-metax-driver
+              mountPath: /opt/mxdriver
+              readOnly: true
+            - name: gpustack-metax-toolkit
+              mountPath: /opt/maca
+              readOnly: true
+            {%- endif %}
+            {%- if config.runtime == 'iluvatar' %}
+            - name: gpustack-iluvatar-toolkit
+              mountPath: /usr/local/corex
+              readOnly: true
+            {%- endif %}
+            {%- if config.runtime == 'cambricon' %}
+            - name: gpustack-cambricon-bin
+              mountPath: /usr/bin/cnmon
+            - name: gpustack-cambricon-toolkit
+              mountPath: /usr/local/neuware
+              readOnly: true
+            {%- endif %}
+            {%- if config.runtime == 'thead' %}
+            - name: gpustack-thead-toolkit
+              mountPath: /usr/local/PPU_SDK
+              readOnly: true
+            {%- endif %}
+          ports:
+            - name: api
+              containerPort: 10150
+              protocol: TCP
+            - name: metrics
+              containerPort: 10151
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 5
+            successThreshold: 1
+      volumes:
+        - name: gpustack-data-dir
+          hostPath:
+            path: /var/lib/gpustack
+            type: DirectoryOrCreate
+        - name: cdi
+          hostPath:
+            path: /var/run/cdi
+            type: DirectoryOrCreate
+        - name: kubelet-device-plugins
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+            type: DirectoryOrCreate
+        {%- if config.runtime == 'ascend' %}
+        - name: gpustack-ascend-driver
+          hostPath:
+            path: /usr/local/Ascend/driver
+            type: DirectoryOrCreate
+        - name: gpustack-ascend-toolkit
+          hostPath:
+            path: /usr/local/Ascend/ascend-toolkit
+            type: DirectoryOrCreate
+        {%- endif %}
+        {%- if config.runtime == 'amd' %}
+        - name: gpustack-amd-driver
+          hostPath:
+            path: /opt/rocm
+            type: DirectoryOrCreate
+        {%- endif %}
+        {%- if config.runtime == 'hygon' %}
+        - name: gpustack-hygon-driver
+          hostPath:
+            path: /opt/hyhal
+            type: DirectoryOrCreate
+        - name: gpustack-hygon-toolkit
+          hostPath:
+            path: /opt/dtk
+            type: DirectoryOrCreate
+        {%- endif %}
+        {%- if config.runtime == 'metax' %}
+        - name: gpustack-metax-driver
+          hostPath:
+            path: /opt/mxdriver
+            type: DirectoryOrCreate
+        - name: gpustack-metax-toolkit
+          hostPath:
+            path: /opt/maca
+            type: DirectoryOrCreate
+        {%- endif %}
+        {%- if config.runtime == 'iluvatar' %}
+        - name: gpustack-iluvatar-toolkit
+          hostPath:
+            path: /usr/local/corex
+            type: DirectoryOrCreate
+        {%- endif %}
+        {%- if config.runtime == 'cambricon' %}
+        - name: gpustack-cambricon-bin
+          hostPath:
+            path: /usr/bin/cnmon
+            type: FileOrCreate
+        - name: gpustack-cambricon-toolkit
+          hostPath:
+            path: /usr/local/neuware
+            type: DirectoryOrCreate
+        {%- endif %}
+        {%- if config.runtime == 'thead' %}
+        - name: gpustack-thead-toolkit
+          hostPath:
+            path: /usr/local/PPU_SDK
+            type: DirectoryOrCreate
+        {%- endif %}
+      hostNetwork: true
+      hostIPC: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: gpustack-worker
+      {%- if config.runtime in ['nvidia', 'mthreads'] %}
+      runtimeClassName: {{ config.runtime }}
+      {%- endif %}
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
