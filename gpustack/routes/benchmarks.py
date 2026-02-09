@@ -228,7 +228,7 @@ async def validate_and_mutate_benchmark_in(
         mutated.request_rate = (
             benchmark_in.total_requests
             if benchmark_in.total_requests is not None
-            else 10000
+            else 1000
         )  # treat non-positive request_rate as unlimited
 
     snapshot = await get_benchmark_snapshot(session, instance, model)
