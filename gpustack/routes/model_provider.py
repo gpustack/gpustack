@@ -133,7 +133,7 @@ async def create_model_provider(session: SessionDep, input: ModelProviderCreate)
             raise NotFoundException(
                 message=f"provider {input.clone_from_id} to clone from not found"
             )
-    existing_tokens = clone_from.api_tokens or []
+        existing_tokens = clone_from.api_tokens or []
     input_dict["api_tokens"] = parse_api_tokens(
         existing_tokens=existing_tokens, api_tokens=input.api_tokens
     )
