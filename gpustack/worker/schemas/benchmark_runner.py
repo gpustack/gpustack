@@ -3,8 +3,9 @@
 # Modifications have been made to fit project requirements.
 
 import json
+import uuid
 from pathlib import Path
-from typing import Generic, Optional, Self, TypeVar
+from typing import Generic, Literal, Optional, Self, TypeVar
 from pydantic import BaseModel, Field
 
 from gpustack.schemas.benchmark import BenchmarkMetrics
@@ -15,6 +16,13 @@ SuccessfulT = TypeVar("SuccessfulT")
 ErroredT = TypeVar("ErroredT")
 IncompleteT = TypeVar("IncompleteT")
 TotalT = TypeVar("TotalT")
+
+GenerativeRequestType = Literal[
+    "text_completions",
+    "chat_completions",
+    "audio_transcriptions",
+    "audio_translations",
+]
 
 
 class StatusBreakdown(BaseModel, Generic[SuccessfulT, ErroredT, IncompleteT, TotalT]):
@@ -203,6 +211,187 @@ class GenerativeMetrics(BaseModel):
     )
 
 
+class RequestTimings(BaseModel):
+    """
+    Timing measurements for tracking request lifecycle events.
+
+    Provides comprehensive timing data for distributed request processing, capturing
+    key timestamps from initial targeting through final completion. Essential for
+    performance analysis, SLA monitoring, and debugging request processing bottlenecks
+    across scheduler workers and backend systems.
+    """
+
+    targeted_start: float | None = Field(
+        default=None,
+        description="Unix timestamp when request was initially targeted for execution",
+    )
+    queued: float | None = Field(
+        default=None,
+        description="Unix timestamp when request was placed into processing queue",
+    )
+    dequeued: float | None = Field(
+        default=None,
+        description="Unix timestamp when request was removed from queue for processing",
+    )
+    scheduled_at: float | None = Field(
+        default=None,
+        description="Unix timestamp when the request was scheduled for processing",
+    )
+    resolve_start: float | None = Field(
+        default=None,
+        description="Unix timestamp when backend resolution of the request began",
+    )
+    request_start: float | None = Field(
+        default=None,
+        description="Unix timestamp when the backend began processing the request",
+    )
+    first_request_iteration: float | None = Field(
+        default=None,
+    )
+    first_token_iteration: float | None = Field(
+        default=None,
+    )
+    last_token_iteration: float | None = Field(
+        default=None,
+    )
+    last_request_iteration: float | None = Field(
+        default=None,
+    )
+    request_iterations: int = Field(
+        default=0,
+    )
+    token_iterations: int = Field(
+        default=0,
+    )
+    request_end: float | None = Field(
+        default=None,
+        description="Unix timestamp when the backend completed processing the request",
+    )
+    resolve_end: float | None = Field(
+        default=None,
+        description="Unix timestamp when backend resolution of the request completed",
+    )
+    finalized: float | None = Field(
+        default=None,
+        description="Unix timestamp when request was processed by the scheduler",
+    )
+
+
+class RequestInfo(BaseModel):
+    """
+    Complete information about a request in the scheduler system.
+
+    Encapsulates all metadata, status tracking, and timing information for requests
+    processed through the distributed scheduler. Provides comprehensive lifecycle
+    tracking from initial queuing through final completion, including error handling
+    and node identification for debugging and performance analysis.
+
+    Example:
+    ::
+        request = RequestInfo()
+        request.status = "in_progress"
+        start_time = request.started_at
+        completion_time = request.completed_at
+    """
+
+    request_id: str = Field(
+        description="Unique identifier for the request",
+        default_factory=lambda: str(uuid.uuid4()),
+    )
+    status: Literal[
+        "queued", "pending", "in_progress", "completed", "errored", "cancelled"
+    ] = Field(description="Current processing status of the request", default="queued")
+    scheduler_node_id: int = Field(
+        description="ID/rank of the scheduler node handling the request",
+        default=-1,
+    )
+    scheduler_process_id: int = Field(
+        description="ID/rank of the node's scheduler process handling the request",
+        default=-1,
+    )
+    scheduler_start_time: float = Field(
+        description="Unix timestamp when scheduler processing began",
+        default=-1,
+    )
+    timings: RequestTimings = Field(
+        default_factory=RequestTimings,
+        description="Timing measurements for the request lifecycle",
+    )
+
+    error: str | None = Field(
+        default=None, description="Error message if the request status is 'errored'"
+    )
+    traceback: str | None = Field(
+        default=None,
+        description="Full traceback of the error if the request status is 'errored'",
+    )
+
+
+class UsageMetrics(BaseModel):
+    """
+    Multimodal usage metrics for generation requests.
+
+    Tracks resource consumption across different modalities including text, images,
+    video, and audio. Provides granular metrics for tokens, bytes, duration, and
+    format-specific measurements to enable comprehensive usage monitoring and billing.
+    """
+
+    # Text stats
+    text_tokens: int | None = Field(
+        default=None, description="Number of text tokens processed/generated."
+    )
+    text_words: int | None = Field(
+        default=None, description="Number of text words processed/generated."
+    )
+    text_characters: int | None = Field(
+        default=None, description="Number of text characters processed/generated."
+    )
+
+
+class GenerativeRequestStats(BaseModel):
+    """
+    Request statistics for generative AI text generation workloads.
+
+    Captures comprehensive performance metrics for individual generative requests,
+    including token counts, timing measurements, and derived performance statistics.
+    Provides computed properties for latency analysis, throughput calculations,
+    and token generation metrics essential for benchmark evaluation.
+
+    Example:
+    ::
+        stats = GenerativeRequestStats(
+            request_id="req_123",
+            request_type="text_completion",
+            info=request_info,
+            input_metrics=input_usage,
+            output_metrics=output_usage
+        )
+        throughput = stats.output_tokens_per_second
+    """
+
+    type_: Literal["generative_request_stats"] = "generative_request_stats"
+    request_id: str = Field(description="Unique identifier for the request")
+    request_type: GenerativeRequestType | str = Field(
+        description="Type of generative request (text_completion or chat_completion)"
+    )
+    response_id: str | None = Field(
+        default=None, description="Unique identifier matching vLLM Response ID"
+    )
+    request_args: str | None = Field(
+        default=None, description="Backend arguments used for this request"
+    )
+    output: str | None = Field(
+        default=None, description="Generated text output from the request"
+    )
+    info: RequestInfo = Field(description="Request metadata and timing information")
+    input_metrics: UsageMetrics = Field(
+        description="Token usage statistics for the input prompt"
+    )
+    output_metrics: UsageMetrics = Field(
+        description="Token usage statistics for the generated output"
+    )
+
+
 class GenerativeBenchmark(BaseModel):
     """
     Complete generative AI benchmark results with specialized metrics.
@@ -227,6 +416,22 @@ class GenerativeBenchmark(BaseModel):
     )
     duration: float = Field(
         description="Total benchmark execution duration in seconds",
+    )
+    requests_truncated: StatusBreakdown[
+        list[GenerativeRequestStats],
+        list[GenerativeRequestStats],
+        list[GenerativeRequestStats],
+        None,
+    ] = Field(
+        default_factory=lambda: StatusBreakdown(
+            successful=[],
+            errored=[],
+            incomplete=[],
+            total=None,
+        ),
+        description=(
+            "Request details grouped by status: successful, incomplete, errored"
+        ),
     )
 
 
@@ -267,6 +472,12 @@ class GenerativeBenchmarksReport(BaseModel):
             tokens_per_second_mean=fbm.tokens_per_second.successful.mean,
             output_tokens_per_second_mean=fbm.output_tokens_per_second.successful.mean,
             input_tokens_per_second_mean=fbm.prompt_tokens_per_second.successful.mean,
+            request_concurrency_max=fbm.request_concurrency.successful.max,
+            request_concurrency_mean=fbm.request_concurrency.successful.mean,
+            request_total=fbm.request_totals.total,
+            request_successful=fbm.request_totals.successful,
+            request_errored=fbm.request_totals.errored,
+            request_incomplete=fbm.request_totals.incomplete,
         )
 
     @classmethod
