@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.15.0/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.15.1/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 # List of supported model architectures for the default version of the vLLM backend
 # TODO version-aware support list
