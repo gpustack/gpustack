@@ -2242,12 +2242,52 @@ class ModelRouteTargetController:
             target.state = target_state
             await target.update(session=session, auto_commit=True)
 
+    async def _update_orphan_route(
+        self, session: AsyncSession, target: ModelRouteTarget, event: Event
+    ) -> bool:
+        """
+        Update the orphan route if the target is deleted or has no associated model.
+        If the target model is not deleted, transfer model_route to a non model-created model.
+        """
+
+        if event.type != EventType.DELETED:
+            return True
+        if target.model_id is None:
+            return True
+        model = await Model.one_by_id(session, target.model_id)
+        if not model or model.deleted_at is not None:
+            return True
+        # If the model is not deleted, transfer the model route to a non model-created model route to avoid service disruption.
+        # The model route will be automatically deleted by the controller after the target is deleted.
+        orphan_route = await ModelRoute.one_by_id(session=session, id=target.route_id)
+        if (
+            not orphan_route
+            or orphan_route.deleted_at is not None
+            or not orphan_route.created_by_model
+        ):
+            # The route is already deleted or not created by model, no need to transfer.
+            # returns true to trigger parent notification and state sync to update the route state if needed.
+            return True
+        try:
+            route_service = ModelRouteService(session=session)
+            await route_service.update(
+                orphan_route, source={"created_by_model": False}, auto_commit=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to transfer model route {orphan_route.id}: {e}")
+            return True
+        return False
+
     async def _reconcile(self, event: Event):
         target: ModelRouteTarget = event.data
         if not target:
             return
         async with async_session() as session:
-            await self._notify_parents(session, target, event)
+            should_notify_parents = await self._update_orphan_route(
+                session, target, event
+            )
+            if should_notify_parents:
+                await self._notify_parents(session, target, event)
             await self._sync_state(session, target, event)
 
 
