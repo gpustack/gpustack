@@ -213,6 +213,26 @@ class BenchmarkMetricsLite(SQLModel):
     input_tokens_per_second_mean: Optional[float] = Field(
         default=None, description="Mean prompt tokens per second (unit: tok/s)"
     )
+    request_concurrency_mean: Optional[float] = Field(
+        default=None,
+        description="Mean request concurrency (unit: number of concurrent requests)",
+    )
+    request_concurrency_max: Optional[float] = Field(
+        default=None,
+        description="Max request concurrency (unit: number of concurrent requests)",
+    )
+    request_total: Optional[int] = Field(
+        default=None, description="Total number of requests made"
+    )
+    request_successful: Optional[int] = Field(
+        default=None, description="Total number of successful requests"
+    )
+    request_errored: Optional[int] = Field(
+        default=None, description="Total number of errored requests"
+    )
+    request_incomplete: Optional[int] = Field(
+        default=None, description="Total number of incomplete requests"
+    )
 
 
 class BenchmarkMetrics(BenchmarkMetricsLite):
@@ -257,6 +277,12 @@ class BenchmarkListParams(ListParams):
         "tokens_per_second_mean",
         "output_tokens_per_second_mean",
         "input_tokens_per_second_mean",
+        "request_concurrency_mean",
+        "request_concurrency_max",
+        "request_total",
+        "request_successful",
+        "request_errored",
+        "request_incomplete",
     ]
 
 
