@@ -85,7 +85,7 @@ function make_community_backends() {
     cd "${tmp_dir}"
     if [[ "${UV_SYSTEM_PYTHON:-}" == "1" ]]; then
       # In Docker build, use system Python directly
-      uv pip install PyYAML && uv run make
+      make
     else
       # For local development, use virtual environment
       uv venv && source .venv/bin/activate && uv pip install PyYAML && uv run make
