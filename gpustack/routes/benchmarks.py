@@ -462,6 +462,7 @@ async def export_benchmarks(
         "progress",
         "state_message",
         "state",
+        "deleted_at",
     ]
     extra_conditions = [
         col(Benchmark.id).in_(ids),
