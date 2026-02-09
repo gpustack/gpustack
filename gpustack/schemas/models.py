@@ -127,13 +127,13 @@ class ModelSource(BaseModel):
 
     @property
     def model_source_index(self) -> str:
-        # Include source type to differentiate between different sources
-        values = [str(self.source)]
-
+        values = []
         if self.source == SourceEnum.HUGGING_FACE:
             values.extend([self.huggingface_repo_id, self.huggingface_filename])
         elif self.source == SourceEnum.MODEL_SCOPE:
-            values.extend([self.model_scope_model_id, self.model_scope_file_path])
+            values.extend(
+                [self.source, self.model_scope_model_id, self.model_scope_file_path]
+            )
         elif self.source == SourceEnum.LOCAL_PATH:
             values.extend([self.local_path])
 
