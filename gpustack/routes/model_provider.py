@@ -122,11 +122,22 @@ async def create_model_provider(session: SessionDep, input: ModelProviderCreate)
     if existing:
         raise AlreadyExistsException(message=f"provider {input.name} already exists")
     validate_provider(input)
-    try:
-        input_dict = input.model_dump(exclude={"api_tokens"})
-        input_dict["api_tokens"] = parse_api_tokens(
-            existing_tokens=[], api_tokens=input.api_tokens
+    input_dict = input.model_dump(exclude={"api_tokens", "clone_from_id"})
+    existing_tokens = []
+    if input.clone_from_id is not None:
+        clone_from = await ModelProvider.one_by_id(
+            session=session,
+            id=input.clone_from_id,
         )
+        if not clone_from:
+            raise NotFoundException(
+                message=f"provider {input.clone_from_id} to clone from not found"
+            )
+    existing_tokens = clone_from.api_tokens or []
+    input_dict["api_tokens"] = parse_api_tokens(
+        existing_tokens=existing_tokens, api_tokens=input.api_tokens
+    )
+    try:
         created = await ModelProvider.create(session=session, source=input_dict)
         return ModelProvider._convert_to_public_class(created)
     except Exception as e:
