@@ -224,7 +224,7 @@ class BenchmarkRunner:
             "--output-dir",
             f"{self._benchmark_dir}",
             "--outputs",
-            f"{self._benchmark.id}.json",
+            f"{self._benchmark.id}.summary_json",
             "--progress-url",
             self._api_url,
             "--progress-auth",

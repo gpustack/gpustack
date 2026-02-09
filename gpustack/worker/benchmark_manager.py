@@ -3,7 +3,7 @@ import multiprocessing
 import setproctitle
 import os
 import time
-from typing import Dict, Optional, Callable
+from typing import Dict, Optional, Callable, List, Tuple
 import logging
 from collections import deque
 
@@ -26,6 +26,7 @@ from gpustack.client import ClientSet
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.schemas.benchmark_runner import (
     GenerativeBenchmarksReport,
+    GenerativeRequestStats,
 )
 from gpustack_runtime.deployer import logs_workload
 
@@ -445,8 +446,8 @@ class BenchmarkManager:
         self._update_benchmark_state_sync(benchmark.id, **patch_dict)
         logger.info(f"Benchmark {benchmark.name} finished.")
 
-        self._sync_benchmark_metrics(benchmark)
         self._dump_benchmark_logs_to_file(benchmark)
+        self._sync_benchmark_metrics(benchmark)
         self._stop_benchmark(benchmark)
 
     def _handle_benchmark_failure(self, benchmark: Benchmark):
@@ -480,10 +481,124 @@ class BenchmarkManager:
             )
             return
 
+        self._log_request_failures_if_any(
+            benchmark=benchmark,
+            report=report,
+            total=metrics.request_total or 0,
+            successful=metrics.request_successful or 0,
+            errored=metrics.request_errored or 0,
+            incomplete=metrics.request_incomplete or 0,
+        )
+
         resp = self._clientset.http_client.get_httpx_client().post(
             f"/benchmarks/{benchmark.id}/metrics", json=metrics.model_dump()
         )
         raise_if_response_error(resp)
+
+    def _log_request_failures_if_any(
+        self,
+        benchmark: Benchmark,
+        report: GenerativeBenchmarksReport,
+        total: int,
+        successful: int,
+        errored: int,
+        incomplete: int,
+        limit: int = 5,
+    ) -> None:
+        if errored <= 0 and incomplete <= 0:
+            return
+
+        try:
+            errored_samples, incomplete_samples = self._load_request_samples(
+                report, limit=limit
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to read request error samples for benchmark "
+                f"{benchmark.name}(id={benchmark.id}): {e}"
+            )
+            return
+
+        if not errored_samples and not incomplete_samples:
+            return
+
+        lines: List[str] = [
+            "",
+            "=== BENCHMARK REQUEST FAILURES ===",
+            "SUMMARY: "
+            f"benchmark={benchmark.name}(id={benchmark.id}) "
+            f"total={total} successful={successful} "
+            f"errored={errored} incomplete={incomplete} "
+            f"showing_up_to={limit}",
+        ]
+
+        if errored_samples:
+            lines.append("")
+            lines.append(f"---- ERRORED REQUESTS (SHOWING UP TO {limit}) ----")
+            lines.extend(self._format_request_samples(errored_samples))
+
+        if incomplete_samples:
+            lines.append("")
+            lines.append(f"---- INCOMPLETE REQUESTS (SHOWING UP TO {limit}) ----")
+            lines.extend(self._format_request_samples(incomplete_samples))
+
+        message = "\n".join(lines)
+        self._append_benchmark_log(benchmark, message)
+
+    def _load_request_samples(
+        self, report: GenerativeBenchmarksReport, limit: int = 5
+    ) -> Tuple[List[GenerativeRequestStats], List[GenerativeRequestStats]]:
+        if (
+            not report.benchmarks
+            or len(report.benchmarks) == 0
+            or report.benchmarks[0] is None
+            or report.benchmarks[0].requests_truncated is None
+        ):
+            return [], []
+
+        requests = report.benchmarks[0].requests_truncated
+        errored = requests.errored or []
+        incomplete = requests.incomplete or []
+
+        return errored[:limit], incomplete[:limit]
+
+    def _format_request_samples(
+        self, samples: List[GenerativeRequestStats]
+    ) -> List[str]:
+        lines: List[str] = []
+        for idx, sample in enumerate(samples, start=1):
+            request_id = sample.request_id or "unknown"
+            request_type = sample.request_type or "unknown"
+            status = sample.info.status or "unknown"
+            error = sample.info.error
+            traceback = sample.info.traceback
+
+            base = (
+                f"- [{idx}] request_id={request_id} type={request_type} "
+                f"status={status}"
+            )
+            lines.append(base)
+
+            if error:
+                lines.append(f"  ERROR: {error}")
+            if traceback:
+                lines.append("  TRACEBACK:")
+                indented = "\n".join(f"    {line}" for line in traceback.splitlines())
+                lines.append(indented)
+            lines.append("")
+        return lines
+
+    def _append_benchmark_log(self, benchmark: Benchmark, message: str) -> None:
+        log_file_path = f"{self._benchmark_log_dir}/{benchmark.id}.log"
+        try:
+            with open(log_file_path, "a", encoding="utf-8") as f:
+                f.write(message)
+                if not message.endswith("\n"):
+                    f.write("\n")
+        except Exception as e:
+            logger.error(
+                f"Failed to append benchmark log for {benchmark.name}(id={benchmark.id}): {e}"
+            )
 
     def _set_active_benchmark(self, benchmark_id: int):
         self._active_benchmark_id = benchmark_id
