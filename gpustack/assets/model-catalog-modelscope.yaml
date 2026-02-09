@@ -655,7 +655,8 @@ model_sets:
       model_scope_model_id: gpustack/DeepSeek-R1-0528-w8a8
       backend: MindIE
       backend_parameters:
-        - --max-seq-len=65536
+        - --max-seq-len=32768
+        - --npu-memory-fraction=0.95
     - mode: throughput
       quantization: FP8
       gpu_filters:
