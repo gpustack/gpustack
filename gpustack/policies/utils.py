@@ -525,10 +525,7 @@ async def get_local_model_weight_size(
         """Try to get model weight size from a single worker."""
         try:
             async with WorkerFilesystemClient() as fs_client:
-                # Pass is_diffusion parameter to worker
-                size = await fs_client.get_model_weight_size(
-                    worker, local_path, is_diffusion
-                )
+                size = await fs_client.get_model_weight_size(worker, local_path)
                 if isinstance(size, int):
                     logger.info(
                         f"Successfully got model weight size from worker {worker.id}: {size} bytes"

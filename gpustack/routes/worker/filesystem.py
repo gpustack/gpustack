@@ -183,16 +183,29 @@ async def file_exists(path: str = Query(..., description="Path to check")):
         raise HTTPException(status_code=500, detail=f"Failed to check path: {str(e)}")
 
 
+def is_diffusion_model(path: str) -> bool:
+    """
+    Check if a path is a diffusion model by looking for model_index.json file.
+
+    Args:
+        path: Directory path to check
+
+    Returns:
+        True if model_index.json exists in the directory, False otherwise
+    """
+    model_index_path = os.path.join(path, "model_index.json")
+    try:
+        return os.path.isfile(model_index_path)
+    except OSError:
+        return False
+
+
 @router.get("/files/model-weight-size")
 async def get_model_weight_size(
     path: str = Query(..., description="Directory path to scan"),
-    is_diffusion: bool = Query(False, description="Whether this is a diffusion model"),
 ):
     """
     Calculate the total size of model weight files in a directory.
-
-    For LLM models (is_diffusion=False): Scans only the root directory.
-    For diffusion models (is_diffusion=True): Scans subdirectories defined in model_index.json.
 
     Security:
     - Uses os.path.realpath to resolve symlinks and prevent directory traversal
@@ -209,6 +222,8 @@ async def get_model_weight_size(
             raise HTTPException(
                 status_code=400, detail=f"Path is not a directory: {path}"
             )
+
+        is_diffusion = is_diffusion_model(validated_path)
 
         # Calculate size using utility function
         try:
