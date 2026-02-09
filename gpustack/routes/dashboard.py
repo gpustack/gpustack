@@ -309,6 +309,8 @@ async def _get_maas_active_models(session: AsyncSession) -> List[ModelSummary]:
         (p.id, m.name): m for p in all_providers for m in (p.models or [])
     }
 
+    provider_id_to_name = {p.id: p.name for p in all_providers}
+
     model_summaries = []
     for usage in top_model_usages:
         model = models_by_provider_and_name.get((usage.provider_id, usage.model_name))
@@ -316,6 +318,9 @@ async def _get_maas_active_models(session: AsyncSession) -> List[ModelSummary]:
         model_summaries.append(
             ModelSummary(
                 provider_id=usage.provider_id,
+                provider_name=provider_id_to_name.get(
+                    usage.provider_id, "Unknown Provider"
+                ),
                 name=usage.model_name,
                 instance_count=0,
                 token_count=int(usage.total_token_count or 0),
