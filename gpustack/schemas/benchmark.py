@@ -134,7 +134,7 @@ class BenchmarkBase(SQLModel):
     )  # denormalized field for easier query
     dataset_input_tokens: Optional[int] = Field(default=None)
     dataset_output_tokens: Optional[int] = Field(default=None)
-    dataset_seed: Optional[int] = Field(default=42)
+    dataset_seed: Optional[int] = Field(default=None)
 
     cluster_id: int = Field(default=None)
     model_id: Optional[int] = Field(default=None)

@@ -106,7 +106,7 @@ def upgrade() -> None:
     sa.Column('dataset_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('dataset_input_tokens', sa.Integer(), nullable=True),
     sa.Column('dataset_output_tokens', sa.Integer(), nullable=True),
-    sa.Column('dataset_seed', sa.Integer(), nullable=True, server_default="42"),
+    sa.Column('dataset_seed', sa.Integer(), nullable=True),
     sa.Column('description', sa.Text(), nullable=True),
     sa.Column('cluster_id', sa.Integer(), nullable=False),
     sa.Column('model_id', sa.Integer(), nullable=True),
