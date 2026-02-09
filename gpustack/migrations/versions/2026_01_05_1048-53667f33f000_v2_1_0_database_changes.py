@@ -92,6 +92,12 @@ def upgrade() -> None:
     sa.Column('tokens_per_second_mean', sa.Float(), nullable=True),
     sa.Column('output_tokens_per_second_mean', sa.Float(), nullable=True),
     sa.Column('input_tokens_per_second_mean', sa.Float(), nullable=True),
+    sa.Column('request_concurrency_mean', sa.Float(), nullable=True),
+    sa.Column('request_concurrency_max', sa.Float(), nullable=True),
+    sa.Column('request_total', sa.Integer(), nullable=True),
+    sa.Column('request_successful', sa.Integer(), nullable=True),
+    sa.Column('request_errored', sa.Integer(), nullable=True),
+    sa.Column('request_incomplete', sa.Integer(), nullable=True),
     sa.Column('snapshot', gpustack.schemas.common.JSON(), nullable=True),
     sa.Column('gpu_summary', sa.Text(), nullable=True),
     sa.Column('gpu_vendor_summary', sa.Text(), nullable=True),
@@ -116,6 +122,7 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
+    
     with op.batch_alter_table('benchmarks', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_benchmarks_name'), ['name'], unique=True)
 
