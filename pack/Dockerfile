@@ -237,6 +237,7 @@ uv
 yq
 hatchling
 py-spy
+poetry
 EOT
     pip install -r /tmp/requirements.txt
 
@@ -517,7 +518,7 @@ RUN --mount=type=cache,target=/root/.cache \
         WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]";
     fi
 
-    uv pip install --extra-index-url https://download.pytorch.org/whl/cpu/ \
+    uv pip install --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu/ \
         ${WHEEL_PACKAGE}
 
     # Download tools
