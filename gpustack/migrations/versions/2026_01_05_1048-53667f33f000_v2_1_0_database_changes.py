@@ -120,7 +120,7 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_benchmarks_name'), ['name'], unique=True)
 
     add_inference_backend_source_and_metadata()
-    recalculate_source_index_for_sources()
+    recalculate_index_for_modelscope_sources()
 
 
 def downgrade() -> None:
@@ -137,7 +137,7 @@ def downgrade() -> None:
     
     _migrate_model_gpu_selector(DOWNGRADE_GPU_TYPE_MAPPING)
 
-    reverse_recalculate_source_index_for_sources()
+    reverse_recalculate_index_for_modelscope_sources()
     remove_inference_backend_source_and_metadata()
 
     with op.batch_alter_table('benchmarks', schema=None) as batch_op:
@@ -388,50 +388,35 @@ def remove_inference_backend_source_and_metadata():
                               existing_nullable=True)
 
 
-def recalculate_source_index_for_sources():
-    """Recalculate source_index to include source type for different sources."""
-    conn = op.get_bind()
-
-    def calc_source_index(source, hf_repo_id, hf_filename, ms_model_id, ms_file_path, local_path, include_source):
-        values = []
+def _calc_index_for_modelscope_source(source, ms_model_id, ms_file_path, include_source):
+    values = []
+    if source == 'MODEL_SCOPE':
         if include_source:
             values.append(str(source))
+        if ms_model_id:
+            values.append(ms_model_id)
+        if ms_file_path:
+            values.append(ms_file_path)
 
-        if source == 'HUGGING_FACE':
-            if hf_repo_id:
-                values.append(hf_repo_id)
-            if hf_filename:
-                values.append(hf_filename)
-        elif source == 'MODEL_SCOPE':
-            if ms_model_id:
-                values.append(ms_model_id)
-            if ms_file_path:
-                values.append(ms_file_path)
-        elif source == 'LOCAL_PATH':
-            if local_path:
-                values.append(local_path)
+    filtered_values = [v for v in values if v is not None]
+    source_string = "/".join(filtered_values)
+    return hashlib.sha256(source_string.encode()).hexdigest()
 
-        filtered_values = [v for v in values if v is not None]
-        source_string = "/".join(filtered_values)
-        return hashlib.sha256(source_string.encode()).hexdigest()
+
+def recalculate_index_for_modelscope_sources():
+    """Recalculate source_index to include source type for different sources."""
+    conn = op.get_bind()
 
     result = conn.execute(sa.text("""
         SELECT id, source, huggingface_repo_id, huggingface_filename,
                model_scope_model_id, model_scope_file_path, local_path
         FROM model_files
-        WHERE deleted_at IS NULL
+        WHERE deleted_at IS NULL AND source = 'MODEL_SCOPE'
     """))
 
     for row in result:
-        new_source_index = calc_source_index(
-            row.source,
-            row.huggingface_repo_id,
-            row.huggingface_filename,
-            row.model_scope_model_id,
-            row.model_scope_file_path,
-            row.local_path,
-            True
-        )
+        new_source_index = _calc_index_for_modelscope_source(row.source, row.model_scope_model_id,
+                                                             row.model_scope_file_path, True)
 
         conn.execute(
             sa.text("UPDATE model_files SET source_index = :new_index WHERE id = :id"),
@@ -441,50 +426,20 @@ def recalculate_source_index_for_sources():
     conn.commit()
 
 
-def reverse_recalculate_source_index_for_sources():
+def reverse_recalculate_index_for_modelscope_sources():
     """Recalculate source_index with old logic (without source type prefix)."""
     conn = op.get_bind()
-
-    def calc_source_index(source, hf_repo_id, hf_filename, ms_model_id, ms_file_path, local_path, include_source):
-        values = []
-        if include_source:
-            values.append(str(source))
-
-        if source == 'HUGGING_FACE':
-            if hf_repo_id:
-                values.append(hf_repo_id)
-            if hf_filename:
-                values.append(hf_filename)
-        elif source == 'MODEL_SCOPE':
-            if ms_model_id:
-                values.append(ms_model_id)
-            if ms_file_path:
-                values.append(ms_file_path)
-        elif source == 'LOCAL_PATH':
-            if local_path:
-                values.append(local_path)
-
-        filtered_values = [v for v in values if v is not None]
-        source_string = "/".join(filtered_values)
-        return hashlib.sha256(source_string.encode()).hexdigest()
 
     result = conn.execute(sa.text("""
         SELECT id, source, huggingface_repo_id, huggingface_filename,
                model_scope_model_id, model_scope_file_path, local_path
         FROM model_files
-        WHERE deleted_at IS NULL
+        WHERE deleted_at IS NULL AND source = 'MODEL_SCOPE'
     """))
 
     for row in result:
-        old_source_index = calc_source_index(
-            row.source,
-            row.huggingface_repo_id,
-            row.huggingface_filename,
-            row.model_scope_model_id,
-            row.model_scope_file_path,
-            row.local_path,
-            False
-        )
+        old_source_index = _calc_index_for_modelscope_source(row.source, row.model_scope_model_id,
+                                                             row.model_scope_file_path, False)
 
         conn.execute(
             sa.text("UPDATE model_files SET source_index = :old_index WHERE id = :id"),
