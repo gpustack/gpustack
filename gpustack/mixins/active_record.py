@@ -588,6 +588,46 @@ class ActiveRecordMixin:
         self._publish_event_after_commit(session, EventType.UPDATED, self)
         await self.save(session, auto_commit=auto_commit)
 
+    @classmethod
+    async def batch_update(
+        cls,
+        session: AsyncSession,
+        updates: List[SQLModel],
+        auto_commit: bool = True,
+    ) -> int:
+        """Batch update multiple records with different data.
+
+        Args:
+            session: The database session
+            updates: A list of SQLModel objects with id field
+            auto_commit: Whether to commit the transaction automatically
+
+        Returns:
+            The number of records successfully updated
+
+        Example:
+            updates = [
+                Model(id=1, name="llama", state="ready"),
+                Model(id=2, name="qwen", state="not_ready"),
+            ]
+            count = await Model.batch_update(session, updates)
+        """
+        if not updates:
+            return 0
+
+        try:
+            for obj in updates:
+                cls._publish_event_after_commit(session, EventType.UPDATED, obj)
+                session.add(obj)
+
+            if auto_commit:
+                await session.commit()
+
+            return len(updates)
+        except Exception as e:
+            await session.rollback()
+            raise e
+
     async def delete(self, session: AsyncSession, soft=False, auto_commit=True):
         """Delete the object from the database."""
         self._publish_event_after_commit(session, EventType.DELETED, self)
