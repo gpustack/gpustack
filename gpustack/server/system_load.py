@@ -138,8 +138,7 @@ class SystemLoadCollector:
                 async with async_session() as session:
                     workers = await Worker.all(session=session)
                     system_loads = compute_system_load(workers)
-                    for system_load in system_loads:
-                        await SystemLoad.create(session, system_load, auto_commit=False)
+                    session.add_all(system_loads)
                     await session.commit()
             except Exception as e:
                 logger.error(f"Failed to collect system load: {e}")
