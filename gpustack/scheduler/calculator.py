@@ -16,6 +16,7 @@ from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import get_global_config
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
+from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.schemas.models import (
     Model,
     SourceEnum,
@@ -840,6 +841,13 @@ async def read_local_path_file_from_workers(  # noqa: C901
         filtered_workers, label_messages = await label_filter.filter(filtered_workers)
         messages.extend(label_messages)
 
+    # Apply LocalPathFilter for LOCAL_PATH models
+    local_path_filter = LocalPathFilter(model)
+    filtered_workers, local_path_messages = await local_path_filter.filter(
+        filtered_workers
+    )
+    messages.extend(local_path_messages)
+
     if messages:
         for msg in messages:
             logger.info(f"Worker filtering for {file_path} read: {msg}")
@@ -930,6 +938,13 @@ async def _calculate_from_workers(  # noqa: C901
         label_filter = LabelMatchingFilter(model)
         filtered_workers, label_messages = await label_filter.filter(filtered_workers)
         messages.extend(label_messages)
+
+    # Apply LocalPathFilter for LOCAL_PATH models
+    local_path_filter = LocalPathFilter(model)
+    filtered_workers, local_path_messages = await local_path_filter.filter(
+        filtered_workers
+    )
+    messages.extend(local_path_messages)
 
     if messages:
         for msg in messages:

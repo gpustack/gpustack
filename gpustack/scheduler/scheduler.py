@@ -32,6 +32,7 @@ from gpustack.policies.worker_filters.backend_framework_filter import (
 )
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
+from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
 from gpustack.scheduler.model_registry import detect_model_type
 from gpustack.scheduler.meta_registry import get_model_meta
@@ -398,6 +399,7 @@ async def find_candidate(
         LabelMatchingFilter(model),
         StatusFilter(model),
         BackendFrameworkFilter(model),
+        LocalPathFilter(model),
     ]
 
     worker_filter_chain = WorkerFilterChain(filters)
