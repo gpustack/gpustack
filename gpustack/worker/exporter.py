@@ -240,11 +240,14 @@ class MetricExporter(Collector):
                     },
                 )
                 if d.core is not None:
-                    gpu_cores.add_metric(gpu_label_values, d.core.total)
-                    gpu_utilization_rate.add_metric(
-                        gpu_label_values,
-                        d.core.utilization_rate,
-                    )
+                    if d.core.total is not None:
+                        gpu_cores.add_metric(gpu_label_values, d.core.total)
+
+                    if d.core.utilization_rate is not None:
+                        gpu_utilization_rate.add_metric(
+                            gpu_label_values,
+                            d.core.utilization_rate,
+                        )
 
                 if d.temperature is not None:
                     gpu_temperature.add_metric(gpu_label_values, d.temperature)
@@ -255,6 +258,7 @@ class MetricExporter(Collector):
 
                     if d.memory.allocated is not None:
                         gram_allocated.add_metric(gpu_label_values, d.memory.allocated)
+
                     if d.memory.used is not None:
                         gram_used.add_metric(gpu_label_values, d.memory.used)
 
@@ -275,6 +279,7 @@ class MetricExporter(Collector):
                     filesystem_total.add_metric(
                         worker_label_values + [d.mount_point], d.total
                     )
+
                 if d.used is not None:
                     filesystem_used.add_metric(
                         worker_label_values + [d.mount_point], d.used
