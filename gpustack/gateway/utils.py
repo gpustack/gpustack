@@ -50,6 +50,7 @@ model_ingress_prefix = "ai-route-model-"
 model_route_ingress_prefix = "ai-route-route-"
 model_route_selector = {"gpustack.ai/route": "true"}
 provider_id_prefix = "provider-"
+model_id_prefix = "model-"
 
 # Type alias for destination tuples
 # Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
@@ -171,14 +172,14 @@ def cluster_worker_prefix(cluster_id: int) -> str:
     return f"cluster-{cluster_id}-worker-"
 
 
-def model_prefix(model_instance: Union[ModelInstance, ModelInstancePublic]) -> str:
-    return f"model-{model_instance.model_id}-"
+def model_prefix(model_id: int) -> str:
+    return f"{model_id_prefix}{model_id}-"
 
 
 def model_instance_prefix(
     model_instance: Union[ModelInstance, ModelInstancePublic]
 ) -> str:
-    return f"{model_prefix(model_instance)}{model_instance.id}"
+    return f"{model_prefix(model_instance.model_id)}{model_instance.id}"
 
 
 def model_instance_registry(
@@ -462,6 +463,8 @@ async def ensure_mcp_bridge(
             )
 
         if registry_need_update or proxy_need_update:
+            registry_list.sort(key=lambda r: r.name or "")
+            proxy_list.sort(key=lambda r: r.name or "")
             existing_bridge.spec.registries = registry_list
             existing_bridge.spec.proxies = proxy_list
             await client.edit_mcpbridge(
@@ -884,26 +887,31 @@ async def cleanup_ingresses(
         logger.error(f"Error cleaning up {reason} model ingresses: {e}")
 
 
-async def ensure_model_instance_mcp_bridge(
+async def ensure_model_mcp_bridge(
     event_type: EventType,
-    model_instance: Union[ModelInstance, ModelInstancePublic],
+    model_id: int,
+    model_instances: List[Union[ModelInstance, ModelInstancePublic]],
     networking_higress_api: NetworkingHigressIoV1Api,
     namespace: str,
     cluster_id: int,
-    worker: Optional[Worker] = None,
+    workers: Optional[Dict[int, Worker]] = None,
 ) -> List[McpBridgeRegistry]:
     desired_registry: List[McpBridgeRegistry] = []
-    to_delete_prefix: Optional[str] = None
-    if event_type == EventType.DELETED:
-        to_delete_prefix = model_instance_prefix(model_instance)
-    else:
-        registry = model_instance_registry(model_instance, worker=worker)
-        if registry is not None:
-            desired_registry.append(registry)
+    to_delete_prefix: Optional[str] = model_prefix(model_id)
+    if event_type != EventType.DELETED:
+        for model_instance in model_instances:
+            worker = (
+                (workers or {}).get(model_instance.worker_id)
+                if model_instance.worker_id
+                else None
+            )
+            registry = model_instance_registry(model_instance, worker=worker)
+            if registry is not None:
+                desired_registry.append(registry)
     await ensure_mcp_bridge(
         client=networking_higress_api,
         namespace=namespace,
-        mcp_bridge_name=cluster_mcp_bridge_name(cluster_id),
+        mcp_bridge_name=model_mcp_bridge_name(cluster_id),
         desired_registries=desired_registry,
         to_delete_prefix=to_delete_prefix,
     )
@@ -1257,3 +1265,49 @@ async def cleanup_ai_proxy_config(
             f"Failed to cleanup gpustack AI proxy wasmplugin {gpustack_ai_proxy_name}: {e}"
         )
         raise
+
+
+async def cleanup_mcpbridge_registry(
+    providers: List[ModelProvider],
+    model_instances: List[ModelInstance],
+    workers: List[Worker],
+    namespace: str,
+    k8s_config: k8s_client.Configuration,
+):
+    worker_by_id = {worker.id: worker for worker in workers}
+    networking_higress_api = NetworkingHigressIoV1Api(k8s_client.ApiClient(k8s_config))
+    # cleanup providers
+    desired_registries = []
+    desired_proxies = []
+    for provider in providers:
+        registry = provider_registry(provider=provider)
+        if registry is not None:
+            desired_registries.append(registry)
+        proxy = provider_proxy(provider=provider)
+        if proxy is not None:
+            desired_proxies.append(proxy)
+    to_delete_prefix = provider_id_prefix
+    await ensure_mcp_bridge(
+        client=networking_higress_api,
+        namespace=namespace,
+        mcp_bridge_name=default_mcp_bridge_name,
+        desired_registries=desired_registries,
+        to_delete_prefix=to_delete_prefix,
+        desired_proxies=desired_proxies,
+        to_delete_proxies_prefix=provider_id_prefix,
+    )
+    # cleanup model instances
+    desired_registries = []
+    to_delete_prefix = model_id_prefix
+    for instance in model_instances:
+        worker = worker_by_id.get(instance.worker_id)
+        registry = model_instance_registry(instance, worker=worker)
+        if registry is not None:
+            desired_registries.append(registry)
+    await ensure_mcp_bridge(
+        client=networking_higress_api,
+        namespace=namespace,
+        mcp_bridge_name=default_mcp_bridge_name,
+        desired_registries=desired_registries,
+        to_delete_prefix=to_delete_prefix,
+    )
