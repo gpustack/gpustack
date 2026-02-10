@@ -102,3 +102,6 @@ BENCHMARK_DATASET_SHAREGPT_PATH = os.getenv(
     "GPUSTACK_BENCHMARK_DATASET_SHAREGPT_PATH",
     "/workspace/benchmark-runner/sharegpt_data/ShareGPT_V3_unfiltered_cleaned_split.json",
 )
+BENCHMARK_REQUEST_TIMEOUT = int(
+    os.getenv("GPUSTACK_BENCHMARK_REQUEST_TIMEOUT", 3600)  # 1 hour
+)  # in seconds
