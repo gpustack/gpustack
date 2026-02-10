@@ -59,6 +59,12 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_PROXY_TIMEOUT_SECONDS` | Proxy timeout in seconds.        | `1800`  | Server          |
 | `GPUSTACK_TCP_CONNECTOR_LIMIT`   | HTTP client TCP connector limit. | `1000`  | Server & Worker |
 
+### Server Cache Configuration
+
+| Variable                          | Description                   | Default | Applies to |
+| --------------------------------- | ----------------------------- | ------- | ---------- |
+| `GPUSTACK_SERVER_CACHE_TTL_SECONDS` | Server cache TTL in seconds. | `600`   | Server     |
+
 ### Authentication & Security
 
 | Variable                            | Description                           | Default | Applies to |
