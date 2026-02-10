@@ -103,6 +103,7 @@ The **Applies to** column indicates where the environment variable should be set
 | Variable                                   | Description                                                                                                                                      | Default                                                                               | Applies to |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- | ---------- |
 | `GPUSTACK_BENCHMARK_DATASET_SHAREGPT_PATH` | ShareGPT dataset path used by the benchmark container when `dataset_name` is set to `ShareGPT`. The default image already includes this dataset. | `/workspace/benchmark-runner/sharegpt_data/ShareGPT_V3_unfiltered_cleaned_split.json` | Worker     |
+| `GPUSTACK_BENCHMARK_REQUEST_TIMEOUT`       | Timeout for each benchmark request in seconds.                                                                                                   | `3600`                                                                                | Worker     |
 
 ### Model Deployment Configuration
 

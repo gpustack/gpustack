@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -6,7 +7,7 @@ from typing import Dict, List, Optional
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.config.registration import read_worker_token
-from gpustack.envs import BENCHMARK_DATASET_SHAREGPT_PATH
+from gpustack.envs import BENCHMARK_DATASET_SHAREGPT_PATH, BENCHMARK_REQUEST_TIMEOUT
 from gpustack.logging import setup_logging
 from gpustack.schemas.benchmark import (
     DATASET_RANDOM,
@@ -208,6 +209,13 @@ class BenchmarkRunner:
         logger.info(f"Created benchmark container workload: {deployment_metadata.name}")
 
     def _build_command_args(self) -> List[str]:
+        backend_kwargs = {
+            "timeout": BENCHMARK_REQUEST_TIMEOUT,
+            "response_handlers": {
+                "chat_completions": "chat_completions_with_reasoning"
+            },
+        }
+
         command_args = [
             "benchmark",
             "run",
@@ -224,11 +232,13 @@ class BenchmarkRunner:
             "--output-dir",
             f"{self._benchmark_dir}",
             "--outputs",
-            f"{self._benchmark.id}.summary_json",
+            f"{self._benchmark.id}.dual_json",
             "--progress-url",
             self._api_url,
             "--progress-auth",
             self._api_key,
+            "--backend-kwargs",
+            json.dumps(backend_kwargs),
         ]
 
         if self._benchmark.dataset_name == DATASET_SHAREGPT:
