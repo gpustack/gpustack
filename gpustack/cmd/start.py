@@ -45,161 +45,167 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
 
 
 def start_cmd_options(parser_server: argparse.ArgumentParser):
-    group = parser_server.add_argument_group("Common settings")
-    group.add_argument(
+    common_group = parser_server.add_argument_group("Common settings")
+    common_group.add_argument(
         "--advertise-address",
         type=str,
         help="The IP address to expose for external access. If not set, the system will auto-detect a suitable local IP address.",
         default=get_gpustack_env("ADVERTISE_ADDRESS"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--port",
         type=int,
         help="Port to bind the server to.",
         default=get_gpustack_env("PORT"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--tls-port",
         type=int,
         help="Port to bind the TLS server to.",
         default=get_gpustack_env("TLS_PORT"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--api-port",
         type=int,
         help="Port to bind the GPUStack API server to.",
         default=get_gpustack_env("API_PORT"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--config-file",
         type=str,
         help="Path to the YAML config file.",
         default=get_gpustack_env("CONFIG_FILE"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "-d",
         "--debug",
         action=OptionalBoolAction,
         help="Enable debug mode.",
         default=get_gpustack_env_bool("DEBUG"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--data-dir",
         type=str,
         help="Directory to store data. The default is OS specific.",
         default=get_gpustack_env("DATA_DIR"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--cache-dir",
         type=str,
         help="Directory to store cache (e.g., model files). The default is <data-dir>/cache.",
         default=get_gpustack_env("CACHE_DIR"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--bin-dir",
         type=str,
         help="Directory to store additional binaries, e.g., versioned backend executables.",
         default=get_gpustack_env("BIN_DIR"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--pipx-path",
         type=str,
         help="Path to the pipx executable, used to install versioned backends.",
         default=get_gpustack_env("PIPX_PATH"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--huggingface-token",
         type=str,
         help="User Access Token to authenticate to the Hugging Face Hub.",
         default=os.getenv("HF_TOKEN"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--system-default-container-registry",
         type=str,
         help="Default container registry for GPUStack to pull system and inference images. The default is 'docker.io'.",
         default=get_gpustack_env("SYSTEM_DEFAULT_CONTAINER_REGISTRY"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--image-name-override",
         type=str,
         help="Override the default image name for the GPUStack container.",
         default=get_gpustack_env("IMAGE_NAME_OVERRIDE"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--image-repo",
         type=str,
         help="Override the default image repository gpustack/gpustack for the GPUStack container.",
         default=get_gpustack_env("IMAGE_REPO"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--benchmark-image-repo",
         type=str,
         help="Override the default benchmark image repository gpustack/benchmark-runner for the GPUStack benchmark container.",
         default=get_gpustack_env("BENCHMARK_IMAGE_REPO"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--gateway-mode",
         type=str,
         help="Gateway running mode. Options: embedded, in-cluster, external, disabled, or auto (default).",
         default=get_gpustack_env("GATEWAY_MODE"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--gateway-kubeconfig",
         type=str,
         help="Path to the kubeconfig file for gatway. Only useful for external gateway-mode.",
         default=get_gpustack_env("GATEWAY_KUBECONFIG"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--gateway-namespace",
         type=str,
         help="The namespace where the gateway component is deployed.",
         default=get_gpustack_env("GATEWAY_NAMESPACE"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--service-discovery-name",
         type=str,
         help="the name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.",
         default=get_gpustack_env("SERVICE_DISCOVERY_NAME"),
     )
-    group.add_argument(
+    common_group.add_argument(
         "--namespace",
         type=str,
         help="Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.",
         default=os.getenv("POD_NAMESPACE"),
     )
 
-    group = parser_server.add_argument_group("Server settings")
-    group.add_argument(
+    server_group = parser_server.add_argument_group("Server settings")
+
+    # Database settings
+    server_group.add_argument(
         "--database-port",
         type=int,
         help="Port of the database. Example: 5432 for PostgreSQL.",
         default=get_gpustack_env("DATABASE_PORT"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--metrics-port",
         type=int,
         help="Port to expose server metrics.",
         default=get_gpustack_env("METRICS_PORT"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--database-url",
         type=str,
         help="URL of the database. Example: postgresql://user:password@hostname:port/db_name.",
         default=get_gpustack_env("DATABASE_URL"),
     )
-    group.add_argument(
+
+    # Embedded worker settings
+    server_group.add_argument(
         "--disable-worker",
         action=OptionalBoolAction,
         help="(DEPRECATED) Disable the embedded worker for the GPUStack server. New installations will not have the embedded worker by default. Use '--enable-worker' to enable the embedded worker if needed. If neither flag is set, for backward compatibility, the embedded worker will be enabled by default for legacy installations prior to v2.0.1.",
         default=get_gpustack_env_bool("DISABLE_WORKER"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--enable-worker",
         action=OptionalBoolAction,
         help="Enable the embedded worker for the GPUStack server.",
         default=get_gpustack_env_bool("ENABLE_WORKER"),
     )
-    group.add_argument(
+
+    # Server settings
+    server_group.add_argument(
         "--disable-metrics",
         action=OptionalBoolAction,
         help="Disable server metrics.",
@@ -207,150 +213,319 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
             "DISABLE_METRICS",
         ),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--bootstrap-password",
         type=str,
         help="Initial password for the default admin user. Random by default.",
         default=get_gpustack_env("BOOTSTRAP_PASSWORD"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--ssl-keyfile",
         type=str,
         help="Path to the SSL key file.",
         default=get_gpustack_env("SSL_KEYFILE"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--ssl-certfile",
         type=str,
         help="Path to the SSL certificate file.",
         default=get_gpustack_env("SSL_CERTFILE"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--force-auth-localhost",
         action=OptionalBoolAction,
         help="Force authentication for requests originating from localhost (127.0.0.1)."
         "When set to True, all requests from localhost will require authentication.",
         default=get_gpustack_env_bool("FORCE_AUTH_LOCALHOST"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--disable-update-check",
         action=OptionalBoolAction,
         help="Disable update check.",
         default=get_gpustack_env_bool("DISABLE_UPDATE_CHECK"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--disable-openapi-docs",
         action=OptionalBoolAction,
         help="Disable autogenerated OpenAPI documentation endpoints (Swagger UI at /docs, ReDoc at /redoc, and the raw spec at /openapi.json).",
         default=get_gpustack_env_bool("DISABLE_OPENAPI_DOCS"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--update-check-url",
         type=str,
         help=argparse.SUPPRESS,
         default=get_gpustack_env("UPDATE_CHECK_URL"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--model-catalog-file",
         type=str,
         help="Path or URL to the model catalog file.",
         default=get_gpustack_env("MODEL_CATALOG_FILE"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--server-external-url",
         type=str,
         help="External URL of the server. Should be set if the server is behind a reverse proxy.",
         default=get_gpustack_env("SERVER_EXTERNAL_URL"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--gateway-concurrency",
         type=int,
         help="Number of concurrent connections for the embedded gateway. The default is 16.",
         default=get_gpustack_env("GATEWAY_CONCURRENCY"),
     )
-    group.add_argument(
+
+    # Observability settings
+    server_group.add_argument(
         "--disable-builtin-observability",
         action=OptionalBoolAction,
         help="Disable embedded Grafana and Prometheus services.",
         default=get_gpustack_env_bool("DISABLE_BUILTIN_OBSERVABILITY"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--grafana-url",
         type=str,
         help="Grafana base URL for dashboard redirects and proxying. Must be browser-reachable (not a container-only hostname). If set, embedded Grafana and Prometheus will be disabled. Only required for external Grafana.",
         default=get_gpustack_env("GRAFANA_URL"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--grafana-worker-dashboard-uid",
         type=str,
         help="Grafana dashboard UID for worker dashboard redirects.",
         default=get_gpustack_env("GRAFANA_WORKER_DASHBOARD_UID"),
     )
-    group.add_argument(
+    server_group.add_argument(
         "--grafana-model-dashboard-uid",
         type=str,
         help="Grafana dashboard UID for model dashboard redirects.",
         default=get_gpustack_env("GRAFANA_MODEL_DASHBOARD_UID"),
     )
 
-    group = parser_server.add_argument_group("Worker settings")
-    group.add_argument(
+    # CORS settings
+    server_group.add_argument(
+        "--enable-cors",
+        action=OptionalBoolAction,
+        help="Enable Cross-Origin Resource Sharing (CORS) on the server.",
+        default=get_gpustack_env_bool("ENABLE_CORS"),
+    )
+    server_group.add_argument(
+        "--allow-credentials",
+        action=OptionalBoolAction,
+        help="Allow cookies and credentials in cross-origin requests.",
+        default=get_gpustack_env_bool("ALLOW_CREDENTIALS"),
+    )
+    server_group.add_argument(
+        "--allow-origins",
+        action='append',
+        help='Origins allowed for cross-origin requests. Specify the flag multiple times for multiple origins. Example: --allow-origins https://example.com --allow-origins https://api.example.com. Default: ["*"] (all origins allowed).',
+    )
+    server_group.add_argument(
+        "--allow-methods",
+        action='append',
+        help='HTTP methods allowed in cross-origin requests. Specify the flag multiple times for multiple methods. Example: --allow-methods GET --allow-methods POST. Default: ["GET", "POST"].',
+    )
+    server_group.add_argument(
+        "--allow-headers",
+        action='append',
+        help='HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: --allow-headers Authorization --allow-headers Content-Type. Default: ["Authorization", "Content-Type"].',
+    )
+
+    # OIDC settings
+    server_group.add_argument(
+        "--oidc-issuer",
+        type=str,
+        help="The issuer URL of the OIDC provider. OIDC discovery under `<issuer>/.well-known/openid-configuration` will be used to discover the OIDC configuration.",
+        default=get_gpustack_env("OIDC_ISSUER"),
+    )
+    server_group.add_argument(
+        "--oidc-client-id",
+        type=str,
+        help="OIDC client ID.",
+        default=get_gpustack_env("OIDC_CLIENT_ID"),
+    )
+    server_group.add_argument(
+        "--oidc-client-secret",
+        type=str,
+        help="OIDC client secret.",
+        default=get_gpustack_env("OIDC_CLIENT_SECRET"),
+    )
+    server_group.add_argument(
+        "--oidc-redirect-uri",
+        type=str,
+        help="The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.",
+        default=get_gpustack_env("OIDC_REDIRECT_URI"),
+    )
+    server_group.add_argument(
+        "--oidc-skip-userinfo",
+        action=OptionalBoolAction,
+        help="Skip using the UserInfo endpoint and retrieve user details from the ID token.",
+        default=get_gpustack_env_bool("OIDC_SKIP_USERINFO"),
+    )
+    server_group.add_argument(
+        "--oidc-use-userinfo",
+        action=OptionalBoolAction,
+        help="[Deprecated] Use the UserInfo endpoint to fetch user details after authentication.",
+        default=get_gpustack_env_bool("OIDC_USE_USERINFO"),
+    )
+
+    # SAML settings
+    server_group.add_argument(
+        "--saml-idp-server-url",
+        type=str,
+        help="SAML IdP server URL.",
+        default=get_gpustack_env("SAML_IDP_SERVER_URL"),
+    )
+    server_group.add_argument(
+        "--saml-idp-logout-url",
+        type=str,
+        help="SAML IdP Single Logout endpoint URL.",
+        default=get_gpustack_env("SAML_IDP_LOGOUT_URL"),
+    )
+    server_group.add_argument(
+        "--saml-idp-entity-id",
+        type=str,
+        help="SAML IdP entity ID.",
+        default=get_gpustack_env("SAML_IDP_ENTITY_ID"),
+    )
+    server_group.add_argument(
+        "--saml-idp-x509-cert",
+        type=str,
+        help="SAML IdP X.509 certificate.",
+        default=get_gpustack_env("SAML_IDP_X509_CERT"),
+    )
+    server_group.add_argument(
+        "--saml-sp-entity-id",
+        type=str,
+        help="SAML SP entity ID.",
+        default=get_gpustack_env("SAML_SP_ENTITY_ID"),
+    )
+    server_group.add_argument(
+        "--saml-sp-acs-url",
+        type=str,
+        help="SAML SP Assertion Consumer Service(ACS) URL. It should be set to `<server-url>/auth/saml/callback`.",
+        default=get_gpustack_env("SAML_SP_ACS_URL"),
+    )
+    server_group.add_argument(
+        "--saml-sp-slo-url",
+        type=str,
+        help="SAML SP Single Logout Service URL. It can be set to `<server-url>/auth/saml/logout/callback` if you need to receive LogoutResponse.",
+        default=get_gpustack_env("SAML_SP_SLO_URL"),
+    )
+    server_group.add_argument(
+        "--saml-sp-x509-cert",
+        type=str,
+        help="SAML SP X.509 certificate.",
+        default=get_gpustack_env("SAML_SP_X509_CERT"),
+    )
+    server_group.add_argument(
+        "--saml-sp-private-key",
+        type=str,
+        help="SAML SP private key.",
+        default=get_gpustack_env("SAML_SP_PRIVATE_KEY"),
+    )
+    server_group.add_argument(
+        "--saml-sp-attribute-prefix",
+        type=str,
+        help="SAML Service Provider attribute prefix, which is used for fetching the attributes that are specified by --external-auth-*. e.g., 'http://schemas.auth0.com/'.",
+        default=get_gpustack_env("SAML_SP_ATTRIBUTE_PREFIX"),
+    )
+    server_group.add_argument(
+        "--saml-security",
+        type=str,
+        help="SAML security settings in JSON.",
+        default=get_gpustack_env("SAML_SECURITY"),
+    )
+
+    # External Authentication settings
+    server_group.add_argument(
+        "--external-auth-name",
+        type=str,
+        help="Mapping of external authentication user information to username, e.g., 'preferred_username'. For SAML, you must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.",
+        default=get_gpustack_env("EXTERNAL_AUTH_NAME"),
+    )
+    server_group.add_argument(
+        "--external-auth-full-name",
+        type=str,
+        help="Mapping of external authentication user information to user's full name. Multiple elements can be combined, e.g., 'name' or 'firstName+lastName'.  For SAML, you must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name' or simplify with 'name' by '--saml-sp-attribute-prefix'.",
+        default=get_gpustack_env("EXTERNAL_AUTH_FULL_NAME"),
+    )
+    server_group.add_argument(
+        "--external-auth-avatar-url",
+        type=str,
+        help="Mapping of external authentication user information to user's avatar URL. e.g.,'picture'. For SAML, you must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.",
+        default=get_gpustack_env("EXTERNAL_AUTH_AVATAR_URL"),
+    )
+    server_group.add_argument(
+        "--external-auth-default-inactive",
+        action=OptionalBoolAction,
+        help="Set newly created externally authenticated users inactive by default.",
+        default=get_gpustack_env_bool("EXTERNAL_AUTH_DEFAULT_INACTIVE"),
+    )
+    server_group.add_argument(
+        "--external-auth-post-logout-redirect-key",
+        type=str,
+        help="Generic key for post-logout redirection across IdPs.",
+        default=get_gpustack_env("EXTERNAL_AUTH_POST_LOGOUT_REDIRECT_KEY"),
+    )
+
+    worker_group = parser_server.add_argument_group("Worker settings")
+    worker_group.add_argument(
         "-t",
         "--token",
         type=str,
         help="Shared secret used to add a worker.",
         default=get_gpustack_env("TOKEN"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "-s",
         "--server-url",
         type=str,
         help="Server to connect to.",
         default=get_gpustack_env("SERVER_URL"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--worker-ip",
         type=str,
         help="IP address of the worker node. Auto-detected by default.",
         default=get_gpustack_env("WORKER_IP"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--worker-ifname",
         type=str,
         help="Network interface name of the worker node. Auto-detected by default.",
         default=get_gpustack_env("WORKER_IFNAME"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--worker-name",
         type=str,
         help="Name of the worker node. Use the hostname by default.",
         default=get_gpustack_env("WORKER_NAME"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--worker-port",
         type=int,
         help="Port to bind the worker to.",
         default=get_gpustack_env("WORKER_PORT"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--service-port-range",
         type=str,
         help="Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40000-40063'.",
         default=get_gpustack_env("SERVICE_PORT_RANGE"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--ray-port-range",
         type=str,
         help="Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '41000-41999'.",
         default=get_gpustack_env("RAY_PORT_RANGE"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--benchmark-max-duration-seconds",
         type=int,
         help="Max duration for a benchmark before timeout. Disabled when unset.",
         default=get_gpustack_env("BENCHMARK_MAX_DURATION_SECONDS"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--disable-worker-metrics",
         action=OptionalBoolAction,
         help="Disable worker metrics.",
@@ -358,25 +533,25 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
             "DISABLE_WORKER_METRICS",
         ),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--worker-metrics-port",
         type=int,
         help="Port to expose worker metrics.",
         default=get_gpustack_env("WORKER_METRICS_PORT"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--log-dir",
         type=str,
         help="Directory to store logs.",
         default=get_gpustack_env("LOG_DIR"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--benchmark-dir",
         type=str,
         help="Directory to store benchmark results.",
         default=get_gpustack_env("BENCHMARK_DIR"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--system-reserved",
         type=json.loads,
         help="The system reserves resources during scheduling, measured in GiB. \
@@ -386,192 +561,29 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         Note: The 'memory' and 'gpu_memory' keys are deprecated and will be removed in future releases.",
         default=get_gpustack_env("SYSTEM_RESERVED"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--tools-download-base-url",
         type=str,
         help="Base URL to download dependency tools.",
         default=get_gpustack_env("TOOLS_DOWNLOAD_BASE_URL"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--enable-hf-transfer",
         action=OptionalBoolAction,
         help="Enable faster downloads from the Hugging Face Hub using hf_transfer.",
         default=os.getenv("HF_HUB_ENABLE_HF_TRANSFER"),
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--enable-hf-xet",
         action=OptionalBoolAction,
         help="Enable downloading model files using Hugging Face Xet.",
     )
-    group.add_argument(
+    worker_group.add_argument(
         "--proxy-mode",
         type=str,
         help="Proxy mode for server accessing model instances: "
         "direct (server connects directly) or worker (via worker proxy). "
         "Default value is direct for embedded worker, and worker for standalone worker.",
-    )
-
-    group.add_argument(
-        "--enable-cors",
-        action=OptionalBoolAction,
-        help="Enable Cross-Origin Resource Sharing (CORS) on the server.",
-        default=get_gpustack_env_bool("ENABLE_CORS"),
-    )
-    group.add_argument(
-        "--allow-credentials",
-        action=OptionalBoolAction,
-        help="Allow cookies and credentials in cross-origin requests.",
-        default=get_gpustack_env_bool("ALLOW_CREDENTIALS"),
-    )
-    group.add_argument(
-        "--allow-origins",
-        action='append',
-        help='Origins allowed for cross-origin requests. Specify the flag multiple times for multiple origins. Example: --allow-origins https://example.com --allow-origins https://api.example.com. Default: ["*"] (all origins allowed).',
-    )
-    group.add_argument(
-        "--allow-methods",
-        action='append',
-        help='HTTP methods allowed in cross-origin requests. Specify the flag multiple times for multiple methods. Example: --allow-methods GET --allow-methods POST. Default: ["GET", "POST"].',
-    )
-    group.add_argument(
-        "--allow-headers",
-        action='append',
-        help='HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: --allow-headers Authorization --allow-headers Content-Type. Default: ["Authorization", "Content-Type"].',
-    )
-    # External authentication settings
-    group.add_argument(
-        "--external-auth-name",
-        type=str,
-        help="Mapping of external authentication user information to username, e.g., 'preferred_username'. For SAML, you must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.",
-        default=get_gpustack_env("EXTERNAL_AUTH_NAME"),
-    )
-    group.add_argument(
-        "--external-auth-full-name",
-        type=str,
-        help="Mapping of external authentication user information to user's full name. Multiple elements can be combined, e.g., 'name' or 'firstName+lastName'.  For SAML, you must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name' or simplify with 'name' by '--saml-sp-attribute-prefix'.",
-        default=get_gpustack_env("EXTERNAL_AUTH_FULL_NAME"),
-    )
-    group.add_argument(
-        "--external-auth-avatar-url",
-        type=str,
-        help="Mapping of external authentication user information to user's avatar URL. e.g.,'picture'. For SAML, you must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.",
-        default=get_gpustack_env("EXTERNAL_AUTH_AVATAR_URL"),
-    )
-    group.add_argument(
-        "--external-auth-default-inactive",
-        action=OptionalBoolAction,
-        help="Set newly created externally authenticated users inactive by default.",
-        default=get_gpustack_env_bool("EXTERNAL_AUTH_DEFAULT_INACTIVE"),
-    )
-    # OIDC settings
-    group.add_argument(
-        "--oidc-issuer",
-        type=str,
-        help="The issuer URL of the OIDC provider. OIDC discovery under `<issuer>/.well-known/openid-configuration` will be used to discover the OIDC configuration.",
-        default=get_gpustack_env("OIDC_ISSUER"),
-    )
-    group.add_argument(
-        "--oidc-client-id",
-        type=str,
-        help="OIDC client ID.",
-        default=get_gpustack_env("OIDC_CLIENT_ID"),
-    )
-    group.add_argument(
-        "--oidc-client-secret",
-        type=str,
-        help="OIDC client secret.",
-        default=get_gpustack_env("OIDC_CLIENT_SECRET"),
-    )
-    group.add_argument(
-        "--oidc-redirect-uri",
-        type=str,
-        help="The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.",
-        default=get_gpustack_env("OIDC_REDIRECT_URI"),
-    )
-    group.add_argument(
-        "--external-auth-post-logout-redirect-key",
-        type=str,
-        help="Generic key for post-logout redirection across IdPs.",
-        default=get_gpustack_env("EXTERNAL_AUTH_POST_LOGOUT_REDIRECT_KEY"),
-    )
-    group.add_argument(
-        "--oidc-skip-userinfo",
-        action=OptionalBoolAction,
-        help="Skip using the UserInfo endpoint and retrieve user details from the ID token.",
-        default=get_gpustack_env_bool("OIDC_SKIP_USERINFO"),
-    )
-    group.add_argument(
-        "--oidc-use-userinfo",
-        action=OptionalBoolAction,
-        help="[Deprecated] Use the UserInfo endpoint to fetch user details after authentication.",
-        default=get_gpustack_env_bool("OIDC_USE_USERINFO"),
-    )
-    # SAML settings
-    group.add_argument(
-        "--saml-idp-server-url",
-        type=str,
-        help="SAML IdP server URL.",
-        default=get_gpustack_env("SAML_IDP_SERVER_URL"),
-    )
-    group.add_argument(
-        "--saml-idp-logout-url",
-        type=str,
-        help="SAML IdP Single Logout endpoint URL.",
-        default=get_gpustack_env("SAML_IDP_LOGOUT_URL"),
-    )
-    group.add_argument(
-        "--saml-idp-entity-id",
-        type=str,
-        help="SAML IdP entity ID.",
-        default=get_gpustack_env("SAML_IDP_ENTITY_ID"),
-    )
-    group.add_argument(
-        "--saml-idp-x509-cert",
-        type=str,
-        help="SAML IdP X.509 certificate.",
-        default=get_gpustack_env("SAML_IDP_X509_CERT"),
-    )
-    group.add_argument(
-        "--saml-sp-entity-id",
-        type=str,
-        help="SAML SP entity ID.",
-        default=get_gpustack_env("SAML_SP_ENTITY_ID"),
-    )
-    group.add_argument(
-        "--saml-sp-acs-url",
-        type=str,
-        help="SAML SP Assertion Consumer Service(ACS) URL. It should be set to `<server-url>/auth/saml/callback`.",
-        default=get_gpustack_env("SAML_SP_ACS_URL"),
-    )
-    group.add_argument(
-        "--saml-sp-slo-url",
-        type=str,
-        help="SAML SP Single Logout Service URL. It can be set to `<server-url>/auth/saml/logout/callback` if you need to receive LogoutResponse.",
-        default=get_gpustack_env("SAML_SP_SLO_URL"),
-    )
-    group.add_argument(
-        "--saml-sp-x509-cert",
-        type=str,
-        help="SAML SP X.509 certificate.",
-        default=get_gpustack_env("SAML_SP_X509_CERT"),
-    )
-    group.add_argument(
-        "--saml-sp-private-key",
-        type=str,
-        help="SAML SP private key.",
-        default=get_gpustack_env("SAML_SP_PRIVATE_KEY"),
-    )
-    group.add_argument(
-        "--saml-sp-attribute-prefix",
-        type=str,
-        help="SAML Service Provider attribute prefix, which is used for fetching the attributes that are specified by --external-auth-*. e.g., 'http://schemas.auth0.com/'.",
-        default=get_gpustack_env("SAML_SP_ATTRIBUTE_PREFIX"),
-    )
-    group.add_argument(
-        "--saml-security",
-        type=str,
-        help="SAML security settings in JSON.",
-        default=get_gpustack_env("SAML_SECURITY"),
     )
 
     parser_server.set_defaults(func=run)
