@@ -430,8 +430,6 @@ def recalculate_index_for_modelscope_sources():
             {"new_index": new_source_index, "id": row.id}
         )
 
-    conn.commit()
-
 
 def reverse_recalculate_index_for_modelscope_sources():
     """Recalculate source_index with old logic (without source type prefix)."""
@@ -452,5 +450,3 @@ def reverse_recalculate_index_for_modelscope_sources():
             sa.text("UPDATE model_files SET source_index = :old_index WHERE id = :id"),
             {"old_index": old_source_index, "id": row.id}
         )
-
-    conn.commit()
