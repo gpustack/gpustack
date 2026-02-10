@@ -7,6 +7,7 @@ from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from gpustack import envs
 from gpustack.api.exceptions import InternalServerErrorException
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_files import ModelFile
@@ -30,6 +31,9 @@ from gpustack.server.usage_buffer import usage_flush_buffer
 
 logger = logging.getLogger(__name__)
 cache = Cache(Cache.MEMORY)
+
+
+CACHE_TTL_SECONDS = envs.SERVER_CACHE_TTL_SECONDS
 
 
 def build_cache_key(func: Callable, *args, **kwargs):
@@ -99,7 +103,7 @@ class UserService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_id(self, user_id: int) -> Optional[User]:
         result = await User.one_by_id(
             self.session,
@@ -114,7 +118,7 @@ class UserService:
         self.session.expunge(result)
         return result
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_username(self, username: str) -> Optional[User]:
         result = await User.one_by_field(self.session, "username", username)
         if result is None:
@@ -161,7 +165,7 @@ class UserService:
             accessible_model_names, limited_model_names
         )
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_user_accessible_model_names(self, user_id: int) -> Set[str]:
         # Get all accessible model names for the user
         user: User = await self.get_by_id(user_id)
@@ -182,7 +186,7 @@ class APIKeyService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_access_key(self, access_key: str) -> Optional[ApiKey]:
         result = await ApiKey.one_by_field(self.session, "access_key", access_key)
         if result is None:
@@ -208,7 +212,7 @@ class WorkerService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_id(self, worker_id: int) -> Optional[Worker]:
         result = await Worker.one_by_id(self.session, worker_id)
         if result is None:
@@ -216,7 +220,7 @@ class WorkerService:
         self.session.expunge(result)
         return result
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_name(self, name: str) -> Optional[Worker]:
         result = await Worker.one_by_field(self.session, "name", name)
         if result is None:
@@ -262,7 +266,7 @@ class ModelRouteService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_name(self, name: str) -> Optional[ModelRoute]:
         result = await ModelRoute.one_by_field(self.session, "name", name)
         if result is None:
@@ -270,7 +274,7 @@ class ModelRouteService:
         self.session.expunge(result)
         return result
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_model_auth_info_by_name(
         self, name: str
     ) -> Optional[Tuple[AccessPolicyEnum, str]]:
@@ -302,7 +306,7 @@ class ModelRouteService:
 
         return route.access_policy, registration_token
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_model_ids_by_model_route_name(self, name: str) -> List[Model]:
         route_targets = await ModelRouteTarget.all_by_fields(
             self.session,
@@ -341,7 +345,7 @@ class ModelService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_id(self, model_id: int) -> Optional[Model]:
         result = await Model.one_by_id(self.session, model_id)
         if result is None:
@@ -349,7 +353,7 @@ class ModelService:
         self.session.expunge(result)
         return result
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_name(self, name: str) -> Optional[Model]:
         result = await Model.one_by_field(self.session, "name", name)
         if result is None:
@@ -374,7 +378,7 @@ class ModelInstanceService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_running_instances(self, model_id: int) -> List[ModelInstance]:
         results = await ModelInstance.all_by_fields(
             self.session,
@@ -454,7 +458,7 @@ class ModelUsageService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    @locked_cached(ttl=60)
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_fields(self, fields: dict) -> ModelUsage:
         result = await ModelUsage.one_by_fields(
             self.session,
