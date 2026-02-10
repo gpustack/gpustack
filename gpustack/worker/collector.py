@@ -87,7 +87,7 @@ class WorkerStatusCollector:
         self, clientset: ClientSet = None, initial: bool = False
     ) -> WorkerStatusPublic:  # noqa: C901
         """Collect worker status information."""
-        status = WorkerStatus()
+        status = WorkerStatus.get_default_status()
         state_message = None
         try:
             system_info = self._detector_factory.detect_system_info()
