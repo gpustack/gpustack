@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from gpustack.schemas.model_provider import ModelProvider
 
 
-name_pattern = r'^[A-Za-z][A-Za-z0-9_\-\.]*[A-Za-z0-9]$'
+name_pattern = r'^[A-Za-z](?:[A-Za-z0-9_\-\.]*[A-Za-z0-9])?$'
 
 
 class AccessPolicyEnum(str, Enum):
