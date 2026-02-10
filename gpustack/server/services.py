@@ -232,6 +232,23 @@ class WorkerService:
         await delete_cache_by_key(self.get_by_name, worker.name)
         return result
 
+    async def batch_update(
+        self,
+        workers: List[Worker],
+        source: Union[dict, SQLModel, None] = None,
+        **kwargs,
+    ) -> int:
+        if not workers:
+            return 0
+
+        updated = await Worker.batch_update(self.session, workers)
+
+        for w in workers:
+            await delete_cache_by_key(self.get_by_id, w.id)
+            await delete_cache_by_key(self.get_by_name, w.name)
+
+        return updated
+
     async def delete(self, worker: Worker, **kwargs):
         worker_id = worker.id
         worker_name = worker.name
