@@ -656,59 +656,47 @@ async def ensure_route_ai_proxy_config(
     operating_id = mcp_handler.model_route_cleanup_prefix(model_route_id)
     ingress_name = mcp_handler.model_route_ingress_name(model_route_id)
     fallback_ingress_name = mcp_handler.fallback_ingress_name(ingress_name)
-
-    def destination_contains_provider(input: mcp_handler.DestinationTupleList) -> bool:
-        for _, _, registry in input:
-            # the provider registry starts with the provider id prefix
-            if registry.name.startswith(mcp_handler.provider_id_prefix):
-                return True
-        return False
-
-    has_provider = destination_contains_provider(route_destinations)
-    fallback_has_provider = destination_contains_provider(fallback_destinations)
     expected_providers = []
     expected_match_rules = []
     # cross provider needs to configure ai_proxy
-    if has_provider != fallback_has_provider:
-        unique_registry_services: Set[str] = set(
-            registry.get_service_name()
-            for _, _, registry in route_destinations
-            if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+    unique_registry_services: Set[str] = set(
+        registry.get_service_name()
+        for _, _, registry in route_destinations
+        if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+    )
+    unique_fallback_registry_services: Set[str] = set(
+        registry.get_service_name()
+        for _, _, registry in fallback_destinations
+        if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+    )
+    if len(unique_registry_services) + len(unique_fallback_registry_services) == 0:
+        return
+
+    expected_providers.append(mcp_handler.ai_proxy_openai_provider_config(operating_id))
+
+    if len(unique_registry_services) > 0:
+        expected_match_rules.append(
+            WasmPluginMatchRule(
+                config={
+                    "activeProviderId": operating_id,
+                },
+                configDisable=False,
+                service=list(unique_registry_services),
+                ingress=[f"{service_namespace_prefix}{ingress_name}"],
+            )
         )
-        unique_fallback_registry_services: Set[str] = set(
-            registry.get_service_name()
-            for _, _, registry in fallback_destinations
-            if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+    # same logic for fallback
+    if len(unique_fallback_registry_services) > 0:
+        expected_match_rules.append(
+            WasmPluginMatchRule(
+                config={
+                    "activeProviderId": operating_id,
+                },
+                configDisable=False,
+                service=list(unique_fallback_registry_services),
+                ingress=[f"{service_namespace_prefix}{fallback_ingress_name}"],
+            )
         )
-        if len(unique_registry_services) > 0:
-            expected_providers.append(
-                mcp_handler.ai_proxy_openai_provider_config(operating_id)
-            )
-            expected_match_rules.append(
-                WasmPluginMatchRule(
-                    config={
-                        "activeProviderId": operating_id,
-                    },
-                    configDisable=False,
-                    service=list(unique_registry_services),
-                    ingress=[f"{service_namespace_prefix}{ingress_name}"],
-                )
-            )
-        # same logic for fallback
-        if len(unique_fallback_registry_services) > 0:
-            expected_providers.append(
-                mcp_handler.ai_proxy_openai_provider_config(f"{operating_id}-fallback")
-            )
-            expected_match_rules.append(
-                WasmPluginMatchRule(
-                    config={
-                        "activeProviderId": f"{operating_id}-fallback",
-                    },
-                    configDisable=False,
-                    service=list(unique_fallback_registry_services),
-                    ingress=[f"{service_namespace_prefix}{fallback_ingress_name}"],
-                )
-            )
 
     await mcp_handler.ensure_gpustack_ai_proxy_config(
         extensions_api=extensions_api,
