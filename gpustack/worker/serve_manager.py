@@ -557,7 +557,7 @@ class ServeManager:
             mi: The model instance to start.
 
         """
-        if mi.id in self._provisioning_processes:
+        if self._is_provisioning(mi):
             logger.warning(f"Model instance {mi.name} is provisioning. Skipping start.")
             return
 
