@@ -111,6 +111,8 @@ logger = logging.getLogger(__name__)
 class ModelController:
     def __init__(self, cfg: Config):
         self._config = cfg
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
+        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
         pass
 
@@ -118,12 +120,47 @@ class ModelController:
         """
         Start the controller.
         """
+        if not self._disable_gateway:
+            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
+            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
         async for event in Model.subscribe(source="model_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
 
             await self._reconcile(event)
+
+    async def _ensure_model_mcp_bridge(
+        self, session: AsyncSession, event_type: EventType, model: Model
+    ):
+        if self._disable_gateway:
+            return
+        model_instances = await ModelInstance.all_by_fields(
+            session,
+            fields={"model_id": model.id, "deleted_at": None},
+        )
+        worker_by_id = None
+        worker_ids = {
+            instance.worker_id for instance in model_instances if instance.worker_id
+        }
+        if worker_ids:
+            workers = await Worker.all_by_fields(
+                session,
+                extra_conditions=[
+                    Worker.id.in_(worker_ids),
+                ],
+            )
+            worker_by_id = {worker.id: worker for worker in workers}
+
+        await mcp_handler.ensure_model_mcp_bridge(
+            event_type=event_type,
+            model_id=model.id,
+            model_instances=model_instances,
+            networking_higress_api=self._higress_network_api,
+            namespace=self._config.gateway_namespace,
+            cluster_id=model.cluster_id,
+            workers=worker_by_id,
+        )
 
     async def _reconcile(self, event: Event):
         """
@@ -138,6 +175,7 @@ class ModelController:
                     session=session, model=model, event=event
                 )
                 await sync_categories_and_meta(session, model, event)
+                await self._ensure_model_mcp_bridge(session, event.type, model)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
 
@@ -145,8 +183,6 @@ class ModelController:
 class ModelInstanceController:
     def __init__(self, cfg: Config):
         self._config = cfg
-        self._k8s_config = get_async_k8s_config(cfg=cfg)
-        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
         pass
 
@@ -154,9 +190,6 @@ class ModelInstanceController:
         """
         Start the controller.
         """
-        if not self._disable_gateway:
-            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
-            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
         async for event in ModelInstance.subscribe(source="model_instance_controller"):
             if event.type == EventType.HEARTBEAT:
@@ -176,21 +209,6 @@ class ModelInstanceController:
                 if not model:
                     return
                 model_deleting = model.deleted_at is not None
-
-                if not self._disable_gateway:
-                    worker = (
-                        await Worker.one_by_id(session, model_instance.worker_id)
-                        if model_instance.worker_id
-                        else None
-                    )
-                    await mcp_handler.ensure_model_instance_mcp_bridge(
-                        event_type=event.type,
-                        model_instance=model_instance,
-                        networking_higress_api=self._higress_network_api,
-                        namespace=self._config.gateway_namespace,
-                        cluster_id=model.cluster_id,
-                        worker=worker,
-                    )
 
                 if event.type == EventType.DELETED:
                     # trigger model replica sync
@@ -669,10 +687,11 @@ async def ensure_route_ai_proxy_config(
         for _, _, registry in fallback_destinations
         if (not registry.name.startswith(mcp_handler.provider_id_prefix))
     )
-    if len(unique_registry_services) + len(unique_fallback_registry_services) == 0:
-        return
 
-    expected_providers.append(mcp_handler.ai_proxy_openai_provider_config(operating_id))
+    if len(unique_registry_services) + len(unique_fallback_registry_services) > 0:
+        expected_providers.append(
+            mcp_handler.ai_proxy_openai_provider_config(operating_id)
+        )
 
     if len(unique_registry_services) > 0:
         expected_match_rules.append(
