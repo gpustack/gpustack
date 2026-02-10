@@ -1,5 +1,6 @@
 import logging
 import copy
+import math
 from urllib.parse import urlparse
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union, Dict, Any, Literal
@@ -607,6 +608,21 @@ def mcp_ingress_equal(
     return True
 
 
+def scale_weight(weight_instance_pairs: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """
+    Scale weights based on the least common multiple of counts to maintain proportionality.
+    """
+    counts = [count for _, count in weight_instance_pairs if count > 0]
+    if not counts:
+        return weight_instance_pairs
+    lcm_count = math.lcm(*counts)
+    scaled = [
+        (weight * lcm_count // count if count > 0 else 0, count)
+        for weight, count in weight_instance_pairs
+    ]
+    return scaled
+
+
 def hamilton_calculate_weight(
     weight_instance_pairs: List[Tuple[int, int]],
     max_weight: Optional[int] = 0,
@@ -620,6 +636,7 @@ def hamilton_calculate_weight(
     :return: list of percentage for instance
     :rtype: List[int]
     """
+    weight_instance_pairs = scale_weight(weight_instance_pairs)
     instances_info = []
     for weight, instance_count in weight_instance_pairs:
         for _ in range(instance_count):
