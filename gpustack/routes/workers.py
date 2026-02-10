@@ -17,9 +17,11 @@ from gpustack.server.deps import (
     SessionDep,
     CurrentUserDep,
 )
-from gpustack.server.heartbeat_buffer import (
+from gpustack.server.worker_status_buffer import (
     heartbeat_flush_buffer,
     heartbeat_flush_buffer_lock,
+    worker_status_flush_buffer,
+    worker_status_flush_buffer_lock,
 )
 from gpustack.schemas.workers import (
     WorkerCreate,
@@ -29,7 +31,7 @@ from gpustack.schemas.workers import (
     WorkersPublic,
     Worker,
     WorkerRegistrationPublic,
-    WorkerStatusPublic,
+    WorkerStatusStored,
     WorkerStateEnum,
 )
 from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
@@ -401,36 +403,22 @@ async def delete_worker(session: SessionDep, id: int):
         raise InternalServerErrorException(message=f"Failed to delete worker: {e}")
 
 
-async def create_worker_status(
-    user: CurrentUserDep, session: SessionDep, input: WorkerStatusPublic
-):
+async def create_worker_status(user: CurrentUserDep, input: WorkerStatusStored):
     if user.worker is None:
         raise ForbiddenException(message="Failed to find related worker")
-
-    worker: Worker = await WorkerService(session).get_by_id(user.worker.id)
-    if not worker or worker.deleted_at is not None:
-        raise NotFoundException(message="Worker not found")
 
     heartbeat_time = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     input_dict = input.model_dump(exclude_unset=True)
     input_dict["heartbeat_time"] = heartbeat_time
-    worker_dict = worker.model_dump()
-    worker_dict.update(input_dict)
-    try:
-        to_update = worker.model_validate(worker_dict)
-        to_update.compute_state()
-        await WorkerService(session).update(worker, to_update)
-        if input.gateway_endpoint is not None:
-            cluster: Cluster = await Cluster.one_by_id(session, worker.cluster_id)
-            # no need to use transaction here
-            cluster.reported_gateway_endpoint = input.gateway_endpoint
-            await cluster.update(session=session)
-        return Response(status_code=204)
-    except Exception as e:
-        raise InternalServerErrorException(message=f"Failed to update worker: {e}")
+
+    # Add worker status to buffer for batch update
+    async with worker_status_flush_buffer_lock:
+        worker_status_flush_buffer[user.worker.id] = input_dict
+
+    return Response(status_code=204)
 
 
-async def heartbeat(user: CurrentUserDep, session: SessionDep):
+async def heartbeat(user: CurrentUserDep):
     if user.worker is None:
         raise ForbiddenException(message="Failed to find related worker")
 
