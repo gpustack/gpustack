@@ -474,7 +474,7 @@ class Server:
             await session.commit()
         except Exception as e:
             logger.error(f"Failed to migrate legacy token: {e}")
-            session.rollback()
+            await session.rollback()
             raise e
 
     async def _migrate_legacy_workers(self, session: AsyncSession):
@@ -543,7 +543,7 @@ class Server:
                 logger.error(
                     f"Failed to migrate worker {worker.id} ({worker.name}): {e}"
                 )
-                session.rollback()
+                await session.rollback()
                 raise e
 
     async def _ensure_registration_token(self, session: AsyncSession):
@@ -576,7 +576,7 @@ class Server:
                 await session.commit()
             except Exception as e:
                 logger.error(f"Failed to ensure registration token: {e}")
-                session.rollback()
+                await session.rollback()
                 raise e
 
         write_registration_token(
