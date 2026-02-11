@@ -646,10 +646,11 @@ class ActiveRecordMixin:
             cls._publish_event_after_commit(session, EventType.DELETED, obj)
             await obj.delete(session, soft=soft, auto_commit=False)
         try:
-            session.commit()
+            await session.commit()
         except Exception as e:
-            session.rollback()
+            await session.rollback()
             logger.error(f"Failed to delete all objects of {cls.__name__}: {e}")
+            raise
 
     @classmethod
     def _publish_event_after_commit(
