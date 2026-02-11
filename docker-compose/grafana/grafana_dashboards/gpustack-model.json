@@ -1371,7 +1371,7 @@
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
-          "legendFormat": "Num Running({{model_instance_name}})",
+          "legendFormat": "Request Running({{model_instance_name}})",
           "range": true,
           "refId": "A",
           "useBackend": false
@@ -1388,7 +1388,7 @@
           "hide": false,
           "includeNullMetadata": true,
           "instant": false,
-          "legendFormat": "Num Swapped({{model_instance_name}})",
+          "legendFormat": "Request Swapped({{model_instance_name}})",
           "range": true,
           "refId": "B",
           "useBackend": false
@@ -1405,13 +1405,13 @@
           "hide": false,
           "includeNullMetadata": true,
           "instant": false,
-          "legendFormat": "Num Waiting({{model_instance_name}})",
+          "legendFormat": "Request Waiting({{model_instance_name}})",
           "range": true,
           "refId": "C",
           "useBackend": false
         }
       ],
-      "title": "Scheduler State",
+      "title": "Request Status",
       "type": "timeseries"
     },
     {
