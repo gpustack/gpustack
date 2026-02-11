@@ -1411,7 +1411,7 @@
           "useBackend": false
         }
       ],
-      "title": "Runtime Status",
+      "title": "Scheduler State",
       "type": "timeseries"
     },
     {
