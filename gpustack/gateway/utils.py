@@ -3,7 +3,7 @@ import copy
 import math
 from urllib.parse import urlparse
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union, Dict, Any, Literal
+from typing import List, Optional, Tuple, Union, Dict, Any, Literal, Callable
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.gateway.labels_annotations import managed_labels, match_labels
 from gpustack.gateway import ai_proxy_types
@@ -47,9 +47,9 @@ logger = logging.getLogger(__name__)
 
 default_mcp_bridge_name = "default"
 gpustack_ai_proxy_name = "gpustack-ai-proxy"
+gpustack_model_mapper_name = "gpustack-model-mapper"
 model_ingress_prefix = "ai-route-model-"
 model_route_ingress_prefix = "ai-route-route-"
-model_route_selector = {"gpustack.ai/route": "true"}
 provider_id_prefix = "provider-"
 model_id_prefix = "model-"
 
@@ -793,9 +793,8 @@ async def ensure_wasm_plugin(
     api: ExtensionsHigressIoV1Api,
     name: str,
     namespace: str,
-    expected: WasmPluginSpec,
+    spec_diff: Callable[[Optional[WasmPluginSpec]], WasmPluginSpec],
     extra_labels: Optional[Dict[str, str]] = None,
-    create_only: bool = False,
 ):
     labels = copy.deepcopy(managed_labels)
     if extra_labels:
@@ -809,6 +808,8 @@ async def ensure_wasm_plugin(
             current_plugin = None
         else:
             raise
+    current_spec = getattr(current_plugin, 'spec', None)
+    expected = spec_diff(copy.deepcopy(current_spec))
     if current_plugin is None:
         wasm_plugin_body = WasmPlugin(
             metadata={
@@ -823,9 +824,7 @@ async def ensure_wasm_plugin(
             body=wasm_plugin_body,
         )
         logger.info(f"Created WasmPlugin {name} in namespace {namespace}.")
-    elif not create_only and match_labels(
-        current_plugin.metadata.get("labels", {}), labels
-    ):
+    elif match_labels(current_plugin.metadata.get("labels", {}), labels):
         current_spec = (
             current_plugin.spec.model_dump(exclude_none=True)
             if current_plugin.spec
@@ -842,36 +841,39 @@ async def ensure_wasm_plugin(
             logger.info(f"Updated WasmPlugin {name} in namespace {namespace}.")
 
 
-async def cleanup_selected_wasm_plugins(
+async def cleanup_model_mapper(
     namespace: str,
-    expected_names: List[str],
+    expected_ingresses: List[str],
     config: k8s_client.Configuration,
     extra_labels: Optional[Dict[str, str]] = None,
-    reason: str = "orphaned",
 ):
     api = ExtensionsHigressIoV1Api(k8s_client.ApiClient(config))
     labels = copy.deepcopy(managed_labels)
     if extra_labels:
         labels.update(extra_labels)
-    try:
-        # Use label selector to filter only managed wasm plugins
-        label_selector = ','.join([f"{k}={v}" for k, v in labels.items()])
-        plugins = await api.list_wasmplugins(
-            namespace=namespace,
-            label_selector=label_selector,
-        )
-        items: List[Dict[str, Any]] = plugins.get('items', [])
-        for plugin in items:
-            # name must be not None due to label selector
-            name = plugin.get("metadata", {}).get("name", None)
-            if name is None or name in expected_names:
-                continue
-            await api.delete_wasmplugin(name=name, namespace=namespace)
-            logger.info(
-                f"Deleted {reason} wasm plugin {name} in namespace {namespace}."
-            )
-    except Exception as e:
-        logger.error(f"Error cleaning up {reason} wasm plugins: {e}")
+
+    def spec_diff(current_spec: Optional[WasmPluginSpec]) -> WasmPluginSpec:
+        if current_spec is None:
+            return current_spec
+        to_keep_rules: List[WasmPluginMatchRule] = []
+        for rule in current_spec.matchRules or []:
+            if any(ingress in expected_ingresses for ingress in rule.ingress):
+                to_keep_rules.append(rule)
+            else:
+                logger.info(
+                    f"Removing rule with ingress {rule.ingress} from model mapper plugin as it is not in expected ingresses."
+                )
+        to_keep_rules.sort(key=lambda r: r.ingress[0] if r.ingress else "")
+        current_spec.matchRules = to_keep_rules
+        return current_spec
+
+    await ensure_wasm_plugin(
+        api=api,
+        name=gpustack_model_mapper_name,
+        namespace=namespace,
+        spec_diff=spec_diff,
+        extra_labels=extra_labels,
+    )
 
 
 async def cleanup_ingresses(
@@ -974,27 +976,14 @@ async def mirror_hostname_tls_from_ingress(
     return hostname, tls
 
 
-def get_model_route_mapper_config(
+def get_expected_match_list(
     route_name: str,
+    ingress_prefix: str,
     ingress_name: str,
     model_name_to_registries: Dict[str, List[str]],
     fallback_model_name_to_registries: Dict[str, List[str]],
-    namespace: Optional[str] = None,
-) -> Optional[List[WasmPluginMatchRule]]:
-    # no need to create mapper if there is no model mapping
-    total_model_count = len(model_name_to_registries) + len(
-        fallback_model_name_to_registries
-    )
-    if total_model_count == 0:
-        return None
-    total_unique_models = set(model_name_to_registries.keys())
-    total_unique_models.update(fallback_model_name_to_registries.keys())
-
-    if len(total_unique_models) == 1 and route_name in total_unique_models:
-        return None
-
+) -> List[WasmPluginMatchRule]:
     match_list: List[WasmPluginMatchRule] = []
-    ingress_prefix = "" if namespace is None else f"{namespace}/"
     ingress_name = f"{ingress_prefix}{ingress_name}"
     for model_name, service_names in model_name_to_registries.items():
         config = {"modelMapping": {route_name: model_name}}
@@ -1019,23 +1008,7 @@ def get_model_route_mapper_config(
                 service=service_names,
             )
         )
-
     return match_list
-
-
-def model_route_mapper_plugin_spec(
-    url: str,
-    match_rules: List[WasmPluginMatchRule],
-) -> WasmPluginSpec:
-    return WasmPluginSpec(
-        phase="AUTHN",
-        priority=800,
-        url=url,
-        defaultConfigDisable=True,
-        defaultConfig={},
-        matchRules=match_rules,
-        failStrategy="FAIL_OPEN",
-    )
 
 
 def higress_http_header_matcher(
@@ -1198,42 +1171,6 @@ def compare_and_append_proxy_match_rules(
     return return_rules
 
 
-async def ensure_gpustack_ai_proxy_config(
-    extensions_api: ExtensionsHigressIoV1Api,
-    namespace: str,
-    expected_providers: List[Dict[str, Any]],
-    expected_match_rules: List[WasmPluginMatchRule],
-    operating_id_prefix: str = "",
-):
-    try:
-        ai_proxy_data = await extensions_api.get_wasmplugin(
-            namespace=namespace,
-            name=gpustack_ai_proxy_name,
-        )
-        existing_plugin = WasmPlugin.model_validate(ai_proxy_data)
-        current_providers = existing_plugin.spec.defaultConfig.get("providers", [])
-        existing_plugin.spec.defaultConfig["providers"] = (
-            compare_and_append_default_proxy_config(
-                current_providers, expected_providers, operating_id_prefix
-            )
-        )
-        existing_plugin.spec.matchRules = compare_and_append_proxy_match_rules(
-            existing_plugin.spec.matchRules or [],
-            expected_match_rules,
-            operating_id_prefix,
-        )
-        await extensions_api.edit_wasmplugin(
-            namespace=namespace,
-            name=gpustack_ai_proxy_name,
-            body=existing_plugin,
-        )
-    except k8s_client.ApiException as e:
-        logger.error(
-            f"Failed to operate gpustack AI proxy wasmplugin {gpustack_ai_proxy_name}: {e}"
-        )
-        raise
-
-
 async def cleanup_ai_proxy_config(
     providers: List[ModelProvider],
     routes: List[ModelRoute],
@@ -1328,3 +1265,24 @@ async def cleanup_mcpbridge_registry(
         desired_registries=desired_registries,
         to_delete_prefix=to_delete_prefix,
     )
+
+
+def ai_proxy_diff_spec(
+    current_spec: Optional[WasmPluginSpec],
+    expected_providers: List[Dict[str, Any]],
+    expected_match_rules: List[WasmPluginMatchRule],
+    operating_id_prefix: Optional[str] = None,
+) -> WasmPluginSpec:
+    if current_spec is None:
+        return current_spec
+    current_spec.defaultConfig["providers"] = compare_and_append_default_proxy_config(
+        existing_providers=current_spec.defaultConfig.get("providers", []),
+        expected_providers=expected_providers,
+        operating_id_prefix=operating_id_prefix,
+    )
+    current_spec.matchRules = compare_and_append_proxy_match_rules(
+        existing_rules=current_spec.matchRules or [],
+        expected_rules=expected_match_rules,
+        operating_id_prefix=operating_id_prefix,
+    )
+    return current_spec

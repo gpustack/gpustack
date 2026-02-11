@@ -5,6 +5,7 @@ import os
 import logging
 import yaml
 import copy
+from functools import partial
 from typing import Any, Dict, Tuple, List, Optional, Literal
 from pydantic import BaseModel
 from kubernetes_asyncio import client as k8s_client
@@ -32,6 +33,7 @@ from gpustack.gateway.utils import (
     default_mcp_bridge_name,
     openai_model_prefixes,
     gpustack_ai_proxy_name,
+    gpustack_model_mapper_name,
     mcp_ingress_equal,
     get_default_mcpbridge_ref,
     ensure_wasm_plugin,
@@ -420,6 +422,20 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     return resource_name, expected_spec
 
 
+def model_mapper_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
+    return gpustack_model_mapper_name, WasmPluginSpec(
+        phase="AUTHN",
+        priority=800,
+        url=get_plugin_url_with_name_and_version(
+            name="model-mapper", version="2.0.0", cfg=cfg
+        ),
+        defaultConfigDisable=False,
+        defaultConfig={"modelMapping": {}},
+        matchRules=[],
+        failStrategy="FAIL_OPEN",
+    )
+
+
 class HeaderRule(BaseModel):
     key: Optional[str] = None
     newKey: Optional[str] = None
@@ -623,6 +639,18 @@ async def ensure_gateway_timeout(cfg: Config, api_client: k8s_client.ApiClient):
         raise
 
 
+def spec_replace(
+    current_spec: Optional[WasmPluginSpec],
+    expected_spec: WasmPluginSpec,
+    create_only: bool = False,
+) -> WasmPluginSpec:
+    if current_spec is None:
+        return expected_spec
+    if create_only:
+        return current_spec
+    return expected_spec
+
+
 def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
     if cfg.gateway_mode == GatewayModeEnum.disabled:
         return
@@ -638,6 +666,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             model_router_plugin(cfg=cfg),
             ai_proxy_plugin(cfg=cfg),
             model_pre_route_plugin(cfg=cfg),
+            model_mapper_plugin(cfg=cfg),
         ]
         if cfg.server_role() != Config.ServerRole.WORKER:
             plugin_list.append(transformer_plugin(cfg=cfg))
@@ -652,13 +681,18 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             await ensure_mcp_resources(cfg=cfg, api_client=api_client)
             await ensure_ingress_resources(cfg=cfg, api_client=api_client)
             for plugin_name, plugin_spec in plugin_list:
-                create_only = plugin_name == gpustack_ai_proxy_name
+                create_only = plugin_name in [
+                    gpustack_ai_proxy_name,
+                    gpustack_model_mapper_name,
+                ]
+                spec_diff_func = partial(
+                    spec_replace, expected_spec=plugin_spec, create_only=create_only
+                )
                 await ensure_wasm_plugin(
                     api=gw_client.ExtensionsHigressIoV1Api(api_client),
                     name=plugin_name,
                     namespace=cfg.gateway_namespace,
-                    expected=plugin_spec,
-                    create_only=create_only,
+                    spec_diff=spec_diff_func,
                 )
 
         try:

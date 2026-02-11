@@ -62,11 +62,10 @@ from gpustack.exporter.exporter import MetricExporter
 from gpustack.gateway.utils import (
     model_ingress_prefix,
     model_route_ingress_prefix,
-    model_route_selector,
     model_route_ingress_name,
     fallback_ingress_name,
     cleanup_ingresses,
-    cleanup_selected_wasm_plugins,
+    cleanup_model_mapper,
     cleanup_fallback_filters,
     cleanup_ai_proxy_config,
     cleanup_mcpbridge_registry,
@@ -613,15 +612,14 @@ class Server:
             if ep.fallback_status_codes is not None
             and len(ep.fallback_status_codes) > 0
         ]
-        expected_names = [
+        expected_ingress_names = [
             model_route_ingress_name(model_route.id) for model_route in model_routes
         ]
-        expected_names.extend(
-            [
-                fallback_ingress_name(model_route_ingress_name(id))
-                for id in fallback_route_ids
-            ]
-        )
+        expected_names = expected_ingress_names + [
+            fallback_ingress_name(model_route_ingress_name(id))
+            for id in fallback_route_ids
+        ]
+
         k8s_config = get_async_k8s_config(cfg=self.config)
         await cleanup_ingresses(
             namespace=self.config.get_namespace(),
@@ -637,11 +635,10 @@ class Server:
             cleanup_prefix=model_ingress_prefix,
             reason="legacy",
         )
-        await cleanup_selected_wasm_plugins(
+        await cleanup_model_mapper(
             namespace=self.config.gateway_namespace,
-            expected_names=expected_names,
+            expected_ingresses=expected_ingress_names,
             config=k8s_config,
-            extra_labels=model_route_selector,
         )
         await cleanup_fallback_filters(
             namespace=self.config.get_namespace(),
