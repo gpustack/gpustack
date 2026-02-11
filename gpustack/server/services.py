@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import functools
-from typing import Any, Callable, Dict, List, Optional, Union, Set, Tuple
+from typing import Any, Callable, List, Optional, Union, Set, Tuple
+from cachetools import LRUCache
 from aiocache import Cache, BaseCache
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -30,7 +31,14 @@ from gpustack.schemas.workers import Worker
 from gpustack.server.usage_buffer import usage_flush_buffer
 
 logger = logging.getLogger(__name__)
+
 cache = Cache(Cache.MEMORY)
+# Cache locks for locked_cached decorator
+# Locks are created per cache key and should be cleaned up when cache expires
+# Using LRUCache from cachetools for automatic LRU eviction
+_cache_locks: LRUCache[str, asyncio.Lock] = LRUCache(
+    maxsize=envs.SERVER_CACHE_LOCKS_MAX_SIZE
+)
 
 
 CACHE_TTL_SECONDS = envs.SERVER_CACHE_TTL_SECONDS
@@ -47,14 +55,12 @@ async def delete_cache_by_key(func, *args, **kwargs):
     key = build_cache_key(func, *args, **kwargs)
     logger.trace(f"Deleting cache for key: {key}")
     await cache.delete(key)
+    _cache_locks.pop(key, None)
 
 
 async def set_cache_by_key(key: str, value: Any):
     logger.trace(f"Set cache for key: {key}")
     await cache.set(key, value)
-
-
-_cache_locks: Dict[str, asyncio.Lock] = {}
 
 
 class locked_cached:
