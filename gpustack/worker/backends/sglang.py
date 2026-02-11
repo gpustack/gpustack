@@ -24,7 +24,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ModelInstanceDeploymentMetadata,
 )
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import find_parameter, extend_args_no_exist
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import (
     InferenceServer,
@@ -377,13 +377,8 @@ class SGLangServer(InferenceServer):
                 )
 
         # Set host and port
-        arguments.extend(
-            [
-                "--host",
-                self._worker.ip,
-                "--port",
-                str(port),
-            ]
+        extend_args_no_exist(
+            arguments, ("--host", self._worker.ip), ("--port", str(port))
         )
 
         return arguments
@@ -412,13 +407,8 @@ class SGLangServer(InferenceServer):
         arguments.extend(self._flatten_backend_param())
 
         # Set host and port
-        arguments.extend(
-            [
-                "--host",
-                self._worker.ip,
-                "--port",
-                str(port),
-            ]
+        extend_args_no_exist(
+            arguments, ("--host", self._worker.ip), ("--port", str(port))
         )
 
         return arguments

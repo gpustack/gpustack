@@ -28,6 +28,7 @@ from gpustack.utils.command import (
     find_parameter,
     find_bool_parameter,
     find_int_parameter,
+    extend_args_no_exist,
 )
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
@@ -490,15 +491,13 @@ class VLLMServer(InferenceServer):
         arguments.extend(self._flatten_backend_param())
 
         # Append immutable arguments to ensure proper operation for accessing
-        immutable_arguments = [
-            "--host",
-            self._worker.ip,
-            "--port",
-            str(port),
-            "--served-model-name",
-            self._model_instance.model_name,
-        ]
-        arguments.extend(immutable_arguments)
+        # Only add if not already present in arguments
+        extend_args_no_exist(
+            arguments,
+            ("--host", self._worker.ip),
+            ("--port", str(port)),
+            ("--served-model-name", self._model_instance.model_name),
+        )
 
         return arguments
 

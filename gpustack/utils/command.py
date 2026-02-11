@@ -2,7 +2,7 @@ import sys
 import sysconfig
 from os.path import dirname, abspath, join
 import shutil
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 import shlex
 
 
@@ -99,3 +99,36 @@ def get_command_path(command_name: str) -> str:
         else sysconfig.get_path("scripts")
     )
     return abspath(join(base_path, command_name))
+
+
+def extend_args_no_exist(
+    arguments: List[str], *args: Union[str, Tuple[str, str]]
+) -> None:
+    """
+    Extend arguments list with key-value pairs only if the key is not already present.
+
+    This function prevents duplicate parameters when user-defined backend parameters
+    may conflict with system-generated ones.
+
+    Args:
+        arguments: The list of arguments to extend (modified in place)
+        *args: Variable number of arguments, each can be:
+               - A tuple of (key, value) like ("--host", "127.0.0.1")
+               - A single string key like "--enable-metrics" (flag without value)
+
+    Examples:
+        extend_args_no_exist(args, ("--host", "127.0.0.1"), ("--port", "8080"))
+        extend_args_no_exist(args, "--enable-metrics")
+    """
+    for arg in args:
+        if isinstance(arg, tuple):
+            key, value = arg
+            if not any(
+                existing_arg == key or existing_arg.startswith(f"{key}=")
+                for existing_arg in arguments
+            ):
+                arguments.extend([key, value])
+        else:
+            # Single flag without value
+            if arg not in arguments:
+                arguments.append(arg)
