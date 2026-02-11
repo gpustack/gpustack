@@ -1,0 +1,807 @@
+/* ==========================================================================
+   1. Global Styles & Variables
+   ========================================================================== */
+:root {
+    --primary-color: #0055ff;
+    --primary-hover: #0044cc;
+    --primary-light: #e6f0ff;
+    --text-color: #333;
+    --text-secondary: #666;
+    --border-color: #ddd;
+    --bg-color: #f5f5f5;
+    --card-bg: #fff;
+    --success-color: #52c41a;
+    --disabled-color: #ccc;
+    --header-height: 70px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    line-height: 1.6;
+    /* Prevent overall horizontal scroll; handle overflows within containers */
+    overflow-x: hidden;
+    width: 100%;
+}
+
+/* Prevent translation flicker during load */
+[data-i18n] {
+    visibility: hidden;
+}
+
+.i18n-ready [data-i18n] {
+    visibility: visible;
+}
+
+/* ==========================================================================
+   2. Header
+   ========================================================================== */
+header {
+    background: linear-gradient(135deg, var(--primary-color) 0%, #0066ff 100%);
+    color: white;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    width: 100%;
+    position: relative;
+    z-index: 100;
+    /* Fix horizontal scroll background break */
+    display: block;
+}
+
+.header-content {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 12px 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    /* Allow wrapping on narrow screens */
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+/* Logo */
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+}
+
+.logo-wide {
+    height: 26px;
+    width: auto;
+    object-fit: contain;
+}
+
+.logo .subtitle {
+    font-size: 13px;
+    font-weight: 400;
+    opacity: 0.7;
+    padding-left: 16px;
+    border-left: 1px solid rgba(255, 255, 255, 0.3);
+    margin-left: 4px;
+    white-space: nowrap;
+}
+
+/* Controls */
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.official-link a {
+    color: white;
+    text-decoration: none;
+    font-size: 13px;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.official-link a:hover {
+    opacity: 1;
+}
+
+.external-icon {
+    opacity: 0.7;
+}
+
+/* Language Dropdown */
+.language-dropdown {
+    position: relative;
+    display: inline-block;
+}
+
+.dropbtn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    color: white;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.dropbtn::after {
+    content: '';
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid white;
+    opacity: 0.7;
+}
+
+.language-dropdown:hover .dropbtn {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: white;
+}
+
+.dropdown-content {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: 100%;
+    padding-top: 5px;
+    background-color: transparent;
+    min-width: 120px;
+    z-index: 1001;
+}
+
+/* Actual content container with background and border-radius */
+.dropdown-inner {
+    background-color: white;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0px 8px 16px 0px rgba(0, 0, 0, 0.2);
+}
+
+/* Invisible bridge to ensure mouse path continuity */
+.dropdown-content::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 10px;
+    background: transparent;
+}
+
+.dropdown-inner a {
+    color: var(--text-color);
+    padding: 10px 16px;
+    text-decoration: none;
+    display: block;
+    font-size: 13px;
+    transition: background 0.2s;
+}
+
+.dropdown-inner a:hover {
+    background-color: var(--bg-color);
+    color: var(--primary-color);
+}
+
+.language-dropdown:hover .dropdown-content {
+    display: block;
+}
+
+/* Version Selector */
+.version-selector {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.version-label {
+    font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.version-select {
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    min-width: 120px;
+}
+
+.version-select:hover {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+.version-select option {
+    background: white;
+    color: var(--text-color);
+}
+
+/* ==========================================================================
+   3. Main Layout
+   ========================================================================== */
+main {
+    max-width: 1400px;
+    margin: 30px auto;
+    padding: 0 30px;
+    width: 100%;
+}
+
+.container {
+    display: grid;
+    /* Desktop: fixed 400px left, adaptive right */
+    grid-template-columns: 400px 1fr;
+    gap: 30px;
+    align-items: start;
+}
+
+.selector-panel,
+.result-panel {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 30px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    min-width: 0;
+}
+
+.selector-panel h2,
+.result-panel h2 {
+    font-size: 22px;
+    margin-bottom: 24px;
+    color: var(--text-color);
+    font-weight: 600;
+}
+
+/* ==========================================================================
+   4. Components
+   ========================================================================== */
+
+/* 4.1 Tooltip Icon */
+.tooltip-icon {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 16px !important;
+    height: 16px !important;
+    border-radius: 50% !important;
+    background-color: var(--primary-light) !important;
+    color: var(--primary-color) !important;
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    font-family: Arial, sans-serif !important;
+    line-height: 1 !important;
+    cursor: help !important;
+    position: relative !important;
+    margin: 0 !important;
+    opacity: 1 !important;
+    transition: all 0.2s ease !important;
+}
+
+.tooltip-icon:hover {
+    background-color: var(--primary-color) !important;
+    color: white !important;
+}
+
+/* Remove external interference */
+.option-button .tooltip-icon {
+    flex-shrink: 0 !important;
+}
+
+.option-button.active .tooltip-icon {
+    background-color: white !important;
+    color: var(--primary-color) !important;
+}
+
+/* Tooltip Popup - Allow interaction */
+.tooltip-content {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    transform: translateX(-10px); 
+    background-color: #1a1a1a !important;
+    color: #ffffff !important;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: normal;
+    width: 260px;
+    opacity: 0;
+    visibility: hidden;
+    /* Disable interaction when hidden to prevent premature triggering */
+    pointer-events: none; 
+    z-index: 10000;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    line-height: 1.6;
+    text-align: left;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+/* Connection bridge to prevent disappearance when moving to popup */
+.tooltip-content::before {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 100%;
+    height: 10px;
+    background: transparent;
+}
+
+.tooltip-icon:hover .tooltip-content {
+    opacity: 1 !important;
+    visibility: visible !important;
+    /* Enable interaction only when visible */
+    pointer-events: auto !important; 
+}
+
+.tooltip-content a {
+    color: #4da6ff;
+    text-decoration: underline;
+    font-weight: 600;
+}
+
+.tooltip-content a:hover {
+    color: #80bfff;
+}
+
+/* 4.2 Buttons */
+.option-button {
+    height: 42px;
+    padding: 0 15px;
+    border: 2px solid var(--border-color);
+    background: white;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.3s ease;
+    color: var(--text-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    /* Prevent text cut-off issues with Tooltips */
+    overflow: visible;
+    white-space: nowrap;
+}
+
+.option-button:hover:not(:disabled):not(.active) {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.option-button.active {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: white;
+}
+
+.option-button:disabled {
+    cursor: not-allowed;
+    background: var(--bg-color);
+    color: var(--text-secondary);
+    border-color: var(--border-color);
+}
+
+/* 4.3 Selector Layout */
+.selector-group {
+    margin-bottom: 24px;
+}
+
+.selector-label {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-color);
+    margin-bottom: 10px;
+}
+
+.label-with-tooltip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.label-with-tooltip .selector-label {
+    margin-bottom: 0;
+}
+
+/* Inline Selector Groups (2:4 ratio) */
+.selector-group-inline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 30px;
+    margin-bottom: 24px;
+}
+
+.selector-item.flex-2 {
+    flex: 2;
+    min-width: 200px;
+}
+
+.selector-item.flex-4 {
+    flex: 4;
+    min-width: 200px;
+}
+
+/* 4.4 Grids */
+.card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 10px;
+}
+
+.button-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.button-grid .option-button {
+    flex: 1;
+    min-width: 110px;
+}
+
+/* Inputs */
+.select-input {
+    width: 100%;
+    padding: 10px 15px;
+    border: 2px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 14px;
+    background: white;
+    cursor: pointer;
+    height: 42px;
+}
+
+/* Checkboxes */
+.checkbox-group {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.checkbox-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.checkbox-item input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--primary-color);
+}
+
+/* 4.5 Image List Tab */
+.image-tabs-container {
+    border: 2px solid var(--border-color);
+    border-radius: 12px;
+    overflow: visible;
+    margin-bottom: 20px;
+    background: #fff;
+}
+
+.image-tabs-header {
+    display: flex;
+    background: var(--bg-color);
+    border-bottom: 2px solid var(--border-color);
+    overflow-x: auto;
+    scrollbar-width: none;
+    border-radius: 10px 10px 0 0;
+}
+
+.image-tab {
+    padding: 12px 30px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    border-bottom: 3px solid transparent;
+    white-space: nowrap;
+    text-align: center;
+    transition: all 0.2s ease;
+}
+
+.image-tab.active {
+    color: var(--primary-color);
+    background: rgba(0, 85, 255, 0.15);
+    border-bottom-color: var(--primary-color);
+}
+
+/* Output */
+.commands-output {
+    background: #1e1e1e;
+}
+
+.code-block-wrapper {
+    position: relative;
+}
+
+.image-commands {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 20px;
+    font-family: 'Monaco', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre;
+    min-height: 200px;
+    max-height: 500px;
+    margin: 0;
+    border: none;
+}
+
+.copy-icon-btn {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: rgba(255, 255, 255, 0.1);
+    border: none;
+    border-radius: 6px;
+    padding: 8px;
+    cursor: pointer;
+    color: #d4d4d4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 4.6 Offline Guide */
+.offline-guide-module {
+    margin-top: 20px;
+    background: #fff;
+    border-radius: 12px;
+    border: 2px solid var(--border-color);
+}
+
+.guide-summary {
+    padding: 12px 20px;
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--primary-color);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    user-select: none;
+    transition: background 0.2s;
+}
+
+.guide-summary:hover {
+    background: var(--bg-color);
+}
+
+.guide-summary::after {
+    content: '';
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid currentColor;
+    margin-left: auto;
+    transition: transform 0.2s;
+}
+
+details[open] .guide-summary::after {
+    transform: rotate(180deg);
+}
+
+.guide-summary::-webkit-details-marker {
+    display: none;
+}
+
+.guide-container {
+    border-top: 1px solid var(--border-color);
+}
+
+.guide-header {
+    background: var(--bg-color);
+    padding: 10px 20px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.guide-tabs {
+    display: flex;
+    gap: 10px;
+}
+
+.guide-tab {
+    padding: 10px 15px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    border-bottom: 3px solid transparent;
+    transition: all 0.2s;
+}
+
+.guide-tab:hover {
+    color: var(--primary-color);
+}
+
+.guide-tab.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+}
+
+.guide-body {
+    padding: 20px;
+}
+
+.guide-content {
+    display: none;
+}
+
+.guide-content.active {
+    display: block;
+}
+
+.guide-content p {
+    font-size: 14px;
+    margin-bottom: 15px;
+}
+
+.guide-content ol {
+    padding-left: 20px;
+}
+
+.guide-content li {
+    font-size: 14px;
+    margin-bottom: 10px;
+    color: var(--text-secondary);
+}
+
+.guide-content pre {
+    background: #f8f9fa;
+    border: 1px solid var(--border-color);
+    padding: 12px;
+    border-radius: 6px;
+    margin: 8px 0;
+    font-family: 'Monaco', 'Consolas', monospace;
+    font-size: 12px;
+    overflow-x: auto;
+    color: var(--text-color);
+}
+
+.guide-footer {
+    padding: 12px 20px;
+    background: #fdfdfd;
+    border-top: 1px solid var(--border-color);
+    text-align: right;
+}
+
+/* Toast */
+.toast {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: var(--success-color);
+    color: white;
+    padding: 12px 24px;
+    border-radius: 8px;
+    z-index: 10000;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* ==========================================================================
+   5. Responsive Adaptation
+   ========================================================================== */
+
+@media (max-width: 1024px) {
+    .container {
+        grid-template-columns: 1fr;
+        max-width: 800px;
+        margin: 30px auto;
+    }
+}
+
+@media (max-width: 768px) {
+    .header-content {
+        padding: 15px 20px;
+    }
+
+    .logo-wide {
+        height: 24px;
+    }
+
+    .logo .subtitle, .version-label {
+        display: none;
+    }
+
+    .version-select {
+        min-width: auto;
+        padding: 6px 10px;
+    }
+
+    main {
+        padding: 0 15px;
+        margin: 20px auto;
+    }
+
+    .selector-panel, .result-panel {
+        padding: 20px;
+    }
+
+    .selector-group-inline {
+        flex-direction: column;
+        gap: 20px;
+    }
+
+    .selector-item.flex-2, .selector-item.flex-4 {
+        flex: none;
+        width: 100%;
+        min-width: 0;
+    }
+
+    .button-grid, .card-grid {
+        grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)) !important;
+        gap: 8px;
+    }
+
+    .button-grid .option-button {
+        min-width: 90px;
+    }
+
+    .option-button {
+        height: 38px;
+        font-size: 13px;
+        padding: 0 8px;
+    }
+
+    .image-tabs-header {
+        display: flex;
+        overflow-x: auto;
+    }
+
+    .image-tab {
+        flex: 1;
+        padding: 10px 15px;
+    }
+
+    .guide-tabs {
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+
+    .guide-tab {
+        flex: 0 0 auto;
+    }
+}
