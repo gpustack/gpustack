@@ -4,6 +4,7 @@ import string
 import asyncio
 import yaml
 from importlib.resources import files
+from functools import partial
 from typing import Any, Dict, List, Tuple, Optional, Set
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -93,6 +94,7 @@ from gpustack.gateway.client.networking_higress_io_v1_api import (
 from gpustack.gateway.client.extensions_higress_io_v1_api import (
     ExtensionsHigressIoV1Api,
     WasmPluginMatchRule,
+    WasmPluginSpec,
 )
 from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
     NetworkingIstioIoV1Alpha3Api,
@@ -102,7 +104,6 @@ from gpustack.gateway import get_async_k8s_config
 from gpustack.schemas.model_provider import (
     ModelProvider,
 )
-from gpustack.gateway.plugins import get_plugin_url_with_name_and_version
 
 
 logger = logging.getLogger(__name__)
@@ -602,7 +603,6 @@ async def get_cluster_registry(
 async def sync_model_route_mapper(
     cfg: Config,
     extensions_api: ExtensionsHigressIoV1Api,
-    event_type: EventType,
     ingress_name: str,
     route_name: str,
     destinations: mcp_handler.DestinationTupleList,
@@ -611,9 +611,9 @@ async def sync_model_route_mapper(
     """
     Synchronize the model route mapper.
     """
-    mapper_namespace = cfg.get_namespace()
-    if mapper_namespace == cfg.gateway_namespace:
-        mapper_namespace = None
+    ingress_prefix = f"{cfg.get_namespace()}/"
+    if cfg.get_namespace() == cfg.gateway_namespace:
+        ingress_prefix = ""
     model_name_to_registries: Dict[str, List[str]] = {}
     for _, model_name, registry in destinations:
         if route_name == model_name:
@@ -625,39 +625,36 @@ async def sync_model_route_mapper(
     for _, model_name, registry in fallback_destinations:
         registries = fallback_model_name_to_registries.setdefault(model_name, [])
         registries.append(registry.get_service_name())
-    expected_rules = mcp_handler.get_model_route_mapper_config(
-        ingress_name=ingress_name,
+
+    expected_rules = mcp_handler.get_expected_match_list(
         route_name=route_name,
-        namespace=mapper_namespace,
+        ingress_prefix=ingress_prefix,
+        ingress_name=ingress_name,
         model_name_to_registries=model_name_to_registries,
         fallback_model_name_to_registries=fallback_model_name_to_registries,
     )
-    try:
-        if event_type == EventType.DELETED or expected_rules is None:
-            await extensions_api.delete_wasmplugin(
-                namespace=cfg.gateway_namespace,
-                name=ingress_name,
-            )
-            return
-    except k8s_client.ApiException as e:
-        if e.status == 404:
-            return
-        if e.status != 404:
-            logger.error(
-                f"Failed to get model route mapper wasmplugin {ingress_name}: {e}"
-            )
-            raise
 
-    plugin_spec = mcp_handler.model_route_mapper_plugin_spec(
-        url=get_plugin_url_with_name_and_version("model-mapper", "2.0.0", cfg),
-        match_rules=expected_rules,
-    )
+    def spec_diff(current_spec: Optional[WasmPluginSpec]) -> WasmPluginSpec:
+        # the current spec must exist. If not, it means the plugin has been deleted manually,
+        # we should not recreate it until next update event to avoid potential misconfiguration.
+        if current_spec is None:
+            return current_spec
+        to_keep_rules: List[WasmPluginMatchRule] = []
+        full_ingress_name = f"{ingress_prefix}{ingress_name}"
+
+        for rule in current_spec.matchRules or []:
+            if full_ingress_name not in rule.ingress:
+                to_keep_rules.append(rule)
+        to_keep_rules.extend(expected_rules)
+        to_keep_rules.sort(key=lambda r: r.ingress[0] if r.ingress else "")
+        current_spec.matchRules = to_keep_rules
+        return current_spec
+
     await mcp_handler.ensure_wasm_plugin(
         api=extensions_api,
+        name=mcp_handler.gpustack_model_mapper_name,
         namespace=cfg.gateway_namespace,
-        name=ingress_name,
-        expected=plugin_spec,
-        extra_labels=mcp_handler.model_route_selector,
+        spec_diff=spec_diff,
     )
 
 
@@ -717,12 +714,16 @@ async def ensure_route_ai_proxy_config(
             )
         )
 
-    await mcp_handler.ensure_gpustack_ai_proxy_config(
-        extensions_api=extensions_api,
+    await mcp_handler.ensure_wasm_plugin(
+        api=extensions_api,
+        name=mcp_handler.gpustack_ai_proxy_name,
         namespace=cfg.gateway_namespace,
-        expected_providers=expected_providers,
-        expected_match_rules=expected_match_rules,
-        operating_id_prefix=operating_id,
+        spec_diff=partial(
+            mcp_handler.ai_proxy_diff_spec,
+            expected_providers=expected_providers,
+            expected_match_rules=expected_match_rules,
+            operating_id_prefix=operating_id,
+        ),
     )
 
 
@@ -736,7 +737,19 @@ async def sync_gateway(
     istio_networking_api: NetworkingIstioIoV1Alpha3Api,
 ):
     event_type = event.type
-    model_route_from_db = await ModelRoute.one_by_id(session, model_route.id)
+    model_route_from_db = await ModelRoute.one_by_id(
+        session,
+        model_route.id,
+        options=[selectinload(ModelRoute.route_targets)],
+    )
+    targets: List[ModelRouteTarget] = (
+        getattr(model_route_from_db, "route_targets", []) if model_route_from_db else []
+    )
+    has_fallback_target = any(
+        target
+        for target in targets
+        if target.fallback_status_codes and len(target.fallback_status_codes) > 0
+    )
     destinations = []
     fallback_destinations = []
     if not model_route_from_db:
@@ -749,14 +762,11 @@ async def sync_gateway(
     await sync_model_route_mapper(
         cfg=cfg,
         extensions_api=extensions_api,
-        event_type=event_type,
         ingress_name=ingress_name,
         route_name=model_route.name,
         destinations=destinations,
         fallback_destinations=fallback_destinations,
     )
-    if event_type != EventType.DELETED and len(destinations) == 0:
-        destinations = fallback_destinations
     await mcp_handler.ensure_model_ingress(
         event_type=event_type,
         ingress_name=ingress_name,
@@ -768,7 +778,7 @@ async def sync_gateway(
         included_proxy_route=model_route.generic_proxy,
     )
     fallback_event_type = event_type
-    if len(fallback_destinations) == 0:
+    if not has_fallback_target:
         fallback_event_type = EventType.DELETED
     # Fallback ingress
     await mcp_handler.ensure_model_ingress(
@@ -2158,12 +2168,16 @@ class ModelProviderController:
                 provider_config_list, match_rules = (
                     mcp_handler.provider_proxy_plugin_spec(*providers)
                 )
-                await mcp_handler.ensure_gpustack_ai_proxy_config(
-                    extensions_api=self._higress_extension_api,
+                await mcp_handler.ensure_wasm_plugin(
+                    api=self._higress_extension_api,
+                    name=mcp_handler.gpustack_ai_proxy_name,
                     namespace=self._config.gateway_namespace,
-                    expected_providers=provider_config_list,
-                    expected_match_rules=match_rules,
-                    operating_id_prefix=mcp_handler.provider_id_prefix,
+                    spec_diff=partial(
+                        mcp_handler.ai_proxy_diff_spec,
+                        expected_providers=provider_config_list,
+                        expected_match_rules=match_rules,
+                        operating_id_prefix=mcp_handler.provider_id_prefix,
+                    ),
                 )
         except Exception as e:
             logger.error(f"Failed to ensure provider's ai_proxy config: {e}")
