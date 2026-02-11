@@ -564,7 +564,7 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     worker_group.add_argument(
         "--tools-download-base-url",
         type=str,
-        help="Base URL to download dependency tools.",
+        help=argparse.SUPPRESS,
         default=get_gpustack_env("TOOLS_DOWNLOAD_BASE_URL"),
     )
     worker_group.add_argument(

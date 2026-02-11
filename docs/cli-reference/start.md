@@ -103,7 +103,6 @@ gpustack start [OPTIONS]
 | `--ray-port-range` value                 | `41000-41999`                          | Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                |
 | `--log-dir` value                        | (empty)                                | Directory to store logs.                                                                                                                                                                        |
 | `--system-reserved` value                | (empty)                                | The system reserves resources for the worker during scheduling, measured in GiB. By default, no resources are reserved, Example: '{\"ram\": 2, \"vram\": 1}'.                                   |
-| `--tools-download-base-url` value        |                                        | Base URL for downloading dependency tools.                                                                                                                                                      |
 | `--enable-hf-transfer`                   | `False`                                | Enable faster downloads from the Hugging Face Hub using hf_transfer. https://huggingface.co/docs/huggingface_hub/v0.29.3/package_reference/environment_variables#hfhubenablehftransfer          |
 | `--enable-hf-xet`                        | `False`                                | Enable downloading model files using Hugging Face Xet.                                                                                                                                          |
 | `--worker-ifname` value                  | (empty)                                | Network interface name of the worker node. Auto-detected by default.                                                                                                                            |
@@ -184,7 +183,6 @@ log_dir: /path/to/log_dir
 system_reserved:
   ram: 2
   vram: 1
-tools_download_base_url: https://mirror.your_company.com
 enable_hf_transfer: false
 enable_hf_xet: false
 proxy_mode: worker
