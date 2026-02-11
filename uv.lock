@@ -2003,7 +2003,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-runner", specifier = ">=0.1.25.post3" },
-    { name = "gpustack-runtime", specifier = "==0.1.42.post4" },
+    { name = "gpustack-runtime", specifier = "==0.1.42.post5" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2094,7 +2094,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.42.post4"
+version = "0.1.42.post5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -2112,9 +2112,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "types-protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/08/69/faf349e48f897e3ef2aba87b671445c7af73e29d915336d7a090cb534652/gpustack_runtime-0.1.42.post4.tar.gz", hash = "sha256:2f449c4f55fef39243dbfb45174493a135b43932b0bbd9940a5a093a7623244a", size = 1495848, upload-time = "2026-02-10T01:32:14.719Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e0/f2/7d6d0d0a2aada9596831f2cf93a6e31b9b5bb4c55171dc2ca61a75ce6e7b/gpustack_runtime-0.1.42.post5.tar.gz", hash = "sha256:7c43ad3ee6caf1b2699f23036c81e2e2d01f0dd1612ff4c1e792df5f562d08c9", size = 1495948, upload-time = "2026-02-11T09:40:22.078Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/77/bdcf0192f3b4771ae0d33e39b5d68a8fe4ae69442e0e1d0142d7f9f4fc7c/gpustack_runtime-0.1.42.post4-py3-none-any.whl", hash = "sha256:9ab8c9d674465c4735a6954c0968fc53548e05d447d711d120d4f077afcffb4c", size = 1475168, upload-time = "2026-02-10T01:32:13.272Z" },
+    { url = "https://files.pythonhosted.org/packages/67/2c/7013bb4d83727c25269161a12aabc09b6320198b249353accbf7a403b819/gpustack_runtime-0.1.42.post5-py3-none-any.whl", hash = "sha256:b59440b713d43de53caccc2744a30834a54a18c1acbab7ba61ee6b18e1aacb98", size = 1475274, upload-time = "2026-02-11T09:40:19.484Z" },
 ]
 
 [[package]]
