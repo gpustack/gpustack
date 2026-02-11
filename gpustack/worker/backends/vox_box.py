@@ -3,6 +3,7 @@ import os
 from typing import Optional, List, Dict
 
 from gpustack.schemas.models import ModelInstanceDeploymentMetadata
+from gpustack.utils.command import extend_args_no_exist
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
 
@@ -147,19 +148,13 @@ class VoxBoxServer(InferenceServer):
         )
         arguments.extend(self._flatten_backend_param())
         # Append immutable arguments to ensure proper operation for accessing
-        immutable_arguments = [
-            "--host",
-            self._worker.ip,
-            "--port",
-            str(port),
-        ]
+        # Only add if not already present in arguments
+        extend_args_no_exist(
+            arguments, ("--host", self._worker.ip), ("--port", str(port))
+        )
         if self._model_instance.gpu_indexes is not None:
-            immutable_arguments.extend(
-                [
-                    "--device",
-                    f"cuda:{self._model_instance.gpu_indexes[0]}",
-                ]
+            extend_args_no_exist(
+                arguments, ("--device", f"cuda:{self._model_instance.gpu_indexes[0]}")
             )
-        arguments.extend(immutable_arguments)
 
         return arguments

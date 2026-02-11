@@ -6,6 +6,7 @@ from gpustack.utils.command import (
     find_parameter,
     find_bool_parameter,
     get_versioned_command,
+    extend_args_no_exist,
 )
 
 
@@ -104,3 +105,39 @@ def test_find_bool_parameter(parameters, param_names, expected):
 )
 def test_get_versioned_command(command_name, version, expected):
     assert get_versioned_command(command_name, version) == expected
+
+
+@pytest.mark.parametrize(
+    'initial_args,new_args,expected',
+    [
+        # Branch 1: Add tuple (key, value) when key doesn't exist
+        ([], [('--host', '127.0.0.1')], ['--host', '127.0.0.1']),
+        # Branch 2: Skip tuple when key already exists (exact match)
+        (['--host', '0.0.0.0'], [('--host', '127.0.0.1')], ['--host', '0.0.0.0']),
+        # Branch 3: Skip tuple when key exists with = format
+        (['--host=0.0.0.0'], [('--host', '127.0.0.1')], ['--host=0.0.0.0']),
+        # Branch 4: Add single flag when it doesn't exist
+        ([], ['--enable-metrics'], ['--enable-metrics']),
+        # Branch 5: Skip single flag when it already exists
+        (['--enable-metrics'], ['--enable-metrics'], ['--enable-metrics']),
+        # Mixed: Add multiple arguments
+        (
+            ['--port', '8080'],
+            [('--host', '127.0.0.1'), '--enable-metrics', ('--workers', '4')],
+            [
+                '--port',
+                '8080',
+                '--host',
+                '127.0.0.1',
+                '--enable-metrics',
+                '--workers',
+                '4',
+            ],
+        ),
+        # Edge case: No new args to add
+        (['--existing', 'value'], [], ['--existing', 'value']),
+    ],
+)
+def test_extend_args_no_exist(initial_args, new_args, expected):
+    extend_args_no_exist(initial_args, *new_args)
+    assert initial_args == expected
