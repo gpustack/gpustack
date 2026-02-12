@@ -360,7 +360,8 @@ async def try_model_with_provider(
         "messages": [{"role": "user", "content": "Ping"}],
         **max_output_token_dict,
     }
-
+    if input.config.type == ModelProviderTypeEnum.QWEN:
+        data["enable_thinking"] = False
     async with httpx.AsyncClient(
         base_url=f"{endpoint}/{prefix}",
         proxy=input.proxy_url,
