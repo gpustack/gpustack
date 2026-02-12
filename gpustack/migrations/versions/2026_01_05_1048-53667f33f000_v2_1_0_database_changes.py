@@ -128,6 +128,8 @@ def upgrade() -> None:
 
     add_inference_backend_source_and_metadata()
     recalculate_index_for_modelscope_sources()
+    
+    upgrade_model_usage_integer_overflow()
 
 
 def downgrade() -> None:
@@ -150,6 +152,64 @@ def downgrade() -> None:
     with op.batch_alter_table('benchmarks', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_benchmarks_name'))
     op.drop_table('benchmarks')
+    
+    downgrade_model_usage_integer_overflow()
+
+model_usage_columns_to_update = [
+        'prompt_token_count',
+        'completion_token_count',
+        'request_count',
+    ]
+def upgrade_model_usage_integer_overflow() -> None:
+    # Change Integer columns to BigInteger for PostgreSQL and MySQL
+    # Both databases support ALTER COLUMN type modification
+    connection = op.get_bind()
+    dialect_name = connection.dialect.name
+
+    if dialect_name == 'postgresql':
+        for column_name in model_usage_columns_to_update:
+            op.alter_column(
+                'model_usages',
+                column_name,
+                existing_type=sa.Integer(),
+                type_=sa.BigInteger(),
+                existing_nullable=False,
+            )
+    elif dialect_name == 'mysql':
+        for column_name in model_usage_columns_to_update:
+            op.execute(
+                f'ALTER TABLE model_usages MODIFY COLUMN {column_name} BIGINT NOT NULL'
+            )
+    else:
+        raise Exception(
+            f'Unsupported database dialect: {dialect_name}. Only PostgreSQL and MySQL are supported.'
+        )
+
+
+def downgrade_model_usage_integer_overflow() -> None:
+    # Downgrade: change BigInteger back to Integer
+    # Note: This may cause data loss if values exceed Integer range
+    connection = op.get_bind()
+    dialect_name = connection.dialect.name
+
+    if dialect_name == 'postgresql':
+        for column_name in model_usage_columns_to_update:
+            op.alter_column(
+                'model_usages',
+                column_name,
+                existing_type=sa.BigInteger(),
+                type_=sa.Integer(),
+                existing_nullable=False,
+            )
+    elif dialect_name == 'mysql':
+        for column_name in model_usage_columns_to_update:
+            op.execute(
+                f'ALTER TABLE model_usages MODIFY COLUMN {column_name} INT NOT NULL'
+            )
+    else:
+        raise Exception(
+            f'Unsupported database dialect: {dialect_name}. Only PostgreSQL and MySQL are supported.'
+        )
 
 def _migrate_model_gpu_selector(gpu_type_map: dict[str, str]) -> None:
     conn = op.get_bind()
