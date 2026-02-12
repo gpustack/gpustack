@@ -507,6 +507,29 @@ def expected_candidate(
             ],
             0,
         ),
+        # Auto schedule Qwen3-Embedding should respect gpu memory utilization setting.
+        (
+            "auto_schedule_qwen3_embedding",
+            make_model(
+                0,
+                None,
+                "Qwen/Qwen3-Embedding-0.6B",
+                categories=[CategoryEnum.EMBEDDING],
+            ),
+            [
+                linux_nvidia_0_4090_24gx1(),
+            ],
+            [
+                expected_candidate(
+                    103,
+                    "host4090-0",
+                    [0],
+                    {0: 23413653504},
+                    [],
+                )
+            ],
+            0,
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -906,6 +929,7 @@ async def test_auto_schedule_single_work_multi_gpu(
     original_init_model_params = resource_fit_selector._init_model_parameters
 
     async def mock_init_model_parameters(self, workers):
+        self._set_gpu_memory_utilization()
         if index == 1:
             # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
             resource_fit_selector._num_attention_heads = 25
