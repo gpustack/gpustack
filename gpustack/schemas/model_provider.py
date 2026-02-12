@@ -358,7 +358,7 @@ class QwenConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.QWEN]
     qwenEnableSearch: Optional[bool] = None
     qwenFileIds: Optional[List[str]] = None
-    qwenEnableCompatible: Optional[bool] = False
+    qwenEnableCompatible: Optional[bool] = True
     _public_endpoint: str = "dashscope.aliyuncs.com"
     _model_uri = "/compatible-mode/v1/models"
 
