@@ -315,7 +315,7 @@ def provider_proxy_plugin_spec(
         default_config_data = {
             "id": provider_registry_name(provider.id),
             "apiTokens": provider.api_tokens,
-            **provider.config.model_dump(exclude={"type"}, exclude_none=True),
+            **provider.config.model_dump_with_default_override(),
             "type": provider.config.type.value,
         }
         accessible_llm_model = next(

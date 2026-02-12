@@ -10,6 +10,8 @@ from typing import (
     TYPE_CHECKING,
     Literal,
     Mapping,
+    Dict,
+    Any,
 )
 from pydantic import (
     BaseModel,
@@ -117,6 +119,24 @@ class BaseProviderConfig(BaseModel):
         if base_url:
             base_url = base_url.rstrip("/")
         return base_url, self._model_uri
+
+    def model_dump_with_default_override(self) -> Dict[str, Any]:
+        """Dumps the model, excluding unset fields, and then merges with `_default_override` values.
+
+        This method is used to generate a configuration dictionary for services
+        that require certain default values to be present, even if they are not
+        explicitly set by the user. User-set values will take precedence over
+        the default override values.
+
+        The `_default_override` attribute should be a dictionary defined on the
+        config subclass.
+        """
+        default_override = getattr(self, "_default_override", {})
+        values = {
+            **default_override,
+            **self.model_dump(exclude_unset=True, exclude={"type"}),
+        }
+        return values
 
 
 class Ai360Config(BaseProviderConfig):
@@ -251,9 +271,10 @@ class FireworksConfig(BaseProviderConfig):
 class GeminiConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.GEMINI]
     geminiSafetySetting: Optional[Mapping[str, str]] = None
-    apiVersion: Optional[str] = 'v1beta'
+    apiVersion: Optional[str] = None
     geminiThinkingBudget: Optional[float] = None
     _public_endpoint: str = "generativelanguage.googleapis.com"
+    _default_override = {"apiVersion": "v1beta"}
 
 
 class GenericConfig(BaseProviderConfig):
@@ -298,9 +319,10 @@ class LongcatConfig(BaseProviderConfig):
 
 class MinimaxConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.MINIMAX]
-    minimaxApiType: Optional[str] = 'v2'
+    minimaxApiType: Optional[str] = None
     minimaxGroupId: Optional[str] = None
     _public_endpoint: str = "api.minimax.chat"
+    _default_override = {"minimaxApiType": "v2"}
 
 
 class MistralConfig(BaseProviderConfig):
@@ -358,9 +380,10 @@ class QwenConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.QWEN]
     qwenEnableSearch: Optional[bool] = None
     qwenFileIds: Optional[List[str]] = None
-    qwenEnableCompatible: Optional[bool] = True
+    qwenEnableCompatible: Optional[bool] = None
     _public_endpoint: str = "dashscope.aliyuncs.com"
     _model_uri = "/compatible-mode/v1/models"
+    _default_override = {"qwenEnableCompatible": True}
 
 
 class SparkConfig(BaseProviderConfig):
