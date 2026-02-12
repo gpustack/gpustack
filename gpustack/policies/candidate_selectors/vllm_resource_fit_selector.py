@@ -81,11 +81,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             VLLMResourceFitSelector.get_world_size_from_backend_parameters(model)
         )
         self._set_gpu_count(world_size, strategies)
-        self._set_gpu_memory_utilization()
 
     async def _init_model_parameters(self, workers: List[Worker]):
         await super()._init_model_parameters(workers)
         self._validate_arguments()
+        # GMU relies on architecture info in model parameters. Set it after model parameters are initialized.
+        self._set_gpu_memory_utilization()
 
     @staticmethod
     def get_world_size_from_backend_parameters(
