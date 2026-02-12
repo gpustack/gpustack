@@ -87,6 +87,7 @@ openai_model_prefixes: List[RoutePrefix] = [
         [
             "/chat/completions",
             "/completions",
+            "/responses",
             "/embeddings",
             "/audio/transcriptions",
             "/audio/speech",
