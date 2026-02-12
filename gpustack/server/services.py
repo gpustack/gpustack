@@ -92,8 +92,8 @@ class locked_cached:
 
             logger.trace(f"cache miss for key: {key}")
             result = await f(*args, **kwargs)
-
-            await self.set_in_cache(key, result)
+            if result is not None:
+                await self.set_in_cache(key, result)
 
         return result
 
