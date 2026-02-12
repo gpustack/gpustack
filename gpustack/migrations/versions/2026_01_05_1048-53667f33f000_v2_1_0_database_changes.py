@@ -215,7 +215,7 @@ def public_maas_integration_upgrade():
             sa.Column('id', sa.Integer(), primary_key=True, nullable=False),
             sa.Column('name', sqlmodel.sql.sqltypes.AutoString() , nullable=False, unique=True, index=True),
             sa.Column('description', sqlmodel.sql.sqltypes.AutoString() , nullable=True),
-            sa.Column('api_tokens', sa.JSON(), nullable=False, server_default='[]'),
+            sa.Column('api_tokens', sa.JSON(), nullable=False),
             sa.Column('timeout', sa.Integer(), nullable=False, default=120),
             sa.Column('config', sa.JSON(), nullable=False),
             sa.Column('models', sa.JSON(), nullable=True),
@@ -327,12 +327,16 @@ def public_maas_integration_upgrade():
         ondelete='SET NULL'
     )
     
-    conn.execute(sa.text("""
-    update model_usages mu set
-        model_name = m.name,
-        model_id = m.id
-    from models m where mu.model_id = m.id;
-    """))
+    result = conn.execute(sa.text("SELECT id, name FROM models")).fetchall()
+    model_id_name_map = {row[0]: row[1] for row in result}
+    usages = conn.execute(sa.text("SELECT id, model_id FROM model_usages"))
+    for usage in usages:
+        usage_id, model_id = usage
+        if model_id in model_id_name_map:
+            conn.execute(
+                sa.text("UPDATE model_usages SET model_name = :name WHERE id = :id"),
+                {"name": model_id_name_map[model_id], "id": usage_id},
+            )
 
     with op.batch_alter_table('model_usages', schema=None) as batch_op:
         batch_op.alter_column('model_name', existing_type=sqlmodel.sql.sqltypes.AutoString(), nullable=False)
