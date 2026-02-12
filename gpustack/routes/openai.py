@@ -92,6 +92,7 @@ async def list_models(
 
 @router.post("/completions")
 @router.post("/chat/completions")
+@router.post("/responses")
 @router.post("/embeddings")
 @router.post("/images/generations")
 @router.post("/images/edits")
