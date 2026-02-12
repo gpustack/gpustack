@@ -168,6 +168,7 @@ async def create_model_route(session: SessionDep, input: ModelRouteCreate):
         )
         await session.commit()
         await session.refresh(route)
+        await revoke_model_access_cache(session=session)
         return route
     except Exception as e:
         await session.rollback()
