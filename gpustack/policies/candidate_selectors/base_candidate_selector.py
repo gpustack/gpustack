@@ -85,13 +85,19 @@ class ModelParameters:
     is_multimodel: bool = False
     vision_config: Optional[Dict] = None
 
-    def from_model_pretrained_config(self, model: Model, pretrained_config: Any):
+    def from_model_pretrained_config(  # noqa: C901
+        self, model: Model, pretrained_config: Any
+    ):
         """
         Parse the model's (hyper)parameters from the model.
         """
         if hasattr(pretrained_config, "vision_config"):
             self.is_multimodel = True
             self.vision_config = pretrained_config.vision_config
+
+        # Get architectures first, it is not available in text_config.
+        if hasattr(pretrained_config, "architectures"):
+            self.architectures = pretrained_config.architectures
 
         pretrained_config = get_hf_text_config(pretrained_config)
         if pretrained_config is None and CategoryEnum.LLM in model.categories:

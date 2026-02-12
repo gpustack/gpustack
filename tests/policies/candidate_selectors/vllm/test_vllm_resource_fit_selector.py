@@ -530,6 +530,29 @@ def expected_candidate(
             ],
             0,
         ),
+        # Auto schedule Qwen3-VL-Embedding should respect gpu memory utilization setting.
+        (
+            "auto_schedule_qwen3_vl_embedding",
+            make_model(
+                0,
+                None,
+                "Qwen/Qwen3-VL-Embedding-2B",
+                categories=[CategoryEnum.EMBEDDING],
+            ),
+            [
+                linux_nvidia_0_4090_24gx1(),
+            ],
+            [
+                expected_candidate(
+                    103,
+                    "host4090-0",
+                    [0],
+                    {0: 23413653504},
+                    [],
+                )
+            ],
+            0,
+        ),
     ],
 )
 @pytest.mark.asyncio
