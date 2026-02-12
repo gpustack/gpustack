@@ -36,6 +36,7 @@ class ModelSpec(ModelSpecBase):
 class SizeUnit(str, Enum):
     MILLION = "M"
     BILLION = "B"
+    TRILLION = "T"
 
 
 class ModelSetBase(BaseModel):

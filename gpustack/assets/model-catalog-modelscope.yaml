@@ -873,7 +873,8 @@ model_sets:
   description: Kimi-K2.5 is a multimodal mixture-of-experts model with 1T total parameters and 32B activated parameters. It features native INT4 quantization, vision support, dual operating modes (thinking/instant), agent swarm capabilities, and excels at visual reasoning, coding with vision, and complex tool orchestration.
   home: https://www.moonshot.ai
   icon: /static/catalog_icons/kimi.png
-  size: 1000
+  size: 1
+  size_unit: T
   activated_size: 32
   categories:
     - llm
