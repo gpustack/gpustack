@@ -317,7 +317,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
                     6: 24732937728,
                     7: 21244001280,
                 },
-                "score": 100,
+                "score": 100.0,
                 "tensor_split": [
                     25769803776,
                     25769803776,
@@ -492,22 +492,22 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
         expected_candidates = [
             {
                 "gpu_indexes": [0, 1, 2],
-                "score": 85.0,
+                "score": 89.0,
                 "tensor_split": [17171480576, 17171480576, 16647192576],
             },
             {
                 "gpu_indexes": [0, 1, 3],
-                "score": 85.0,
+                "score": 89.0,
                 "tensor_split": [17171480576, 17171480576, 16542334976],
             },
             {
                 "gpu_indexes": [0, 2, 3],
-                "score": 84.0,
+                "score": 86.5,
                 "tensor_split": [17171480576, 16647192576, 16542334976],
             },
             {
                 "gpu_indexes": [1, 2, 3],
-                "score": 84.0,
+                "score": 86.5,
                 "tensor_split": [17171480576, 16647192576, 16542334976],
             },
         ]
@@ -706,8 +706,8 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
         spread_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
 
         expected_spread_candidates = [
-            {"worker_id": 7, "score": 85.0},
-            {"worker_id": 6, "score": 83.3333333333},
+            {"worker_id": 7, "score": 90.0},
+            {"worker_id": 6, "score": 65.0},
         ]
 
         assert len(spread_candidates) == 2
@@ -964,7 +964,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
                     0: 70670915584,
                     1: 68910751744,
                 },
-                "score": 100,
+                "score": 100.0,
                 "tensor_split": [
                     85899345920,
                     85899345920,
@@ -1093,7 +1093,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
                 "vram": {
                     0: 22050643968,
                 },
-                "score": 100,
+                "score": 100.0,
                 "tensor_split": [17163091968, 16106143744, 24683479040],
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(

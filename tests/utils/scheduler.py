@@ -55,8 +55,13 @@ def compare_candidates(  # noqa: C901
             ), f"Expected ram {expected['ram']}, but got {actual.computed_resource_claim.ram}"
 
         if "score" in expected:
-            assert (
-                str(actual.score)[:5] == str(expected["score"])[:5]
+            assert actual.score is not None
+
+            def truncate_2(value: float) -> float:
+                return int(value * 100) / 100.0
+
+            assert truncate_2(actual.score) == truncate_2(
+                expected["score"]
             ), f"Expected score {expected['score']}, but got {actual.score}"
 
         if "subordinate_workers" in expected:
