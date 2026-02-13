@@ -68,7 +68,7 @@ def registration_client(
             time.sleep(0.5)
     if registration_token:
         if not registration_token.startswith(API_KEY_PREFIX):
-            legacy_uuid = get_legacy_uuid(data_dir) or get_system_uuid(data_dir, False)
+            legacy_uuid = get_legacy_uuid(data_dir) or get_system_uuid()
             if not legacy_uuid:
                 raise ValueError(
                     "Legacy UUID not found, please re-register the worker."

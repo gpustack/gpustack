@@ -291,7 +291,9 @@ async def validate_gpu_ids(  # noqa: C901
         gpu_index = safe_int(matched.get("gpu_index"), -1)
         worker_name_set.add(worker_name)
 
-        worker = await WorkerService(session).get_by_name(worker_name)
+        worker = await WorkerService(session).get_by_cluster_id_name(
+            model_in.cluster_id, worker_name
+        )
         if not worker:
             raise BadRequestException(message=f"Worker {worker_name} not found")
 

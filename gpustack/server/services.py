@@ -227,6 +227,18 @@ class WorkerService:
         return result
 
     @locked_cached(ttl=CACHE_TTL_SECONDS)
+    async def get_by_cluster_id_name(
+        self, cluster_id: int, name: str
+    ) -> Optional[Worker]:
+        result = await Worker.one_by_fields(
+            self.session, fields={"cluster_id": cluster_id, "name": name}
+        )
+        if result is None:
+            return None
+        self.session.expunge(result)
+        return result
+
+    @locked_cached(ttl=CACHE_TTL_SECONDS)
     async def get_by_name(self, name: str) -> Optional[Worker]:
         result = await Worker.one_by_field(self.session, "name", name)
         if result is None:

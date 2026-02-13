@@ -101,8 +101,6 @@ DEFAULT_CLUSTER_KUBERNETES = (
     os.getenv("GPUSTACK_DEFAULT_CLUSTER_KUBERNETES", "false").lower() == "true"
 )
 
-AUTO_GENERATE_UUID = os.getenv("GPUSTACK_AUTO_GENERATE_UUID", "false").lower() == "true"
-
 # Benchmark configuration
 BENCHMARK_DATASET_SHAREGPT_PATH = os.getenv(
     "GPUSTACK_BENCHMARK_DATASET_SHAREGPT_PATH",
