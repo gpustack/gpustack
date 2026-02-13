@@ -1183,8 +1183,59 @@ class InferenceBackendController:
                 )
                 return
 
+            # Collect backend names from YAML
+            yaml_backend_names = set()
             for backend_config in yaml_data:
+                backend_name = backend_config.get("backend_name")
+                if backend_name:
+                    yaml_backend_names.add(backend_name)
                 await self._upsert_community_backend(session, backend_config)
+
+            # Query all community backends from database
+            all_backends = await InferenceBackend.all(session)
+            db_community_backends = [
+                backend
+                for backend in all_backends
+                if backend.backend_source == BackendSourceEnum.COMMUNITY
+            ]
+
+            # Delete community backends that are no longer in YAML
+            for backend in db_community_backends:
+                if backend.backend_name in yaml_backend_names:
+                    continue
+
+                if backend.enabled:
+                    # Convert to custom backend to preserve user's custom versions
+                    # Convert all built_in_frameworks versions to custom_framework versions
+                    converted_versions = {}
+                    if backend.version_configs and backend.version_configs.root:
+                        for version, config in backend.version_configs.root.items():
+                            config_data = config.model_dump()
+                            if config_data.get("built_in_frameworks"):
+                                config_data["custom_framework"] = config_data[
+                                    "built_in_frameworks"
+                                ][0]
+                                config_data["built_in_frameworks"] = None
+                            converted_versions[version] = VersionConfig(**config_data)
+
+                    # Prepare update data
+                    update_data = {
+                        "backend_source": BackendSourceEnum.CUSTOM,
+                        "enabled": False,
+                        "version_configs": VersionConfigDict(root=converted_versions),
+                    }
+                    flag_modified(backend, "version_configs")
+                    await backend.update(session, update_data)
+                    logger.info(
+                        f"Converted community backend '{backend.backend_name}' to custom backend"
+                    )
+                else:
+                    # Delete if no custom versions
+                    await backend.delete(session)
+                    logger.info(
+                        f"Deleted community backend '{backend.backend_name}' "
+                        f"(no longer in community-inference-backends.yaml)"
+                    )
 
             logger.debug(
                 "Community backends initialized from community-inference-backends.yaml"
