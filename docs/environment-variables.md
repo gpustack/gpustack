@@ -61,8 +61,8 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Server Cache Configuration
 
-| Variable                          | Description                   | Default | Applies to |
-| --------------------------------- | ----------------------------- | ------- | ---------- |
+| Variable                            | Description                  | Default | Applies to |
+| ----------------------------------- | ---------------------------- | ------- | ---------- |
 | `GPUSTACK_SERVER_CACHE_TTL_SECONDS` | Server cache TTL in seconds. | `600`   | Server     |
 
 ### Authentication & Security
@@ -102,7 +102,6 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS`             | Add debug log for slow worker status collection if it exceeds this time in seconds.                                  | `180`   | Worker     |
 | `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`                  | Model instance health check interval in seconds.                                                                     | `3`     | Worker     |
 | `GPUSTACK_DISABLE_OS_FILELOCK`                                   | Disable OS file lock.                                                                                                | `false` | Worker     |
-| `GPUSTACK_AUTO_GENERATE_UUID`                                    | If set to true, always generate a new worker UUID at startup instead of reading the UUID from the system.            | `false` | Worker     |
 
 ### Benchmark Configuration
 

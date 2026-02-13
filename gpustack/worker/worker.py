@@ -1,9 +1,7 @@
 import asyncio
 from collections import defaultdict
 from contextlib import asynccontextmanager
-import os
 import logging
-import socket
 from typing import Optional, Tuple
 import json
 
@@ -56,6 +54,7 @@ from gpustack.config import registration
 from gpustack.gateway import init_async_k8s_config
 from gpustack.client.generated_http_client import default_versioned_prefix
 from gpustack.worker.workload_cleaner import WorkloadCleaner
+from gpustack.utils.uuid import get_worker_name, get_legacy_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +72,8 @@ class Worker:
     _worker_ip: Optional[str] = None
     _worker_ifname: Optional[str] = None
     _worker_id: Optional[int] = None
+    _worker_name: Optional[str] = None
+    _worker_uuid: Optional[str] = None
     _cluster_id: Optional[int] = None
 
     def worker_ip(self) -> str:
@@ -80,6 +81,16 @@ class Worker:
 
     def worker_ifname(self) -> str:
         return self._config.worker_ifname or self._worker_ifname
+
+    def worker_name(self) -> Optional[str]:
+        return (
+            self._config.worker_name
+            or self._worker_name
+            or get_worker_name(self._config.data_dir)
+        )
+
+    def worker_uuid(self) -> str:
+        return self._worker_uuid or get_legacy_uuid(self._config.data_dir) or ""
 
     def worker_id(self) -> int:
         return self._worker_id
@@ -99,9 +110,6 @@ class Worker:
         self._async_tasks = []
         self._worker_ip, self._worker_ifname = self._detect_worker_ip_and_ifname()
 
-        self._worker_name = cfg.worker_name
-        if self._worker_name is None:
-            self._worker_name = self._get_worker_name()
         self._runtime_metrics_cache = defaultdict()
 
         self._status_collector = WorkerStatusCollector(
@@ -109,21 +117,21 @@ class Worker:
             worker_ip_getter=self.worker_ip,
             worker_ifname_getter=self.worker_ifname,
             worker_id_getter=self.worker_id,
+            worker_uuid_getter=self.worker_uuid,
         )
 
         self._worker_manager = WorkerManager(
             cfg=cfg,
             is_embedded=self._is_embedded,
             collector=self._status_collector,
-            worker_name=self._worker_name,
         )
 
         self._exporter = MetricExporter(
             cfg=cfg,
-            worker_name=self._worker_name,
             collector=self._status_collector,
             worker_ip_getter=self.worker_ip,
             worker_id_getter=self.worker_id,
+            worker_name_getter=self.worker_name,
             clientset_getter=self.clientset,
             cache=self._runtime_metrics_cache,
         )
@@ -145,21 +153,6 @@ class Worker:
             clientset_getter=self.clientset,
         )
 
-    def _get_worker_name(self):
-        # Hostname might change with the network, so we store the worker name in a file.
-        # It avoids creating multiple workers for the same node.
-        # This is useful when running standalone on a PC.
-        worker_name_path = os.path.join(self._config.data_dir, "worker_name")
-        if os.path.exists(worker_name_path):
-            with open(worker_name_path, "r") as file:
-                worker_name = file.read().strip()
-        else:
-            worker_name = socket.gethostname()
-            with open(worker_name_path, "w") as file:
-                file.write(worker_name)
-
-        return worker_name
-
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(10),
         wait=tenacity.wait_fixed(3),
@@ -176,10 +169,13 @@ class Worker:
         worker_list = self._clientset.workers.list(
             params={"me": 'true'},
         )
+        name = self.worker_name() or "<not specified>"
         if len(worker_list.items) != 1:
-            raise Exception(f"Worker {self._worker_name} not registered.")
+            raise Exception(f"Worker {name} not registered.")
         self._worker_id = worker_list.items[0].id
         self._cluster_id = worker_list.items[0].cluster_id
+        self._worker_name = worker_list.items[0].name
+        self._worker_uuid = worker_list.items[0].worker_uuid
 
     def _create_async_task(self, coro):
         self._async_tasks.append(asyncio.create_task(coro))

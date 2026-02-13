@@ -477,6 +477,7 @@ class WorkerPublic(
 
 class WorkerRegistrationPublic(WorkerPublic):
     token: str
+    worker_uuid: str
     worker_config: Optional["PredefinedConfigNoDefaults"] = None
 
 

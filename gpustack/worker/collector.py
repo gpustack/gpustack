@@ -18,7 +18,6 @@ from gpustack.schemas.workers import (
     SystemInfo,
 )
 from gpustack.utils.profiling import time_decorator
-from gpustack.utils.uuid import get_system_uuid, get_machine_id, get_legacy_uuid
 
 
 logger = logging.getLogger(__name__)
@@ -29,8 +28,7 @@ class WorkerStatusCollector:
     _worker_id_getter: Callable[[], int]
     _worker_ifname_getter: Callable[[], str]
     _worker_ip_getter: Callable[[], str]
-    _system_uuid: str
-    _machine_id: str
+    _worker_uuid_getter: Callable[[], str]
     _gpu_devices: GPUDevicesStatus
     _system_info: SystemInfo
 
@@ -48,15 +46,13 @@ class WorkerStatusCollector:
         worker_ip_getter: Callable[[], str],
         worker_ifname_getter: Callable[[], str],
         worker_id_getter: Callable[[], int],
+        worker_uuid_getter: Callable[[], str],
     ):
         self._cfg = cfg
         self._worker_ip_getter = worker_ip_getter
         self._worker_ifname_getter = worker_ifname_getter
         self._worker_id_getter = worker_id_getter
-        self._system_uuid = get_legacy_uuid(cfg.data_dir) or get_system_uuid(
-            cfg.data_dir
-        )
-        self._machine_id = get_machine_id()
+        self._worker_uuid_getter = worker_uuid_getter
         self._gpu_devices = cfg.get_gpu_devices()
         self._system_info = cfg.get_system_info()
         if self._gpu_devices and self._system_info:
@@ -122,8 +118,7 @@ class WorkerStatusCollector:
             system_reserved=SystemReserved(**self._cfg.get_system_reserved()),
             state_message=state_message,
             status=status,
-            worker_uuid=self._system_uuid,
-            machine_id=self._machine_id,
+            worker_uuid=self._worker_uuid_getter(),
             proxy_mode=self._cfg.proxy_mode,
         )
 

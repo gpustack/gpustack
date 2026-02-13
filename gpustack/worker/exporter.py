@@ -41,20 +41,22 @@ def _add_metric(
 
 class MetricExporter(Collector):
     _worker_ip_getter: Callable[[], str]
+    _worker_name_getter: Callable[[], str]
+    _worker_id_getter: Callable[[], int]
     _collector: WorkerStatusCollector
 
     def __init__(
         self,
         cfg: Config,
-        worker_name: str,
         collector: WorkerStatusCollector,
+        worker_name_getter: Callable[[], str],
         worker_ip_getter: Callable[[], str],
         worker_id_getter: Callable[[], int],
         clientset_getter: Callable[[], ClientSet] = None,
         cache: dict = None,
     ):
         self._collector = collector
-        self._worker_name = worker_name
+        self._worker_name_getter = worker_name_getter
         self._worker_id_getter = worker_id_getter
         self._worker_ip_getter = worker_ip_getter
         self._port = cfg.worker_metrics_port
@@ -165,7 +167,7 @@ class MetricExporter(Collector):
         )
         worker_ip = _safe_label(self._worker_ip_getter())
         worker_id = _safe_label(self._worker_id_getter())
-        worker_name = _safe_label(self._worker_name)
+        worker_name = _safe_label(self._worker_name_getter())
         worker_label_values = [worker_id, worker_name, worker_ip]
         try:
             worker = self._collector.timed_collect(clientset=self._clientset_getter())

@@ -1,7 +1,12 @@
 import secrets
 import datetime
 import base64
-from typing import Optional
+import uuid
+import logging
+import asyncio
+from typing import Optional, List, Dict, Any, Set
+from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Response, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
@@ -11,6 +16,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
     ForbiddenException,
+    InvalidException,
 )
 from gpustack.config.config import get_global_config
 from gpustack.server.deps import (
@@ -48,6 +54,7 @@ from gpustack.utils.grafana import resolve_grafana_base_url
 
 router = APIRouter()
 system_name_prefix = "system/worker"
+logger = logging.getLogger(__name__)
 
 
 def to_worker_public(input: Worker, me: bool) -> WorkerPublic:
@@ -193,9 +200,12 @@ def update_worker_data(
             }
         )
     else:
+        # new worker should ignore the reported worker_uuid
         to_create_worker = Worker.model_validate(
             {
-                **worker_in.model_dump(),
+                **worker_in.model_dump(exclude={"name", "worker_uuid"}),
+                "name": worker_in.name or worker_in.hostname,
+                "worker_uuid": "",
                 "state": WorkerStateEnum.READY,
                 **kwargs,
             }
@@ -206,38 +216,156 @@ def update_worker_data(
     return to_create_worker
 
 
-async def get_existing_worker(
-    session, cluster_id: int, worker_in: WorkerCreate
+def filter_workers_by_fields(
+    workers: List[Worker],
+    fields: Optional[Dict[str, Any]],
+    fuzzy_fields: Dict[str, str] = {},
+) -> List[Worker]:
+    if not fields and not fuzzy_fields:
+        return workers
+
+    to_return = []
+    for worker in workers:
+        match = True
+        if fields:
+            for k, v in fields.items():
+                if getattr(worker, k, None) != v:
+                    match = False
+                    break
+        if not match:
+            continue
+
+        if fuzzy_fields:
+            for k, v in fuzzy_fields.items():
+                attr = getattr(worker, k, None)
+                if not isinstance(attr, str) or v.lower() not in attr.lower():
+                    match = False
+                    break
+
+        if match:
+            to_return.append(worker)
+    return to_return
+
+
+def get_existing_worker(
+    cluster_id: int, worker_in: WorkerCreate, workers: List[Worker]
 ) -> Optional[Worker]:
     static_fields = {
         "deleted_at": None,
         "cluster_id": cluster_id,
     }
+
+    if worker_in.name == "":
+        return None
+
     # find existing worker by external_id or worker_uuid
     for field in ["external_id", "worker_uuid"]:
         value = getattr(worker_in, field, None)
         if value is None:
             continue
         fields = {**static_fields, field: value}
-        existing_worker = await Worker.one_by_fields(session, fields)
+        existing_worker = next(iter(filter_workers_by_fields(workers, fields)), None)
         if existing_worker is not None:
             return existing_worker
 
     # find existing worker by name
     if worker_in.labels and worker_in.labels.get("gpustack.existence-check"):
         fields = {"name": worker_in.name}
-        existing_worker = await Worker.one_by_fields(session, fields)
+        existing_worker = next(iter(filter_workers_by_fields(workers, fields)), None)
         if existing_worker is not None:
+            if existing_worker.cluster_id != cluster_id:
+                raise AlreadyExistsException(
+                    message=f"worker with name {worker_in.name} already exists in another cluster"
+                )
             return existing_worker
 
-    # no existing worker found, find duplicated name worker
-    name_conflict_fields = {**static_fields, "name": worker_in.name}
-    name_conflict_worker = await Worker.one_by_fields(session, name_conflict_fields)
-    if name_conflict_worker is not None:
-        raise AlreadyExistsException(
-            message=f"worker with name {worker_in.name} already exists"
-        )
     return None
+
+
+def check_worker_name_conflict(
+    name: str, workers: List[Worker], existing_id: Optional[int] = None
+):
+    if name == "":
+        if existing_id is not None:
+            raise InvalidException(message="worker name cannot be empty")
+        return
+    workers = [worker for worker in workers if worker.id != existing_id]
+    name_conflict_fields = {"name": name}
+    name_conflict_worker = next(
+        iter(filter_workers_by_fields(workers, name_conflict_fields)), None
+    )
+    if name_conflict_worker is not None:
+        raise AlreadyExistsException(message=f"worker with name {name} already exists")
+
+
+def find_available_worker_name(
+    original_name: str, current_name: str, related_names: Set[str]
+) -> str:
+    if original_name not in related_names:
+        return original_name
+
+    index = 1
+    if current_name.startswith(f"{original_name}-"):
+        suffix = current_name[len(original_name) + 1 :]
+        if suffix.isdigit():
+            index = int(suffix) + 1
+
+    new_name = f"{original_name}-{index}"
+    while new_name in related_names:
+        index += 1
+        new_name = f"{original_name}-{index}"
+    return new_name
+
+
+async def retry_create_worker(
+    session: AsyncSession, to_create: Worker, workers: List[Worker]
+) -> Worker:
+    related_workers = filter_workers_by_fields(
+        workers,
+        fields={
+            "deleted_at": None,
+        },
+        fuzzy_fields={"name": to_create.name},
+    )
+    related_names = set(worker.name for worker in related_workers)
+    original_name = to_create.name
+    current_name = to_create.name
+    for i in range(5):
+        try:
+            current_name = find_available_worker_name(
+                original_name, current_name, related_names
+            )
+            to_create.name = current_name
+            to_create.labels["worker_name"] = current_name
+            new_worker = await Worker.create(session, to_create, auto_commit=False)
+            return new_worker
+        except IntegrityError:
+            logger.warning(
+                f"Worker name collision detected for worker name {to_create.name}, retrying... (attempt {i + 1}/5)"
+            )
+            related_names.add(current_name)
+            await asyncio.sleep(0.1)  # small delay before retrying to reduce contention
+    raise InternalServerErrorException(
+        message="Failed to create worker with unique name after multiple attempts"
+    )
+
+
+def retry_create_unique_worker_uuid(workers: List[Worker]) -> str:
+    current_uuids = set(
+        worker.worker_uuid for worker in workers if worker.worker_uuid != ""
+    )
+    for i in range(5):
+        new_uuid = str(uuid.uuid4())
+        if new_uuid not in current_uuids:
+            return new_uuid
+        logger.warning(
+            f"UUID collision detected for worker_uuid {new_uuid}, retrying... (attempt {i + 1}/5)"
+        )
+    # might not be necessary to retry so many times, but just in case, we want to make sure
+    # the system can recover from such a rare event without manual intervention
+    raise InternalServerErrorException(
+        message="Failed to generate unique worker UUID after multiple attempts"
+    )
 
 
 @router.post("", response_model=WorkerRegistrationPublic)
@@ -249,14 +377,23 @@ async def create_worker(
     )
     if cluster_id is None:
         raise ForbiddenException(message="Missing cluster_id for worker registration")
-
-    existing_worker = await get_existing_worker(session, cluster_id, worker_in)
+    all_workers = await Worker.all_by_fields(session, {"deleted_at": None})
+    existing_worker = get_existing_worker(cluster_id, worker_in, all_workers)
+    check_worker_name_conflict(
+        worker_in.name,
+        all_workers,
+        existing_id=existing_worker.id if existing_worker else None,
+    )
     if existing_worker is None:
         if worker_in.external_id is not None:
             # avoid creating a worker with a non-existent external_id
             raise NotFoundException(
                 message=f"worker with external_id {worker_in.external_id} not found"
             )
+    else:
+        existing_worker = await Worker.one_by_id(
+            session=session, id=existing_worker.id, for_update=True
+        )
 
     # needed a session bond cluster object here
     cluster = await Cluster.one_by_id(session, cluster_id)
@@ -292,6 +429,8 @@ async def create_worker(
         cluster=cluster,
         token=new_token,
     )
+    if new_worker.worker_uuid == "":
+        new_worker.worker_uuid = retry_create_unique_worker_uuid(all_workers)
 
     # determine if existing worker already has an user and api key
     existing_user = (
@@ -340,7 +479,7 @@ async def create_worker(
             )
             worker = existing_worker
         else:
-            worker = await Worker.create(session, new_worker, auto_commit=False)
+            worker = await retry_create_worker(session, new_worker, all_workers)
         created_user = None
         if to_create_user is not None:
             to_create_user.worker = worker
