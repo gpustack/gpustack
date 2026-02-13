@@ -47,11 +47,16 @@ Please refer to the vLLM [documentation](https://docs.vllm.ai/en/stable/models/s
 
 ### Supported Features
 
-#### Multimodal Language Models
+#### Omni-Modal Support
 
-vLLM supports multimodal language models listed [here](https://docs.vllm.ai/en/stable/models/supported_models/#list-of-multimodal-language-models).
+[vLLM-Omni](https://github.com/vllm-project/vllm-omni) is an extension of vLLM designed for omni-modal inference, supporting:
 
-When users deploy a vision language model using the vLLM backend, image inputs are supported in the chat completion API.
+- **Omni Models**: Simultaneous processing of text, audio, images, and video (e.g., `Qwen3-Omni`)
+- **Image Tasks**: Image generation and editing (e.g., `Z-Image-Turbo`)
+- **Video Tasks**: Video generation and editing (e.g., `Wan2.2`)
+- **Audio Tasks**: Speech synthesis, voice cloning, and more (e.g., `Qwen3-TTS`)
+
+GPUStack integrates with vLLM-Omni to deliver a seamless experience for deploying and managing omni-modal models. When a model is deployed via the vLLM backend, GPUStack automatically detects whether it is omni-modal based on its metadata and sets the required parameters for vLLM-Omni.
 
 #### Distributed Inference Across Workers (Experimental)
 
