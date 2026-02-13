@@ -66,6 +66,28 @@ Screenshots:
 ![gguf-deploy.png](../assets/tutorials/using-custom-backend/gguf-deploy.png)
 ![gguf-resp.png](../assets/tutorials/using-custom-backend/gguf-resp.png)
 
+### Fast Deploy GGUF Models with llama.cpp for all AMD GPU ROCM/VULKAN
+
+1. Add the following backend configuration on the Inference Backend page:
+    ```yaml
+    backend_name: llama.cpp-custom
+    default_run_command: '-m {{model_path}} --host 0.0.0.0 --port {{port}}'
+    version_configs:
+      v1-custom:
+        image_name: ghcr.io/ggml-org/llama.cpp:server-vulkan
+        custom_framework: rocm
+    default_version: v1-custom
+    ```
+   ROCM gpu
+   a) use docker.io/rocm/llama.cpp:llama.cpp-b6652.amd0_rocm7.0.0_ubuntu24.04_server
+   b) use docker.io/rocm/llama.cpp:llama.cpp-b6356_rocm6.4.3_ubuntu22.04_server
+   
+3. On the Deployment page, locate a GGUF-format model, select `llama.cpp`, and deploy.
+   ghcr.io/ggml-org/llama.cpp:server-vulkan
+4. More install use [rocm.docs.amd.com]([https://github.com/ggml-org/llama.cpp](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/3rd-party/previous-versions/llama-cpp-install-v25.9.html#build-llama-cpp-docker-image)). 
+
+   
+
 ### Use Kokoro-FastAPI
 1. Find the image name in the [documentation](https://github.com/remsky/Kokoro-FastAPI?tab=readme-ov-file#get-started), and choose the variant that matches your worker platform:
    - `ghcr.io/remsky/kokoro-fastapi-cpu:latest`
