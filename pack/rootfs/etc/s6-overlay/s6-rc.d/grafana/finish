@@ -5,4 +5,5 @@ source "$SCRIPT_ROOT/base.sh"
 
 EXIT_CODE="$1"
 EXIT_SIGNAL="$2"
-handleServiceExit "grafana" "$EXIT_CODE" "$EXIT_SIGNAL"
+
+handleOptionalServiceExit "grafana" "$EXIT_CODE" "$EXIT_SIGNAL"

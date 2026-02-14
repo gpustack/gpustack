@@ -5,4 +5,5 @@ source "$SCRIPT_ROOT/base.sh"
 
 EXIT_CODE="$1"
 EXIT_SIGNAL="$2"
-handleServiceExit "prometheus" "$EXIT_CODE" "$EXIT_SIGNAL"
+
+handleOptionalServiceExit "prometheus" "$EXIT_CODE" "$EXIT_SIGNAL"
