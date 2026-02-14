@@ -79,7 +79,7 @@ function handleServiceExit() {
 
     echo "[INFO] Service '${service_name}' exited by signal, shutting down container..."
     exec /run/s6/basedir/bin/halt
-  
+
   # Case 2: non-zero exit → fatal → shutdown container
   elif [[ "${exit_code_service}" -ne 0 ]]; then
 
@@ -95,6 +95,49 @@ function handleServiceExit() {
   # Case 3: zero exit → exit normally
   echo "[INFO] Service '${service_name}' exited normally."
   exec /run/s6/basedir/bin/halt
+}
+
+function handleOptionalServiceExit() {
+  # For optional services, allow s6 to restart instead of halting the container
+  #
+  # s6 finish script exit codes:
+  # - exit 0: finish script succeeded, s6 will restart the service (default policy for longrun)
+  # - exit 125: tell s6 not to restart the service
+  # - other non-zero: finish script failed
+  #
+  # Service exit codes:
+  # - EXIT_CODE 256: process was killed by a signal (signal number in EXIT_SIGNAL)
+  # - EXIT_CODE 0: process exited normally
+  # - other non-zero: process crashed or errored
+
+  local service_name="$1"
+  local exit_code_service="$2"
+  local exit_code_signal="$3"
+
+  # Case 1: Exit by SIGTERM (signal 15) - container is shutting down
+  if [[ "${exit_code_service}" -eq 256 ]] && [[ "${exit_code_signal}" -eq 15 ]]; then
+    echo "[INFO] Service '${service_name}' received SIGTERM (container shutting down)" >&2
+    echo "[INFO] Service '${service_name}' will not be restarted." >&2
+    exit 125  # Tell s6 not to restart during shutdown
+
+  # Case 2: Exit by other signals (SIGKILL, SIGHUP, etc.)
+  elif [[ "${exit_code_service}" -eq 256 ]]; then
+    echo "[WARN] Service '${service_name}' exited by signal ${exit_code_signal} (exit code: ${exit_code_service})" >&2
+    echo "[INFO] Service '${service_name}' will be restarted by s6." >&2
+    exit 0  # Allow s6 to restart the service
+
+  # Case 3: Non-zero exit code (crash, error)
+  elif [[ "${exit_code_service}" -ne 0 ]]; then
+    echo "[ERROR] Service '${service_name}' exited with non-zero code: ${exit_code_service}" >&2
+    echo "[INFO] Service '${service_name}' will be restarted by s6." >&2
+    exit 0  # Allow s6 to restart the service
+
+  # Case 4: Normal exit (code 0, no signal)
+  else
+    echo "[INFO] Service '${service_name}' exited normally (code: ${exit_code_service}, signal: ${exit_code_signal})" >&2
+    echo "[INFO] Service '${service_name}' will not be restarted." >&2
+    exit 125  # Tell s6 not to restart
+  fi
 }
 
 
