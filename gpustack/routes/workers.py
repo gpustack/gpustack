@@ -336,7 +336,7 @@ async def retry_create_worker(
                 original_name, current_name, related_names
             )
             to_create.name = current_name
-            to_create.labels["worker_name"] = current_name
+            to_create.labels["worker-name"] = current_name
             new_worker = await Worker.create(session, to_create, auto_commit=False)
             return new_worker
         except IntegrityError:

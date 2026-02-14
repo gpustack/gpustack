@@ -140,14 +140,16 @@ class WorkerManager:
         # worker name label will be set during registration
         name = self._cfg.worker_name or get_worker_name(self._cfg.data_dir)
         if name:
-            labels["worker_name"] = name
+            labels["worker-name"] = name
 
         # Legacy workers with version 0.7.x send worker_uuid as part of registration.
         # Legacy workers with version <0.7.x don't have worker_uuid, so we use this label as part of the registration allowance.
-        if (
-            self._cfg.token
-            and not self._cfg.token.startswith(API_KEY_PREFIX)
-            or get_legacy_uuid(self._cfg.data_dir) is None
-        ):
+        is_legacy_token = self._cfg.token and not self._cfg.token.startswith(
+            API_KEY_PREFIX
+        )
+        is_legacy_worker = get_legacy_uuid(self._cfg.data_dir) is None
+        is_existing_worker = get_worker_name(self._cfg.data_dir) is not None
+
+        if (is_legacy_token or is_legacy_worker) and is_existing_worker:
             labels["gpustack.existence-check"] = "true"
         return labels
