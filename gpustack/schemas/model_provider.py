@@ -548,7 +548,12 @@ class ModelProvider(ModelProviderBase, BaseModelMixin, table=True):
 
     @classmethod
     def _convert_to_public_class(cls, data) -> "ModelProviderPublic":
-        dict_data = data if isinstance(data, dict) else data.model_dump()
+        # somehow when updating model provider while deleting targets
+        # the result of await ModelProvider.one_by_id(session=session, id=id) is not fully correct.
+        # e.g. the provider.config is a dict instead of correct config class and it will
+        # yields validation warnings when model_dump it. So setting warnings=False to ignore
+        # the warnings and convert it to correct config class by ourselves.
+        dict_data = data if isinstance(data, dict) else data.model_dump(warnings=False)
         current_tokens: List[str] = dict_data.pop("api_tokens", None)
         masked_tokens: List[MaskedAPIToken] = []
         if current_tokens:
