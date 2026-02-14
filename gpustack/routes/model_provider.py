@@ -18,8 +18,10 @@ from gpustack.schemas.model_provider import (
     ModelProviderTypeEnum,
     TestProviderModelInput,
     TestProviderModelResult,
+    ProviderModel,
 )
 from gpustack.schemas.models import CategoryEnum
+from gpustack.schemas.model_routes import ModelRouteTarget
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -156,6 +158,17 @@ async def get_model_provider(session: SessionDep, id: int):
     return ModelProvider._convert_to_public_class(provider)
 
 
+def deleted_model_names(
+    existing_models: List[ProviderModel],
+    input_models: List[ProviderModel],
+) -> List[str]:
+    input_model_names = {model.name for model in input_models}
+    deleted_names = [
+        model.name for model in existing_models if model.name not in input_model_names
+    ]
+    return deleted_names
+
+
 @router.put(
     "/{id}", response_model=ModelProviderPublic, response_model_exclude_none=True
 )
@@ -166,6 +179,7 @@ async def update_model_provider(
     if not provider:
         raise NotFoundException(message=f"provider {id} not found")
     validate_provider(input)
+    deleted_models = deleted_model_names(provider.models or [], input.models or [])
     try:
         input_dict = input.model_dump(exclude={"api_tokens"})
         if input.api_tokens is not None:
@@ -173,7 +187,20 @@ async def update_model_provider(
                 existing_tokens=provider.api_tokens or [],
                 api_tokens=input.api_tokens,
             )
-        await provider.update(session=session, source=input_dict)
+        await provider.update(
+            session=session, source=input_dict, auto_commit=len(deleted_models) == 0
+        )
+        if len(deleted_models) > 0:
+            routes = await ModelRouteTarget.all_by_fields(
+                session=session,
+                fields={"provider_id": id},
+                extra_conditions=[
+                    ModelRouteTarget.provider_model_name.in_(deleted_models)
+                ],
+            )
+            for route in routes:
+                await route.delete(session=session, auto_commit=False)
+            await session.commit()
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update provider {id}: {e}"
