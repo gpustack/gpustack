@@ -11,6 +11,8 @@ source "$SCRIPT_ROOT/default-variables.sh"
 
 set -e
 
+exec 2>&1
+
 createDir "$GF_PATHS_DATA"
 createDir "$GF_PATHS_LOGS"
 createDir "$GF_PATHS_PLUGINS"
