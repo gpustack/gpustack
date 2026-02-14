@@ -69,6 +69,7 @@ async def get_benchmarks(
     model_name: Optional[str] = Query(None, description="Filter by model name."),
     gpu_summary: Optional[str] = Query(None, description="Filter by GPU summary."),
     dataset_name: Optional[str] = Query(None, description="Filter by dataset name."),
+    profile: Optional[str] = Query(None, description="Filter by profile."),
 ):
     return await _get_benchmarks(
         session=session,
@@ -78,6 +79,7 @@ async def get_benchmarks(
         model_name=model_name,
         gpu_summary=gpu_summary,
         dataset_name=dataset_name,
+        profile=profile,
     )
 
 
@@ -96,13 +98,17 @@ async def _get_benchmarks(
     params: BenchmarkListParams,
     search: str = None,
     state: Optional[BenchmarkStateEnum] = None,
-    model_name: Optional[str] = Query(None, description="Filter by model name."),
-    gpu_summary: Optional[str] = Query(None, description="Filter by GPU summary."),
-    dataset_name: Optional[str] = Query(None, description="Filter by dataset name."),
+    model_name: Optional[str] = None,
+    gpu_summary: Optional[str] = None,
+    dataset_name: Optional[str] = None,
+    profile: Optional[str] = None,
 ):
     fuzzy_fields = {}
     if search:
         fuzzy_fields["name"] = search
+
+    if profile:
+        fuzzy_fields["profile"] = profile
 
     fields = {}
     if state:
