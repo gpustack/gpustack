@@ -42,6 +42,7 @@ from gpustack.schemas.model_routes import (
 from gpustack.server.services import (
     ModelService,
     WorkerService,
+    revoke_model_access_cache,
 )
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
@@ -406,6 +407,7 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
                 auto_commit=False,
             )
             await session.commit()
+            await revoke_model_access_cache(session=session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create model: {e}")
 
