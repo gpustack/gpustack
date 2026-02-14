@@ -38,7 +38,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.server.services import (
     ModelRouteService,
-    delete_accessible_model_cache,
+    revoke_model_access_cache,
 )
 from gpustack.routes.model_common import (
     build_category_conditions,
@@ -748,19 +748,3 @@ async def get_my_model(
         user_id=user_id,
         target_class=target_class,
     )
-
-
-async def revoke_model_access_cache(
-    session: AsyncSession,
-    model: Optional[ModelRoute] = None,
-    extra_user_ids: Optional[set[int]] = None,
-):
-    user_ids = set()
-    if model is None:
-        users = await User.all(session)
-        user_ids = {user.id for user in users}
-    else:
-        user_ids = {user.id for user in model.users}
-    if extra_user_ids:
-        user_ids.update(extra_user_ids)
-    await delete_accessible_model_cache(session, *user_ids)

@@ -4,7 +4,7 @@ import functools
 from typing import Any, Callable, List, Optional, Union, Set, Tuple
 from cachetools import LRUCache
 from aiocache import Cache, BaseCache
-from sqlmodel import SQLModel
+from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -545,3 +545,19 @@ async def delete_accessible_model_cache(
         await delete_cache_by_key(
             UserService(session).get_user_accessible_model_names, user_id
         )
+
+
+async def revoke_model_access_cache(
+    session: AsyncSession,
+    model: Optional[ModelRoute] = None,
+    extra_user_ids: Optional[set[int]] = None,
+):
+    user_ids = set()
+    if model is None:
+        result = await session.exec(select(User.id))
+        user_ids = set(result.all())
+    else:
+        user_ids = {user.id for user in model.users}
+    if extra_user_ids:
+        user_ids.update(extra_user_ids)
+    await delete_accessible_model_cache(session, *user_ids)
