@@ -340,11 +340,14 @@ async def get_models_from_specific_provider(
         raise InvalidException(
             message=f"provider {provider.name} id: {id} has no API tokens configured"
         )
+    proxy_url = (
+        input.proxy_url if 'proxy_url' in input.model_fields_set else provider.proxy_url
+    )
     return await get_models_from_provider(
         ProviderModelsInput(
             api_token=input.api_token or provider.api_tokens[0],
             config=input.config or provider.config,
-            proxy_url=input.proxy_url or provider.proxy_url,
+            proxy_url=proxy_url,
         )
     )
 
@@ -437,11 +440,14 @@ async def try_model_with_specific_provider(
         raise InvalidException(
             message=f"provider {provider.name} id: {id} has no API tokens configured"
         )
+    proxy_url = (
+        input.proxy_url if 'proxy_url' in input.model_fields_set else provider.proxy_url
+    )
     return await try_model_with_provider(
         TestProviderModelInput(
             api_token=input.api_token or provider.api_tokens[0],
             config=input.config or provider.config,
-            proxy_url=input.proxy_url or provider.proxy_url,
+            proxy_url=proxy_url,
             model_name=input.model_name,
         )
     )
