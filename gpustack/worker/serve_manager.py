@@ -154,7 +154,11 @@ class ServeManager:
             is_main_worker = mi.worker_id == self._worker_id
             is_subordinate_worker = False
 
-            if not is_main_worker and mi.distributed_servers and mi.distributed_servers.subordinate_workers:
+            if (
+                not is_main_worker
+                and mi.distributed_servers
+                and mi.distributed_servers.subordinate_workers
+            ):
                 is_subordinate_worker = any(
                     sw.worker_id == self._worker_id
                     for sw in mi.distributed_servers.subordinate_workers
@@ -186,10 +190,8 @@ class ServeManager:
                 self._model_instance_by_instance_id[mi.id] = mi
 
                 if workload.state == WorkloadStatusStateEnum.RUNNING:
-                    if mi.port:
-                        if self._assigned_ports.get(mi.id) is None:
-                            self._assigned_ports[mi.id] = set()
-                        self._assigned_ports[mi.id].add(mi.port)
+                    if mi.ports:
+                        self._assigned_ports.setdefault(mi.id, set()).update(mi.ports)
 
                 reconnect_count += 1
             else:

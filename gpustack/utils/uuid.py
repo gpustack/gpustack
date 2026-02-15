@@ -78,7 +78,9 @@ def get_worker_id(data_dir: str) -> Optional[int]:
             try:
                 return int(file.read().strip())
             except ValueError:
-                logger.warning(f"Invalid content in worker_id file: {worker_id_path}. Ignoring.")
+                logger.warning(
+                    f"Invalid content in worker_id file: {worker_id_path}. Ignoring."
+                )
                 return None
     return None
 
