@@ -75,7 +75,11 @@ def get_worker_id(data_dir: str) -> Optional[int]:
     worker_id_path = os.path.join(data_dir, worker_id_filename)
     if os.path.exists(worker_id_path):
         with open(worker_id_path, "r") as file:
-            return int(file.read().strip())
+            try:
+                return int(file.read().strip())
+            except ValueError:
+                logger.warning(f"Invalid content in worker_id file: {worker_id_path}. Ignoring.")
+                return None
     return None
 
 
