@@ -13,6 +13,7 @@ from gpustack_runtime.deployer import (
     get_workload,
     WorkloadStatusStateEnum,
     delete_workload,
+    list_workloads,
 )
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
@@ -126,6 +127,81 @@ class ServeManager:
         self._clientset_getter = clientset_getter
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
+
+    def reconnect_existing_model_instances(self):
+        """
+        Reconnect to existing model instances after worker restart.
+
+        This method is called after worker registration to reconnect to
+        existing model instances that were running before the restart.
+        It checks which workloads still exist in Kubernetes and either:
+        - Reconnects to running workloads (updates internal state)
+        - Recreates missing workloads
+        """
+        logger.info("Reconnecting to existing model instances...")
+
+        model_instances_page = self._clientset.model_instances.list()
+        if not model_instances_page.items:
+            logger.info("No model instances to reconnect.")
+            return
+
+        current_workloads = {w.name: w for w in list_workloads()}
+
+        reconnect_count = 0
+        recreate_count = 0
+
+        for mi in model_instances_page.items:
+            is_main_worker = mi.worker_id == self._worker_id
+            is_subordinate_worker = False
+
+            if not is_main_worker and mi.distributed_servers and mi.distributed_servers.subordinate_workers:
+                is_subordinate_worker = any(
+                    sw.worker_id == self._worker_id
+                    for sw in mi.distributed_servers.subordinate_workers
+                )
+
+            if not is_main_worker and not is_subordinate_worker:
+                continue
+
+            if mi.state not in [
+                ModelInstanceStateEnum.RUNNING,
+                ModelInstanceStateEnum.STARTING,
+                ModelInstanceStateEnum.INITIALIZING,
+            ]:
+                continue
+
+            deployment_metadata = mi.get_deployment_metadata(self._worker_id)
+            if not deployment_metadata:
+                continue
+
+            workload_name = deployment_metadata.name
+
+            if workload_name in current_workloads:
+                workload = current_workloads[workload_name]
+                logger.info(
+                    f"Reconnecting to existing model instance {mi.name}: "
+                    f"workload {workload_name} is {workload.state}"
+                )
+
+                self._model_instance_by_instance_id[mi.id] = mi
+
+                if workload.state == WorkloadStatusStateEnum.RUNNING:
+                    if mi.port:
+                        if self._assigned_ports.get(mi.id) is None:
+                            self._assigned_ports[mi.id] = set()
+                        self._assigned_ports[mi.id].add(mi.port)
+
+                reconnect_count += 1
+            else:
+                logger.warning(
+                    f"Workload {workload_name} for model instance {mi.name} not found. "
+                    "Will be restarted by the event watcher."
+                )
+                recreate_count += 1
+
+        logger.info(
+            f"Reconnection complete: {reconnect_count} connected, {recreate_count} need restart."
+        )
 
     async def watch_models(self):
         """

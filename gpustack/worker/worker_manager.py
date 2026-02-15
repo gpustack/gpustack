@@ -27,6 +27,8 @@ from gpustack.utils.uuid import (
     get_worker_name,
     set_legacy_uuid,
     get_legacy_uuid,
+    set_worker_id,
+    get_worker_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,23 +112,27 @@ class WorkerManager:
             with open(os.path.join(self._cfg.data_dir, 'external_id'), 'r') as f:
                 external_id = f.read()
 
+        existing_worker_id = get_worker_id(self._cfg.data_dir)
+
         workerStatus = self._collector.timed_collect(initial=True)
         # Set empty name if not specified to avoid validation error
         workerUpdate = WorkerUpdate(
             name=name or "",
             labels=self._ensure_builtin_labels(),
         )
-        to_register = WorkerCreate.model_validate(
-            {
-                **workerStatus.model_dump(),
-                **workerUpdate.model_dump(),
-                "external_id": external_id,
-            }
-        )
+        register_data = {
+            **workerStatus.model_dump(),
+            **workerUpdate.model_dump(),
+            "external_id": external_id,
+        }
+        if existing_worker_id is not None:
+            register_data["worker_id"] = existing_worker_id
+        to_register = WorkerCreate.model_validate(register_data)
         created = self._registration_client.create(to_register)
         logger.info(f"Worker {created.name} registered with worker_id {created.id}.")
         set_worker_name(self._cfg.data_dir, created.name)
         set_legacy_uuid(self._cfg.data_dir, created.worker_uuid)
+        set_worker_id(self._cfg.data_dir, created.id)
         return created
 
     def _register_shutdown_hooks(self):
