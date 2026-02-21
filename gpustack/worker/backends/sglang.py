@@ -14,6 +14,7 @@ from gpustack_runtime.deployer import (
     WorkloadPlan,
     create_workload,
     ContainerRestartPolicyEnum,
+    ContainerMount,
 )
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
@@ -129,6 +130,18 @@ class SGLangServer(InferenceServer):
         command_args: List[str],
         env: Dict[str, str],
     ):
+        # Store workload name for management operations
+        self._workload_name = self._model_instance.name
+
+        # Get resources configuration
+        resources = self._get_configured_resources()
+
+        # Setup container mounts
+        mounts = self._get_configured_mounts()
+        # Add SSD mount for HiCache L3 cache if configured
+        self._add_hicache_ssd_mount(mounts)
+
+        # Get SGLang image name
         image = self._get_configured_image()
         if not image:
             raise ValueError("Can't find compatible SGLang image")
@@ -443,6 +456,7 @@ class SGLangServer(InferenceServer):
     def _get_hicache_arguments(self) -> List[str]:
         """
         Get hierarchical KV cache arguments for SGLang.
+        Supports L1 (GPU VRAM), L2 (CPU RAM), and L3 (SSD Disk) cache.
         """
         extended_kv_cache = self._model.extended_kv_cache
         if not (extended_kv_cache and extended_kv_cache.enabled):
@@ -473,7 +487,59 @@ class SGLangServer(InferenceServer):
                 ]
             )
 
+        # SSD (L3) cache configuration
+        # kv_cache_dir is configured at worker level, disk_size is configured at model level
+        if self._config.kv_cache_dir:
+            # Note: SGLang HiCache disk cache support may vary by version
+            # These parameters are added for future compatibility
+            arguments.extend(
+                [
+                    "--hicache-disk-path",
+                    self._config.kv_cache_dir,
+                ]
+            )
+            if extended_kv_cache.disk_size and extended_kv_cache.disk_size > 0:
+                arguments.extend(
+                    [
+                        "--hicache-disk-size",
+                        str(extended_kv_cache.disk_size),
+                    ]
+                )
+
         return arguments
+
+    def _add_hicache_ssd_mount(self, mounts: List[ContainerMount]):
+        """
+        Add SSD mount for HiCache L3 cache if kv_cache_dir is configured.
+        kv_cache_dir is configured at worker level via config.
+
+        Args:
+            mounts: List of container mounts to append to
+        """
+        extended_kv_cache = self._model.extended_kv_cache
+        if not (extended_kv_cache and extended_kv_cache.enabled):
+            return
+
+        # kv_cache_dir is configured at worker level via config
+        if not self._config.kv_cache_dir:
+            return
+
+        # Check if the path exists on the host
+        kv_cache_dir = self._config.kv_cache_dir
+        if os.path.exists(kv_cache_dir):
+            # Mount the SSD path to the container
+            # Use the same path inside the container for simplicity
+            mounts.append(
+                ContainerMount(
+                    path=kv_cache_dir,
+                )
+            )
+            logger.info(f"Added SSD mount for HiCache L3 cache: {kv_cache_dir}")
+        else:
+            logger.warning(
+                f"KV cache directory for HiCache L3 cache does not exist on host: {kv_cache_dir}. "
+                "Please ensure the path exists or create it before deploying the model."
+            )
 
     def _get_multinode_arguments(self, is_distributed_leader: bool) -> List[str]:
         """
