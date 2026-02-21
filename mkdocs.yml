@@ -101,10 +101,12 @@ nav:
               - Rerank: user-guide/playground/rerank.md
           - Model Catalog: user-guide/model-catalog.md
           - Model Deployment Management: user-guide/model-deployment-management.md
+          - My Models: user-guide/my-models.md
           - Inference Backend Management: user-guide/inference-backend-management.md
           - Built-in Inference Backends: user-guide/built-in-inference-backends.md
           - Compatibility Check: user-guide/compatibility-check.md
           - Model File management: user-guide/model-file-management.md
+          - Worker Mantenance Mode: user-guide/worker-maintenance-mode.md
           - Cluster Management: user-guide/cluster-management.md
           - Cloud Credential Management: user-guide/cloud-credential-management.md
           - API Key Management: user-guide/api-key-management.md
