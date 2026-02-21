@@ -101,6 +101,8 @@ nav:
               - Rerank: user-guide/playground/rerank.md
           - Model Catalog: user-guide/model-catalog.md
           - Model Deployment Management: user-guide/model-deployment-management.md
+          - Model Route Management: user-guide/model-route-management.md
+          - Model Provider Management: user-guide/model-provider-management.md
           - Inference Backend Management: user-guide/inference-backend-management.md
           - Built-in Inference Backends: user-guide/built-in-inference-backends.md
           - Compatibility Check: user-guide/compatibility-check.md
@@ -127,6 +129,7 @@ nav:
           - Using Custom Inference Backend: tutorials/using-custom-backends.md
           - Adding a GPU Cluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
           - Adding a GPU Cluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
+          - Managing Model Routes: tutorials/managing-model-routes.md
       - Integrations:
           - Inference APIs: integrations/inference-apis.md
           - Integrate with Claude Code: integrations/integrate-with-claude-code.md
