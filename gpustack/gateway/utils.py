@@ -264,7 +264,8 @@ def provider_registry(provider: ModelProvider) -> Optional[McpBridgeRegistry]:
         protocol = "http"
         port = 80
     registry_type = "dns"
-    if is_ipaddress(domain):
+    parsed_domain = urlparse(f"//{domain}")
+    if is_ipaddress(parsed_domain.hostname):
         registry_type = "static"
         port = 80
     elif result.port is not None:
