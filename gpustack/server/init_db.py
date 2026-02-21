@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import threading
 import time
 import re
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -41,24 +40,6 @@ logger = logging.getLogger(__name__)
 
 SLOW_QUERY_THRESHOLD_SECOND = 0.5
 
-# Query counter for performance monitoring
-_query_counter = 0
-_query_counter_lock = threading.Lock()
-
-
-def increment_query_count_sync():
-    """Increment the global query counter (synchronous version)."""
-    global _query_counter
-    with _query_counter_lock:
-        _query_counter += 1
-
-
-def get_query_count() -> int:
-    """Get the current query count."""
-    global _query_counter
-    with _query_counter_lock:
-        return _query_counter
-
 
 async def init_db(db_url: str):
     if db.engine is None:
@@ -90,14 +71,28 @@ async def init_db_engine(db_url: str):
     else:
         raise Exception(f"Unsupported database URL: {db_url}")
 
-    engine = create_async_engine(
+    # Use the new init_engine function from db module
+    # 使用 db 模块中的新 init_engine 函数
+    engine = db.init_engine(
         db_url,
-        echo=envs.DB_ECHO,
         pool_size=envs.DB_POOL_SIZE,
         max_overflow=envs.DB_MAX_OVERFLOW,
-        pool_timeout=envs.DB_POOL_TIMEOUT,
         connect_args=connect_args,
     )
+    
+    """
+    变更：使用新的 init_engine 函数代替直接调用 create_async_engine
+    Change: Use the new init_engine function instead of directly calling create_async_engine
+    
+    原因：
+    - 提供连接池管理，优化多 Server 环境下的数据库连接
+    - 支持连接池配置，如 pool_size 和 max_overflow
+    - 确保数据库引擎的单例模式
+    Reasons:
+    - Provide connection pool management to optimize database connections in multi-server environments
+    - Support connection pool configuration such as pool_size and max_overflow
+    - Ensure singleton pattern for database engine
+    """
     return engine
 
 
@@ -154,14 +149,6 @@ def listen_events(engine: AsyncEngine):
             event.listen(
                 engine.sync_engine, "after_cursor_execute", after_cursor_execute
             )
-
-    # Always count queries for performance monitoring
-    event.listen(engine.sync_engine, "after_cursor_execute", count_query)
-
-
-def count_query(conn, cursor, statement, parameters, context, executemany):
-    """Increment the global query counter for each query executed."""
-    increment_query_count_sync()
 
 
 def setup_sqlite_pragmas(conn, record):
