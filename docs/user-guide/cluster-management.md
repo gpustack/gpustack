@@ -8,7 +8,7 @@ GPUStack supports cluster-based worker management and provides multiple cluster 
 2. Click the `Add Cluster` button.
 3. Select a cluster provider. There are `Docker` and `Kubernetes` for the `Self-Host` provider and `DigitalOcean` for the `Cloud Provider`.
 4. Depending on the provider, different options need to be set in the `Base Configuration` and `Add Worker` steps.
-5. The `Advanced` cluster settings in the Base Configuration allow you to specify the GPUStack Server URL for worker connections and pre-configure worker options using the `Worker Configuration YAML`.
+5. The `Advanced` cluster settings in the Base Configuration allow you to pre-configure the worker options using the `Worker Configuration YAML`.
 
 ### Create Docker Cluster
 
@@ -18,7 +18,6 @@ GPUStack supports cluster-based worker management and provides multiple cluster 
 4. `Select the GPU vendor`. Tested vendors include `Nvidia`, `AMD`, and `Ascend`. Experimental vendors include `Hygon`, `Moore Threads`, `Iluvatar`, `Cambricon`, and `Metax`. Click `Next` after selecting a vendor.
 5. `Check Environment`. A shell command is provided to verify your environment is ready to add a worker. Copy the script and run it in your environment. Click `Next` after the script returns OK.
 6. `Specify arguments` for the worker to be added. Provide the following arguments and click `Next`:
-
    - `Specify the worker IP`, or let the worker `Auto-detect the Worker IP`. Make sure the worker IP is accessible from the server.
    - Specify a `Additional Volume Mount` for the worker container. The mount path can be used to reuse existing model files.
 
@@ -48,7 +47,7 @@ The kubernetes can be registerred after the cluster is created.
 
 ### Creating DigitalOcean Cluster
 
-1. In the `Basic Configuration` step, the `Name` field is required and `Description` is optional. Create or select a Cloud Credential for communicating with the DigitalOcean API. Select a Region that supports GPU Droplets. You must also configure the GPUStack `Server URL`, which will be accessible from the newly created DigitalOcean Droplets.
+1. In the `Basic Configuration` step, the `Name` field is required and `Description` is optional. Create or select a Cloud Credential for communicating with the DigitalOcean API. Select a Region that supports GPU Droplets. You must also configure the `GPUStack Server URL`, which will be accessible from the newly created DigitalOcean Droplets.
 2. Click `Next`.
 3. Adding one or more `Worker Pools`. For each pool, `Name`, `Instance Type`, `OS Image`, `Replicas`, `Batch Size`, `Labels` and `Volumes` can be specified.
 4. Click `Save` after the worker pools are configured.
@@ -75,7 +74,7 @@ You can manage worker pools for DigitalOcean clusters on the `Clusters` page:
 1. Go to the `Clusters` page.
 2. Find the cluster which you want to edit.
 3. Click the `Edit` button.
-4. Update the `Name`, `Description`, `Server URL` and `Worker Configuration YAML` as needed.
+4. Update the `Name`, `Description` and `Worker Configuration YAML` as needed.
 5. Click the `Save` button.
 
 ## Delete Cluster
