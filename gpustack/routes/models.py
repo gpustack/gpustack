@@ -30,6 +30,7 @@ from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
+    ModelSpecBase,
     ModelUpdate,
     ModelPublic,
     ModelsPublic,
@@ -216,10 +217,13 @@ async def get_model_instances(session: SessionDep, id: int, params: ListParamsDe
 
 
 async def validate_model_in(
-    session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
+    session: SessionDep,
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+    *,
+    cluster_id: Optional[int] = None,
 ):
     if model_in.gpu_selector is not None and model_in.replicas > 0:
-        await validate_gpu_ids(session, model_in)
+        await validate_gpu_ids(session, model_in, cluster_id=cluster_id)
 
     if model_in.backend_parameters:
         param_gpu_layers = find_parameter(
@@ -255,8 +259,14 @@ async def validate_model_in(
 
 
 async def validate_gpu_ids(  # noqa: C901
-    session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
+    session: SessionDep,
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+    *,
+    cluster_id: Optional[int] = None,
 ):
+    effective_cluster_id = (
+        cluster_id if cluster_id is not None else getattr(model_in, "cluster_id", None)
+    )
 
     if (
         model_in.gpu_selector
@@ -291,8 +301,13 @@ async def validate_gpu_ids(  # noqa: C901
         gpu_index = safe_int(matched.get("gpu_index"), -1)
         worker_name_set.add(worker_name)
 
+        if effective_cluster_id is None:
+            raise BadRequestException(
+                message=f"A cluster context is required for manual GPU selection, but was not provided. Cannot validate worker '{worker_name}'."
+            )
+
         worker = await WorkerService(session).get_by_cluster_id_name(
-            model_in.cluster_id, worker_name
+            effective_cluster_id, worker_name
         )
         if not worker:
             raise BadRequestException(message=f"Worker {worker_name} not found")
