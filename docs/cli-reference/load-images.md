@@ -15,7 +15,7 @@ gpustack load-images [OPTIONS] [input]
 ## Configurations
 
 | <div style="width:220px">Flag</div>                                   | <div style="width:120px">Default</div>                          | Description                                                             |
-|-----------------------------------------------------------------------|-----------------------------------------------------------------|-------------------------------------------------------------------------|
+| --------------------------------------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `--repository` `REPOSITORY`                                           | (empty)                                                         | Filter images by repository name                                        |
 | `--platform` `{linux/amd64,linux/arm64}`                              | (empty)                                                         | Filter images by platform                                               |
 | `--deprecated`                                                        |                                                                 | Include deprecated images in the listing                                |
@@ -23,8 +23,6 @@ gpustack load-images [OPTIONS] [input]
 | `--max-retries` `MAX_RETRIES`                                         | `1`                                                             | Maximum number of retries for copying an image                          |
 | `--destination`, `--dest` `DESTINATION`                               | `docker.io` (env: `GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY`) | Override destination registry                                           |
 | `--destination-namespace`, `--dest-namespace` `DESTINATION_NAMESPACE` | (env: `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_CONTAINER_NAMESPACE`)    | Override namespace in the destination registry                          |
-| `--destination-username`, `--dest-user` `DESTINATION_USERNAME`        | (env: `DESTINATION_USERNAME`)                                   | Username for destination registry authentication                        |
-| `--destination-password`, `--dest-passwd` `DESTINATION_PASSWORD`      | (env: `DESTINATION_PASSWORD`)                                   | Password/Token for destination registry authentication                  |
-| `--archive-format`                                                    | `oci`                                                           | Archive format to save                                                  |
-| `--storage`                                                           | `docker`                                                        | Container image storage to load images into                             |
+| `--archive-format` `{oci,docker}`                                     | `oci`                                                           | Archive format to save                                                  |
+| `--storage` `{docker,podman}`                                         | `docker`                                                        | Container image storage to load images into                             |
 | `input`                                                               | (current working directory)                                     | Input directory to load images from                                     |
