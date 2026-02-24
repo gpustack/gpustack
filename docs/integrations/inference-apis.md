@@ -13,6 +13,7 @@ The following API endpoints are supported:
 - [x] [List Models](https://platform.openai.com/docs/api-reference/models/list)
 - [x] [Create Completion](https://platform.openai.com/docs/api-reference/completions/create)
 - [x] [Create Chat Completion](https://platform.openai.com/docs/api-reference/chat/create)
+- [x] [Create Response](https://platform.openai.com/docs/api-reference/responses/create)
 - [x] [Create Embeddings](https://platform.openai.com/docs/api-reference/embeddings/create)
 - [x] [Create Image](https://platform.openai.com/docs/api-reference/images/create)
 - [x] [Create Image Edit](https://platform.openai.com/docs/api-reference/images/createEdit)
