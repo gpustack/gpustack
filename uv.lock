@@ -2002,8 +2002,8 @@ requires-dist = [
     { name = "dataclasses-json", specifier = ">=0.6.7" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
-    { name = "gpustack-runner", specifier = ">=0.1.25.post4" },
-    { name = "gpustack-runtime", specifier = "==0.1.42.post5" },
+    { name = "gpustack-runner", specifier = "==0.1.25.post4" },
+    { name = "gpustack-runtime", specifier = "==0.1.42.post6" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2094,7 +2094,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.42.post5"
+version = "0.1.42.post6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -2112,9 +2112,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "types-protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e0/f2/7d6d0d0a2aada9596831f2cf93a6e31b9b5bb4c55171dc2ca61a75ce6e7b/gpustack_runtime-0.1.42.post5.tar.gz", hash = "sha256:7c43ad3ee6caf1b2699f23036c81e2e2d01f0dd1612ff4c1e792df5f562d08c9", size = 1495948, upload-time = "2026-02-11T09:40:22.078Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/9a/6d72f5a59c2c00e217c3322d05b56a6573f950258dbefe6db5396353937b/gpustack_runtime-0.1.42.post6.tar.gz", hash = "sha256:5bb7c7a2210c7b14f2de95be28e66d5cc36e1cd4ac29c92fe6ebb976b134552f", size = 1495960, upload-time = "2026-02-24T01:36:10.638Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/2c/7013bb4d83727c25269161a12aabc09b6320198b249353accbf7a403b819/gpustack_runtime-0.1.42.post5-py3-none-any.whl", hash = "sha256:b59440b713d43de53caccc2744a30834a54a18c1acbab7ba61ee6b18e1aacb98", size = 1475274, upload-time = "2026-02-11T09:40:19.484Z" },
+    { url = "https://files.pythonhosted.org/packages/57/fe/04e752ee793f3a12c45f7fb559fb6d6350d45c2165f672e241997e64631b/gpustack_runtime-0.1.42.post6-py3-none-any.whl", hash = "sha256:fffde23e343bd091b9be0200f9cd21c83c02ad76a712e10834e0b607cbe0c553", size = 1475280, upload-time = "2026-02-24T01:36:08.966Z" },
 ]
 
 [[package]]
