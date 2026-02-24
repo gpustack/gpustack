@@ -101,7 +101,12 @@ async def evaluate_models(
 
     async def evaluate(model: ModelSpec):
         return await evaluate_model_with_cache(
-            config, session, model, workers, model_instances
+            config,
+            session,
+            model,
+            workers,
+            model_instances,
+            cluster_id=cluster_id,
         )
 
     tasks = [evaluate(model) for model in model_specs]
@@ -152,6 +157,7 @@ async def evaluate_model_with_cache(
     model: ModelSpec,
     workers: List[Worker],
     model_instances: List[ModelInstance],
+    cluster_id: Optional[int] = None,
 ) -> ModelEvaluationResult:
     cache_key = make_hashable_key(model, workers)
     if cache_key in evaluate_cache:
@@ -163,7 +169,7 @@ async def evaluate_model_with_cache(
     try:
         async with evaluate_model_limiter:
             result = await evaluate_model(
-                config, session, model, workers, model_instances
+                config, session, model, workers, model_instances, cluster_id=cluster_id
             )
             evaluate_cache[cache_key] = result
     except Exception as e:
@@ -184,6 +190,7 @@ async def evaluate_model(
     model: ModelSpec,
     workers: List[Worker],
     model_instances: List[ModelInstance],
+    cluster_id: Optional[int] = None,
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
@@ -193,7 +200,7 @@ async def evaluate_model(
     await set_gguf_model_file_path(config, model)
 
     evaluations = [
-        (evaluate_model_input, (session, model)),
+        (evaluate_model_input, (session, model, cluster_id)),
         (evaluate_model_metadata, (config, model, workers)),
         (evaluate_environment, (model, workers)),
     ]
@@ -401,9 +408,10 @@ async def evaluate_model_metadata(
 async def evaluate_model_input(
     session: AsyncSession,
     model: ModelSpec,
+    cluster_id: Optional[int] = None,
 ) -> Tuple[bool, List[str]]:
     try:
-        await validate_model_in(session, model)
+        await validate_model_in(session, model, cluster_id=cluster_id)
     except HTTPException as e:
         return False, [e.message]
     except Exception as e:
