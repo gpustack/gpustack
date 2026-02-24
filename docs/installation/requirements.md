@@ -8,7 +8,7 @@ GPUStack supports most modern Linux distributions on **AMD64** and **ARM64** arc
 
 !!! note
 
-    - GPUStack is not recommended for direct installation via PyPi. For best compatibility, use the provided Docker images.
+    - GPUStack is not supported for direct installation via PyPi. For best compatibility, use the provided Docker images.
     - The Network Time Protocol (NTP) package must be installed to ensure consistent state synchronization between nodes.
 
 ## Accelerator Runtime Requirements
@@ -31,7 +31,7 @@ Ensure all required drivers and toolkits are installed before running GPUStack.
 
 #### Requirements
 
-- [NVIDIA GPU Driver](https://www.nvidia.com/en-us/drivers/) that supports NVIDIA CUDA 12.4 or higher.
+- [NVIDIA GPU Driver](https://www.nvidia.com/en-us/drivers/) that supports NVIDIA CUDA 12.6 or higher.
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit)
 
 Run the following commands to verify:
@@ -81,7 +81,7 @@ sudo docker info 2>/dev/null | grep -q "amd" \
 #### Requirements
 
 - [Ascend NPU Driver](https://www.hiascend.com/hardware/firmware-drivers/community)
-- [Ascend Docker Runtime](https://www.hiascend.com/document/detail/zh/mindcluster/72rc1/clustersched/dlug/dlug_installation_017.html)
+- [Ascend Docker Runtime](https://www.hiascend.com/document/detail/zh/mindcluster/730/clustersched/dlug/dlug_installation_017.html)
 
 Run the following commands to verify:
 
@@ -122,7 +122,7 @@ sudo hy-smi
 
 #### Supported Devices
 
-- [x] Hygon DCUs (K100_AI (Verified), Z100/Z100L/K100(Not Verified))
+- [x] Hygon DCUs
 
 #### Supported Inference Backends
 
