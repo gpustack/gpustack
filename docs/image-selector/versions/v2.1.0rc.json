@@ -91,7 +91,7 @@
   "gpustack/runner:rocm6.4-vllm0.11.2",
   "gpustack/runner:rocm6.4-vllm0.10.2",
   "gpustack/runtime:pause",
-  "gpustack/benchmark-runner:latest",
+  "gpustack/benchmark-runner:v0.0.2",
   "postgres:17.7",
   "prom/prometheus:v3.9.1",
   "grafana/grafana:12.3"
