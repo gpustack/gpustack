@@ -11,12 +11,14 @@ write_files:
   - path: /var/lib/gpustack/config.yaml
     permissions: '0600'
     content: |
-      server_url: {{ server_url }}
-      token: {{ token }}
+      server_url: "{{ server_url }}"
+      token: "{{ token }}"
+      worker_name: "{{ worker_name }}"
       {%- for k, v in secret_configs.items() %}
+      {%- if v is not none %}
       {{ k }}: {{ v }}
+      {%- endif %}
       {%- endfor %}
-        
 
   - path: /opt/gpustack-run-worker.sh
     permissions: '0755'
@@ -83,12 +85,15 @@ class UserDataTemplate:
     setup_driver: Optional[ManufacturerEnum]
     _data: Optional[Dict[str, Any]]
     secret_configs: Dict[str, Any]
+    # worker related data
+    worker_name: str
 
     def __init__(
         self,
         server_url: str,
         token: str,
         image_name: str,
+        worker_name: str,
         secret_configs: Dict[str, Any] = {},
     ):
         self.server_url = server_url
@@ -96,6 +101,7 @@ class UserDataTemplate:
         self.image_name = image_name
         self.install_driver = None
         self.setup_driver = None
+        self.worker_name = worker_name
         self.distribution = None
         self.secret_configs = secret_configs
         template = jinja2.Environment().from_string(default_user_data_template_jinja)
@@ -105,6 +111,7 @@ class UserDataTemplate:
                 token=self.token,
                 image_name=self.image_name,
                 secret_configs=self.secret_configs,
+                worker_name=self.worker_name,
             )
         )
         self.distribution = "ubuntu"

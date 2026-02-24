@@ -56,6 +56,7 @@ async def list(
         fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
+        options=WORKER_POOL_LOAD_OPTIONS,
     )
 
 
@@ -81,9 +82,7 @@ async def update(session: SessionDep, id: int, input: WorkerPoolUpdate):
             message=f"Failed to update worker pool {id}: {e}"
         )
 
-    return await WorkerPool.one_by_id(
-        session, id, options=[selectinload(WorkerPool.pool_workers)]
-    )
+    return await WorkerPool.one_by_id(session, id, options=WORKER_POOL_LOAD_OPTIONS)
 
 
 @router.delete("/{id}")

@@ -7,6 +7,7 @@ def test_userdata_template_basic():
         server_url="http://test-server",
         token="test-token",
         image_name="gpustack/test:latest",
+        worker_name="test-worker",
     )
     template.distribution = "ubuntu"
     template.install_driver = ManufacturerEnum.NVIDIA
@@ -32,6 +33,7 @@ def test_userdata_template_no_driver():
         server_url="http://test-server",
         token="test-token",
         image_name="gpustack/test:latest",
+        worker_name="test-worker",
     )
     template.distribution = "ubuntu"
     template.install_driver = None
@@ -47,6 +49,7 @@ def test_userdata_template_debian():
         server_url="http://test-server",
         token="test-token",
         image_name="gpustack/test:latest",
+        worker_name="test-worker",
     )
     template.distribution = "debian"
     template.install_driver = ManufacturerEnum.NVIDIA
@@ -65,6 +68,7 @@ def test_userdata_template_env_in_worker_script():
         server_url="http://test-server",
         token="test-token",
         image_name="gpustack/test:latest",
+        worker_name="test-worker",
     )
     template.distribution = "ubuntu"
     result = template.format()
@@ -82,9 +86,35 @@ def test_userdata_template_setup_driver():
         server_url="http://test-server",
         token="test-token",
         image_name="gpustack/test:latest",
+        worker_name="test-worker",
     )
     template.distribution = "ubuntu"
     template.setup_driver = ManufacturerEnum.NVIDIA
     result = template.format()
     data = yaml.safe_load(result)
     assert any("nvidia-ctk runtime configure" in cmd for cmd in data["runcmd"])
+
+
+def test_userdata_template_secret_configs():
+    template = UserDataTemplate(
+        server_url="http://test-server",
+        token="test-token",
+        image_name="gpustack/test:latest",
+        worker_name="test-worker",
+        secret_configs={
+            "SECRET_KEY": "mysecret",
+            "OPTIONAL_KEY": None,
+            "ANOTHER_KEY": 123,
+        },
+    )
+    template.distribution = "ubuntu"
+    result = template.format()
+    data = yaml.safe_load(result)
+    config_file = next(
+        f for f in data["write_files"] if f["path"] == "/var/lib/gpustack/config.yaml"
+    )
+    content = config_file["content"]
+    # SECRET_KEY and ANOTHER_KEY should appear, OPTIONAL_KEY should not
+    assert "SECRET_KEY: mysecret" in content
+    assert "ANOTHER_KEY: 123" in content
+    assert "OPTIONAL_KEY" not in content
