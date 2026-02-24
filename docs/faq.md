@@ -182,6 +182,24 @@ Try restarting the GPUStack container where the model is scheduled. If the issue
 
 Move the mouse over the `Error` status to view the reason. If there is a `View More` button, click it to check the error messages in the model logs and analyze the cause of the error.
 
+### Why does the model fail to start when using a custom backend version based on the official vLLM image with `PYPI_PACKAGES_INSTALL`?
+
+When deploying a model using a custom vLLM backend version based on the official vLLM image, the model may fail to start if `PYPI_PACKAGES_INSTALL` is used to install additional Python packages.
+
+You may see an error similar to:
+
+```bash
+/gpustack-command-xxxxxxxx: 40: /path/to/your_model: Permission denied
+```
+
+This happens because the container starts with a custom command instead of the image’s default entrypoint.
+
+In `Inference Backends` → `vLLM` → `Edit` → `Versions Config`, edit the corresponding version and set Override Image Entrypoint to:
+
+```bash
+vllm serve
+```
+
 ### Why doesn’t deleting a model free up disk space?
 
 This is to avoid re-downloading the model when redeploying. You need to clean it up in `Model Files` manually.
