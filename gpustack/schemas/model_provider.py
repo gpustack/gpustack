@@ -367,7 +367,14 @@ class OpenAIConfig(BaseProviderConfig):
 
     def get_base_url(self) -> Optional[str]:
         if self.openaiCustomUrl:
-            return self.openaiCustomUrl
+            # for openai compatible provider, if the custom url is provided and it ends with /v1,
+            # we will trim the /v1 part to be compatible with openai sdk which will add /v1 by itself.
+            # e.g. if user input http://my-openai.com/v1, we will trim it to http://my-openai.com
+            # to avoid the final url to be http://my-openai.com/v1/v1 which is incorrect.
+            cleaned_url = self.openaiCustomUrl.rstrip("/")
+            if cleaned_url.endswith("/v1"):
+                return cleaned_url[:-3]
+            return cleaned_url
         return super().get_base_url()
 
 
