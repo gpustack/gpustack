@@ -16,7 +16,7 @@ const CONFIG = {
     cardFrameworkMap: {
         'nvidia': 'CUDA', 'amd': 'ROCm', 'ascend': 'CANN', 'hygon': 'DTK',
         'mthreads': 'MUSA', 'iluvatar': 'CoreX', 'cambricon': 'Neuware',
-        'maxx': 'MACA', 't-head': 'HGGC'
+        'maca': 'MACA', 't-head': 'HGGC'
     },
     // Standard case mapping for inference engine names
     backendNameMap: {
@@ -105,9 +105,9 @@ const CONFIG = {
                 'monitoring': '监控套件 - 包含 Prometheus 和 Grafana（可选组件）'
             },
             'cards': {
-                'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': '昇腾', 'hygon': '海光', 
-                'mthreads': '摩尔线程', 'iluvatar': '天数智芯', 'cambricon': '寒武纪', 
-                'maxx': '沐曦', 't-head': '平头哥 PPU'
+                'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': '昇腾', 'hygon': '海光',
+                'mthreads': '摩尔线程', 'iluvatar': '天数智芯', 'cambricon': '寒武纪',
+                'maca': '沐曦', 't-head': '平头哥 PPU'
             }
         },
         'en': {
@@ -190,9 +190,9 @@ const CONFIG = {
                 'monitoring': 'Monitoring Suite - Includes Prometheus and Grafana (optional components)'
             },
             'cards': {
-                'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': 'Ascend', 'hygon': 'Hygon', 
-                'mthreads': 'MThreads', 'iluvatar': 'Iluvatar', 'cambricon': 'Cambricon', 
-                'maxx': 'MetaX', 't-head': 'T-Head PPU'
+                'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': 'Ascend', 'hygon': 'Hygon',
+                'mthreads': 'MThreads', 'iluvatar': 'Iluvatar', 'cambricon': 'Cambricon',
+                'maca': 'MetaX', 't-head': 'T-Head PPU'
             }
         }
     }
@@ -215,10 +215,10 @@ const elements = {};
 async function init() {
     initElements();
     bindEvents();
-    updateLanguage(); 
+    updateLanguage();
     await loadData();
     // Show content after initialization
-    document.body.classList.add('i18n-ready'); 
+    document.body.classList.add('i18n-ready');
 }
 
 // Initialize DOM elements
@@ -336,17 +336,17 @@ function updateLanguage() {
     const lang = state.currentLang;
     const data = CONFIG.i18n[lang];
     const version = state.selectedGpuStackVersion || 'latest';
-    
+
     // Translate page title
-    document.title = data.title; 
-    
+    document.title = data.title;
+
     elements.currentLangBtn.textContent = lang === 'zh' ? '简体中文' : 'English';
-    
+
     // Get current image lists for dynamic placeholders
     const allImgs = getCurrentImages('all');
     const serverImgs = getCurrentImages('server').join(' ');
     const workerImgs = getCurrentImages('worker').join(' ');
-    
+
     // Generate tag & push commands under 'gpustack' namespace
     const tagPushCmds = allImgs.map(img => {
         const parts = img.split(':');
@@ -371,7 +371,7 @@ function updateLanguage() {
     });
     const copyImagesEl = document.getElementById('copy-images-command');
     if (copyImagesEl) copyImagesEl.textContent = data.copy_images_cmd;
-    
+
     // Hide China Mirror in English mode
     elements.registryChina.style.display = (lang === 'en') ? 'none' : 'block';
 }
@@ -464,7 +464,7 @@ function renderCardSelector() {
         { id: 'mthreads', name: cardDict.mthreads, framework: 'MUSA' },
         { id: 'iluvatar', name: cardDict.iluvatar, framework: 'CoreX' },
         { id: 'cambricon', name: cardDict.cambricon, framework: 'Neuware' },
-        { id: 'maxx', name: cardDict.maxx, framework: 'MACA' },
+        { id: 'maca', name: cardDict.maca, framework: 'MACA' },
         { id: 't-head', name: cardDict.t_head || cardDict['t-head'], framework: 'HGGC' }
     ];
     allCards.forEach(card => {
