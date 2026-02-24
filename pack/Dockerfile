@@ -401,14 +401,14 @@ ARG GOPROXY="https://proxy.golang.org"
 RUN <<EOF
     # Skopeo
 
-    REQUIRED_SKOPEO_VERSION=1.13.3
+    REQUIRED_SKOPEO_VERSION=1.20.0
     # Install Skopeo for images mirroring
     apt-get update -y && apt-get install -y --no-install-recommends \
         skopeo
 
     IFS="." read -r MAJOR MINOR PATCH <<< "$(skopeo --version | awk '{print $3}' | cut -d'-' -f1)"
-    if (( MAJOR < 1 || ( MAJOR == 1 && MINOR < 14 ) )); then
-        GOLANG_VERSION=1.18.10
+    if (( MAJOR < 1 || ( MAJOR == 1 && MINOR < 21 ) )); then
+        GOLANG_VERSION=1.23.3
         echo "Skopeo version ${MAJOR}.${MINOR} is lower than required ${REQUIRED_SKOPEO_VERSION}, upgrading from source..."
 
         apt-get install -y --no-install-recommends \
