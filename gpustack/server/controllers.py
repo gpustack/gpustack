@@ -1771,6 +1771,7 @@ class WorkerProvisioningController:
             image_name=get_cluster_image_name(worker.cluster.worker_config),
             os_image=worker.worker_pool.os_image,
             secret_configs=secret_configs,
+            worker_name=worker.name,
         )
         ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
         if ssh_key is None:
