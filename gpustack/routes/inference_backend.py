@@ -842,23 +842,7 @@ async def update_inference_backend(
         )
 
     if backend_in.version_configs is not None:
-        current_versions = {}
-        if backend.version_configs and backend.version_configs.root:
-            current_versions = backend.version_configs.root
-
-        new_versions = {}
-        if backend_in.version_configs and backend_in.version_configs.root:
-            new_versions = backend_in.version_configs.root
-
-        removed_versions = set(current_versions.keys()) - set(new_versions.keys())
-        for version in removed_versions:
-            is_in_use, model_names = await check_backend_in_use(
-                session, backend.backend_name, version
-            )
-            if is_in_use:
-                raise BadRequestException(
-                    message=f"Cannot remove version name '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
-                )
+        await _validate_version_removal(session, backend, backend_in.version_configs)
 
     # Validate version names for custom backends before updating
     if backend.backend_source == BackendSourceEnum.CUSTOM or (
@@ -893,6 +877,7 @@ async def update_inference_backend(
                 for k, v in backend.version_configs.root.items()
                 if v.built_in_frameworks
             }
+            # merge built-in versions with custom versions for update
             built_in_version.update(update_data['version_configs'].root)
             update_data['version_configs'].root = built_in_version
 
@@ -1157,7 +1142,11 @@ async def _validate_version_removal(
     # Get current versions (empty dict if none)
     current_versions = {}
     if backend.version_configs and backend.version_configs.root:
-        current_versions = backend.version_configs.root
+        current_versions = {
+            v: config
+            for v, config in backend.version_configs.root.items()
+            if not config.built_in_frameworks
+        }
 
     # Get new versions (empty dict if none)
     new_versions = {}
