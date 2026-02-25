@@ -84,7 +84,7 @@ sudo docker run -d --name gpustack-worker \
 
 1. Navigate to the `Catalog` page in the GPUStack UI.
 
-2. Select the `Qwen3 0.6B` model from the list of available models.
+2. Select the `Qwen3-0.6B` model from the list of available models.
 
 3. After the deployment compatibility checks pass, click the `Save` button to deploy the model.
 
