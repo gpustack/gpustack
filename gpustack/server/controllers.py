@@ -16,6 +16,9 @@ from gpustack.config.config import (
 )
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
+from gpustack.policies.scorers.score_chain import (
+    ModelInstanceScoreChain,
+)
 from gpustack.policies.base import ModelInstanceScore
 from gpustack.policies.scorers.status_scorer import StatusScorer
 from gpustack.schemas.inference_backend import (
@@ -68,6 +71,7 @@ from gpustack.schemas.users import (
 )
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.utils.model_source import get_draft_model_source
+from gpustack import envs
 from gpustack.server.db import async_session
 from gpustack.server.services import (
     ModelFileService,
@@ -491,36 +495,38 @@ async def get_model_files_for_instance(
 
 
 async def find_scale_down_candidates(
-    instances: List[ModelInstance], model: Model
+    instances: List[ModelInstance],
+    model: Model,
+    *,
+    status_max_score: Optional[float] = None,
+    offload_max_score: Optional[float] = None,
+    placement_max_score: Optional[float] = None,
+    total_max_score: Optional[float] = None,
 ) -> List[ModelInstanceScore]:
     try:
-        placement_scorer = PlacementScorer(
-            model, instances, scale_type=ScaleTypeEnum.SCALE_DOWN
+        if status_max_score is None:
+            status_max_score = envs.SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE
+        if offload_max_score is None:
+            offload_max_score = envs.SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE
+        if placement_max_score is None:
+            placement_max_score = envs.SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE
+
+        chain = ModelInstanceScoreChain(
+            scorers=[
+                StatusScorer(model, max_score=status_max_score),
+                OffloadLayerScorer(model, max_score=offload_max_score),
+                PlacementScorer(
+                    model,
+                    instances,
+                    scale_type=ScaleTypeEnum.SCALE_DOWN,
+                    max_score=placement_max_score,
+                ),
+            ],
+            total_max_score=total_max_score,
         )
-        placement_candidates = await placement_scorer.score_instances(instances)
-
-        offload_layer_scorer = OffloadLayerScorer(model)
-        offload_candidates = await offload_layer_scorer.score_instances(instances)
-
-        status_scorer = StatusScorer(model)
-        status_candidates = await status_scorer.score_instances(instances)
-
-        offload_cand_map = {cand.model_instance.id: cand for cand in offload_candidates}
-        placement_cand_map = {
-            cand.model_instance.id: cand for cand in placement_candidates
-        }
-
-        for cand in status_candidates:
-            score = cand.score * 100
-            offload_candidate = offload_cand_map.get(cand.model_instance.id)
-            score += offload_candidate.score * 10 if offload_candidate else 0
-
-            placement_candidate = placement_cand_map.get(cand.model_instance.id)
-            score += placement_candidate.score if placement_candidate else 0
-            cand.score = score / 111
-
+        final_candidates = await chain.score(instances)
         final_candidates = sorted(
-            status_candidates, key=lambda x: x.score, reverse=False
+            final_candidates, key=lambda x: x.score, reverse=False
         )
         return final_candidates
     except Exception as e:

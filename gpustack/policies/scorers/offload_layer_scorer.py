@@ -4,14 +4,13 @@ from typing import List
 from gpustack.policies.base import ModelInstanceScore, ModelInstanceScorer
 from gpustack.schemas.models import Model, ModelInstance
 
-MaxScore = 100
-
 logger = logging.getLogger(__name__)
 
 
 class OffloadLayerScorer(ModelInstanceScorer):
-    def __init__(self, model: Model):
+    def __init__(self, model: Model, max_score: float = 100.0):
         self._model = model
+        self._max_score = max_score
 
     async def score_instances(
         self, instances: List[ModelInstance]
@@ -47,9 +46,9 @@ class OffloadLayerScorer(ModelInstanceScorer):
             offload_layers = instance.computed_resource_claim.offload_layers
 
             if total_layers == offload_layers:
-                score = MaxScore
+                score = self._max_score
             else:
-                score = offload_layers / total_layers * MaxScore
+                score = offload_layers / total_layers * self._max_score
 
             scored_instances.append(
                 ModelInstanceScore(model_instance=instance, score=score)
