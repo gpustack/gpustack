@@ -14,8 +14,7 @@ from gpustack_runtime.deployer import (
     ContainerPort,
     ContainerRestartPolicyEnum,
 )
-from gpustack_runtime.detector import ManufacturerEnum
-
+from gpustack_runtime.detector import ManufacturerEnum, manufacturer_to_backend
 from gpustack.schemas.models import (
     ModelInstance,
     SpeculativeAlgorithmEnum,
@@ -467,7 +466,10 @@ class VLLMServer(InferenceServer):
 
         if self._model.extended_kv_cache and self._model.extended_kv_cache.enabled:
             vendor, _, _ = self._get_device_info()
-            if vendor in [ManufacturerEnum.NVIDIA, ManufacturerEnum.AMD]:
+            if vendor in {
+                manufacturer_to_backend(ManufacturerEnum.NVIDIA),
+                manufacturer_to_backend(ManufacturerEnum.AMD),
+            }:
                 arguments.extend(
                     [
                         "--kv-transfer-config",
