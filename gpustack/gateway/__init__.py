@@ -308,6 +308,7 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
             "allowed_upstream_headers": [
                 {"exact": "X-Mse-Consumer"},
                 {"exact": "Authorization"},
+                {"exact": "cookie"},
             ]
         },
         "endpoint": {
