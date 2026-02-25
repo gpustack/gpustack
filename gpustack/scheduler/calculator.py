@@ -709,6 +709,13 @@ async def get_pretrained_config_with_workers(
             if config_dict:
                 return PretrainedConfig.from_dict(config_dict)
 
+            # If config_dict is None for LOCAL_PATH, provide a clearer error message
+            if model.source == SourceEnum.LOCAL_PATH:
+                raise ValueError(
+                    f"Model path '{model.local_path}' does not exist or config.json is not found. "
+                    f"Please ensure the model files are available at the specified path."
+                )
+
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             return pretrained_config
 
@@ -737,13 +744,16 @@ def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
     Returns:
         bool: True if should fallback to loading config.json, False otherwise
     """
+    # For LOCAL_PATH models, only fallback if the path exists and is a directory
+    if model.source == SourceEnum.LOCAL_PATH:
+        return bool(model.local_path and os.path.isdir(model.local_path))
+
+    # For other sources, only Hugging Face and ModelScope support config.json fallback
     if model.source not in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
         return False
 
-    if model.backend_version is not None or isinstance(e, ImportError):
-        return True
-
-    return False
+    # Fallback for backend version specified or import errors
+    return model.backend_version is not None or isinstance(e, ImportError)
 
 
 async def check_diffusers_model_index_from_workers(
