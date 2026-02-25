@@ -1,5 +1,7 @@
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
+
+from tests.utils.mock import mock_async_session
 
 from gpustack.policies.utils import (
     get_model_num_attention_heads,
@@ -573,11 +575,15 @@ async def test_select_candidates(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
         m.backend = BackendEnum.VLLM.value
@@ -820,11 +826,15 @@ async def test_select_candidates_from_different_gpu_types(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
         m.backend = BackendEnum.VLLM.value
@@ -882,11 +892,15 @@ async def test_auto_schedule_single_work_single_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -971,11 +985,15 @@ async def test_auto_schedule_single_work_multi_gpu(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
         patch.object(
             VLLMResourceFitSelector,
@@ -1058,11 +1076,15 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1133,11 +1155,15 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1387,11 +1413,15 @@ async def test_output_schedule_msg(config, index, workers, model, expect_msg):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
