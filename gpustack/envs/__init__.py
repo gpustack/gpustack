@@ -10,7 +10,7 @@ DB_POOL_TIMEOUT = int(os.getenv("GPUSTACK_DB_POOL_TIMEOUT", 30))
 # Maximum concurrent subscriptions that can perform initial DB list queries
 # This prevents connection pool exhaustion when many workers reconnect simultaneously
 DB_SUBSCRIBE_INIT_CONCURRENCY = int(
-    os.getenv("GPUSTACK_DB_SUBSCRIBE_INIT_CONCURRENCY", 20)
+    os.getenv("GPUSTACK_DB_SUBSCRIBE_INIT_CONCURRENCY", 5)
 )
 
 # Proxy configuration
