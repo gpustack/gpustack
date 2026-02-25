@@ -882,6 +882,28 @@ model_sets:
         - --enable-auto-tool-choice
         - --tool-call-parser=step3p5
         - --trust-remote-code
+- name: Nanbeige4.1-3B
+  description: Nanbeige4.1-3B is a 3B-parameter language model from Nanbeige LLM Lab, optimized for long-context reasoning, agentic tasks, and tool use.
+  home: https://huggingface.co/Nanbeige
+  icon: /static/catalog_icons/nanbeige.png
+  size: 3
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-02-13"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Nanbeige/Nanbeige4.1-3B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=32768
 # Embedding models
 - name: Qwen3-Embedding-0.6B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
