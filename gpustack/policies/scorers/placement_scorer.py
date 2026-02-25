@@ -4,6 +4,7 @@ from enum import Enum
 import logging
 from typing import Dict, List, Optional
 
+from gpustack import envs
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -23,8 +24,6 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import async_session
-
-MaxScore = 100
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +75,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         model_weight: Optional[ModelWeight] = None,
         inference_server_type_weight: Optional[InferenceServerTypeWeight] = None,
         spread_score_weights: Optional[SpreadScoreWeights] = None,
+        max_score: Optional[float] = None,
     ):
         self._model = model
         self._model_instances = model_instances
@@ -86,6 +86,11 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         )
         self._spread_score_weights = spread_score_weights or SpreadScoreWeights()
         self._scale_type = scale_type
+        self._max_score = (
+            envs.SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE
+            if max_score is None
+            else max_score
+        )
 
     async def score(
         self, candidates: List[ModelInstanceScheduleCandidate]
@@ -331,11 +336,17 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 ram_score = 0
             else:
                 ram_score = (
-                    ram_claim / ram_allocatable * MaxScore * self._resource_weight.ram
+                    ram_claim
+                    / ram_allocatable
+                    * self._max_score
+                    * self._resource_weight.ram
                 )
 
             vram_score = (
-                vram_claim / vram_allocatable * MaxScore * self._resource_weight.vram
+                vram_claim
+                / vram_allocatable
+                * self._max_score
+                * self._resource_weight.vram
             )
             return (ram_score + vram_score) / (
                 self._resource_weight.ram + self._resource_weight.vram
@@ -344,12 +355,12 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         if gpu_count == 0:
             # computed_resource_claim.ram must have value when running cpu only model instance
             if scale_type == ScaleTypeEnum.SCALE_UP:
-                score = computed_resource_claim.ram / allocatable.ram * MaxScore
+                score = computed_resource_claim.ram / allocatable.ram * self._max_score
             elif scale_type == ScaleTypeEnum.SCALE_DOWN:
                 score = (
                     computed_resource_claim.ram
                     / (allocatable.ram + computed_resource_claim.ram)
-                    * MaxScore
+                    * self._max_score
                 )
         elif gpu_count == 1:
             if scale_type == ScaleTypeEnum.SCALE_UP:
@@ -407,7 +418,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             )
 
         gpu_score = sum(per_gpu_scores) / len(per_gpu_scores) if per_gpu_scores else 1
-        gpu_score = gpu_score * MaxScore
+        gpu_score = gpu_score * self._max_score
 
         return (
             worker_score * self._spread_score_weights.worker_weight
@@ -456,7 +467,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 * inverse_norm(others_count, min_others, max_others)
             )
 
-        return score * MaxScore
+        return score * self._max_score
 
     def _build_spread_stats(self, worker_model_instances_count_map, workers) -> dict:
         totals = []
