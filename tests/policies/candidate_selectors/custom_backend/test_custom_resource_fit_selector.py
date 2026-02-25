@@ -1,4 +1,6 @@
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
+
+from tests.utils.mock import mock_async_session
 
 import pytest
 
@@ -64,11 +66,11 @@ async def test_schedule_single_work_multi_gpu(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -119,11 +121,11 @@ async def test_failed_cases_auto_schedule(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
         candidates = await resource_fit_selector.select_candidates(workers)
