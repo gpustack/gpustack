@@ -11,6 +11,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
+from gpustack.policies.scorers.model_file_locality_scorer import (
+    ModelFileLocalityScorer,
+)
+from gpustack.policies.scorers.score_chain import CandidateScoreChain
 from gpustack.config.config import Config, get_global_config
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
@@ -38,6 +42,7 @@ from gpustack.scheduler.model_registry import detect_model_type
 from gpustack.scheduler.meta_registry import get_model_meta
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
+from gpustack import envs
 from gpustack.schemas.inference_backend import is_built_in_backend
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.models import (
@@ -70,6 +75,7 @@ from gpustack.utils.command import find_parameter
 from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
+from gpustack.utils.model_source import get_draft_model_source
 from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -442,8 +448,19 @@ async def find_candidate(
     candidates = await candidates_selector.select_candidates(workers)
 
     # Score candidates.
-    placement_scorer = PlacementScorer(model, model_instances)
-    candidates = await placement_scorer.score(candidates)
+    candidate_scorers = [
+        PlacementScorer(model, model_instances),
+    ]
+    locality_max_score = envs.SCHEDULER_SCALE_UP_LOCALITY_MAX_SCORE
+    if locality_max_score > 0:
+        candidate_scorers.append(
+            ModelFileLocalityScorer(
+                model,
+                draft_model_source=get_draft_model_source(model),
+                max_score=locality_max_score,
+            )
+        )
+    candidates = await CandidateScoreChain(candidate_scorers).score(candidates)
 
     # Pick the highest score candidate.
     candidate = pick_highest_score_candidate(candidates)

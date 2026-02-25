@@ -116,6 +116,10 @@ class WorkerFilterChain:
 
 
 class ModelInstanceScorer(ABC):
+    @property
+    def max_score(self) -> Optional[float]:
+        return getattr(self, "_max_score", None)
+
     @abstractmethod
     async def score_instances(
         self, instances: List[ModelInstance]
