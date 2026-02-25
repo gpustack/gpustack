@@ -45,13 +45,14 @@ async def server_auth(
     api_key: Optional[ApiKey] = None
     access_key: Optional[str] = None
     consumer = 'none'
+    cookie_token = await cookie_auth(request)
     try:
         user = await get_current_user(
             request=request,
             session=session,
             basic_credentials=await basic_auth(request),
             bearer_token=await bearer_auth(request),
-            cookie_token=await cookie_auth(request),
+            cookie_token=cookie_token,
         )
         api_key = getattr(request.state, "api_key", None)
         access_key = None if api_key is None else api_key.access_key
@@ -97,6 +98,9 @@ async def server_auth(
         "X-Mse-Consumer": consumer,
         "Authorization": f"Bearer {registration_token}",
     }
+    if cookie_token is not None:
+        # reset the cookie in higress
+        headers["cookie"] = "dummy=dummy"
     return Response(
         status_code=200,
         headers=headers,
