@@ -376,7 +376,7 @@ async def try_model_with_provider(
             message=f"provider type {input.config.type} not supported for testing model accessibility"
         )
     endpoint = input.config.get_base_url()
-    prefix = ""
+    prefix = "v1/"
     completion_url = "chat/completions"
     max_output_token_dict = {"max_tokens": 16}
     if input.config.type == ModelProviderTypeEnum.DOUBAO:
@@ -384,7 +384,7 @@ async def try_model_with_provider(
     elif input.config.type == ModelProviderTypeEnum.QWEN:
         prefix = "compatible-mode/v1/"
     elif input.config.type == ModelProviderTypeEnum.CLAUDE:
-        completion_url = "v1/messages"
+        completion_url = "messages"
     data = {
         "model": input.model_name,
         "messages": [{"role": "user", "content": "Ping"}],
