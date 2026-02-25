@@ -14,7 +14,9 @@ from tests.fixtures.workers.fixtures import (
     linux_cpu_1,
 )
 
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
+
+from tests.utils.mock import mock_async_session
 
 from tests.utils.model import new_model, new_model_instance
 
@@ -92,15 +94,15 @@ async def test_find_scale_down_candidates():
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.status_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
-        candidates = await find_scale_down_candidates(mis, m)
+        candidates = await find_scale_down_candidates(mis, m, total_max_score=100)
 
         expected_candidates = [
             {

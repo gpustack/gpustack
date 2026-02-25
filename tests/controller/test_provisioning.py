@@ -74,6 +74,9 @@ async def test_provisioning_flow(monkeypatch):
 
     client.get_instance = AsyncMock(return_value=mock_instance)
     client.create_ssh_key = AsyncMock(return_value="ssh-key-id")
+    mock_user_data = MagicMock()
+    mock_user_data.format.return_value = "#!/bin/bash\necho hello"
+    client.construct_user_data = AsyncMock(return_value=mock_user_data)
     client.create_instance = AsyncMock(return_value="instance-id")
     client.wait_for_started = AsyncMock(return_value={"id": "instance-id"})
     client.wait_for_public_ip = AsyncMock(
