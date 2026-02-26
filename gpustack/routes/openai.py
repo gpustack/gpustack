@@ -20,7 +20,6 @@ from gpustack.api.exceptions import (
     OpenAIAPIErrorResponse,
     ServiceUnavailableException,
     GatewayTimeoutException,
-    ForbiddenException,
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
@@ -114,7 +113,7 @@ async def proxy_request_by_model(
         user_id=user.id,
         api_key=getattr(request.state, "api_key", None),
     ):
-        raise ForbiddenException(
+        raise NotFoundException(
             message="Model not found",
             is_openai_exception=True,
         )
