@@ -118,7 +118,6 @@ system_reserved:
 # ========= huggingface ===========
 huggingface_token: xxxxxx
 enable_hf_transfer: false
-enable_hf_xet: false
 ```
 
 The above YAML lists all currently supported options for the `Worker Configuration YAML`. For the meaning of each option, refer to the full GPUStack [config file documentation](../cli-reference/start.md#config-file).
