@@ -105,7 +105,6 @@ class Config(WorkerConfig, BaseSettings):
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
         enable_hf_transfer: Speed up file transfers with the huggingface Hub.
-        enable_hf_xet: Using Hugging Face XET for download model files.
         enable_cors: Enable CORS in server.
         allow_origins: A list of origins that should be permitted to make cross-origin requests.
         allow_credentials: Indicate that cookies should be supported for cross-origin requests.
