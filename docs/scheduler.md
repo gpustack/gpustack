@@ -2,7 +2,7 @@
 
 ## Summary
 
-The scheduler's primary responsibility is to calculate the resources required by models instance and to evaluate and select the optimal workers/GPUs for model instances through a series of strategies. This ensures that model instances can run efficiently. This document provides a detailed overview of the policies and processes used by the scheduler.
+The scheduler's primary responsibility is to calculate the resources required by model instances and to evaluate and select the optimal workers/GPUs for model instances through a series of strategies. This ensures that model instances can run efficiently. This document provides a detailed overview of the policies and processes used by the scheduler.
 
 ## Scheduling Process
 
@@ -14,6 +14,7 @@ The filtering phase aims to narrow down the available workers or GPUs to those t
 - GPU Matching Policy
 - Label Matching Policy
 - Status Policy
+- Backend Framework Matching Policy
 - Resource Fit Policy
 
 #### Cluster Matching Policy

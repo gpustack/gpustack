@@ -230,7 +230,7 @@ When CPU offloading is enabled, GPUStack will allocate CPU memory if GPU resourc
 
 Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more other workers, offloading computation tasks to them.
 
-### Auto-Restrat on Error
+### Auto-Restart on Error
 
 Enable automatic restart of the model instance if it encounters an error. This feature ensures high availability and reliability of the model instance. If an error occurs, GPUStack will automatically attempt to restart the model instance using an exponential backoff strategy. The delay between restart attempts increases exponentially, up to a maximum interval of 5 minutes. This approach prevents the system from being overwhelmed by frequent restarts in the case of persistent errors.
 

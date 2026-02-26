@@ -2,7 +2,7 @@
 
 ## Support Matrix
 
-### Hybird Cluster Support
+### Hybrid Cluster Support
 
 GPUStack supports heterogeneous clusters spanning NVIDIA, AMD, Ascend, Hygon, Moore Threads, Iluvatar, MetaX, and Cambricon GPUs, and works across both AMD64 and ARM64 architectures.
 

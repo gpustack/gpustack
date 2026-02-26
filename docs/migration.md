@@ -101,7 +101,7 @@ Also customizing the `--data-dir`, `GPUSTACK_DATA_DIR` is also supported in data
 
 #### External Database Migration
 
-GPUStack supports using an external database to store the management data. If you previously deployed GPUStack with an external database, start the server will following command:
+GPUStack supports using an external database to store the management data. If you previously deployed GPUStack with an external database, start the server with the following command:
 
 ```bash
 sudo docker run -d --name gpustack-server \

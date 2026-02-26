@@ -34,7 +34,7 @@ The GPUStack server connects to a SQL database as the datastore. GPUStack uses a
 
 ### Inference Server
 
-Inference servers are the backends that performs the inference tasks. GPUStack supports [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang), [Ascend MindIE](https://www.hiascend.com/en/software/mindie) and [vox-box](https://github.com/gpustack/vox-box) as the built-in inference server. You can also add custom inference backends.
+Inference servers are the backends that perform the inference tasks. GPUStack supports [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang), [Ascend MindIE](https://www.hiascend.com/en/software/mindie) and [VoxBox](https://github.com/gpustack/vox-box) as the built-in inference server. You can also add custom inference backends.
 
 ### Ray
 
