@@ -191,6 +191,41 @@ class Config(WorkerConfig, BaseSettings):
     grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"
     grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
 
+    # ==================== Multi-Server Configuration ====================
+    # Server unique identifier, auto-generated if not specified
+    server_id: Optional[str] = None
+    # List of all Server URLs for multi-server deployment
+    server_urls: Optional[List[str]] = []
+    # Coordinator service URL for distributed coordination (optional, supports etcd, Consul, etc.)
+    coordinator_url: Optional[str] = None
+    # Scheduling mode: local (local only), distributed, auto (automatic)
+    scheduling_mode: str = "auto"
+    # Heartbeat interval (seconds)
+    heartbeat_interval: int = 15
+    # Server timeout (seconds)
+    server_timeout: int = 60
+    # Distributed lock timeout (seconds)
+    lock_timeout: int = 30
+    # Whether to enable distributed scheduling
+    distributed_scheduling: bool = True
+    # Schedule lock timeout (seconds)
+    schedule_lock_timeout: int = 60
+    
+    # Configuration validation constants
+    MIN_HEARTBEAT_INTERVAL: int = 5
+    MAX_HEARTBEAT_INTERVAL: int = 60
+    DEFAULT_HEARTBEAT_INTERVAL: int = 15
+    MIN_SERVER_TIMEOUT: int = 30
+    MAX_SERVER_TIMEOUT: int = 300
+    DEFAULT_SERVER_TIMEOUT: int = 60
+    MIN_LOCK_TIMEOUT: int = 10
+    MAX_LOCK_TIMEOUT: int = 120
+    DEFAULT_LOCK_TIMEOUT: int = 30
+    MIN_SCHEDULE_LOCK_TIMEOUT: int = 30
+    MAX_SCHEDULE_LOCK_TIMEOUT: int = 180
+    DEFAULT_SCHEDULE_LOCK_TIMEOUT: int = 60
+    VALID_SCHEDULING_MODES: List[str] = ["local", "distributed", "auto"]
+
     _set_worker_fields = {}
 
     model_config = SettingsConfigDict(
@@ -255,6 +290,9 @@ class Config(WorkerConfig, BaseSettings):
         if self.service_discovery_name is None:
             self.service_discovery_name = "worker" if self._is_worker() else "server"
 
+        # Multi-server configuration
+        self.init_multi_server_config()
+
         self.make_dirs()
         self.detect_gateway_mode()
 
@@ -297,6 +335,73 @@ class Config(WorkerConfig, BaseSettings):
             self.check_database_url()
 
         return self
+    
+    @model_validator(mode="before")
+    def validate_scheduling_mode(cls, values):
+        """Validate scheduling mode"""
+        scheduling_mode = values.get("scheduling_mode")
+        if scheduling_mode and scheduling_mode not in cls.VALID_SCHEDULING_MODES:
+            logger.warning(
+                f"Invalid scheduling_mode: {scheduling_mode}. Using default: 'auto'"
+            )
+            values["scheduling_mode"] = "auto"
+        return values
+    
+    @model_validator(mode="before")
+    def validate_heartbeat_interval(cls, values):
+        """Validate heartbeat interval"""
+        heartbeat_interval = values.get("heartbeat_interval")
+        if heartbeat_interval:
+            if heartbeat_interval < cls.MIN_HEARTBEAT_INTERVAL or heartbeat_interval > cls.MAX_HEARTBEAT_INTERVAL:
+                logger.warning(
+                    f"heartbeat_interval ({heartbeat_interval}) is outside the recommended range "
+                    f"[{cls.MIN_HEARTBEAT_INTERVAL}-{cls.MAX_HEARTBEAT_INTERVAL}]. "
+                    f"Using default value: {cls.DEFAULT_HEARTBEAT_INTERVAL}"
+                )
+                values["heartbeat_interval"] = cls.DEFAULT_HEARTBEAT_INTERVAL
+        return values
+    
+    @model_validator(mode="before")
+    def validate_server_timeout(cls, values):
+        """Validate server timeout"""
+        server_timeout = values.get("server_timeout")
+        if server_timeout:
+            if server_timeout < cls.MIN_SERVER_TIMEOUT or server_timeout > cls.MAX_SERVER_TIMEOUT:
+                logger.warning(
+                    f"server_timeout ({server_timeout}) is outside the recommended range "
+                    f"[{cls.MIN_SERVER_TIMEOUT}-{cls.MAX_SERVER_TIMEOUT}]. "
+                    f"Using default value: {cls.DEFAULT_SERVER_TIMEOUT}"
+                )
+                values["server_timeout"] = cls.DEFAULT_SERVER_TIMEOUT
+        return values
+    
+    @model_validator(mode="before")
+    def validate_lock_timeout(cls, values):
+        """Validate lock timeout"""
+        lock_timeout = values.get("lock_timeout")
+        if lock_timeout:
+            if lock_timeout < cls.MIN_LOCK_TIMEOUT or lock_timeout > cls.MAX_LOCK_TIMEOUT:
+                logger.warning(
+                    f"lock_timeout ({lock_timeout}) is outside the recommended range "
+                    f"[{cls.MIN_LOCK_TIMEOUT}-{cls.MAX_LOCK_TIMEOUT}]. "
+                    f"Using default value: {cls.DEFAULT_LOCK_TIMEOUT}"
+                )
+                values["lock_timeout"] = cls.DEFAULT_LOCK_TIMEOUT
+        return values
+    
+    @model_validator(mode="before")
+    def validate_schedule_lock_timeout(cls, values):
+        """Validate schedule lock timeout"""
+        schedule_lock_timeout = values.get("schedule_lock_timeout")
+        if schedule_lock_timeout:
+            if schedule_lock_timeout < cls.MIN_SCHEDULE_LOCK_TIMEOUT or schedule_lock_timeout > cls.MAX_SCHEDULE_LOCK_TIMEOUT:
+                logger.warning(
+                    f"schedule_lock_timeout ({schedule_lock_timeout}) is outside the recommended range "
+                    f"[{cls.MIN_SCHEDULE_LOCK_TIMEOUT}-{cls.MAX_SCHEDULE_LOCK_TIMEOUT}]. "
+                    f"Using default value: {cls.DEFAULT_SCHEDULE_LOCK_TIMEOUT}"
+                )
+                values["schedule_lock_timeout"] = cls.DEFAULT_SCHEDULE_LOCK_TIMEOUT
+        return values
 
     def get_grafana_url(self) -> Optional[str]:
         if self.grafana_url is not None:
@@ -800,6 +905,31 @@ class Config(WorkerConfig, BaseSettings):
             << 30
         )
         return system_reserved_in_bytes
+
+    def init_multi_server_config(self):
+        """
+        Initialize multi-server configuration with default values.
+        
+        新增：为多服务器配置添加默认值和验证逻辑
+        Added: Add default values and validation logic for multi-server configuration
+        """
+        # Generate server_id if not specified
+        # 如果未指定，生成 server_id
+        if self.server_id is None:
+            import uuid
+            self.server_id = str(uuid.uuid4())
+            
+        # Ensure server_urls is a list
+        # 确保 server_urls 是一个列表
+        if self.server_urls is None:
+            self.server_urls = []
+        
+        # Add current server to server_urls if not already present
+        # 如果当前服务器不在 server_urls 中，添加它
+        if not self._is_worker():
+            current_server_url = self.get_server_url()
+            if current_server_url not in self.server_urls:
+                self.server_urls.append(current_server_url)
 
 
 def get_image_name(
