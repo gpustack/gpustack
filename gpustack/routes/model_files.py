@@ -11,6 +11,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
 )
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
 from gpustack.schemas.model_files import (
     ModelFile,
@@ -27,7 +28,6 @@ router = APIRouter()
 
 @router.get("", response_model=ModelFilesPublic)
 async def get_model_files(
-    session: SessionDep,
     params: ModelFileListParams = Depends(),
     search: str = None,
     worker_id: int = None,
@@ -96,14 +96,15 @@ async def get_model_files(
                 new_order_by.append((field, direction))
         order_by = new_order_by
 
-    return await ModelFile.paginated_by_query(
-        session=session,
-        fields=fields,
-        extra_conditions=extra_conditions,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=order_by,
-    )
+    async with async_session() as session:
+        return await ModelFile.paginated_by_query(
+            session=session,
+            fields=fields,
+            extra_conditions=extra_conditions,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=order_by,
+        )
 
 
 def search_model_file_filter(data: ModelFile, search: str) -> bool:

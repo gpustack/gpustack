@@ -16,6 +16,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.config import parse_base_model_to_env_vars
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
 from gpustack.schemas.clusters import (
     ClusterListParams,
@@ -86,58 +87,61 @@ async def get_clusters(
             media_type="text/event-stream",
         )
 
-    items = await Cluster.all_by_fields(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        options=CLUSTER_LOAD_OPTIONS,
-    )
-
-    if not items:
-        return PaginatedList[ClusterPublic](
-            items=[],
-            pagination=Pagination(
-                page=params.page,
-                perPage=params.perPage,
-                total=0,
-                totalPage=0,
-            ),
+    async with async_session() as session:
+        items = await Cluster.all_by_fields(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            options=CLUSTER_LOAD_OPTIONS,
         )
 
-    if params.page < 1 or params.perPage < 1:
-        # Return all items.
-        pagination = Pagination(
-            page=1,
-            perPage=len(items),
-            total=len(items),
-            totalPage=1,
-        )
-        return PaginatedList[ClusterPublic](items=items, pagination=pagination)
-
-    # sort in memory
-    order_by = params.order_by
-    if order_by:
-        for field, direction in reversed(order_by):
-            items.sort(
-                key=_make_sort_key(field),
-                reverse=direction == "desc",
+        if not items:
+            return PaginatedList[ClusterPublic](
+                items=[],
+                pagination=Pagination(
+                    page=params.page,
+                    perPage=params.perPage,
+                    total=0,
+                    totalPage=0,
+                ),
             )
 
-    # Paginate results.
-    start = (params.page - 1) * params.perPage
-    end = start + params.perPage
-    paginated_items = items[start:end]
+        if params.page < 1 or params.perPage < 1:
+            # Return all items.
+            pagination = Pagination(
+                page=1,
+                perPage=len(items),
+                total=len(items),
+                totalPage=1,
+            )
+            return PaginatedList[ClusterPublic](items=items, pagination=pagination)
 
-    count = len(items)
-    total_page = math.ceil(count / params.perPage)
-    pagination = Pagination(
-        page=params.page,
-        perPage=params.perPage,
-        total=count,
-        totalPage=total_page,
-    )
+        # sort in memory
+        order_by = params.order_by
+        if order_by:
+            for field, direction in reversed(order_by):
+                items.sort(
+                    key=_make_sort_key(field),
+                    reverse=direction == "desc",
+                )
 
-    return PaginatedList[ClusterPublic](items=paginated_items, pagination=pagination)
+        # Paginate results.
+        start = (params.page - 1) * params.perPage
+        end = start + params.perPage
+        paginated_items = items[start:end]
+
+        count = len(items)
+        total_page = math.ceil(count / params.perPage)
+        pagination = Pagination(
+            page=params.page,
+            perPage=params.perPage,
+            total=count,
+            totalPage=total_page,
+        )
+
+        return PaginatedList[ClusterPublic](
+            items=paginated_items, pagination=pagination
+        )
 
 
 def _make_sort_key(field: str) -> Callable[[Any], tuple]:

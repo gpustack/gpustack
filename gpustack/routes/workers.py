@@ -23,6 +23,7 @@ from gpustack.server.deps import (
     SessionDep,
     CurrentUserDep,
 )
+from gpustack.server.db import async_session
 from gpustack.server.worker_status_buffer import (
     heartbeat_flush_buffer,
     heartbeat_flush_buffer_lock,
@@ -67,7 +68,6 @@ def to_worker_public(input: Worker, me: bool) -> WorkerPublic:
 @router.get("", response_model=WorkersPublic)
 async def get_workers(
     user: CurrentUserDep,
-    session: SessionDep,
     params: WorkerListParams = Depends(),
     name: str = None,
     search: str = None,
@@ -108,20 +108,21 @@ async def get_workers(
                 new_order_by.append((field, direction))
         order_by = new_order_by
 
-    worker_list = await Worker.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=order_by,
-    )
-    if not user.worker:
-        return worker_list
-    public_list = []
-    for worker in worker_list.items:
-        public_list.append(to_worker_public(worker, user.worker.id == worker.id))
-    return WorkersPublic(items=public_list, pagination=worker_list.pagination)
+    async with async_session() as session:
+        worker_list = await Worker.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=order_by,
+        )
+        if not user.worker:
+            return worker_list
+        public_list = []
+        for worker in worker_list.items:
+            public_list.append(to_worker_public(worker, user.worker.id == worker.id))
+        return WorkersPublic(items=public_list, pagination=worker_list.pagination)
 
 
 @router.get("/{id}", response_model=WorkerPublic)

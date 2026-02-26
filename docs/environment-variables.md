@@ -50,7 +50,6 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_DB_POOL_SIZE`                  | Database connection pool size.                                             | `10`    | Server     |
 | `GPUSTACK_DB_MAX_OVERFLOW`               | Database connection pool max overflow.                                     | `10`    | Server     |
 | `GPUSTACK_DB_POOL_TIMEOUT`               | Database connection pool timeout in seconds.                               | `30`    | Server     |
-| `GPUSTACK_DB_SUBSCRIBE_INIT_CONCURRENCY` | Maximum concurrent subscriptions that can perform initial DB list queries. | `5`     | Server     |
 
 ### Network Configuration
 

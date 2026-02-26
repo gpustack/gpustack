@@ -28,6 +28,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     InvalidException,
 )
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
 from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
@@ -38,7 +39,6 @@ logger = logging.getLogger(__name__)
 
 @router.get("", response_model=ModelProvidersPublic, response_model_exclude_none=True)
 async def get_model_providers(
-    session: SessionDep,
     params: ModelProviderListParams = Depends(),
     name: str = None,
     search: str = None,
@@ -57,18 +57,19 @@ async def get_model_providers(
             media_type="text/event-stream",
         )
 
-    provider_list = await ModelProvider.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=params.order_by,
-    )
-    provider_list.items = [
-        ModelProvider._convert_to_public_class(provider)
-        for provider in provider_list.items
-    ]
+    async with async_session() as session:
+        provider_list = await ModelProvider.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=params.order_by,
+        )
+        provider_list.items = [
+            ModelProvider._convert_to_public_class(provider)
+            for provider in provider_list.items
+        ]
 
     return provider_list
 
