@@ -53,6 +53,9 @@ from gpustack.worker.inference_backend_manager import InferenceBackendManager
 
 logger = logging.getLogger(__name__)
 
+# Global lock for port assignment to avoid pickle serialization issues
+_port_lock = threading.Lock()
+
 _SERVER_CLASS_MAPPING = {
     BackendEnum.VLLM: VLLMServer,
     BackendEnum.SGLANG: SGLangServer,
@@ -123,7 +126,6 @@ class ServeManager:
 
         # Instance-level port tracking to avoid conflicts
         self._assigned_ports: Dict[int, Set[int]] = {}
-        self._port_lock = threading.Lock()
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
@@ -691,7 +693,7 @@ class ServeManager:
             # Port already assigned, skip.
             return
 
-        with self._port_lock:
+        with _port_lock:
             if mi.port:
                 # Port already assigned, skip.
                 return
