@@ -9,6 +9,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.security import API_KEY_PREFIX, get_secret_hash
+from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.schemas.api_keys import (
     ApiKey,
@@ -26,7 +27,6 @@ router = APIRouter()
 
 @router.get("", response_model=ApiKeysPublic)
 async def get_api_keys(
-    session: SessionDep,
     user: CurrentUserDep,
     params: ApiKeyListParams = Depends(),
     search: str = None,
@@ -43,14 +43,15 @@ async def get_api_keys(
             media_type="text/event-stream",
         )
 
-    return await ApiKey.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=params.order_by,
-    )
+    async with async_session() as session:
+        return await ApiKey.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=params.order_by,
+        )
 
 
 @router.post("", response_model=ApiKeyPublic)

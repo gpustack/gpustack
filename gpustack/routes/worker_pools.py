@@ -7,6 +7,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ForbiddenException,
 )
+from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.clusters import (
     WorkerPoolPublic,
@@ -22,7 +23,6 @@ router = APIRouter()
 
 @router.get("", response_model=WorkerPoolsPublic)
 async def list(
-    session: SessionDep,
     params: ListParamsDep,
     name: str = None,
     search: str = None,
@@ -50,14 +50,15 @@ async def list(
             media_type="text/event-stream",
         )
 
-    return await WorkerPool.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        options=WORKER_POOL_LOAD_OPTIONS,
-    )
+    async with async_session() as session:
+        return await WorkerPool.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            options=WORKER_POOL_LOAD_OPTIONS,
+        )
 
 
 @router.get("/{id}", response_model=WorkerPoolPublic)

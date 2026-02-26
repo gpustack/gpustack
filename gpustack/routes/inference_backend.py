@@ -31,6 +31,7 @@ from gpustack.schemas.inference_backend import (
     is_built_in_backend,
 )
 from gpustack.schemas.models import BackendEnum, Model, BackendSourceEnum
+from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack_runner import list_service_runners
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
@@ -613,12 +614,14 @@ async def get_inference_backends(  # noqa: C901
             media_type="text/event-stream",
         )
 
-    merged_backends = await merge_runner_versions_to_db(
-        session, with_deprecated=include_deprecated
-    )
+    async with async_session() as session:
+        merged_backends = await merge_runner_versions_to_db(
+            session, with_deprecated=include_deprecated
+        )
 
-    # Get worker GPU information for framework sorting
-    workers = await Worker.all(session)
+        # Get worker GPU information for framework sorting
+        workers = await Worker.all(session)
+
     framework_list = set()
     for worker in workers:
         if worker.status and worker.status.gpu_devices:

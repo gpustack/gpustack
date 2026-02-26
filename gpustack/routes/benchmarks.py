@@ -23,6 +23,7 @@ from gpustack.schemas.models import (
     is_renaker_model,
 )
 from gpustack.schemas.workers import Worker
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
 from gpustack.schemas.benchmark import (
     DATASET_RANDOM,
@@ -59,7 +60,6 @@ router = APIRouter()
 
 @router.get("", response_model=BenchmarksPublic)
 async def get_benchmarks(
-    session: SessionDep,
     params: BenchmarkListParams = Depends(),
     search: str = None,
     state: Optional[BenchmarkStateEnum] = Query(
@@ -72,7 +72,6 @@ async def get_benchmarks(
     profile: Optional[str] = Query(None, description="Filter by profile."),
 ):
     return await _get_benchmarks(
-        session=session,
         params=params,
         state=state,
         search=search,
@@ -94,7 +93,6 @@ def gpu_summary_filter(data: Benchmark, gpu_summary: Optional[str]) -> bool:
 
 
 async def _get_benchmarks(
-    session: SessionDep,
     params: BenchmarkListParams,
     search: str = None,
     state: Optional[BenchmarkStateEnum] = None,
@@ -152,16 +150,17 @@ async def _get_benchmarks(
                 new_order_by.append(("created_at", direction))
         order_by = new_order_by
 
-    return await Benchmark.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=order_by,
-        extra_conditions=extra_conditions,
-        options=[defer(Benchmark.raw_metrics)],
-    )
+    async with async_session() as session:
+        return await Benchmark.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=order_by,
+            extra_conditions=extra_conditions,
+            options=[defer(Benchmark.raw_metrics)],
+        )
 
 
 @router.get("/{id}", response_model=BenchmarkFullPublic)

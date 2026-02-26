@@ -16,6 +16,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
+from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     ModelInstance,
@@ -34,7 +35,6 @@ router = APIRouter()
 
 @router.get("", response_model=ModelInstancesPublic)
 async def get_model_instances(
-    session: SessionDep,
     params: ListParamsDep,
     id: Optional[int] = None,
     model_id: Optional[int] = None,
@@ -60,12 +60,13 @@ async def get_model_instances(
             media_type="text/event-stream",
         )
 
-    return await ModelInstance.paginated_by_query(
-        session=session,
-        fields=fields,
-        page=params.page,
-        per_page=params.perPage,
-    )
+    async with async_session() as session:
+        return await ModelInstance.paginated_by_query(
+            session=session,
+            fields=fields,
+            page=params.page,
+            per_page=params.perPage,
+        )
 
 
 @router.get("/{id}", response_model=ModelInstancePublic)

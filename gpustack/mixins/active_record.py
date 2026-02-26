@@ -6,6 +6,7 @@ import logging
 import math
 from typing import Any, AsyncGenerator, Callable, List, Optional, Union, Tuple
 
+import anyio
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, event as sa_event, inspect
 from sqlmodel import SQLModel, and_, asc, col, desc, or_, select, text
@@ -16,16 +17,11 @@ from sqlalchemy.orm.exc import FlushError
 from sqlalchemy.orm.state import InstanceState
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
+from gpustack.server.cache import locked_cached, delete_cache_by_key, class_key
 from gpustack.server.db import async_session
-from gpustack import envs
 
 
 logger = logging.getLogger(__name__)
-
-# Semaphore to limit concurrent subscription initializations
-# This prevents exhausting the database connection pool when many workers
-# reconnect simultaneously (e.g., after server restart)
-_subscribe_init_semaphore = asyncio.Semaphore(envs.DB_SUBSCRIBE_INIT_CONCURRENCY)
 
 
 class CommitEvent:
@@ -563,6 +559,8 @@ class ActiveRecordMixin:
                 await session.refresh(self)
             if session.is_active:
                 await self._refresh_related_objects(session)
+            # Invalidate cached_all cache on successful write
+            await self.__class__._invalidate_cached_all()
         except (IntegrityError, OperationalError, FlushError) as e:
             await session.rollback()
             raise e
@@ -623,6 +621,8 @@ class ActiveRecordMixin:
             if auto_commit:
                 await session.commit()
 
+            # Invalidate cached_all cache after successful batch update
+            await cls._invalidate_cached_all()
             return len(updates)
         except Exception as e:
             await session.rollback()
@@ -643,6 +643,8 @@ class ActiveRecordMixin:
         if not auto_commit:
             return
         await session.commit()
+        # Invalidate cached_all cache after successful delete
+        await self.__class__._invalidate_cached_all()
 
     async def _handle_cascade_delete(
         self, session: AsyncSession, soft=False, auto_commit=True
@@ -679,6 +681,39 @@ class ActiveRecordMixin:
         return result.all()
 
     @classmethod
+    async def _do_cached_all_query(cls, options: Optional[List] = None):
+        """Execute the cached_all query in a shielded context.
+
+        This runs the entire database operation including session cleanup
+        in a way that's protected from anyio cancellation.
+        """
+        session = async_session()
+        try:
+            results = await cls.all(session, options=options)
+            for item in results:
+                session.expunge(item)
+            return results
+        finally:
+            await session.close()
+
+    @classmethod
+    @locked_cached(key=class_key("cached_all"))
+    async def cached_all(cls, options: Optional[List] = None):
+        """Return all objects with caching for subscribe() initial data loading."""
+        logger.debug(f"Loading cached {cls.__name__} with options={options}")
+        # Run the entire database operation in a shielded context to protect
+        # from anyio cancellation. This prevents connection pool issues when
+        # CancelledError interrupts database operations or session cleanup.
+        with anyio.CancelScope(shield=True):
+            return await cls._do_cached_all_query(options)
+
+    @classmethod
+    async def _invalidate_cached_all(cls):
+        """Invalidate cached_all cache for this model class."""
+        cache_key = class_key("cached_all")(None, cls)
+        await delete_cache_by_key(key=cache_key)
+
+    @classmethod
     async def delete_all(cls, session: AsyncSession, soft=False):
         """Delete all objects of the model."""
 
@@ -687,6 +722,8 @@ class ActiveRecordMixin:
             await obj.delete(session, soft=soft, auto_commit=False)
         try:
             await session.commit()
+            # Invalidate cached_all cache after successful delete_all
+            await cls._invalidate_cached_all()
         except Exception as e:
             await session.rollback()
             logger.error(f"Failed to delete all objects of {cls.__name__}: {e}")
@@ -717,9 +754,7 @@ class ActiveRecordMixin:
             id(subscriber),
         )
 
-        async with _subscribe_init_semaphore:
-            async with async_session() as session:
-                initial_items = await cls.all(session, options=options)
+        initial_items = await cls.cached_all(options=options)
 
         for item in initial_items:
             yield Event(type=EventType.CREATED, data=item)

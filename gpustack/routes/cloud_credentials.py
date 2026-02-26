@@ -8,6 +8,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
 )
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
 from gpustack.schemas.clusters import (
     CloudCredentialCreate,
@@ -26,7 +27,6 @@ router = APIRouter()
 
 @router.get("", response_model=CloudCredentialsPublic)
 async def list(
-    session: SessionDep,
     params: CloudCredentialListParams = Depends(),
     name: str = None,
     search: str = None,
@@ -45,14 +45,15 @@ async def list(
             media_type="text/event-stream",
         )
 
-    return await CloudCredential.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=params.order_by,
-    )
+    async with async_session() as session:
+        return await CloudCredential.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=params.order_by,
+        )
 
 
 @router.get("/{id}", response_model=CloudCredentialPublic)
