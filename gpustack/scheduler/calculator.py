@@ -744,12 +744,11 @@ def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
     Returns:
         bool: True if should fallback to loading config.json, False otherwise
     """
-    # For LOCAL_PATH models, only fallback if the path exists and is a directory
-    if model.source == SourceEnum.LOCAL_PATH:
-        return bool(model.local_path and os.path.isdir(model.local_path))
 
-    # For other sources, only Hugging Face and ModelScope support config.json fallback
-    if model.source not in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
+    # For LOCAL_PATH models, the path must be a valid directory
+    if model.source == SourceEnum.LOCAL_PATH and not (
+        model.local_path and os.path.isdir(model.local_path)
+    ):
         return False
 
     # Fallback for backend version specified or import errors
