@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 from datetime import datetime, timezone
 import multiprocessing
+import threading
 
 import requests
 import setproctitle
@@ -94,11 +95,6 @@ class ServeManager:
     When the (sub)process is alive, the model instance is provisioning.
     If the (sub)process exited, the model instance is either running or failed.
     """
-    _assigned_ports: Dict[int, Set[int]] = {}
-    """
-    The mapping of model instance ID to assigned ports.
-    Used to avoid port conflicts when assigning ports to new model instances.
-    """
     _error_model_instances: Dict[int, ModelInstance] = {}
     """
     The mapping of model instance ID to error model instances.
@@ -124,6 +120,10 @@ class ServeManager:
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._clientset_getter = clientset_getter
+
+        # Instance-level port tracking to avoid conflicts
+        self._assigned_ports: Dict[int, Set[int]] = {}
+        self._port_lock = threading.Lock()
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
@@ -585,42 +585,7 @@ class ServeManager:
             model = self._get_model(mi)
             backend = get_backend(model)
 
-            # Assign port.
-            if not mi.port:
-                if self._assigned_ports:
-                    unavailable_ports = set.union(*self._assigned_ports.values())
-                else:
-                    unavailable_ports = set()
-                mi.port = network.get_free_port(
-                    port_range=self._config.service_port_range,
-                    unavailable_ports=unavailable_ports,
-                )
-                mi.ports = [mi.port]
-                unavailable_ports.add(mi.port)
-                if (
-                    mi.distributed_servers
-                    and mi.distributed_servers.subordinate_workers
-                ):
-                    # Get RPC port for DP communication in vLLM backend.
-                    if backend == BackendEnum.VLLM:
-                        dps = find_int_parameter(
-                            model.backend_parameters,
-                            ["data-parallel-size", "dp"],
-                        )
-                        if dps and dps > 1:
-                            dp_connecting_port = network.get_free_port(
-                                port_range=self._config.service_port_range,
-                                unavailable_ports=unavailable_ports,
-                            )
-                            mi.ports.append(dp_connecting_port)
-                            unavailable_ports.add(dp_connecting_port)
-                    # Get port for subordinate workers' communication.
-                    connecting_port = network.get_free_port(
-                        port_range=self._config.service_port_range,
-                        unavailable_ports=unavailable_ports,
-                    )
-                    mi.ports.append(connecting_port)
-                    unavailable_ports.add(connecting_port)
+            self._assign_ports(mi, model, backend)
 
             logger.debug(
                 f"Starting model instance {mi.name}"
@@ -651,7 +616,6 @@ class ServeManager:
             process.daemon = False
             process.start()
             self._provisioning_processes[mi.id] = process
-            self._assigned_ports[mi.id] = set(mi.ports)
 
             # Get patch dict for main worker.
             if is_main_worker:
@@ -703,6 +667,76 @@ class ServeManager:
 
             self._update_model_instance(mi.id, **patch_dict)
             logger.error(f"Failed to start model instance {mi.name}: {e}")
+
+    def _assign_ports(
+        self,
+        mi: ModelInstance,
+        model: Model,
+        backend: BackendEnum,
+    ) -> None:
+        """
+        Assign ports to the model instance.
+
+        This method is thread-safe and allocates ports for:
+        - Main serving port
+        - RPC port for vLLM DP communication (if applicable)
+        - Connecting port for subordinate workers (if applicable)
+
+        Args:
+            mi: The model instance to assign ports to.
+            model: The model associated with the instance.
+            backend: The backend type (e.g., vLLM, SGLang).
+        """
+        if mi.port:
+            # Port already assigned, skip.
+            return
+
+        with self._port_lock:
+            if mi.port:
+                # Port already assigned, skip.
+                return
+
+            if self._assigned_ports:
+                unavailable_ports = set.union(*self._assigned_ports.values())
+            else:
+                unavailable_ports = set()
+
+            # Main serving port
+            mi.port = network.get_free_port(
+                port_range=self._config.service_port_range,
+                unavailable_ports=unavailable_ports,
+                host=mi.worker_ip,
+            )
+            mi.ports = [mi.port]
+            unavailable_ports.add(mi.port)
+
+            # Additional ports for distributed servers
+            if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
+                # RPC port for DP communication in vLLM backend
+                if backend == BackendEnum.VLLM:
+                    dps = find_int_parameter(
+                        model.backend_parameters,
+                        ["data-parallel-size", "dp"],
+                    )
+                    if dps and dps > 1:
+                        dp_connecting_port = network.get_free_port(
+                            port_range=self._config.service_port_range,
+                            unavailable_ports=unavailable_ports,
+                            host=mi.worker_ip,
+                        )
+                        mi.ports.append(dp_connecting_port)
+                        unavailable_ports.add(dp_connecting_port)
+
+                # Connecting port for subordinate workers communication
+                connecting_port = network.get_free_port(
+                    port_range=self._config.service_port_range,
+                    unavailable_ports=unavailable_ports,
+                    host=mi.worker_ip,
+                )
+                mi.ports.append(connecting_port)
+                unavailable_ports.add(connecting_port)
+
+            self._assigned_ports[mi.id] = set(mi.ports)
 
     def _restart_model_instance(self, mi: ModelInstance):
         """
