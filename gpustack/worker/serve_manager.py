@@ -513,6 +513,11 @@ class ServeManager:
                     )
                     return
 
+        # Cache model instance for both main and subordinate workers,
+        # so that sync_model_instances_state can find subordinate instances.
+        if not is_main_worker:
+            self._model_instance_by_instance_id[mi.id] = mi
+
         if event.type == EventType.DELETED:
             self._stop_model_instance(mi)
             logger.trace(f"DELETED event: stopped deleted model instance {mi.name}.")
