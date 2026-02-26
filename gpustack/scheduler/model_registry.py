@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.15.1/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.16.0/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 # List of supported model architectures for the default version of the vLLM backend
 # TODO version-aware support list
@@ -53,6 +53,7 @@ _TEXT_GENERATION_MODELS = [
     "Glm4ForCausalLM",
     "Glm4MoeForCausalLM",
     "Glm4MoeLiteForCausalLM",
+    "GlmMoeDsaForCausalLM",
     "GptOssForCausalLM",
     "GPT2LMHeadModel",
     "GPTBigCodeForCausalLM",
@@ -101,6 +102,7 @@ _TEXT_GENERATION_MODELS = [
     "MiMoV2FlashForCausalLM",
     "NemotronForCausalLM",
     "NemotronHForCausalLM",
+    "NemotronHPuzzleForCausalLM",
     "OlmoForCausalLM",
     "Olmo2ForCausalLM",
     "Olmo3ForCausalLM",
@@ -146,6 +148,7 @@ _EMBEDDING_MODELS = [
     # [Text-only]
     "BertModel",
     "BertSpladeSparseEmbeddingModel",
+    "HF_ColBERT",
     "DeciLMForCausalLM",
     "Gemma2Model",
     "Gemma3TextModel",
@@ -177,6 +180,7 @@ _EMBEDDING_MODELS = [
     "RobertaForMaskedLM",
     "RobertaModel",
     # "TeleChat2ForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    "VoyageQwen3BidirectionalEmbedModel",
     "XLMRobertaModel",
     "BgeM3EmbeddingModel",
     # [Multimodal]
@@ -203,6 +207,8 @@ _CROSS_ENCODER_MODELS = [
 _MULTIMODAL_MODELS = [
     # [Decoder-only]
     "AriaForConditionalGeneration",
+    "AudioFlamingo3ForConditionalGeneration",
+    "MusicFlamingoForConditionalGeneration",
     "AyaVisionForConditionalGeneration",
     "BeeForConditionalGeneration",
     "Blip2ForConditionalGeneration",
@@ -210,6 +216,7 @@ _MULTIMODAL_MODELS = [
     "Cohere2VisionForConditionalGeneration",
     "DeepseekVLV2ForCausalLM",
     "DeepseekOCRForCausalLM",
+    "DeepseekOCR2ForCausalLM",
     "DotsOCRForCausalLM",
     "Eagle2_5_VLForConditionalGeneration",
     "Ernie4_5_VLMoeForConditionalGeneration",
@@ -220,6 +227,7 @@ _MULTIMODAL_MODELS = [
     "Glm4vForConditionalGeneration",
     "Glm4v_moeForConditionalGeneration",
     "Glm4vMoeForConditionalGeneration",  # Note: New class for "Glm4v_moeForConditionalGeneration"
+    "GlmOcrForConditionalGeneration",
     "H2OVLChatModel",
     "HunYuanVLForConditionalGeneration",
     "StepVLForConditionalGeneration",
@@ -227,6 +235,7 @@ _MULTIMODAL_MODELS = [
     "NemotronH_Nano_VL_V2",
     "InternS1ForConditionalGeneration",
     "InternVLForConditionalGeneration",
+    "InternS1ProForConditionalGeneration",
     "Idefics3ForConditionalGeneration",
     "IsaacForConditionalGeneration",
     "SmolVLMForConditionalGeneration",
@@ -253,6 +262,7 @@ _MULTIMODAL_MODELS = [
     "MolmoForCausalLM",
     "Molmo2ForConditionalGeneration",
     "NVLM_D",
+    "OpenPanguVLForConditionalGeneration",
     "Ovis",
     "Ovis2_5",
     "PaddleOCRVLForConditionalGeneration",
@@ -285,9 +295,12 @@ _MULTIMODAL_MODELS = [
 ]
 
 _SPEECH_TO_TEXT_MODELS = [
+    "FunAudioChatForConditionalGeneration",
     "GlmAsrForConditionalGeneration",
     "GraniteSpeechForConditionalGeneration",
+    "Qwen3ASRForConditionalGeneration",
     "VoxtralForConditionalGeneration",
+    "VoxtralRealtimeGeneration",
     "WhisperForConditionalGeneration",
 ]
 

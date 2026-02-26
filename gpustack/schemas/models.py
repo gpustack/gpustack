@@ -690,9 +690,6 @@ def get_backend(model: Model) -> str:
     if is_gguf_model(model):
         return BackendEnum.CUSTOM
 
-    if is_audio_model(model):
-        return BackendEnum.VOX_BOX
-
     return BackendEnum.VLLM
 
 
