@@ -165,7 +165,7 @@ set the following environment variables when starting the GPUStack worker to all
 
 ```
 
-### Pulling Inference Backend Images from none default Namespace
+### Pulling Inference Backend Images from non-default Namespace
 
 If your internal container registry uses a different namespace than the default `gpustack`,  
 set the following environment variable when starting the GPUStack worker to allow it to pull the runner image.

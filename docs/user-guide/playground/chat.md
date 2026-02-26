@@ -58,7 +58,7 @@ You can compare multiple models in the playground. The following is an example s
 
 ![Compare Playground Screenshot](../../assets/playground/compare-playground.png)
 
-### Comparision Mode
+### Comparison Mode
 
 You can choose the number of models to compare by clicking the comparison view buttons, including 2, 3, 4 and 6-model comparison.
 

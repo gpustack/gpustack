@@ -1,6 +1,6 @@
 # Quickstart
 
-This guide will walk you through running GPUStack on your own self-hosted GPU servers. To use [cloud GPUs](./tutorials/adding-gpucluster-using-digitalocean.md), or integrating with an  [existing Kubernetes cluster](./tutorials/adding-gpucluster-using-kubernetes.md), see the relevant tutorials.
+This guide will walk you through running GPUStack on your own self-hosted GPU servers. To use [cloud GPUs](./tutorials/adding-gpucluster-using-digitalocean.md), or integrating with an [existing Kubernetes cluster](./tutorials/adding-gpucluster-using-kubernetes.md), see the relevant tutorials.
 
 !!! info "Prerequisites"
 
@@ -76,9 +76,9 @@ sudo docker run -d --name gpustack-worker \
       --advertise-address 192.168.1.2
 ```
 
-4. Execute the command on the worker node to connect it to the GPUStack server.
+6. Execute the command on the worker node to connect it to the GPUStack server.
 
-5. After the worker node connects successfully, it will appear on the `Workers` page in the GPUStack UI.
+7. After the worker node connects successfully, it will appear on the `Workers` page in the GPUStack UI.
 
 ## Deploy a Model
 
