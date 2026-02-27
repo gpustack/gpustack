@@ -18,10 +18,12 @@ from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilt
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.schemas.models import (
+    BackendEnum,
     Model,
     SourceEnum,
     get_mmproj_filename,
     CategoryEnum,
+    is_audio_model,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.utils.compat_importlib import pkg_resources
@@ -750,6 +752,11 @@ def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
         model.local_path and os.path.isdir(model.local_path)
     ):
         return False
+
+    if model.backend == BackendEnum.VLLM and is_audio_model(model):
+        # TODO(michelia): Qwen3-ASR is currently supported by vLLM but not yet by Hugging Face Transformers.
+        # Track upstream progress: https://github.com/huggingface/transformers/issues/43837
+        return True
 
     # Fallback for backend version specified or import errors
     return model.backend_version is not None or isinstance(e, ImportError)
