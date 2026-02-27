@@ -810,8 +810,13 @@ class ActiveRecordMixin:
                 if filter_func and not filter_func(event.data):
                     continue
 
-                event.data = cls._convert_to_public_class(event.data)
-                yield cls._format_event(event)
+                public_event = Event(
+                    type=event.type,
+                    data=cls._convert_to_public_class(event.data),
+                    changed_fields=event.changed_fields,
+                    id=event.id,
+                )
+                yield cls._format_event(public_event)
         except asyncio.CancelledError:
             pass
         except Exception as e:
