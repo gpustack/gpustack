@@ -6,6 +6,7 @@ import yaml
 from importlib.resources import files
 from functools import partial
 from typing import Any, Dict, List, Tuple, Optional, Set
+from pydantic import BaseModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
@@ -2235,6 +2236,61 @@ class ModelProviderController:
             logger.error(f"Failed to ensure provider's ai_proxy config: {e}")
             raise
 
+    async def _notify_provider_model_routes(
+        self, session: AsyncSession, model_provider: ModelProvider, event: Event
+    ):
+        if event.type != EventType.UPDATED:
+            return
+        changed_fields = event.changed_fields or {}
+        should_notify = False
+        if "config" not in changed_fields:
+            return
+
+        # the changed field "config" must have old and new value, otherwise it's not a valid update event for config change.
+        # index 0 of the tuple is the old value, index 1 is the new value.
+        # each value must be a list with only 1 element as it is a norman field instead of relationship field.
+        old_config = changed_fields["config"][0][0]
+        if isinstance(changed_fields["config"][0][0], BaseModel):
+            old_config = changed_fields["config"][0][0].model_dump()
+        new_config = changed_fields["config"][1][0]
+        if isinstance(changed_fields["config"][1][0], BaseModel):
+            new_config = changed_fields["config"][1][0].model_dump()
+
+        # use hardcoded fields to determine whether to notify.
+        # For ProviderConfigType, including:
+        # - openaiCustomUrl
+        # - ollamaServerHost
+        # - difyApiUrl
+        # The above fields will affect the registry type of the provider_registry,
+        # it requires notifying ingress to regenerate registry destination.
+        related_fields = [
+            "openaiCustomUrl",
+            "ollamaServerHost",
+            "difyApiUrl",
+        ]
+        for field in related_fields:
+            if old_config.get(field) != new_config.get(field):
+                should_notify = True
+                break
+        if not should_notify:
+            return
+        targets = await ModelRouteTarget.all_by_fields(
+            session=session,
+            fields={"provider_id": model_provider.id},
+            options=[selectinload(ModelRouteTarget.model_route)],
+        )
+        unique_routes = {
+            target.model_route.id: target.model_route
+            for target in targets
+            if target.model_route is not None
+        }
+        for route in unique_routes.values():
+            route_copy = ModelRoute.model_validate(route.model_dump())
+            await event_bus.publish(
+                route_copy.__class__.__name__.lower(),
+                Event(type=EventType.UPDATED, data=route_copy),
+            )
+
     async def _reconcile(self, event: Event):
         """
         Reconcile the model provider.
@@ -2254,6 +2310,7 @@ class ModelProviderController:
                 return
             await self._ensure_provider_registry(model_provider, event)
             await self._ensure_provider_ai_proxy_config()
+            await self._notify_provider_model_routes(session, model_provider, event)
 
 
 class ModelRouteTargetController:
