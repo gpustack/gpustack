@@ -88,12 +88,10 @@ class BaseProviderConfig(BaseModel):
     model_config: ConfigDict = {
         "extra": "allow",
     }
+    _chat_uri: Optional[str] = "/v1/chat/completions"
     _public_endpoint: Optional[str] = None
     _default_schema = "https"
     _model_uri = None
-
-    def get_service_registry(self) -> Optional[str]:
-        return self._public_endpoint
 
     def get_base_url(self) -> Optional[str]:
         if self._public_endpoint:
@@ -119,6 +117,12 @@ class BaseProviderConfig(BaseModel):
         if base_url:
             base_url = base_url.rstrip("/")
         return base_url, self._model_uri
+
+    def get_chat_url(self) -> Tuple[Optional[str], Optional[str]]:
+        base_url = self.get_base_url()
+        if base_url:
+            base_url = base_url.rstrip("/")
+        return base_url, self._chat_uri
 
     def model_dump_with_default_override(self) -> Dict[str, Any]:
         """Dumps the model, excluding unset fields, and then merges with `_default_override` values.
@@ -150,11 +154,6 @@ class AzureOpenAIConfig(BaseProviderConfig):
         default=None, json_schema_extra={"field_required": True}
     )
 
-    def get_service_registry(self) -> Optional[str]:
-        if self.azureServiceUrl:
-            return urlparse(self.azureServiceUrl).netloc
-        return None
-
     def get_base_url(self) -> Optional[str]:
         return self.azureServiceUrl
 
@@ -184,8 +183,10 @@ class BedrockConfig(BaseProviderConfig):
     )
     bedrockAdditionalFields: Optional[dict] = None
 
-    def get_service_registry(self) -> Optional[str]:
-        return f"bedrock-runtime.{self.awsRegion}.amazonaws.com"
+    def get_base_url(self):
+        return (
+            f"{self._default_schema}://bedrock-runtime.{self.awsRegion}.amazonaws.com"
+        )
 
 
 class ClaudeConfig(BaseProviderConfig):
@@ -193,6 +194,7 @@ class ClaudeConfig(BaseProviderConfig):
     claudeVersion: Optional[str] = None
     _public_endpoint: str = "api.anthropic.com"
     _model_uri = "/v1/models"
+    _chat_uri = "/v1/messages"
 
 
 class CloudflareConfig(BaseProviderConfig):
@@ -237,12 +239,6 @@ class DifyConfig(BaseProviderConfig):
     outputVariable: Optional[str] = None
     _public_endpoint: str = "api.dify.ai"
 
-    def get_service_registry(self) -> Optional[str]:
-        if self.difyApiUrl:
-            dify_url = urlparse(self.difyApiUrl)
-            return dify_url.netloc
-        return self._public_endpoint
-
     def get_base_url(self) -> Optional[str]:
         if self.difyApiUrl:
             return self.difyApiUrl
@@ -255,11 +251,11 @@ class DoubaoConfig(BaseProviderConfig):
 
     _public_endpoint: str = "ark.cn-beijing.volces.com"
     _model_uri = "/api/v3/models"
+    _chat_uri = "/api/v3/chat/completions"
 
-    def get_service_registry(self) -> Optional[str]:
-        if self.doubaoDomain:
-            return self.doubaoDomain
-        return self._public_endpoint
+    def get_base_url(self):
+        domain = self.doubaoDomain or self._public_endpoint
+        return f"{self._default_schema}://{domain}"
 
 
 class FireworksConfig(BaseProviderConfig):
@@ -281,7 +277,7 @@ class GenericConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.GENERIC]
     _public_endpoint: str = ""
 
-    def get_service_registry(self) -> Optional[str]:
+    def get_base_url(self) -> Optional[str]:
         return None
 
 
@@ -348,8 +344,12 @@ class OllamaConfig(BaseProviderConfig):
     _default_schema = "http"
     _model_uri = "/v1/models"
 
-    def get_service_registry(self) -> Optional[str]:
-        return f"{self.ollamaServerHost}:{self.ollamaServerPort}"
+    def get_base_url(self):
+        if not self.ollamaServerHost:
+            return None
+        port_suffix = f":{self.ollamaServerPort}" if self.ollamaServerPort else ""
+        domain = f"{self.ollamaServerHost}{port_suffix}"
+        return f"{self._default_schema}://{domain}"
 
 
 class OpenAIConfig(BaseProviderConfig):
@@ -359,23 +359,25 @@ class OpenAIConfig(BaseProviderConfig):
     _public_endpoint: str = "api.openai.com"
     _model_uri = "/v1/models"
 
-    def get_service_registry(self) -> Optional[str]:
-        if self.openaiCustomUrl:
-            openai_url = urlparse(self.openaiCustomUrl)
-            return openai_url.netloc
-        return self._public_endpoint
-
     def get_base_url(self) -> Optional[str]:
         if self.openaiCustomUrl:
-            # for openai compatible provider, if the custom url is provided and it ends with /v1,
-            # we will trim the /v1 part to be compatible with openai sdk which will add /v1 by itself.
-            # e.g. if user input http://my-openai.com/v1, we will trim it to http://my-openai.com
-            # to avoid the final url to be http://my-openai.com/v1/v1 which is incorrect.
-            cleaned_url = self.openaiCustomUrl.rstrip("/")
-            if cleaned_url.endswith("/v1"):
-                return cleaned_url[:-3]
-            return cleaned_url
+            parsed_url = urlparse(self.openaiCustomUrl)
+            return f"{parsed_url.scheme}://{parsed_url.netloc}"
         return super().get_base_url()
+
+    def get_model_url(self) -> Tuple[Optional[str], Optional[str]]:
+        if not self.openaiCustomUrl:
+            return super().get_model_url()
+        parsed_url = urlparse(self.openaiCustomUrl)
+        model_uri = f"{parsed_url.path.rstrip('/')}/models"
+        return self.get_base_url(), model_uri
+
+    def get_chat_url(self):
+        if not self.openaiCustomUrl:
+            return super().get_chat_url()
+        parsed_url = urlparse(self.openaiCustomUrl)
+        chat_uri = f"{parsed_url.path.rstrip('/')}/chat/completions"
+        return self.get_base_url(), chat_uri
 
 
 class OpenrouterConfig(BaseProviderConfig):
@@ -390,6 +392,7 @@ class QwenConfig(BaseProviderConfig):
     qwenEnableCompatible: Optional[bool] = None
     _public_endpoint: str = "dashscope.aliyuncs.com"
     _model_uri = "/compatible-mode/v1/models"
+    _chat_uri = "/compatible-mode/v1/chat/completions"
     _default_override = {"qwenEnableCompatible": True}
 
 
@@ -413,8 +416,10 @@ class TritonConfig(BaseProviderConfig):
     modelVersion: Optional[str] = None
     tritonDomain: Optional[str] = None
 
-    def get_service_registry(self) -> Optional[str]:
-        return self.tritonDomain
+    def get_base_url(self) -> Optional[str]:
+        if not self.tritonDomain:
+            return None
+        return f"{self._default_schema}://{self.tritonDomain}"
 
 
 class YiConfig(BaseProviderConfig):

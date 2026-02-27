@@ -254,10 +254,9 @@ def provider_registry_name(id: int) -> str:
 
 
 def provider_registry(provider: ModelProvider) -> Optional[McpBridgeRegistry]:
-    domain = provider.config.get_service_registry()
-    if domain is None:
-        return None
     provider_url = provider.config.get_base_url()
+    if provider_url is None:
+        return None
     result = urlparse(url=provider_url)
     protocol = "http" if result.scheme == "http" else "https"
     port = 443 if protocol == "https" else 80
@@ -265,10 +264,13 @@ def provider_registry(provider: ModelProvider) -> Optional[McpBridgeRegistry]:
         "static" if result.hostname and is_ipaddress(result.hostname) else "dns"
     )
     if registry_type == "static":
+        domain = result.netloc
         if result.port is None:
-            domain = f"{result.hostname}:{port}"
-    elif result.port is not None:
-        port = result.port
+            domain = f"{domain}:{port}"
+    else:
+        domain = result.hostname
+        if result.port is not None:
+            port = result.port
     registry_name = provider_registry_name(provider.id)
     proxyName = f"{registry_name}-proxy" if provider.proxy_url else None
     return McpBridgeRegistry(
