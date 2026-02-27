@@ -340,7 +340,7 @@ class VLLMServer(InferenceServer):
 
         vllm_speculative_algorithm_mapping = {
             SpeculativeAlgorithmEnum.EAGLE3: "eagle3",
-            SpeculativeAlgorithmEnum.MTP: "deepseek_mtp",
+            SpeculativeAlgorithmEnum.MTP: "mtp",
             SpeculativeAlgorithmEnum.NGRAM: "ngram",
         }
 
