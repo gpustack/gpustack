@@ -1,6 +1,7 @@
 import httpx
 import logging
 import hashlib
+from urllib.parse import urlparse
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timezone
 from sqlalchemy.orm import selectinload
@@ -19,6 +20,7 @@ from gpustack.schemas.model_provider import (
     TestProviderModelInput,
     TestProviderModelResult,
     ProviderModel,
+    OpenAIConfig,
 )
 from gpustack.schemas.models import CategoryEnum
 from gpustack.schemas.model_routes import ModelRouteTarget
@@ -95,6 +97,13 @@ def validate_provider(provider: Union[ModelProviderCreate, ModelProviderUpdate])
             )
     if len(provider.models or []) == 0:
         raise InvalidException(message="At least one model is required for a provider")
+
+    if isinstance(provider.config, OpenAIConfig) and provider.config.openaiCustomUrl:
+        parsed_url = urlparse(provider.config.openaiCustomUrl.rstrip("/"))
+        if parsed_url.path == "":
+            raise InvalidException(
+                message=f"openaiCustomUrl {provider.config.openaiCustomUrl} is invalid, it must include a path, e.g. http://my-openai.com/v1"
+            )
 
 
 def parse_api_tokens(
@@ -366,26 +375,12 @@ async def try_model_with_provider(
             message="api_token and config are required to fetch models from provider"
         )
 
-    if input.config.type not in [
-        ModelProviderTypeEnum.QWEN,
-        ModelProviderTypeEnum.DEEPSEEK,
-        ModelProviderTypeEnum.DOUBAO,
-        ModelProviderTypeEnum.CLAUDE,
-        ModelProviderTypeEnum.OPENAI,
-    ]:
+    endpoint, completion_url = input.config.get_chat_url()
+    if not endpoint or not completion_url:
         raise InvalidException(
-            message=f"provider type {input.config.type} not supported for testing model accessibility"
+            message=f"provider type {input.config.type} does not support testing model accessibility"
         )
-    endpoint = input.config.get_base_url()
-    prefix = "v1/"
-    completion_url = "chat/completions"
     max_output_token_dict = {"max_tokens": 16}
-    if input.config.type == ModelProviderTypeEnum.DOUBAO:
-        prefix = "api/v3/"
-    elif input.config.type == ModelProviderTypeEnum.QWEN:
-        prefix = "compatible-mode/v1/"
-    elif input.config.type == ModelProviderTypeEnum.CLAUDE:
-        completion_url = "messages"
     data = {
         "model": input.model_name,
         "messages": [{"role": "user", "content": "Ping"}],
@@ -394,7 +389,7 @@ async def try_model_with_provider(
     if input.config.type == ModelProviderTypeEnum.QWEN:
         data["enable_thinking"] = False
     async with httpx.AsyncClient(
-        base_url=f"{endpoint}/{prefix}",
+        base_url=f"{endpoint}",
         proxy=input.proxy_url,
         trust_env=True,
     ) as client:
