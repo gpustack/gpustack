@@ -1866,6 +1866,42 @@ model_sets:
       source: model_scope
       model_scope_model_id: ibm-granite/granite-speech-3.3-8b
       backend: vLLM
+- name: Qwen3-ASR-1.7B
+  description: Qwen3-ASR-1.7B support language identification and ASR for 52 languages and dialects. It leverages large-scale speech training data and the strong audio understanding capability of its foundation model, Qwen3-Omni.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 1.7
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-29"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-ASR-1.7B
+      backend: vLLM
+      categories:
+        - speech_to_text
+- name: Qwen3-ASR-0.6B
+  description: Qwen3-ASR-0.6B support language identification and ASR for 52 languages and dialects. It leverages large-scale speech training data and the strong audio understanding capability of its foundation model, Qwen3-Omni.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 0.6
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-29"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-ASR-0.6B
+      backend: vLLM
+      categories:
+        - speech_to_text
 - name: Dia-1.6B
   description: Dia is a text-to-speech model created by Nari Labs. Dia directly generates highly realistic dialogue from a transcript. You can condition the output on audio, enabling emotion and tone control. The model can also produce nonverbal communications like laughter, coughing, clearing throat, etc.
   home: https://narilabs.org
