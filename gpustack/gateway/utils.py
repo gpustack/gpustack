@@ -495,6 +495,8 @@ def generate_model_ingress(
         "higress.io/rewrite-target": "/$1$3",
         "higress.io/destination": destinations,
         "higress.io/ignore-path-case": 'true',
+        "higress.io/proxy-next-upstream-tries": '3',
+        "higress.io/proxy-next-upstream": "http_503,http_502,non_idempotent",
         **higress_http_header_matcher("exact", "x-higress-llm-model", route_name),
     }
     if extra_annotations is not None:
