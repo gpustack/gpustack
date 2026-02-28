@@ -17,6 +17,9 @@ from gpustack.config.config import (
 )
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
+from gpustack.policies.scorers.score_chain import (
+    ModelInstanceScoreChain,
+)
 from gpustack.policies.base import ModelInstanceScore
 from gpustack.policies.scorers.status_scorer import StatusScorer
 from gpustack.schemas.inference_backend import (
@@ -68,7 +71,8 @@ from gpustack.schemas.users import (
     is_default_cluster_user,
 )
 from gpustack.server.bus import Event, EventType, event_bus
-from gpustack.server.catalog import get_catalog_draft_models
+from gpustack.utils.model_source import get_draft_model_source
+from gpustack import envs
 from gpustack.server.db import async_session
 from gpustack.server.services import (
     ModelFileService,
@@ -491,70 +495,39 @@ async def get_model_files_for_instance(
     return model_files
 
 
-def get_draft_model_source(model: Model) -> Optional[ModelSource]:
-    """
-    Get the model source for the draft model.
-    First check the catalog for the draft model.
-    If not found, get the model source empirically to support custom draft models.
-    """
-    if model.speculative_config is None or not model.speculative_config.draft_model:
-        return None
-
-    draft_model = model.speculative_config.draft_model
-    catalog_draft_models = get_catalog_draft_models()
-    for catalog_draft_model in catalog_draft_models:
-        if catalog_draft_model.name == draft_model:
-            return catalog_draft_model
-
-    # If draft_model looks like a path, assume it's a local path.
-    if draft_model.startswith("/"):
-        return ModelSource(source=SourceEnum.LOCAL_PATH, local_path=draft_model)
-
-    # Otherwise, assume it comes from the same source as the main model.
-    if model.source == SourceEnum.HUGGING_FACE:
-        return ModelSource(
-            source=SourceEnum.HUGGING_FACE,
-            huggingface_repo_id=draft_model,
-        )
-    elif model.source == SourceEnum.MODEL_SCOPE:
-        return ModelSource(
-            source=SourceEnum.MODEL_SCOPE,
-            model_scope_model_id=draft_model,
-        )
-    return None
-
-
 async def find_scale_down_candidates(
-    instances: List[ModelInstance], model: Model
+    instances: List[ModelInstance],
+    model: Model,
+    *,
+    status_max_score: Optional[float] = None,
+    offload_max_score: Optional[float] = None,
+    placement_max_score: Optional[float] = None,
+    total_max_score: Optional[float] = None,
 ) -> List[ModelInstanceScore]:
     try:
-        placement_scorer = PlacementScorer(
-            model, instances, scale_type=ScaleTypeEnum.SCALE_DOWN
+        if status_max_score is None:
+            status_max_score = envs.SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE
+        if offload_max_score is None:
+            offload_max_score = envs.SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE
+        if placement_max_score is None:
+            placement_max_score = envs.SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE
+
+        chain = ModelInstanceScoreChain(
+            scorers=[
+                StatusScorer(model, max_score=status_max_score),
+                OffloadLayerScorer(model, max_score=offload_max_score),
+                PlacementScorer(
+                    model,
+                    instances,
+                    scale_type=ScaleTypeEnum.SCALE_DOWN,
+                    max_score=placement_max_score,
+                ),
+            ],
+            total_max_score=total_max_score,
         )
-        placement_candidates = await placement_scorer.score_instances(instances)
-
-        offload_layer_scorer = OffloadLayerScorer(model)
-        offload_candidates = await offload_layer_scorer.score_instances(instances)
-
-        status_scorer = StatusScorer(model)
-        status_candidates = await status_scorer.score_instances(instances)
-
-        offload_cand_map = {cand.model_instance.id: cand for cand in offload_candidates}
-        placement_cand_map = {
-            cand.model_instance.id: cand for cand in placement_candidates
-        }
-
-        for cand in status_candidates:
-            score = cand.score * 100
-            offload_candidate = offload_cand_map.get(cand.model_instance.id)
-            score += offload_candidate.score * 10 if offload_candidate else 0
-
-            placement_candidate = placement_cand_map.get(cand.model_instance.id)
-            score += placement_candidate.score if placement_candidate else 0
-            cand.score = score / 111
-
+        final_candidates = await chain.score(instances)
         final_candidates = sorted(
-            status_candidates, key=lambda x: x.score, reverse=False
+            final_candidates, key=lambda x: x.score, reverse=False
         )
         return final_candidates
     except Exception as e:

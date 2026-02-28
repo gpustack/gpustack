@@ -85,6 +85,16 @@ The **Applies to** column indicates where the environment variable should be set
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
 | `GPUSTACK_DEFAULT_CLUSTER_KUBERNETES` | If a default cluster is created automatically, it will use the `Kubernetes` provider when this variable is set. | `false` | Server     |
 
+### Scheduler Configuration
+
+| Variable                                | Description                                                                                 | Default | Applies to |
+| --------------------------------------- | ------------------------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE` | Max placement score used by the scheduler placement scorer.                                 | `100`   | Server     |
+| `GPUSTACK_SCHEDULER_SCALE_UP_LOCALITY_MAX_SCORE`  | Max locality score added to placement score when model files already exist.                 | `5`     | Server     |
+| `GPUSTACK_SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE`   | Scale-down max contribution for status scorer (normalized).                                | `100`   | Server     |
+| `GPUSTACK_SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE`  | Scale-down max contribution for offload scorer (normalized).                               | `10`    | Server     |
+| `GPUSTACK_SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE` | Scale-down max contribution for placement scorer (normalized).                             | `1`     | Server     |
+
 ### Worker and Model Configuration
 
 | Variable                                                         | Description                                                                                                          | Default | Applies to |
