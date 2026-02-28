@@ -585,6 +585,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         "direct (server connects directly) or worker (via worker proxy). "
         "Default value is direct for embedded worker, and worker for standalone worker.",
     )
+    group.add_argument(
+        "--kv-cache-dir",
+        type=str,
+        help="Directory for KV cache storage (L3 cache). Default is <cache-dir>/kv_cache. The path should be accessible from the container.",
+        default=get_gpustack_env("KV_CACHE_DIR"),
+    )
 
     parser_server.set_defaults(func=run)
 
@@ -766,6 +772,7 @@ def set_worker_options(args, config_data: dict):
         "enable_hf_transfer",
         "enable_hf_xet",
         "proxy_mode",
+        "kv_cache_dir",
     ]
 
     for option in options:

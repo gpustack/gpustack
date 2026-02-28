@@ -107,6 +107,8 @@ class VLLMServer(InferenceServer):
         resources = self._get_configured_resources()
 
         mounts = self._get_configured_mounts()
+        # Add SSD mount for LMCache L3 cache if configured
+        self._add_lmcache_ssd_mount(mounts)
 
         ports = self._get_configured_ports()
 
@@ -272,6 +274,46 @@ class VLLMServer(InferenceServer):
             vram_claim = self._get_total_vram_claim()
             ram_size = int(vram_claim * extended_kv_cache.ram_ratio)
             env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(ram_size))
+
+        # SSD (L3) cache configuration via environment variables
+        # kv_cache_dir is configured at worker level, disk_size is configured at model level
+        if self._config.kv_cache_dir:
+            env["LMCACHE_LOCAL_DISK"] = self._config.kv_cache_dir
+            if extended_kv_cache.disk_size and extended_kv_cache.disk_size > 0:
+                env["LMCACHE_MAX_LOCAL_DISK_SIZE"] = str(extended_kv_cache.disk_size)
+
+    def _add_lmcache_ssd_mount(self, mounts: List[ContainerMount]):
+        """
+        Add SSD mount for LMCache L3 cache if kv_cache_dir is configured.
+        kv_cache_dir is configured at worker level via config.
+
+        Args:
+            mounts: List of container mounts to append to
+        """
+        extended_kv_cache = self._model.extended_kv_cache
+        if not (extended_kv_cache and extended_kv_cache.enabled):
+            return
+
+        # kv_cache_dir is configured at worker level via config
+        if not self._config.kv_cache_dir:
+            return
+
+        # Check if the path exists on the host
+        kv_cache_dir = self._config.kv_cache_dir
+        if os.path.exists(kv_cache_dir):
+            # Mount the SSD path to the container
+            # Use the same path inside the container for simplicity
+            mounts.append(
+                ContainerMount(
+                    path=kv_cache_dir,
+                )
+            )
+            logger.info(f"Added SSD mount for LMCache L3 cache: {kv_cache_dir}")
+        else:
+            logger.warning(
+                f"KV cache directory for LMCache L3 cache does not exist on host: {kv_cache_dir}. "
+                "Please ensure the path exists or create it before deploying the model."
+            )
 
     def _set_distributed_env(self, env: Dict[str, str]):
         """
