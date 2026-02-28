@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 import secrets
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -66,13 +67,26 @@ async def create_api_key(
     if not selected_user:
         raise NotFoundException(message="User not found")
     try:
-        access_key = secrets.token_hex(8)
-        secret_key = secrets.token_hex(16)
-
         current = datetime.now(timezone.utc)
         expires_at = None
         if key_in.expires_in and key_in.expires_in > 0:
             expires_at = current + timedelta(seconds=key_in.expires_in)
+
+        # Handle custom API key vs auto-generated
+        if key_in.custom_key is not None and key_in.custom_key.strip() != "":
+            # Custom API key
+            custom_key = key_in.custom_key.strip()
+            # Use MD5 hash of custom key as access_key to prevent duplicates
+            access_key = hashlib.md5(custom_key.encode()).hexdigest()
+            secret_key = custom_key  # Use custom key as secret key
+            is_custom = True
+            hashed_secret_key = get_secret_hash(secret_key)
+        else:
+            # Auto-generated API key
+            access_key = secrets.token_hex(8)
+            secret_key = secrets.token_hex(16)
+            is_custom = False
+            hashed_secret_key = get_secret_hash(secret_key)
 
         api_key = ApiKey(
             name=key_in.name,
@@ -80,7 +94,9 @@ async def create_api_key(
             user=selected_user,
             user_id=selected_user.id,
             access_key=access_key,
-            hashed_secret_key=get_secret_hash(secret_key),
+            hashed_secret_key=hashed_secret_key,
+            is_custom=is_custom,
+            custom_key=custom_key if is_custom else None,
             expires_at=expires_at,
             allowed_model_names=key_in.allowed_model_names,
         )
@@ -88,11 +104,19 @@ async def create_api_key(
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create api key: {e}")
 
+    # Return the appropriate value based on whether it's custom or auto-generated
+    if key_in.custom_key is not None and key_in.custom_key.strip() != "":
+        # For custom keys, return the custom key value
+        api_key_value = key_in.custom_key.strip()
+    else:
+        # For auto-generated keys, return the standard format
+        api_key_value = f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
+
     return ApiKeyPublic(
         name=api_key.name,
         description=api_key.description,
         id=api_key.id,
-        value=f"{API_KEY_PREFIX}_{access_key}_{secret_key}",
+        value=api_key_value,
         created_at=api_key.created_at,
         updated_at=api_key.updated_at,
         expires_at=api_key.expires_at,
