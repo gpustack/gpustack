@@ -7,6 +7,7 @@ import yaml
 from fastapi import APIRouter, Body
 from gpustack_runner.runner import ServiceVersionedRunner, ServiceRunner
 from gpustack_runtime.deployer.__utils__ import compare_versions
+from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -1006,6 +1007,12 @@ async def create_inference_backend_from_yaml(
         # Validate version names for custom backends
         validate_custom_suffix(yaml_data['backend_name'], None)
 
+        # Validate YAML data using Pydantic model to ensure field types are correct
+        try:
+            InferenceBackendCreate.model_validate(yaml_data)
+        except ValidationError as e:
+            raise BadRequestException(message=f"Invalid YAML data: {e}")
+
         # Create the backend
         backend = InferenceBackend(**yaml_data)
         backend = await InferenceBackend.create(session, backend)
@@ -1063,6 +1070,7 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             "version_configs",
             "default_backend_param",
             "default_run_command",
+            "default_entrypoint",
             "health_check_path",
             "description",
             "default_env",
@@ -1100,6 +1108,12 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             yaml_data['version_configs'] = _merge_community_versions(
                 backend, yaml_data.get('version_configs')
             )
+
+        # Validate YAML data using Pydantic model to ensure field types are correct
+        try:
+            InferenceBackendUpdate.model_validate(yaml_data)
+        except ValidationError as e:
+            raise BadRequestException(message=f"Invalid YAML data: {e}")
 
         # Update the backend from YAML data (after normalization)
         await backend.update(session, yaml_data)
