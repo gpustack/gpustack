@@ -1,0 +1,46 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: {{ .Release.Name }}-server
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.server.apiPort }}
+      targetPort: {{ .Values.server.apiPort }}
+    - name: metrics
+      protocol: TCP
+      port: {{ .Values.server.metricsPort }}
+      targetPort: {{ .Values.server.metricsPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  ingressClassName: {{ .Values.gateway.ingressClassname }}
+  rules:
+    - {{- if .Values.server.ingress.hostname }}
+      host: {{ .Values.server.ingress.hostname }}
+      {{- end }}
+      http:
+        paths:
+          - backend:
+              service:
+                name: server
+                port:
+                  number: {{ .Values.server.apiPort }}
+            path: /
+            pathType: Prefix
+{{ include "ingress_tls" . | indent 2 }}

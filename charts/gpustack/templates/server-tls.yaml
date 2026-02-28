@@ -1,0 +1,11 @@
+{{- if and .Values.server.ingress.tls.cert .Values.server.ingress.tls.key .Values.server.ingress.hostname }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "tls_secret_name" . }}
+  namespace: {{ .Release.Namespace }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ .Values.server.ingress.tls.cert | b64enc }}
+  tls.key: {{ .Values.server.ingress.tls.key | b64enc }}
+{{- end }}
