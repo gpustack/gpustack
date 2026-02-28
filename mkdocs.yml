@@ -55,6 +55,7 @@ extra:
     provider: mike
 extra_javascript:
   - javascripts/katex.js
+  - image-selector/assets/extra.js
   - https://unpkg.com/katex@0/dist/katex.min.js
   - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
 extra_css:
@@ -189,3 +190,4 @@ nav:
       - References:
           - The Impact of Quantization on vLLM Inference Performance: performance-lab/references/the-impact-of-quantization-on-vllm-inference-performance.md
           - Evaluating LMCache Prefill Acceleration in vLLM: performance-lab/references/evaluating-lmcache-prefill-acceleration-in-vllm.md
+  - Container Image Selector: image-selector/index.html
