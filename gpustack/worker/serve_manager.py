@@ -194,30 +194,32 @@ class ServeManager:
         - If everything is fine, update the model instance state to RUNNING.
         """
 
-        # Get all model instances assigned to this worker.
-        #
-        # FIXME(thxCode): This may cause performance issues when there are many model instances in the system.
-        #                 A mechanism is needed to improve efficiency here.
-        model_instances_page = self._clientset.model_instances.list()
-        if not model_instances_page.items:
-            return
+        # Get model instances assigned to this worker, filtered by worker_id
+        # to avoid full table scan.
+        model_instances_page = self._clientset.model_instances.list(
+            params={"worker_id": str(self._worker_id)}
+        )
         model_instances: List[ModelInstance] = []
-        for model_instance in model_instances_page.items:
-            # if the model instance is assigned to this worker, it must be scheduled.
-            # But we don't need to sync the scheduled model when it is not initialized yet.
-            if (
-                model_instance.worker_id == self._worker_id
-                and model_instance.state != ModelInstanceStateEnum.SCHEDULED
-            ):
-                model_instances.append(model_instance)
-            if (
-                model_instance.distributed_servers
-                and model_instance.distributed_servers.subordinate_workers
-            ):
-                for sw in model_instance.distributed_servers.subordinate_workers:
+        if model_instances_page.items:
+            for mi in model_instances_page.items:
+                if mi.state != ModelInstanceStateEnum.SCHEDULED:
+                    model_instances.append(mi)
+
+        # Supplement distributed inference instances where this worker is a
+        # subordinate. These instances have a different worker_id (the primary
+        # worker) so the query above won't return them. We retrieve them from
+        # the event-driven cache maintained by _handle_model_instance_event.
+        for instance_id, mi in self._model_instance_by_instance_id.items():
+            if mi.worker_id == self._worker_id:
+                continue  # already included from the query above
+            if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
+                for sw in mi.distributed_servers.subordinate_workers:
                     if sw.worker_id == self._worker_id:
-                        model_instances.append(model_instance)
+                        model_instances.append(mi)
                         break
+
+        if not model_instances:
+            return
 
         for model_instance in model_instances:
             # Skip if the provision process has not exited yet.
@@ -512,6 +514,11 @@ class ServeManager:
                         f"Model instance {mi.name} waits for previous subordinate worker {sw.worker_ip} to be ready."
                     )
                     return
+
+        # Cache model instance for both main and subordinate workers,
+        # so that sync_model_instances_state can find subordinate instances.
+        if not is_main_worker:
+            self._model_instance_by_instance_id[mi.id] = mi
 
         if event.type == EventType.DELETED:
             self._stop_model_instance(mi)
