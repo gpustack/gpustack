@@ -84,22 +84,27 @@
 
             <!-- Optional Images -->
             <div class="selector-group">
-                <div class="label-with-tooltip">
-                    <label class="selector-label" data-i18n="optional_images"></label>
-                    <span class="tooltip-icon">
-                            i
-                            <span class="tooltip-content" data-i18n="optional_images_tooltip"></span>
-                        </span>
-                </div>
+                <label class="selector-label" data-i18n="optional_images"></label>
                 <div class="checkbox-group" id="optional-images">
-                    <label class="checkbox-item" data-for-component="server">
+                    <div class="label-with-tooltip"><label class="checkbox-item" data-for-component="server">
                         <input type="checkbox" id="postgres">
                         <span data-i18n="postgres"></span>
                     </label>
-                    <label class="checkbox-item" data-for-component="server">
-                        <input type="checkbox" id="monitoring">
-                        <span data-i18n="monitoring"></span>
-                    </label>
+                        <span class="tooltip-icon">
+                            i
+                            <span class="tooltip-content" data-i18n="optional_postgres_images_tooltip"></span>
+                        </span>
+                    </div>
+                    <div class="label-with-tooltip">
+                        <label class="checkbox-item" data-for-component="server">
+                            <input type="checkbox" id="monitoring">
+                            <span data-i18n="monitoring"></span>
+                        </label>
+                        <span class="tooltip-icon">
+                            i
+                            <span class="tooltip-content" data-i18n="optional_monitoring_images_tooltip"></span>
+                        </span>
+                    </div>
                 </div>
             </div>
         </div>

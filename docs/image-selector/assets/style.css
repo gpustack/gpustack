@@ -348,6 +348,8 @@ main {
     border: 1px solid rgba(255, 255, 255, 0.25);
     transition: opacity 0.2s ease,
     visibility 0.2s ease;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
 }
 
 /* Connection bridge to prevent disappearance when moving to popup */
