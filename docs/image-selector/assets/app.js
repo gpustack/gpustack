@@ -513,7 +513,17 @@ function renderFrameworkVersions(fw, cardId) {
             const vMatch = pts[0].match(/^cann([\d.]+)$/i);
             if (vMatch && !['vllm','sglang','mindie','voxbox'].some(b => pts[1].includes(b))) combos.set(`${vMatch[1]}-${pts[1]}`, { v: vMatch[1], c: pts[1] });
         });
-        Array.from(combos.values()).sort((a,b) => b.v.localeCompare(a.v) || a.c.localeCompare(b.c)).forEach(item => {
+        Array.from(combos.values()).sort((a,b) => {
+            const versionCompare = b.v.localeCompare(a.v, undefined, {numeric: true, sensitivity: 'base'});
+            if (versionCompare !== 0) {
+                return versionCompare;
+            }
+            const aIs910B = a.c.toUpperCase().includes('910B');
+            const bIs910B = b.c.toUpperCase().includes('910B');
+            if (aIs910B && !bIs910B) return -1;
+            if (!aIs910B && bIs910B) return 1;
+            return b.c.localeCompare(a.c);
+        }).forEach(item => {
             const opt = document.createElement('option');
             opt.value = item.v; opt.dataset.chipType = item.c; opt.textContent = `${fwName} ${item.v} (${item.c})`;
             select.appendChild(opt);
