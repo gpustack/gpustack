@@ -403,12 +403,14 @@ def model_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 
 def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-set-model-pre-route"
-    enabled_paths = supported_openai_routes.copy()
-    enabled_paths.append("/model/proxy")
+    enabled_path_suffixes = supported_openai_routes.copy()
+    enabled_path_prefixes = ["/model/proxy"]
     expected_spec = WasmPluginSpec(
         defaultConfig={
-            'modelToHeader': router_header_key,
-            'enableOnPathSuffix': enabled_paths,
+            'clusterNameHeader': 'X-GPUStack-Model',
+            'routeNameHeader': 'X-GPUStack-Route-Name',
+            'enableOnPathSuffix': enabled_path_suffixes,
+            'enableOnPathPrefix': enabled_path_prefixes,
         },
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
@@ -417,7 +419,7 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         phase="AUTHN",
         priority=90,
         url=get_plugin_url_with_name_and_version(
-            name="model-router", version="2.0.0", cfg=cfg
+            name="gpustack-set-header-pre-route", version="1.0.0", cfg=cfg
         ),
     )
     return resource_name, expected_spec
