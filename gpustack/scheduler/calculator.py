@@ -758,6 +758,29 @@ def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
         # Track upstream progress: https://github.com/huggingface/transformers/issues/43837
         return True
 
+    # For very new HF checkpoints, AutoConfig may fail on an older transformers.
+    # Falling back to reading config.json avoids requiring a transformers upgrade.
+    #
+    # Example upstream error message (may vary by transformers version):
+    """
+    The checkpoint you are trying to load has model type `{config_dict['model_type']}`
+    but Transformers does not recognize this architecture. This could be because of an
+    issue with the checkpoint, or because your version of Transformers is out of date.
+    You can update Transformers with the command `pip install --upgrade transformers`.
+    If this does not work, and the checkpoint is very new, then there may not be a
+    release version that supports this model yet. In this case, you can get the most
+    up-to-date code by installing Transformers from source with the command
+    `pip install git+https://github.com/huggingface/transformers.git`
+    """
+    msg = str(e).lower()
+    if (
+        "update transformers" in msg
+        or "pip install --upgrade transformers" in msg
+        or "does not recognize this architecture" in msg
+        or "install transformers from source" in msg
+    ):
+        return True
+
     # Fallback for backend version specified or import errors
     return model.backend_version is not None or isinstance(e, ImportError)
 
