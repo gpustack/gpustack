@@ -711,7 +711,7 @@ class ActiveRecordMixin:
     async def _invalidate_cached_all(cls):
         """Invalidate cached_all cache for this model class."""
         cache_key = class_key("cached_all")(None, cls)
-        await delete_cache_by_key(key=cache_key)
+        await delete_cache_by_key(_key=cache_key)
 
     @classmethod
     async def delete_all(cls, session: AsyncSession, soft=False):

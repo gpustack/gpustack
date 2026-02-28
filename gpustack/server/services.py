@@ -477,13 +477,10 @@ def intersection_nullable_set(set1: Set[str], set2: Optional[Set[str]]) -> Set[s
 
 
 async def delete_accessible_model_cache(
-    session: AsyncSession,
     *user_ids: int,
 ):
     for user_id in user_ids:
-        await delete_cache_by_key(
-            UserService(session).get_user_accessible_model_names, user_id
-        )
+        await delete_cache_by_key(UserService.get_user_accessible_model_names, user_id)
 
 
 async def revoke_model_access_cache(
@@ -499,4 +496,4 @@ async def revoke_model_access_cache(
         user_ids = {user.id for user in model.users}
     if extra_user_ids:
         user_ids.update(extra_user_ids)
-    await delete_accessible_model_cache(session, *user_ids)
+    await delete_accessible_model_cache(*user_ids)

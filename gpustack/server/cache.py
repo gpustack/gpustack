@@ -25,7 +25,8 @@ def build_cache_key(func: Callable, *args, **kwargs):
     return func.__qualname__ + str(args) + str(ordered_kwargs)
 
 
-async def delete_cache_by_key(func=None, key: str = None, *args, **kwargs):
+async def delete_cache_by_key(func=None, *args, **kwargs):
+    key = kwargs.pop("_key", None)
     if key is None:
         if func is None:
             raise ValueError("Either func or key must be provided")
