@@ -54,6 +54,7 @@ class ApiKeyCreate(ApiKeyBase):
 class ApiKeyPublic(ApiKeyBase):
     id: int
     value: Optional[str] = None  # only available when creating
+    masked_value: Optional[str] = None  # partial characters for identification
     created_at: datetime
     updated_at: datetime
     expires_at: Optional[datetime] = None
