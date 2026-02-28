@@ -1,8 +1,7 @@
 import asyncio
 import logging
 import aiohttp
-import random
-from typing import Callable, Dict
+from typing import Callable, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
@@ -104,25 +103,25 @@ def get_model_instance_info_from_model_name(request: Request) -> int:
 
     Return the model instance port and support of generic proxy or not.
     """
-    model_name = request.headers.get(router_header_key, None)
-    if model_name is None:
+    model_destination = request.headers.get(router_header_key, None)
+    if model_destination is None:
         raise HTTPException(
             status_code=400, detail=f"Missing {router_header_key} header"
         )
-    instance_ports: Dict[int, int] = request.app.state.instance_port_by_model_name(
-        model_name
+    # model_destination is in the format of "model-<id>-<instance.id>.<suffix>",
+    # we need to extract the model instance id from it, which is the last part of the splitted by "-",
+    # and before the first ".". For example, "model-1-2.3" -> model instance id is 2.
+    splitted = model_destination.split(".")[0].split("-")
+    model_instance_id = int(splitted[-1])
+    port: Optional[int] = request.app.state.get_instance_port_by_model_instance_id(
+        model_instance_id
     )
-    if len(instance_ports) == 0:
+    if not port:
         raise HTTPException(
             status_code=404,
-            detail=f"No running model instance found for model name: {model_name}",
+            detail=f"No running model instance found for model name: {model_destination}",
         )
-    instances = list(instance_ports.keys())
-    model_instance_id = random.choice(instances)
-    port = instance_ports[model_instance_id]
-    logger.debug(
-        f"Found ports for model instances {instances} of model {model_name}, selected port: {port}"
-    )
+    logger.debug(f"Found port {port} from model destination {model_destination}")
     return port
 
 
