@@ -494,6 +494,8 @@ function selectCard(cardId) {
     renderFrameworkVersions(fw, cardId);
     const first = elements.frameworkVersionSelect.querySelector('option:not([value=""])');
     if (first) { first.selected = true; selectFrameworkVersion(first.value); }
+    const targetArch = cardId === 'ascend' ? 'arm64' : 'amd64';
+    if (state.selectedArch !== targetArch) selectArch(targetArch);
 }
 
 // Render Framework Version dropdown
