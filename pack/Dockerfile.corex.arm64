@@ -1,0 +1,28 @@
+FROM crpi-92uj7jb20gffz04j.cn-guangzhou.personal.cr.aliyuncs.com/iluvatar_common/vllm0.10.1-4.3.6-aarch64:v1 AS build
+
+RUN apt-get update && apt-get install -y \
+    git \
+    curl
+
+COPY .. /workspace/gpustack
+RUN cd /workspace/gpustack && make build
+
+FROM crpi-92uj7jb20gffz04j.cn-guangzhou.personal.cr.aliyuncs.com/iluvatar_common/vllm0.10.1-4.3.6-aarch64:v1 AS runtime
+
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    wget \
+    tzdata \
+    iproute2 \
+    tini \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /workspace/gpustack/dist/*.whl /dist/
+RUN pip install /dist/*.whl && \
+    pip cache purge && \
+    rm -rf /dist
+
+RUN gpustack download-tools --device cpu
+
+ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
