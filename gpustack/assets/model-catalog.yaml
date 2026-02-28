@@ -1500,7 +1500,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: black-forest-labs/FLUX.2-klein-4B
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: FLUX.2-klein-9B
@@ -1519,7 +1519,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: black-forest-labs/FLUX.2-klein-9B
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: Qwen-Image
@@ -1538,7 +1538,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen-Image
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: Qwen-Image-Edit
@@ -1576,7 +1576,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen-Image-2512
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: Z-Image
@@ -1595,7 +1595,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Tongyi-MAI/Z-Image
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: Z-Image-Turbo
@@ -1614,7 +1614,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Tongyi-MAI/Z-Image-Turbo
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
       env:
@@ -2060,7 +2060,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-1.7B-Base
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: Qwen3-TTS-12Hz-1.7B-CustomVoice
@@ -2079,7 +2079,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: Qwen3-TTS-12Hz-1.7B-VoiceDesign
@@ -2098,7 +2098,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: Qwen3-TTS-12Hz-0.6B-Base
@@ -2117,7 +2117,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-0.6B-Base
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: Qwen3-TTS-12Hz-0.6B-CustomVoice
@@ -2136,7 +2136,7 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
       backend: vLLM
-      backend_version: 0.14.1
+      backend_version: 0.16.0
       backend_parameters:
         - --omni
 - name: SenseVoice-Small
