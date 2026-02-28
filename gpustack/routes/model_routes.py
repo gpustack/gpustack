@@ -196,6 +196,8 @@ async def update_model_route(
         raise AlreadyExistsException(
             f"ModelRoute with name '{input.name}' already exists."
         )
+    existing_name = existing.name
+    input_name = input.name
     input_data = input.model_dump(exclude={"targets"})
     try:
         if input.targets is not None or input.name != existing.name:
@@ -212,6 +214,8 @@ async def update_model_route(
             existing, source=input_data, auto_commit=False
         )
         await session.commit()
+        if existing_name != input_name:
+            await revoke_model_access_cache(session=session)
     except Exception as e:
         raise InternalServerErrorException(f"Failed to update ModelRoute '{id}': {e}")
     return await ModelRoute.one_by_id(session=session, id=id)
