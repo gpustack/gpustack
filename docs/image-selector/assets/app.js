@@ -1,4 +1,4 @@
-// GPUStack Image Selector - Main Logic
+// Container Image Selector - Main Logic
 
 const CONFIG = {
     versionsUrl: './versions/index.json',
@@ -25,8 +25,8 @@ const CONFIG = {
     // Multilingual dictionary
     i18n: {
         'zh': {
-            'title': 'GPUStack 镜像选择器',
-            'subtitle': '镜像选择器',
+            'title': '容器镜像选择器',
+            'subtitle': '容器镜像选择器',
             'back_to_docs': '文档',
             'version': '版本',
             'loading': '加载中...',
@@ -111,8 +111,8 @@ const CONFIG = {
             }
         },
         'en': {
-            'title': 'GPUStack Image Selector',
-            'subtitle': 'Image Selector',
+            'title': 'Container Image Selector',
+            'subtitle': 'Container Image Selector',
             'back_to_docs': 'Docs',
             'version': 'Version',
             'loading': 'Loading...',

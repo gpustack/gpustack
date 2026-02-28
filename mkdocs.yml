@@ -189,4 +189,4 @@ nav:
       - References:
           - The Impact of Quantization on vLLM Inference Performance: performance-lab/references/the-impact-of-quantization-on-vllm-inference-performance.md
           - Evaluating LMCache Prefill Acceleration in vLLM: performance-lab/references/evaluating-lmcache-prefill-acceleration-in-vllm.md
-  - Image Selector: image-selector/index.html
+  - Container Image Selector: image-selector/index.html
