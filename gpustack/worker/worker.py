@@ -238,6 +238,9 @@ class Worker:
         self._register()
         self._config.reload_worker_config(self._default_config)
         self.log_worker_config()
+
+        self._serve_manager.reconnect_existing_model_instances()
+
         if self._exporter_enabled:
             # Start the runtime metrics cacher.
             _runtime_metrics_aggregator = RuntimeMetricsAggregator(

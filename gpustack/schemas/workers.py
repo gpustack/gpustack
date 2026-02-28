@@ -327,6 +327,10 @@ class WorkerCreate(WorkerStatusStored, WorkerUpdate):
     external_id: Optional[str] = Field(
         default=None, sa_column=Column(String(255), nullable=True)
     )
+    worker_id: Optional[int] = Field(
+        default=None,
+        description="Existing worker ID to reconnect to (for worker restarts)",
+    )
 
 
 class WorkerBase(WorkerCreate):

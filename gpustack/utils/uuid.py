@@ -7,6 +7,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 legacy_uuid_filename = "worker_uuid"
 worker_name_filename = "worker_name"
+worker_id_filename = "worker_id"
 
 
 def get_legacy_uuid(data_dir: str) -> Optional[str]:
@@ -68,3 +69,28 @@ def set_worker_name(data_dir: str, worker_name: str):
         )
         with open(worker_name_path, "w") as file:
             file.write(worker_name)
+
+
+def get_worker_id(data_dir: str) -> Optional[int]:
+    worker_id_path = os.path.join(data_dir, worker_id_filename)
+    if os.path.exists(worker_id_path):
+        with open(worker_id_path, "r") as file:
+            try:
+                return int(file.read().strip())
+            except ValueError:
+                logger.warning(
+                    f"Invalid content in worker_id file: {worker_id_path}. Ignoring."
+                )
+                return None
+    return None
+
+
+def set_worker_id(data_dir: str, worker_id: int):
+    worker_id_path = os.path.join(data_dir, worker_id_filename)
+    current_worker_id = get_worker_id(data_dir)
+    if current_worker_id != worker_id:
+        logger.warning(
+            f"Worker ID is being updated from {current_worker_id or '<empty>'} to {worker_id}"
+        )
+    with open(worker_id_path, "w") as file:
+        file.write(str(worker_id))

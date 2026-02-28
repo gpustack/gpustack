@@ -259,6 +259,13 @@ def get_existing_worker(
     if worker_in.name == "":
         return None
 
+    # find existing worker by worker_id (for worker restarts)
+    if worker_in.worker_id is not None:
+        fields = {**static_fields, "id": worker_in.worker_id}
+        existing_worker = next(iter(filter_workers_by_fields(workers, fields)), None)
+        if existing_worker is not None:
+            return existing_worker
+
     # find existing worker by external_id or worker_uuid
     for field in ["external_id", "worker_uuid"]:
         value = getattr(worker_in, field, None)
