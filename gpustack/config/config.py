@@ -119,6 +119,25 @@ class Config(WorkerConfig, BaseSettings):
         gateway_mode: Gateway deployment mode. Options are 'auto', 'embedded', 'incluster', 'external', 'disabled'. Default is 'auto'.
         gateway_kubeconfig: Path to the kubeconfig file for gateway. Only used when gateway_mode is 'external'.
         gateway_concurrency: Number of concurrent connections for the embedded gateway. Default is 16.
+# ==================== Multi-Server Configuration ====================
+# Server unique identifier, auto-generated if not specified
+server_id: Optional[str] = None
+# List of all Server URLs for multi-server deployment
+server_urls: Optional[List[str]] = []
+# Coordinator service URL for distributed coordination (optional, supports etcd, Consul, etc.)
+coordinator_url: Optional[str] = None
+# Schedulingmode: local (local only), distributed, auto (automatic)
+scheduling_mode: str = "auto"
+# Heartbeat interval (seconds)
+heartbeat_interval: int = 15
+# Server timeout (seconds)
+server_timeout: int = 60
+# Distributed lock timeout (seconds)
+lock_timeout: int = 30
+# Whether to enable distributed scheduling
+distributed_scheduling: bool = True
+# Schedule lock timeout (seconds)
+schedule_lock_timeout: int = 60
         gateway_namespace: The namespace where the gateway component is deployed.
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
         disable_builtin_observability: Disable embedded Grafana and Prometheus services.
