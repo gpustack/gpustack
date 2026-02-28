@@ -1,14 +1,17 @@
 import asyncio
 import logging
 import aiohttp
-import random
-from typing import Callable, Dict
+from typing import Callable, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
 from gpustack.api.auth import worker_auth
-from gpustack.api.exceptions import GatewayTimeoutException, ServiceUnavailableException
+from gpustack.api.exceptions import (
+    GatewayTimeoutException,
+    ServiceUnavailableException,
+    NotFoundException,
+)
 from gpustack import envs
 from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.gateway import router_header_key
@@ -104,25 +107,29 @@ def get_model_instance_info_from_model_name(request: Request) -> int:
 
     Return the model instance port and support of generic proxy or not.
     """
-    model_name = request.headers.get(router_header_key, None)
-    if model_name is None:
+    model_destination = request.headers.get(router_header_key, None)
+    if model_destination is None:
         raise HTTPException(
             status_code=400, detail=f"Missing {router_header_key} header"
         )
-    instance_ports: Dict[int, int] = request.app.state.instance_port_by_model_name(
-        model_name
-    )
-    if len(instance_ports) == 0:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No running model instance found for model name: {model_name}",
+    # model_destination is in the format of "model-<id>-<instance.id>.<suffix>",
+    # we need to extract the model instance id from it, which is the last part of the splitted by "-",
+    # and before the first ".". For example, "model-1-2.3" -> model instance id is 2.
+    splitted = model_destination.split(".")[0].split("-")
+    try:
+        model_instance_id = int(splitted[-1])
+    except (ValueError, IndexError):
+        raise NotFoundException(
+            message=f"Invalid model destination format: {model_destination}",
         )
-    instances = list(instance_ports.keys())
-    model_instance_id = random.choice(instances)
-    port = instance_ports[model_instance_id]
-    logger.debug(
-        f"Found ports for model instances {instances} of model {model_name}, selected port: {port}"
+    port: Optional[int] = request.app.state.get_instance_port_by_model_instance_id(
+        model_instance_id
     )
+    if not port:
+        raise NotFoundException(
+            message=f"No running model instance found for model name: {model_destination}",
+        )
+    logger.debug(f"Found port {port} from model destination {model_destination}")
     return port
 
 
@@ -135,6 +142,9 @@ async def set_port_from_model_name(request: Request, call_next):
         request.scope["path"] = f"/proxy{request.url.path}"
         request.state.x_target_port = str(port)
         return await call_next(request)
+    except NotFoundException as e:
+        logger.debug("failed to find model instance for proxying: %s", e.message)
+        raise e
     except HTTPException as e:
         logger.debug("failed to find model instance for proxying: %s", e.detail)
         return await call_next(request)

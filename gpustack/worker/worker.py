@@ -331,8 +331,8 @@ class Worker:
         app.state.config = self._config
         app.state.token = read_worker_token(self._config.data_dir)
         app.state.worker_ip_getter = self.worker_ip
-        app.state.instance_port_by_model_name = (
-            self._serve_manager.get_instance_ports_by_model_name
+        app.state.get_instance_port_by_model_instance_id = (
+            self._serve_manager.get_instance_port_by_model_instance_id
         )
         app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
         app.include_router(route_config.router, prefix=default_versioned_prefix)

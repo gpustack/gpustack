@@ -71,6 +71,12 @@ supported_plugins: List[HigressPlugin] = [
         digest="sha256:8cc102de760e8aba2856149da9cbc8eae3d04f6d42127b624326885a013ac239",
         registry_prefix="oci://docker.io/gpustack/higress-plugin-",
     ),
+    HigressPlugin(
+        name="gpustack-set-header-pre-route",
+        version="1.0.0",
+        digest="sha256:103e2bb42c1a9f65544c4bbec549e418ae1af1417180f1c0307d52aab226e6bd",
+        registry_prefix="oci://docker.io/gpustack/higress-plugin-",
+    ),
 ]
 
 
