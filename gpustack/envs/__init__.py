@@ -95,6 +95,15 @@ GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
 
 GATEWAY_EXTERNAL_METRICS_URL = os.getenv("GPUSTACK_GATEWAY_EXTERNAL_METRICS_URL", None)
 
+GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES = [
+    ct.strip()
+    for ct in os.getenv(
+        "GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES",
+        "application/json,text/event-stream",
+    ).split(",")
+    if ct.strip()
+]
+
 DEFAULT_CLUSTER_KUBERNETES = (
     os.getenv("GPUSTACK_DEFAULT_CLUSTER_KUBERNETES", "false").lower() == "true"
 )

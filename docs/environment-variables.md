@@ -73,12 +73,13 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Gateway Configuration
 
-| Variable                                  | Description                                                                         | Default | Applies to |
-| ----------------------------------------- | ----------------------------------------------------------------------------------- | ------- | ---------- |
-| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`    | Higress external authentication timeout in milliseconds.                            | `30000` | Server     |
-| `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`    | The interval in seconds of GPUStack Server checking embedded gateway listening port | `2`     | Server     |
-| `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT` | The retry count of GPUStack Server checking embedded gateway listening port         | `300`   | Server     |
-| `GPUSTACK_GATEWAY_EXTERNAL_METRICS_URL`   | The external gateway metrics url. e.g. `http://<gateway-ip>:15020/stats/prometheus` | None    | Server     |
+| Variable                                              | Description                                                                                                                        | Default                              | Applies to |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ---------- |
+| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Higress external authentication timeout in milliseconds.                                                                           | `30000`                              | Server     |
+| `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`                | The interval in seconds of GPUStack Server checking embedded gateway listening port                                                | `2`                                  | Server     |
+| `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT`             | The retry count of GPUStack Server checking embedded gateway listening port                                                        | `300`                                | Server     |
+| `GPUSTACK_GATEWAY_EXTERNAL_METRICS_URL`               | The external gateway metrics url. e.g. `http://<gateway-ip>:15020/stats/prometheus`                                                | None                                 | Server     |
+| `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Comma-separated list of content-types to be monitored by the ai-statistics plugin. Each value should be a valid HTTP Content-Type. | `application/json,text/event-stream` | Server     |
 
 ### Cluster Configuration
 
