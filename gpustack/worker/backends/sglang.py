@@ -23,6 +23,7 @@ from gpustack.schemas.models import (
     SpeculativeAlgorithmEnum,
     CategoryEnum,
     ModelInstanceDeploymentMetadata,
+    BackendEnum,
 )
 from gpustack.utils.command import (
     find_bool_parameter,
@@ -375,7 +376,9 @@ class SGLangServer(InferenceServer):
         arguments.extend(cache_report_arguments)
 
         # Add multimodal argument if needed
-        if is_multimodal_model(self._get_model_architecture()):
+        if is_multimodal_model(
+            self._get_model_architecture(), backend=BackendEnum.SGLANG
+        ):
             arguments.append("--enable-multimodal")
 
         # Add speculative config arguments if needed
@@ -419,7 +422,9 @@ class SGLangServer(InferenceServer):
                     "ascend",
                 ]
             )
-            if is_multimodal_model(self._get_model_architecture()):
+            if is_multimodal_model(
+                self._get_model_architecture(), backend=BackendEnum.SGLANG
+            ):
                 arguments.extend(
                     [
                         "--mm-attention-backend",
