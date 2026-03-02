@@ -1,0 +1,1 @@
+0 * * * * /usr/sbin/logrotate /etc/logrotate.d/higress-logrotate

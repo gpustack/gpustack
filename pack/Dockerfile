@@ -378,15 +378,8 @@ RUN --mount=type=bind,from=apiserver,source=/apiserver,dst=/mnt/apiserver,rw \
     cp /mnt/gateway/var/lib/istio/envoy/*.so /var/lib/istio/envoy/;
     cp /mnt/gateway/usr/local/bin/pilot-agent /usr/local/bin/pilot-agent;
     cp /mnt/gateway/usr/local/bin/envoy /usr/local/bin/envoy;
-    cp /mnt/gateway/usr/local/bin/higress-proxy-container-init.sh /usr/local/bin/;
     cp /mnt/gateway/usr/local/bin/supercronic-linux-${TARGETARCH} /usr/local/bin/;
     ln -s supercronic-linux-${TARGETARCH} supercronic && mv supercronic /usr/local/bin/;
-
-    # Prepare Higress
-    chmod a+x /usr/local/bin/higress-proxy-container-init.sh; \
-    sed -i 's/1337/0/g' /usr/local/bin/higress-proxy-container-init.sh; \
-    /usr/local/bin/higress-proxy-container-init.sh
-
 EOF
 # Initialize configurations
 COPY pack/rootfs/ /
