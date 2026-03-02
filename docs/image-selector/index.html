@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+          content="Container Image Selector - Generate Docker pull commands based on your hardware configuration.">
+    <title data-i18n="title">Container Image Selector</title>
+    <link rel="icon" type="image/png" href="assets/logo.png">
+    <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header>
+    <div class="header-content">
+        <div class="logo">
+            <img src="assets/logo-white.png" alt="GPUStack" class="logo-wide">
+            <span class="subtitle" data-i18n="subtitle"></span>
+        </div>
+        <div class="header-controls">
+            <div class="official-link">
+                <a href="https://docs.gpustack.ai/" target="_blank">
+                    <span data-i18n="back_to_docs"></span>
+                    <svg class="external-icon" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                        <polyline points="15 3 21 3 21 9"></polyline>
+                        <line x1="10" y1="14" x2="21" y2="3"></line>
+                    </svg>
+                </a>
+            </div>
+            <div class="language-dropdown">
+                <button class="dropbtn" id="current-lang">English</button>
+                <div class="dropdown-content">
+                    <div class="dropdown-inner">
+                        <a href="#" data-lang="en">English</a>
+                        <a href="#" data-lang="zh">简体中文</a>
+                    </div>
+                </div>
+            </div>
+            <div class="version-selector">
+                <label class="version-label" data-i18n="version"></label>
+                <select id="gpustack-version-select" class="version-select">
+                    <option value="" data-i18n="loading"></option>
+                </select>
+            </div>
+        </div>
+    </div>
+</header>
+
+<main>
+    <div class="container">
+        <div class="selector-panel">
+            <h2 data-i18n="select_config"></h2>
+
+            <!-- GPU Type Selection -->
+            <div class="selector-group">
+                <label class="selector-label" data-i18n="gpu_type"></label>
+                <div class="card-grid" id="card-selector">
+                    <!-- Dynamic Generation -->
+                </div>
+            </div>
+
+            <!-- Computing Framework Version -->
+            <div class="selector-group" id="framework-version-group">
+                <label class="selector-label" data-i18n="framework_version"></label>
+                <select id="framework-version-select" class="select-input">
+                    <option value="" data-i18n="select_gpu_first"></option>
+                </select>
+            </div>
+
+            <!-- Inference Backend -->
+            <div class="selector-group" id="backend-group">
+                <div class="label-with-tooltip">
+                    <label class="selector-label" data-i18n="inference_backend"></label>
+                    <span class="tooltip-icon">
+                            i
+                            <span class="tooltip-content" data-i18n="inference_backend_tooltip"></span>
+                        </span>
+                </div>
+                <div class="checkbox-group" id="backend-selector">
+                    <!-- Dynamic Generation -->
+                </div>
+            </div>
+
+            <!-- Optional Images -->
+            <div class="selector-group">
+                <label class="selector-label" data-i18n="optional_images"></label>
+                <div class="checkbox-group" id="optional-images">
+                    <div class="label-with-tooltip"><label class="checkbox-item" data-for-component="server">
+                        <input type="checkbox" id="postgres">
+                        <span data-i18n="postgres"></span>
+                    </label>
+                        <span class="tooltip-icon">
+                            i
+                            <span class="tooltip-content" data-i18n="optional_postgres_images_tooltip"></span>
+                        </span>
+                    </div>
+                    <div class="label-with-tooltip">
+                        <label class="checkbox-item" data-for-component="server">
+                            <input type="checkbox" id="monitoring">
+                            <span data-i18n="monitoring"></span>
+                        </label>
+                        <span class="tooltip-icon">
+                            i
+                            <span class="tooltip-content" data-i18n="optional_monitoring_images_tooltip"></span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Image List Panel -->
+        <div class="result-panel">
+            <h2 data-i18n="required_images"></h2>
+
+            <!-- Architecture -->
+            <div class="selector-group-inline">
+                <div class="selector-item flex-2">
+                    <label class="selector-label" data-i18n="architecture"></label>
+                    <div class="button-grid" id="arch-selector">
+                        <button class="option-button active" data-value="amd64">AMD64</button>
+                        <button class="option-button" data-value="arm64">ARM64</button>
+                    </div>
+                </div>
+
+                <div class="selector-item flex-4">
+                    <label class="selector-label" data-i18n="registry"></label>
+                    <div class="button-grid" id="registry-selector">
+                        <button class="option-button active" data-value="docker-hub">Docker Hub</button>
+                        <button class="option-button" data-value="quay">Quay.io</button>
+                        <button class="option-button" data-value="china" id="registry-china"
+                                data-i18n="china_registry"></button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Image List Tab Component -->
+            <div class="image-tabs-container">
+                <div class="image-tabs-header">
+                    <button class="image-tab active" data-component="all" data-i18n="tab_all"></button>
+                    <button class="image-tab" data-component="server" data-i18n="tab_server"></button>
+                    <button class="image-tab" data-component="worker" data-i18n="tab_worker"></button>
+                </div>
+                <div class="image-tabs-content">
+                    <div class="commands-output">
+                        <div class="code-block-wrapper">
+                            <pre id="image-list" class="image-commands"><code class="placeholder"
+                                                                              data-i18n="placeholder_select"></code></pre>
+                            <button id="copy-all-btn" class="copy-icon-btn" title="Copy all commands"
+                                    style="display: none;">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="2">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Offline Installation Guide Module -->
+            <div class="offline-guide-module">
+                <details>
+                    <summary class="guide-summary" data-i18n="offline_guide_title"></summary>
+                    <div class="guide-container">
+                        <div class="guide-header">
+                            <div class="guide-tabs">
+                                <button class="guide-tab active" data-guide="save-load"
+                                        data-i18n="guide_tab_save"></button>
+                                <button class="guide-tab" data-guide="tag-push" data-i18n="guide_tab_tag"></button>
+                                <button class="guide-tab" data-guide="copy-images" data-i18n="guide_tab_auto"></button>
+                            </div>
+                        </div>
+
+                        <div class="guide-body">
+                            <div class="guide-content active" id="guide-save-load" data-i18n="guide_save_content"></div>
+                            <div class="guide-content" id="guide-tag-push" data-i18n="guide_tag_content"></div>
+                            <div class="guide-content" id="guide-copy-images" data-i18n="guide_auto_content"></div>
+                        </div>
+                        <div class="guide-footer">
+                            <a href="https://docs.gpustack.ai/latest/installation/air-gapped/" target="_blank"
+                               class="docs-link" data-i18n="view_full_docs"></a>
+                        </div>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </div>
+</main>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

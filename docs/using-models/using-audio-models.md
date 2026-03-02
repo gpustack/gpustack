@@ -80,6 +80,28 @@ In the `Text to Speech` playground,
 
 ![Generated](../assets/using-models/using-audio-models/inference-tts-model.png)
 
+### Step 3: Streaming Output via API
+
+You can also use the API to get streaming audio output. Here's an example using curl:
+
+```bash
+# Replace ${SERVER_URL} with your GPUStack server URL and ${YOUR_GPUSTACK_API_KEY} with your API key.
+curl ${SERVER_URL}/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${YOUR_GPUSTACK_API_KEY}" \
+  -d '{
+    "model": "qwen3-tts-12hz-1.7b-customvoice",
+    "voice": "Vivian",
+    "task_type": "CustomVoice",
+    "language": "Auto",
+    "input": "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye.",
+    "stream": true,
+    "response_format": "pcm"
+  }' --no-buffer | play -t raw -r 24000 -e signed -b 16 -c 1 -
+```
+
+This will stream the audio output directly and play it using the `play` command. The audio is streamed in PCM format at 24kHz sample rate with 16-bit signed encoding and mono channel.
+
 ## Voice Cloning Using Qwen3-TTS
 
 GPUStack also supports voice cloning with Text-to-Speech models. Here's how to use it:
