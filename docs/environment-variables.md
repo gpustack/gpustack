@@ -44,19 +44,20 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Database Configuration
 
-| Variable                                 | Description                                                                | Default | Applies to |
-| ---------------------------------------- | -------------------------------------------------------------------------- | ------- | ---------- |
-| `GPUSTACK_DB_ECHO`                       | Enable database query logging.                                             | `false` | Server     |
-| `GPUSTACK_DB_POOL_SIZE`                  | Database connection pool size.                                             | `30`    | Server     |
-| `GPUSTACK_DB_MAX_OVERFLOW`               | Database connection pool max overflow.                                     | `20`    | Server     |
-| `GPUSTACK_DB_POOL_TIMEOUT`               | Database connection pool timeout in seconds.                               | `30`    | Server     |
+| Variable                   | Description                                  | Default | Applies to |
+| -------------------------- | -------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_DB_ECHO`         | Enable database query logging.               | `false` | Server     |
+| `GPUSTACK_DB_POOL_SIZE`    | Database connection pool size.               | `30`    | Server     |
+| `GPUSTACK_DB_MAX_OVERFLOW` | Database connection pool max overflow.       | `20`    | Server     |
+| `GPUSTACK_DB_POOL_TIMEOUT` | Database connection pool timeout in seconds. | `30`    | Server     |
 
 ### Network Configuration
 
-| Variable                         | Description                      | Default | Applies to      |
-| -------------------------------- | -------------------------------- | ------- | --------------- |
-| `GPUSTACK_PROXY_TIMEOUT_SECONDS` | Proxy timeout in seconds.        | `1800`  | Server          |
-| `GPUSTACK_TCP_CONNECTOR_LIMIT`   | HTTP client TCP connector limit. | `1000`  | Server & Worker |
+| Variable                                       | Description                                  | Default | Applies to      |
+| ---------------------------------------------- | -------------------------------------------- | ------- | --------------- |
+| `GPUSTACK_PROXY_TIMEOUT_SECONDS`               | Proxy timeout in seconds.                    | `1800`  | Server          |
+| `GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS` | Upstream idle timeout in seconds for higress | `300`   | Server          |
+| `GPUSTACK_TCP_CONNECTOR_LIMIT`                 | HTTP client TCP connector limit.             | `1000`  | Server & Worker |
 
 ### Server Cache Configuration
 

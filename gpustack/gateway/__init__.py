@@ -620,6 +620,7 @@ async def ensure_gateway_timeout(cfg: Config, api_client: k8s_client.ApiClient):
                 name=higress_config_name, namespace=namespace
             )
         )
+        should_update = False
         config_data: str = higress_config.data["higress"]
         config = yaml.safe_load(config_data)
         idle_timeout = (
@@ -630,6 +631,22 @@ async def ensure_gateway_timeout(cfg: Config, api_client: k8s_client.ApiClient):
         if idle_timeout is None or str(idle_timeout) != f"{envs.PROXY_TIMEOUT}":
             config.setdefault("downstream", {})["idleTimeout"] = envs.PROXY_TIMEOUT
             higress_config.data["higress"] = yaml.safe_dump(config)
+            should_update = True
+        upstream_idle_timeout = (
+            config.get("upstream", {}).get("idleTimeout")
+            if isinstance(config, dict)
+            else None
+        )
+        if (
+            upstream_idle_timeout is None
+            or str(upstream_idle_timeout) != f"{envs.PROXY_UPSTREAM_IDLE_TIMEOUT}"
+        ):
+            config.setdefault("upstream", {})[
+                "idleTimeout"
+            ] = envs.PROXY_UPSTREAM_IDLE_TIMEOUT
+            higress_config.data["higress"] = yaml.safe_dump(config)
+            should_update = True
+        if should_update:
             await core_v1_client.replace_namespaced_config_map(
                 name=higress_config_name,
                 namespace=namespace,
