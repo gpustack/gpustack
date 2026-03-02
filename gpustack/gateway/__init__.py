@@ -356,6 +356,7 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-ai-statistics"
     expected_spec = WasmPluginSpec(
         defaultConfig={
+            "enable_content_types": envs.GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES,
             "attributes": [
                 {
                     "apply_to_log": True,
@@ -364,7 +365,7 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     "value": "x-mse-consumer",
                     "value_source": "request_header",
                 }
-            ]
+            ],
         },
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
@@ -671,6 +672,14 @@ def spec_replace(
     return expected_spec
 
 
+def validate_ai_statistics_plugin_content_types():
+    for content_type in envs.GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES:
+        if content_type == "audio/pcm":
+            raise ValueError(
+                "audio/pcm content type is not supported in ai statistics plugin"
+            )
+
+
 def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
     if cfg.gateway_mode == GatewayModeEnum.disabled:
         return
@@ -680,6 +689,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
         GatewayModeEnum.embedded,
         GatewayModeEnum.external,
     ]:
+        validate_ai_statistics_plugin_content_types()
         plugin_list: List[Tuple[str, WasmPluginSpec]] = [
             ext_auth_plugin(cfg=cfg),
             ai_statistics_plugin(cfg=cfg),
