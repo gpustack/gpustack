@@ -136,6 +136,7 @@ nav:
           - Integrate with Dify: integrations/integrate-with-dify.md
           - Integrate with RAGFlow: integrations/integrate-with-ragflow.md
           - Integrate with CherryStudio: integrations/integrate-with-cherrystudio.md
+          - Integrate with OpenClaw: integrations/integrate-with-openclaw.md
       - Architecture: architecture.md
       - Scheduler: scheduler.md
       - Troubleshooting: troubleshooting.md
