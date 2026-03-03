@@ -24,15 +24,9 @@ class ModelClient:
         self._url = "/models"
         self._enable_cache = enable_cache
         self._cache: Dict[int, ModelPublic] = {}
-        self._cache_lock = None
+        self._cache_lock = threading.Lock()
         self._watch_started = False
         self._initial_sync_logged = False
-
-    def _get_cache_lock(self):
-        """Lazy initialization of cache lock."""
-        if self._cache_lock is None:
-            self._cache_lock = threading.Lock()
-        return self._cache_lock
 
     def list(
         self, params: Dict[str, Any] = None, use_cache: bool = True
@@ -79,7 +73,7 @@ class ModelClient:
         The first call to awatch() will set _watch_started=True and enable caching.
         """
         # Get all cached items
-        with self._get_cache_lock():
+        with self._cache_lock:
             all_items = list(self._cache.values())
 
         # Apply filters if params provided
@@ -113,17 +107,42 @@ class ModelClient:
 
         return ModelsPublic(items=all_items, total=total, pagination=pagination)
 
-    def _update_cache_from_event(self, event: Event):
-        """Update cache based on received event."""
+    async def _update_cache_from_event(self, event: Event):
+        """Update cache based on received event.
+
+        Runs on the awatch event loop. Network I/O uses the async httpx
+        client and happens outside the cache lock, so concurrent readers
+        (list/get) are never blocked waiting on HTTP.
+        """
         if not self._enable_cache:
             return
 
         try:
+            # Server only emits ID-only events for DELETED (when its own
+            # enrichment cache misses on a row that's already gone from DB).
+            # CREATED/UPDATED are always enriched server-side or dropped, so
+            # we only handle the DELETED case here.
+            is_id_only_delete = (
+                event.type == EventType.DELETED
+                and isinstance(event.data, dict)
+                and event.id is not None
+                and set(event.data.keys()) == {"id"}
+            )
+            if is_id_only_delete:
+                with self._cache_lock:
+                    item = self._cache.pop(event.id, None)
+                if item is not None:
+                    # Enrich so downstream callbacks (e.g. ServeManager) see
+                    # a validated object instead of {"id": ...}.
+                    event.data = item
+                logger.debug(f"Cache: removed model {event.id}")
+                return
+
             item = ModelPublic.model_validate(event.data)
             if not hasattr(item, 'id'):
                 return
 
-            with self._get_cache_lock():
+            with self._cache_lock:
                 if event.type == EventType.DELETED:
                     self._cache.pop(item.id, None)
                     logger.debug(f"Cache: removed model {item.id}")
@@ -197,7 +216,7 @@ class ModelClient:
 
                         # Update cache if enabled
                         if self._enable_cache:
-                            self._update_cache_from_event(event)
+                            await self._update_cache_from_event(event)
 
                             # Log cache size after initial events (approximately)
                             if (
@@ -205,7 +224,7 @@ class ModelClient:
                                 and event.type == EventType.CREATED
                             ):
                                 # Check if we have accumulated enough items (heuristic)
-                                with self._get_cache_lock():
+                                with self._cache_lock:
                                     cache_size = len(self._cache)
                                 if cache_size > 0:
                                     # Set a flag to avoid repeated logging
@@ -214,7 +233,20 @@ class ModelClient:
                                         f"models cache populated with {cache_size} items"
                                     )
 
-                        if callback:
+                        # Skip the callback if the event is still ID-only after
+                        # cache update (e.g. DELETED for an item this client
+                        # never saw). Subscribers like ServeManager call
+                        # model_validate(event.data) and would otherwise fail;
+                        # also they can't act without the full object.
+                        if (
+                            isinstance(event.data, dict)
+                            and event.id is not None
+                            and set(event.data.keys()) == {"id"}
+                        ):
+                            logger.debug(
+                                f"Skipping callback for ID-only {event.type} event on models {event.id}"
+                            )
+                        elif callback:
                             if asyncio.iscoroutinefunction(callback):
                                 await callback(event)
                             else:
@@ -241,7 +273,7 @@ class ModelClient:
 
         # Try to get from cache first if it should be used
         if should_use_cache:
-            with self._get_cache_lock():
+            with self._cache_lock:
                 if id in self._cache:
                     logger.trace(f"Cache hit for model {id}")
                     return self._cache[id]
@@ -253,7 +285,7 @@ class ModelClient:
 
         # Update cache if enabled
         if self._enable_cache:
-            with self._get_cache_lock():
+            with self._cache_lock:
                 self._cache[id] = result
 
         return result

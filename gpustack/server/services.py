@@ -195,8 +195,9 @@ class WorkerService:
         self, worker: Worker, source: Union[dict, SQLModel, None] = None, **kwargs
     ):
         result = await worker.update(self.session, source, **kwargs)
-        await delete_cache_by_key(self.get_by_id, worker.id)
-        await delete_cache_by_key(self.get_by_name, worker.name)
+        # Worker cache is high-frequency, non-security-critical, skip coordinator sync
+        await delete_cache_by_key(self.get_by_id, worker.id, sync_coordinator=False)
+        await delete_cache_by_key(self.get_by_name, worker.name, sync_coordinator=False)
         return result
 
     async def batch_update(
@@ -211,8 +212,9 @@ class WorkerService:
         updated = await Worker.batch_update(self.session, workers)
 
         for w in workers:
-            await delete_cache_by_key(self.get_by_id, w.id)
-            await delete_cache_by_key(self.get_by_name, w.name)
+            # Worker cache is high-frequency, non-security-critical, skip coordinator sync
+            await delete_cache_by_key(self.get_by_id, w.id, sync_coordinator=False)
+            await delete_cache_by_key(self.get_by_name, w.name, sync_coordinator=False)
 
         return updated
 
@@ -220,8 +222,9 @@ class WorkerService:
         worker_id = worker.id
         worker_name = worker.name
         result = await worker.delete(self.session, **kwargs)
-        await delete_cache_by_key(self.get_by_id, worker_id)
-        await delete_cache_by_key(self.get_by_name, worker_name)
+        # Worker cache is high-frequency, non-security-critical, skip coordinator sync
+        await delete_cache_by_key(self.get_by_id, worker_id, sync_coordinator=False)
+        await delete_cache_by_key(self.get_by_name, worker_name, sync_coordinator=False)
         return result
 
 

@@ -1,6 +1,5 @@
 from functools import partial
 from contextlib import asynccontextmanager
-from importlib.metadata import entry_points
 import logging
 from pathlib import Path
 import aiohttp
@@ -13,13 +12,13 @@ from gpustack.api import exceptions, middlewares
 from gpustack.api.auth import BearerTokenAuthenticator
 from gpustack.config.config import Config
 from gpustack import envs
-from gpustack.extension import Plugin
 from gpustack.routes import ui
 from gpustack.routes.routes import api_router
 from gpustack.utils.forwarded import ForwardedHostPortMiddleware
 from gpustack.security import JWTManager
 from gpustack.gateway.utils import worker_websocket_connect_callback
 from gpustack.websocket_proxy.message_server import MessageServerHandler
+from gpustack.extension import Plugin, iter_plugin_classes
 
 logger = logging.getLogger(__name__)
 
@@ -91,24 +90,17 @@ def _load_extension_plugins(app: FastAPI, cfg: Config):
     whose ``__init__(app, cfg)`` performs the full registration.
     """
     app.state.extension_plugins = []
-    eps = entry_points(group="gpustack.plugins")
-    for ep in eps:
+    for name, plugin_class in iter_plugin_classes():
         try:
-            plugin_factory = ep.load()
             if not (
-                isinstance(plugin_factory, type) and issubclass(plugin_factory, Plugin)
+                isinstance(plugin_class, type) and issubclass(plugin_class, Plugin)
             ):
                 logger.warning(
-                    f"Extension plugin {ep.name} does not implement "
-                    "the Plugin interface."
+                    f"Extension plugin {name} does not implement the Plugin interface."
                 )
                 continue
-
-            plugin = plugin_factory(app, cfg)
+            plugin = plugin_class(app, cfg)
             app.state.extension_plugins.append(plugin)
-            logger.info(f"Loaded extension plugin: {ep.name}")
-        except Exception:
-            logger.warning(
-                f"Failed to load extension plugin: {ep.name}",
-                exc_info=True,
-            )
+            logger.info(f"Loaded extension plugin: {name}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load extension plugin '{name}': {e}") from e

@@ -1,36 +1,18 @@
 from logging.config import fileConfig
 import os
-import re
 import warnings
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
-from sqlalchemy.dialects.postgresql import base as pg_base
 from sqlalchemy.exc import SAWarning
 
 from alembic import context
 
 from gpustack import schemas
+from gpustack.utils.db import patch_pg_version_info
 from sqlmodel import SQLModel
 
-# Patch PGDialect to support openGauss version strings.
-# openGauss returns "(openGauss X.Y.Z build ...)" instead of "PostgreSQL X.Y.Z",
-# which SQLAlchemy's default regex cannot parse.
-_orig_get_server_version_info = pg_base.PGDialect._get_server_version_info
-
-
-def _patched_get_server_version_info(self, connection):
-    try:
-        return _orig_get_server_version_info(self, connection)
-    except AssertionError:
-        v = connection.exec_driver_sql("select pg_catalog.version()").scalar()
-        m = re.search(r"openGauss (\d+)\.(\d+)(?:\.(\d+))?", v)
-        if not m:
-            raise
-        return tuple([int(x) if x is not None else 0 for x in m.group(1, 2, 3)])
-
-
-pg_base.PGDialect._get_server_version_info = _patched_get_server_version_info
+patch_pg_version_info()
 
 
 # OceanBase DDL contains syntax (e.g. BLOCK_SIZE, non-standard FK format) that

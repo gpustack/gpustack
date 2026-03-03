@@ -2,6 +2,7 @@ import asyncio
 from multiprocessing import Process
 import os
 import re
+import importlib.util
 import aiohttp
 
 import uvicorn
@@ -77,6 +78,13 @@ from gpustack.envs import (
     GATEWAY_PORT_CHECK_RETRY_COUNT,
     DEFAULT_CLUSTER_KUBERNETES,
 )
+from gpustack.server.coordinator import LocalCoordinator
+from gpustack.server.coordinator.cache import preload_cache
+from gpustack.server.coordinator.models import get_model_for_topic
+from gpustack.server import bus
+from gpustack.server import cache as cache_module
+from alembic import command
+from alembic.config import Config as AlembicConfig
 
 from gpustack.websocket_proxy.proxy_server import HTTPSProxyServer
 from gpustack.api.auth import (
@@ -92,6 +100,9 @@ class Server:
         self._sub_processes = []
         self._async_tasks = []
         self._worker_process = worker_process
+        # Coordination components
+        self._coordinator = None
+        self._leader_election_task = None
 
     @property
     def all_processes(self):
@@ -117,19 +128,32 @@ class Server:
         if self._config.server_role() == Config.ServerRole.BOTH:
             self._sub_processes.append(self._worker_process)
 
-        # Start FastAPI server
+        # Create FastAPI app. Plugin ``__init__(app, cfg)`` runs here and
+        # may attach a distributed-mode coordinator to the plugin instance.
         app = create_app(self._config)
+        self._app = app
+
+        # Initialize coordinator from plugin instances (LocalCoordinator if
+        # none supplied). Must run before the event bus goes online so any
+        # early publishes are routed correctly.
+        await self._init_coordinator(app)
+
+        # Preload change-detection cache after the coordinator is up.
+        # Required in distributed mode so the first cross-instance event
+        # on each topic carries accurate ``changed_fields``.
+        await self._preload_change_detector_cache()
 
         self._start_sub_processes()
-        self._start_scheduler()
-        self._start_controllers()
-        self._start_system_load_collector()
-        self._start_worker_syncer(app)
-        self._start_update_checker()
+
+        # Start Leader-Only tasks (includes scheduler and controllers)
+        # In single-node mode, they start immediately.
+        # In distributed mode, they start only when this node becomes leader.
+        await self._start_leader_only_tasks()
+
+        # These tasks can run on all instances
         self._start_model_usage_flusher()
         self._start_worker_status_flusher()
         self._start_gateway_metrics_flusher()
-        self._start_worker_instance_cleaner()
         self._start_metrics_exporter()
         self._start_query_count_logger()
         self._start_default_registry_checker()
@@ -178,10 +202,6 @@ class Server:
     def _run_migrations(self):
         logger.info("Running database migration.")
 
-        from alembic import command
-        from alembic.config import Config as AlembicConfig
-        import importlib.util
-
         spec = importlib.util.find_spec("gpustack")
         if spec is None:
             raise ImportError("The 'gpustack' package is not found.")
@@ -215,43 +235,48 @@ class Server:
         logger.debug("Data initialization completed.")
 
     def _start_scheduler(self):
+        """Start the scheduler and return the task."""
         scheduler = Scheduler(self._config)
-        self._create_async_task(scheduler.start())
-
+        task = asyncio.create_task(scheduler.start())
         logger.debug("Scheduler started.")
+        return task
 
     def _start_controllers(self):
+        """Start all controllers and return the list of tasks."""
+        tasks = []
+
         model_provider_controller = ModelProviderController(self._config)
-        self._create_async_task(model_provider_controller.start())
+        tasks.append(asyncio.create_task(model_provider_controller.start()))
 
         model_route_target_controller = ModelRouteTargetController(self._config)
-        self._create_async_task(model_route_target_controller.start())
+        tasks.append(asyncio.create_task(model_route_target_controller.start()))
 
         model_route_controller = ModelRouteController(self._config)
-        self._create_async_task(model_route_controller.start())
+        tasks.append(asyncio.create_task(model_route_controller.start()))
 
         model_controller = ModelController(self._config)
-        self._create_async_task(model_controller.start())
+        tasks.append(asyncio.create_task(model_controller.start()))
 
         model_instance_controller = ModelInstanceController(self._config)
-        self._create_async_task(model_instance_controller.start())
+        tasks.append(asyncio.create_task(model_instance_controller.start()))
 
         worker_controller = WorkerController(self._config)
-        self._create_async_task(worker_controller.start())
+        tasks.append(asyncio.create_task(worker_controller.start()))
 
         model_file_controller = ModelFileController()
-        self._create_async_task(model_file_controller.start())
+        tasks.append(asyncio.create_task(model_file_controller.start()))
 
         cluster_controller = ClusterController(self._config)
-        self._create_async_task(cluster_controller.start())
+        tasks.append(asyncio.create_task(cluster_controller.start()))
 
         worker_pool_controller = WorkerPoolController()
-        self._create_async_task(worker_pool_controller.start())
+        tasks.append(asyncio.create_task(worker_pool_controller.start()))
 
         inference_backend_controller = InferenceBackendController()
-        self._create_async_task(inference_backend_controller.start())
+        tasks.append(asyncio.create_task(inference_backend_controller.start()))
 
         logger.debug("Controllers started.")
+        return tasks
 
     def _start_system_load_collector(self):
         collector = SystemLoadCollector()
@@ -292,12 +317,11 @@ class Server:
         logger.debug("Worker instance cleaner started.")
 
     def _start_update_checker(self):
+        """Start update checker."""
         if self._config.disable_update_check:
             return
-
         update_checker = UpdateChecker(update_check_url=self._config.update_check_url)
         self._create_async_task(update_checker.start())
-
         logger.debug("Update checker started.")
 
     async def _monitor_sub_processes(self):
@@ -746,3 +770,161 @@ class Server:
                     "Failed to start async tasks from extension plugin %s",
                     type(plugin).__name__,
                 )
+
+    async def _init_coordinator(self, app: FastAPI):
+        """Pick a coordinator from extension plugins (if any) and start it.
+
+        Plugins attach a ``Coordinator`` to ``self.coordinator`` inside
+        their ``__init__(app, cfg)``. We scan ``app.state.extension_plugins``
+        after ``create_app`` has run and take the first non-None one. If
+        no plugin supplies one, we fall back to ``LocalCoordinator``.
+        """
+        coordinator = None
+        for plugin in getattr(app.state, "extension_plugins", []):
+            candidate = getattr(plugin, "coordinator", None)
+            if candidate is not None:
+                coordinator = candidate
+                logger.info(f"Coordinator provided by plugin: {type(plugin).__name__}")
+                break
+
+        if coordinator is None:
+            coordinator = LocalCoordinator(self._config)
+            logger.debug("Using LocalCoordinator")
+
+        self._coordinator = coordinator
+        await self._coordinator.start()
+
+        # Set up bus and cache to use coordinator
+        bus.set_coordinator(coordinator)
+        await bus.event_bus.start()
+        cache_module.set_coordinator(coordinator)
+
+        await self._prepare_jwt_secret_key()
+
+    async def _preload_change_detector_cache(self):
+        if isinstance(self._coordinator, LocalCoordinator):
+            return
+
+        topics = [
+            "worker",
+            "model",
+            "modelinstance",
+            "modelroute",
+            "modelroutetarget",
+            "workerpool",
+            "inferencebackend",
+        ]
+        async with async_session() as session:
+            for topic in topics:
+                model_class = get_model_for_topic(topic)
+                if model_class is None:
+                    continue
+                try:
+                    await preload_cache(topic, model_class, session)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to preload change-detection cache for {topic}: {e}"
+                    )
+
+    async def _prepare_jwt_secret_key(self):
+        """Enforce that distributed deployments use an explicit JWT secret.
+
+        ``Config`` auto-generates a local ``jwt_secret_key`` file during init
+        so early startup paths (e.g. ``initialize_gateway``) have a usable key.
+        That auto-generated value is safe only in single-node mode; distributed
+        instances must share the SAME secret or JWTs signed by one instance
+        won't verify on another. We rely on the ``_jwt_secret_key_user_provided``
+        flag (set from --jwt-secret-key / GPUSTACK_JWT_SECRET_KEY / config file)
+        rather than the current value, since the value is always populated by
+        the time this runs.
+        """
+        if self._config._jwt_secret_key_user_provided:
+            return
+
+        if isinstance(self._coordinator, LocalCoordinator):
+            return
+
+        raise RuntimeError(
+            "jwt_secret_key must be explicitly set in distributed mode. "
+            "Mount a Kubernetes Secret or pass it via the --jwt-secret-key flag "
+            "or set the GPUSTACK_JWT_SECRET_KEY environment variable."
+        )
+
+    async def _start_leader_only_tasks(self):
+        """Start tasks that should only run on the Leader instance."""
+        if isinstance(self._coordinator, LocalCoordinator):
+            # Local mode: start leader tasks directly (always run)
+            self._start_leader_tasks()
+            return
+
+        # Distributed mode: start leader election loop
+        logger.info("Starting leader election loop...")
+        self._leader_election_task = asyncio.create_task(self._leader_election_loop())
+
+    async def _leader_election_loop(self):
+        """Main leader election loop using coordinator."""
+        server_id = self._config.server_id
+        ttl = self._coordinator.leader_election_ttl
+        renew_interval = self._coordinator.leader_election_renew_interval
+        is_first_attempt = True
+
+        while True:
+            try:
+                if not self._coordinator.is_leader():
+                    # Try to acquire leadership
+                    if is_first_attempt:
+                        logger.info(
+                            f"Server {server_id} attempting to acquire leadership..."
+                        )
+                    acquired = await self._coordinator.acquire_leadership(ttl)
+                    if acquired:
+                        logger.info(
+                            f"Server {server_id} became leader, starting scheduler and controllers"
+                        )
+                        # Start leader-only tasks
+                        self._start_leader_tasks()
+                    elif is_first_attempt:
+                        logger.info(
+                            f"Server {server_id} is standby, waiting for leadership..."
+                        )
+                        is_first_attempt = False
+                else:
+                    # Renew leadership
+                    renewed = await self._coordinator.renew_leadership(ttl)
+                    if not renewed:
+                        logger.error(
+                            f"Server {server_id} lost leadership, exiting for restart"
+                        )
+                        # Hard exit to prevent split-brain: os._exit bypasses
+                        # cleanup so the process stops immediately and the
+                        # container runtime can restart it as a standby.
+                        os._exit(1)
+
+                await asyncio.sleep(renew_interval)
+            except Exception as e:
+                logger.error(f"Leader election error: {e}")
+                await asyncio.sleep(5)
+
+    def _start_leader_tasks(self):
+        """Start tasks that run only on the leader.
+
+        Note: If leadership is lost, the process exits directly (os._exit),
+        so we don't need to track and cancel these tasks.
+        """
+        # Scheduler
+        self._start_scheduler()
+
+        # Controllers
+        self._start_controllers()
+
+        # System Load Collector
+        self._start_system_load_collector()
+
+        # Update Checker
+        self._start_update_checker()
+
+        # Worker Instance Cleaner
+        self._start_worker_instance_cleaner()
+
+        # Worker Syncer (checks worker reachability and updates states)
+        self._start_worker_syncer(self._app)

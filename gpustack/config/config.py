@@ -1,9 +1,13 @@
+import ipaddress
+import logging
 import os
 import secrets
+import socket
+import uuid
 from enum import Enum
 from typing import List, Optional, Dict
 from urllib.parse import urlparse
-import ipaddress
+
 import httpx
 import hmac
 import hashlib
@@ -51,6 +55,8 @@ from gpustack.utils.network import (
 from gpustack.utils import platform
 
 _config = None
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerConfig(PredefinedConfig):
@@ -202,11 +208,14 @@ class Config(WorkerConfig, BaseSettings):
     grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"
     grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
 
+    server_id: Optional[str] = None
+
     _set_worker_fields = {}
     _derive_gateway_token = None
+    _jwt_secret_key_user_provided = False
 
     model_config = SettingsConfigDict(
-        env_prefix="GPUSTACK_", protected_namespaces=('settings_',)
+        env_prefix="GPUSTACK_", protected_namespaces=('settings_',), extra="allow"
     )
 
     def __init__(self, **values):
@@ -256,6 +265,14 @@ class Config(WorkerConfig, BaseSettings):
         ):
             raise Exception("Token is required when running as worker")
 
+        # Generate server_id if not provided
+        if self.server_id is None:
+            self.server_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+
+        # Snapshot whether jwt_secret_key came from user input (flag / env / config
+        # file) before prepare_jwt_secret_key() auto-fills it. Server startup uses
+        # this to enforce that distributed mode requires an explicit key.
+        self._jwt_secret_key_user_provided = self.jwt_secret_key is not None
         self.prepare_jwt_secret_key()
 
         # server options

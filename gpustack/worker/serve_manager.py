@@ -663,8 +663,8 @@ class ServeManager:
                     )
                 return
 
-            # Restart if scheduled.
-            if mi.state == ModelInstanceStateEnum.SCHEDULED:
+            # Restart if scheduled and this is the assigned worker.
+            if is_main_worker and mi.state == ModelInstanceStateEnum.SCHEDULED:
                 self._restart_model_instance(mi)
                 logger.trace(
                     f"UPDATED event: restarted scheduled model instance {mi.name}."
@@ -682,6 +682,9 @@ class ServeManager:
             return
 
         if event.type == EventType.CREATED:
+            # Only handle CREATED if this is the assigned worker
+            if not is_main_worker:
+                return
             if mi.state == ModelInstanceStateEnum.RUNNING:
                 logger.warning(
                     f"Model instance {mi.name} is already running. Skipping start."

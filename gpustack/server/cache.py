@@ -2,11 +2,15 @@ import inspect
 import asyncio
 import logging
 import functools
-from typing import Any, Callable
+from typing import Any, Callable, Optional, TYPE_CHECKING
 from cachetools import LRUCache
 from aiocache import Cache, BaseCache
 
 from gpustack import envs
+from gpustack.server.coordinator.base import Event, EventType
+
+if TYPE_CHECKING:
+    from gpustack.server.coordinator.base import Coordinator
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +21,58 @@ cache = Cache(Cache.MEMORY)
 _cache_locks: LRUCache[str, asyncio.Lock] = LRUCache(
     maxsize=envs.SERVER_CACHE_LOCKS_MAX_SIZE
 )
+
+# Global coordinator reference for distributed cache synchronization
+_coordinator: Optional["Coordinator"] = None
+
+
+def set_coordinator(coordinator: Optional["Coordinator"]) -> None:
+    """Set the coordinator for distributed cache synchronization.
+
+    This is called during server startup to enable cache invalidation
+    broadcasting across instances.
+    """
+    global _coordinator
+    _coordinator = coordinator
+    if coordinator:
+        # Subscribe to cache invalidation events
+        coordinator.subscribe("cache", _handle_cache_invalidate)
+        logger.debug("Distributed cache synchronization enabled")
+
+
+def _handle_cache_invalidate(event: "Event") -> None:
+    """Handle cache invalidation events from other instances."""
+    if event.type == EventType.DELETED and event.data:
+        key = event.data.get("key")
+        if key:
+            # Use asyncio.create_task since this is called from sync context
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_local_delete_cache(key))
+            except RuntimeError:
+                # No event loop running, ignore
+                pass
+
+
+async def _local_delete_cache(key: str) -> None:
+    """Delete cache locally without broadcasting (for remote events)."""
+    logger.trace(f"Deleting cache for key: {key} (from remote)")
+    await cache.delete(key)
+    _cache_locks.pop(key, None)
+
+
+async def _broadcast_invalidation(key: str) -> None:
+    """Broadcast cache invalidation to other instances."""
+    if _coordinator is None:
+        return
+
+    try:
+        await _coordinator.publish(
+            "cache", Event(type=EventType.DELETED, data={"key": key})
+        )
+        logger.trace(f"Broadcasted cache invalidation for key: {key}")
+    except Exception as e:
+        logger.warning(f"Failed to broadcast cache invalidation: {e}")
 
 
 def build_cache_key(func: Callable, *args, **kwargs):
@@ -39,7 +95,19 @@ def build_cache_key(func: Callable, *args, **kwargs):
         return func.__qualname__ + str(args) + str(sorted(kwargs.items()))
 
 
-async def delete_cache_by_key(func=None, *args, **kwargs):
+async def delete_cache_by_key(
+    func=None, *args, sync_coordinator: bool = True, **kwargs
+):
+    """Delete cache by key or function.
+
+    Args:
+        func: The cached function (optional)
+        *args: Arguments to build the cache key
+        sync_coordinator: Whether to broadcast invalidation to other instances via coordinator.
+                         Default is True for security-sensitive data.
+                         Set to False for high-frequency, non-critical caches (e.g., Worker status).
+        **kwargs: Additional arguments including `_key` for explicit key
+    """
     key = kwargs.pop("_key", None)
     if key is None:
         if func is None:
@@ -48,6 +116,10 @@ async def delete_cache_by_key(func=None, *args, **kwargs):
     logger.trace(f"Deleting cache for key: {key}")
     await cache.delete(key)
     _cache_locks.pop(key, None)
+
+    # Broadcast to other instances via coordinator
+    if sync_coordinator:
+        await _broadcast_invalidation(key)
 
 
 async def set_cache_by_key(key: str, value: Any):

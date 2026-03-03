@@ -173,7 +173,6 @@ class ModelController:
         """
         Reconcile the model.
         """
-
         model: Model = event.data
         try:
             async with async_session() as session:
@@ -218,14 +217,15 @@ class ModelInstanceController:
                 model_deleting = model.deleted_at is not None
 
                 if event.type == EventType.DELETED:
-                    # trigger model replica sync
-                    copied_model = Model.model_validate(model.model_dump())
-                    asyncio.create_task(
-                        event_bus.publish(
-                            Model.__name__.lower(),
-                            Event(type=EventType.UPDATED, data=copied_model),
+                    # trigger model replica sync, but only if model is not deleted
+                    if not model_deleting:
+                        copied_model = Model.model_validate(model.model_dump())
+                        asyncio.create_task(
+                            event_bus.publish(
+                                Model.__name__.lower(),
+                                Event(type=EventType.UPDATED, data=copied_model),
+                            )
                         )
-                    )
                 elif model_instance.state == ModelInstanceStateEnum.INITIALIZING:
                     await ensure_instance_model_file(session, model_instance)
                     return
@@ -246,8 +246,12 @@ async def sync_replicas(session: AsyncSession, model: Model):
     Synchronize the replicas.
     """
 
-    if model.deleted_at is not None:
+    # Re-fetch model from database to ensure we have latest state
+    # (event data may be from a different session or stale)
+    fresh_model = await Model.one_by_id(session, model.id)
+    if not fresh_model or fresh_model.deleted_at is not None:
         return
+    model = fresh_model
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
     if len(instances) < model.replicas:
@@ -2439,7 +2443,15 @@ class ModelRouteTargetController:
     ):
         if event.type == EventType.DELETED:
             return
-        target: ModelRouteTarget = await ModelRouteTarget.one_by_id(session, target.id)
+        # Handle ID-only events from distributed mode
+        target_id = (
+            target.id
+            if hasattr(target, 'id')
+            else target.get('id') if isinstance(target, dict) else None
+        )
+        if not target_id:
+            return
+        target: ModelRouteTarget = await ModelRouteTarget.one_by_id(session, target_id)
         if not target:
             return
         if target.provider_id is not None:
@@ -2532,9 +2544,17 @@ class ModelRouteController:
         model_route: ModelRoute = event.data
         if not model_route:
             return False
+        # Handle ID-only events from distributed mode
+        model_route_id = (
+            model_route.id
+            if hasattr(model_route, 'id')
+            else model_route.get('id') if isinstance(model_route, dict) else None
+        )
+        if not model_route_id:
+            return False
         model_route: ModelRoute = await ModelRoute.one_by_id(
             session,
-            model_route.id,
+            model_route_id,
             options=[selectinload(ModelRoute.route_targets)],
         )
         if not model_route:

@@ -818,7 +818,9 @@ class ActiveRecordMixin:
                     changed_fields=event.changed_fields,
                     id=event.id,
                 )
-                yield cls._format_event(public_event)
+                formatted = cls._format_event(public_event)
+                if formatted is not None:
+                    yield formatted
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -844,11 +846,22 @@ class ActiveRecordMixin:
     @classmethod
     def _convert_to_public_class(cls, data: Any) -> Any:
         """Convert the instance to the corresponding Public class if it exists."""
+        # If data is a dict (e.g., ID-only event), return as-is
+        if isinstance(data, dict):
+            return data
         class_module = importlib.import_module(cls.__module__)
         public_class = getattr(class_module, f"{cls.__name__}Public", None)
         return public_class.model_validate(data) if public_class else data
 
     @staticmethod
-    def _format_event(event: Any) -> str:
+    def _format_event(event: Any) -> Optional[str]:
         """Format the event as a JSON string."""
+        # Skip ID-only events for CREATED/UPDATED - they can't be properly validated by clients
+        # But allow ID-only for DELETED - clients can still remove by ID from their cache
+        if (
+            event.type != EventType.DELETED
+            and isinstance(event.data, dict)
+            and set(event.data.keys()) == {"id"}
+        ):
+            return None
         return json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"
