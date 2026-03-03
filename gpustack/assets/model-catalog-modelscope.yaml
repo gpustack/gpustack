@@ -493,6 +493,20 @@ model_sets:
   specs:
     - mode: standard
       quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-0.8B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    - mode: standard
+      quantization: BF16
       source: model_scope
       model_scope_model_id: Qwen/Qwen3.5-0.8B
       backend: SGLang
@@ -517,6 +531,20 @@ model_sets:
   specs:
     - mode: standard
       quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-2B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    - mode: standard
+      quantization: BF16
       source: model_scope
       model_scope_model_id: Qwen/Qwen3.5-2B
       backend: SGLang
@@ -539,6 +567,21 @@ model_sets:
     - apache-2.0
   release_date: "2026-03-02"
   specs:
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-4B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
     - mode: standard
       quantization: BF16
       source: model_scope
@@ -566,6 +609,21 @@ model_sets:
   specs:
     - mode: standard
       quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-9B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    - mode: standard
+      quantization: BF16
       source: model_scope
       model_scope_model_id: Qwen/Qwen3.5-9B
       backend: SGLang
@@ -589,6 +647,21 @@ model_sets:
     - apache-2.0
   release_date: "2026-02-24"
   specs:
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-27B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
     - mode: standard
       quantization: BF16
       source: model_scope
@@ -629,6 +702,21 @@ model_sets:
   specs:
     - mode: standard
       quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-35B-A3B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    - mode: standard
+      quantization: BF16
       source: model_scope
       model_scope_model_id: Qwen/Qwen3.5-35B-A3B
       backend: SGLang
@@ -667,6 +755,21 @@ model_sets:
   specs:
     - mode: standard
       quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-122B-A10B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    - mode: standard
+      quantization: BF16
       source: model_scope
       model_scope_model_id: Qwen/Qwen3.5-122B-A10B
       backend: SGLang
@@ -703,6 +806,21 @@ model_sets:
     - apache-2.0
   release_date: "2026-02-16"
   specs:
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-397B-A17B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
     - mode: standard
       quantization: BF16
       source: model_scope
