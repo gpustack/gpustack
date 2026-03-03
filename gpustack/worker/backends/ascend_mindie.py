@@ -1865,11 +1865,9 @@ class AscendMindIEServer(InferenceServer):
         if not image:
             raise ValueError("Failed to get Ascend MindIE backend image")
 
-        # Command script will override the given command,
-        # so we need to prepend command to command args.
-        if command_script and command:
-            command_args = command + command_args
-            command = None
+        command, command_args = self._override_entrypoint(
+            command, command_args, command_script
+        )
 
         resources = self._get_configured_resources(
             mount_all_devices=deployment_metadata.distributed,

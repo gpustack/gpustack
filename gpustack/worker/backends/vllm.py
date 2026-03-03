@@ -148,11 +148,13 @@ class VLLMServer(InferenceServer):
         if not image:
             raise ValueError("Failed to get vLLM backend image")
 
-        command = None
+        command = ["vllm", "serve"]
         if self.inference_backend:
-            command = self.inference_backend.get_container_entrypoint(
+            entrypoint = self.inference_backend.get_container_entrypoint(
                 self._model.backend_version
             )
+            if entrypoint:
+                command = entrypoint
 
         command_script = self._get_serving_command_script(env)
 
@@ -191,11 +193,9 @@ class VLLMServer(InferenceServer):
         env: Dict[str, str],
         image: str,
     ):
-        # Command script will override the given command,
-        # so we need to prepend command to command args.
-        if command_script and command:
-            command_args = command + command_args
-            command = None
+        command, command_args = self._override_entrypoint(
+            command, command_args, command_script
+        )
 
         resources = self._get_configured_resources()
 
@@ -242,12 +242,11 @@ class VLLMServer(InferenceServer):
             ray_command, ray_command_args, ray_ports = self._build_ray_configuration(
                 is_leader=False,
             )
-
-            # Command script will override the given command,
-            # so we need to prepend command to command args.
-            if command_script:
-                ray_command_args = ray_command + ray_command_args
-                ray_command = None
+            ray_command, ray_command_args = self._override_entrypoint(
+                ray_command,
+                ray_command_args,
+                command_script,
+            )
 
             run_container.execution.command = ray_command
             # run_container.execution.command_script = command_script # already set
@@ -269,12 +268,11 @@ class VLLMServer(InferenceServer):
             ray_command, ray_command_args, ray_ports = self._build_ray_configuration(
                 is_leader=True,
             )
-
-            # Command script will override the given command,
-            # so we need to prepend command to command args.
-            if command_script:
-                ray_command_args = ray_command + ray_command_args
-                ray_command = None
+            ray_command, ray_command_args = self._override_entrypoint(
+                ray_command,
+                ray_command_args,
+                command_script,
+            )
 
             # Copy envs and override RAY_LOG_TO_STDERR for the sidecar
             # so Ray head logs go to stderr (captured by container log stream),
@@ -313,7 +311,7 @@ class VLLMServer(InferenceServer):
         logger.info(
             f"With image: {image}, "
             f"command: [{' '.join(command) if command else ''}], "
-            f"arguments: [{' '.join(command_args)}], "
+            f"arguments: [{' '.join(command_args) if command_args else ''}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
             f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
@@ -585,7 +583,7 @@ class VLLMServer(InferenceServer):
             port, is_distributed, entrypoint, deployment_metadata
         )
 
-        arguments: List[str] = ["vllm", "serve", self._model_path]
+        arguments: List[str] = [self._model_path]
         arguments = self.build_versioned_command_args(arguments)
 
         arguments.extend(self._build_omni_arguments(ctx))

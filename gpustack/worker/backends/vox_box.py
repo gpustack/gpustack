@@ -77,11 +77,9 @@ class VoxBoxServer(InferenceServer):
         if not image:
             raise ValueError("Failed to get VoxBox backend image")
 
-        # Command script will override the given command,
-        # so we need to prepend command to command args.
-        if command_script and command:
-            command_args = command + command_args
-            command = None
+        command, command_args = self._override_entrypoint(
+            command, command_args, command_script
+        )
 
         resources = self._get_configured_resources(
             # Pass-through all devices as vox-box handles device itself.
