@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import shlex
+import json
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -64,8 +65,10 @@ class InferenceServer(ABC):
     This is set when the model instance state changes to STARTING.
     """
 
-    _pretrained_config: Optional[Dict] = None
+    _pretrained_config: Optional[PretrainedConfig] = None
     """The model configuration, if available."""
+    _pretrained_config_initialized: bool = False
+    """Whether pretrained config loading has been attempted."""
 
     _fallback_registry: Optional[str] = None
     """The fallback container registry to use if needed."""
@@ -219,15 +222,55 @@ class InferenceServer(ABC):
         Returns:
             The pretrained model configuration dictionary, or None if not available.
         """
-        if self._pretrained_config is not None:
+        if self._pretrained_config_initialized:
             return self._pretrained_config
 
+        auto_config_error: Optional[Exception] = None
         try:
             pretrained_config = get_pretrained_config(self._model)
+            if isinstance(pretrained_config, dict):
+                # Ensure we have a PretrainedConfig object, not a dict, for consistency.
+                pretrained_config = PretrainedConfig.from_dict(pretrained_config)
+
             self._pretrained_config = pretrained_config
+            self._pretrained_config_initialized = True
+
             return pretrained_config
         except Exception as e:
-            logger.error(f"Failed to get pretrained config: {e}")
+            logger.debug(
+                f"Failed to get pretrained config via AutoConfig, falling back to local config.json. Error: {e}"
+            )
+            auto_config_error = e
+
+        try:
+            fallback_config = self._load_pretrained_config_from_local_config_json()
+            self._pretrained_config = fallback_config
+            self._pretrained_config_initialized = True
+            return fallback_config
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to load pretrained config. "
+                f"AutoConfig error: {auto_config_error}. "
+                f"Local config.json fallback error: {e}."
+            ) from e
+
+    def _load_pretrained_config_from_local_config_json(
+        self,
+    ) -> Optional[PretrainedConfig]:
+        """
+        Load PretrainedConfig from local config.json under resolved model path.
+        """
+        if not self._model_path:
+            return None
+
+        config_path = os.path.join(self._model_path, "config.json")
+        if not os.path.isfile(config_path):
+            return None
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_dict = json.load(f)
+        if isinstance(config_dict, dict):
+            return PretrainedConfig.from_dict(config_dict)
 
         return None
 
@@ -248,7 +291,9 @@ class InferenceServer(ABC):
             pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
             return get_max_model_len(pretrained_or_hf_text_config)
         except Exception as e:
-            logger.error(f"Failed to derive max model length: {e}")
+            logger.warning(
+                f"Failed to derive max model length: {e}, continuing with default"
+            )
 
         return default
 
@@ -264,7 +309,9 @@ class InferenceServer(ABC):
             if pretrained_config and hasattr(pretrained_config, "architectures"):
                 return pretrained_config.architectures
         except Exception as e:
-            logger.error(f"Failed to derive model architecture: {e}")
+            logger.warning(
+                f"Failed to derive model architecture: {e}, continuing with empty list"
+            )
 
         return []
 
