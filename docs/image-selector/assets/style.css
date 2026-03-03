@@ -532,6 +532,7 @@ main {
     overflow: visible;
     margin-bottom: 20px;
     background: #fff;
+    overflow: hidden;
 }
 
 .image-tabs-header {
@@ -559,7 +560,6 @@ main {
 
 .image-tab.active {
     color: var(--primary-color);
-    background: rgba(0, 85, 255, 0.15);
     border-bottom-color: var(--primary-color);
 }
 
@@ -608,13 +608,13 @@ main {
     background: #fff;
     border-radius: 12px;
     border: 2px solid var(--border-color);
+    overflow: hidden;
 }
 
 .guide-summary {
     padding: 12px 20px;
     cursor: pointer;
     font-weight: 600;
-    color: var(--primary-color);
     list-style: none;
     display: flex;
     align-items: center;
