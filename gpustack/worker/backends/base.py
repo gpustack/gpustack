@@ -732,7 +732,7 @@ exec "$@"
         when the version uses non-built-in version and defines a custom run_command
 
         Args:
-        - default_args: The default command argument list (e.g., ["vllm", "serve", "/path/to/model"]).
+        - default_args: The default command argument list.
         - model_path: Path used to replace {{model_path}}; if None, fall back to self._model_path.
         - port: Port used to replace {{port}}; if None, fall back to self._model_instance.port.
 
@@ -780,30 +780,48 @@ exec "$@"
         return default_args
 
     @staticmethod
+    def _override_entrypoint(
+        command: Optional[List[str]],
+        command_args: List[str],
+        command_script: Optional[str],
+    ) -> Tuple[Optional[List[str]], Optional[List[str]]]:
+        """
+        Map command / command_args / command_script onto the container's
+        ENTRYPOINT/CMD override semantics.
+
+        - command_script becomes the entrypoint, so the original command is
+          prepended to its args.
+        - Otherwise merge command and args into command to override the image
+          ENTRYPOINT (args alone would be appended to ENTRYPOINT, not replace it).
+        - When there is no command to override the ENTRYPOINT, leave the args
+          appended as-is.
+        """
+        if command_script:
+            return None, (command or []) + command_args
+        if not command:
+            return None, command_args
+        return command + command_args, None
+
+    @staticmethod
     def _get_backend_parameter_start_index(
         arguments: List[str],
         entrypoint: Optional[List[str]] = None,
     ) -> int:
         """
-        Return where backend parameters start in container args.
-
-        When a container entrypoint is configured separately, `arguments`
-        contains only entrypoint arguments, so backend parameters start at 0.
-        Otherwise, skip the command prefix embedded in `arguments`.
+        Return where backend parameters start in `arguments`, skipping any
+        command prefix or model path that may precede the first option.
         """
-        if entrypoint:
-            return 0
-
         if not arguments:
             return 0
 
-        command = os.path.basename(arguments[0])
-        if (
-            len(arguments) >= 3
-            and command.startswith("python")
-            and arguments[1] == "-m"
-        ):
-            return 3
+        if not entrypoint:
+            command = os.path.basename(arguments[0])
+            if (
+                len(arguments) >= 3
+                and command.startswith("python")
+                and arguments[1] == "-m"
+            ):
+                return 3
 
         for index, argument in enumerate(arguments):
             if argument.startswith("-"):
@@ -902,11 +920,11 @@ exec "$@"
             # Return directly if there is not a valid device.
             # GPUStack-Runner does not provide CPU-only platform images.
             # To use a CPU-only version, user must configure in `Inference Backend` page.
-            return None
+            return None, None
 
         if backend not in available_backends():
             # Return directly if found backend is not within the available backends.
-            return None
+            return None, None
 
         """
         Retrieve runners by queries.

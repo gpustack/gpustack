@@ -85,24 +85,25 @@ class SGLangServer(InferenceServer):
 
     is_diffusion = False
 
-    def start(self):  # noqa: C901
+    def start(self):
         try:
             if CategoryEnum.IMAGE in self._model.categories:
                 self.is_diffusion = True
-                self._start_diffusion()
-            else:
-                self._start()
+            self._start()
         except Exception as e:
             self._handle_error(e)
 
     def _start(self):
-        logger.info(f"Starting SGLang model instance: {self._model_instance.name}")
+        kind = "Diffusion " if self.is_diffusion else ""
+        logger.info(
+            f"Starting SGLang {kind}model instance: {self._model_instance.name}"
+        )
 
         deployment_metadata = self._get_deployment_metadata()
 
-        # Setup environment variables
+        # Diffusion path does not support distributed deployment.
         env = self._get_configured_env(
-            is_distributed=deployment_metadata.distributed,
+            is_distributed=(not self.is_diffusion) and deployment_metadata.distributed,
         )
 
         # Resolve image first so that backend_version is populated before
@@ -111,71 +112,29 @@ class SGLangServer(InferenceServer):
         if not image:
             raise ValueError("Can't find compatible SGLang image")
 
-        command = None
+        command = ["sglang", "serve"]
         if self.inference_backend:
-            command = self.inference_backend.get_container_entrypoint(
+            entrypoint = self.inference_backend.get_container_entrypoint(
                 self._model.backend_version
             )
+            if entrypoint:
+                command = entrypoint
 
         command_script = self._get_serving_command_script(env)
 
         # Build SGLang command arguments
-        command_args, injected = self._build_command_args(
-            port=self._get_serving_port(),
-            is_distributed=deployment_metadata.distributed,
-            is_distributed_leader=deployment_metadata.distributed_leader,
-            entrypoint=command,
-        )
-
-        try:
-            self._update_model_instance(
-                self._model_instance.id,
-                injected_backend_parameters=format_backend_parameters(injected) or None,
+        if self.is_diffusion:
+            command_args, injected = self._build_command_args_for_diffusion(
+                port=self._get_serving_port(),
+                entrypoint=command,
             )
-        except Exception as e:
-            logger.warning(
-                f"Failed to persist injected backend parameters for {self._model_instance.name}: {e}"
+        else:
+            command_args, injected = self._build_command_args(
+                port=self._get_serving_port(),
+                is_distributed=deployment_metadata.distributed,
+                is_distributed_leader=deployment_metadata.distributed_leader,
+                entrypoint=command,
             )
-
-        self._create_workload(
-            deployment_metadata=deployment_metadata,
-            command=command,
-            command_script=command_script,
-            command_args=command_args,
-            env=env,
-            image=image,
-        )
-
-    def _start_diffusion(self):
-        logger.info(
-            f"Starting SGLang Diffusion model instance: {self._model_instance.name}"
-        )
-
-        deployment_metadata = self._get_deployment_metadata()
-
-        # Setup environment variables
-        env = self._get_configured_env(
-            is_distributed=False,
-        )
-
-        # Resolve image first so that backend_version is populated before
-        # building command args (version-gated arguments depend on it).
-        image = self._get_configured_image()
-        if not image:
-            raise ValueError("Can't find compatible SGLang image")
-
-        command = None
-        if self.inference_backend:
-            command = self.inference_backend.get_container_entrypoint(
-                self._model.backend_version
-            )
-
-        command_script = self._get_serving_command_script(env)
-
-        command_args, injected = self._build_command_args_for_diffusion(
-            port=self._get_serving_port(),
-            entrypoint=command,
-        )
 
         try:
             self._update_model_instance(
@@ -213,11 +172,9 @@ class SGLangServer(InferenceServer):
                 "SGLang versions <= 0.5.5 do not support Diffusion models."
             )
 
-        # Command script will override the given command,
-        # so we need to prepend command to command args.
-        if command_script and command:
-            command_args = command + command_args
-            command = None
+        command, command_args = self._override_entrypoint(
+            command, command_args, command_script
+        )
 
         resources = self._get_configured_resources()
 
@@ -257,7 +214,7 @@ class SGLangServer(InferenceServer):
         logger.info(
             f"With image: {image}, "
             f"command: [{' '.join(command) if command else ''}], "
-            f"arguments: [{' '.join(command_args)}], "
+            f"arguments: [{' '.join(command_args) if command_args else ''}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
             f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
@@ -365,9 +322,6 @@ class SGLangServer(InferenceServer):
             backend parameters.
         """
         arguments = [
-            "python",
-            "-m",
-            "sglang.launch_server",
             "--model-path",
             self._model_path,
         ]
@@ -486,8 +440,6 @@ class SGLangServer(InferenceServer):
         self, port: int, entrypoint: Optional[List[str]] = None
     ) -> Tuple[List[str], List[str]]:
         arguments = [
-            "sglang",
-            "serve",
             "--model-path",
             self._model_path,
         ]

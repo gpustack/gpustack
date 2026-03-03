@@ -117,6 +117,8 @@ These are essentially custom backends with a "community" source label, allowing 
 
     vLLM has changed the entrypoint of its Docker image since v0.11.1. Therefore, when adding a custom version for vLLM v0.11.1 or later, you must specify the `Override Image Entrypoint` and `Execution Command` field; otherwise, the model will fail to start. If you use newer versions of `gpustack/runner` images, you don't need to set the `Execution Command` field.
 
+    For backends that supply the executable through `Override Image Entrypoint` (such as vLLM and SGLang), the `Execution Command` must contain arguments only. Do not put the executable (e.g. `vllm serve` or `python -m vllm ...`) in the `Execution Command`, otherwise it would be appended after the entrypoint and produce a duplicated prefix like `vllm serve python -m vllm ...`.
+
 ### Example: Add a Custom Version to the Built-in SGLang Inference Backend
 
 1. On the Inference Backend page, locate the SGLang inference backend. From the card's top-right dropdown menu, choose "Edit".

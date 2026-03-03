@@ -10,6 +10,7 @@ from gpustack.schemas.inference_backend import (
 )
 from gpustack.schemas.models import BackendEnum
 from gpustack.utils.config import apply_registry_override_to_image
+from gpustack.worker.backends.base import InferenceServer
 from gpustack.worker.backends.custom import CustomServer
 from gpustack.worker.backends.sglang import (
     SGLangServer,
@@ -755,3 +756,76 @@ def test_custom_backend_configured_entrypoint_injected_parameters(
     assert entrypoint == expected_entrypoint
     assert arguments[-2:] == ["--user-param", "1"]
     assert injected == expected_injected
+
+
+@pytest.mark.parametrize(
+    "command, command_args, command_script, expected_command, expected_args",
+    [
+        # No script + non-empty command (vLLM/SGLang main path): merge into
+        # command so the image ENTRYPOINT is fully overridden.
+        (
+            ["vllm", "serve"],
+            ["/models/llm", "--port", "8000"],
+            None,
+            ["vllm", "serve", "/models/llm", "--port", "8000"],
+            None,
+        ),
+        # No script + command is None (vox_box/ascend with no entrypoint):
+        # keep args as-is, must not raise TypeError on None + list.
+        (
+            None,
+            ["vox-box", "start", "--model", "/models/audio"],
+            None,
+            None,
+            ["vox-box", "start", "--model", "/models/audio"],
+        ),
+        # No script + empty command: same as None.
+        ([], ["mindieservice_daemon"], None, None, ["mindieservice_daemon"]),
+        # Script + non-empty command: script becomes entrypoint, command is
+        # prepended to its args.
+        (
+            ["vllm", "serve"],
+            ["/models/llm"],
+            "setup.sh",
+            None,
+            ["vllm", "serve", "/models/llm"],
+        ),
+        # Script + command is None: just pass the args through under the script.
+        (None, ["vox-box", "start"], "setup.sh", None, ["vox-box", "start"]),
+    ],
+)
+def test_override_entrypoint(
+    command, command_args, command_script, expected_command, expected_args
+):
+    result_command, result_args = InferenceServer._override_entrypoint(
+        command, command_args, command_script
+    )
+
+    assert result_command == expected_command
+    assert result_args == expected_args
+
+
+@pytest.mark.parametrize(
+    "arguments, entrypoint, expected_start_index",
+    [
+        # Empty arguments.
+        ([], None, 0),
+        # vLLM/SGLang style: executable carried in command (not args here),
+        # first option marks the start.
+        (["vllm", "serve", "/models/llm", "--port", "8000"], None, 3),
+        # python -m module ...: skip the launcher and module, start at 3.
+        (["python", "-m", "vllm", "--host", "x"], None, 3),
+        # With an explicit container entrypoint, the python -m heuristic is
+        # skipped; the first dash-prefixed token wins ("-m" at index 1).
+        (["python", "-m", "vllm", "--host", "x"], ["llama-server"], 1),
+        # Entrypoint set, model path then first option.
+        (["/models/llm", "--port", "8000"], ["vllm", "serve"], 1),
+        # First token already an option.
+        (["--port", "8000"], None, 0),
+    ],
+)
+def test_get_backend_parameter_start_index(arguments, entrypoint, expected_start_index):
+    assert (
+        InferenceServer._get_backend_parameter_start_index(arguments, entrypoint)
+        == expected_start_index
+    )
