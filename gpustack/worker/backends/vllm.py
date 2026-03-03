@@ -20,6 +20,7 @@ from gpustack.schemas.models import (
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
     ModelInstanceDeploymentMetadata,
+    is_audio_model,
     is_omni_model,
 )
 from gpustack.utils import network
@@ -421,18 +422,18 @@ class VLLMServer(InferenceServer):
                 ]
             )
 
-        if not is_omni:
-            derived_max_model_len = self._derive_max_model_len()
+        is_audio = is_audio_model(self._model)
+
+        if not is_omni and not is_audio:
+
             specified_max_model_len = find_parameter(
                 self._model.backend_parameters,
                 ["max-model-len"],
             )
-            if (
-                specified_max_model_len is None
-                and derived_max_model_len
-                and derived_max_model_len > 8192
-            ):
-                arguments.extend(["--max-model-len", "8192"])
+            if specified_max_model_len is None:
+                derived_max_model_len = self._derive_max_model_len()
+                if derived_max_model_len and derived_max_model_len > 8192:
+                    arguments.extend(["--max-model-len", "8192"])
 
         auto_parallelism_arguments = get_auto_parallelism_arguments(
             self._model.backend_parameters,

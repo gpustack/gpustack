@@ -568,18 +568,21 @@ def get_max_model_len(pretrained_config) -> int:  # noqa: C901
     return int(derived_max_model_len)
 
 
-# Similar to https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/transformers_utils/config.py#L700,
+# Similar to https://github.com/vllm-project/vllm/blob/89a77b10846fd96273cce78d86d2556ea582d26e/vllm/transformers_utils/config.py#L978,
 # But we don't assert and fail if num_attention_heads is missing.
 def get_hf_text_config(config: PretrainedConfig):
     """Get the "sub" config relevant to llm for multi modal models.
     No op for pure text models.
     """
-    if hasattr(config, "text_config") and hasattr(
-        config.text_config, "num_attention_heads"
-    ):
-        return config.text_config
-    else:
-        return config
+    if hasattr(config, "text_config"):
+        text_config = config.get_text_config()
+        if text_config is not None:
+            if isinstance(text_config, dict):
+                text_config = PretrainedConfig.from_dict(text_config)
+            if hasattr(text_config, "num_attention_heads"):
+                return text_config
+
+    return config
 
 
 quantization_list = [
