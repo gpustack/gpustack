@@ -66,11 +66,13 @@ class VLLMServer(InferenceServer):
             is_distributed=deployment_metadata.distributed,
         )
 
-        command = None
+        command = ["vllm", "serve"]
         if self.inference_backend:
-            command = self.inference_backend.get_container_entrypoint(
+            entrypoint = self.inference_backend.get_container_entrypoint(
                 self._model.backend_version
             )
+            if entrypoint:
+                command = entrypoint
 
         command_script = self._get_serving_command_script(env)
 
@@ -150,6 +152,10 @@ class VLLMServer(InferenceServer):
             if command_script:
                 ray_command_args = ray_command + ray_command_args
                 ray_command = None
+            else:
+                # Set command_args as command to override image ENTRYPOINT.
+                ray_command = ray_command_args
+                ray_command_args = None
 
             run_container.execution.command = ray_command
             # run_container.execution.command_script = command_script # already set
@@ -175,6 +181,10 @@ class VLLMServer(InferenceServer):
             if command_script:
                 ray_command_args = ray_command + ray_command_args
                 ray_command = None
+            else:
+                # Set command_args as command to override image ENTRYPOINT.
+                ray_command = ray_command_args
+                ray_command_args = None
 
             sidecar_container = Container(
                 image=image,
@@ -199,7 +209,7 @@ class VLLMServer(InferenceServer):
         logger.info(
             f"With image: {image}, "
             f"command: [{' '.join(command) if command else ''}], "
-            f"arguments: [{' '.join(command_args)}], "
+            f"arguments: [{' '.join(command_args) if command_args else ''}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
             f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
@@ -400,11 +410,7 @@ class VLLMServer(InferenceServer):
         """
         Build vLLM command arguments for container execution.
         """
-        arguments = [
-            "vllm",
-            "serve",
-            self._model_path,
-        ]
+        arguments = [self._model_path]
 
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
