@@ -11,6 +11,25 @@ Run GPUStack server or worker.
 gpustack start [OPTIONS]
 ```
 
+!!! note "CLI Argument Placement"
+
+    In Docker, the actual command executed by `docker run` consists of **ENTRYPOINT** and **COMMAND**.
+
+    The `gpustack/gpustack` image sets its `ENTRYPOINT`, which can be simply understood as
+    (or considered equivalent to):
+
+        gpustack start
+
+    Therefore, CLI arguments for `gpustack start` must be placed after the image name,
+    at the end of the `docker run` command, rather than as options to `docker run` itself.
+
+    Example:
+
+        docker run [docker options] gpustack/gpustack <start-args>
+
+    In Kubernetes, these arguments should be specified using the `args` field
+    in the container specification.
+
 ## Configurations
 
 ### Common Options
