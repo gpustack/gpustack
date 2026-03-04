@@ -279,6 +279,11 @@ class Worker:
             self._serve_manager.sync_model_instances_state,
             envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL,
         )
+        if envs.MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_INTERVAL > 0:
+            run_periodically_in_thread(
+                self._serve_manager.sync_model_instances_inference_health,
+                envs.MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_INTERVAL,
+            )
         run_periodically_in_thread(
             self._workload_cleaner.cleanup_orphan_workloads, 120, 15
         )
