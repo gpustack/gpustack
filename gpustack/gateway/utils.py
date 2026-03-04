@@ -491,12 +491,13 @@ def generate_model_ingress(
     included_proxy_route: Optional[bool] = False,
     extra_annotations: Optional[Dict[str, str]] = None,
 ) -> k8s_client.V1Ingress:
+    retry_policies = "error,timeout,http_503,http_502,non_idempotent"
     annotations = {
         "higress.io/rewrite-target": "/$1$3",
         "higress.io/destination": destinations,
         "higress.io/ignore-path-case": 'true',
-        "higress.io/proxy-next-upstream-tries": '3',
-        "higress.io/proxy-next-upstream": "http_503,http_502,non_idempotent",
+        "higress.io/proxy-next-upstream-tries": '2',
+        "higress.io/proxy-next-upstream": retry_policies,
         **higress_http_header_matcher("exact", "x-higress-llm-model", route_name),
     }
     if extra_annotations is not None:
