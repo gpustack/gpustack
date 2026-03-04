@@ -35,7 +35,11 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import GPUDevicesStatus, Worker
 from gpustack.config import Config
-from gpustack.utils.command import find_parameter, find_int_parameter
+from gpustack.utils.command import (
+    find_bool_parameter,
+    find_parameter,
+    find_int_parameter,
+)
 from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
@@ -87,6 +91,15 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._validate_arguments()
         # GMU relies on architecture info in model parameters. Set it after model parameters are initialized.
         self._set_gpu_memory_utilization()
+
+    def _should_check_vision_tp_divisibility(self) -> bool:
+        if not self._model.backend_parameters:
+            return True
+
+        language_only = find_bool_parameter(
+            self._model.backend_parameters, ["language-model-only"]
+        )
+        return not language_only
 
     @staticmethod
     def get_world_size_from_backend_parameters(

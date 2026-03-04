@@ -1,7 +1,10 @@
 import pytest
 from unittest.mock import patch, AsyncMock
 
-from gpustack.policies.utils import get_model_num_attention_heads
+from gpustack.policies.utils import (
+    get_model_num_attention_heads,
+    get_model_vision_num_attention_heads,
+)
 from tests.utils.model import make_model, new_model, new_model_instance
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
@@ -988,6 +991,56 @@ async def test_auto_schedule_single_work_multi_gpu(
 
 
 @pytest.mark.asyncio
+async def test_tp_divisibility_checks_vision_heads_for_vllm(config):
+    m = make_model(
+        1,
+        None,
+        "Qwen/Qwen2.5-VL-7B-Instruct",
+        backend_parameters=[],
+    )
+    m.backend = BackendEnum.VLLM
+
+    resource_fit_selector = VLLMResourceFitSelector(config, m, [])
+    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._vision_num_attention_heads = 16
+    resource_fit_selector._model_params.vocab_size = None
+
+    assert not resource_fit_selector._is_tp_size_divisible(6)
+    assert (
+        resource_fit_selector._check_tp_size_divisibility(6)
+        == "Total number of vision attention heads (16)"
+        " must be divisible by tensor parallel size (6)."
+    )
+
+
+@pytest.mark.parametrize(
+    "language_only_param",
+    [
+        "--language-model-only",
+    ],
+)
+@pytest.mark.asyncio
+async def test_tp_divisibility_skips_vision_heads_in_language_only_mode_for_vllm(
+    config, language_only_param
+):
+    m = make_model(
+        1,
+        None,
+        "Qwen/Qwen2.5-VL-7B-Instruct",
+        backend_parameters=[language_only_param],
+    )
+    m.backend = BackendEnum.VLLM
+
+    resource_fit_selector = VLLMResourceFitSelector(config, m, [])
+    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._vision_num_attention_heads = 16
+    resource_fit_selector._model_params.vocab_size = None
+
+    assert resource_fit_selector._is_tp_size_divisible(6)
+    assert resource_fit_selector._check_tp_size_divisibility(6) is None
+
+
+@pytest.mark.asyncio
 async def test_auto_schedule_multi_work_multi_gpu(config):
     workers = [linux_nvidia_2_4080_16gx2(), linux_nvidia_2_4080_16gx2()]
     workers[1].id += 1
@@ -1210,6 +1263,72 @@ async def test_num_attention_heads(config, pretrained_config, expect_num):
     num_attention_heads = get_model_num_attention_heads(pretrained_config_obj)
 
     assert num_attention_heads == expect_num
+
+
+@pytest.mark.parametrize(
+    "pretrained_config, expect_num",
+    [
+        (
+            {
+                "vision_config": {
+                    "num_attention_heads": 16,
+                },
+            },
+            16,
+        ),
+        (
+            {
+                "vision_config": {
+                    "num_heads": 16,
+                },
+            },
+            16,
+        ),
+        (
+            {
+                "vision_config": {
+                    "num_heads": 16,
+                    "num_dummy_heads": 2,
+                },
+            },
+            18,
+        ),
+        (
+            {
+                "vision_config": {
+                    "num_heads": 16,
+                    "num_dummy_heads": -2,
+                },
+            },
+            16,
+        ),
+        (
+            {
+                "vision_config": {
+                    "num_heads": "16",
+                },
+            },
+            None,
+        ),
+        (
+            {},
+            None,
+        ),
+    ],
+)
+def test_vision_num_attention_heads(pretrained_config, expect_num):
+    class DictToObj:
+        def __init__(self, dictionary):
+            for key, value in dictionary.items():
+                if isinstance(value, dict):
+                    setattr(self, key, DictToObj(value))
+                else:
+                    setattr(self, key, value)
+
+    assert get_model_vision_num_attention_heads(pretrained_config) == expect_num
+    assert (
+        get_model_vision_num_attention_heads(DictToObj(pretrained_config)) == expect_num
+    )
 
 
 @pytest.mark.parametrize(
