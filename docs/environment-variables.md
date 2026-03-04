@@ -56,7 +56,7 @@ The **Applies to** column indicates where the environment variable should be set
 | Variable                                       | Description                                  | Default | Applies to      |
 | ---------------------------------------------- | -------------------------------------------- | ------- | --------------- |
 | `GPUSTACK_PROXY_TIMEOUT_SECONDS`               | Proxy timeout in seconds.                    | `1800`  | Server          |
-| `GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS` | Upstream idle timeout in seconds for higress | `300`   | Server          |
+| `GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS` | Upstream idle timeout in seconds for higress | `3`     | Server          |
 | `GPUSTACK_TCP_CONNECTOR_LIMIT`                 | HTTP client TCP connector limit.             | `1000`  | Server & Worker |
 
 ### Server Cache Configuration
