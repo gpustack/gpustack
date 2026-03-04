@@ -484,6 +484,19 @@ model_sets:
         - --chunked-prefill-size=4096
         - --max-prefill-tokens=4096
         - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-0.8B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+        - --attention-backend=triton
     # Other GPUs
     - mode: standard
       quantization: BF16
@@ -524,6 +537,19 @@ model_sets:
         - --chunked-prefill-size=4096
         - --max-prefill-tokens=4096
         - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-2B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+        - --attention-backend=triton
     # Other GPUs
     - mode: standard
       quantization: BF16
@@ -565,6 +591,20 @@ model_sets:
         - --chunked-prefill-size=4096
         - --max-prefill-tokens=4096
         - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-4B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
     # Other GPUs
     - mode: standard
       quantization: BF16
@@ -607,6 +647,20 @@ model_sets:
         - --chunked-prefill-size=4096
         - --max-prefill-tokens=4096
         - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-9B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
     # Other GPUs
     - mode: standard
       quantization: BF16
@@ -649,6 +703,20 @@ model_sets:
         - --chunked-prefill-size=4096
         - --max-prefill-tokens=4096
         - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-27B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
     # Other GPUs
     - mode: standard
       quantization: BF16
@@ -659,11 +727,29 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=qwen3
         - --context-length=32768
+    # Split FP8 throughput by architecture: on Blackwell, SGLang may
+    # auto-select flashinfer, while hybrid GDN Qwen3.5 requires triton/trtllm_mha.
+    # Ref: https://github.com/sgl-project/sglang/blob/bbe9c7eeb520b0a67e92d133dfc137a3688dc7f2/python/sglang/srt/layers/attention/attention_registry.py#L202
+    # NVIDIA Blackwell (e.g. RTX 5090)
     - mode: throughput
       quantization: FP8
       gpu_filters:
         vendor: nvidia
-        compute_capability: ">=9.0" # Hopper or later
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-27B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # NVIDIA Hopper/Ada before Blackwell
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<12.0"
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-27B-FP8
       backend: SGLang
@@ -704,6 +790,20 @@ model_sets:
         - --chunked-prefill-size=4096
         - --max-prefill-tokens=4096
         - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-35B-A3B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
     # Other GPUs
     - mode: standard
       quantization: BF16
@@ -714,11 +814,26 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=qwen3
         - --context-length=32768
+    # NVIDIA Blackwell (e.g. RTX 5090)
     - mode: throughput
       quantization: FP8
       gpu_filters:
         vendor: nvidia
-        compute_capability: ">=9.0" # Hopper or later
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-35B-A3B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # NVIDIA Hopper/Ada before Blackwell
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<12.0"
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-35B-A3B-FP8
       backend: SGLang
@@ -759,6 +874,20 @@ model_sets:
         - --chunked-prefill-size=4096
         - --max-prefill-tokens=4096
         - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-122B-A10B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
     # Other GPUs
     - mode: standard
       quantization: BF16
@@ -769,11 +898,26 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=qwen3
         - --context-length=32768
+    # NVIDIA Blackwell (e.g. RTX 5090)
     - mode: throughput
       quantization: FP8
       gpu_filters:
         vendor: nvidia
-        compute_capability: ">=9.0" # Hopper or later
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-122B-A10B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # NVIDIA Hopper/Ada before Blackwell
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<12.0"
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-122B-A10B-FP8
       backend: SGLang
@@ -814,6 +958,20 @@ model_sets:
         - --chunked-prefill-size=4096
         - --max-prefill-tokens=4096
         - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-397B-A17B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
     # Other GPUs
     - mode: standard
       quantization: BF16
@@ -824,11 +982,25 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=qwen3
         - --context-length=32768
+    # NVIDIA Blackwell (e.g. RTX 5090)
     - mode: throughput
       quantization: FP8
       gpu_filters:
         vendor: nvidia
-        compute_capability: ">=9.0" # Hopper or later
+        compute_capability: ">=12.0"
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-397B-A17B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<12.0" # Hopper/Ada before Blackwell
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-397B-A17B-FP8
       backend: SGLang
