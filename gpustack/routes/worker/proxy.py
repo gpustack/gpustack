@@ -3,7 +3,7 @@ import logging
 import aiohttp
 from typing import Callable, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 from gpustack.api.auth import worker_auth
@@ -11,6 +11,7 @@ from gpustack.api.exceptions import (
     GatewayTimeoutException,
     ServiceUnavailableException,
     NotFoundException,
+    ErrorResponse,
 )
 from gpustack import envs
 from gpustack.utils.network import use_proxy_env_for_url
@@ -144,7 +145,14 @@ async def set_port_from_model_name(request: Request, call_next):
         return await call_next(request)
     except NotFoundException as e:
         logger.debug("failed to find model instance for proxying: %s", e.message)
-        raise e
+        return JSONResponse(
+            status_code=e.status_code,
+            content=ErrorResponse(
+                code=e.status_code,
+                reason=e.reason,
+                message=e.message,
+            ).model_dump(),
+        )
     except HTTPException as e:
         logger.debug("failed to find model instance for proxying: %s", e.detail)
         return await call_next(request)
