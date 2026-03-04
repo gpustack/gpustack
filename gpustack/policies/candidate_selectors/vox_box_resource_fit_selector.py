@@ -73,6 +73,9 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
     def get_messages(self) -> List[str]:
         return self._messages
 
+    def _should_check_vision_tp_divisibility(self) -> bool:
+        return False
+
     async def select_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:

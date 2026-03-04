@@ -87,6 +87,15 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         await super()._init_model_parameters(workers)
         self._validate_and_set_arguments()
 
+    def _should_check_vision_tp_divisibility(self) -> bool:
+        if not self._model.backend_parameters:
+            return True
+
+        language_only = find_bool_parameter(
+            self._model.backend_parameters, ["language-only"]
+        )
+        return not language_only
+
     @staticmethod
     def get_world_size_from_backend_parameters(
         model: Model,

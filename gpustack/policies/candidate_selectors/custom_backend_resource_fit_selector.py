@@ -59,6 +59,9 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         """Get scheduling messages."""
         return self._messages
 
+    def _should_check_vision_tp_divisibility(self) -> bool:
+        return False
+
     def _set_messages(self):
         """Aggregate event messages into a compact diagnostic string list (similar to vLLM, without utilization)."""
         if self._messages:

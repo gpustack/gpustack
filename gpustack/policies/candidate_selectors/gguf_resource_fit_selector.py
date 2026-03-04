@@ -111,6 +111,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._messages = []
         self._event_collector = EventCollector(self._model, logger)
 
+    def _should_check_vision_tp_divisibility(self) -> bool:
+        return False
+
     def _initialize_cached_claim_data(self):
         """Initialize cached claim data."""
 

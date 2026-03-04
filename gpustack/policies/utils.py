@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
@@ -485,6 +485,47 @@ def get_model_num_attention_heads(pretrained_config) -> Optional[int]:
         logger.warning(f"Cannot get num_attention_heads: {e}")
 
     return num_attention_heads
+
+
+def _get_config_value(config: Any, key: str) -> Any:
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return config.get(key)
+    return getattr(config, key, None)
+
+
+def _get_config_int(config: Any, key: str) -> Optional[int]:
+    value = _get_config_value(config, key)
+    if type(value) is int:
+        return value
+    return None
+
+
+def get_model_vision_num_attention_heads(pretrained_config: Any) -> Optional[int]:
+    """
+    Get total vision attention heads used for TP divisibility check.
+
+    Priority for raw heads: num_attention_heads > num_heads.
+    The final value is:
+        total_vision_heads = raw_heads + max(num_dummy_heads, 0)
+    """
+    try:
+        vision_config = _get_config_value(pretrained_config, "vision_config")
+        if not vision_config:
+            return None
+
+        num_heads = _get_config_int(vision_config, "num_attention_heads")
+        if num_heads is None:
+            num_heads = _get_config_int(vision_config, "num_heads")
+        if num_heads is None or num_heads <= 0:
+            return None
+
+        num_dummy_heads = _get_config_int(vision_config, "num_dummy_heads") or 0
+        return num_heads + max(num_dummy_heads, 0)
+    except Exception as e:
+        logger.warning(f"Cannot get vision num_attention_heads: {e}")
+        return None
 
 
 async def get_local_model_weight_size(

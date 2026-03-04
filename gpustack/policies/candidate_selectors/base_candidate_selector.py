@@ -27,6 +27,7 @@ from gpustack.policies.utils import (
     ListMessageBuilder,
     get_computed_ram_claim,
     get_model_num_attention_heads,
+    get_model_vision_num_attention_heads,
     get_worker_allocatable_resource,
     get_worker_model_instances,
     sort_gpu_indexes_by_allocatable_rate,
@@ -84,6 +85,7 @@ class ModelParameters:
 
     is_multimodel: bool = False
     vision_config: Optional[Dict] = None
+    vision_num_attention_heads: Optional[int] = None
 
     def from_model_pretrained_config(  # noqa: C901
         self, model: Model, pretrained_config: Any
@@ -94,6 +96,9 @@ class ModelParameters:
         if hasattr(pretrained_config, "vision_config"):
             self.is_multimodel = True
             self.vision_config = pretrained_config.vision_config
+            self.vision_num_attention_heads = get_model_vision_num_attention_heads(
+                pretrained_config
+            )
 
         # Get architectures first, it is not available in text_config.
         if hasattr(pretrained_config, "architectures"):
@@ -168,6 +173,7 @@ class ScheduleCandidatesSelector(ABC):
     _model_params: ModelParameters
     # Frequently used model parameter in selectors.
     _num_attention_heads: int
+    _vision_num_attention_heads: int
     # Number of GPUs required by the model.
     # Derived from GPU selectors(manual) or Parallelism parameters(auto).
     _gpu_count: int
@@ -193,6 +199,7 @@ class ScheduleCandidatesSelector(ABC):
         self._model_instances = model_instances
         self._model_params = ModelParameters()
         self._num_attention_heads = 0
+        self._vision_num_attention_heads = 0
         self._gpu_count = 0
         self._selected_gpu_workers = None
         self._selected_gpu_indexes_by_gpu_type_and_worker = {}
@@ -218,6 +225,13 @@ class ScheduleCandidatesSelector(ABC):
         """
         pass
 
+    @abstractmethod
+    def _should_check_vision_tp_divisibility(self) -> bool:
+        """
+        Whether this backend enforces TP divisibility for vision attention heads.
+        """
+        pass
+
     async def _init_model_parameters(self, workers: List[Worker]):
         if is_omni_model(self._model):
             # Current model parameters are for llm-like models.
@@ -234,6 +248,9 @@ class ScheduleCandidatesSelector(ABC):
                 self._model, pretrained_config
             )
             self._num_attention_heads = self._model_params.num_attention_heads
+            self._vision_num_attention_heads = (
+                self._model_params.vision_num_attention_heads
+            )
         except Exception as e:
             raise ValueError(
                 f"Failed to parse model {self._model.name} hyperparameters: {e}"
@@ -991,7 +1008,8 @@ class ScheduleCandidatesSelector(ABC):
         """
         Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
         1. num_attention_heads
-        2. vocab_size
+        2. vision_num_attention_heads
+        3. vocab_size
 
         Notes on `tp_size` (tensor parallel size) usage in auto scheduling:
         - Single-worker multi-GPU: `tp_size` is the number of GPUs currently selected
@@ -1003,6 +1021,12 @@ class ScheduleCandidatesSelector(ABC):
         if not tp_size:
             return False
         if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
+            return False
+        if (
+            self._should_check_vision_tp_divisibility()
+            and self._vision_num_attention_heads
+            and self._vision_num_attention_heads % tp_size != 0
+        ):
             return False
 
         if (
@@ -1020,7 +1044,8 @@ class ScheduleCandidatesSelector(ABC):
         """
         Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
         1. num_attention_heads
-        2. vocab_size
+        2. vision_num_attention_heads
+        3. vocab_size
 
         Return:
             None if divisibility is satisfied, otherwise an error message.
@@ -1030,6 +1055,16 @@ class ScheduleCandidatesSelector(ABC):
         if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
             return (
                 f"Total number of attention heads ({self._num_attention_heads})"
+                " must be divisible by tensor parallel size "
+                f"({tp_size})."
+            )
+        if (
+            self._should_check_vision_tp_divisibility()
+            and self._vision_num_attention_heads
+            and self._vision_num_attention_heads % tp_size != 0
+        ):
+            return (
+                f"Total number of vision attention heads ({self._vision_num_attention_heads})"
                 " must be divisible by tensor parallel size "
                 f"({tp_size})."
             )
