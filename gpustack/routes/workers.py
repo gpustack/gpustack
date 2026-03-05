@@ -497,7 +497,6 @@ async def create_worker(
             cluster.state = ClusterStateEnum.READY
             await cluster.update(session=session, auto_commit=False)
         await session.commit()
-        await session.refresh(worker)
         worker_dump = worker.model_dump()
         worker_dump["token"] = worker.token
         worker_dump["worker_config"] = PredefinedConfigNoDefaults.model_validate(
