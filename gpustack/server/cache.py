@@ -122,6 +122,22 @@ async def delete_cache_by_key(
         await _broadcast_invalidation(key)
 
 
+async def delete_cache_by_prefix(prefix: str) -> int:
+    """Delete every in-memory cache entry whose key starts with ``prefix``.
+
+    Local-only — does not broadcast via the coordinator. Callers using
+    this helper accept that other replicas will see stale entries until
+    their TTL expires.
+    """
+    keys = [k for k in list(cache._cache.keys()) if k.startswith(prefix)]
+    for k in keys:
+        await cache.delete(k)
+        _cache_locks.pop(k, None)
+    if keys:
+        logger.trace(f"Deleted {len(keys)} cache entries with prefix: {prefix}")
+    return len(keys)
+
+
 async def set_cache_by_key(key: str, value: Any, ttl: Optional[int] = None):
     """Write ``value`` to the in-memory cache.
 

@@ -36,6 +36,7 @@ from gpustack.schemas.inference_backend import (
     is_built_in_backend,
 )
 from gpustack.schemas.models import BackendEnum, Model, BackendSourceEnum
+from gpustack.server.cache import locked_cached, delete_cache_by_prefix
 from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
 from gpustack_runner import list_service_runners
@@ -44,6 +45,8 @@ from gpustack_runtime.detector import ManufacturerEnum
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_INFERENCE_BACKENDS_ALL_CACHE_KEY = "inference_backends_all"
 
 
 def filter_yaml_fields(yaml_data: Dict, filter_keys: List[str]) -> Dict:  # noqa: C901
@@ -924,11 +927,23 @@ async def get_inference_backends(  # noqa: C901
     )
 
 
-@router.get("/all", response_model=List[InferenceBackend])
-async def get_all_inference_backends(
-    session: SessionDep,
-    ctx: TenantContextDep,
-):
+def _all_inference_backends_cache_key(f, *args, **kwargs):
+    """Shard cache by (current_principal_id, is_platform_admin) so each
+    tenant view gets its own entry. ``_fetch_visible_backend_rows`` and
+    ``_collapse_by_backend_name`` produce different rows per shard, so a
+    single global key would leak rows across tenants.
+    """
+    ctx = kwargs.get("ctx") if "ctx" in kwargs else (args[1] if len(args) > 1 else None)
+    if ctx is None:
+        return f"{_INFERENCE_BACKENDS_ALL_CACHE_KEY}:none:0"
+    principal_id = ctx.current_principal_id
+    is_admin = int(bool(ctx.is_platform_admin))
+    principal_part = principal_id if principal_id is not None else "all"
+    return f"{_INFERENCE_BACKENDS_ALL_CACHE_KEY}:{principal_part}:{is_admin}"
+
+
+@locked_cached(key=_all_inference_backends_cache_key, ttl=60)
+async def _get_all_inference_backends_cached(session: SessionDep, ctx):
     backends = await merge_runner_versions_to_db(session, ctx=ctx)
     ret = []
     for backend in backends:
@@ -943,6 +958,14 @@ async def get_all_inference_backends(
         ret.append(backend)
 
     return ret
+
+
+@router.get("/all", response_model=List[InferenceBackend])
+async def get_all_inference_backends(
+    session: SessionDep,
+    ctx: TenantContextDep,
+):
+    return await _get_all_inference_backends_cached(session, ctx)
 
 
 def _assert_backend_visible(ctx, backend):
@@ -1077,6 +1100,7 @@ async def create_inference_backend(
             message=f"Failed to create inference backend: {e}"
         )
 
+    await delete_cache_by_prefix(_INFERENCE_BACKENDS_ALL_CACHE_KEY)
     return backend
 
 
@@ -1218,6 +1242,7 @@ async def update_inference_backend(  # noqa: C901
             message=f"Failed to update inference backend: {e}"
         )
 
+    await delete_cache_by_prefix(_INFERENCE_BACKENDS_ALL_CACHE_KEY)
     return backend
 
 
@@ -1255,6 +1280,8 @@ async def delete_inference_backend(session: SessionDep, ctx: TenantContextDep, i
         raise InternalServerErrorException(
             message=f"Failed to delete inference backend: {e}"
         )
+
+    await delete_cache_by_prefix(_INFERENCE_BACKENDS_ALL_CACHE_KEY)
 
 
 @router.post("/from-yaml", response_model=InferenceBackend)
@@ -1361,6 +1388,7 @@ async def create_inference_backend_from_yaml(  # noqa: C901
         backend = InferenceBackend(**yaml_data, owner_principal_id=target_org_id)
         backend = await InferenceBackend.create(session, backend)
 
+        await delete_cache_by_prefix(_INFERENCE_BACKENDS_ALL_CACHE_KEY)
         return backend
 
     except yaml.YAMLError as e:
@@ -1466,6 +1494,7 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         # Update the backend from YAML data (after normalization)
         await backend.update(session, yaml_data)
 
+        await delete_cache_by_prefix(_INFERENCE_BACKENDS_ALL_CACHE_KEY)
         return backend
 
     except yaml.YAMLError as e:
