@@ -577,7 +577,9 @@ class ActiveRecordMixin:
         """Update the object with the source and save to the database."""
 
         if isinstance(source, SQLModel):
-            source = source.model_dump(exclude_unset=True)
+            source = {
+                key: getattr(source, key, None) for key in source.model_fields_set
+            }
         elif source is None:
             source = {}
 
