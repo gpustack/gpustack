@@ -32,6 +32,7 @@ from gpustack.schemas.inference_backend import (
     is_built_in_backend,
 )
 from gpustack.schemas.models import BackendEnum, Model, BackendSourceEnum
+from gpustack.server.cache import locked_cached, delete_cache_by_key
 from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack_runner import list_service_runners
@@ -40,6 +41,8 @@ from gpustack_runtime.detector import ManufacturerEnum
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_INFERENCE_BACKENDS_ALL_CACHE_KEY = "inference_backends_all"
 
 
 def filter_yaml_fields(yaml_data: Dict, filter_keys: List[str]) -> Dict:
@@ -726,10 +729,12 @@ async def get_inference_backends(  # noqa: C901
     )
 
 
-@router.get("/all", response_model=List[InferenceBackend])
-async def get_all_inference_backends(
-    session: SessionDep,
-):
+@locked_cached(key=_INFERENCE_BACKENDS_ALL_CACHE_KEY, ttl=60)
+async def _get_all_inference_backends_cached(session: SessionDep):
+    """
+    Internal cached function to get all inference backends.
+    This function is cached to improve performance.
+    """
     backends = await merge_runner_versions_to_db(session)
     ret = []
     for backend in backends:
@@ -744,6 +749,17 @@ async def get_all_inference_backends(
         ret.append(backend)
 
     return ret
+
+
+@router.get("/all", response_model=List[InferenceBackend])
+async def get_all_inference_backends(
+    session: SessionDep,
+):
+    """
+    Get all inference backends with caching.
+    Cache is automatically invalidated when backends are created, updated, or deleted.
+    """
+    return await _get_all_inference_backends_cached(session)
 
 
 @router.get("/{id}", response_model=InferenceBackend)
@@ -819,6 +835,7 @@ async def create_inference_backend(
             message=f"Failed to create inference backend: {e}"
         )
 
+    await delete_cache_by_key(_key=_INFERENCE_BACKENDS_ALL_CACHE_KEY)
     return backend
 
 
@@ -891,6 +908,7 @@ async def update_inference_backend(
             message=f"Failed to update inference backend: {e}"
         )
 
+    await delete_cache_by_key(_key=_INFERENCE_BACKENDS_ALL_CACHE_KEY)
     return backend
 
 
@@ -922,6 +940,8 @@ async def delete_inference_backend(session: SessionDep, id: int):
         raise InternalServerErrorException(
             message=f"Failed to delete inference backend: {e}"
         )
+
+    await delete_cache_by_key(_key=_INFERENCE_BACKENDS_ALL_CACHE_KEY)
 
 
 @router.post("/from-yaml", response_model=InferenceBackend)
@@ -1017,6 +1037,7 @@ async def create_inference_backend_from_yaml(
         backend = InferenceBackend(**yaml_data)
         backend = await InferenceBackend.create(session, backend)
 
+        await delete_cache_by_key(_key=_INFERENCE_BACKENDS_ALL_CACHE_KEY)
         return backend
 
     except yaml.YAMLError as e:
@@ -1118,6 +1139,7 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         # Update the backend from YAML data (after normalization)
         await backend.update(session, yaml_data)
 
+        await delete_cache_by_key(_key=_INFERENCE_BACKENDS_ALL_CACHE_KEY)
         return backend
 
     except yaml.YAMLError as e:

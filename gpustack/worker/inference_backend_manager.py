@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import time
 from typing import Dict, Optional
 
 
@@ -56,28 +57,88 @@ class InferenceBackendManager:
 
         return None
 
-    def _initialize_cache(self) -> None:
-        """Initialize the cache with existing InferenceBackend data."""
-        try:
-            logger.info("Initializing InferenceBackend cache")
-            resp = self._clientset.http_client.get_httpx_client().get(
-                "/inference-backends/all"
-            )
-            backends = resp.json()
-            if backends:
-                with _cache_lock:
-                    for backend in backends:
-                        backend = InferenceBackend.model_validate(backend)
-                        if backend:
-                            self.backends_cache[backend.backend_name] = backend
+    def _initialize_cache(self, max_retries: int = 3, retry_delay: float = 1.0) -> None:
+        """Initialize the cache with existing InferenceBackend data.
+
+        Args:
+            max_retries: Maximum number of retry attempts
+            retry_delay: Delay in seconds between retries
+        """
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
                 logger.info(
-                    f"Initialized cache with {self.backends_cache.keys()} InferenceBackends"
+                    f"Initializing InferenceBackend cache (attempt {attempt + 1}/{max_retries})"
                 )
-            else:
-                logger.info("No existing InferenceBackends found")
-        except Exception as e:
-            logger.error(f"Failed to initialize InferenceBackend cache: {e}")
-            raise
+                resp = self._clientset.http_client.get_httpx_client().get(
+                    "/inference-backends/all"
+                )
+
+                # Validate HTTP response status
+                resp.raise_for_status()
+
+                backends = resp.json()
+
+                # Validate response data type
+                if not isinstance(backends, list):
+                    logger.error(
+                        f"Invalid response type: expected list, got {type(backends).__name__}. "
+                        f"Response content: {backends}"
+                    )
+                    raise ValueError(
+                        f"Expected list of backends, got {type(backends).__name__}"
+                    )
+
+                if not backends:
+                    logger.info("No InferenceBackends found in response")
+                    return
+
+                with _cache_lock:
+                    for backend_data in backends:
+                        # Validate individual backend data type
+                        if not isinstance(backend_data, dict):
+                            logger.warning(
+                                f"Skipping invalid backend data: expected dict, got {type(backend_data).__name__}. "
+                                f"Data: {backend_data}"
+                            )
+                            continue
+
+                        try:
+                            backend = InferenceBackend.model_validate(backend_data)
+                            if backend:
+                                self.backends_cache[backend.backend_name] = backend
+                        except Exception as validation_error:
+                            logger.error(
+                                f"Failed to validate backend data: {validation_error}. "
+                                f"Data: {backend_data}"
+                            )
+                            # Continue processing other backends instead of failing completely
+                            continue
+
+                logger.info(
+                    f"Initialized cache with {len(self.backends_cache)} InferenceBackends"
+                )
+
+                # Success - exit retry loop
+                return
+
+            except Exception as e:
+                last_exception = e
+                logger.error(
+                    f"Failed to initialize InferenceBackend cache (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+
+                # If this is not the last attempt, wait before retrying
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+
+        # All retries failed
+        logger.error(
+            f"Failed to initialize InferenceBackend cache after {max_retries} attempts"
+        )
+        raise last_exception
 
     async def _watch_changes(self) -> None:
         """Watch for InferenceBackend changes and update the cache."""
