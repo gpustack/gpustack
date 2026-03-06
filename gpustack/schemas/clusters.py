@@ -2,7 +2,7 @@ import secrets
 from urllib.parse import urlparse
 from enum import Enum
 from typing import ClassVar, Optional, Dict, Any, List
-from pydantic import BaseModel, computed_field, field_validator, ConfigDict
+from pydantic import BaseModel, computed_field, field_validator, ConfigDict, PrivateAttr
 from sqlmodel import (
     Field,
     Relationship,
@@ -102,24 +102,29 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"lazy": "noload"},
         back_populates="worker_pool",
     )
-    _workers: int = 0
-    _ready_workers: int = 0
+    _workers: int = PrivateAttr(default=-1)
+    _ready_workers: int = PrivateAttr(default=-1)
 
     @computed_field()
     @property
     def workers(self) -> int:
-        if self.pool_workers is not None:
-            return len(self.pool_workers)
-
-        return self._workers
+        try:
+            if self._workers >= 0:
+                return self._workers
+        except AttributeError:
+            pass
+        return len(self.pool_workers or [])
 
     @computed_field()
     @property
     def ready_workers(self) -> int:
-        if self.pool_workers is not None:
-            return len([w for w in self.pool_workers if w.state.value == 'ready'])
+        try:
+            if self._ready_workers >= 0:
+                return self._ready_workers
+        except AttributeError:
+            pass
 
-        return self._ready_workers
+        return len([w for w in self.pool_workers or [] if w.state.value == 'ready'])
 
     def __hash__(self):
         return hash(self.id)
@@ -131,8 +136,8 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
 
     def __init__(
         self,
-        workers: int = 0,
-        ready_workers: int = 0,
+        workers: int = -1,
+        ready_workers: int = -1,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -290,47 +295,55 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
         back_populates="cluster",
     )
-    _models: int = 0
-    _workers: int = 0
-    _ready_workers: int = 0
-    _gpus: int = 0
+    _models: int = PrivateAttr(default=-1)
+    _workers: int = PrivateAttr(default=-1)
+    _ready_workers: int = PrivateAttr(default=-1)
+    _gpus: int = PrivateAttr(default=-1)
 
     @computed_field()
     @property
     def workers(self) -> int:
-        if self.cluster_workers is not None:
-            return len(self.cluster_workers)
-
-        return self._workers
+        try:
+            if self._workers >= 0:
+                return self._workers
+        except AttributeError:
+            pass
+        return len(self.cluster_workers or [])
 
     @computed_field()
     @property
     def ready_workers(self) -> int:
-        if self.cluster_workers is not None:
-            return len([w for w in self.cluster_workers if w.state.value == 'ready'])
-
-        return self._ready_workers
+        try:
+            if self._ready_workers >= 0:
+                return self._ready_workers
+        except AttributeError:
+            pass
+        return len([w for w in self.cluster_workers or [] if w.state.value == 'ready'])
 
     @computed_field(alias="gpus")
     @property
     def gpus(self) -> int:
-        if self.cluster_workers is not None:
-            count = 0
-            for worker in self.cluster_workers:
-                if worker.status is None or worker.status.gpu_devices is None:
-                    continue
-                count += len(worker.status.gpu_devices)
-            return count
-
-        return self._gpus
+        try:
+            if self._gpus >= 0:
+                return self._gpus
+        except AttributeError:
+            pass
+        count = 0
+        for worker in self.cluster_workers or []:
+            if worker.status is None or worker.status.gpu_devices is None:
+                continue
+            count += len(worker.status.gpu_devices)
+        return count
 
     @computed_field(alias="models")
     @property
     def models(self) -> int:
-        if self.cluster_models is not None:
-            return len(self.cluster_models)
-
-        return self._models
+        try:
+            if self._models >= 0:
+                return self._models
+        except AttributeError:
+            pass
+        return len(self.cluster_models or [])
 
     def __hash__(self):
         return hash(self.id)
@@ -342,10 +355,10 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
 
     def __init__(
         self,
-        workers: int = 0,
-        ready_workers: int = 0,
-        gpus: int = 0,
-        models: int = 0,
+        workers: int = -1,
+        ready_workers: int = -1,
+        gpus: int = -1,
+        models: int = -1,
         **kwargs,
     ):
         super().__init__(**kwargs)
