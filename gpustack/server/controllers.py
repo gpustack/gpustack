@@ -769,12 +769,16 @@ async def sync_gateway(
         destinations=destinations,
         fallback_destinations=fallback_destinations,
     )
+    # FIXME: Copy the fallback destination to the main ingress for now to make sure the fallback
+    # route is always hit when fallback is configured, even if the main route has no valid
+    # destination. This is to avoid potential misconfiguration that causes the main route to
+    # have no destination and the fallback route is not hit at all.
     await mcp_handler.ensure_model_ingress(
         event_type=event_type,
         ingress_name=ingress_name,
         route_name=model_route.name,
         namespace=cfg.get_namespace(),
-        destinations=destinations,
+        destinations=destinations if len(destinations) > 0 else fallback_destinations,
         networking_api=networking_api,
         included_generic_route=False,
         included_proxy_route=model_route.generic_proxy,
