@@ -733,7 +733,7 @@ async def get_all_inference_backends(
     backends = await merge_runner_versions_to_db(session)
     ret = []
     for backend in backends:
-        if not backend.is_built_in:
+        if backend.backend_source == BackendSourceEnum.CUSTOM:
             ret.append(backend)
             continue
         for built_in_version, config in backend.built_in_version_configs.items():
