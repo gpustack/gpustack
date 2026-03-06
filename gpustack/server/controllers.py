@@ -562,6 +562,7 @@ async def find_scale_down_candidates(
             f"Failed to find scale down candidates for model {model.name}: {e}"
         )
         logger.error(state_message)
+        return []
 
 
 async def sync_ready_replicas(session: AsyncSession, model: Model):
