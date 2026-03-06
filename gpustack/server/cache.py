@@ -49,13 +49,15 @@ def class_key(suffix: str):
         async def cached_all(cls, session, ...):
             ...
 
-    The generated key will be "{ClassName}.{suffix}.{ordered_kwargs}", e.g., "Worker.all_cached.{ordered_kwargs}"
+    The generated key will be "{ClassName}.{suffix}", e.g., "Worker.all_cached"
     """
 
+    # FIXME: The kwargs should be taken into account for more fine-grained cache keys,
+    # but for now we just use the class name and suffix for simplicity.
+    # Using kwargs as key causes https://github.com/gpustack/gpustack/issues/4813.
     def builder(f, *args, **kwargs):
         cls = args[0]  # First arg is cls for classmethod
-        ordered_kwargs = sorted(kwargs.items())
-        return f"{cls.__name__}.{suffix}.{str(ordered_kwargs)}"
+        return f"{cls.__name__}.{suffix}"
 
     return builder
 
