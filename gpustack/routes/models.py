@@ -255,10 +255,23 @@ async def validate_model_in(
                 )
 
         param_port = find_parameter(model_in.backend_parameters, ["port"])
-
         if param_port:
             raise BadRequestException(
-                message="Setting the port using --port is not supported."
+                message="Setting the port using --port is not supported. Ports are automatically allocated by GPUStack. Access your model through the GPUStack server URL: $gpustack_server_url/v1"
+            )
+
+        param_api_key = find_parameter(model_in.backend_parameters, ["api-key"])
+        if param_api_key:
+            raise BadRequestException(
+                message="Setting the API key using --api-key is not supported. API keys are managed by GPUStack. Please create and use API keys from the UI: User avatar → API Keys"
+            )
+
+        param_served_model_name = find_parameter(
+            model_in.backend_parameters, ["served-model-name"]
+        )
+        if param_served_model_name:
+            raise BadRequestException(
+                message="Setting the served model name using --served-model-name is not supported. The model name is automatically set from your deployment configuration. To change the model name, update the 'Name' field in your deployment settings"
             )
 
 
