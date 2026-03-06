@@ -21,6 +21,15 @@ class WorkerStatusClient:
         raise_if_response_error(response)
         return None
 
+    async def create_async(self, model_create: WorkerStatusPublic):
+        response = await self._client.get_async_httpx_client().post(
+            self._url,
+            content=model_create.model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        )
+        raise_if_response_error(response)
+        return None
+
 
 class WorkerRegistrationClient:
     def __init__(self, client: HTTPClient):
@@ -29,6 +38,15 @@ class WorkerRegistrationClient:
 
     def create(self, model_create: WorkerCreate):
         response = self._client.get_httpx_client().post(
+            self._url,
+            content=model_create.model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        )
+        raise_if_response_error(response)
+        return WorkerRegistrationPublic.model_validate(response.json())
+
+    async def create_async(self, model_create: WorkerCreate):
+        response = await self._client.get_async_httpx_client().post(
             self._url,
             content=model_create.model_dump_json(),
             headers={"Content-Type": "application/json"},

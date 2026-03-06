@@ -597,6 +597,18 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         "direct (server connects directly) or worker (via worker proxy). "
         "Default value is direct for embedded worker, and worker for standalone worker.",
     )
+    worker_group.add_argument(
+        "--skip-version-check",
+        action=OptionalBoolAction,
+        help="Skip version check between worker and server. Not recommended for production.",
+        default=get_gpustack_env_bool("SKIP_VERSION_CHECK"),
+    )
+    worker_group.add_argument(
+        "--strict-version-check",
+        action=OptionalBoolAction,
+        help="Require exact version match between worker and server (including patch version).",
+        default=get_gpustack_env_bool("STRICT_VERSION_CHECK"),
+    )
 
     parser_server.set_defaults(func=run)
 
@@ -779,6 +791,8 @@ def set_worker_options(args, config_data: dict):
         "tools_download_base_url",
         "enable_hf_transfer",
         "proxy_mode",
+        "skip_version_check",
+        "strict_version_check",
     ]
 
     for option in options:
