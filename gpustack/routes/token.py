@@ -98,8 +98,14 @@ async def server_auth(
         "X-Mse-Consumer": consumer,
         "Authorization": f"Bearer {registration_token}",
     }
+    # FIXME: The original info should be removed beforing routing.
+    # Remove this FIXME after we remove the original header in the gateway.
+    headers["x-gpustack-original-cookies"] = request.headers.get("cookie", "")
+    headers["x-gpustack-original-authorization"] = request.headers.get(
+        "authorization", ""
+    )
     if cookie_token is not None:
-        # reset the cookie in higress
+        # backup the cookie in higress
         headers["cookie"] = "dummy=dummy"
     return Response(
         status_code=200,
