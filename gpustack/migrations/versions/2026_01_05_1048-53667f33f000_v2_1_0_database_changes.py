@@ -19,6 +19,9 @@ from sqlalchemy.dialects import postgresql
 from gpustack.migrations.utils import table_exists
 import gpustack.utils.sql_enum as sql_enum
 from gpustack.schemas.stmt import model_user_after_drop_view_stmt
+from gpustack.config.config import get_global_config
+from gpustack.routes.auth import remove_initial_password_file_if_exists
+
 
 # revision identifiers, used by Alembic.
 revision: str = '53667f33f000'
@@ -130,6 +133,10 @@ def upgrade() -> None:
     recalculate_index_for_modelscope_sources()
     
     upgrade_model_usage_integer_overflow()
+
+    config = get_global_config()
+    if config:
+        remove_initial_password_file_if_exists(config)
 
 
 def downgrade() -> None:
