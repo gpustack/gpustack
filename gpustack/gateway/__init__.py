@@ -309,6 +309,8 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                 {"exact": "X-Mse-Consumer"},
                 {"exact": "Authorization"},
                 {"exact": "cookie"},
+                {"exact": "X-GPUStack-Original-Cookies"},
+                {"exact": "X-GPUStack-Original-Authorization"},
             ]
         },
         "endpoint": {
@@ -474,12 +476,20 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                 transform_header(
                     "rename",
                     HeaderRule(
-                        newKey="x-higress-llm-model",
                         oldKey="x-gpustack-model",
+                        newKey="x-higress-llm-model",
                     ),
                     HeaderRule(
                         oldKey="x-gpustack-original-path",
                         newKey=":path",
+                    ),
+                    HeaderRule(
+                        oldKey="x-gpustack-original-cookies",
+                        newKey="cookie",
+                    ),
+                    HeaderRule(
+                        oldKey="x-gpustack-original-authorization",
+                        newKey="authorization",
                     ),
                 ),
                 transform_header(
@@ -494,6 +504,14 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     ),
                     HeaderRule(
                         key=":path",
+                        strategy="RETAIN_LAST",
+                    ),
+                    HeaderRule(
+                        key="cookie",
+                        strategy="RETAIN_LAST",
+                    ),
+                    HeaderRule(
+                        key="authorization",
                         strategy="RETAIN_LAST",
                     ),
                 ),
