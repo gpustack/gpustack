@@ -111,7 +111,7 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
         try:
             if self._workers >= 0:
                 return self._workers
-        except AttributeError:
+        except TypeError:
             pass
         return len(self.pool_workers or [])
 
@@ -121,7 +121,7 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
         try:
             if self._ready_workers >= 0:
                 return self._ready_workers
-        except AttributeError:
+        except TypeError:
             pass
 
         return len([w for w in self.pool_workers or [] if w.state.value == 'ready'])
@@ -306,7 +306,7 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
         try:
             if self._workers >= 0:
                 return self._workers
-        except AttributeError:
+        except TypeError:
             pass
         return len(self.cluster_workers or [])
 
@@ -316,7 +316,7 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
         try:
             if self._ready_workers >= 0:
                 return self._ready_workers
-        except AttributeError:
+        except TypeError:
             pass
         return len([w for w in self.cluster_workers or [] if w.state.value == 'ready'])
 
@@ -326,7 +326,7 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
         try:
             if self._gpus >= 0:
                 return self._gpus
-        except AttributeError:
+        except TypeError:
             pass
         count = 0
         for worker in self.cluster_workers or []:
@@ -341,7 +341,7 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
         try:
             if self._models >= 0:
                 return self._models
-        except AttributeError:
+        except TypeError:
             pass
         return len(self.cluster_models or [])
 
