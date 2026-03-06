@@ -2,10 +2,11 @@ import asyncio
 import multiprocessing
 import setproctitle
 import os
+import re
 import time
 from typing import Dict, Optional, Callable, List, Tuple
 import logging
-from collections import deque
+from collections import Counter, deque
 
 from gpustack_runtime.deployer import (
     delete_workload,
@@ -32,6 +33,11 @@ from gpustack_runtime.deployer import logs_workload
 
 
 logger = logging.getLogger(__name__)
+
+HTTP_ERROR_PATTERN = re.compile(
+    r"^HTTP\s+(?P<status>\d+):\s+(?P<msg>.*)\s+\(type=(?P<type>[^,]+),\s*code=(?P<code>[^)]+)\)$"
+)
+BENCHMARK_STATE_MESSAGE_MAX_LEN = 1024
 
 
 class BenchmarkManager:
@@ -481,13 +487,37 @@ class BenchmarkManager:
             )
             return
 
+        total = metrics.request_total or 0
+        successful = metrics.request_successful or 0
+        errored = metrics.request_errored or 0
+        incomplete = metrics.request_incomplete or 0
+
+        try:
+            errored_samples, incomplete_samples = self._load_request_samples(
+                report, limit=None
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to read request error samples for benchmark "
+                f"{benchmark.name}(id={benchmark.id}): {e}"
+            )
+            errored_samples, incomplete_samples = [], []
+
         self._log_request_failures_if_any(
             benchmark=benchmark,
-            report=report,
-            total=metrics.request_total or 0,
-            successful=metrics.request_successful or 0,
-            errored=metrics.request_errored or 0,
-            incomplete=metrics.request_incomplete or 0,
+            total=total,
+            successful=successful,
+            errored=errored,
+            incomplete=incomplete,
+            errored_samples=errored_samples,
+            incomplete_samples=incomplete_samples,
+        )
+
+        partial_failure_message = self._build_partial_failure_state_message(
+            errored=errored,
+            incomplete=incomplete,
+            errored_samples=errored_samples,
+            incomplete_samples=incomplete_samples,
         )
 
         resp = self._clientset.http_client.get_httpx_client().post(
@@ -495,31 +525,30 @@ class BenchmarkManager:
         )
         raise_if_response_error(resp)
 
+        if partial_failure_message:
+            self._update_benchmark_state_sync(
+                benchmark.id,
+                state_message=partial_failure_message,
+            )
+
     def _log_request_failures_if_any(
         self,
         benchmark: Benchmark,
-        report: GenerativeBenchmarksReport,
         total: int,
         successful: int,
         errored: int,
         incomplete: int,
+        errored_samples: List[GenerativeRequestStats],
+        incomplete_samples: List[GenerativeRequestStats],
         limit: int = 5,
     ) -> None:
         if errored <= 0 and incomplete <= 0:
             return
 
-        try:
-            errored_samples, incomplete_samples = self._load_request_samples(
-                report, limit=limit
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to read request error samples for benchmark "
-                f"{benchmark.name}(id={benchmark.id}): {e}"
-            )
-            return
+        errored_samples_to_show = errored_samples[:limit]
+        incomplete_samples_to_show = incomplete_samples[:limit]
 
-        if not errored_samples and not incomplete_samples:
+        if not errored_samples_to_show and not incomplete_samples_to_show:
             return
 
         lines: List[str] = [
@@ -532,21 +561,21 @@ class BenchmarkManager:
             f"showing_up_to={limit}",
         ]
 
-        if errored_samples:
+        if errored_samples_to_show:
             lines.append("")
             lines.append(f"---- ERRORED REQUESTS (SHOWING UP TO {limit}) ----")
-            lines.extend(self._format_request_samples(errored_samples))
+            lines.extend(self._format_request_samples(errored_samples_to_show))
 
-        if incomplete_samples:
+        if incomplete_samples_to_show:
             lines.append("")
             lines.append(f"---- INCOMPLETE REQUESTS (SHOWING UP TO {limit}) ----")
-            lines.extend(self._format_request_samples(incomplete_samples))
+            lines.extend(self._format_request_samples(incomplete_samples_to_show))
 
         message = "\n".join(lines)
         self._append_benchmark_log(benchmark, message)
 
     def _load_request_samples(
-        self, report: GenerativeBenchmarksReport, limit: int = 5
+        self, report: GenerativeBenchmarksReport, limit: Optional[int] = 5
     ) -> Tuple[List[GenerativeRequestStats], List[GenerativeRequestStats]]:
         if (
             not report.benchmarks
@@ -559,6 +588,9 @@ class BenchmarkManager:
         requests = report.benchmarks[0].requests_truncated
         errored = requests.errored or []
         incomplete = requests.incomplete or []
+
+        if limit is None:
+            return errored, incomplete
 
         return errored[:limit], incomplete[:limit]
 
@@ -587,6 +619,95 @@ class BenchmarkManager:
                 lines.append(indented)
             lines.append("")
         return lines
+
+    def _build_partial_failure_state_message(
+        self,
+        errored: int,
+        incomplete: int,
+        errored_samples: List[GenerativeRequestStats],
+        incomplete_samples: List[GenerativeRequestStats],
+        top_n: int = 3,
+    ) -> Optional[str]:
+        if errored <= 0 and incomplete <= 0:
+            return None
+
+        summary = (
+            "Completed with partial success: "
+            f"errored={errored}, incomplete={incomplete}."
+        )
+
+        errored_reasons = self._collect_failure_reasons(
+            errored_samples, fallback="Errored"
+        )
+        incomplete_reasons = self._collect_failure_reasons(
+            incomplete_samples, fallback="Incomplete"
+        )
+
+        reason_parts: List[str] = []
+        if errored_reasons:
+            top_errored = ", ".join(
+                f"{reason} (x{count})"
+                for reason, count in errored_reasons.most_common(top_n)
+            )
+            reason_parts.append(f"Top errored reasons: {top_errored}")
+
+        if incomplete_reasons:
+            top_incomplete = ", ".join(
+                f"{reason} (x{count})"
+                for reason, count in incomplete_reasons.most_common(top_n)
+            )
+            reason_parts.append(f"Top incomplete reasons: {top_incomplete}")
+
+        if reason_parts:
+            summary = f"{summary} {'; '.join(reason_parts)}"
+        else:
+            summary = f"{summary} See benchmark logs for details."
+
+        return self._truncate_state_message(summary)
+
+    def _collect_failure_reasons(
+        self, samples: List[GenerativeRequestStats], fallback: str
+    ) -> Counter[str]:
+        reasons: Counter[str] = Counter()
+        for sample in samples:
+            error = sample.info.error
+            if error:
+                reason = self._normalize_error_message(error)
+            else:
+                status = sample.info.status or "unknown"
+                reason = f"{fallback} request (status={status})"
+            reasons[reason] += 1
+        return reasons
+
+    def _normalize_error_message(self, error: str) -> str:
+        stripped = error.strip()
+        if not stripped:
+            return "Unknown error"
+
+        first_line = stripped.splitlines()[0]
+        match = HTTP_ERROR_PATTERN.match(first_line)
+        if not match:
+            return first_line
+
+        status = match.group("status")
+        msg = " ".join(match.group("msg").split())
+        error_type = match.group("type").strip()
+        code = match.group("code").strip()
+
+        if code and code.lower() != "none":
+            normalized = f"HTTP {status} {error_type}/{code}: {msg}"
+        else:
+            normalized = f"HTTP {status} {error_type}: {msg}"
+
+        if len(normalized) > 220:
+            return normalized[:217] + "..."
+
+        return normalized
+
+    def _truncate_state_message(self, message: str) -> str:
+        if len(message) <= BENCHMARK_STATE_MESSAGE_MAX_LEN:
+            return message
+        return message[: BENCHMARK_STATE_MESSAGE_MAX_LEN - 3] + "..."
 
     def _append_benchmark_log(self, benchmark: Benchmark, message: str) -> None:
         log_file_path = f"{self._benchmark_log_dir}/{benchmark.id}.log"
