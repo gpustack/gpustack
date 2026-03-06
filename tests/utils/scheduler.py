@@ -17,6 +17,11 @@ def compare_candidates(  # noqa: C901
                 actual.gpu_indexes == expected["gpu_indexes"]
             ), f"Expected gpu_indexes {expected['gpu_indexes']}, but got {actual.gpu_indexes}"
 
+        if "gpu_type" in expected:
+            assert (
+                actual.gpu_type == expected["gpu_type"]
+            ), f"Expected gpu_type {expected['gpu_type']}, but got {actual.gpu_type}"
+
         if "gpu_addresses" in expected:
             assert (
                 actual.gpu_addresses == expected["gpu_addresses"]
