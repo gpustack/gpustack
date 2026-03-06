@@ -2,7 +2,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 import logging
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from gpustack.policies.base import (
     Allocatable,
@@ -324,8 +324,8 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         def calculate_score(
             ram_claim: Optional[int],
             ram_allocatable: Optional[int],
-            vram_claim: Dict[int, int],
-            vram_allocatable: Dict[int, int],
+            vram_claim: Optional[int],
+            vram_allocatable: Optional[int],
         ):
             if ram_claim is None or ram_allocatable is None or ram_allocatable == 0:
                 ram_score = 0
@@ -334,9 +334,15 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                     ram_claim / ram_allocatable * MaxScore * self._resource_weight.ram
                 )
 
-            vram_score = (
-                vram_claim / vram_allocatable * MaxScore * self._resource_weight.vram
-            )
+            if vram_claim is None or vram_allocatable is None or vram_allocatable == 0:
+                vram_score = 0
+            else:
+                vram_score = (
+                    vram_claim
+                    / vram_allocatable
+                    * MaxScore
+                    * self._resource_weight.vram
+                )
             return (ram_score + vram_score) / (
                 self._resource_weight.ram + self._resource_weight.vram
             )
@@ -351,37 +357,24 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                     / (allocatable.ram + computed_resource_claim.ram)
                     * MaxScore
                 )
-        elif gpu_count == 1:
-            if scale_type == ScaleTypeEnum.SCALE_UP:
-                score = calculate_score(
-                    computed_resource_claim.ram,
-                    allocatable.ram,
-                    computed_resource_claim.vram[gpu_indexes[0]],
-                    allocatable.vram[gpu_indexes[0]],
-                )
-            elif scale_type == ScaleTypeEnum.SCALE_DOWN:
-                score = calculate_score(
-                    computed_resource_claim.ram,
-                    allocatable.ram + computed_resource_claim.ram or 0,
-                    computed_resource_claim.vram[gpu_indexes[0]],
-                    allocatable.vram[gpu_indexes[0]]
-                    + computed_resource_claim.vram[gpu_indexes[0]],
-                )
-        else:
+        elif gpu_count > 0:
             for i in gpu_indexes:
+                vram_claim = (computed_resource_claim.vram or {}).get(i, 0)
+                allocatable_vram = (allocatable.vram or {}).get(i, 0)
+                result = 0
                 if scale_type == ScaleTypeEnum.SCALE_UP:
                     result = calculate_score(
                         computed_resource_claim.ram,
                         allocatable.ram,
-                        computed_resource_claim.vram[i],
-                        allocatable.vram[i],
+                        vram_claim,
+                        allocatable_vram,
                     )
                 elif scale_type == ScaleTypeEnum.SCALE_DOWN:
                     result = calculate_score(
                         computed_resource_claim.ram,
                         allocatable.ram + (computed_resource_claim.ram or 0),
-                        computed_resource_claim.vram[i],
-                        allocatable.vram[i] + computed_resource_claim.vram[i],
+                        vram_claim,
+                        allocatable_vram + vram_claim,
                     )
                 if result > score:
                     score = result
