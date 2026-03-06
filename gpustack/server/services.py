@@ -262,7 +262,10 @@ class ModelRouteService:
             },
             options=[selectinload(ModelRouteTarget.model)],
         )
-        return [target.model for target in route_targets if target.model is not None]
+        models = [target.model for target in route_targets if target.model is not None]
+        for model in models:
+            self.session.expunge(model)
+        return models
 
     async def update(
         self,
