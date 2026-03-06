@@ -3,6 +3,9 @@ from unittest.mock import patch
 
 from tests.utils.model import new_model
 from gpustack.policies.candidate_selectors import AscendMindIEResourceFitSelector
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
+    RequestEstimateUsage,
+)
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -17,6 +20,34 @@ from tests.fixtures.workers.fixtures import (
     linux_ascend_4_910b_64gx8,
 )
 from tests.utils.scheduler import compare_candidates
+
+
+@pytest.mark.asyncio
+async def test_auto_single_worker_candidate_has_gpu_type(config):
+    model = new_model(
+        id=1,
+        name="auto_single_worker_gpu_type",
+        replicas=1,
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        cpu_offloading=False,
+        backend=BackendEnum.ASCEND_MINDIE.value,
+    )
+    worker = linux_ascend_1_910b_64gx8(return_device=1)
+    selector = AscendMindIEResourceFitSelector(config, model, [])
+    selector._serving_params.world_size = 1
+    selector._serving_params.npu_memory_fraction = 0.5
+
+    request_usage = RequestEstimateUsage(ram=512 * 1024**2, vram=1)
+    selected_devices = {
+        worker.status.gpu_devices[0].index: worker.status.gpu_devices[0]
+    }
+    candidates = await selector._select_single_worker(
+        {worker: selected_devices},
+        request_usage,
+    )
+
+    assert len(candidates) > 0
+    assert candidates[0].gpu_type == "cann"
 
 
 def expected_candidate(
@@ -104,6 +135,7 @@ def expected_candidate(
                 {
                     "worker_id": 1,
                     "worker_name": "ascend_0",
+                    "gpu_type": "cann",
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.39"],
                     "ram": 536870912,
@@ -112,6 +144,7 @@ def expected_candidate(
                 {
                     "worker_id": 3,
                     "worker_name": "ascend_2",
+                    "gpu_type": "cann",
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.41"],
                     "ram": 536870912,
@@ -429,6 +462,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
                 {
                     "worker_id": 1,
                     "worker_name": "ascend_0",
+                    "gpu_type": "cann",
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.39"],
                     "ram": 536870912,
@@ -437,6 +471,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
                 {
                     "worker_id": 3,
                     "worker_name": "ascend_2",
+                    "gpu_type": "cann",
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.41"],
                     "ram": 536870912,

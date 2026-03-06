@@ -538,6 +538,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     continue
 
                 # Append the device to the candidate.
+                candidate.gpu_type = device.type
                 candidate.gpu_indexes.append(device.index)
                 candidate.gpu_addresses.append(
                     device.network.inet
