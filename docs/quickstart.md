@@ -11,13 +11,12 @@ This guide will walk you through running GPUStack on your own self-hosted GPU se
 
 ## Install GPUStack
 
-Run the following command to install and start the GPUStack server using [Docker](https://docs.docker.com/engine/install/), port 80 is the primary server endpoint, while port 10161 is used to expose metrics for observability.:
+Run the following command to install and start the GPUStack server using [Docker](https://docs.docker.com/engine/install/):
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
     -p 80:80 \
-    -p 10161:10161 \
     --volume gpustack-data:/var/lib/gpustack \
     gpustack/gpustack
 ```
@@ -30,7 +29,6 @@ sudo docker run -d --name gpustack \
     sudo docker run -d --name gpustack \
         --restart unless-stopped \
         -p 80:80 \
-        -p 10161:10161 \
         --volume gpustack-data:/var/lib/gpustack \
         quay.io/gpustack/gpustack \
         --system-default-container-registry quay.io
