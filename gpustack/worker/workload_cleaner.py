@@ -37,7 +37,9 @@ class WorkloadCleaner:
 
     def cleanup_orphan_workloads(self):
         current_instance_names = set()
-        model_instances_page = self._clientset.model_instances.list()
+        model_instances_page = self._clientset.model_instances.list(
+            params={"worker_id": str(self._worker_id)}
+        )
         if model_instances_page.items:
             for model_instance in model_instances_page.items:
                 deployment_metadata = model_instance.get_deployment_metadata(
