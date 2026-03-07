@@ -235,6 +235,13 @@ class Worker:
 
         add_signal_handlers_in_loop()
 
+        # Check version compatibility with server before registration
+        try:
+            self._worker_manager.check_server_version()
+        except Exception as e:
+            logger.error(f"Version check failed: {e}")
+            raise
+
         self._register()
         self._config.reload_worker_config(self._default_config)
         self.log_worker_config()

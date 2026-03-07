@@ -2,6 +2,9 @@ import os
 import logging
 from typing import Optional, Tuple
 
+import httpx
+
+from gpustack import __version__, __git_commit__
 from gpustack.client import ClientSet
 from gpustack.client.worker_manager_clients import (
     WorkerStatusClient,
@@ -28,6 +31,7 @@ from gpustack.utils.uuid import (
     set_legacy_uuid,
     get_legacy_uuid,
 )
+from gpustack.utils.version import is_worker_version_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -153,3 +157,79 @@ class WorkerManager:
         if (is_legacy_token or is_legacy_worker) and is_existing_worker:
             labels["gpustack.existence-check"] = "true"
         return labels
+
+    def _fetch_server_version(self) -> Optional[dict]:
+        """
+        Fetch the server version from the /version endpoint.
+        Returns None if the endpoint is not available (e.g., old server).
+        """
+        server_url = self._cfg.get_server_url()
+        version_url = f"{server_url}/version"
+
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(version_url)
+                if response.status_code == 404:
+                    logger.warning(
+                        "Server does not support version check. "
+                        "Please upgrade your server to enable version verification."
+                    )
+                    return None
+                response.raise_for_status()
+                return response.json()
+        except httpx.TimeoutException:
+            logger.error(f"Timeout while fetching server version from {version_url}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to fetch server version: {e}")
+            raise
+
+    def check_server_version(self):
+        """
+        Check if the worker version is compatible with the server version.
+        Raises an exception if versions are incompatible and skip_version_check is False.
+        """
+        if self._cfg.skip_version_check:
+            logger.warning(
+                "Version check is disabled. "
+                "This is not recommended for production environments."
+            )
+            return
+
+        try:
+            server_version_info = self._fetch_server_version()
+        except Exception as e:
+            logger.error(f"Version check failed: {e}")
+            raise Exception(
+                "Unable to verify server version. "
+                "Use --skip-version-check to bypass this check."
+            )
+
+        if server_version_info is None:
+            # Old server without version endpoint - warn and continue
+            logger.warning(
+                "Server version unknown. Proceeding without version check. "
+                "Consider upgrading your server."
+            )
+            return
+
+        server_version = server_version_info.get("version", "unknown")
+        server_git_commit = server_version_info.get("git_commit", "unknown")
+
+        is_compatible, reason = is_worker_version_compatible(
+            __version__, server_version, strict=self._cfg.strict_version_check
+        )
+
+        if not is_compatible:
+            error_msg = (
+                f"Version mismatch detected:\n"
+                f"  Worker version: {__version__} (commit: {__git_commit__})\n"
+                f"  Server version: {server_version} (commit: {server_git_commit})\n\n"
+                f"{reason}\n\n"
+                f"Please upgrade your worker to match the server version.\n"
+                f"To skip this check, use --skip-version-check flag (not recommended for production)."
+            )
+            logger.error(error_msg)
+            raise Exception("Version mismatch detected. Worker startup aborted.")
+        else:
+            logger.info(f"Version check passed: {reason}")
