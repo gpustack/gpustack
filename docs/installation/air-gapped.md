@@ -18,7 +18,7 @@ If your system supports a container toolkit, install and configure it as needed 
 
 ### Container Images
 
-GPUStack offers an [Image Selector](https://docs.gpustack.ai/image-selector/) site to help users easily pick the images they want to download. For more advanced or automated syncing, GPUStack also provides image management commands:
+GPUStack offers an [Image Selector](https://docs.gpustack.ai/latest/image-selector/) site to help users easily pick the images they want to download. For more advanced or automated syncing, GPUStack also provides image management commands:
 
 - `gpustack copy-images`: Sync images from one registry to another
 - `gpustack save-images`: Download images and save them locally
