@@ -57,6 +57,7 @@ class WorkerConfig(PredefinedConfig):
     worker_ip: Optional[str] = None
     worker_ifname: Optional[str] = None
     worker_name: Optional[str] = None
+    kv_cache_dir: Optional[str] = None
 
 
 class Config(WorkerConfig, BaseSettings):
@@ -214,6 +215,9 @@ class Config(WorkerConfig, BaseSettings):
         self.data_dir = prepare_dir(self.data_dir, self.get_data_dir())
         self.cache_dir = prepare_dir(
             self.cache_dir, os.path.join(self.data_dir, "cache")
+        )
+        self.kv_cache_dir = prepare_dir(
+            self.kv_cache_dir, os.path.join(self.cache_dir, "kv_cache")
         )
         self.bin_dir = prepare_dir(self.bin_dir, os.path.join(self.data_dir, "bin"))
         self.log_dir = prepare_dir(self.log_dir, os.path.join(self.data_dir, "log"))
