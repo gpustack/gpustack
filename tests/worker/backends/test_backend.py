@@ -2,6 +2,7 @@ import types
 
 import pytest
 
+from gpustack.schemas.inference_backend import ParameterFormatEnum
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.worker.backends.custom import CustomServer
 
@@ -149,4 +150,85 @@ async def test_apply_registry_override(
 def test_flatten_backend_param(backend_parameters, expected):
     backend = CustomServer.__new__(CustomServer)
     backend._model = types.SimpleNamespace(backend_parameters=backend_parameters)
+    backend.inference_backend = None
+    assert backend._flatten_backend_param() == expected
+
+
+@pytest.mark.parametrize(
+    "backend_parameters, parameter_format, expected",
+    [
+        # Test space format conversion
+        (["ctx-size=1024"], ParameterFormatEnum.SPACE, ["--ctx-size", "1024"]),
+        (["--ctx-size=1024"], ParameterFormatEnum.SPACE, ["--ctx-size", "1024"]),
+        (["n-gpu-layers=0"], ParameterFormatEnum.SPACE, ["--n-gpu-layers", "0"]),
+        (["-n-gpu-layers=0"], ParameterFormatEnum.SPACE, ["--n-gpu-layers", "0"]),
+        # Test equal format conversion
+        (["--ctx-size 1024"], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
+        (["ctx-size 1024"], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
+        (["-ctx-size 1024"], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
+        # Test no conversion (None)
+        (["--ctx-size 1024"], None, ["--ctx-size", "1024"]),
+        (["--ctx-size=1024"], None, ["--ctx-size=1024"]),
+        # Test flag parameters (no value)
+        (["--verbose"], ParameterFormatEnum.SPACE, ["--verbose"]),
+        (["--verbose"], ParameterFormatEnum.EQUAL, ["--verbose"]),
+        (["verbose"], ParameterFormatEnum.SPACE, ["--verbose"]),
+        (["-verbose"], ParameterFormatEnum.EQUAL, ["--verbose"]),
+        # Test parameters with spaces in value
+        (['--name "my model"'], ParameterFormatEnum.SPACE, ["--name", "my model"]),
+        (['--name "my model"'], ParameterFormatEnum.EQUAL, ["--name=my model"]),
+        (['name "my model"'], ParameterFormatEnum.SPACE, ["--name", "my model"]),
+        # Test multiple parameters
+        (
+            ["ctx-size=1024", "n-gpu-layers=0"],
+            ParameterFormatEnum.SPACE,
+            ["--ctx-size", "1024", "--n-gpu-layers", "0"],
+        ),
+        (
+            ["ctx-size 1024", "n-gpu-layers 0"],
+            ParameterFormatEnum.EQUAL,
+            ["--ctx-size=1024", "--n-gpu-layers=0"],
+        ),
+        # Test edge cases
+        (["  ctx-size = 1024  "], ParameterFormatEnum.SPACE, ["--ctx-size", "1024"]),
+        (["  ctx-size   1024  "], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
+        ([""], ParameterFormatEnum.SPACE, []),
+        (None, ParameterFormatEnum.SPACE, []),
+        # Test mixed formats with conversion
+        (
+            ["--ctx-size=1024", "n-gpu-layers 0"],
+            ParameterFormatEnum.SPACE,
+            ["--ctx-size", "1024", "--n-gpu-layers", "0"],
+        ),
+        (
+            ["ctx-size 1024", "--n-gpu-layers=0"],
+            ParameterFormatEnum.EQUAL,
+            ["--ctx-size=1024", "--n-gpu-layers=0"],
+        ),
+        # Test parameters with multiple values
+        (
+            ['--arg "value1 value2 value3"'],
+            ParameterFormatEnum.SPACE,
+            ["--arg", "value1 value2 value3"],
+        ),
+        (
+            ['--arg "value1 value2 value3"'],
+            ParameterFormatEnum.EQUAL,
+            ["--arg=value1 value2 value3"],
+        ),
+    ],
+)
+def test_flatten_backend_param_with_format_conversion(
+    backend_parameters, parameter_format, expected
+):
+    backend = CustomServer.__new__(CustomServer)
+    backend._model = types.SimpleNamespace(backend_parameters=backend_parameters)
+
+    # Mock the inference backend with parameter_format configuration
+    if parameter_format is not None:
+        inference_backend = types.SimpleNamespace(parameter_format=parameter_format)
+        backend.inference_backend = inference_backend
+    else:
+        backend.inference_backend = None
+
     assert backend._flatten_backend_param() == expected

@@ -1,6 +1,7 @@
 import re
 import shlex
 from datetime import datetime
+from enum import Enum
 from typing import Dict, List, Optional
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
@@ -11,6 +12,13 @@ from sqlmodel import SQLModel, Field as SQLField
 from gpustack.mixins import BaseModelMixin
 from .common import pydantic_column_type, PaginatedList
 from .models import BackendEnum, BackendSourceEnum
+
+
+class ParameterFormatEnum(str, Enum):
+    """Parameter format for backend parameters."""
+
+    SPACE = "space"  # --key value format
+    EQUAL = "equal"  # --key=value format
 
 
 class ContainerEnvConfig(BaseModel):
@@ -64,6 +72,8 @@ class InferenceBackendBase(SQLModel):
         default_entrypoint: Default entrypoint to replace for the inference server
         description: Backend description
         health_check_path: Path for health check endpoint
+        parameter_format: Parameter format for backend parameters (Optional)
+        common_parameters: List of commonly used parameters for UI hints (Optional)
 
     """
 
@@ -91,6 +101,10 @@ class InferenceBackendBase(SQLModel):
     enabled: Optional[bool] = SQLField(default=None)
     icon: Optional[str] = SQLField(default=None)
     default_env: Optional[Dict[str, str]] = SQLField(
+        sa_column=Column(JSON), default=None
+    )
+    parameter_format: Optional[ParameterFormatEnum] = SQLField(default=None)
+    common_parameters: Optional[List[str]] = SQLField(
         sa_column=Column(JSON), default=None
     )
 
