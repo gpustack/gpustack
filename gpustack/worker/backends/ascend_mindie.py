@@ -1804,7 +1804,17 @@ fi
         "openAiSupport" : "vllm",
         "tokenTimeout" : 600,
         "e2eTimeout" : 600,
-        "distDPServerEnabled":false
+        "distDPServerEnabled":false,
+        "layerwiseDisaggregated" : false,
+        "layerwiseDisaggregatedRoleType" : "",
+        "layerwiseDisaggregatedMasterIpAddress" : "127.0.0.3",
+        "layerwiseDisaggregatedSlaveIpAddress" : ["127.0.0.4"],
+        "layerwiseDisaggregatedDataPort" : 10024,
+        "layerwiseDisaggregatedCrtlPort" : [10001,10002],
+        "HealthCheckConfig" :
+        {
+            "npuUsageThreshold" : 0
+        }
     },
 
     "BackendConfig" : {
@@ -1867,7 +1877,15 @@ fi
             "maxQueueDelayMicroseconds" : 5000,
             "maxFirstTokenWaitTime": 2500
         }
-    }
+    },
+
+    "LogConfig": {
+        "dynamicLogLevel" : "",
+        "dynamicLogLevelValidHours" : 2,
+        "dynamicLogLevelValidTime" : ""
+    },
+
+    "EnableDynamicAdjustTimeoutConfig": false
 }
 """
         return json.loads(config_str)
