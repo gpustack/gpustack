@@ -2,7 +2,13 @@ import secrets
 from urllib.parse import urlparse
 from enum import Enum
 from typing import ClassVar, Optional, Dict, Any, List
-from pydantic import BaseModel, computed_field, field_validator, ConfigDict, PrivateAttr
+from pydantic import (
+    BaseModel,
+    computed_field,
+    field_validator,
+    ConfigDict,
+    PrivateAttr,
+)
 from sqlmodel import (
     Field,
     Relationship,
@@ -20,6 +26,7 @@ from typing import TYPE_CHECKING
 from gpustack.schemas.config import (
     SensitivePredefinedConfig,
     PredefinedConfigNoDefaults,
+    K8sVolumeMount,
 )
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import (
@@ -236,6 +243,17 @@ class ClusterUpdate(SQLModel):
             )
         ),
     )
+    k8s_volume_mounts: Optional[List[K8sVolumeMount]] = Field(
+        default=None,
+        sa_column=Column(
+            pydantic_column_type(
+                List[K8sVolumeMount],
+                exclude_none=True,
+                exclude_unset=True,
+                exclude_defaults=True,
+            )
+        ),
+    )
 
     @field_validator("server_url")
     def validate_server_url(cls, v: Optional[str]) -> Optional[str]:
@@ -388,6 +406,7 @@ class ClusterPublic(ClusterBase, PublicFields):
     gpus: int = Field(default=0)
     models: int = Field(default=0)
     worker_config: Optional[PredefinedConfigNoDefaults] = Field(default=None)
+    k8s_volume_mounts: Optional[List[K8sVolumeMount]] = Field(default=None)
 
 
 ClustersPublic = PaginatedList[ClusterPublic]

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Optional
 from pydantic import BaseModel, Field, model_validator
 
 from gpustack import __benchmark_runner_version__
@@ -98,7 +98,6 @@ class PredefinedConfig(SensitivePredefinedConfig):
     enable_hf_transfer: bool = False
     enable_hf_xet: bool = False
     proxy_mode: Optional[ModelInstanceProxyModeEnum] = None
-    k8s_volume_mounts: Optional[List[K8sVolumeMount]] = None
 
 
 class PredefinedConfigNoDefaults(PredefinedConfig):
@@ -116,7 +115,6 @@ class PredefinedConfigNoDefaults(PredefinedConfig):
     gateway_mode: Optional[str] = None
     gateway_namespace: Optional[str] = None
     namespace: Optional[str] = None
-    k8s_volume_mounts: Optional[List[K8sVolumeMount]] = None
 
 
 def parse_base_model_to_env_vars(
