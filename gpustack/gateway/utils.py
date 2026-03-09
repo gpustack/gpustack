@@ -98,6 +98,10 @@ openai_model_prefixes: List[RoutePrefix] = [
     RoutePrefix(["/rerank"], False),
 ]
 
+anthropic_model_exact: List[RoutePrefix] = [
+    RoutePrefix(["/messages", "/messages/count_tokens", "/complete"], False),
+]
+
 
 def get_default_mcpbridge_ref(
     mcp_bridge_name: str = default_mcp_bridge_name,
@@ -127,10 +131,11 @@ def wrap_route(
 
 
 def anthropic_routes() -> List[k8s_client.V1HTTPIngressPath]:
-    return [
-        wrap_route("/v1/messages", "Prefix"),
-        wrap_route("/v1/complete", "Exact"),
-    ]
+    routes = []
+    for route_exact in anthropic_model_exact:
+        for prefix in route_exact.regex_prefixes():
+            routes.append(wrap_route(path=prefix, path_type="ImplementationSpecific"))
+    return routes
 
 
 def ingress_rule_for_model() -> k8s_client.V1IngressRule:
