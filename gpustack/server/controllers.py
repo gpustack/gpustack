@@ -1161,7 +1161,7 @@ class InferenceBackendController:
                         f"Updated backend_source for existing built-in backend {backend.backend_name}"
                     )
 
-    async def _init_community_backends(self, session: AsyncSession):
+    async def _init_community_backends(self, session: AsyncSession):  # noqa: C901
         """Load community backends from community-inference-backends.yaml into database."""
         try:
             # Get the path to community-inference-backends.yaml
