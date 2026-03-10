@@ -327,6 +327,12 @@ class WorkerCreate(WorkerStatusStored, WorkerUpdate):
     external_id: Optional[str] = Field(
         default=None, sa_column=Column(String(255), nullable=True)
     )
+    worker_version: Optional[str] = Field(
+        default=None, sa_column=Column(String(100), nullable=True)
+    )
+    worker_git_commit: Optional[str] = Field(
+        default=None, sa_column=Column(String(40), nullable=True)
+    )
 
 
 class WorkerBase(WorkerCreate):

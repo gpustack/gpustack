@@ -125,6 +125,8 @@ class WorkerManager:
                 **workerStatus.model_dump(),
                 **workerUpdate.model_dump(),
                 "external_id": external_id,
+                "worker_version": __version__,
+                "worker_git_commit": __git_commit__,
             }
         )
         created = await self._registration_client.create_async(to_register)
@@ -187,23 +189,13 @@ class WorkerManager:
     async def check_server_version(self):
         """
         Check if the worker version is compatible with the server version.
-        Raises an exception if versions are incompatible and skip_version_check is False.
+        Logs a warning if versions are incompatible but allows startup to continue.
         """
-        if self._cfg.skip_version_check:
-            logger.warning(
-                "Version check is disabled. "
-                "This is not recommended for production environments."
-            )
-            return
-
         try:
             server_version_info = await self._fetch_server_version()
         except Exception as e:
-            logger.error(f"Version check failed: {e}")
-            raise Exception(
-                "Unable to verify server version. "
-                "Use --skip-version-check to bypass this check."
-            )
+            logger.error(f"Server version check failed: {e}")
+            return
 
         if server_version_info is None:
             # Old server without version endpoint - warn and continue
@@ -216,20 +208,17 @@ class WorkerManager:
         server_version = server_version_info.get("version", "unknown")
         server_git_commit = server_version_info.get("git_commit", "unknown")
 
-        is_compatible, reason = is_worker_version_compatible(
-            __version__, server_version, strict=self._cfg.strict_version_check
-        )
+        is_compatible = is_worker_version_compatible(__version__, server_version)
 
         if not is_compatible:
-            error_msg = (
+            warning_msg = (
                 f"Version mismatch detected:\n"
                 f"  Worker version: {__version__} (commit: {__git_commit__})\n"
                 f"  Server version: {server_version} (commit: {server_git_commit})\n\n"
-                f"{reason}\n\n"
-                f"Please upgrade your worker to match the server version.\n"
-                f"To skip this check, use --skip-version-check flag (not recommended for production)."
+                f"Please upgrade your worker to match the server version."
             )
-            logger.error(error_msg)
-            raise Exception("Version mismatch detected. Worker startup aborted.")
+            logger.warning(warning_msg)
         else:
-            logger.info(f"Version check passed: {reason}")
+            logger.info(
+                f"Version check passed: worker {__version__} matches server {server_version}"
+            )
