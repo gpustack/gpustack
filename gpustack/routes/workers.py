@@ -67,6 +67,7 @@ def to_worker_public(input: Worker, me: bool) -> WorkerPublic:
     data = input.model_dump()
     if me:
         data['me'] = me
+
     return WorkerPublic.model_validate(data)
 
 

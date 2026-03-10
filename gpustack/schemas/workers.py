@@ -327,6 +327,9 @@ class WorkerCreate(WorkerStatusStored, WorkerUpdate):
     external_id: Optional[str] = Field(
         default=None, sa_column=Column(String(255), nullable=True)
     )
+    worker_version: Optional[str] = Field(
+        default=None, sa_column=Column(String(100), nullable=True)
+    )
 
 
 class WorkerBase(WorkerCreate):
