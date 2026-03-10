@@ -61,8 +61,6 @@ class WorkerConfig(PredefinedConfig):
     worker_ip: Optional[str] = None
     worker_ifname: Optional[str] = None
     worker_name: Optional[str] = None
-    skip_version_check: bool = False
-    strict_version_check: bool = False
 
 
 class Config(WorkerConfig, BaseSettings):
