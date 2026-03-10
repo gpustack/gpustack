@@ -2003,7 +2003,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-runner", specifier = "==0.1.25.post6" },
-    { name = "gpustack-runtime", specifier = "==0.1.43" },
+    { name = "gpustack-runtime", specifier = "==0.1.43.post1" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2094,7 +2094,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.43"
+version = "0.1.43.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -2112,9 +2112,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "types-protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0d/14/c37f87093769f930088178b836b01a076b831a156c7a916ac4c1b521c9d2/gpustack_runtime-0.1.43.tar.gz", hash = "sha256:db854e5ffb132d0f05a41bb2c4ccd118e0cc93b589a9c779da607f3d265e63e9", size = 1495303, upload-time = "2026-03-09T06:35:15.762Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/40/8bd1d01a0445c52f718cef108dfb986700d38efc3e3de55b8c59e744f4be/gpustack_runtime-0.1.43.post1.tar.gz", hash = "sha256:c90d992f122973354a5c9b7a89f504fa2e49612e3f02e1ca29b1d66d98b66489", size = 1496155, upload-time = "2026-03-10T12:33:20.523Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/9a/c4ff8ba9d291eb8a1b6d6c6189b368d67944e0f412dcf2ac80d9f4f87786/gpustack_runtime-0.1.43-py3-none-any.whl", hash = "sha256:d47c339673f42ce2966aec720271b82ebf63741e6addcaaeca308c526a0b7251", size = 1475209, upload-time = "2026-03-09T06:35:13.923Z" },
+    { url = "https://files.pythonhosted.org/packages/86/a6/aa55d4a8ab417714241fd1a36f3472fd772b486bcb94b66cb61126456478/gpustack_runtime-0.1.43.post1-py3-none-any.whl", hash = "sha256:b89ab570326c06ec9ca02da8156ea5e11d2745a75c0337d94e5bfbfc4760e5aa", size = 1475315, upload-time = "2026-03-10T12:33:18.912Z" },
 ]
 
 [[package]]
