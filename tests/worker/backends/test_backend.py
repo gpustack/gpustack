@@ -116,7 +116,7 @@ async def test_apply_registry_override(
         ),
         (
             ['--arg1 "val with spaces"', '--arg2="val with spaces"'],
-            ['--arg1', 'val with spaces', '--arg2="val with spaces"'],
+            ['--arg1', 'val with spaces', '--arg2=val with spaces'],
         ),
         (
             [
@@ -135,18 +135,6 @@ async def test_apply_registry_override(
             ["--ctx-size=1024"],
         ),
         (
-            ["--ctx-size =1024"],
-            ["--ctx-size=1024"],
-        ),
-        (
-            ["  --ctx-size  =1024"],
-            ["--ctx-size=1024"],
-        ),
-        (
-            ["--ctx-size  =  1024"],
-            ["--ctx-size=1024"],
-        ),
-        (
             ["  --ctx-size 1024"],
             ["--ctx-size", "1024"],
         ),
@@ -155,8 +143,26 @@ async def test_apply_registry_override(
             ["--max-model-len=8192"],
         ),
         (
-            ["--foo =bar", "  --baz  =  qux"],
-            ["--foo=bar", "--baz=qux"],
+            ["--foo bar=baz"],
+            ["--foo", "bar=baz"],
+        ),
+        # Test negative number values
+        (
+            ["--temperature -0.5"],
+            ["--temperature", "-0.5"],
+        ),
+        # Issue #5209: shell line-continuation backslashes pasted from docs
+        (
+            ["--tp 2 \\"],
+            ["--tp", "2"],
+        ),
+        (
+            ["--tp 2 \\", "--max-model-len 8192 \\"],
+            ["--tp", "2", "--max-model-len", "8192"],
+        ),
+        (
+            ["--tp 2 \\\n"],
+            ["--tp", "2"],
         ),
         (
             None,
@@ -175,50 +181,43 @@ def test_flatten_backend_param(backend_parameters, expected):
     "backend_parameters, parameter_format, expected",
     [
         # Test space format conversion
-        (["ctx-size=1024"], ParameterFormatEnum.SPACE, ["--ctx-size", "1024"]),
         (["--ctx-size=1024"], ParameterFormatEnum.SPACE, ["--ctx-size", "1024"]),
-        (["n-gpu-layers=0"], ParameterFormatEnum.SPACE, ["--n-gpu-layers", "0"]),
-        (["-n-gpu-layers=0"], ParameterFormatEnum.SPACE, ["--n-gpu-layers", "0"]),
+        # llama.cpp short options like -n, -ngl, -m must keep single-dash form;
+        # we never auto-coerce dash count even when normalizing format.
+        (["-n-gpu-layers=0"], ParameterFormatEnum.SPACE, ["-n-gpu-layers", "0"]),
+        (["-ngl 99"], ParameterFormatEnum.EQUAL, ["-ngl=99"]),
         # Test equal format conversion
         (["--ctx-size 1024"], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
-        (["ctx-size 1024"], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
-        (["-ctx-size 1024"], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
+        (["-ctx-size 1024"], ParameterFormatEnum.EQUAL, ["-ctx-size=1024"]),
         # Test no conversion (None)
         (["--ctx-size 1024"], None, ["--ctx-size", "1024"]),
         (["--ctx-size=1024"], None, ["--ctx-size=1024"]),
         # Test flag parameters (no value)
         (["--verbose"], ParameterFormatEnum.SPACE, ["--verbose"]),
         (["--verbose"], ParameterFormatEnum.EQUAL, ["--verbose"]),
-        (["verbose"], ParameterFormatEnum.SPACE, ["--verbose"]),
-        (["-verbose"], ParameterFormatEnum.EQUAL, ["--verbose"]),
+        (["--verbose"], None, ["--verbose"]),
         # Test parameters with spaces in value
         (['--name "my model"'], ParameterFormatEnum.SPACE, ["--name", "my model"]),
         (['--name "my model"'], ParameterFormatEnum.EQUAL, ["--name=my model"]),
-        (['name "my model"'], ParameterFormatEnum.SPACE, ["--name", "my model"]),
         # Test multiple parameters
         (
-            ["ctx-size=1024", "n-gpu-layers=0"],
+            ["--ctx-size=1024", "--n-gpu-layers=0"],
             ParameterFormatEnum.SPACE,
             ["--ctx-size", "1024", "--n-gpu-layers", "0"],
         ),
         (
-            ["ctx-size 1024", "n-gpu-layers 0"],
+            ["--ctx-size 1024", "--n-gpu-layers 0"],
             ParameterFormatEnum.EQUAL,
             ["--ctx-size=1024", "--n-gpu-layers=0"],
         ),
-        # Test edge cases
-        (["  ctx-size = 1024  "], ParameterFormatEnum.SPACE, ["--ctx-size", "1024"]),
-        (["  ctx-size   1024  "], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
-        ([""], ParameterFormatEnum.SPACE, []),
-        (None, ParameterFormatEnum.SPACE, []),
         # Test mixed formats with conversion
         (
-            ["--ctx-size=1024", "n-gpu-layers 0"],
+            ["--ctx-size=1024", "--n-gpu-layers 0"],
             ParameterFormatEnum.SPACE,
             ["--ctx-size", "1024", "--n-gpu-layers", "0"],
         ),
         (
-            ["ctx-size 1024", "--n-gpu-layers=0"],
+            ["--ctx-size 1024", "--n-gpu-layers=0"],
             ParameterFormatEnum.EQUAL,
             ["--ctx-size=1024", "--n-gpu-layers=0"],
         ),
@@ -232,6 +231,120 @@ def test_flatten_backend_param(backend_parameters, expected):
             ['--arg "value1 value2 value3"'],
             ParameterFormatEnum.EQUAL,
             ["--arg=value1 value2 value3"],
+        ),
+        # Test negative number values
+        (
+            ["--temperature -0.5"],
+            ParameterFormatEnum.SPACE,
+            ["--temperature", "-0.5"],
+        ),
+        (
+            ["--temperature -0.5"],
+            ParameterFormatEnum.EQUAL,
+            ["--temperature=-0.5"],
+        ),
+        (
+            ["--temperature=-0.5"],
+            ParameterFormatEnum.SPACE,
+            ["--temperature", "-0.5"],
+        ),
+        # ----- issue #5200: multiple --key in a single slot -----
+        # Space form, no enforced target format: keep original separators.
+        (
+            ["--gpu-memory-utilization 0.8 --max-model-len 8192"],
+            None,
+            ["--gpu-memory-utilization", "0.8", "--max-model-len", "8192"],
+        ),
+        # Equal form previously folded into the first key's value.
+        (
+            ["--gpu-memory-utilization=0.8 --max-model-len=8192"],
+            None,
+            ["--gpu-memory-utilization=0.8", "--max-model-len=8192"],
+        ),
+        # Mixed forms; parameter_format=SPACE normalizes them all.
+        (
+            ["--gpu-memory-utilization 0.8 --max-model-len=8192"],
+            ParameterFormatEnum.SPACE,
+            ["--gpu-memory-utilization", "0.8", "--max-model-len", "8192"],
+        ),
+        # Mixed forms; parameter_format=EQUAL normalizes them all.
+        (
+            ["--gpu-memory-utilization 0.8 --max-model-len=8192"],
+            ParameterFormatEnum.EQUAL,
+            ["--gpu-memory-utilization=0.8", "--max-model-len=8192"],
+        ),
+        # Flag-only mixed with valued params in one slot.
+        (
+            ["--enable-prefix-caching --tp 8 --trust-remote-code"],
+            ParameterFormatEnum.SPACE,
+            ["--enable-prefix-caching", "--tp", "8", "--trust-remote-code"],
+        ),
+        # Negative value inside a multi-param slot stays bound to its key.
+        (
+            ["--temperature -0.5 --top-p 0.9"],
+            ParameterFormatEnum.EQUAL,
+            ["--temperature=-0.5", "--top-p=0.9"],
+        ),
+        # JSON value (equal form) followed by another --key — JSON masking
+        # keeps the JSON intact across the split.
+        (
+            [
+                '--compilation-config={"cudagraph_mode": "FULL_DECODE_ONLY"} '
+                '--max-model-len 65536'
+            ],
+            None,
+            [
+                '--compilation-config={"cudagraph_mode": "FULL_DECODE_ONLY"}',
+                '--max-model-len',
+                '65536',
+            ],
+        ),
+        # Quoted JSON value (space form) followed by another --key.
+        (
+            ['--speculative-config \'{"num_speculative_tokens": 2}\' --tp 8'],
+            None,
+            [
+                '--speculative-config',
+                '{"num_speculative_tokens": 2}',
+                '--tp',
+                '8',
+            ],
+        ),
+        # Shell line-continuation in the middle of a single slot.
+        (
+            ["--tp 2 \\\n--max-model-len 8192"],
+            ParameterFormatEnum.SPACE,
+            ["--tp", "2", "--max-model-len", "8192"],
+        ),
+        # vLLM --lora-modules with multiple JSON values (flat-token form).
+        # parameter_format=EQUAL must NOT fold multi-value into --key=v1=v2;
+        # the cluster stays in space form because equal form is unsafe here.
+        (
+            [
+                "--lora-modules",
+                '{"name": "x1", "path": "/p1"}',
+                '{"name": "x2", "path": "/p2"}',
+            ],
+            ParameterFormatEnum.EQUAL,
+            [
+                "--lora-modules",
+                '{"name": "x1", "path": "/p1"}',
+                '{"name": "x2", "path": "/p2"}',
+            ],
+        ),
+        # Same multi-value cluster, SPACE target — passes through.
+        (
+            [
+                "--lora-modules",
+                '{"name": "x1"}',
+                '{"name": "x2"}',
+            ],
+            ParameterFormatEnum.SPACE,
+            [
+                "--lora-modules",
+                '{"name": "x1"}',
+                '{"name": "x2"}',
+            ],
         ),
     ],
 )

@@ -330,6 +330,18 @@ def upgrade() -> None:
         _create_details_indexes('model_usage_details_archive')
     ### end
 
+    ### inference_backends parameter_format & common_parameters
+    with op.batch_alter_table('inference_backends', schema=None) as batch_op:
+        if not column_exists('inference_backends', 'parameter_format'):
+            batch_op.add_column(
+                sa.Column('parameter_format', sa.String(length=255), nullable=True)
+            )
+        if not column_exists('inference_backends', 'common_parameters'):
+            batch_op.add_column(
+                sa.Column('common_parameters', sa.JSON(), nullable=True)
+            )
+    ### end
+
 
 
 def downgrade() -> None:
@@ -415,4 +427,10 @@ def downgrade() -> None:
         op.drop_index(f'ix_{details_table}_model_id', table_name=details_table)
         op.drop_index(f'ix_{details_table}_date', table_name=details_table)
         op.drop_table(details_table)
+    ### end
+
+    ### Remove inference_backends parameter_format & common_parameters
+    with op.batch_alter_table('inference_backends', schema=None) as batch_op:
+        batch_op.drop_column('common_parameters')
+        batch_op.drop_column('parameter_format')
     ### end
