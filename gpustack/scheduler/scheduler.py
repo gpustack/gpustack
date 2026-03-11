@@ -38,7 +38,9 @@ from gpustack.policies.worker_filters.label_matching_filter import LabelMatching
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
 from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
-from gpustack.scheduler.model_registry import detect_model_type
+from gpustack.scheduler.model_registry import (
+    detect_model_type,
+)
 from gpustack.scheduler.meta_registry import get_model_meta
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
@@ -683,6 +685,92 @@ async def prioritize_workers_with_model_files(
     return sorted_workers
 
 
+async def _fetch_pretrained_config_safe(
+    model: Model,
+    workers: Optional[List[Worker]] = None,
+    raise_raw: bool = False,
+) -> Optional[object]:
+    """
+    Fetch pretrained config with error handling.
+
+    Args:
+        model: Model to fetch config for.
+        workers: Optional list of workers (for LOCAL_PATH).
+        raise_raw: If True, raise the raw exception.
+
+    Returns:
+        Pretrained config object, or None if architecture check should be skipped.
+    """
+    try:
+        trust_remote_code = _extract_trust_remote_code(model)
+        return await get_pretrained_config_with_workers(
+            model,
+            workers=workers,
+            trust_remote_code=trust_remote_code,
+        )
+    except ValueError as e:
+        # Skip value error exceptions and defaults to LLM catagory for certain cases.
+        if should_skip_architecture_check(model):
+            model.categories = model.categories or [CategoryEnum.LLM]
+            return None
+
+        if raise_raw:
+            raise
+
+        logger.debug(
+            f"Failed to get config for model {model.name or model.readable_source}, ValueError: {e}"
+        )
+        raise simplify_auto_config_value_error(e)
+    except TimeoutError:
+        raise Exception(
+            f"Timeout while getting config for model {model.name or model.readable_source}."
+        )
+    except Exception as e:
+        raise Exception(
+            f"Failed to get config for model {model.name or model.readable_source}: {e}"
+        )
+
+
+def _detect_model_type_from_config(
+    pretrained_config: object,
+    model: Model,
+) -> CategoryEnum:
+    """
+    Detect model type from pretrained config.
+
+    Args:
+        pretrained_config: Pretrained config object.
+        model: Model to detect type for.
+
+    Returns:
+        Detected model category.
+
+    Raises:
+        ValueError: If architectures are empty and no custom backend version is specified.
+    """
+    if pretrained_config is None:
+        if not model.backend_version:
+            raise ValueError(
+                "Could not determine model architecture because pretrained config could not be fetched."
+            )
+        return detect_model_type([], backend=model.backend)
+
+    architectures = getattr(pretrained_config, "architectures", []) or []
+    model_type_str = getattr(pretrained_config, "model_type", None)
+
+    # For MindIE backend, use model_type field instead of architectures
+    if model.backend == BackendEnum.ASCEND_MINDIE and model_type_str:
+        # MindIE uses model_type (e.g., 'llama', 'qwen2')
+        return detect_model_type([model_type_str], backend=model.backend)
+
+    # vLLM and SGLang use architectures (e.g., ['LlamaForCausalLM'])
+    if not architectures and not model.backend_version:
+        raise ValueError(
+            "Unrecognized architecture. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
+        )
+    return detect_model_type(architectures, backend=model.backend)
+
+
 async def evaluate_pretrained_config(
     model: Model,
     workers: Optional[List[Worker]] = None,
@@ -704,54 +792,48 @@ async def evaluate_pretrained_config(
             return True
     except Exception:
         pass
+
     # 2) Check overrided architectures if specified in backend parameters.
     architectures = get_vllm_override_architectures(model)
+    pretrained_config = None
+
     if not architectures:
-        try:
-            trust_remote_code = _extract_trust_remote_code(model)
-            pretrained_config = await get_pretrained_config_with_workers(
-                model,
-                workers=workers,
-                trust_remote_code=trust_remote_code,
-            )
-        except ValueError as e:
-            # Skip value error exceptions and defaults to LLM catagory for certain cases.
-            if should_skip_architecture_check(model):
-                model.categories = model.categories or [CategoryEnum.LLM]
-                return True
+        # Fetch pretrained config if no override architectures
+        pretrained_config = await _fetch_pretrained_config_safe(
+            model, workers=workers, raise_raw=raise_raw
+        )
 
-            if raise_raw:
-                raise
+        # If config fetch was skipped and categories were set, return early
+        if pretrained_config is None and model.categories:
+            return True
 
-            logger.debug(
-                f"Failed to get config for model {model.name or model.readable_source}, ValueError: {e}"
-            )
-            raise simplify_auto_config_value_error(e)
-        except TimeoutError:
-            raise Exception(
-                f"Timeout while getting config for model {model.name or model.readable_source}."
-            )
-        except Exception as e:
-            raise Exception(
-                f"Failed to get config for model {model.name or model.readable_source}: {e}"
-            )
+        # Detect model type from config
+        model_type = _detect_model_type_from_config(pretrained_config, model)
+    else:
+        # Use backend-specific model type detection for overridden architectures
+        model_type = detect_model_type(architectures, backend=model.backend)
 
-        architectures = getattr(pretrained_config, "architectures", []) or []
-        if not architectures and not model.backend_version:
-            raise ValueError(
-                "Unrecognized architecture. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
-            )
-
-    model_type = detect_model_type(architectures)
-
-    # TODO : Additional checks for unsupported architectures for other backends.
+    # Check for unsupported architectures for vLLM backend
     if (
-        model.backend == BackendEnum.VLLM
+        model.backend != BackendEnum.CUSTOM
         and model_type == CategoryEnum.UNKNOWN
         and not model.backend_version
     ):
+        # Get architectures for error message
+        if architectures:
+            arch_info = architectures
+        elif pretrained_config:
+            # For MindIE backend, show model_type instead of architectures
+            if model.backend == BackendEnum.ASCEND_MINDIE:
+                model_type_str = getattr(pretrained_config, "model_type", None)
+                arch_info = [model_type_str] if model_type_str else []
+            else:
+                arch_info = getattr(pretrained_config, "architectures", []) or []
+        else:
+            arch_info = []
+
         raise ValueError(
-            f"Unsupported architecture: {architectures}. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
+            f"Unsupported architecture: {arch_info}. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
         )
 
     meta_modified = False
