@@ -45,6 +45,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import GPUDevicesStatus
 from gpustack.server.bus import Event
+from gpustack.utils.command import flatten_to_argv, is_parameter_key
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
 from gpustack.utils.hub import get_hf_text_config, get_max_model_len
@@ -59,6 +60,58 @@ lock = threading.Lock()
 
 class ModelInstanceStateError(Exception):
     pass
+
+
+def _normalize_param_format(
+    tokens: List[str], target: ParameterFormatEnum
+) -> List[str]:
+    """
+    Walk an argv-style token stream, regroup each ``--key [value...]`` cluster,
+    and emit each cluster in ``target`` format. The key's leading dashes are
+    preserved verbatim — ``-n`` / ``-ngl`` / ``-m`` are real llama.cpp short
+    options and must not be coerced into ``--n`` / ``--ngl`` / ``--m``.
+
+    Multi-value clusters (``--lora-modules v1 v2``) always stay in space form —
+    ``--key=v1 --key=v2`` would change argparse semantics (the later value
+    overwrites the earlier one), so equal form is unsafe to use for them.
+
+    Stray positional tokens that do not follow a key (rare; only happens on
+    malformed input) pass through verbatim — let the inference server reject
+    them rather than guessing.
+    """
+    result: List[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if not is_parameter_key(tok):
+            result.append(tok)
+            i += 1
+            continue
+
+        if "=" in tok:
+            head_key, _, head_val = tok.partition("=")
+            values = [head_val]
+            i += 1
+        else:
+            head_key = tok
+            values = []
+            i += 1
+            while i < n and not is_parameter_key(tokens[i]):
+                values.append(tokens[i])
+                i += 1
+
+        if not values:
+            result.append(head_key)
+        elif len(values) == 1 and target == ParameterFormatEnum.EQUAL:
+            result.append(f"{head_key}={values[0]}")
+        elif len(values) == 1:
+            result.extend([head_key, values[0]])
+        else:
+            result.append(head_key)
+            result.extend(values)
+
+    return result
 
 
 # Reference: requirements for `usage.prompt_tokens_details.cached_tokens` to
@@ -985,82 +1038,31 @@ exec "$@"
                 f"Failed to update model service version {service_version}: {e}"
             )
 
-    def _parse_parameter_key_value(self, param: str) -> Tuple[str, Optional[str]]:
-        """Parse a parameter string into key and value."""
-        # Handle equal sign format
-        if "=" in param:
-            key, value = map(str.strip, param.split("=", 1))
-            return key, value
-
-        # Handle space-separated format
-        tokens = shlex.split(param)
-        if not tokens:
-            return "", None
-        return tokens[0], " ".join(tokens[1:]) if len(tokens) > 1 else None
-
-    def _parse_parameter_default(self, param: str) -> List[str]:
-        """Default parameter parsing (current behavior)."""
-        if "=" in param:
-            key, value = map(str.strip, param.split("=", 1))
-            return [f"{key}={value}"]
-        return shlex.split(param)
-
-    def _convert_parameter_format(
-        self, param: str, target_format: Optional[ParameterFormatEnum]
-    ) -> List[str]:
-        """Convert a parameter string to the target format."""
-        # No conversion if target_format is None
-        if target_format is None:
-            return self._parse_parameter_default(param)
-
-        # Parse the parameter to extract key and value
-        key, value = self._parse_parameter_key_value(param)
-
-        # If no value (flag parameter), return as-is
-        if value is None:
-            return [f"--{key.strip().lstrip('-')}"]
-
-        # Convert to target format
-        if target_format == ParameterFormatEnum.SPACE:
-            return [f"--{key.strip().lstrip('-')}", value]
-        elif target_format == ParameterFormatEnum.EQUAL:
-            return [f"--{key.strip().lstrip('-')}={value}"]
-        else:
-            return self._parse_parameter_default(param)
-
     def _flatten_backend_param(self) -> List[str]:
         """
-        Flattens all backend parameter strings into a list of individual tokens
-        with automatic format conversion based on backend configuration.
+        Reduce ``backend_parameters`` to a flat argv-style token list.
 
-        Each entry in `backend_parameters` may contain one or more whitespace-separated
-        arguments. This method splits them and returns a single flattened list.
-        e.g.
-            self._model.backend_parameters = ["--ctx-size 1024"] -> ["--ctx-size", "1024"]
-            self._model.backend_parameters = [" --ctx-size=1024"] -> ["--ctx-size=1024"]
-            self._model.backend_parameters = ["--ctx-size =1024"] -> ["--ctx-size=1024"]
+        ``backend_parameters`` is semantically a concatenated argv: each element
+        may be one token (``"--host"``, ``"0.0.0.0"``), one full
+        ``--key value`` / ``--key=value`` string, or a whole pasted command line
+        (``"--a 1 --b=2 --flag"``). ``flatten_to_argv`` recovers the underlying
+        token stream uniformly.
 
-        If parameter_format is configured in the backend version config:
-            - 'space': converts to --key value format
-            - 'equal': converts to --key=value format
-            - None: uses default parsing (current behavior)
+        If the backend's ``parameter_format`` is set, each ``--key value(s)``
+        cluster is normalized to that form (multi-value clusters always stay in
+        space form — equal form can't safely express them).
         """
-        result = []
+        tokens = flatten_to_argv(self._model.backend_parameters or [])
+
         parameter_format = (
-            self.inference_backend.parameter_format if self.inference_backend else None
+            getattr(self.inference_backend, "parameter_format", None)
+            if self.inference_backend
+            else None
         )
+        if parameter_format is None or not tokens:
+            return tokens
 
-        for param in self._model.backend_parameters or []:
-            param_stripped = param.strip()
-            if not param_stripped:
-                continue
-
-            converted_params = self._convert_parameter_format(
-                param_stripped, parameter_format
-            )
-            result.extend(converted_params)
-
-        return result
+        return _normalize_param_format(tokens, parameter_format)
 
     def _transform_workload_plan(
         self, workload: WorkloadPlan
