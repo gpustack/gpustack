@@ -37,6 +37,22 @@ def test_regex_prefixes():
     ]
 
 
+def test_v2_prefixes():
+    rerank = RoutePrefix(
+        ["/rerank"],
+        support_legacy=False,
+        additional_versions=["/v2"],
+    )
+    assert rerank.regex_prefixes() == [
+        r"/(v1)()(/rerank)",
+        r"/(v2)()(/rerank)",
+    ]
+    assert rerank.flattened_prefixes() == [
+        "/v1/rerank",
+        "/v2/rerank",
+    ]
+
+
 def test_provider_registry_static_ip():
     provider = ModelProvider(
         id=1,
