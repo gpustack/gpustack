@@ -44,6 +44,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import GPUDevicesStatus
 from gpustack.server.bus import Event
+from gpustack.utils.command import safe_split
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
 from gpustack.utils.hub import get_hf_text_config, get_max_model_len
@@ -57,6 +58,10 @@ lock = threading.Lock()
 
 
 class ModelInstanceStateError(Exception):
+    pass
+
+
+class ArgParseError(ValueError):
     pass
 
 
@@ -817,48 +822,100 @@ $@
                 f"Failed to update model service version {service_version}: {e}"
             )
 
-    def _parse_parameter_key_value(self, param: str) -> Tuple[str, Optional[str]]:
-        """Parse a parameter string into key and value."""
-        # Handle equal sign format
-        if "=" in param:
-            key, value = map(str.strip, param.split("=", 1))
-            return key, value
+    def _parse_parameter_key_value(
+        self, param: str
+    ) -> Tuple[str, Optional[str], ParameterFormatEnum]:
+        """
+        Parse ONE element like:
+            "--foo bar"
+            "--foo=bar baz"
+        """
 
-        # Handle space-separated format
-        tokens = shlex.split(param)
+        def _is_key(token: str) -> bool:
+            return token.startswith("-") and len(token) > 1
+
+        def _incorrect_json(value: str) -> bool:
+            if value.startswith("{") or value.startswith("["):
+                try:
+                    import json
+
+                    json.loads(value)
+                    return False
+                except json.JSONDecodeError:
+                    return True
+            return False
+
+        # Split the parameter string into tokens
+        tokens = safe_split(param)
+
         if not tokens:
-            return "", None
-        return tokens[0], " ".join(tokens[1:]) if len(tokens) > 1 else None
+            raise ArgParseError("Empty argument")
 
-    def _parse_parameter_default(self, param: str) -> List[str]:
-        """Default parameter parsing (current behavior)."""
-        if "=" in param:
-            key, value = map(str.strip, param.split("=", 1))
-            return [f"{key}={value}"]
-        return shlex.split(param)
+        first = tokens[0]
+
+        # Validate that the first token is a valid key (starts with '-')
+        if not _is_key(first):
+            raise ArgParseError(f"Invalid key in '{param}'")
+
+        # -----------------------
+        # inline '=' mode: --key=value
+        # -----------------------
+        # Example: "--config={'key': 'value'}" or "--port=8080"
+        if "=" in first:
+            key, value_part = first.split("=", 1)
+            # Combine value_part with any remaining tokens
+            # This handles cases like: --key=value1 value2
+            value_tokens = [value_part] + tokens[1:]
+            value = " ".join(value_tokens)
+            if value == "":
+                raise ArgParseError(f"Missing value for '{key}'")
+
+            return key, value, ParameterFormatEnum.EQUAL
+
+        # -----------------------
+        # space mode: --key value
+        # -----------------------
+        # Example: "--port 8080" or "--config '{"key": "value"}'"
+        key = first
+        if len(tokens) == 1:
+            # Flag parameter with no value (e.g., "--verbose")
+            return key, None, ParameterFormatEnum.SPACE
+
+        value = tokens[1]
+        # Validate JSON format: unquoted JSON must be properly formatted
+        # This prevents errors like: --config {"key": "value"} (missing quotes)
+        if _incorrect_json(value):
+            raise ArgParseError(
+                f"JSON value must be quoted when using space separation: '{param}'"
+            )
+
+        # In space mode, we only accept exactly 2 tokens: key and value
+        # More tokens indicate incorrect usage (e.g., --key value1 value2)
+        if len(tokens) > 2:
+            raise ArgParseError(f"Too many tokens in space-separated mode: '{param}'")
+
+        return key, value, ParameterFormatEnum.SPACE
 
     def _convert_parameter_format(
         self, param: str, target_format: Optional[ParameterFormatEnum]
     ) -> List[str]:
         """Convert a parameter string to the target format."""
-        # No conversion if target_format is None
-        if target_format is None:
-            return self._parse_parameter_default(param)
 
         # Parse the parameter to extract key and value
-        key, value = self._parse_parameter_key_value(param)
+        key, value, source_format = self._parse_parameter_key_value(param)
 
         # If no value (flag parameter), return as-is
         if value is None:
             return [f"--{key.strip().lstrip('-')}"]
 
+        def format(key: str, value: str, target_format: ParameterFormatEnum):
+            if target_format == ParameterFormatEnum.EQUAL:
+                return [f"--{key.strip().lstrip('-')}={value}"]
+            else:
+                return [f"--{key.strip().lstrip('-')}", value]
+
         # Convert to target format
-        if target_format == ParameterFormatEnum.SPACE:
-            return [f"--{key.strip().lstrip('-')}", value]
-        elif target_format == ParameterFormatEnum.EQUAL:
-            return [f"--{key.strip().lstrip('-')}={value}"]
-        else:
-            return self._parse_parameter_default(param)
+        return format(key, value, target_format or source_format)
 
     def _flatten_backend_param(self) -> List[str]:
         """

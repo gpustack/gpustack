@@ -99,7 +99,7 @@ async def test_apply_registry_override(
         ),
         (
             ['--arg1 "val with spaces"', '--arg2="val with spaces"'],
-            ['--arg1', 'val with spaces', '--arg2="val with spaces"'],
+            ['--arg1', 'val with spaces', '--arg2=val with spaces'],
         ),
         (
             [
@@ -118,18 +118,6 @@ async def test_apply_registry_override(
             ["--ctx-size=1024"],
         ),
         (
-            ["--ctx-size =1024"],
-            ["--ctx-size=1024"],
-        ),
-        (
-            ["  --ctx-size  =1024"],
-            ["--ctx-size=1024"],
-        ),
-        (
-            ["--ctx-size  =  1024"],
-            ["--ctx-size=1024"],
-        ),
-        (
             ["  --ctx-size 1024"],
             ["--ctx-size", "1024"],
         ),
@@ -138,8 +126,8 @@ async def test_apply_registry_override(
             ["--max-model-len=8192"],
         ),
         (
-            ["--foo =bar", "  --baz  =  qux"],
-            ["--foo=bar", "--baz=qux"],
+            ["--foo bar=baz"],
+            ["--foo", "bar=baz"],
         ),
         (
             None,
@@ -158,13 +146,10 @@ def test_flatten_backend_param(backend_parameters, expected):
     "backend_parameters, parameter_format, expected",
     [
         # Test space format conversion
-        (["ctx-size=1024"], ParameterFormatEnum.SPACE, ["--ctx-size", "1024"]),
         (["--ctx-size=1024"], ParameterFormatEnum.SPACE, ["--ctx-size", "1024"]),
-        (["n-gpu-layers=0"], ParameterFormatEnum.SPACE, ["--n-gpu-layers", "0"]),
         (["-n-gpu-layers=0"], ParameterFormatEnum.SPACE, ["--n-gpu-layers", "0"]),
         # Test equal format conversion
         (["--ctx-size 1024"], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
-        (["ctx-size 1024"], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
         (["-ctx-size 1024"], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
         # Test no conversion (None)
         (["--ctx-size 1024"], None, ["--ctx-size", "1024"]),
@@ -172,36 +157,29 @@ def test_flatten_backend_param(backend_parameters, expected):
         # Test flag parameters (no value)
         (["--verbose"], ParameterFormatEnum.SPACE, ["--verbose"]),
         (["--verbose"], ParameterFormatEnum.EQUAL, ["--verbose"]),
-        (["verbose"], ParameterFormatEnum.SPACE, ["--verbose"]),
-        (["-verbose"], ParameterFormatEnum.EQUAL, ["--verbose"]),
+        (["--verbose"], None, ["--verbose"]),
         # Test parameters with spaces in value
         (['--name "my model"'], ParameterFormatEnum.SPACE, ["--name", "my model"]),
         (['--name "my model"'], ParameterFormatEnum.EQUAL, ["--name=my model"]),
-        (['name "my model"'], ParameterFormatEnum.SPACE, ["--name", "my model"]),
         # Test multiple parameters
         (
-            ["ctx-size=1024", "n-gpu-layers=0"],
+            ["--ctx-size=1024", "--n-gpu-layers=0"],
             ParameterFormatEnum.SPACE,
             ["--ctx-size", "1024", "--n-gpu-layers", "0"],
         ),
         (
-            ["ctx-size 1024", "n-gpu-layers 0"],
+            ["--ctx-size 1024", "--n-gpu-layers 0"],
             ParameterFormatEnum.EQUAL,
             ["--ctx-size=1024", "--n-gpu-layers=0"],
         ),
-        # Test edge cases
-        (["  ctx-size = 1024  "], ParameterFormatEnum.SPACE, ["--ctx-size", "1024"]),
-        (["  ctx-size   1024  "], ParameterFormatEnum.EQUAL, ["--ctx-size=1024"]),
-        ([""], ParameterFormatEnum.SPACE, []),
-        (None, ParameterFormatEnum.SPACE, []),
         # Test mixed formats with conversion
         (
-            ["--ctx-size=1024", "n-gpu-layers 0"],
+            ["--ctx-size=1024", "--n-gpu-layers 0"],
             ParameterFormatEnum.SPACE,
             ["--ctx-size", "1024", "--n-gpu-layers", "0"],
         ),
         (
-            ["ctx-size 1024", "--n-gpu-layers=0"],
+            ["--ctx-size 1024", "--n-gpu-layers=0"],
             ParameterFormatEnum.EQUAL,
             ["--ctx-size=1024", "--n-gpu-layers=0"],
         ),
