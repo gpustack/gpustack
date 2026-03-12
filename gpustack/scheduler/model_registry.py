@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.16.0/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.17.1/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 # List of supported model architectures for the default version of the vLLM backend
 # TODO version-aware support list
@@ -13,6 +13,7 @@ _TEXT_GENERATION_MODELS = [
     "AquilaForCausalLM",
     "ArceeForCausalLM",
     "ArcticForCausalLM",
+    "AXK1ForCausalLM",
     "MiniMaxForCausalLM",
     "MiniMaxText01ForCausalLM",
     "MiniMaxM1ForCausalLM",
@@ -20,6 +21,7 @@ _TEXT_GENERATION_MODELS = [
     "BaichuanForCausalLM",
     "BailingMoeForCausalLM",
     "BailingMoeV2ForCausalLM",
+    "BailingMoeV2_5ForCausalLM",
     "BambaForCausalLM",
     "BloomForCausalLM",
     "ChatGLMModel",
@@ -149,6 +151,8 @@ _EMBEDDING_MODELS = [
     "BertModel",
     "BertSpladeSparseEmbeddingModel",
     "HF_ColBERT",
+    "ColBERTModernBertModel",
+    "ColBERTJinaRobertaModel",
     "DeciLMForCausalLM",
     "Gemma2Model",
     "Gemma3TextModel",
@@ -188,6 +192,12 @@ _EMBEDDING_MODELS = [
     # "Phi3VForCausalLM",
     # "Qwen2VLForConditionalGeneration", # Registered in _TEXT_GENERATION_MODELS
     "CLIPModel",
+    "ColModernVBertForRetrieval",
+    "ColQwen3",
+    "OpsColQwen3Model",
+    "Qwen3VLNemotronEmbedModel",
+    "SiglipModel",
+    "LlamaNemotronVLModel",
     "PrithviGeoSpatialMAE",
     "Terratorch",
 ]
@@ -202,6 +212,7 @@ _CROSS_ENCODER_MODELS = [
     "ModernBertForTokenClassification",
     "JinaVLForRanking",
     "LlamaBidirectionalForSequenceClassification",
+    "LlamaNemotronVLForSequenceClassification",
 ]
 
 _MULTIMODAL_MODELS = [
@@ -265,6 +276,8 @@ _MULTIMODAL_MODELS = [
     "OpenPanguVLForConditionalGeneration",
     "Ovis",
     "Ovis2_5",
+    "Ovis2_6ForCausalLM",
+    "Ovis2_6_MoeForCausalLM",
     "PaddleOCRVLForConditionalGeneration",
     "PaliGemmaForConditionalGeneration",
     "Phi3VForCausalLM",
@@ -280,6 +293,8 @@ _MULTIMODAL_MODELS = [
     "Qwen3OmniMoeForConditionalGeneration",
     "Qwen3VLForConditionalGeneration",
     "Qwen3VLMoeForConditionalGeneration",
+    "Qwen3_5ForConditionalGeneration",
+    "Qwen3_5MoeForConditionalGeneration",
     "UltravoxModel",
     "SkyworkR1VChatModel",
     "Step3VLForConditionalGeneration",
@@ -295,10 +310,13 @@ _MULTIMODAL_MODELS = [
 ]
 
 _SPEECH_TO_TEXT_MODELS = [
+    "FireRedASR2ForConditionalGeneration",
+    "FunASRForConditionalGeneration",
     "FunAudioChatForConditionalGeneration",
     "GlmAsrForConditionalGeneration",
     "GraniteSpeechForConditionalGeneration",
     "Qwen3ASRForConditionalGeneration",
+    "Qwen3ASRRealtimeGeneration",
     "VoxtralForConditionalGeneration",
     "VoxtralRealtimeGeneration",
     "WhisperForConditionalGeneration",
