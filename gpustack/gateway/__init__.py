@@ -306,6 +306,7 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
             "allowed_headers": [
                 {"exact": "X-GPUStack-Real-IP"},
                 {"exact": "x-higress-llm-model"},
+                {"exact": "x-api-key"},
                 {"exact": "cookie"},
             ]
         },

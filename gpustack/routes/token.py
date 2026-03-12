@@ -14,6 +14,7 @@ from gpustack.schemas.users import User
 from gpustack.schemas.models import AccessPolicyEnum
 from gpustack.server.deps import SessionDep
 from gpustack.api.auth import (
+    api_key_header_auth,
     basic_auth,
     cookie_auth,
     bearer_auth,
@@ -52,6 +53,7 @@ async def server_auth(
             session=session,
             basic_credentials=await basic_auth(request),
             bearer_token=await bearer_auth(request),
+            x_api_key=await api_key_header_auth(request),
             cookie_token=cookie_token,
         )
         api_key = getattr(request.state, "api_key", None)
@@ -118,6 +120,7 @@ async def worker_auth(
     bearer_token: Annotated[
         Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
     ] = None,
+    x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
 ):
     token: str = request.app.state.token
     registration_token = request.app.state.config.token
@@ -125,12 +128,10 @@ async def worker_auth(
     if model_name is None:
         logger.warning("Missing X-Higress-Llm-Model header for token authentication")
         raise credentials_exception
-    if bearer_token is None:
+    token_value = bearer_token.credentials if bearer_token else x_api_key
+    if token_value is None:
         raise credentials_exception
-    if (
-        bearer_token.credentials != token
-        and bearer_token.credentials != registration_token
-    ):
+    if token_value != token and token_value != registration_token:
         raise credentials_exception
     return Response(
         status_code=200,

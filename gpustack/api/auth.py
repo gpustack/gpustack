@@ -10,6 +10,7 @@ from gpustack.server.db import get_session
 from typing import Annotated, Optional, Tuple
 from fastapi.security import (
     APIKeyCookie,
+    APIKeyHeader,
     HTTPAuthorizationCredentials,
     HTTPBasic,
     HTTPBasicCredentials,
@@ -39,6 +40,7 @@ SYSTEM_USER_PREFIX = "system/"
 SYSTEM_WORKER_USER_PREFIX = "system/worker/"
 basic_auth = HTTPBasic(auto_error=False)
 bearer_auth = HTTPBearer(auto_error=False)
+api_key_header_auth = APIKeyHeader(name="X-API-Key", auto_error=False)
 cookie_auth = APIKeyCookie(name=SESSION_COOKIE_NAME, auto_error=False)
 
 credentials_exception = UnauthorizedException(
@@ -62,6 +64,7 @@ async def get_current_user(
     bearer_token: Annotated[
         Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
     ] = None,
+    x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
     cookie_token: Annotated[Optional[str], Depends(cookie_auth)] = None,
 ) -> User:
     if hasattr(request.state, "user"):
@@ -78,8 +81,9 @@ async def get_current_user(
         elif cookie_token:
             jwt_manager: JWTManager = request.app.state.jwt_manager
             user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
-        elif bearer_token:
-            user, api_key = await get_user_from_bearer_token(session, bearer_token)
+        elif bearer_token or x_api_key:
+            token = bearer_token.credentials if bearer_token else x_api_key
+            user, api_key = await get_user_from_api_token(session, token)
 
         if user is None and client_ip_getter(request=request) == "127.0.0.1":
             if not server_config.force_auth_localhost:
@@ -203,13 +207,13 @@ def parse_uuid(value: str) -> Optional[str]:
         return None
 
 
-async def get_user_from_bearer_token(
-    session: AsyncSession, bearer_token: HTTPAuthorizationCredentials
+async def get_user_from_api_token(
+    session: AsyncSession, token: str
 ) -> Tuple[Optional[User], Optional[ApiKey]]:
     try:
         access_key = ""
-        secret_key = bearer_token.credentials
-        parts = bearer_token.credentials.split("_", maxsplit=2)
+        secret_key = token
+        parts = token.split("_", maxsplit=2)
         if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
             access_key = parts[1]
             secret_key = parts[2]
@@ -259,23 +263,25 @@ async def worker_auth(
     bearer_token: Annotated[
         Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
     ] = None,
+    x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
 ):
-    if not bearer_token:
+    token_value = bearer_token.credentials if bearer_token else x_api_key
+    if not token_value:
         raise UnauthorizedException(message="Invalid authentication credentials")
     token = request.app.state.token
     config: Config = request.app.state.config
     registration_token = config.token
     server_url = config.get_server_url()
-    if bearer_token.credentials in [token, registration_token]:
+    if token_value in [token, registration_token]:
         return
     model_name = request.headers.get("X-Higress-Llm-Model")
     if model_name is not None:
-        cred = bearer_token.credentials
+        cred = token_value
         show_len = max(1, min(6, len(cred)))
         masked_token = f"{'*' * (len(cred) - show_len)}{cred[-show_len:]}"
         logger.debug(f"Verifying worker token {masked_token} via server authentication")
         cached_auth = make_auth_token_via_server(request.app.state.http_client_no_proxy)
-        is_valid = await cached_auth(server_url, bearer_token.credentials, model_name)
+        is_valid = await cached_auth(server_url, token_value, model_name)
         if is_valid:
             return
     raise UnauthorizedException(message="Invalid authentication credentials")
