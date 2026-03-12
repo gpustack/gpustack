@@ -327,7 +327,7 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     server_group.add_argument(
         "--allow-headers",
         action='append',
-        help='HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: --allow-headers Authorization --allow-headers Content-Type. Default: ["Authorization", "Content-Type"].',
+        help='HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: --allow-headers Authorization --allow-headers X-API-Key --allow-headers Content-Type. Default: ["Authorization", "Content-Type", "X-API-Key"].',
     )
 
     # OIDC settings
