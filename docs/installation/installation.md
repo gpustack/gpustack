@@ -14,13 +14,12 @@
 
 ## Install GPUStack Server
 
-Run the following command to install and start the GPUStack server using Docker. Port 80 is the primary server endpoint, while port 10161 is used to expose metrics for observability.
+Run the following command to install and start the GPUStack server using Docker:
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
     -p 80:80 \
-    -p 10161:10161 \
     --volume gpustack-data:/var/lib/gpustack \
     gpustack/gpustack
 ```
@@ -61,7 +60,6 @@ The following sections describe examples of custom configuration options when st
  sudo docker run -d --name gpustack \
      ...
      -p 80:80 \
-     -p 10161:10161 \
 +    -p 443:443 \
      --volume gpustack-data:/var/lib/gpustack \
 +    --volume /path/to/cert_files:/path/to/cert_files:ro \
@@ -98,17 +96,6 @@ sudo docker run -d --name gpustack \
 
 ## Installation via Docker Compose
 
-This guide explains how to deploy GPUStack and observability components (Prometheus, Grafana) using Docker Compose.
-
-
-### Overview of Services
-
-**Services:**
-
-- **gpustack-server**: Central server for scheduling, management, and built-in inference.
-- **prometheus**: Metrics collection.
-- **grafana**: Metrics visualization.
-
 ### Prerequisites
 
 - [Docker Compose](https://docs.docker.com/compose/install/) must be installed.
@@ -116,7 +103,7 @@ This guide explains how to deploy GPUStack and observability components (Prometh
 
 ### Deployment
 
-The Docker Compose files and configuration files are maintained in the [GPUStack repository](https://github.com/gpustack/gpustack/tree/main/docker-compose)
+The Docker Compose files and configuration files are maintained in the [GPUStack repository](https://github.com/gpustack/gpustack/tree/main/docker-compose).
 
 Run the following commands to clone the latest stable release:
 
@@ -133,7 +120,7 @@ git clone -b "$LATEST_TAG" https://github.com/gpustack/gpustack.git
 cd gpustack/docker-compose
 ```
 
-Start the GPUStack server and observability components:
+Start the GPUStack server:
 
 ```bash
 sudo docker compose -f docker-compose.server.yaml up -d
@@ -146,3 +133,5 @@ Log in with username `admin` and the default password. Retrieve the initial pass
 ```bash
 sudo docker exec -it gpustack-server cat /var/lib/gpustack/initial_admin_password
 ```
+
+For built-in and external observability options, see [Observability](../user-guide/observability.md).

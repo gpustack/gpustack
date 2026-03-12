@@ -3,6 +3,9 @@ from unittest.mock import patch
 
 from tests.utils.model import new_model
 from gpustack.policies.candidate_selectors import AscendMindIEResourceFitSelector
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
+    RequestEstimateUsage,
+)
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -17,6 +20,34 @@ from tests.fixtures.workers.fixtures import (
     linux_ascend_4_910b_64gx8,
 )
 from tests.utils.scheduler import compare_candidates
+
+
+@pytest.mark.asyncio
+async def test_auto_single_worker_candidate_has_gpu_type(config):
+    model = new_model(
+        id=1,
+        name="auto_single_worker_gpu_type",
+        replicas=1,
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        cpu_offloading=False,
+        backend=BackendEnum.ASCEND_MINDIE.value,
+    )
+    worker = linux_ascend_1_910b_64gx8(return_device=1)
+    selector = AscendMindIEResourceFitSelector(config, model, [])
+    selector._serving_params.world_size = 1
+    selector._serving_params.npu_memory_fraction = 0.5
+
+    request_usage = RequestEstimateUsage(ram=512 * 1024**2, vram=1)
+    selected_devices = {
+        worker.status.gpu_devices[0].index: worker.status.gpu_devices[0]
+    }
+    candidates = await selector._select_single_worker(
+        {worker: selected_devices},
+        request_usage,
+    )
+
+    assert len(candidates) > 0
+    assert candidates[0].gpu_type == "cann"
 
 
 def expected_candidate(
@@ -88,8 +119,7 @@ def expected_candidate(
         # Check point:
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected.
         (
             new_model(
                 id=1,
@@ -105,8 +135,18 @@ def expected_candidate(
                 {
                     "worker_id": 1,
                     "worker_name": "ascend_0",
+                    "gpu_type": "cann",
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.39"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388},
+                },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_type": "cann",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.41"],
                     "ram": 536870912,
                     "vram": {0: 54975581388},
                 },
@@ -406,8 +446,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
         # Check point:
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected
         (
             new_model(
                 id=1,
@@ -423,8 +462,18 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
                 {
                     "worker_id": 1,
                     "worker_name": "ascend_0",
+                    "gpu_type": "cann",
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.39"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388},
+                },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_type": "cann",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.41"],
                     "ram": 536870912,
                     "vram": {0: 54975581388},
                 },
@@ -594,8 +643,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
         #   it has sorted to the list end.
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected.
         (
             new_model(
                 id=1,
@@ -617,6 +665,14 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "ram": 536870912,
                     "vram": {1: 54975581388},
                 },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.41"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388},
+                },
             ],
         ),
         # Semi-automatic single worker selection.
@@ -626,8 +682,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
         # - Specify tensor parallel size to enforce the selection of multi-devices.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected.
         (
             new_model(
                 id=1,
@@ -650,6 +705,14 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "ram": 536870912,
                     "vram": {1: 54975581388, 2: 54975581388},
                 },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0, 1],
+                    "gpu_addresses": ["29.17.48.41", "29.17.57.32"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388, 1: 54975581388},
+                },
             ],
         ),
         # Semi-automatic single worker selection 2.
@@ -659,8 +722,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
         # - Specify data parallel size to enforce the selection of multi-devices.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected.
         (
             new_model(
                 id=1,
@@ -682,6 +744,14 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "gpu_addresses": ["29.17.57.31", "29.17.51.57"],
                     "ram": 536870912,
                     "vram": {1: 54975581388, 2: 54975581388},
+                },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0, 1],
+                    "gpu_addresses": ["29.17.48.41", "29.17.57.32"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388, 1: 54975581388},
                 },
             ],
         ),
@@ -1544,7 +1614,7 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.2",
                     "--trust-remote-code",
                 ],
             ),
@@ -1565,7 +1635,7 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.2",
                     "--trust-remote-code",
                 ],
             ),
@@ -1586,7 +1656,7 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.2",
                     "--trust-remote-code",
                 ],
                 distributed_inference_across_workers=False,
@@ -1646,8 +1716,6 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
 
     resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
 
-    resource_fit_selector._serving_params.npu_memory_fraction = 0.2
-
     with (
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
@@ -1675,7 +1743,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.9",
                     "--trust-remote-code",
                 ],
                 gpu_selector=GPUSelector(
@@ -1709,7 +1777,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.1",
                     "--trust-remote-code",
                 ],
                 gpu_selector=GPUSelector(
@@ -1743,7 +1811,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.9",
                     "--trust-remote-code",
                 ],
                 gpu_selector=GPUSelector(
@@ -1850,21 +1918,8 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
         if gpu.memory.allocated
     ]
 
-    if index == 1:
-        resource_fit_selector = AscendMindIEResourceFitSelector(
-            config, m, model_instances
-        )
-        resource_fit_selector._serving_params.npu_memory_fraction = 0.9
-    elif index == 2:
-        resource_fit_selector = AscendMindIEResourceFitSelector(
-            config, m, model_instances
-        )
-        resource_fit_selector._serving_params.npu_memory_fraction = 0.1
-    elif index == 3:
-        resource_fit_selector = AscendMindIEResourceFitSelector(
-            config, m, model_instances
-        )
-        resource_fit_selector._serving_params.npu_memory_fraction = 0.9
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    if index == 3:
         for worker in workers:
             worker.system_reserved.ram = worker.status.memory.total - 500
 

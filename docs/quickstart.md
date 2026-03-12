@@ -1,6 +1,6 @@
 # Quickstart
 
-This guide will walk you through running GPUStack on your own self-hosted GPU servers. To use [cloud GPUs](./tutorials/adding-gpucluster-using-digitalocean.md), or integrating with an  [existing Kubernetes cluster](./tutorials/adding-gpucluster-using-kubernetes.md), see the relevant tutorials.
+This guide will walk you through running GPUStack on your own self-hosted GPU servers. To use [cloud GPUs](./tutorials/adding-gpucluster-using-digitalocean.md), or integrating with an [existing Kubernetes cluster](./tutorials/adding-gpucluster-using-kubernetes.md), see the relevant tutorials.
 
 !!! info "Prerequisites"
 
@@ -11,13 +11,12 @@ This guide will walk you through running GPUStack on your own self-hosted GPU se
 
 ## Install GPUStack
 
-Run the following command to install and start the GPUStack server using [Docker](https://docs.docker.com/engine/install/), port 80 is the primary server endpoint, while port 10161 is used to expose metrics for observability.:
+Run the following command to install and start the GPUStack server using [Docker](https://docs.docker.com/engine/install/):
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
     -p 80:80 \
-    -p 10161:10161 \
     --volume gpustack-data:/var/lib/gpustack \
     gpustack/gpustack
 ```
@@ -30,7 +29,6 @@ sudo docker run -d --name gpustack \
     sudo docker run -d --name gpustack \
         --restart unless-stopped \
         -p 80:80 \
-        -p 10161:10161 \
         --volume gpustack-data:/var/lib/gpustack \
         quay.io/gpustack/gpustack \
         --system-default-container-registry quay.io
@@ -76,15 +74,15 @@ sudo docker run -d --name gpustack-worker \
       --advertise-address 192.168.1.2
 ```
 
-4. Execute the command on the worker node to connect it to the GPUStack server.
+6. Execute the command on the worker node to connect it to the GPUStack server.
 
-5. After the worker node connects successfully, it will appear on the `Workers` page in the GPUStack UI.
+7. After the worker node connects successfully, it will appear on the `Workers` page in the GPUStack UI.
 
 ## Deploy a Model
 
 1. Navigate to the `Catalog` page in the GPUStack UI.
 
-2. Select the `Qwen3 0.6B` model from the list of available models.
+2. Select the `Qwen3-0.6B` model from the list of available models.
 
 3. After the deployment compatibility checks pass, click the `Save` button to deploy the model.
 

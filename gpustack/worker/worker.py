@@ -1,9 +1,7 @@
 import asyncio
 from collections import defaultdict
 from contextlib import asynccontextmanager
-import os
 import logging
-import socket
 from typing import Optional, Tuple
 import json
 
@@ -42,6 +40,7 @@ from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
+from gpustack.worker.benchmark_manager import BenchmarkManager
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.runtime_metrics_aggregator import RuntimeMetricsAggregator
@@ -52,10 +51,10 @@ from gpustack.worker.worker_manager import WorkerManager
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.config.registration import read_worker_token
 from gpustack.config import registration
-from gpustack.worker.worker_gateway import WorkerGatewayController
-from gpustack.gateway.plugins import register as register_gateway_plugins
 from gpustack.gateway import init_async_k8s_config
 from gpustack.client.generated_http_client import default_versioned_prefix
+from gpustack.worker.workload_cleaner import WorkloadCleaner
+from gpustack.utils.uuid import get_worker_name, get_legacy_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +66,14 @@ class Worker:
     _status_collector: WorkerStatusCollector
     _worker_manager: WorkerManager
     _serve_manager: ServeManager
+    _benchmark_manager: BenchmarkManager
+    _workload_cleaner: WorkloadCleaner
     _config: Config
     _worker_ip: Optional[str] = None
     _worker_ifname: Optional[str] = None
     _worker_id: Optional[int] = None
+    _worker_name: Optional[str] = None
+    _worker_uuid: Optional[str] = None
     _cluster_id: Optional[int] = None
 
     def worker_ip(self) -> str:
@@ -78,6 +81,16 @@ class Worker:
 
     def worker_ifname(self) -> str:
         return self._config.worker_ifname or self._worker_ifname
+
+    def worker_name(self) -> Optional[str]:
+        return (
+            self._config.worker_name
+            or self._worker_name
+            or get_worker_name(self._config.data_dir)
+        )
+
+    def worker_uuid(self) -> str:
+        return self._worker_uuid or get_legacy_uuid(self._config.data_dir) or ""
 
     def worker_id(self) -> int:
         return self._worker_id
@@ -97,9 +110,6 @@ class Worker:
         self._async_tasks = []
         self._worker_ip, self._worker_ifname = self._detect_worker_ip_and_ifname()
 
-        self._worker_name = cfg.worker_name
-        if self._worker_name is None:
-            self._worker_name = self._get_worker_name()
         self._runtime_metrics_cache = defaultdict()
 
         self._status_collector = WorkerStatusCollector(
@@ -107,21 +117,21 @@ class Worker:
             worker_ip_getter=self.worker_ip,
             worker_ifname_getter=self.worker_ifname,
             worker_id_getter=self.worker_id,
+            worker_uuid_getter=self.worker_uuid,
         )
 
         self._worker_manager = WorkerManager(
             cfg=cfg,
             is_embedded=self._is_embedded,
             collector=self._status_collector,
-            worker_name=self._worker_name,
         )
 
         self._exporter = MetricExporter(
             cfg=cfg,
-            worker_name=self._worker_name,
             collector=self._status_collector,
             worker_ip_getter=self.worker_ip,
             worker_id_getter=self.worker_id,
+            worker_name_getter=self.worker_name,
             clientset_getter=self.clientset,
             cache=self._runtime_metrics_cache,
         )
@@ -132,20 +142,16 @@ class Worker:
             cfg=self._config,
         )
 
-    def _get_worker_name(self):
-        # Hostname might change with the network, so we store the worker name in a file.
-        # It avoids creating multiple workers for the same node.
-        # This is useful when running standalone on a PC.
-        worker_name_path = os.path.join(self._config.data_dir, "worker_name")
-        if os.path.exists(worker_name_path):
-            with open(worker_name_path, "r") as file:
-                worker_name = file.read().strip()
-        else:
-            worker_name = socket.gethostname()
-            with open(worker_name_path, "w") as file:
-                file.write(worker_name)
+        self._benchmark_manager = BenchmarkManager(
+            worker_id_getter=self.worker_id,
+            clientset_getter=self.clientset,
+            cfg=self._config,
+        )
 
-        return worker_name
+        self._workload_cleaner = WorkloadCleaner(
+            worker_id_getter=self.worker_id,
+            clientset_getter=self.clientset,
+        )
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(10),
@@ -163,10 +169,13 @@ class Worker:
         worker_list = self._clientset.workers.list(
             params={"me": 'true'},
         )
+        name = self.worker_name() or "<not specified>"
         if len(worker_list.items) != 1:
-            raise Exception(f"Worker {self._worker_name} not registered.")
+            raise Exception(f"Worker {name} not registered.")
         self._worker_id = worker_list.items[0].id
         self._cluster_id = worker_list.items[0].cluster_id
+        self._worker_name = worker_list.items[0].name
+        self._worker_uuid = worker_list.items[0].worker_uuid
 
     def _create_async_task(self, coro):
         self._async_tasks.append(asyncio.create_task(coro))
@@ -271,26 +280,19 @@ class Worker:
             envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL,
         )
         run_periodically_in_thread(
-            self._serve_manager.cleanup_orphan_workloads, 120, 15
+            self._workload_cleaner.cleanup_orphan_workloads, 120, 15
         )
+        run_periodically_in_thread(self._benchmark_manager.sync_benchmark_state, 3, 15)
 
         self._create_async_task(self._serve_manager.watch_models())
         self._create_async_task(self._serve_manager.watch_model_instances_event())
         self._create_async_task(self._serve_manager.watch_model_instances())
+        self._create_async_task(self._benchmark_manager.watch_benchmarks_event())
 
         model_file_manager = ModelFileManager(
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
         )
         self._create_async_task(model_file_manager.watch_model_files())
-
-        controller = WorkerGatewayController(
-            worker_id=self._worker_id,
-            cluster_id=self._cluster_id,
-            clientset=self._clientset,
-            cfg=self._config,
-        )
-        self._create_async_task(controller.sync_model_cache())
-        self._create_async_task(controller.start_model_instance_controller())
 
         # Start Kubernetes Device Plugin server if allowed.
         if get_resource_injection_policy() == "kdp":
@@ -329,9 +331,8 @@ class Worker:
         app.state.config = self._config
         app.state.token = read_worker_token(self._config.data_dir)
         app.state.worker_ip_getter = self.worker_ip
-        app.state.model_by_instance_id = self._serve_manager._model_cache_by_instance
-        app.state.model_instance_by_instance_id = (
-            self._serve_manager._model_instance_by_instance_id
+        app.state.get_instance_port_by_model_instance_id = (
+            self._serve_manager.get_instance_port_by_model_instance_id
         )
         app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
         app.include_router(route_config.router, prefix=default_versioned_prefix)
@@ -345,7 +346,6 @@ class Worker:
             endpoint=worker_auth,
             methods=["GET"],
         )
-        register_gateway_plugins(self._config, app)
         exceptions.register_handlers(app)
 
         config = uvicorn.Config(

@@ -688,5 +688,63 @@ async def test_cuda_version_incompatibility():
         assert "host-4-4080" in messages[0]
 
 
+@pytest.mark.asyncio
+async def test_cpu_offloading_with_incompatible_gpu():
+    """
+    Test 15: Worker with incompatible GPU should pass when model has cpu_offloading=True and CPU runner exists.
+
+    This test verifies that when a model has cpu_offloading enabled, a worker with an incompatible GPU
+    can still be considered a valid candidate if a CPU runner is available.
+    """
+    model = create_model(backend="vLLM", backend_version="0.11.0", cpu_offloading=True)
+
+    # Create a worker with ROCm GPU (incompatible with vLLM in this test scenario)
+    worker = linux_nvidia_4_4080_16gx4()
+    if worker.status and worker.status.gpu_devices:
+        for gpu in worker.status.gpu_devices:
+            gpu.type = "rocm"
+            gpu.vendor = "amd"
+
+    workers = [worker]
+
+    # Backend only supports CUDA, not ROCm
+    backend = create_inference_backend(
+        backend_name="vLLM",
+        version_configs={
+            "0.11.0": VersionConfig(
+                image_name="test:0.11.0",
+                built_in_frameworks=[
+                    "cuda",
+                    "cpu",
+                ],  # Supports CUDA and CPU, but not ROCm
+                custom_framework="",
+            )
+        },
+        is_built_in=True,
+    )
+
+    filter_instance = BackendFrameworkFilter(model)
+
+    async def mock_session_exec(statement):
+        mock_result = MagicMock()
+        mock_result.first.return_value = backend
+        return mock_result
+
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
+        filtered_workers, messages = await filter_instance.filter(workers)
+
+        # Worker should pass because cpu_offloading=True adds CPU as a query condition,
+        # and CPU is in the built_in_frameworks
+        assert len(filtered_workers) == 1
+        assert filtered_workers[0].name == "host-4-4080"
+        assert len(messages) == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

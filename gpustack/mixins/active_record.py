@@ -6,6 +6,7 @@ import logging
 import math
 from typing import Any, AsyncGenerator, Callable, List, Optional, Union, Tuple
 
+import anyio
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, event as sa_event, inspect
 from sqlmodel import SQLModel, and_, asc, col, desc, or_, select, text
@@ -16,6 +17,7 @@ from sqlalchemy.orm.exc import FlushError
 from sqlalchemy.orm.state import InstanceState
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
+from gpustack.server.cache import locked_cached, delete_cache_by_key, class_key
 from gpustack.server.db import async_session
 
 
@@ -221,6 +223,7 @@ class ActiveRecordMixin:
         page: int = 1,
         per_page: int = 100,
         order_by: Optional[List[Tuple[Union[str, Any], str]]] = None,
+        options: Optional[List] = None,
     ) -> PaginatedList[SQLModel]:
         """
         Return a paginated and optionally sorted list of objects matching the given query criteria.
@@ -256,6 +259,9 @@ class ActiveRecordMixin:
 
         if extra_conditions:
             statement = statement.where(and_(*extra_conditions))
+
+        if options:
+            statement = statement.options(*options)
 
         if not order_by:
             order_by = [("created_at", "desc")]
@@ -504,8 +510,9 @@ class ActiveRecordMixin:
     @classmethod
     async def count(cls, session: AsyncSession) -> int:
         """Return the number of records in the model."""
-
-        return len(await cls.all(session))
+        statement = select(func.count()).select_from(cls)
+        result = await session.exec(statement)
+        return result.one()
 
     @classmethod
     async def count_by_field(cls, session: AsyncSession, field: str, value: Any) -> int:
@@ -552,6 +559,8 @@ class ActiveRecordMixin:
                 await session.refresh(self)
             if session.is_active:
                 await self._refresh_related_objects(session)
+            # Invalidate cached_all cache on successful write
+            await self.__class__._invalidate_cached_all()
         except (IntegrityError, OperationalError, FlushError) as e:
             await session.rollback()
             raise e
@@ -568,7 +577,9 @@ class ActiveRecordMixin:
         """Update the object with the source and save to the database."""
 
         if isinstance(source, SQLModel):
-            source = source.model_dump(exclude_unset=True)
+            source = {
+                key: getattr(source, key, None) for key in source.model_fields_set
+            }
         elif source is None:
             source = {}
 
@@ -576,6 +587,48 @@ class ActiveRecordMixin:
             setattr(self, key, value)
         self._publish_event_after_commit(session, EventType.UPDATED, self)
         await self.save(session, auto_commit=auto_commit)
+
+    @classmethod
+    async def batch_update(
+        cls,
+        session: AsyncSession,
+        updates: List[SQLModel],
+        auto_commit: bool = True,
+    ) -> int:
+        """Batch update multiple records with different data.
+
+        Args:
+            session: The database session
+            updates: A list of SQLModel objects with id field
+            auto_commit: Whether to commit the transaction automatically
+
+        Returns:
+            The number of records successfully updated
+
+        Example:
+            updates = [
+                Model(id=1, name="llama", state="ready"),
+                Model(id=2, name="qwen", state="not_ready"),
+            ]
+            count = await Model.batch_update(session, updates)
+        """
+        if not updates:
+            return 0
+
+        try:
+            for obj in updates:
+                cls._publish_event_after_commit(session, EventType.UPDATED, obj)
+                session.add(obj)
+
+            if auto_commit:
+                await session.commit()
+
+            # Invalidate cached_all cache after successful batch update
+            await cls._invalidate_cached_all()
+            return len(updates)
+        except Exception as e:
+            await session.rollback()
+            raise e
 
     async def delete(self, session: AsyncSession, soft=False, auto_commit=True):
         """Delete the object from the database."""
@@ -585,15 +638,15 @@ class ActiveRecordMixin:
             if hasattr(self, "deleted_at"):
                 # timestamp is stored without timezone in db
                 self.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
-                await self.save(session, auto_commit=auto_commit)
-            await self._handle_cascade_delete(
-                session, soft=soft, auto_commit=auto_commit
-            )
+                await self.save(session, auto_commit=False)
+            await self._handle_cascade_delete(session, soft=soft, auto_commit=False)
         if not soft:
             await session.delete(self)
         if not auto_commit:
             return
         await session.commit()
+        # Invalidate cached_all cache after successful delete
+        await self.__class__._invalidate_cached_all()
 
     async def _handle_cascade_delete(
         self, session: AsyncSession, soft=False, auto_commit=True
@@ -630,6 +683,39 @@ class ActiveRecordMixin:
         return result.all()
 
     @classmethod
+    async def _do_cached_all_query(cls, options: Optional[List] = None):
+        """Execute the cached_all query in a shielded context.
+
+        This runs the entire database operation including session cleanup
+        in a way that's protected from anyio cancellation.
+        """
+        session = async_session()
+        try:
+            results = await cls.all(session, options=options)
+            for item in results:
+                session.expunge(item)
+            return results
+        finally:
+            await session.close()
+
+    @classmethod
+    @locked_cached(key=class_key("cached_all"))
+    async def cached_all(cls, options: Optional[List] = None):
+        """Return all objects with caching for subscribe() initial data loading."""
+        logger.debug(f"Loading cached {cls.__name__} with options={options}")
+        # Run the entire database operation in a shielded context to protect
+        # from anyio cancellation. This prevents connection pool issues when
+        # CancelledError interrupts database operations or session cleanup.
+        with anyio.CancelScope(shield=True):
+            return await cls._do_cached_all_query(options)
+
+    @classmethod
+    async def _invalidate_cached_all(cls):
+        """Invalidate cached_all cache for this model class."""
+        cache_key = class_key("cached_all")(None, cls)
+        await delete_cache_by_key(_key=cache_key)
+
+    @classmethod
     async def delete_all(cls, session: AsyncSession, soft=False):
         """Delete all objects of the model."""
 
@@ -637,10 +723,13 @@ class ActiveRecordMixin:
             cls._publish_event_after_commit(session, EventType.DELETED, obj)
             await obj.delete(session, soft=soft, auto_commit=False)
         try:
-            session.commit()
+            await session.commit()
+            # Invalidate cached_all cache after successful delete_all
+            await cls._invalidate_cached_all()
         except Exception as e:
-            session.rollback()
+            await session.rollback()
             logger.error(f"Failed to delete all objects of {cls.__name__}: {e}")
+            raise
 
     @classmethod
     def _publish_event_after_commit(
@@ -667,8 +756,7 @@ class ActiveRecordMixin:
             id(subscriber),
         )
 
-        async with async_session() as session:
-            initial_items = await cls.all(session, options=options)
+        initial_items = await cls.cached_all(options=options)
 
         for item in initial_items:
             yield Event(type=EventType.CREATED, data=item)
@@ -724,8 +812,13 @@ class ActiveRecordMixin:
                 if filter_func and not filter_func(event.data):
                     continue
 
-                event.data = cls._convert_to_public_class(event.data)
-                yield cls._format_event(event)
+                public_event = Event(
+                    type=event.type,
+                    data=cls._convert_to_public_class(event.data),
+                    changed_fields=event.changed_fields,
+                    id=event.id,
+                )
+                yield cls._format_event(public_event)
         except asyncio.CancelledError:
             pass
         except Exception as e:

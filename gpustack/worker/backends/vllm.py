@@ -14,18 +14,21 @@ from gpustack_runtime.deployer import (
     ContainerPort,
     ContainerRestartPolicyEnum,
 )
-from gpustack_runtime.detector import ManufacturerEnum
-
+from gpustack_runtime.detector import ManufacturerEnum, manufacturer_to_backend
 from gpustack.schemas.models import (
     ModelInstance,
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
     ModelInstanceDeploymentMetadata,
+    is_audio_model,
+    is_omni_model,
 )
 from gpustack.utils import network
 from gpustack.utils.command import (
     find_parameter,
+    find_bool_parameter,
     find_int_parameter,
+    extend_args_no_exist,
 )
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
@@ -108,6 +111,9 @@ class VLLMServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
+        # Read container config from environment variables
+        container_config = self._get_container_env_config(env)
+
         run_container = Container(
             image=image,
             name="default",
@@ -118,6 +124,8 @@ class VLLMServer(InferenceServer):
                 command=command,
                 command_script=command_script,
                 args=command_args,
+                run_as_user=container_config.user,
+                run_as_group=container_config.group,
             ),
             envs=[
                 ContainerEnv(
@@ -178,6 +186,8 @@ class VLLMServer(InferenceServer):
                     command=ray_command,
                     command_script=command_script,
                     args=ray_command_args,
+                    run_as_user=container_config.user,
+                    run_as_group=container_config.group,
                 ),
                 envs=run_container.envs,
                 resources=run_container.resources,
@@ -198,12 +208,14 @@ class VLLMServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
-            shm_size=10 * 1 << 30,  # 10 GiB
+            shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=(
                 [run_container]
                 if not sidecar_container
                 else [run_container, sidecar_container]
             ),
+            run_as_user=container_config.user,
+            run_as_group=container_config.group,
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
@@ -329,7 +341,7 @@ class VLLMServer(InferenceServer):
 
         vllm_speculative_algorithm_mapping = {
             SpeculativeAlgorithmEnum.EAGLE3: "eagle3",
-            SpeculativeAlgorithmEnum.MTP: "deepseek_mtp",
+            SpeculativeAlgorithmEnum.MTP: "mtp",
             SpeculativeAlgorithmEnum.NGRAM: "ngram",
         }
 
@@ -397,17 +409,31 @@ class VLLMServer(InferenceServer):
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
 
-        derived_max_model_len = self._derive_max_model_len()
-        specified_max_model_len = find_parameter(
+        # Omni modalities
+        omni_enabled = find_bool_parameter(
             self._model.backend_parameters,
-            ["max-model-len"],
+            ["omni"],
         )
-        if (
-            specified_max_model_len is None
-            and derived_max_model_len
-            and derived_max_model_len > 8192
-        ):
-            arguments.extend(["--max-model-len", "8192"])
+        is_omni = is_omni_model(self._model)
+        if is_omni and not omni_enabled:
+            arguments.extend(
+                [
+                    "--omni",
+                ]
+            )
+
+        is_audio = is_audio_model(self._model)
+
+        if not is_omni and not is_audio:
+
+            specified_max_model_len = find_parameter(
+                self._model.backend_parameters,
+                ["max-model-len"],
+            )
+            if specified_max_model_len is None:
+                derived_max_model_len = self._derive_max_model_len()
+                if derived_max_model_len and derived_max_model_len > 8192:
+                    arguments.extend(["--max-model-len", "8192"])
 
         auto_parallelism_arguments = get_auto_parallelism_arguments(
             self._model.backend_parameters,
@@ -441,7 +467,10 @@ class VLLMServer(InferenceServer):
 
         if self._model.extended_kv_cache and self._model.extended_kv_cache.enabled:
             vendor, _, _ = self._get_device_info()
-            if vendor in [ManufacturerEnum.NVIDIA, ManufacturerEnum.AMD]:
+            if vendor in {
+                manufacturer_to_backend(ManufacturerEnum.NVIDIA),
+                manufacturer_to_backend(ManufacturerEnum.AMD),
+            }:
                 arguments.extend(
                     [
                         "--kv-transfer-config",
@@ -467,15 +496,13 @@ class VLLMServer(InferenceServer):
         arguments.extend(self._flatten_backend_param())
 
         # Append immutable arguments to ensure proper operation for accessing
-        immutable_arguments = [
-            "--host",
-            self._worker.ip,
-            "--port",
-            str(port),
-            "--served-model-name",
-            self._model_instance.model_name,
-        ]
-        arguments.extend(immutable_arguments)
+        # Only add if not already present in arguments
+        extend_args_no_exist(
+            arguments,
+            ("--host", self._worker.ip),
+            ("--port", str(port)),
+            ("--served-model-name", self._model_instance.model_name),
+        )
 
         return arguments
 

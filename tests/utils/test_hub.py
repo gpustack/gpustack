@@ -205,7 +205,6 @@ def test_get_ms_min_gguf_file():
         ),
     ],
 )
-@pytest.mark.asyncio
-async def test_read_repo_file_content(m, file, token, predicate):
-    config_dict = await read_repo_file_content(m, file, token)
+def test_read_repo_file_content(m, file, token, predicate):
+    config_dict = read_repo_file_content(m, file, token)
     assert predicate(config_dict)

@@ -8,7 +8,7 @@ from gpustack.api.exceptions import (
     UnauthorizedException,
     BadRequestException,
 )
-from gpustack.server.services import ModelService, UserService
+from gpustack.server.services import ModelRouteService, UserService
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.users import User
 from gpustack.schemas.models import AccessPolicyEnum
@@ -45,13 +45,14 @@ async def server_auth(
     api_key: Optional[ApiKey] = None
     access_key: Optional[str] = None
     consumer = 'none'
+    cookie_token = await cookie_auth(request)
     try:
         user = await get_current_user(
             request=request,
             session=session,
             basic_credentials=await basic_auth(request),
             bearer_token=await bearer_auth(request),
-            cookie_token=await cookie_auth(request),
+            cookie_token=cookie_token,
         )
         api_key = getattr(request.state, "api_key", None)
         access_key = None if api_key is None else api_key.access_key
@@ -70,7 +71,7 @@ async def server_auth(
             "Missing x-higress-llm-model header for token authentication",
         )
         raise credentials_exception if user is None else model_name_missing_exception
-    pair = await ModelService(session=session).get_model_auth_info_by_name(
+    pair = await ModelRouteService(session=session).get_model_auth_info_by_name(
         name=model_name
     )
     if pair is None:
@@ -97,6 +98,15 @@ async def server_auth(
         "X-Mse-Consumer": consumer,
         "Authorization": f"Bearer {registration_token}",
     }
+    # FIXME: The original info should be removed beforing routing.
+    # Remove this FIXME after we remove the original header in the gateway.
+    headers["x-gpustack-original-cookies"] = request.headers.get("cookie", "")
+    headers["x-gpustack-original-authorization"] = request.headers.get(
+        "authorization", ""
+    )
+    if cookie_token is not None:
+        # backup the cookie in higress
+        headers["cookie"] = "dummy=dummy"
     return Response(
         status_code=200,
         headers=headers,

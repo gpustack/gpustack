@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 def setup_reset_admin_password_cmd(subparsers: argparse._SubParsersAction):
     parser: argparse.ArgumentParser = subparsers.add_parser(
         "reset-admin-password",
+        help="Reset the admin user's password.",
     )
     parser.add_argument(
         "-s",

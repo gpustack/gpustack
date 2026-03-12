@@ -101,3 +101,54 @@ def sanitize_env(env: Dict[str, str]) -> Dict[str, str]:
         for k, v in env.items()
         if not k.startswith(prefixes) and not k.endswith(suffixes)
     }
+
+
+def filter_env_vars(env_dict: dict) -> dict:
+    """
+    Filter out environment variables that should not be passed to the model instance or container.
+    """
+    return {
+        k: v
+        for k, v in env_dict.items()
+        if not (
+            k.startswith(
+                (
+                    "GPUSTACK_",
+                    "PIP_",
+                    "PIPX_",
+                    "POETRY_",
+                    "UV_",
+                    "S6_",
+                    "PGCONFIG_",
+                    "POSTGRES_",
+                )
+            )
+            or k.endswith(
+                (
+                    "_VISIBLE_DEVICES",
+                    "_DISABLE_REQUIRE",
+                    "_DRIVER_CAPABILITIES",
+                    "_PATH",
+                    "_HOME",
+                )
+            )
+            or (
+                k
+                in (
+                    "DEBIAN_FRONTEND",
+                    "LANG",
+                    "LANGUAGE",
+                    "LC_ALL",
+                    "PYTHON_VERSION",
+                    "HOME",
+                    "HOSTNAME",
+                    "PWD",
+                    "_",
+                    "TERM",
+                    "SHLVL",
+                    "LS_COLORS",
+                    "PATH",
+                )
+            )
+        )
+    }

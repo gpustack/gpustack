@@ -1,4 +1,6 @@
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
+
+from tests.utils.mock import mock_async_session
 
 import pytest
 
@@ -20,7 +22,7 @@ from tests.policies.candidate_selectors.vllm.test_vllm_resource_fit_selector imp
             [linux_nvidia_4_4080_16gx4()],
             make_model(1, None, "Qwen/Qwen2.5-Omni-7B"),
             [
-                '- The model requires approximately 25.99 GiB of VRAM and 2.6 GiB of RAM.\n'
+                '- The model requires approximately 26.99 GiB of VRAM and 2.7 GiB of RAM.\n'
                 '- The current available GPU only has 15.99 GiB allocatable VRAM.'
             ],
         ),
@@ -37,7 +39,7 @@ from tests.policies.candidate_selectors.vllm.test_vllm_resource_fit_selector imp
                 "Qwen/Qwen3-8B",
             ),
             [
-                '- The model requires approximately 19.31 GiB of VRAM and 2.0 GiB of RAM.\n'
+                '- The model requires approximately 20.31 GiB of VRAM and 2.03 GiB of RAM.\n'
             ],
         ),
     ],
@@ -64,11 +66,11 @@ async def test_schedule_single_work_multi_gpu(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -119,11 +121,11 @@ async def test_failed_cases_auto_schedule(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
         candidates = await resource_fit_selector.select_candidates(workers)

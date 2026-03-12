@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from fastapi import APIRouter, Query
-from sqlmodel import desc, distinct, select, func, col
+from sqlmodel import desc, distinct, select, func, col, and_, or_
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.schemas.common import ItemList
@@ -24,6 +24,7 @@ from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
 from gpustack.server.deps import SessionDep
 from gpustack.schemas import Worker, Cluster
+from gpustack.schemas.model_provider import ModelProvider
 from gpustack.server.system_load import compute_system_load
 
 router = APIRouter()
@@ -165,6 +166,7 @@ async def get_model_usage_stats(
     model_ids: Optional[List[int]] = None,
     user_ids: Optional[List[int]] = None,
     cluster_id: Optional[int] = None,
+    provider_model_names: Optional[Dict[int, Optional[List[str]]]] = None,
 ) -> ModelUsageStats:
     if start_date is None or end_date is None:
         end_date = date.today()
@@ -187,8 +189,17 @@ async def get_model_usage_stats(
         .order_by(ModelUsage.date)
     )
 
+    or_conditions = []
     if model_ids is not None:
-        statement = statement.where(col(ModelUsage.model_id).in_(model_ids))
+        or_conditions.append(col(ModelUsage.model_id).in_(model_ids))
+    for provider_id, model_names in (provider_model_names or {}).items():
+        if provider_id is not None:
+            and_conds = [col(ModelUsage.provider_id) == provider_id]
+            if model_names:
+                and_conds.append(col(ModelUsage.model_name).in_(model_names))
+            or_conditions.append(and_(*and_conds))
+    if or_conditions:
+        statement = statement.where(or_(*or_conditions))
 
     if user_ids is not None:
         statement = statement.where(col(ModelUsage.user_id).in_(user_ids))
@@ -279,7 +290,58 @@ async def get_model_usage_summary(
     )
 
 
-async def get_active_models(
+async def _get_maas_active_models(session: AsyncSession) -> List[ModelSummary]:
+    all_providers = await ModelProvider.all_by_field(
+        session, field="deleted_at", value=None
+    )
+    if not all_providers:
+        return []
+
+    provider_ids = [p.id for p in all_providers]
+    total_tokens = func.sum(
+        ModelUsage.prompt_token_count + ModelUsage.completion_token_count
+    )
+    # Aggregate model usage in the database for efficiency
+    statement = (
+        select(
+            ModelUsage.provider_id,
+            ModelUsage.model_name,
+            total_tokens.label("total_token_count"),
+        )
+        .where(col(ModelUsage.provider_id).in_(provider_ids))
+        .group_by(ModelUsage.provider_id, ModelUsage.model_name)
+        .order_by(func.coalesce(total_tokens, 0).desc())
+        .limit(10)
+    )
+    top_model_usages = (await session.exec(statement)).all()
+
+    models_by_provider_and_name = {
+        (p.id, m.name): m for p in all_providers for m in (p.models or [])
+    }
+
+    provider_id_to_name = {p.id: p.name for p in all_providers}
+
+    model_summaries = []
+    for usage in top_model_usages:
+        model = models_by_provider_and_name.get((usage.provider_id, usage.model_name))
+
+        model_summaries.append(
+            ModelSummary(
+                provider_id=usage.provider_id,
+                provider_name=provider_id_to_name.get(
+                    usage.provider_id, "Unknown Provider"
+                ),
+                name=usage.model_name,
+                instance_count=0,
+                token_count=int(usage.total_token_count or 0),
+                categories=([model.category] if model and model.category else None),
+            )
+        )
+
+    return model_summaries
+
+
+async def _get_gpustack_active_models(
     session: AsyncSession, cluster_id: Optional[int] = None
 ) -> List[ModelSummary]:
     statement = active_model_statement(cluster_id=cluster_id)
@@ -327,6 +389,18 @@ async def get_active_models(
         )
 
     return model_summary
+
+
+async def get_active_models(
+    session: AsyncSession, cluster_id: Optional[int] = None
+) -> List[ModelSummary]:
+    summary = await _get_gpustack_active_models(session, cluster_id)
+    if cluster_id is None:
+        maas_active_models = await _get_maas_active_models(session)
+        summary.extend(maas_active_models)
+    summary.sort(key=lambda x: x.token_count, reverse=True)
+    summary = summary[:10]
+    return summary
 
 
 def aggregate_resource_claim(
@@ -466,16 +540,32 @@ async def usage_stats(
     user_ids: Optional[List[int]] = Query(
         None, description="Filter by user IDs. Defaults to all users."
     ),
+    provider_model_names: Optional[List[str]] = Query(
+        None,
+        description="Filter by provider and model names. Format is 'provider_id:model_name'. To filter by provider ID only, use 'provider_id:'. Defaults to no filtering.",
+    ),
 ):
     """
     Get model usage statistics.
     This endpoint returns aggregated statistics for model usage, including token counts and request counts.
-    It can filter by date range, model IDs, and user IDs.
+    It can filter by date range, model IDs, user IDs, model names with provider ID prefix.
     """
+    model_names_by_provider_id = {}
+    for id_prefix_name in provider_model_names or []:
+        if ":" not in id_prefix_name:
+            continue
+        id_str, name = id_prefix_name.split(":", 1)
+        try:
+            provider_id = int(id_str)
+        except ValueError:
+            continue
+        names: List[str] = model_names_by_provider_id.setdefault(provider_id, [])
+        names.append(name)
     return await get_model_usage_stats(
         session,
         start_date=start_date,
         end_date=end_date,
         model_ids=model_ids,
         user_ids=user_ids,
+        provider_model_names=model_names_by_provider_id,
     )

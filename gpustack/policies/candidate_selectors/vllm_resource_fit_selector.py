@@ -33,9 +33,13 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceSubordinateWorker,
 )
-from gpustack.schemas.workers import GPUDevicesInfo, Worker
+from gpustack.schemas.workers import GPUDevicesStatus, Worker
 from gpustack.config import Config
-from gpustack.utils.command import find_parameter, find_int_parameter
+from gpustack.utils.command import (
+    find_bool_parameter,
+    find_parameter,
+    find_int_parameter,
+)
 from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
@@ -81,9 +85,21 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             VLLMResourceFitSelector.get_world_size_from_backend_parameters(model)
         )
         self._set_gpu_count(world_size, strategies)
+
+    async def _init_model_parameters(self, workers: List[Worker]):
+        await super()._init_model_parameters(workers)
+        self._validate_arguments()
+        # GMU relies on architecture info in model parameters. Set it after model parameters are initialized.
         self._set_gpu_memory_utilization()
 
-        self._validate_arguments()
+    def _should_check_vision_tp_divisibility(self) -> bool:
+        if not self._model.backend_parameters:
+            return True
+
+        language_only = find_bool_parameter(
+            self._model.backend_parameters, ["language-model-only"]
+        )
+        return not language_only
 
     @staticmethod
     def get_world_size_from_backend_parameters(
@@ -152,13 +168,15 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         NON_LLM_GMU_EXCEPTIONS = {
             "Qwen3ForCausalLM",
             "Qwen3ForSequenceClassification",  # Qwen3-Embedding & Qwen3-Reranker
+            "Qwen3VLForConditionalGeneration",  # Qwen3-VL-Embedding & Qwen3-VL-Reranker
         }
 
-        if CategoryEnum.LLM not in self._model.categories:
-            # Disable for non-LLM models unless they are in the exception list
-            return not any(arch in NON_LLM_GMU_EXCEPTIONS for arch in architectures)
+        use_gmu_categories = [CategoryEnum.LLM, CategoryEnum.SPEECH_TO_TEXT]
+        if any(cat in self._model.categories for cat in use_gmu_categories):
+            return False
 
-        return False
+        # Disable for non-LLM models unless they are in the exception list
+        return not any(arch in NON_LLM_GMU_EXCEPTIONS for arch in architectures)
 
     def _set_model_parameters(self):
         super()._set_model_parameters()
@@ -238,6 +256,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         """
         Get schedule candidates that fit the GPU resources requirement.
         """
+
+        # Initialize model parameters.
+        await self._init_model_parameters(workers)
 
         self._vram_claim = await estimate_model_vram(
             self._model, self._config.huggingface_token, workers
@@ -499,7 +520,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             self._largest_multi_gpu_total = len(worker.status.gpu_devices)
 
         # Sort by vram in descending order
-        sorted_gpu_devices: GPUDevicesInfo = sorted(
+        sorted_gpu_devices: GPUDevicesStatus = sorted(
             gpu_list,
             key=lambda gpu: allocatable.vram.get(gpu.index, 0),
             reverse=True,

@@ -27,10 +27,10 @@ from gpustack.schemas.model_evaluations import (
 from gpustack.schemas.models import (
     ModelInstance,
     BackendEnum,
-    CategoryEnum,
     SourceEnum,
     get_backend,
     is_gguf_model,
+    is_audio_model,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.worker_selector import WorkerSelector
@@ -93,9 +93,20 @@ async def evaluate_models(
 
     model_instances = await ModelInstance.all_by_fields(session, fields=fields)
 
+    if len(model_specs) == 1:
+        # Sort worker for single-model evaluation only. No need for batch evaluation.
+        workers = await scheduler.prioritize_workers_with_model_files(
+            session, model_specs[0], workers
+        )
+
     async def evaluate(model: ModelSpec):
         return await evaluate_model_with_cache(
-            config, session, model, workers, model_instances
+            config,
+            session,
+            model,
+            workers,
+            model_instances,
+            cluster_id=cluster_id,
         )
 
     tasks = [evaluate(model) for model in model_specs]
@@ -146,6 +157,7 @@ async def evaluate_model_with_cache(
     model: ModelSpec,
     workers: List[Worker],
     model_instances: List[ModelInstance],
+    cluster_id: Optional[int] = None,
 ) -> ModelEvaluationResult:
     cache_key = make_hashable_key(model, workers)
     if cache_key in evaluate_cache:
@@ -157,7 +169,7 @@ async def evaluate_model_with_cache(
     try:
         async with evaluate_model_limiter:
             result = await evaluate_model(
-                config, session, model, workers, model_instances
+                config, session, model, workers, model_instances, cluster_id=cluster_id
             )
             evaluate_cache[cache_key] = result
     except Exception as e:
@@ -178,6 +190,7 @@ async def evaluate_model(
     model: ModelSpec,
     workers: List[Worker],
     model_instances: List[ModelInstance],
+    cluster_id: Optional[int] = None,
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
@@ -187,8 +200,8 @@ async def evaluate_model(
     await set_gguf_model_file_path(config, model)
 
     evaluations = [
-        (evaluate_model_input, (session, model)),
-        (evaluate_model_metadata, (config, session, model, workers)),
+        (evaluate_model_input, (session, model, cluster_id)),
+        (evaluate_model_metadata, (config, model, workers)),
         (evaluate_environment, (model, workers)),
     ]
     for evaluation, args in evaluations:
@@ -289,19 +302,6 @@ async def evaluate_environment(
     workers: List[Worker],
 ) -> Tuple[bool, List[str]]:
     backend = get_backend(model)
-    has_linux_workers = any(worker.labels.get("os") == "linux" for worker in workers)
-    if backend == BackendEnum.VLLM and not has_linux_workers:
-        return False, ["The model requires Linux workers but none are available."]
-
-    only_windows_workers = all(
-        worker.labels.get("os") == "windows" for worker in workers
-    )
-    if (
-        only_windows_workers
-        and backend == BackendEnum.VOX_BOX
-        and CategoryEnum.TEXT_TO_SPEECH.value in model.categories
-    ):
-        return False, ["The model is not supported on Windows workers."]
 
     if backend == BackendEnum.ASCEND_MINDIE and not any_gpu_match(
         workers, lambda gpu: gpu.vendor == ManufacturerEnum.ASCEND.value
@@ -337,7 +337,6 @@ async def evaluate_environment(
 
 async def evaluate_model_metadata(
     config: Config,
-    session: AsyncSession,
     model: ModelSpec,
     workers: List[Worker],
 ) -> Tuple[bool, List[str]]:
@@ -363,8 +362,8 @@ async def evaluate_model_metadata(
                         else:
                             # Path not found on any worker
                             return False, [
-                                "The model file path you specified does not exist on the GPUStack server or any worker. "
-                                "Please ensure the model file is accessible from at least one worker."
+                                "The model file path you specified does not exist."
+                                "Please ensure the model file is accessible from at least one node."
                             ]
                 except Exception as e:
                     logger.warning(
@@ -372,8 +371,7 @@ async def evaluate_model_metadata(
                     )
                     # Fallback to original warning
                     return False, [
-                        "The model file path you specified does not exist on the GPUStack server. "
-                        "It's recommended to place the model file at the same path on both the GPUStack server and GPUStack workers. This helps GPUStack make better decisions."
+                        "Failed to get model metadata. The model file path you specified does not exist."
                     ]
 
         if model.source in [
@@ -392,15 +390,11 @@ async def evaluate_model_metadata(
                 )
 
         if is_gguf_model(model):
-            await scheduler.evaluate_gguf_model(config, model)
+            await scheduler.evaluate_gguf_model(model, workers=workers)
         elif model.backend == BackendEnum.VOX_BOX:
             await scheduler.evaluate_vox_box_model(config, model)
-        else:
-            await scheduler.evaluate_pretrained_config(
-                model, session=session, workers=workers
-            )
-
-        set_default_worker_selector(model)
+        elif not is_audio_model(model):
+            await scheduler.evaluate_pretrained_config(model, workers=workers)
     except Exception as e:
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
@@ -411,25 +405,13 @@ async def evaluate_model_metadata(
     return True, []
 
 
-def set_default_worker_selector(
-    model: ModelSpec,
-) -> ModelSpec:
-    if (
-        not model.worker_selector
-        and not model.gpu_selector
-        and get_backend(model) == BackendEnum.VLLM
-    ):
-        # vLLM models are only supported on Linux
-        model.worker_selector = {"os": "linux"}
-    return model
-
-
 async def evaluate_model_input(
     session: AsyncSession,
     model: ModelSpec,
+    cluster_id: Optional[int] = None,
 ) -> Tuple[bool, List[str]]:
     try:
-        await validate_model_in(session, model)
+        await validate_model_in(session, model, cluster_id=cluster_id)
     except HTTPException as e:
         return False, [e.message]
     except Exception as e:

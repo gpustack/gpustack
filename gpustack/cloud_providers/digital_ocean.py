@@ -195,6 +195,7 @@ class DigitalOceanClient(ProviderClientBase):
         token,
         image_name,
         os_image,
+        worker_name,
         secret_configs: Dict[str, Any] = {},
     ) -> UserDataTemplate:
         image_info = await self.client.images.get(os_image)
@@ -213,7 +214,7 @@ class DigitalOceanClient(ProviderClientBase):
             install_driver = ManufacturerEnum.NVIDIA
             setup_driver = ManufacturerEnum.NVIDIA
         user_data = await super().construct_user_data(
-            server_url, token, image_name, os_image, secret_configs
+            server_url, token, image_name, os_image, worker_name, secret_configs
         )
         user_data.distribution = distribution
         user_data.setup_driver = setup_driver

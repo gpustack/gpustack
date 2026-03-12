@@ -1,0 +1,23 @@
+#!/command/with-contenv /bin/bash
+# shellcheck shell=bash
+# shellcheck disable=SC1091,SC1090
+
+SERVICE_DIR=$(cd "$(dirname "$0")" && pwd)
+SERVICE_NAME=$(basename "$SERVICE_DIR")
+SERVICE_NAME=${SERVICE_NAME%-logger}
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+source "$SCRIPT_ROOT/default-variables.sh"
+
+set -e
+
+SERVICE_LOG_DIR="${LOG_DIR}/${SERVICE_NAME}"
+createDir "$SERVICE_LOG_DIR"
+chown 65534:65534 "$SERVICE_LOG_DIR"
+chmod 755 "$SERVICE_LOG_DIR"
+
+# clean leftover lock file
+rm -rf "${SERVICE_LOG_DIR}/lock"
+
+exec logutil-service "${SERVICE_LOG_DIR}"

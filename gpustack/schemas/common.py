@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import timezone, datetime
 import json
 from typing import ClassVar, Generic, List, Optional, Tuple, Type, TypeVar
 
@@ -11,6 +11,13 @@ from sqlalchemy import JSON as SQLAlchemyJSON, TypeDecorator
 from gpustack.api.exceptions import InvalidException
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class PublicFields:
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: Optional[datetime] = None
 
 
 class Pagination(BaseModel):
@@ -179,7 +186,7 @@ def pydantic_column_type(
             return x == y
 
         def _prepare_value_for_dump(self, value):
-            return pydantic_type.model_validate(value)
+            return TypeAdapter(pydantic_type).validate_python(value)
 
         def __repr__(self):
             return "JSON()"

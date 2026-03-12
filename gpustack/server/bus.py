@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
-import copy
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +114,7 @@ class EventBus:
     async def publish(self, topic: str, event: Event):
         if topic in self.subscribers:
             for subscriber in self.subscribers[topic]:
-                await subscriber.enqueue(copy.deepcopy(event))
+                await subscriber.enqueue(event)
 
 
 event_bus = EventBus()

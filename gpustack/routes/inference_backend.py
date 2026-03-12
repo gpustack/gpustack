@@ -1,4 +1,5 @@
 import logging
+import math
 from copy import deepcopy
 from typing import List, Tuple, Optional, Dict
 
@@ -6,7 +7,7 @@ import yaml
 from fastapi import APIRouter, Body
 from gpustack_runner.runner import ServiceVersionedRunner, ServiceRunner
 from gpustack_runtime.deployer.__utils__ import compare_versions
-from sqlalchemy import or_, func
+from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -30,7 +31,8 @@ from gpustack.schemas.inference_backend import (
     VersionListItem,
     is_built_in_backend,
 )
-from gpustack.schemas.models import BackendEnum, Model
+from gpustack.schemas.models import BackendEnum, Model, BackendSourceEnum
+from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack_runner import list_service_runners
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
@@ -345,7 +347,9 @@ async def list_backend_configs(  # noqa: C901
             versions: List[VersionListItem] = []
             if backend.version_configs and backend.version_configs.root:
                 versions = [
-                    VersionListItem(version=version)
+                    VersionListItem(
+                        version=version, env=backend.get_backend_env(version)
+                    )
                     for version in backend.version_configs.root.keys()
                 ]
 
@@ -363,9 +367,13 @@ async def list_backend_configs(  # noqa: C901
                         is_deprecated = get_runner_deprecate(
                             runner_versions.get(version, [])
                         )
+                        # Get environment for this specific version
+                        version_env = backend.get_backend_env(version)
                         versions.append(
                             VersionListItem(
-                                version=version, is_deprecated=is_deprecated
+                                version=version,
+                                is_deprecated=is_deprecated,
+                                env=version_env,
                             )
                         )
 
@@ -382,8 +390,16 @@ async def list_backend_configs(  # noqa: C901
                     default_backend_param=backend.default_backend_param,
                     versions=versions,
                     is_built_in=backend.is_built_in,
+                    enabled=True,
+                    backend_source=BackendSourceEnum.BUILT_IN,
+                    default_env=backend.default_env,
                 )
             else:
+                if (
+                    backend.backend_source == BackendSourceEnum.COMMUNITY
+                    and not backend.enabled
+                ):
+                    continue
                 # For custom backends, use backend_name as show_name
                 backend_item = InferenceBackendListItem(
                     backend_name=backend.backend_name,
@@ -391,6 +407,9 @@ async def list_backend_configs(  # noqa: C901
                     default_backend_param=backend.default_backend_param,
                     versions=versions,
                     is_built_in=False,
+                    enabled=backend.enabled,
+                    backend_source=backend.backend_source,
+                    default_env=backend.default_env,
                 )
 
             items.append(backend_item)
@@ -402,6 +421,9 @@ async def list_backend_configs(  # noqa: C901
             default_backend_param=None,
             versions=[],
             is_built_in=False,
+            enabled=True,
+            backend_source=BackendSourceEnum.BUILT_IN,
+            default_env=None,
         )
         items.append(custom_backend_item)
 
@@ -418,10 +440,13 @@ async def merge_runner_versions_to_db(
     # Get database backends first
     db_result = await InferenceBackend.all(session)
 
+    # Sort by id ascending to ensure consistent ordering
+    db_result_sorted = sorted(db_result, key=lambda x: x.id if x.id else 0)
+
     # Create a map of database backends by name for easy lookup
     db_backends_map = {
         backend.backend_name: InferenceBackendPublic(**backend.model_dump())
-        for backend in db_result
+        for backend in db_result_sorted
     }
 
     # Ensure all BUILT_IN_BACKENDS are included
@@ -461,6 +486,25 @@ async def merge_runner_versions_to_db(
     # Add remaining database backends that are not in BUILT_IN_BACKENDS
     for backend_name, db_backend in db_backends_map.items():
         if backend_name not in built_in_backend_names:
+            # Migrate versions with built_in_frameworks to built_in_version_configs
+            if (
+                db_backend.backend_source == BackendSourceEnum.COMMUNITY
+                and db_backend.version_configs
+                and db_backend.version_configs.root
+            ):
+                versions_to_move = {}
+                for version, config in db_backend.version_configs.root.items():
+                    if config.built_in_frameworks:
+                        versions_to_move[version] = config
+
+                if versions_to_move:
+                    if not db_backend.built_in_version_configs:
+                        db_backend.built_in_version_configs = {}
+                    db_backend.built_in_version_configs.update(versions_to_move)
+
+                    for version in versions_to_move:
+                        del db_backend.version_configs.root[version]
+
             merged_backends.append(db_backend)
 
     return merged_backends
@@ -503,27 +547,67 @@ def _generate_framework_index_map(
     return framework_map
 
 
+def _filter_community_backends(
+    backends: List[InferenceBackendPublic],
+    is_only_community: Optional[bool] = None,
+) -> List[InferenceBackendPublic]:
+    """
+    Filter backends to only include community backends without custom frameworks.
+
+    This function filters the backend list to only include backends with
+    backend_source=COMMUNITY, and removes any versions that have custom_framework set.
+
+    Args:
+        backends: List of inference backends to filter
+
+    Returns:
+        List of community backends with non-custom framework versions only
+    """
+    filter_backends = []
+
+    for backend in backends:
+        if is_only_community:
+            # using in community_backends catalog
+            if backend.backend_source != BackendSourceEnum.COMMUNITY:
+                continue
+            backend.version_configs.root = {}
+        else:
+            # using in common inference_backends view
+            if (
+                backend.backend_source == BackendSourceEnum.COMMUNITY
+                and not backend.enabled
+            ):
+                continue
+
+        filter_backends.append(backend)
+
+    return filter_backends
+
+
 @router.get("", response_model=InferenceBackendsPublic)
 async def get_inference_backends(  # noqa: C901
     session: SessionDep,
     params: ListParamsDep,
     search: str = None,
     include_deprecated: bool = False,
+    community: Optional[bool] = None,
+    backend_source: Optional[str] = None,
 ):
     """
-    Get paginated list of inference backends with optional search.
+    Get paginated list of inference backends with optional search and filters.
+
+    Args:
+        session: Database session
+        params: List parameters (page, perPage, watch, sort_by)
+        search: Search keyword for backend_name and description
+        include_deprecated: Include deprecated versions
+        community: Filter community backends (True=community only with non-custom versions, False/None=all backends)
+        backend_source: Filter by backend source (built-in, custom, or community)
+
+    Returns:
+        InferenceBackendsPublic: Paginated list of inference backends
     """
     fields = {}
-
-    extra_conditions = []
-    if search:
-        lower_search = search.lower()
-        extra_conditions.append(
-            or_(
-                func.lower(InferenceBackend.backend_name).like(f"%{lower_search}%"),
-                func.lower(InferenceBackend.description).like(f"%{lower_search}%"),
-            )
-        )
 
     if params.watch:
         return StreamingResponse(
@@ -531,19 +615,29 @@ async def get_inference_backends(  # noqa: C901
             media_type="text/event-stream",
         )
 
-    merged_backends = await merge_runner_versions_to_db(
-        session, with_deprecated=include_deprecated
-    )
-    filter_backends = []
-    workers = await Worker.all(session)
+    async with async_session() as session:
+        merged_backends = await merge_runner_versions_to_db(
+            session, with_deprecated=include_deprecated
+        )
+
+        # Get worker GPU information for framework sorting
+        workers = await Worker.all(session)
+
     framework_list = set()
     for worker in workers:
         if worker.status and worker.status.gpu_devices:
             for gpu in worker.status.gpu_devices:
                 framework_list.add(gpu.type)
 
+    # Single-pass filtering and transformation pipeline:
+    # 1. Framework sorting (data transformation)
+    # 2. Search filter (early rejection)
+    # 3. Community filter (early rejection)
+    # 4. Backend source filter (early rejection)
+    # 5. Framework index map generation (final transformation)
+    filter_backends = []
     for backend in merged_backends:
-        # sorted by if framework is supported
+        # 1. Sort frameworks by support status (must be first as it modifies data structure)
         sorted_version_configs = {}
         for version, config in backend.built_in_version_configs.items():
             if config.built_in_frameworks:
@@ -562,21 +656,43 @@ async def get_inference_backends(  # noqa: C901
             sorted_version_configs[version] = config
 
         backend.built_in_version_configs = sorted_version_configs
-        filter_backends.append(backend)
 
-    # Apply search filter to merged backends if search is provided
-    if search:
-        lower_search = search.lower()
-        search_filter_backends = []
-        for backend in filter_backends:
-            if lower_search in backend.backend_name.lower() or (
-                backend.description and lower_search in backend.description.lower()
+        # 2. Apply search filter (early rejection to reduce subsequent processing)
+        if search:
+            lower_search = search.lower()
+            if not (
+                lower_search in backend.backend_name.lower()
+                or (backend.description and lower_search in backend.description.lower())
             ):
-                search_filter_backends.append(backend)
-        filter_backends = search_filter_backends
+                continue  # Skip backends that don't match search criteria
 
-    # Generate framework_index_map for each backend
-    for backend in filter_backends:
+        # 3. Apply community filter (early rejection)
+        if community is True:
+            # Using in community_backends catalog
+            if backend.backend_source != BackendSourceEnum.COMMUNITY:
+                continue
+            # Clear custom versions for community backends
+            if backend.version_configs:
+                backend.version_configs.root = {}
+        else:
+            # Using in common inference_backends view
+            if (
+                backend.backend_source == BackendSourceEnum.COMMUNITY
+                and not backend.enabled
+            ):
+                continue
+
+        # 4. Apply backend_source filter (early rejection)
+        if backend_source:
+            try:
+                source_enum = BackendSourceEnum(backend_source)
+                if backend.backend_source != source_enum:
+                    continue
+            except ValueError:
+                # Invalid backend_source value, log warning but don't filter
+                logger.warning(f"Invalid backend_source value: {backend_source}")
+
+        # 5. Generate framework_index_map (must be last as it depends on processed data)
         version_config_dicts = []
         if backend.built_in_version_configs:
             version_config_dicts.append(backend.built_in_version_configs)
@@ -586,6 +702,9 @@ async def get_inference_backends(  # noqa: C901
         backend.framework_index_map = _generate_framework_index_map(
             version_config_dicts
         )
+
+        # Backend passed all filters, add to result list
+        filter_backends.append(backend)
 
     # Apply pagination to merged results
     total = len(filter_backends)
@@ -597,7 +716,7 @@ async def get_inference_backends(  # noqa: C901
         page=params.page,
         perPage=params.perPage,
         total=total,
-        totalPage=max(total / params.perPage, 1),
+        totalPage=max(math.ceil(total / params.perPage), 1),
     )
 
     # Create the response with the same structure as the original
@@ -614,7 +733,7 @@ async def get_all_inference_backends(
     backends = await merge_runner_versions_to_db(session)
     ret = []
     for backend in backends:
-        if not backend.is_built_in:
+        if backend.backend_source == BackendSourceEnum.CUSTOM:
             ret.append(backend)
             continue
         for built_in_version, config in backend.built_in_version_configs.items():
@@ -663,6 +782,8 @@ async def create_inference_backend(
                 f"Backend name {backend_in.backend_name} duplicates with built-in backends (case-insensitive). Please use another name."
             ),
         )
+    backend_in.backend_source = BackendSourceEnum.CUSTOM
+    backend_in.enabled = True
     # Check if backend with same name already exists
     existing = await InferenceBackend.one_by_field(
         session, "backend_name", backend_in.backend_name
@@ -673,7 +794,7 @@ async def create_inference_backend(
         )
 
     # Validate version names for custom backends before creating
-    validate_versions_suffix(backend_in.backend_name, None)
+    validate_custom_suffix(backend_in.backend_name, None)
 
     for version in backend_in.version_configs.root.keys():
         backend_in.version_configs.root[version].built_in_frameworks = None
@@ -688,6 +809,9 @@ async def create_inference_backend(
             default_entrypoint=backend_in.default_entrypoint,
             health_check_path=backend_in.health_check_path,
             description=backend_in.description,
+            default_env=backend_in.default_env,
+            enabled=backend_in.enabled,
+            backend_source=backend_in.backend_source,
         )
         backend = await InferenceBackend.create(session, backend)
     except Exception as e:
@@ -722,29 +846,15 @@ async def update_inference_backend(
         )
 
     if backend_in.version_configs is not None:
-        current_versions = {}
-        if backend.version_configs and backend.version_configs.root:
-            current_versions = backend.version_configs.root
-
-        new_versions = {}
-        if backend_in.version_configs and backend_in.version_configs.root:
-            new_versions = backend_in.version_configs.root
-
-        removed_versions = set(current_versions.keys()) - set(new_versions.keys())
-        for version in removed_versions:
-            is_in_use, model_names = await check_backend_in_use(
-                session, backend.backend_name, version
-            )
-            if is_in_use:
-                raise BadRequestException(
-                    message=f"Cannot remove version name '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
-                )
+        await _validate_version_removal(session, backend, backend_in.version_configs)
 
     # Validate version names for custom backends before updating
-    if backend.is_built_in:
-        validate_versions_suffix(None, backend_in.version_configs)
+    if backend.backend_source == BackendSourceEnum.CUSTOM or (
+        backend.backend_source is None and not backend.is_built_in
+    ):
+        validate_custom_suffix(backend_in.backend_name, None)
     else:
-        validate_versions_suffix(backend_in.backend_name, None)
+        validate_custom_suffix(None, backend_in.version_configs)
 
     for version in backend_in.version_configs.root.keys():
         backend_in.version_configs.root[version].built_in_frameworks = None
@@ -760,7 +870,21 @@ async def update_inference_backend(
             "default_entrypoint": backend_in.default_entrypoint,
             "health_check_path": backend_in.health_check_path,
             "description": backend_in.description,
+            "default_env": backend_in.default_env,
+            "backend_source": backend_in.backend_source,
         }
+        if backend_in.backend_source == BackendSourceEnum.COMMUNITY:
+            if backend_in.enabled is not None:
+                update_data["enabled"] = backend_in.enabled
+            built_in_version = {
+                k: v
+                for k, v in backend.version_configs.root.items()
+                if v.built_in_frameworks
+            }
+            # merge built-in versions with custom versions for update
+            built_in_version.update(update_data['version_configs'].root)
+            update_data['version_configs'].root = built_in_version
+
         await backend.update(session, update_data)
     except Exception as e:
         raise InternalServerErrorException(
@@ -778,6 +902,12 @@ async def delete_inference_backend(session: SessionDep, id: int):
     backend = await InferenceBackend.one_by_id(session, id)
     if not backend:
         raise NotFoundException(message=f"Inference backend {id} not found")
+
+    if (
+        backend.backend_source != BackendSourceEnum.CUSTOM
+        and backend.backend_source is not None
+    ):
+        raise BadRequestException(message="Cannot delete built-in or community backend")
 
     # Check if the backend is being used by any models
     is_in_use, model_names = await check_backend_in_use(session, backend.backend_name)
@@ -839,6 +969,8 @@ async def create_inference_backend_from_yaml(
                     f"Backend name {req_yaml_data['backend_name']} duplicates with built-in backends (case-insensitive). Please use another name."
                 ),
             )
+        req_yaml_data["backend_source"] = BackendSourceEnum.CUSTOM
+        req_yaml_data["enabled"] = True
 
         # Check if backend with same name already exists
         existing = await InferenceBackend.one_by_field(
@@ -857,6 +989,9 @@ async def create_inference_backend_from_yaml(
             "default_run_command",
             "health_check_path",
             "description",
+            "default_env",
+            "enabled",
+            "backend_source",
         ]
         yaml_data = {k: req_yaml_data[k] for k in allowed_keys if k in req_yaml_data}
 
@@ -870,7 +1005,13 @@ async def create_inference_backend_from_yaml(
             yaml_data['version_configs'] = VersionConfigDict(root=version_configs_dict)
 
         # Validate version names for custom backends
-        validate_versions_suffix(yaml_data['backend_name'], None)
+        validate_custom_suffix(yaml_data['backend_name'], None)
+
+        # Validate YAML data using Pydantic model to ensure field types are correct
+        try:
+            InferenceBackendCreate.model_validate(yaml_data)
+        except ValidationError as e:
+            raise BadRequestException(message=f"Invalid YAML data: {e}")
 
         # Create the backend
         backend = InferenceBackend(**yaml_data)
@@ -929,51 +1070,50 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             "version_configs",
             "default_backend_param",
             "default_run_command",
+            "default_entrypoint",
             "health_check_path",
             "description",
+            "default_env",
+            "enabled",
+            "backend_source",
         ]
         if not is_built_in_backend(backend.backend_name):
             allowed_keys.append("default_version")
 
         yaml_data = {k: req_yaml_data[k] for k in allowed_keys if k in req_yaml_data}
 
-        # Convert version_configs to VersionConfigDict if present
-        if 'version_configs' in yaml_data and yaml_data['version_configs']:
-            version_configs_dict = {}
-            for version, config in yaml_data['version_configs'].items():
-                if config.get('built_in_frameworks'):
-                    config['built_in_frameworks'] = None
-                version_configs_dict[version] = VersionConfig(**config)
-            yaml_data['version_configs'] = VersionConfigDict(root=version_configs_dict)
+        # Process version_configs if present
+        yaml_data['version_configs'] = _process_version_configs(
+            yaml_data.get('version_configs')
+        )
 
-        if 'version_configs' in yaml_data:
-            current_versions = {}
-            if backend.version_configs and backend.version_configs.root:
-                current_versions = backend.version_configs.root
+        # Check if any versions are being removed and validate they're not in use
+        await _validate_version_removal(
+            session, backend, yaml_data.get('version_configs')
+        )
 
-            new_versions = {}
-            if yaml_data['version_configs'] and yaml_data['version_configs'].root:
-                new_versions = yaml_data['version_configs'].root
-
-            removed_versions = set(current_versions.keys()) - set(new_versions.keys())
-            for version in removed_versions:
-                is_in_use, model_names = await check_backend_in_use(
-                    session, backend.backend_name, version
-                )
-                if is_in_use:
-                    raise BadRequestException(
-                        message=f"Cannot remove version name '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
-                    )
-
-        # Validate version names
-        if backend.is_built_in:
-            validate_versions_suffix(None, yaml_data['version_configs'])
+        # Validate version names based on backend source
+        if backend.backend_source == BackendSourceEnum.CUSTOM or (
+            backend.backend_source is None and not backend.is_built_in
+        ):
+            validate_custom_suffix(yaml_data['backend_name'], None)
         else:
-            validate_versions_suffix(yaml_data['backend_name'], None)
+            validate_custom_suffix(None, yaml_data.get('version_configs'))
 
-        if yaml_data.get('version_configs') and yaml_data['version_configs'].root:
-            for v in yaml_data['version_configs'].root.keys():
-                yaml_data['version_configs'].root[v].built_in_frameworks = None
+        # Clear built_in_frameworks for all versions in yaml_data
+        _clear_built_in_frameworks(yaml_data.get('version_configs'))
+
+        # Merge built-in versions for COMMUNITY backends
+        if backend.backend_source == BackendSourceEnum.COMMUNITY:
+            yaml_data['version_configs'] = _merge_community_versions(
+                backend, yaml_data.get('version_configs')
+            )
+
+        # Validate YAML data using Pydantic model to ensure field types are correct
+        try:
+            InferenceBackendUpdate.model_validate(yaml_data)
+        except ValidationError as e:
+            raise BadRequestException(message=f"Invalid YAML data: {e}")
 
         # Update the backend from YAML data (after normalization)
         await backend.update(session, yaml_data)
@@ -990,20 +1130,125 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         )
 
 
-def validate_versions_suffix(
+def _process_version_configs(
+    version_configs_data: Optional[dict],
+) -> VersionConfigDict:
+    """
+    Convert raw version_configs dict to VersionConfigDict.
+
+    Returns None if version_configs_data is None or empty.
+    """
+    version_configs_dict = {}
+    for version, config in version_configs_data.items() if version_configs_data else []:
+        # Clear built_in_frameworks during initial processing
+        if config.get('built_in_frameworks'):
+            config['built_in_frameworks'] = None
+        version_configs_dict[version] = VersionConfig(**config)
+
+    return VersionConfigDict(root=version_configs_dict)
+
+
+async def _validate_version_removal(
+    session,
+    backend: InferenceBackend,
+    new_version_configs: Optional[VersionConfigDict],
+):
+    """
+    Check if any versions are being removed and validate they're not in use.
+    """
+    # Get current versions (empty dict if none)
+    current_versions = {}
+    if backend.version_configs and backend.version_configs.root:
+        current_versions = {
+            v: config
+            for v, config in backend.version_configs.root.items()
+            if not config.built_in_frameworks
+        }
+
+    # Get new versions (empty dict if none)
+    new_versions = {}
+    if new_version_configs and new_version_configs.root:
+        new_versions = new_version_configs.root
+
+    # Find removed versions
+    removed_versions = set(current_versions.keys()) - set(new_versions.keys())
+
+    # Check if removed versions are in use
+    for version in removed_versions:
+        is_in_use, model_names = await check_backend_in_use(
+            session, backend.backend_name, version
+        )
+        if is_in_use:
+            raise BadRequestException(
+                message=f"Cannot remove version name '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
+            )
+
+
+def _clear_built_in_frameworks(version_configs: Optional[VersionConfigDict]):
+    """
+    Clear built_in_frameworks for all versions in version_configs.
+    """
+    if not version_configs or not version_configs.root:
+        return
+
+    for version_config in version_configs.root.values():
+        version_config.built_in_frameworks = None
+
+
+def _merge_community_versions(
+    backend: InferenceBackend,
+    new_version_configs: Optional[VersionConfigDict],
+) -> VersionConfigDict:
+    """
+    Merge built-in versions with new versions for COMMUNITY backends.
+
+    Returns:
+        VersionConfigDict: Merged version configurations with built-in versions preserved
+    """
+    # Extract built-in versions from current backend
+    built_in_versions = {}
+    if backend.version_configs and backend.version_configs.root:
+        built_in_versions = {
+            k: v
+            for k, v in backend.version_configs.root.items()
+            if v.built_in_frameworks
+        }
+
+    if not new_version_configs or not new_version_configs.root:
+        return VersionConfigDict(root=built_in_versions)
+
+    # Merge: built-in versions + new versions (new versions take precedence)
+    built_in_versions.update(new_version_configs.root or {})
+    new_version_configs.root = built_in_versions
+    return new_version_configs
+
+
+def validate_custom_suffix(
     backend_name: Optional[str],
     version_configs: Optional[VersionConfigDict],
 ):
     """
-    Validate for custom backends: ensure backend name and each version key already ends with
-    "-custom". If no satisfied, raise a BadRequestException.
+    Validate custom suffix for backend names and version names.
+
+    Rules:
+    - Backend name: Must end with '-custom' if provided
+    - Version name: Must end with '-custom' ONLY if it's a user-defined version
+      (i.e., built_in_frameworks is None and custom_framework has value)
     """
+    # Validate backend name
     if backend_name and not backend_name.endswith("-custom"):
         raise BadRequestException(
             message=f"Custom backend name '{backend_name}' must end with '-custom'",
         )
+
+    # Validate version names
     if version_configs and version_configs.root:
-        for version in list(version_configs.root.keys()):
+        for version, config in version_configs.root.items():
+            # Skip predefined versions (built_in_frameworks has value)
+            if config.built_in_frameworks:
+                continue
+
+            # User-defined versions must have -custom suffix
             if not isinstance(version, str) or not version.endswith("-custom"):
                 raise BadRequestException(
                     message=f"Custom backend version '{version}' must end with '-custom'",

@@ -1,7 +1,8 @@
 from typing import Optional
 import aiohttp
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
+from urllib.parse import urlencode
 from sqlalchemy.orm import selectinload
 
 from gpustack.api.responses import StreamingResponseWithStatusCode
@@ -14,6 +15,8 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.schemas.workers import Worker
+from gpustack.schemas.clusters import Cluster
+from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     ModelInstance,
@@ -24,13 +27,14 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
 )
 from gpustack.schemas.model_files import ModelFileStateEnum
+from gpustack.config.config import get_global_config
+from gpustack.utils.grafana import resolve_grafana_base_url
 
 router = APIRouter()
 
 
 @router.get("", response_model=ModelInstancesPublic)
 async def get_model_instances(
-    session: SessionDep,
     params: ListParamsDep,
     id: Optional[int] = None,
     model_id: Optional[int] = None,
@@ -56,12 +60,13 @@ async def get_model_instances(
             media_type="text/event-stream",
         )
 
-    return await ModelInstance.paginated_by_query(
-        session=session,
-        fields=fields,
-        page=params.page,
-        per_page=params.perPage,
-    )
+    async with async_session() as session:
+        return await ModelInstance.paginated_by_query(
+            session=session,
+            fields=fields,
+            page=params.page,
+            per_page=params.perPage,
+        )
 
 
 @router.get("/{id}", response_model=ModelInstancePublic)
@@ -73,6 +78,41 @@ async def get_model_instance(
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
     return model_instance
+
+
+@router.get("/{id}/dashboard")
+async def get_model_instance_dashboard(
+    session: SessionDep,
+    id: int,
+    request: Request,
+):
+    model_instance = await ModelInstance.one_by_id(session, id)
+    if not model_instance:
+        raise NotFoundException(message="Model instance not found")
+
+    cfg = get_global_config()
+    if not cfg.get_grafana_url() or not cfg.grafana_model_dashboard_uid:
+        raise InternalServerErrorException(
+            message="Grafana dashboard settings are not configured"
+        )
+
+    cluster = None
+    if model_instance.cluster_id is not None:
+        cluster = await Cluster.one_by_id(session, model_instance.cluster_id)
+
+    query_params = {}
+    if cluster is not None:
+        query_params["var-cluster_name"] = cluster.name
+    query_params["var-model_name"] = model_instance.model_name
+    query_params["var-model_instance_name"] = model_instance.name
+
+    grafana_base = resolve_grafana_base_url(cfg, request)
+    slug = "gpustack-model"
+    dashboard_url = f"{grafana_base}/d/{cfg.grafana_model_dashboard_uid}/{slug}"
+    if query_params:
+        dashboard_url = f"{dashboard_url}?{urlencode(query_params)}"
+
+    return RedirectResponse(url=dashboard_url, status_code=302)
 
 
 async def fetch_model_instance(session, id):

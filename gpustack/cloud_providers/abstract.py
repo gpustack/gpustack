@@ -95,6 +95,7 @@ class ProviderClientBase(ABC):
         token: str,
         image_name: str,
         os_image: str,
+        worker_name: str,
         secret_configs: Dict[str, Any] = {},
     ) -> UserDataTemplate:
         user_data = UserDataTemplate(
@@ -102,6 +103,7 @@ class ProviderClientBase(ABC):
             token=token,
             image_name=image_name,
             secret_configs=secret_configs,
+            worker_name=worker_name,
         )
         return user_data
 

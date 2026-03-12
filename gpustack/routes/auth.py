@@ -545,7 +545,7 @@ async def update_password(
     patch = {"hashed_password": hashed_password, "require_password_change": False}
     await user.update(session, patch)
 
-    _remove_initial_password_file_if_exists(request.app.state.server_config)
+    remove_initial_password_file_if_exists(request.app.state.server_config)
 
 
 @router.get("/config")
@@ -591,7 +591,7 @@ def _get_initial_password_command(initial_password_file: Path) -> str:
         return f"cat {initial_password_file}"
 
 
-def _remove_initial_password_file_if_exists(config: Config):
+def remove_initial_password_file_if_exists(config: Config):
     """
     Remove the initial admin password file if it exists.
     """

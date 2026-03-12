@@ -18,14 +18,16 @@ from transformers import PretrainedConfig
 from huggingface_hub import HfApi
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
 from requests.exceptions import HTTPError
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas import ModelFile
-from gpustack.schemas.models import CategoryEnum, Model, SourceEnum, get_mmproj_filename
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.models import (
+    CategoryEnum,
+    Model,
+    SourceEnum,
+    get_mmproj_filename,
+)
 from gpustack.utils.cache import is_cached, load_cache, save_cache
-from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 
 logger = logging.getLogger(__name__)
 
@@ -267,19 +269,17 @@ def match_model_scope_file_paths(
     return matching_paths
 
 
-async def read_repo_file_content(  # noqa: C901
+def read_repo_file_content(  # noqa: C901
     model: Model,
     file_path: str,
     token: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Read a JSON config file from the model's source.
 
     - Hugging Face: uses HfFileSystem to open `{repo_id}/{file_path}`.
     - ModelScope: downloads a snapshot matching `file_path` and cleaned automatically after reading locally.
-    - Local Path: reads from the local directory.
+    - Local Path: reads from the local directory only (no worker broadcast).
 
     Returns None if the file cannot be found or read.
     """
@@ -339,31 +339,11 @@ async def read_repo_file_content(  # noqa: C901
             if not local_path or not os.path.isdir(local_path):
                 return None
             fp = os.path.join(local_path, file_path)
-            if not os.path.exists(fp):
-                # Try to read from worker if session and workers are provided
-                async with WorkerFilesystemClient() as filesystem_client:
-                    for worker in workers or []:
-                        try:
-                            logger.info(
-                                f"Trying to read file {file_path} from worker {worker.id}"
-                            )
-                            config_dict = await filesystem_client.read_model_config(
-                                worker, fp
-                            )
-                            if config_dict:
-                                logger.info(
-                                    f"Successfully read file {file_path} from worker {worker.id}"
-                                )
-                                return config_dict
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to read file {file_path} from worker {worker.id}: {e}"
-                            )
-                            continue
-                return None
-            with open(fp, "r", encoding="utf-8") as f:
-                return json.load(f)
+            if os.path.exists(fp):
+                with open(fp, "r", encoding="utf-8") as f:
+                    return json.load(f)
 
+            return None
         else:
             return None
     except Exception as e:
@@ -388,6 +368,9 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
         int: The size of the model weights
     """
     weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
+    # consolidated.safetensors is usually a duplicate of other weight files. Exclude by default.
+    # Example: https://huggingface.co/mistralai/Voxtral-Small-24B-2507
+    exclude_files = ["consolidated.safetensors"]
     if model.source == SourceEnum.HUGGING_FACE:
         repo_id = model.huggingface_repo_id
     elif model.source == SourceEnum.MODEL_SCOPE:
@@ -398,13 +381,14 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     return sum(
         file.get("size", 0)
         for file in repo_file_infos
-        if file.get("name", "").endswith(weight_file_extensions)
+        if (
+            file.get("name", "").endswith(weight_file_extensions)
+            and file.get("name", "") not in exclude_files
+        )
     )
 
 
-async def get_diffusion_model_weight_size(
-    model: Model, token: Optional[str] = None
-) -> int:
+def get_diffusion_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     """
     Get the size of the diffusion model weights.
     This is the sum of all weight files with extensions .safetensors, .bin, .pt, or .pth located in the root directory
@@ -428,7 +412,7 @@ async def get_diffusion_model_weight_size(
     # In different repositories, model files may be stored in different dir.
     # However, during runtime, the diffusers loads components from corresponding dir according to the pipeline defined in model_index.json.
     # We can follow the definition in model_index.json to determine which file weights should be included in the calculation.
-    pipeline_data = await read_repo_file_content(model, "model_index.json", token=token)
+    pipeline_data = read_repo_file_content(model, "model_index.json", token=token)
     if pipeline_data is None:
         raise ValueError(f"No model_index.json in repo {repo_id}")
     if isinstance(pipeline_data, list) and len(pipeline_data) > 0:
@@ -449,12 +433,7 @@ async def get_diffusion_model_weight_size(
     return sum_size
 
 
-async def get_pretrained_config(
-    model: Model,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
-    **kwargs,
-):
+def get_pretrained_config(model: Model, **kwargs):
     """
     Get the pretrained config of the model from Hugging Face or ModelScope.
     Args:
@@ -500,28 +479,6 @@ async def get_pretrained_config(
             )
     elif model.source == SourceEnum.LOCAL_PATH:
         if not os.path.exists(model.local_path):
-            # Try to read config from worker
-            async with WorkerFilesystemClient() as filesystem_client:
-                for worker in workers or []:
-                    try:
-                        logger.info(f"Trying to read config from worker {worker.id}")
-                        # Read config.json file
-                        config_path = os.path.join(model.local_path, "config.json")
-                        config_dict = await filesystem_client.read_model_config(
-                            worker, config_path
-                        )
-                        if not config_dict:
-                            continue
-
-                        logger.info(f"Successfully read config from worker {worker.id}")
-                        pretrained_config = PretrainedConfig.from_dict(config_dict)
-                        return pretrained_config
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to read config from worker {worker.id}: {e}"
-                        )
-                        continue
-
             logger.warning(
                 f"Local Path: {model.readable_source} is not local to the server node and may reside on a worker node."
             )
@@ -540,93 +497,6 @@ async def get_pretrained_config(
         raise ValueError(f"Unsupported model source: {model.source}")
 
     return pretrained_config
-
-
-async def get_pretrained_config_with_fallback(
-    model: Model,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
-    **kwargs,
-):
-    pretrained_config = None
-    try:
-        pretrained_config = await get_pretrained_config(
-            model, session=session, workers=workers, **kwargs
-        )
-    except Exception as e:
-        if model.backend_version is not None or isinstance(e, ImportError):
-            logger.debug(
-                "Fallback to load config.json after AutoConfig.from_pretrained failed"
-            )
-            # Fallback:
-            # AutoConfig.from_pretrained performs strict architecture validation and may fail in several cases, like:
-            #   1. Models using custom or backend-specific architectures not recognized by the current Transformers version.
-            #   2. Newly released models whose architectures are not yet supported in older AutoConfig implementations.
-            #   3. Import-time failures caused by missing or conflicting dependencies
-            #      (e.g., LlamaFlashAttention2 import errors — see: https://github.com/deepseek-ai/DeepSeek-OCR/issues/7).
-            # In all such cases, fallback to loading config.json directly to avoid blocking model startup.
-            try:
-                # try to read config.json and ensure num_attention_heads not None.
-                config_dict = await read_repo_file_content(
-                    model,
-                    "config.json",
-                    token=get_global_config().huggingface_token,
-                    session=session,
-                    workers=workers,
-                )
-                if config_dict:
-                    try:
-                        pretrained_config = PretrainedConfig.from_dict(config_dict)
-                    except Exception as ce:
-                        logger.warning(f"read_repo_file_content failed: {ce}")
-            except Exception as ce:
-                logger.warning(f"Fallback to load config.json failed: {ce}")
-
-        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
-            # In GPUStack model evaluation skipping mode, an empty config is acceptable.
-            return pretrained_config
-
-        if any(
-            cat in model.categories
-            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
-        ):
-            # For image models, an empty config is acceptable.
-            return pretrained_config
-
-        if pretrained_config is None and (
-            CategoryEnum.LLM in model.categories or isinstance(e, ValueError)
-        ):
-            # LLM models or ValueError: empty config is NOT acceptable, raise error
-            raise e
-
-    return pretrained_config
-
-
-def get_pretrained_config_with_fallback_sync(model: Model, **kwargs):
-    """
-    Synchronous wrapper for get_pretrained_config_with_fallback.
-    This is used in contexts where async is not available (e.g., worker backends).
-    """
-    import asyncio
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If there's already a running event loop, we need to run in a thread
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    get_pretrained_config_with_fallback(model, **kwargs),
-                )
-                return future.result()
-        else:
-            # No running event loop, we can use asyncio.run directly
-            return asyncio.run(get_pretrained_config_with_fallback(model, **kwargs))
-    except RuntimeError:
-        # No event loop at all, create a new one
-        return asyncio.run(get_pretrained_config_with_fallback(model, **kwargs))
 
 
 # Simplified from vllm.config._get_and_verify_max_len
@@ -698,18 +568,21 @@ def get_max_model_len(pretrained_config) -> int:  # noqa: C901
     return int(derived_max_model_len)
 
 
-# Similar to https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/transformers_utils/config.py#L700,
+# Similar to https://github.com/vllm-project/vllm/blob/89a77b10846fd96273cce78d86d2556ea582d26e/vllm/transformers_utils/config.py#L978,
 # But we don't assert and fail if num_attention_heads is missing.
 def get_hf_text_config(config: PretrainedConfig):
     """Get the "sub" config relevant to llm for multi modal models.
     No op for pure text models.
     """
-    if hasattr(config, "text_config") and hasattr(
-        config.text_config, "num_attention_heads"
-    ):
-        return config.text_config
-    else:
-        return config
+    if hasattr(config, "text_config"):
+        text_config = config.get_text_config()
+        if text_config is not None:
+            if isinstance(text_config, dict):
+                text_config = PretrainedConfig.from_dict(text_config)
+            if hasattr(text_config, "num_attention_heads"):
+                return text_config
+
+    return config
 
 
 quantization_list = [
@@ -790,24 +663,31 @@ def get_model_scope_model_min_gguf_path(
     return gguf_files[0]
 
 
-async def has_diffusers_model_index(  # noqa: C901
+def has_diffusers_model_index(
     model: Model,
     token: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
 ) -> bool:
     """Check whether the model source contains a model_index.json with
     the key "_diffusers_version".
 
+    This function only handles direct file access (Hub sources and local files).
+    For LOCAL_PATH models that require worker queries, use
+    check_diffusers_model_index_from_workers() in calculator.py instead.
+
     Supported sources:
     - Hugging Face: checks via HfFileSystem
     - ModelScope: downloads only model_index.json via snapshot_download and inspects
-    - Local Path: reads model_index.json in the provided directory
+    - Local Path: reads model_index.json in the local directory only
+
+    Args:
+        model: Model to check
+        token: Optional Hugging Face API token
+
+    Returns:
+        True if model_index.json contains _diffusers_version, False otherwise
     """
     try:
-        data = await read_repo_file_content(
-            model, "model_index.json", token=token, session=session, workers=workers
-        )
+        data = read_repo_file_content(model, "model_index.json", token=token)
         if data is None:
             return False
 

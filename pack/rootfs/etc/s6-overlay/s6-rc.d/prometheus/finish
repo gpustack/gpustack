@@ -1,0 +1,9 @@
+#!/command/with-contenv bash
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+
+EXIT_CODE="$1"
+EXIT_SIGNAL="$2"
+
+handleOptionalServiceExit "prometheus" "$EXIT_CODE" "$EXIT_SIGNAL"

@@ -1,3 +1,7 @@
+# YAML Variables
+.vllm_omni_ascend_stable_version: &vllm_omni_ascend_stable_version "0.14.1"
+.vllm_omni_stable_version: &vllm_omni_stable_version "0.16.0"
+
 draft_models:
 - name: Qwen3-8B-EAGLE3
   algorithm: eagle3
@@ -229,6 +233,39 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=deepseek_r1
         - --max-model-len=32768
+- name: Qwen3-Coder-Next
+  description: Qwen3-Coder-Next is a super-efficient coding model with 80B total parameters and 3B activated parameters (MoE architecture). It achieves performance comparable to models with 10-20x more active parameters, excelling at long-horizon reasoning, complex tool usage, and IDE integration.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 80
+  activated_size: 3
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-02-03"
+  specs:
+    - mode: throughput
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-Coder-Next-FP8
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --enable-auto-tool-choice
+        - --tool-call-parser=qwen3_coder
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-Coder-Next
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --enable-auto-tool-choice
+        - --tool-call-parser=qwen3_coder
 - name: Qwen3-30B-A3B-Instruct-2507
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
@@ -438,6 +475,562 @@ model_sets:
         - --tool-call-parser=hermes
         - --enable-auto-tool-choice
         - --max-model-len=65536
+- name: Qwen3.5-0.8B
+  description: Qwen3.5-0.8B is a compact language model from the Qwen family, designed for efficient reasoning, coding, and multilingual understanding across diverse tasks.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 0.8
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-03-02"
+  specs:
+    # Ascend NPUs
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-0.8B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-0.8B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+        - --attention-backend=triton
+    # Other GPUs
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-0.8B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+- name: Qwen3.5-2B
+  description: Qwen3.5-2B is a compact language model from the Qwen family, designed for efficient reasoning, coding, and multilingual understanding across diverse tasks.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 2
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-03-02"
+  specs:
+    # Ascend NPUs
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-2B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-2B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+        - --attention-backend=triton
+    # Other GPUs
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-2B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --context-length=32768
+- name: Qwen3.5-4B
+  description: Qwen3.5-4B is a compact language model from the Qwen family, designed for efficient reasoning, coding, and multilingual understanding across diverse tasks.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 4
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-03-02"
+  specs:
+    # Ascend NPUs
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-4B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-4B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # Other GPUs
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-4B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+- name: Qwen3.5-9B
+  description: Qwen3.5-9B is a model from the Qwen family, designed for strong reasoning, coding, and multilingual understanding with competitive performance across a wide range of tasks.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 9
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-03-02"
+  specs:
+    # Ascend NPUs
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-9B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-9B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # Other GPUs
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-9B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+- name: Qwen3.5-27B
+  description: Qwen3.5-27B is a model designed for strong reasoning, coding, and multilingual understanding with competitive performance across a wide range of tasks.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 27
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-02-24"
+  specs:
+    # Ascend NPUs
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-27B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-27B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # Other GPUs
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-27B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+    # Split FP8 throughput by architecture: on Blackwell, SGLang may
+    # auto-select flashinfer, while hybrid GDN Qwen3.5 requires triton/trtllm_mha.
+    # Ref: https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/layers/attention/attention_registry.py#L201-L207
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0" # Blackwell
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-27B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # NVIDIA Hopper/Ada before Blackwell
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-27B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+- name: Qwen3.5-35B-A3B
+  description: Qwen3.5-35B-A3B is a 35-billion-parameter open-source large language model from the Qwen family, designed for strong reasoning, code generation, and multilingual understanding across diverse tasks.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 35
+  activated_size: 3
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-02-24"
+  specs:
+    # Ascend NPUs
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-35B-A3B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-35B-A3B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # Other GPUs
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-35B-A3B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-35B-A3B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # NVIDIA Hopper/Ada before Blackwell
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-35B-A3B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+- name: Qwen3.5-122B-A10B
+  description: Qwen3.5-122B-A10B is a 122-billion-parameter open-source large language model from the Qwen family, designed for strong reasoning, code generation, and multilingual understanding across diverse tasks.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 122
+  activated_size: 10
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-02-24"
+  specs:
+    # Ascend NPUs
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-122B-A10B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-122B-A10B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # Other GPUs
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-122B-A10B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-122B-A10B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # NVIDIA Hopper/Ada before Blackwell
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-122B-A10B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+- name: Qwen3.5-397B-A17B
+  description: Qwen3.5-397B-A17B is a flagship MoE-hybrid model that delivers state-of-the-art reasoning and multimodal performance with ultra-efficient inference capabilities.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 397
+  activated_size: 17
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-02-16"
+  specs:
+    # Ascend NPUs
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-397B-A17B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --disable-radix-cache
+        - --chunked-prefill-size=4096
+        - --max-prefill-tokens=4096
+        - --max-total-tokens=40960
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-397B-A17B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # Other GPUs
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-397B-A17B
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+    # NVIDIA Blackwell (e.g. RTX 5090)
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-397B-A17B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
+        - --attention-backend=triton
+    # NVIDIA Hopper/Ada before Blackwell
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<12.0"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.5-397B-A17B-FP8
+      backend: SGLang
+      backend_version: 0.5.9
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --context-length=32768
 - name: GLM-4.7
   description: GLM-4.7 is a large language model developed by Zhipu AI, featuring advanced agentic, reasoning, and coding capabilities.
   home: https://z.ai
@@ -614,6 +1207,17 @@ model_sets:
   release_date: "2025-05-28"
   specs:
     - mode: throughput
+      quantization: W8A8
+      gpu_filters:
+        vendor: ascend
+        vendor_variant: "910b"
+      source: model_scope
+      model_scope_model_id: gpustack/DeepSeek-R1-0528-w8a8
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=32768
+        - --npu-memory-fraction=0.95
+    - mode: throughput
       quantization: FP8
       gpu_filters:
         vendor: nvidia
@@ -656,6 +1260,51 @@ model_sets:
         - --logits_processors=vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor
         - --no-enable-prefix-caching
         - --mm-processor-cache-gb=0
+- name: PaddleOCR-VL-1.5
+  description: PaddleOCR-VL-1.5 is an advanced optical character recognition (OCR) vision-language model developed by PaddlePaddle. It is designed to accurately extract and understand text from images and documents.
+  home: https://www.paddleocr.com
+  icon: /static/catalog_icons/paddlepaddle.jpeg
+  size: 0.9
+  categories:
+    - llm
+  capabilities:
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-29"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: PaddlePaddle/PaddleOCR-VL-1.5
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
+        - --max-num-batched-tokens=16384
+        - --no-enable-prefix-caching
+        - --mm-processor-cache-gb=0
+- name: LightOnOCR-2-1B
+  description: LightOnOCR-2-1B is an efficient end-to-end vision-language model for optical character recognition (OCR), converting documents (PDFs, scans, images) into clean, naturally ordered text. It achieves state-of-the-art performance on OlmOCR-Bench while being significantly faster and more cost-effective than competitors.
+  home: https://www.lighton.ai
+  icon: /static/catalog_icons/lighton.png
+  size: 1
+  categories:
+    - llm
+  capabilities:
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-19"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: lightonai/LightOnOCR-2-1B
+      backend: vLLM
+      backend_parameters:
+        - '--limit-mm-per-prompt={"image": 1}'
+        - --mm-processor-cache-gb=0
+        - --no-enable-prefix-caching
 - name: Deepseek-V3.2
   description: 'DeepSeek-V3.2 is a model that balances computational efficiency with strong reasoning and agent capabilities through three technical innovations: DeepSeek Sparse Attention (DSA), Scalable Reinforcement Learning Framework, Large-Scale Agentic Task Synthesis Pipeline.'
   home: https://www.deepseek.com
@@ -679,7 +1328,7 @@ model_sets:
       backend: vLLM
       backend_version: 0.14.1
       backend_parameters:
-        - --max-model-len=65532
+        - --max-model-len=65536
         - --gpu-memory-utilization=0.92
         - --no-enable-prefix-caching
         - --trust-remote-code
@@ -780,6 +1429,124 @@ model_sets:
         - --tool-call-parser=minimax_m2
         - --enable-auto-tool-choice
         - --trust-remote-code
+- name: MiniMax-M2.5
+  description: MiniMax-M2.5 is a powerful MoE (Mixture-of-Experts) model that delivers exceptional performance in logical reasoning, coding, and complex agent tasks through highly efficient inference.
+  home: https://www.minimax.io/
+  icon: /static/catalog_icons/minimax.png
+  size: 230
+  activated_size: 10
+  categories:
+    - llm
+  capabilities:
+    - context/196K
+    - reasoning
+    - tools
+  licenses:
+    - modified-mit
+  release_date: "2026-02-12"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-M2.5
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=minimax_m2_append_think
+        - --tool-call-parser=minimax_m2
+        - --enable-auto-tool-choice
+        - --trust-remote-code
+        - --enable-expert-parallel
+- name: Kimi-K2.5
+  description: Kimi-K2.5 is a multimodal mixture-of-experts model with 1T total parameters and 32B activated parameters. It features native INT4 quantization, vision support, dual operating modes (thinking/instant), agent swarm capabilities, and excels at visual reasoning, coding with vision, and complex tool orchestration.
+  home: https://www.moonshot.ai
+  icon: /static/catalog_icons/kimi.png
+  size: 1
+  size_unit: T
+  activated_size: 32
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - vision
+    - tools
+  licenses:
+    - modified-mit
+  release_date: "2026-01-26"
+  specs:
+    - mode: standard
+      quantization: INT4
+      source: model_scope
+      model_scope_model_id: MoonshotAI/Kimi-K2.5
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --mm-encoder-tp-mode=data
+        - --tool-call-parser=kimi_k2
+        - --reasoning-parser=kimi_k2
+        - --trust-remote-code
+- name: Step-3.5-Flash
+  description: Step-3.5-Flash is a fast, cost-effective multimodal model with 196B total parameters and 11B active parameters (MoE), optimized for quick inference. Built on StepFun's Step3 architecture, it delivers strong performance across text and vision tasks with efficient token usage.
+  home: https://www.stepfun.com
+  icon: /static/catalog_icons/stepfun.png
+  size: 196
+  activated_size: 11
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-02-02"
+  specs:
+    - mode: throughput
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: stepfun-ai/Step-3.5-Flash-FP8
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --disable-cascade-attn
+        - --reasoning-parser=step3p5
+        - --enable-auto-tool-choice
+        - --tool-call-parser=step3p5
+        - --trust-remote-code
+        - --quantization=fp8
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: stepfun-ai/Step-3.5-Flash
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --disable-cascade-attn
+        - --reasoning-parser=step3p5
+        - --enable-auto-tool-choice
+        - --tool-call-parser=step3p5
+        - --trust-remote-code
+- name: Nanbeige4.1-3B
+  description: Nanbeige4.1-3B is a 3B-parameter language model from Nanbeige LLM Lab, optimized for long-context reasoning, agentic tasks, and tool use.
+  home: https://modelscope.cn/organization/nanbeige
+  icon: /static/catalog_icons/nanbeige.png
+  size: 3
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-02-13"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: nanbeige/Nanbeige4.1-3B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=32768
 # Embedding models
 - name: Qwen3-Embedding-0.6B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
@@ -844,6 +1611,54 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
+- name: Qwen3-VL-Embedding-2B
+  description: Qwen3-VL-Embedding is a multimodal embedding model series optimized for multimodal retrieval, clustering, and classification. It supports image-text retrieval and unified multimodal representation learning with 30+ languages support.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 2
+  categories:
+    - embedding
+  capabilities:
+    - vision
+    - dimensions/2048
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-VL-Embedding-2B
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --runner=pooling
+- name: Qwen3-VL-Embedding-8B
+  description: Qwen3-VL-Embedding is a multimodal embedding model series optimized for multimodal retrieval, clustering, and classification. It supports image-text retrieval and unified multimodal representation learning with 30+ languages support.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 8
+  categories:
+    - embedding
+  capabilities:
+    - vision
+    - dimensions/4096
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-VL-Embedding-8B
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --runner=pooling
 - name: BGE-M3
   description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
   home: https://bge-model.com
@@ -1025,6 +1840,52 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+- name: Qwen3-VL-Reranker-2B
+  description: Qwen3-VL-Reranker is a multimodal text reranking model series optimized for multimodal retrieval, clustering, classification, and bitext mining. It consistently outperforms the base embedding model and baseline rerankers.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 2
+  categories:
+    - reranker
+  capabilities:
+    - vision
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-VL-Reranker-2B
+      categories:
+        - reranker
+      backend: vLLM
+      backend_parameters:
+        - '--hf_overrides={"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+- name: Qwen3-VL-Reranker-8B
+  description: Qwen3-VL-Reranker is a multimodal text reranking model series optimized for multimodal retrieval, clustering, classification, and bitext mining. It consistently outperforms the base embedding model and baseline rerankers, with the 8B model showing particularly strong results.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 8
+  categories:
+    - reranker
+  capabilities:
+    - vision
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-VL-Reranker-8B
+      categories:
+        - reranker
+      backend: vLLM
+      backend_parameters:
+        - '--hf_overrides={"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
 - name: BGE-Reranker-V2-M3
   description: BGE-Reranker-V2-M3 is a reranker model from BAAI.
   home: https://bge-model.com
@@ -1085,6 +1946,56 @@ model_sets:
       backend_version: 0.5.6.post2
       env:
         GPUSTACK_MODEL_VRAM_CLAIM: "37580963840" # 35 GiB, observed empirically
+- name: FLUX.2-klein-4B
+  description: FLUX.2-klein-4B is a 4 billion parameter image generation model from Black Forest Labs.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  size: 4
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-15"
+  .base_spec: &flux_2_klein_4b_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: black-forest-labs/FLUX.2-klein-4B
+    backend: vLLM
+    backend_parameters:
+      - --omni
+  specs:
+    - <<: *flux_2_klein_4b_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *flux_2_klein_4b_base_spec
+      backend_version: *vllm_omni_stable_version
+- name: FLUX.2-klein-9B
+  description: FLUX.2-klein-9B is a 9 billion parameter image generation model from Black Forest Labs.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  size: 9
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-15"
+  .base_spec: &flux_2_klein_9b_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: black-forest-labs/FLUX.2-klein-9B
+    backend: vLLM
+    backend_parameters:
+      - --omni
+  specs:
+    - <<: *flux_2_klein_9b_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *flux_2_klein_9b_base_spec
+      backend_version: *vllm_omni_stable_version
 - name: Qwen-Image
   description: Qwen-Image is an image generation foundation model in the Qwen series that achieves significant advances in complex text rendering and precise image editing.
   home: https://qwen.ai
@@ -1095,17 +2006,23 @@ model_sets:
   licenses:
     - apache-2.0
   release_date: "2025-08-04"
+  .base_spec: &qwen_image_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: Qwen/Qwen-Image
+    backend: vLLM
+    backend_parameters:
+      - --omni
   specs:
-    - mode: standard
-      quantization: "BF16"
+    - <<: *qwen_image_base_spec
       gpu_filters:
-        vendor: nvidia
-      source: model_scope
-      model_scope_model_id: Qwen/Qwen-Image
-      backend: SGLang
-      backend_version: 0.5.6.post2
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *qwen_image_base_spec
+      backend_version: *vllm_omni_stable_version
 - name: Qwen-Image-Edit
-  description: Built upon our 20B Qwen-Image model, Qwen-Image-Edit successfully extends Qwen-Image’s unique text rendering capabilities to image editing tasks, enabling precise text editing.
+  description: Built upon the 20B Qwen-Image model, Qwen-Image-Edit successfully extends Qwen-Image's unique text rendering capabilities to image editing tasks, enabling precise text editing.
   home: https://qwen.ai
   icon: /static/catalog_icons/qwen.png
   size: 20
@@ -1123,6 +2040,56 @@ model_sets:
       model_scope_model_id: Qwen/Qwen-Image-Edit
       backend: SGLang
       backend_version: 0.5.6.post2
+- name: Qwen-Image-2512
+  description: Qwen-Image-2512 is the December update of Qwen-Image's text-to-image foundational model, delivering enhanced image generation capabilities.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 20
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2025-12-30"
+  .base_spec: &qwen_image_2512_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: Qwen/Qwen-Image-2512
+    backend: vLLM
+    backend_parameters:
+      - --omni
+  specs:
+    - <<: *qwen_image_2512_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *qwen_image_2512_base_spec
+      backend_version: *vllm_omni_stable_version
+- name: Z-Image
+  description: Z-Image is the foundation model of the Z-Image family, engineered for good quality, robust generative diversity, broad stylistic coverage, and precise prompt adherence.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 6
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-28"
+  .base_spec: &z_image_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: Tongyi-MAI/Z-Image
+    backend: vLLM
+    backend_parameters:
+      - --omni
+  specs:
+    - <<: *z_image_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *z_image_base_spec
+      backend_version: *vllm_omni_stable_version
 - name: Z-Image-Turbo
   description: Z-Image is a powerful and highly efficient image generation model with 6B parameters.
   home: https://qwen.ai
@@ -1133,15 +2100,23 @@ model_sets:
   licenses:
     - apache-2.0
   release_date: "2025-11-27"
+  .base_spec: &z_image_turbo_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: Tongyi-MAI/Z-Image-Turbo
+    backend: vLLM
+    backend_parameters:
+      - --omni
+    env:
+      GPUSTACK_MODEL_VRAM_CLAIM: "24696061952" # 23 GiB observed. Weight file size is 33 GiB in F32 while vLLM loads in BF16.
   specs:
-    - mode: standard
-      quantization: "BF16"
+    - <<: *z_image_turbo_base_spec
       gpu_filters:
-        vendor: nvidia
-      source: model_scope
-      model_scope_model_id: Tongyi-MAI/Z-Image-Turbo
-      backend: SGLang
-      backend_version: 0.5.6.post2
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *z_image_turbo_base_spec
+      backend_version: *vllm_omni_stable_version
 - name: Qwen3-VL-8B-Instruct
   description: Qwen3-VL-8B-Instruct is a vision-language model that delivers comprehensive upgrades across text understanding, visual perception, and reasoning capabilities, supporting image/video/text unified understanding.
   home: https://qwen.ai
@@ -1432,6 +2407,125 @@ model_sets:
       source: model_scope
       model_scope_model_id: gpustack/faster-whisper-small
       backend: VoxBox
+- name: Whisper-Large-V3-Turbo
+  description: Whisper large-v3-turbo is a finetuned version of a pruned Whisper large-v3. In other words, it's the exact same model, except that the number of decoding layers have reduced from 32 to 4. As a result, the model is way faster, at the expense of a minor quality degradation.
+  home: https://openai.com
+  icon: /static/catalog_icons/openai.png
+  size: 809
+  size_unit: M
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2024-10-01"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: openai/whisper-large-v3-turbo
+      backend: vLLM
+- name: Whisper-Large-V3
+  description: Whisper is a state-of-the-art model for automatic speech recognition (ASR) and speech translation. Trained on 5M hours of labeled data, Whisper large-v3 demonstrates strong ability to generalise to many datasets and domains in a zero-shot setting.
+  home: https://openai.com
+  icon: /static/catalog_icons/openai.png
+  size: 1.55
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-11-06"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: openai/whisper-large-v3
+      backend: vLLM
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "4294967296" # 4 GiB. The repo stores weight files in multiple formats so explicitly set VRAM claim to avoid over-allocation.
+- name: Voxtral-Mini-3B-2507
+  description: Voxtral-Mini-3B-2507 is a speech-to-text model from Mistral AI, designed for automatic speech recognition with high accuracy and efficiency.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  size: 3
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2025-07-18"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: mistralai/Voxtral-Mini-3B-2507
+      backend: vLLM
+- name: Granite-Speech-3.3-2B
+  description: Granite-Speech-3.3-2B is a speech-to-text model from IBM, part of the Granite series, designed for automatic speech recognition with strong multilingual capabilities.
+  home: https://www.ibm.com
+  icon: /static/catalog_icons/ibm.png
+  size: 2
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2025-06-19"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: ibm-granite/granite-speech-3.3-2b
+      backend: vLLM
+- name: Granite-Speech-3.3-8B
+  description: Granite-Speech-3.3-8B is a speech-to-text model from IBM, part of the Granite series, designed for automatic speech recognition with enhanced accuracy and multilingual support.
+  home: https://www.ibm.com
+  icon: /static/catalog_icons/ibm.png
+  size: 8
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2025-06-19"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: ibm-granite/granite-speech-3.3-8b
+      backend: vLLM
+- name: Qwen3-ASR-1.7B
+  description: Qwen3-ASR-1.7B support language identification and ASR for 52 languages and dialects. It leverages large-scale speech training data and the strong audio understanding capability of its foundation model, Qwen3-Omni.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 1.7
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-29"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-ASR-1.7B
+      backend: vLLM
+      categories:
+        - speech_to_text
+- name: Qwen3-ASR-0.6B
+  description: Qwen3-ASR-0.6B support language identification and ASR for 52 languages and dialects. It leverages large-scale speech training data and the strong audio understanding capability of its foundation model, Qwen3-Omni.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 0.6
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-29"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-ASR-0.6B
+      backend: vLLM
+      categories:
+        - speech_to_text
 - name: Dia-1.6B
   description: Dia is a text-to-speech model created by Nari Labs. Dia directly generates highly realistic dialogue from a transcript. You can condition the output on audio, enabling emotion and tone control. The model can also produce nonverbal communications like laughter, coughing, clearing throat, etc.
   home: https://narilabs.org
@@ -1448,6 +2542,131 @@ model_sets:
       source: model_scope
       model_scope_model_id: nari-labs/Dia-1.6B
       backend: VoxBox
+- name: Qwen3-TTS-12Hz-1.7B-Base
+  description: Qwen3-TTS-12Hz-1.7B-Base is a text-to-speech model from the Qwen3-TTS series with 1.7B parameters, supporting 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 1.7
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  .base_spec: &qwen3_tts_12hz_1_7b_base_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    backend: vLLM
+    backend_parameters:
+      - --omni
+  specs:
+    - <<: *qwen3_tts_12hz_1_7b_base_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *qwen3_tts_12hz_1_7b_base_base_spec
+      backend_version: *vllm_omni_stable_version
+- name: Qwen3-TTS-12Hz-1.7B-CustomVoice
+  description: Qwen3-TTS-12Hz-1.7B-CustomVoice is a text-to-speech model from the Qwen3-TTS series with 1.7B parameters, supporting custom voice cloning and 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 1.7
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  .base_spec: &qwen3_tts_12hz_1_7b_customvoice_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+    backend: vLLM
+    backend_parameters:
+      - --omni
+  specs:
+    - <<: *qwen3_tts_12hz_1_7b_customvoice_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *qwen3_tts_12hz_1_7b_customvoice_base_spec
+      backend_version: *vllm_omni_stable_version
+- name: Qwen3-TTS-12Hz-1.7B-VoiceDesign
+  description: Qwen3-TTS-12Hz-1.7B-VoiceDesign is a text-to-speech model from the Qwen3-TTS series with 1.7B parameters, supporting voice design and 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 1.7
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  .base_spec: &qwen3_tts_12hz_1_7b_voicedesign_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+    backend: vLLM
+    backend_parameters:
+      - --omni
+  specs:
+    - <<: *qwen3_tts_12hz_1_7b_voicedesign_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *qwen3_tts_12hz_1_7b_voicedesign_base_spec
+      backend_version: *vllm_omni_stable_version
+- name: Qwen3-TTS-12Hz-0.6B-Base
+  description: Qwen3-TTS-12Hz-0.6B-Base is a text-to-speech model from the Qwen3-TTS series with 0.6B parameters, supporting 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 0.6
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  .base_spec: &qwen3_tts_12hz_0_6b_base_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: Qwen/Qwen3-TTS-12Hz-0.6B-Base
+    backend: vLLM
+    backend_parameters:
+      - --omni
+  specs:
+    - <<: *qwen3_tts_12hz_0_6b_base_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *qwen3_tts_12hz_0_6b_base_base_spec
+      backend_version: *vllm_omni_stable_version
+- name: Qwen3-TTS-12Hz-0.6B-CustomVoice
+  description: Qwen3-TTS-12Hz-0.6B-CustomVoice is a text-to-speech model from the Qwen3-TTS series with 0.6B parameters, supporting custom voice cloning and 12kHz audio generation.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 0.6
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-22"
+  .base_spec: &qwen3_tts_12hz_0_6b_customvoice_base_spec
+    mode: standard
+    quantization: "BF16"
+    source: model_scope
+    model_scope_model_id: Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+    backend: vLLM
+    backend_parameters:
+      - --omni
+  specs:
+    - <<: *qwen3_tts_12hz_0_6b_customvoice_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *qwen3_tts_12hz_0_6b_customvoice_base_spec
+      backend_version: *vllm_omni_stable_version
 - name: SenseVoice-Small
   description: SenseVoice is a speech foundation model with multiple speech understanding capabilities, including automatic speech recognition (ASR), spoken language identification (LID), speech emotion recognition (SER), and audio event detection (AED).
   home: https://github.com/FunAudioLLM

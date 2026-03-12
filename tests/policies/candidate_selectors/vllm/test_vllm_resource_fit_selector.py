@@ -1,7 +1,12 @@
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
-from gpustack.policies.utils import get_model_num_attention_heads
+from tests.utils.mock import mock_async_session
+
+from gpustack.policies.utils import (
+    get_model_num_attention_heads,
+    get_model_vision_num_attention_heads,
+)
 from tests.utils.model import make_model, new_model, new_model_instance
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
@@ -507,6 +512,52 @@ def expected_candidate(
             ],
             0,
         ),
+        # Auto schedule Qwen3-Embedding should respect gpu memory utilization setting.
+        (
+            "auto_schedule_qwen3_embedding",
+            make_model(
+                0,
+                None,
+                "Qwen/Qwen3-Embedding-0.6B",
+                categories=[CategoryEnum.EMBEDDING],
+            ),
+            [
+                linux_nvidia_0_4090_24gx1(),
+            ],
+            [
+                expected_candidate(
+                    103,
+                    "host4090-0",
+                    [0],
+                    {0: 23413653504},
+                    [],
+                )
+            ],
+            0,
+        ),
+        # Auto schedule Qwen3-VL-Embedding should respect gpu memory utilization setting.
+        (
+            "auto_schedule_qwen3_vl_embedding",
+            make_model(
+                0,
+                None,
+                "Qwen/Qwen3-VL-Embedding-2B",
+                categories=[CategoryEnum.EMBEDDING],
+            ),
+            [
+                linux_nvidia_0_4090_24gx1(),
+            ],
+            [
+                expected_candidate(
+                    103,
+                    "host4090-0",
+                    [0],
+                    {0: 23413653504},
+                    [],
+                )
+            ],
+            0,
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -524,11 +575,15 @@ async def test_select_candidates(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
         m.backend = BackendEnum.VLLM.value
@@ -771,11 +826,15 @@ async def test_select_candidates_from_different_gpu_types(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
         m.backend = BackendEnum.VLLM.value
@@ -833,11 +892,15 @@ async def test_auto_schedule_single_work_single_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -903,11 +966,17 @@ async def test_auto_schedule_single_work_multi_gpu(
     resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
     placement_scorer = PlacementScorer(m, mis)
 
-    if index == 1:
-        # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
-        resource_fit_selector._num_attention_heads = 25
-    if index == 3:
-        resource_fit_selector._model_params.vocab_size = 10001
+    original_init_model_params = resource_fit_selector._init_model_parameters
+
+    async def mock_init_model_parameters(self, workers):
+        self._set_gpu_memory_utilization()
+        if index == 1:
+            # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
+            resource_fit_selector._num_attention_heads = 25
+        elif index == 3:
+            resource_fit_selector._model_params.vocab_size = 10001
+        else:
+            await original_init_model_params(workers)
 
     with (
         patch(
@@ -916,11 +985,20 @@ async def test_auto_schedule_single_work_multi_gpu(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
+        ),
+        patch.object(
+            VLLMResourceFitSelector,
+            '_init_model_parameters',
+            new=mock_init_model_parameters,
         ),
     ):
 
@@ -928,6 +1006,56 @@ async def test_auto_schedule_single_work_multi_gpu(
         _ = await placement_scorer.score(candidates)
 
         assert resource_fit_selector._messages == expect_msg
+
+
+@pytest.mark.asyncio
+async def test_tp_divisibility_checks_vision_heads_for_vllm(config):
+    m = make_model(
+        1,
+        None,
+        "Qwen/Qwen2.5-VL-7B-Instruct",
+        backend_parameters=[],
+    )
+    m.backend = BackendEnum.VLLM
+
+    resource_fit_selector = VLLMResourceFitSelector(config, m, [])
+    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._vision_num_attention_heads = 16
+    resource_fit_selector._model_params.vocab_size = None
+
+    assert not resource_fit_selector._is_tp_size_divisible(6)
+    assert (
+        resource_fit_selector._check_tp_size_divisibility(6)
+        == "Total number of vision attention heads (16)"
+        " must be divisible by tensor parallel size (6)."
+    )
+
+
+@pytest.mark.parametrize(
+    "language_only_param",
+    [
+        "--language-model-only",
+    ],
+)
+@pytest.mark.asyncio
+async def test_tp_divisibility_skips_vision_heads_in_language_only_mode_for_vllm(
+    config, language_only_param
+):
+    m = make_model(
+        1,
+        None,
+        "Qwen/Qwen2.5-VL-7B-Instruct",
+        backend_parameters=[language_only_param],
+    )
+    m.backend = BackendEnum.VLLM
+
+    resource_fit_selector = VLLMResourceFitSelector(config, m, [])
+    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._vision_num_attention_heads = 16
+    resource_fit_selector._model_params.vocab_size = None
+
+    assert resource_fit_selector._is_tp_size_divisible(6)
+    assert resource_fit_selector._check_tp_size_divisibility(6) is None
 
 
 @pytest.mark.asyncio
@@ -948,11 +1076,15 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1023,11 +1155,15 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1156,6 +1292,72 @@ async def test_num_attention_heads(config, pretrained_config, expect_num):
 
 
 @pytest.mark.parametrize(
+    "pretrained_config, expect_num",
+    [
+        (
+            {
+                "vision_config": {
+                    "num_attention_heads": 16,
+                },
+            },
+            16,
+        ),
+        (
+            {
+                "vision_config": {
+                    "num_heads": 16,
+                },
+            },
+            16,
+        ),
+        (
+            {
+                "vision_config": {
+                    "num_heads": 16,
+                    "num_dummy_heads": 2,
+                },
+            },
+            18,
+        ),
+        (
+            {
+                "vision_config": {
+                    "num_heads": 16,
+                    "num_dummy_heads": -2,
+                },
+            },
+            16,
+        ),
+        (
+            {
+                "vision_config": {
+                    "num_heads": "16",
+                },
+            },
+            None,
+        ),
+        (
+            {},
+            None,
+        ),
+    ],
+)
+def test_vision_num_attention_heads(pretrained_config, expect_num):
+    class DictToObj:
+        def __init__(self, dictionary):
+            for key, value in dictionary.items():
+                if isinstance(value, dict):
+                    setattr(self, key, DictToObj(value))
+                else:
+                    setattr(self, key, value)
+
+    assert get_model_vision_num_attention_heads(pretrained_config) == expect_num
+    assert (
+        get_model_vision_num_attention_heads(DictToObj(pretrained_config)) == expect_num
+    )
+
+
+@pytest.mark.parametrize(
     "index, workers, model, expect_msg",
     [
         # Overcommit when used all selected GPUs
@@ -1211,11 +1413,15 @@ async def test_output_schedule_msg(config, index, workers, model, expect_msg):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 

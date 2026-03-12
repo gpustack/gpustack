@@ -12,7 +12,7 @@ from gpustack.scheduler.calculator import (
     ModelResourceClaim,
     Estimate,
     MemoryEstimate,
-    calculate_model_resource_claim,
+    calculate_gguf_model_resource_claim,
 )
 from gpustack.policies.base import (
     Allocatable,
@@ -93,6 +93,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._model = model
         self._model_instances = model_instances
         self._cache_dir = cache_dir
+        self._workers = []  # Initialize workers list for remote parsing
 
         self._workers_allocatable_resource = {}
         self._gpus_allocatable_vram = []
@@ -109,6 +110,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
         self._messages = []
         self._event_collector = EventCollector(self._model, logger)
+
+    def _should_check_vision_tp_divisibility(self) -> bool:
+        return False
 
     def _initialize_cached_claim_data(self):
         """Initialize cached claim data."""
@@ -372,6 +376,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
         if not workers:
             return []
+
+        # Save workers reference for remote parsing
+        self._workers = workers
 
         # reset the data with input workers.
         await self._set_offload_resource_claim()
@@ -2231,9 +2238,10 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
     async def _calculate_model_resource_claim(
         self, offload: GPUOffloadEnum = GPUOffloadEnum.Partial, **kwargs
     ) -> ModelResourceClaim:
-        return await calculate_model_resource_claim(
+        return await calculate_gguf_model_resource_claim(
             self._model,
             offload,
+            workers=self._workers,
             cache_dir=self._cache_dir,
             **kwargs,
         )

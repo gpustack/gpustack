@@ -17,7 +17,7 @@ from gpustack.utils import validators
 from gpustack.schemas.workers import (
     CPUInfo,
     FileSystemInfo,
-    GPUDeviceInfo,
+    GPUDeviceStatus,
     KernelInfo,
     MemoryInfo,
     MountPoint,
@@ -25,7 +25,7 @@ from gpustack.schemas.workers import (
     SwapInfo,
     SystemInfo,
     UptimeInfo,
-    GPUDevicesInfo,
+    GPUDevicesStatus,
     GPUNetworkInfo,
 )
 from gpustack.schemas.users import AuthProviderEnum
@@ -99,11 +99,12 @@ class Config(WorkerConfig, BaseSettings):
         ray_port_range: Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '41000-41999'.
         log_dir: Directory to store logs.
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
+        benchmark_dir: Directory to store benchmark results.
+        benchmark_max_duration_seconds: Max duration for a benchmark before timeout. Disabled when unset.
         pipx_path: Path to the pipx executable, used to install versioned backends.
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
         enable_hf_transfer: Speed up file transfers with the huggingface Hub.
-        enable_hf_xet: Using Hugging Face XET for download model files.
         enable_cors: Enable CORS in server.
         allow_origins: A list of origins that should be permitted to make cross-origin requests.
         allow_credentials: Indicate that cookies should be supported for cross-origin requests.
@@ -119,6 +120,10 @@ class Config(WorkerConfig, BaseSettings):
         gateway_concurrency: Number of concurrent connections for the embedded gateway. Default is 16.
         gateway_namespace: The namespace where the gateway component is deployed.
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
+        disable_builtin_observability: Disable embedded Grafana and Prometheus services.
+        grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
+        grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
+        grafana_model_dashboard_uid: Grafana dashboard UID for model dashboard.
     """
 
     # Server options
@@ -180,6 +185,10 @@ class Config(WorkerConfig, BaseSettings):
     external_auth_post_logout_redirect_key: Optional[str] = None
     # Number of concurrent connections for the embedded gateway.
     gateway_concurrency: int = 16
+    disable_builtin_observability: bool = False
+    grafana_url: Optional[str] = None
+    grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"
+    grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
 
     # ==================== Multi-Server Configuration ====================
     # Server unique identifier, auto-generated if not specified
@@ -242,6 +251,11 @@ class Config(WorkerConfig, BaseSettings):
         )
         self.bin_dir = prepare_dir(self.bin_dir, os.path.join(self.data_dir, "bin"))
         self.log_dir = prepare_dir(self.log_dir, os.path.join(self.data_dir, "log"))
+        self.benchmark_dir = prepare_dir(
+            self.benchmark_dir, os.path.join(self.data_dir, "benchmarks")
+        )
+        if isinstance(self.grafana_url, str) and not self.grafana_url.strip():
+            self.grafana_url = None
 
         if self.token is None:
             self.token = read_registration_token(self.data_dir)
@@ -388,6 +402,13 @@ class Config(WorkerConfig, BaseSettings):
                 values["schedule_lock_timeout"] = cls.DEFAULT_SCHEDULE_LOCK_TIMEOUT
         return values
 
+    def get_grafana_url(self) -> Optional[str]:
+        if self.grafana_url is not None:
+            return self.grafana_url
+        if self.disable_builtin_observability:
+            return None
+        return "http://127.0.0.1:3000"
+
     @staticmethod
     def check_port_range(port_range: str, diff: Optional[int] = None):
         ports = port_range.split("-")
@@ -408,6 +429,7 @@ class Config(WorkerConfig, BaseSettings):
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.bin_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
+        os.makedirs(self.benchmark_dir, exist_ok=True)
         # prepare gateway dirs
         os.makedirs(
             os.getenv("GPUSTACK_GATEWAY_DIR", self.higress_base_dir()),
@@ -539,7 +561,7 @@ class Config(WorkerConfig, BaseSettings):
 
         return system_info
 
-    def get_gpu_devices(self) -> GPUDevicesInfo:  # noqa: C901
+    def get_gpu_devices(self) -> GPUDevicesStatus:  # noqa: C901
         """get gpu devices from resources
         resource example:
         ```yaml
@@ -565,7 +587,7 @@ class Config(WorkerConfig, BaseSettings):
                   mtu: 8192                # optional
         ```
         """
-        gpu_devices: GPUDevicesInfo = []
+        gpu_devices: GPUDevicesStatus = []
         if not self.resources:
             return None
 
@@ -627,7 +649,7 @@ class Config(WorkerConfig, BaseSettings):
                 )
 
             gpu_devices.append(
-                GPUDeviceInfo(
+                GPUDeviceStatus(
                     index=index,
                     arch_family=arch_family,
                     compute_capability=compute_capability,

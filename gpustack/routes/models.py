@@ -1,13 +1,12 @@
+import logging
 import math
 from typing import List, Optional, Union
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import RedirectResponse, StreamingResponse
+from urllib.parse import urlencode
 from gpustack_runtime.detector import ManufacturerEnum
-from sqlalchemy import bindparam, cast
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.mysql import JSON
 from sqlalchemy.orm import selectinload
-from sqlmodel import and_, col, or_, func
+from sqlmodel import and_, or_
 from sqlmodel.ext.asyncio.session import AsyncSession
 from enum import Enum
 
@@ -25,32 +24,41 @@ from gpustack.schemas.models import (
     BackendEnum,
     ModelListParams,
 )
-from gpustack.schemas.workers import GPUDeviceInfo, Worker
-from gpustack.server.deps import ListParamsDep, SessionDep, CurrentUserDep
+from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.workers import GPUDeviceStatus, Worker
+from gpustack.server.db import async_session
+from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
+    ModelSpecBase,
     ModelUpdate,
     ModelPublic,
     ModelsPublic,
 )
-from gpustack.schemas.models import (
-    ModelAccessUpdate,
-    ModelUserAccessExtended,
-    ModelAccessList,
-    MyModel,
+from gpustack.schemas.model_routes import (
+    ModelRoute,
+    ModelRouteTarget,
+    TargetStateEnum,
 )
-from gpustack.schemas.users import User
 from gpustack.server.services import (
     ModelService,
     WorkerService,
-    delete_accessible_model_cache,
+    revoke_model_access_cache,
 )
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
+from gpustack.routes.model_common import (
+    build_category_conditions,
+    categories_filter,
+)
+from gpustack.config.config import get_global_config
+from gpustack.utils.grafana import resolve_grafana_base_url
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 class ModelStateFilterEnum(str, Enum):
@@ -61,7 +69,6 @@ class ModelStateFilterEnum(str, Enum):
 
 @router.get("", response_model=ModelsPublic)
 async def get_models(
-    session: SessionDep,
     params: ModelListParams = Depends(),
     state: Optional[ModelStateFilterEnum] = Query(
         default=None,
@@ -71,28 +78,6 @@ async def get_models(
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
     backend: Optional[str] = Query(None, description="Filter by backend."),
-):
-    return await _get_models(
-        session=session,
-        params=params,
-        state=state,
-        search=search,
-        categories=categories,
-        cluster_id=cluster_id,
-        backend=backend,
-    )
-
-
-async def _get_models(
-    session: SessionDep,
-    params: ModelListParams,
-    state: Optional[ModelStateFilterEnum] = None,
-    search: str = None,
-    categories: Optional[List[str]] = Query(None, description="Filter by categories."),
-    cluster_id: int = None,
-    backend: Optional[str] = None,
-    target_class: Union[Model, MyModel] = Model,
-    user_id: Optional[int] = None,
 ):
     fuzzy_fields = {}
     if search:
@@ -105,12 +90,9 @@ async def _get_models(
     if backend:
         fields["backend"] = backend
 
-    if user_id:
-        fields["user_id"] = user_id
-
     if params.watch:
         return StreamingResponse(
-            target_class.streaming(
+            Model.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=lambda data: categories_filter(data, categories),
@@ -118,89 +100,44 @@ async def _get_models(
             media_type="text/event-stream",
         )
 
-    extra_conditions = []
-    if categories:
-        conditions = build_category_conditions(session, target_class, categories)
-        extra_conditions.append(or_(*conditions))
+    async with async_session() as session:
+        extra_conditions = []
+        if categories:
+            conditions = build_category_conditions(session, Model, categories)
+            extra_conditions.append(or_(*conditions))
 
-    if state is None:
-        pass
-    elif state == ModelStateFilterEnum.READY:
-        extra_conditions.append(target_class.ready_replicas > 0)
-    elif state == ModelStateFilterEnum.NOT_READY:
-        extra_conditions.append(
-            and_(target_class.ready_replicas == 0, target_class.replicas > 0)
+        if state is None:
+            pass
+        elif state == ModelStateFilterEnum.READY:
+            extra_conditions.append(Model.ready_replicas > 0)
+        elif state == ModelStateFilterEnum.NOT_READY:
+            extra_conditions.append(and_(Model.ready_replicas == 0, Model.replicas > 0))
+        elif state == ModelStateFilterEnum.STOPPED:
+            extra_conditions.append(Model.replicas == 0)
+
+        order_by = params.order_by
+        if order_by:
+            # When sorting by "source", add additional sorting fields for deterministic ordering
+            new_order_by = []
+            for field, direction in order_by:
+                new_order_by.append((field, direction))
+                if field == "source":
+                    new_order_by.append(("huggingface_repo_id", direction))
+                    new_order_by.append(("huggingface_filename", direction))
+                    new_order_by.append(("model_scope_model_id", direction))
+                    new_order_by.append(("model_scope_file_path", direction))
+                    new_order_by.append(("local_path", direction))
+            order_by = new_order_by
+
+        return await Model.paginated_by_query(
+            session=session,
+            fuzzy_fields=fuzzy_fields,
+            extra_conditions=extra_conditions,
+            page=params.page,
+            per_page=params.perPage,
+            fields=fields,
+            order_by=order_by,
         )
-    elif state == ModelStateFilterEnum.STOPPED:
-        extra_conditions.append(target_class.replicas == 0)
-
-    order_by = params.order_by
-    if order_by:
-        # When sorting by "source", add additional sorting fields for deterministic ordering
-        new_order_by = []
-        for field, direction in order_by:
-            new_order_by.append((field, direction))
-            if field == "source":
-                new_order_by.append(("huggingface_repo_id", direction))
-                new_order_by.append(("huggingface_filename", direction))
-                new_order_by.append(("model_scope_model_id", direction))
-                new_order_by.append(("model_scope_file_path", direction))
-                new_order_by.append(("local_path", direction))
-        order_by = new_order_by
-
-    return await target_class.paginated_by_query(
-        session=session,
-        fuzzy_fields=fuzzy_fields,
-        extra_conditions=extra_conditions,
-        page=params.page,
-        per_page=params.perPage,
-        fields=fields,
-        order_by=order_by,
-    )
-
-
-def build_pg_category_condition(target_class: Union[Model, MyModel], category: str):
-    if category == "":
-        return cast(target_class.categories, JSONB).op('@>')(cast('[]', JSONB))
-    return cast(target_class.categories, JSONB).op('?')(
-        bindparam(f"category_{category}", category)
-    )
-
-
-# Add MySQL category condition construction function
-def build_mysql_category_condition(target_class: Union[Model, MyModel], category: str):
-    if category == "":
-        return func.json_length(target_class.categories) == 0
-    return func.json_contains(
-        target_class.categories, func.cast(func.json_quote(category), JSON), '$'
-    )
-
-
-def build_category_conditions(session, target_class: Union[Model, MyModel], categories):
-    dialect = session.bind.dialect.name
-    if dialect == "postgresql":
-        return [
-            build_pg_category_condition(target_class, category)
-            for category in categories
-        ]
-    elif dialect == "mysql":
-        return [
-            build_mysql_category_condition(target_class, category)
-            for category in categories
-        ]
-    else:
-        raise NotImplementedError(f'Unsupported database {dialect}')
-
-
-def categories_filter(data: Union[Model, MyModel], categories: Optional[List[str]]):
-    if not categories:
-        return True
-
-    data_categories = data.categories or []
-    if not data_categories and "" in categories:
-        return True
-
-    return any(category in data_categories for category in categories)
 
 
 @router.get("/{id}", response_model=ModelPublic)
@@ -211,18 +148,43 @@ async def get_model(
     return await _get_model(session=session, id=id)
 
 
+@router.get("/{id}/dashboard")
+async def get_model_dashboard(
+    session: SessionDep,
+    id: int,
+    request: Request,
+):
+    model = await _get_model(session=session, id=id)
+
+    cfg = get_global_config()
+    if not cfg.get_grafana_url() or not cfg.grafana_model_dashboard_uid:
+        raise InternalServerErrorException(
+            message="Grafana dashboard settings are not configured"
+        )
+
+    cluster = None
+    if model.cluster_id is not None:
+        cluster = await Cluster.one_by_id(session, model.cluster_id)
+
+    query_params = {}
+    if cluster is not None:
+        query_params["var-cluster_name"] = cluster.name
+    query_params["var-model_name"] = model.name
+
+    grafana_base = resolve_grafana_base_url(cfg, request)
+    slug = "gpustack-model"
+    dashboard_url = f"{grafana_base}/d/{cfg.grafana_model_dashboard_uid}/{slug}"
+    if query_params:
+        dashboard_url = f"{dashboard_url}?{urlencode(query_params)}"
+
+    return RedirectResponse(url=dashboard_url, status_code=302)
+
+
 async def _get_model(
     session: SessionDep,
     id: int,
-    target_class: Union[Model, MyModel] = Model,
-    user_id: Optional[int] = None,
 ):
-    fields = {
-        "id": id,
-    }
-    if user_id:
-        fields["user_id"] = user_id
-    model = await target_class.one_by_fields(session, fields=fields)
+    model = await Model.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -230,11 +192,7 @@ async def _get_model(
 
 
 @router.get("/{id}/instances", response_model=ModelInstancesPublic)
-async def get_model_instances(session: SessionDep, id: int, params: ListParamsDep):
-    model = await Model.one_by_id(session, id, options=[selectinload(Model.instances)])
-    if not model:
-        raise NotFoundException(message="Model not found")
-
+async def get_model_instances(id: int, params: ListParamsDep):
     if params.watch:
         fields = {"model_id": id}
         return StreamingResponse(
@@ -242,24 +200,34 @@ async def get_model_instances(session: SessionDep, id: int, params: ListParamsDe
             media_type="text/event-stream",
         )
 
-    instances = model.instances
-    count = len(instances)
-    total_page = math.ceil(count / params.perPage)
-    pagination = Pagination(
-        page=params.page,
-        perPage=params.perPage,
-        total=count,
-        totalPage=total_page,
-    )
+    async with async_session() as session:
+        model = await Model.one_by_id(
+            session, id, options=[selectinload(Model.instances)]
+        )
+        if not model:
+            raise NotFoundException(message="Model not found")
 
-    return ModelInstancesPublic(items=instances, pagination=pagination)
+        instances = model.instances
+        count = len(instances)
+        total_page = math.ceil(count / params.perPage)
+        pagination = Pagination(
+            page=params.page,
+            perPage=params.perPage,
+            total=count,
+            totalPage=total_page,
+        )
+
+        return ModelInstancesPublic(items=instances, pagination=pagination)
 
 
 async def validate_model_in(
-    session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
+    session: SessionDep,
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+    *,
+    cluster_id: Optional[int] = None,
 ):
     if model_in.gpu_selector is not None and model_in.replicas > 0:
-        await validate_gpu_ids(session, model_in)
+        await validate_gpu_ids(session, model_in, cluster_id=cluster_id)
 
     if model_in.backend_parameters:
         param_gpu_layers = find_parameter(
@@ -295,8 +263,14 @@ async def validate_model_in(
 
 
 async def validate_gpu_ids(  # noqa: C901
-    session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
+    session: SessionDep,
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+    *,
+    cluster_id: Optional[int] = None,
 ):
+    effective_cluster_id = (
+        cluster_id if cluster_id is not None else getattr(model_in, "cluster_id", None)
+    )
 
     if (
         model_in.gpu_selector
@@ -331,7 +305,14 @@ async def validate_gpu_ids(  # noqa: C901
         gpu_index = safe_int(matched.get("gpu_index"), -1)
         worker_name_set.add(worker_name)
 
-        worker = await WorkerService(session).get_by_name(worker_name)
+        if effective_cluster_id is None:
+            raise BadRequestException(
+                message=f"A cluster context is required for manual GPU selection, but was not provided. Cannot validate worker '{worker_name}'."
+            )
+
+        worker = await WorkerService(session).get_by_cluster_id_name(
+            effective_cluster_id, worker_name
+        )
         if not worker:
             raise BadRequestException(message=f"Worker {worker_name} not found")
 
@@ -346,16 +327,6 @@ async def validate_gpu_ids(  # noqa: C901
         if gpu:
             validate_gpu(gpu, model_backend=model_backend)
 
-        worker_os = (
-            worker.labels.get("os", "unknown")
-            if worker.labels is not None
-            else "unknown"
-        )
-        if model_backend == BackendEnum.VLLM and worker_os != "linux":
-            raise BadRequestException(
-                message=f'vLLM backend is only supported on Linux, but the selected worker "{worker.name}" is running on {worker_os.capitalize()}.'
-            )
-
         if model_backend == BackendEnum.VLLM and len(worker_name_set) > 1:
             await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
 
@@ -369,7 +340,7 @@ async def validate_gpu_ids(  # noqa: C901
         )
 
 
-def validate_gpu(gpu_device: GPUDeviceInfo, model_backend: str = ""):
+def validate_gpu(gpu_device: GPUDeviceStatus, model_backend: str = ""):
     if (
         model_backend == BackendEnum.VOX_BOX
         and gpu_device.vendor != ManufacturerEnum.NVIDIA.value
@@ -413,12 +384,51 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
             message=f"Model '{model_in.name}' already exists. "
             "Please choose a different name or check the existing model."
         )
-
+    should_create_route = (
+        model_in.enable_model_route is not None and model_in.enable_model_route
+    )
+    if should_create_route:
+        existing_route = await ModelRoute.one_by_field(session, "name", model_in.name)
+        if existing_route:
+            raise AlreadyExistsException(
+                message=f"Model route '{model_in.name}' already exists. "
+                "Please choose a different name or check the existing model route."
+            )
     await validate_model_in(session, model_in)
+    model_in_dict = model_in.model_dump(exclude={"enable_model_route"})
 
     try:
-        await revoke_model_access_cache(session=session)
-        model = await Model.create(session, model_in)
+        model: Model = await Model.create(
+            session, source=model_in_dict, auto_commit=(not should_create_route)
+        )
+        if should_create_route:
+            model_route = ModelRoute(
+                name=model.name,
+                description=model.description,
+                categories=model.categories,
+                generic_proxy=model.generic_proxy,
+                created_by_model=True,
+                access_policy=model.access_policy,
+            )
+            model_route: ModelRoute = await ModelRoute.create(
+                session, source=model_route, auto_commit=False
+            )
+            model_route_target = ModelRouteTarget(
+                name=f"{model.name}-deployment",
+                route_name=model_route.name,
+                generic_proxy=model.generic_proxy,
+                model_route=model_route,
+                model=model,
+                weight=100,
+                state=TargetStateEnum.UNAVAILABLE,
+            )
+            await ModelRouteTarget.create(
+                session,
+                source=model_route_target,
+                auto_commit=False,
+            )
+            await session.commit()
+            await revoke_model_access_cache(session=session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create model: {e}")
 
@@ -451,153 +461,18 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
 
 @router.delete("/{id}")
 async def delete_model(session: SessionDep, id: int):
-    model = await Model.one_by_id(session, id, options=[selectinload(Model.users)])
+    model = await Model.one_by_id(
+        session,
+        id,
+        options=[
+            selectinload(Model.instances),
+            selectinload(Model.model_route_targets),
+        ],
+    )
     if not model:
         raise NotFoundException(message="Model not found")
 
     try:
-        await revoke_model_access_cache(session=session, model=model)
         await ModelService(session).delete(model)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
-
-
-def model_access_list(model: Model) -> List[ModelUserAccessExtended]:
-    return [
-        ModelUserAccessExtended(
-            id=access.id,
-            username=access.username,
-            full_name=access.full_name,
-            avatar_url=access.avatar_url,
-            # Add more user fields here if needed
-        )
-        for access in model.users
-    ]
-
-
-@router.get("/{id}/access", response_model=ModelAccessList)
-async def get_model_access(session: SessionDep, id: int):
-    model: Model = await Model.one_by_id(
-        session, id, options=[selectinload(Model.users)]
-    )
-    if not model:
-        raise NotFoundException(message="Model not found")
-
-    return ModelAccessList(items=model_access_list(model))
-
-
-@router.post("/{id}/access", response_model=ModelAccessList)
-async def add_model_access(
-    session: SessionDep, id: int, access_request: ModelAccessUpdate
-):
-    model = await Model.one_by_id(session, id, options=[selectinload(Model.users)])
-    if not model:
-        raise NotFoundException(message="Model not found")
-    extra_conditions = [
-        col(User.id).in_([user.id for user in access_request.users]),
-    ]
-
-    affected_user_ids = {user.id for user in model.users}
-    cache_model = model
-
-    users = await User.all_by_fields(
-        session=session, fields={}, extra_conditions=extra_conditions
-    )
-    if len(users) != len(access_request.users):
-        existing_user_ids = {user.id for user in users}
-        for req_user in access_request.users:
-            if req_user.id not in existing_user_ids:
-                raise NotFoundException(message=f"User ID {req_user.id} not found")
-
-    model.users = list(users)
-    if (
-        access_request.access_policy is not None
-        and access_request.access_policy != model.access_policy
-    ):
-        model.access_policy = access_request.access_policy
-        # if changing to public, need to update all users
-        affected_user_ids = None
-        cache_model = None
-    try:
-        await revoke_model_access_cache(
-            session=session,
-            model=cache_model,
-            extra_user_ids=affected_user_ids,
-        )
-        await ModelService(session).update(model)
-    except Exception as e:
-        raise InternalServerErrorException(message=f"Failed to add model access: {e}")
-    await session.refresh(model)
-    return ModelAccessList(items=model_access_list(model))
-
-
-my_models_router = APIRouter()
-
-
-@my_models_router.get("", response_model=ModelsPublic)
-async def get_my_models(
-    user: CurrentUserDep,
-    session: SessionDep,
-    params: ModelListParams = Depends(),
-    state: Optional[ModelStateFilterEnum] = Query(
-        default=None,
-        description="Filter by model state.",
-    ),
-    search: str = None,
-    categories: Optional[List[str]] = Query(None, description="Filter by categories."),
-    cluster_id: int = None,
-    backend: Optional[str] = Query(None, description="Filter by backend."),
-):
-    user_id = None
-    target_class = Model
-    if not user.is_admin:
-        target_class = MyModel
-        user_id = user.id
-
-    return await _get_models(
-        session=session,
-        params=params,
-        state=state,
-        search=search,
-        categories=categories,
-        cluster_id=cluster_id,
-        backend=backend,
-        target_class=target_class,
-        user_id=user_id,
-    )
-
-
-@my_models_router.get("/{id}", response_model=ModelPublic)
-async def get_my_model(
-    session: SessionDep,
-    id: int,
-    user: CurrentUserDep,
-):
-    user_id = None
-    target_class = Model
-    if not user.is_admin:
-        target_class = MyModel
-        user_id = user.id
-
-    return await _get_model(
-        session=session,
-        id=id,
-        user_id=user_id,
-        target_class=target_class,
-    )
-
-
-async def revoke_model_access_cache(
-    session: AsyncSession,
-    model: Optional[Model] = None,
-    extra_user_ids: Optional[set[int]] = None,
-):
-    user_ids = set()
-    if model is None:
-        users = await User.all(session)
-        user_ids = {user.id for user in users}
-    else:
-        user_ids = {user.id for user in model.users}
-    if extra_user_ids:
-        user_ids.update(extra_user_ids)
-    await delete_accessible_model_cache(session, *user_ids)

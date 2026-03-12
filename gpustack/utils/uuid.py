@@ -3,10 +3,10 @@ import sys
 import subprocess
 import logging
 from typing import Optional
-from gpustack.envs import AUTO_GENERATE_UUID
 
 logger = logging.getLogger(__name__)
 legacy_uuid_filename = "worker_uuid"
+worker_name_filename = "worker_name"
 
 
 def get_legacy_uuid(data_dir: str) -> Optional[str]:
@@ -14,25 +14,16 @@ def get_legacy_uuid(data_dir: str) -> Optional[str]:
     if os.path.exists(legacy_uuid_path):
         with open(legacy_uuid_path, "r") as file:
             return file.read().strip()
-    if AUTO_GENERATE_UUID:
-        return write_legacy_uuid(data_dir)
     return None
 
 
-def write_legacy_uuid(data_dir: str) -> str:
-    import uuid
-
-    legacy_uuid = str(uuid.uuid4())
+def set_legacy_uuid(data_dir: str, legacy_uuid: str):
     legacy_uuid_path = os.path.join(data_dir, legacy_uuid_filename)
-    try:
-        with open(legacy_uuid_path, "w") as file:
-            file.write(legacy_uuid)
-        return legacy_uuid
-    except Exception as e:
-        raise RuntimeError("Failed to write legacy UUID") from e
+    with open(legacy_uuid_path, "w") as file:
+        file.write(legacy_uuid)
 
 
-def get_system_uuid(data_dir: str, write: bool = True) -> str:
+def get_system_uuid() -> str:
     system = sys.platform
     linux_uuid_path = '/sys/class/dmi/id/product_uuid'
     try:
@@ -57,31 +48,23 @@ def get_system_uuid(data_dir: str, write: bool = True) -> str:
             raise RuntimeError(f"Not supported OS or unable to retrieve {system} UUID")
     except Exception as e:
         logger.warning(f"{e}")
-        logger.info("try to create legacy uuid for worker")
-        if write:
-            return write_legacy_uuid(data_dir)
-        else:
-            raise e
+        raise e
 
 
-def get_machine_id() -> str:
-    system = sys.platform
-    try:
-        if system == 'linux':
-            for path in ['/etc/machine-id', '/var/lib/dbus/machine-id']:
-                if not os.path.exists(path):
-                    continue
-                with open(path, 'r') as f:
-                    return f.read().strip()
-        elif system == 'darwin':
-            return ''
-        elif system == 'win32':
-            import winreg
+def get_worker_name(data_dir: str) -> Optional[str]:
+    worker_name_path = os.path.join(data_dir, worker_name_filename)
+    if os.path.exists(worker_name_path):
+        with open(worker_name_path, "r") as file:
+            return file.read().strip()
+    return None
 
-            reg_path = r"SOFTWARE\\Microsoft\\Cryptography"
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as key:
-                value, _ = winreg.QueryValueEx(key, "MachineGuid")
-                return value
-    except Exception:
-        pass
-    return ""
+
+def set_worker_name(data_dir: str, worker_name: str):
+    worker_name_path = os.path.join(data_dir, worker_name_filename)
+    current_worker_name = get_worker_name(data_dir)
+    if current_worker_name is None or current_worker_name != worker_name:
+        logger.warning(
+            f"Worker name is being updated from {current_worker_name or '<empty>'} to {worker_name}"
+        )
+        with open(worker_name_path, "w") as file:
+            file.write(worker_name)

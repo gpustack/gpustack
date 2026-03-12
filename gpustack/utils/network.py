@@ -141,7 +141,11 @@ def parse_port_range(port_range: str) -> Tuple[int, int]:
     return int(start), int(end)
 
 
-def get_free_port(port_range: str, unavailable_ports: Optional[set[int]] = None) -> int:
+def get_free_port(
+    port_range: str,
+    unavailable_ports: Optional[set[int]] = None,
+    host: str = "127.0.0.1",
+) -> int:
     start, end = parse_port_range(port_range)
     if unavailable_ports is None:
         unavailable_ports = set()
@@ -153,7 +157,7 @@ def get_free_port(port_range: str, unavailable_ports: Optional[set[int]] = None)
         port = random.randint(start, end)
         if port in unavailable_ports:
             continue
-        if is_port_available(port):
+        if is_port_available(port, host):
             return port
         else:
             unavailable_ports.add(port)
@@ -162,7 +166,7 @@ def get_free_port(port_range: str, unavailable_ports: Optional[set[int]] = None)
             continue
 
 
-def is_port_available(port: int) -> bool:
+def is_port_available(port: int, host: str = "127.0.0.1") -> bool:
     """
     Test if a port is available.
 
@@ -174,7 +178,7 @@ def is_port_available(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
             s.settimeout(0.5)
-            result = s.connect_ex(("127.0.0.1", port))
+            result = s.connect_ex((host, port))
             if result == 0:
                 # Someone is listening, port is not available
                 return False

@@ -18,7 +18,7 @@ make install
 
 ## Run
 
-Use `disabled` gateway mode and connect to the your database for development:
+Use `disabled` gateway mode and connect to your database for development:
 
 ```bash
 uv run gpustack start --database-url postgresql://postgres:mysecretpassword@localhost:5432/postgres --gateway-mode disabled --api-port 80

@@ -28,26 +28,11 @@ Click `Download Image` to save the edited image.
 
 You can select available models in GPUStack by clicking the model dropdown at the top-right corner of the playground UI.
 
-## Customize Parameters
-
-You can customize the image generation parameters by switching between two API styles:
-
-1. **OpenAI Compatible mode**
-2. **Advanced mode**
-
-![image-parameter](../../assets/playground/api-style.png)
-
-### Advanced Parameters
+## Parameters
 
 | Parameter         | Default    | Description                                                                                                                                                         |
 | ----------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Size`            | `512x512`  | The size of the generated image in 'widthxheight' format.                                                                                                           |
-| `Sample Method`   | `euler_a`  | The sampler algorithm for image generation. Options include 'euler_a', 'euler', 'heun', 'dpm2', 'dpm++2s_a', 'dpm++2m', 'dpm++2mv2', 'ipndm', 'ipndm_v', and 'lcm'. |
-| `Schedule Method` | `discrete` | The noise scheduling method.                                                                                                                                        |
-| `Sampling Steps`  | `10`       | The number of sampling steps to perform. Higher values may improve image quality at the cost of longer processing time.                                             |
-| `Guidance`        | `3.5`      | The scale for classifier-free guidance. A higher value increases adherence to the prompt.                                                                           |
-| `CFG Scale`       | `4.5`      | The scale for classifier-free guidance. A higher value increases adherence to the prompt.                                                                           |
-| `Negative Prompt` | (empty)    | A negative prompt to specify what the image should avoid.                                                                                                           |
 | `Seed`            | (empty)    | Random seed.                                                                                                                                                        |
 
 ## View Code

@@ -15,7 +15,7 @@ gpustack save-images [OPTIONS] [output]
 ## Configurations
 
 | <div style="width:220px">Flag</div>                             | <div style="width:120px">Default</div> | Description                                                             |
-|-----------------------------------------------------------------|----------------------------------------|-------------------------------------------------------------------------|
+| --------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------- |
 | `--backend` `{cann,corex,cuda,dtk,hggc,maca,musa,neuware,rocm}` | (empty)                                | Filter gpustack/runner images by backend name                           |
 | `--backend-version` `BACKEND_VERSION`                           | (empty)                                | Filter gpustack/runner images by exact backend version                  |
 | `--backend-version-prefix` `BACKEND_VERSION_PREFIX`             | (empty)                                | Filter gpustack/runner images by backend version prefix                 |
@@ -32,5 +32,5 @@ gpustack save-images [OPTIONS] [output]
 | `--source-namespace`, `--src-namespace` `SOURCE_NAMESPACE`      | (empty)                                | Source namespace in the source registry                                 |
 | `--source-username`, `--src-user` `SOURCE_USERNAME`             | (env: `SOURCE_USERNAME`)               | Username for source registry authentication                             |
 | `--source-password`, `--src-passwd` `SOURCE_PASSWORD`           | (env: `SOURCE_PASSWORD`)               | Password/Token for source registry authentication                       |
-| `--archive-format`                                              | `oci`                                  | Archive format to save                                                  |
+| `--archive-format` `{oci,docker}`                               | `oci`                                  | Archive format to save                                                  |
 | `output`                                                        | (current working directory)            | Output directory to save images                                         |

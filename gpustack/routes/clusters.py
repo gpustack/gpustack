@@ -1,8 +1,9 @@
 import math
 import secrets
 from typing import Any, Callable, Optional, Union
-from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import StreamingResponse
+from urllib.parse import urlencode
+from fastapi import APIRouter, Depends, Request, Response, Query
+from fastapi.responses import RedirectResponse, StreamingResponse
 from enum import Enum
 from sqlalchemy.orm import selectinload
 
@@ -15,6 +16,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.config import parse_base_model_to_env_vars
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
 from gpustack.schemas.clusters import (
     ClusterListParams,
@@ -37,6 +39,8 @@ from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import get_global_config, get_cluster_image_name
+from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack_runtime.detector import ManufacturerEnum
 
 CLUSTER_LOAD_OPTIONS = [
     selectinload(Cluster.cluster_workers),
@@ -83,58 +87,61 @@ async def get_clusters(
             media_type="text/event-stream",
         )
 
-    items = await Cluster.all_by_fields(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        options=CLUSTER_LOAD_OPTIONS,
-    )
-
-    if not items:
-        return PaginatedList[ClusterPublic](
-            items=[],
-            pagination=Pagination(
-                page=params.page,
-                perPage=params.perPage,
-                total=0,
-                totalPage=0,
-            ),
+    async with async_session() as session:
+        items = await Cluster.all_by_fields(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            options=CLUSTER_LOAD_OPTIONS,
         )
 
-    if params.page < 1 or params.perPage < 1:
-        # Return all items.
-        pagination = Pagination(
-            page=1,
-            perPage=len(items),
-            total=len(items),
-            totalPage=1,
-        )
-        return PaginatedList[ClusterPublic](items=items, pagination=pagination)
-
-    # sort in memory
-    order_by = params.order_by
-    if order_by:
-        for field, direction in reversed(order_by):
-            items.sort(
-                key=_make_sort_key(field),
-                reverse=direction == "desc",
+        if not items:
+            return PaginatedList[ClusterPublic](
+                items=[],
+                pagination=Pagination(
+                    page=params.page,
+                    perPage=params.perPage,
+                    total=0,
+                    totalPage=0,
+                ),
             )
 
-    # Paginate results.
-    start = (params.page - 1) * params.perPage
-    end = start + params.perPage
-    paginated_items = items[start:end]
+        if params.page < 1 or params.perPage < 1:
+            # Return all items.
+            pagination = Pagination(
+                page=1,
+                perPage=len(items),
+                total=len(items),
+                totalPage=1,
+            )
+            return PaginatedList[ClusterPublic](items=items, pagination=pagination)
 
-    count = len(items)
-    total_page = math.ceil(count / params.perPage)
-    pagination = Pagination(
-        page=params.page,
-        perPage=params.perPage,
-        total=count,
-        totalPage=total_page,
-    )
+        # sort in memory
+        order_by = params.order_by
+        if order_by:
+            for field, direction in reversed(order_by):
+                items.sort(
+                    key=_make_sort_key(field),
+                    reverse=direction == "desc",
+                )
 
-    return PaginatedList[ClusterPublic](items=paginated_items, pagination=pagination)
+        # Paginate results.
+        start = (params.page - 1) * params.perPage
+        end = start + params.perPage
+        paginated_items = items[start:end]
+
+        count = len(items)
+        total_page = math.ceil(count / params.perPage)
+        pagination = Pagination(
+            page=params.page,
+            perPage=params.perPage,
+            total=count,
+            totalPage=total_page,
+        )
+
+        return PaginatedList[ClusterPublic](
+            items=paginated_items, pagination=pagination
+        )
 
 
 def _make_sort_key(field: str) -> Callable[[Any], tuple]:
@@ -405,7 +412,14 @@ async def get_registration_token(request: Request, session: SessionDep, id: int)
 
 
 @router.get("/{id}/manifests")
-async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
+async def get_cluster_manifests(
+    request: Request,
+    session: SessionDep,
+    id: int,
+    runtime: Optional[ManufacturerEnum] = Query(
+        None, description="Optional runtime to include in the manifest"
+    ),
+):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
@@ -417,6 +431,7 @@ async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
         registration=get_registration_from_cluster(request, cluster),
         cluster_suffix=cluster.hashed_suffix,
         namespace=getattr(cluster.worker_config, "namespace", None),
+        runtime_enum=runtime,
     )
     yaml_content = config.render()
     return Response(
@@ -424,3 +439,29 @@ async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
         media_type="application/x-yaml",
         headers={"Content-Disposition": "attachment; filename=manifest.yaml"},
     )
+
+
+@router.get("/{id}/dashboard")
+async def get_cluster_dashboard(
+    session: SessionDep,
+    id: int,
+    request: Request,
+):
+    cluster = await Cluster.one_by_id(session, id)
+    if not cluster:
+        raise NotFoundException(message="cluster not found")
+
+    cfg = get_global_config()
+    if not cfg.get_grafana_url() or not cfg.grafana_worker_dashboard_uid:
+        raise InternalServerErrorException(
+            message="Grafana dashboard settings are not configured"
+        )
+    query_params = {"var-cluster_name": cluster.name}
+
+    grafana_base = resolve_grafana_base_url(cfg, request)
+    slug = "gpustack-worker"
+    dashboard_url = f"{grafana_base}/d/{cfg.grafana_worker_dashboard_uid}/{slug}"
+    if query_params:
+        dashboard_url = f"{dashboard_url}?{urlencode(query_params)}"
+
+    return RedirectResponse(url=dashboard_url, status_code=302)

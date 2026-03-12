@@ -5,7 +5,10 @@ import threading
 from typing import Any, Callable, Dict, Optional, Union, Awaitable
 
 import httpx
-from gpustack.api.exceptions import raise_if_response_error
+from gpustack.api.exceptions import (
+    raise_if_response_error,
+    async_raise_if_response_error,
+)
 from gpustack.server.bus import Event, EventType
 from gpustack.schemas import *
 from gpustack.schemas.common import Pagination
@@ -187,7 +190,7 @@ class InferenceBackendClient:
             params=params,
             timeout=httpx.Timeout(connect=10, read=None, write=10, pool=10),
         ) as response:
-            raise_if_response_error(response)
+            await async_raise_if_response_error(response)
             lines = response.aiter_lines()
             while True:
                 try:
@@ -211,7 +214,6 @@ class InferenceBackendClient:
                                 if cache_size > 0:
                                     # Set a flag to avoid repeated logging
                                     self._initial_sync_logged = True
-                                    initial_sync_logged = True
                                     logger.debug(
                                         f"inference-backends cache populated with {cache_size} items"
                                     )

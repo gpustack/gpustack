@@ -17,10 +17,12 @@ from gpustack.schemas.users import (
     get_default_cluster_user,
     default_cluster_user_name,
 )
+from gpustack.schemas.models import ModelInstance
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
-from gpustack.schemas.models import Model
+from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
+from gpustack.schemas.model_provider import ModelProvider
 from gpustack.security import (
     JWTManager,
     generate_secure_password,
@@ -40,6 +42,9 @@ from gpustack.server.controllers import (
     ClusterController,
     WorkerPoolController,
     InferenceBackendController,
+    ModelRouteController,
+    ModelRouteTargetController,
+    ModelProviderController,
 )
 from gpustack.server.db import async_session
 from gpustack.server.init_db import init_db, get_query_count
@@ -47,14 +52,24 @@ from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.usage_buffer import flush_usage_to_db
-from gpustack.server.heartbeat_buffer import flush_heartbeats_to_db
+from gpustack.server.worker_status_buffer import flush_worker_status_to_db
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.server.metrics_collector import GatewayMetricsCollector
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
-from gpustack.gateway.utils import cleanup_orphaned_model_ingresses
+from gpustack.gateway.utils import (
+    model_ingress_prefix,
+    model_route_ingress_prefix,
+    model_route_ingress_name,
+    fallback_ingress_name,
+    cleanup_ingresses,
+    cleanup_model_mapper,
+    cleanup_fallback_filters,
+    cleanup_ai_proxy_config,
+    cleanup_mcpbridge_registry,
+)
 from gpustack.gateway import get_async_k8s_config
 from gpustack.envs import (
     GATEWAY_PORT_CHECK_INTERVAL,
@@ -103,7 +118,7 @@ class Server:
         self._start_worker_syncer()
         self._start_update_checker()
         self._start_model_usage_flusher()
-        self._start_heartbeat_flusher()
+        self._start_worker_status_flusher()
         self._start_worker_instance_cleaner()
         self._start_metrics_exporter()
         self._start_gateway_metrics_collector()
@@ -209,6 +224,15 @@ class Server:
         logger.debug("Scheduler started.")
 
     def _start_controllers(self):
+        model_provider_controller = ModelProviderController(self._config)
+        self._create_async_task(model_provider_controller.start())
+
+        model_route_target_controller = ModelRouteTargetController(self._config)
+        self._create_async_task(model_route_target_controller.start())
+
+        model_route_controller = ModelRouteController(self._config)
+        self._create_async_task(model_route_controller.start())
+
         model_controller = ModelController(self._config)
         self._create_async_task(model_controller.start())
 
@@ -249,10 +273,10 @@ class Server:
 
         logger.debug("Model usage flusher started.")
 
-    def _start_heartbeat_flusher(self):
-        self._create_async_task(flush_heartbeats_to_db())
+    def _start_worker_status_flusher(self):
+        self._create_async_task(flush_worker_status_to_db())
 
-        logger.debug("Heartbeat flusher started.")
+        logger.debug("Worker status flusher started.")
 
     def _start_worker_instance_cleaner(self):
         worker_instance_cleaner = WorkerInstanceCleaner()
@@ -261,7 +285,10 @@ class Server:
         logger.debug("Worker instance cleaner started.")
 
     def _start_gateway_metrics_collector(self):
-        if self._config.gateway_mode != GatewayModeEnum.embedded:
+        if self._config.gateway_mode not in [
+            GatewayModeEnum.embedded,
+            GatewayModeEnum.external,
+        ]:
             return
         collector = GatewayMetricsCollector(cfg=self._config)
 
@@ -446,7 +473,7 @@ class Server:
             await session.commit()
         except Exception as e:
             logger.error(f"Failed to migrate legacy token: {e}")
-            session.rollback()
+            await session.rollback()
             raise e
 
     async def _migrate_legacy_workers(self, session: AsyncSession):
@@ -515,7 +542,7 @@ class Server:
                 logger.error(
                     f"Failed to migrate worker {worker.id} ({worker.name}): {e}"
                 )
-                session.rollback()
+                await session.rollback()
                 raise e
 
     async def _ensure_registration_token(self, session: AsyncSession):
@@ -548,7 +575,7 @@ class Server:
                 await session.commit()
             except Exception as e:
                 logger.error(f"Failed to ensure registration token: {e}")
-                session.rollback()
+                await session.rollback()
                 raise e
 
         write_registration_token(
@@ -559,16 +586,79 @@ class Server:
     async def _cleanup_orphaned_gateway_data(self, session: AsyncSession):
         if self.config.gateway_mode == GatewayModeEnum.disabled:
             return
-        # Remove the orphaned ingresses of model
-        models = await Model.all_by_field(
+        # Remove the orphaned ingresses of model routes
+        model_routes = await ModelRoute.all_by_field(
             session=session, field="deleted_at", value=None
         )
-        model_ids = [model.id for model in models]
+        route_targets = await ModelRouteTarget.all_by_fields(
+            session=session,
+            fields={"deleted_at": None},
+        )
+        providers = await ModelProvider.all_by_fields(
+            session=session,
+            fields={"deleted_at": None},
+        )
+        model_instances = await ModelInstance.all_by_fields(
+            session=session,
+            fields={"deleted_at": None},
+        )
+        workers = await Worker.all_by_fields(
+            session=session,
+            fields={"deleted_at": None},
+        )
+        fallback_route_ids = [
+            ep.route_id
+            for ep in route_targets
+            if ep.fallback_status_codes is not None
+            and len(ep.fallback_status_codes) > 0
+        ]
+        expected_ingress_names = [
+            model_route_ingress_name(model_route.id) for model_route in model_routes
+        ]
+        expected_names = expected_ingress_names + [
+            fallback_ingress_name(model_route_ingress_name(id))
+            for id in fallback_route_ids
+        ]
+
         k8s_config = get_async_k8s_config(cfg=self.config)
-        await cleanup_orphaned_model_ingresses(
+        await cleanup_ingresses(
             namespace=self.config.get_namespace(),
-            existing_model_ids=model_ids,
+            expected_names=expected_names,
             config=k8s_config,
+            cleanup_prefix=model_route_ingress_prefix,
+            reason="orphaned",
+        )
+        await cleanup_ingresses(
+            namespace=self.config.get_namespace(),
+            expected_names=expected_names,
+            config=k8s_config,
+            cleanup_prefix=model_ingress_prefix,
+            reason="legacy",
+        )
+        await cleanup_model_mapper(
+            namespace=self.config.gateway_namespace,
+            expected_ingresses=expected_ingress_names,
+            config=k8s_config,
+        )
+        await cleanup_fallback_filters(
+            namespace=self.config.get_namespace(),
+            expected_names=expected_names,
+            cleanup_prefix=model_route_ingress_prefix,
+            reason="orphaned",
+            k8s_config=k8s_config,
+        )
+        await cleanup_ai_proxy_config(
+            namespace=self.config.gateway_namespace,
+            providers=providers,
+            routes=model_routes,
+            k8s_config=k8s_config,
+        )
+        await cleanup_mcpbridge_registry(
+            providers=providers,
+            namespace=self.config.gateway_namespace,
+            model_instances=model_instances,
+            workers=workers,
+            k8s_config=k8s_config,
         )
 
     def _should_create_default_cluster(self) -> bool:

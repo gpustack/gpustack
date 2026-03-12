@@ -41,10 +41,7 @@ migration_temp_file_prefix = "gpustack_migration_temp_"
 
 
 def setup_migrate_cmd(subparsers: argparse._SubParsersAction):
-    parser: argparse.ArgumentParser = subparsers.add_parser(
-        "migrate",
-        help=argparse.SUPPRESS,
-    )
+    parser: argparse.ArgumentParser = subparsers.add_parser("migrate")
     parser.add_argument(
         "--migration-data-dir",
         type=str,

@@ -2,6 +2,7 @@ import types
 
 import pytest
 
+from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.worker.backends.custom import CustomServer
 
 
@@ -59,11 +60,21 @@ async def test_apply_registry_override(
     )
     backend._fallback_registry = fallback_registry
 
-    assert backend._apply_registry_override(image_name) == expect_image_name
+    assert (
+        apply_registry_override_to_image(
+            backend._config, image_name, backend._fallback_registry
+        )
+        == expect_image_name
+    )
 
     if container_registry:
         backend._config = types.SimpleNamespace(system_default_container_registry=None)
-        assert backend._apply_registry_override(image_name) == image_name
+        assert (
+            apply_registry_override_to_image(
+                backend._config, image_name, backend._fallback_registry
+            )
+            == image_name
+        )
 
 
 @pytest.mark.parametrize(
@@ -99,6 +110,35 @@ async def test_apply_registry_override(
                 '{"architectures": ["NewModel"]}',
                 """--hf-overrides={"architectures": ["NewModel"]}""",
             ],
+        ),
+        # Test cases for whitespace handling
+        (
+            [" --ctx-size=1024"],
+            ["--ctx-size=1024"],
+        ),
+        (
+            ["--ctx-size =1024"],
+            ["--ctx-size=1024"],
+        ),
+        (
+            ["  --ctx-size  =1024"],
+            ["--ctx-size=1024"],
+        ),
+        (
+            ["--ctx-size  =  1024"],
+            ["--ctx-size=1024"],
+        ),
+        (
+            ["  --ctx-size 1024"],
+            ["--ctx-size", "1024"],
+        ),
+        (
+            [" --max-model-len=8192"],
+            ["--max-model-len=8192"],
+        ),
+        (
+            ["--foo =bar", "  --baz  =  qux"],
+            ["--foo=bar", "--baz=qux"],
         ),
         (
             None,

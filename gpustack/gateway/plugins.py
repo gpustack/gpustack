@@ -38,7 +38,7 @@ supported_plugins: List[HigressPlugin] = [
     HigressPlugin(
         name="ai-statistics",
         version="2.0.0",
-        digest="sha256:394b188ebc23935047752cbbfab0418a9085377fab680430738bd7ab324d2c3e",
+        digest="sha256:237a93b4fcaddedc80fc714af4f234ea95ab19ddc13101f6b5f34e7edec5527f",
     ),
     HigressPlugin(
         name="ext-auth",
@@ -48,7 +48,7 @@ supported_plugins: List[HigressPlugin] = [
     HigressPlugin(
         name="model-router",
         version="2.0.0",
-        digest="sha256:4367cff0ce1349ea9885b7e80e495bcd443931d302b6dc804946ecda78545632",
+        digest="sha256:f4a30a40f069c1ef68ec87e71a739b3246801cfac7388c98590dd98c89be02cb",
     ),
     HigressPlugin(
         name="transformer",
@@ -56,9 +56,25 @@ supported_plugins: List[HigressPlugin] = [
         digest="sha256:40ff2e000dcfd94da76c36593bdfd50f4d0f094309c013732da8e1c35171f321",
     ),
     HigressPlugin(
+        name="model-mapper",
+        version="2.0.0",
+        digest="sha256:d6e99e739f83eacf5efef5d00876efcc4ac849a80f19eb19a914d0aa2cce267b",
+    ),
+    HigressPlugin(
+        name="ai-proxy",
+        version="2.0.0",
+        digest="sha256:a3005bed7d70e8281d4bd26bf5520485a4d7b7994b5e67b9b7ab27b9b4b52212",
+    ),
+    HigressPlugin(
         name="gpustack-token-usage",
         version="1.0.0",
-        digest="sha256:82928ef0b70f1e7b83e8dfafb5f9fe3f2047e6a109928c0676d8eb8701dc2e62",
+        digest="sha256:8cc102de760e8aba2856149da9cbc8eae3d04f6d42127b624326885a013ac239",
+        registry_prefix="oci://docker.io/gpustack/higress-plugin-",
+    ),
+    HigressPlugin(
+        name="gpustack-set-header-pre-route",
+        version="1.0.0",
+        digest="sha256:103e2bb42c1a9f65544c4bbec549e418ae1af1417180f1c0307d52aab226e6bd",
         registry_prefix="oci://docker.io/gpustack/higress-plugin-",
     ),
 ]

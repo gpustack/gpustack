@@ -119,6 +119,9 @@ class GPUDeviceInfo(BaseModel):
     """
     Compute compatibility version of the GPU device, e.g. for NVIDIA GPUs.
     """
+
+
+class GPUDeviceStatus(GPUDeviceInfo):
     core: Optional[GPUCoreInfo] = Field(sa_column=Column(JSON), default=None)
     """
     Core information of the GPU device.
@@ -137,7 +140,7 @@ class GPUDeviceInfo(BaseModel):
     """
 
 
-GPUDevicesInfo = List[GPUDeviceInfo]
+GPUDevicesStatus = List[GPUDeviceStatus]
 
 
 class MountPoint(BaseModel):
@@ -248,7 +251,9 @@ class WorkerStatus(SystemInfo):
     rpc_servers: Deprecated
     """
 
-    gpu_devices: Optional[GPUDevicesInfo] = Field(sa_column=Column(JSON), default=None)
+    gpu_devices: Optional[GPUDevicesStatus] = Field(
+        sa_column=Column(JSON), default=None
+    )
     rpc_servers: Optional[Dict[int, RPCServer]] = Field(
         sa_column=Column(JSON), default=None
     )
@@ -278,7 +283,7 @@ class WorkerStatusStored(BaseModel):
     metrics_port: Optional[int] = None
 
     system_reserved: Optional[SystemReserved] = Field(
-        sa_column=Column(pydantic_column_type(SystemReserved))
+        default=None, sa_column=Column(pydantic_column_type(SystemReserved))
     )
     state_message: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
@@ -472,6 +477,7 @@ class WorkerPublic(
 
 class WorkerRegistrationPublic(WorkerPublic):
     token: str
+    worker_uuid: str
     worker_config: Optional["PredefinedConfigNoDefaults"] = None
 
 

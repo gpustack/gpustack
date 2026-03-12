@@ -24,7 +24,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ModelInstanceDeploymentMetadata,
 )
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import find_parameter, extend_args_no_exist
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import (
     InferenceServer,
@@ -153,7 +153,9 @@ class SGLangServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
-        # Create container configuration
+        # Read container config from environment variables
+        container_config = self._get_container_env_config(env)
+
         run_container = Container(
             image=image,
             name="default",
@@ -164,6 +166,8 @@ class SGLangServer(InferenceServer):
                 command=command,
                 command_script=command_script,
                 args=command_args,
+                run_as_user=container_config.user,
+                run_as_group=container_config.group,
             ),
             envs=[
                 ContainerEnv(
@@ -190,8 +194,10 @@ class SGLangServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
-            shm_size=10 * 1 << 30,  # 10 GiB
+            shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=[run_container],
+            run_as_user=container_config.user,
+            run_as_group=container_config.group,
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
@@ -290,17 +296,14 @@ class SGLangServer(InferenceServer):
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
 
-        derived_max_model_len = self._derive_max_model_len()
         specified_max_model_len = find_parameter(
             self._model.backend_parameters,
             ["context-length"],
         )
-        if (
-            specified_max_model_len is None
-            and derived_max_model_len
-            and derived_max_model_len > 8192
-        ):
-            arguments.extend(["--context-length", "8192"])
+        if specified_max_model_len is None:
+            derived_max_model_len = self._derive_max_model_len()
+            if derived_max_model_len and derived_max_model_len > 8192:
+                arguments.extend(["--context-length", "8192"])
 
         # Add auto parallelism arguments if needed
         auto_parallelism_arguments = get_auto_parallelism_arguments(
@@ -371,13 +374,8 @@ class SGLangServer(InferenceServer):
                 )
 
         # Set host and port
-        arguments.extend(
-            [
-                "--host",
-                self._worker.ip,
-                "--port",
-                str(port),
-            ]
+        extend_args_no_exist(
+            arguments, ("--host", self._worker.ip), ("--port", str(port))
         )
 
         return arguments
@@ -406,13 +404,8 @@ class SGLangServer(InferenceServer):
         arguments.extend(self._flatten_backend_param())
 
         # Set host and port
-        arguments.extend(
-            [
-                "--host",
-                self._worker.ip,
-                "--port",
-                str(port),
-            ]
+        extend_args_no_exist(
+            arguments, ("--host", self._worker.ip), ("--port", str(port))
         )
 
         return arguments

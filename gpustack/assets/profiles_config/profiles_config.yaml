@@ -1,0 +1,48 @@
+profiles:
+  - name: Throughput
+    description: >
+      Max throughput with realistic prompt length.
+      The most commonly used baseline for GPU and model comparison.
+    dataset_name: Random
+    dataset_source: RANDOM
+    dataset_input_tokens: 1024 # Default value for Random dataset in vLLM https://github.com/vllm-project/vllm/blob/17b17c068453e6dc6af79240bb94857ae175cc51/vllm/benchmarks/datasets.py#L457
+    dataset_output_tokens: 128
+    dataset_seed: 42
+    request_rate: -1 # unlimited
+    total_requests: 1000
+
+  - name: Latency
+    description: >
+      Single-request latency benchmark focusing on TTFT and tail latency.
+      Suitable for API serving and chat scenarios.
+    dataset_name: Random
+    dataset_source: RANDOM
+    dataset_input_tokens: 32 # Default value for Latency in vLLM https://github.com/vllm-project/vllm/blob/17b17c068453e6dc6af79240bb94857ae175cc51/vllm/benchmarks/latency.py#L34
+    dataset_output_tokens: 128
+    dataset_seed: 42
+    request_rate: 1
+    total_requests: 100
+
+  - name: Long Context
+    description: >
+      Stress test for long-context handling.
+      Evaluates KV cache behavior, memory usage, and backend stability.
+    dataset_name: Random
+    dataset_source: RANDOM
+    dataset_input_tokens: 32000
+    dataset_output_tokens: 100
+    dataset_seed: 42
+    request_rate: 1
+    total_requests: 100
+
+  - name: Generation Heavy
+    description: >
+      Decode-heavy generation benchmark.
+      Measures sustained decoding speed and output token throughput.
+    dataset_name: Random
+    dataset_source: RANDOM
+    dataset_input_tokens: 1000
+    dataset_output_tokens: 2000
+    dataset_seed: 42
+    request_rate: 1
+    total_requests: 200

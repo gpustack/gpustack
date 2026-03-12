@@ -48,7 +48,7 @@ class BackendFrameworkFilter(WorkerFilter):
                 query_conditions.add(
                     (gpu.type, gpu.runtime_version, self.model.backend_version, variant)
                 )
-        if not query_conditions:
+        if not query_conditions or self.model.cpu_offloading:
             query_conditions.add(("cpu", None, self.model.backend_version, None))
         return list(query_conditions)
 
@@ -112,7 +112,7 @@ class BackendFrameworkFilter(WorkerFilter):
                 # Check if gpu_type is supported by built_in_frameworks
                 is_built_in_supported = version_config.built_in_frameworks and (
                     "cpu" in version_config.built_in_frameworks
-                    and gpu_type in version_config.built_in_frameworks
+                    or gpu_type in version_config.built_in_frameworks
                 )
 
                 # GPU is supported if either custom or built-in framework supports it

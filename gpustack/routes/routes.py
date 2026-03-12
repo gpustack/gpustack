@@ -25,10 +25,16 @@ from gpustack.routes import (
     worker_pools,
     clusters,
     token,
+    benchmarks,
+    benchmark_profiles,
+    model_provider,
+    rerank,
+    model_routes,
+    grafana,
+    prometheus,
 )
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
-from gpustack.routes import rerank
 from gpustack.api.auth import (
     get_admin_user,
     get_current_user,
@@ -39,6 +45,18 @@ from gpustack.api.auth import (
 versioned_prefix = "/v2"
 
 api_router = APIRouter(responses=error_responses)
+api_router.include_router(
+    grafana.router,
+    prefix="/grafana",
+    dependencies=[Depends(get_admin_user)],
+    include_in_schema=False,
+)
+api_router.include_router(
+    prometheus.router,
+    prefix="/prometheus",
+    dependencies=[Depends(get_admin_user)],
+    include_in_schema=False,
+)
 api_router.include_router(probes.router, tags=["Probes"])
 api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 api_router.include_router(
@@ -56,7 +74,7 @@ v1_base_router.include_router(
     metrics.router, prefix="/metrics", include_in_schema=False
 )
 v1_base_router.include_router(
-    models.my_models_router,
+    model_routes.my_models_router,
     dependencies=[Depends(get_current_user)],
     prefix="/my-models",
     tags=["My Models"],
@@ -82,6 +100,17 @@ model_routers = [
         "tags": ["Model Instances"],
     },
     {"router": model_files.router, "prefix": "/model-files", "tags": ["Model Files"]},
+    {"router": benchmarks.router, "prefix": "/benchmarks", "tags": ["Benchmarks"]},
+    {
+        "router": benchmark_profiles.router,
+        "prefix": "/benchmark-profiles",
+        "tags": ["Benchmark Profiles"],
+    },
+    {
+        "router": model_routes.target_router,
+        "prefix": "/model-route-targets",
+        "tags": ["Model Route Targets"],
+    },
 ]
 # worker client have full access to model and model instances
 worker_client_router = APIRouter()
@@ -144,6 +173,16 @@ admin_routers = model_routers + [
         "tags": ["Worker Pools"],
     },
     {"router": clusters.router, "prefix": "/clusters", "tags": ["Clusters"]},
+    {
+        "router": model_provider.router,
+        "prefix": "/model-providers",
+        "tags": ["Model Providers"],
+    },
+    {
+        "router": model_routes.router,
+        "prefix": "/model-routes",
+        "tags": ["Model Routes"],
+    },
 ]
 
 v1_admin_router = APIRouter()

@@ -77,6 +77,8 @@ async def init_db_engine(db_url: str):
         db_url,
         pool_size=envs.DB_POOL_SIZE,
         max_overflow=envs.DB_MAX_OVERFLOW,
+        pool_timeout=envs.DB_POOL_TIMEOUT,
+        pool_pre_ping=True,
         connect_args=connect_args,
     )
     

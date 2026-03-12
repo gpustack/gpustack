@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import shlex
+import json
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -21,17 +22,15 @@ from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime import envs as runtime_envs
 from gpustack_runtime.envs import (
     to_bool,
-    GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE,
-    GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE,
 )
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 from gpustack_runtime.deployer.docker import DockerWorkloadPlan
-from gpustack_runtime.deployer import WorkloadPlan, DockerDeployer
+from gpustack_runtime.deployer import WorkloadPlan
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
-from gpustack.schemas.inference_backend import InferenceBackend
+from gpustack.schemas.inference_backend import InferenceBackend, ContainerEnvConfig
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -40,15 +39,15 @@ from gpustack.schemas.models import (
     ModelUpdate,
     ModelInstanceDeploymentMetadata,
 )
-from gpustack.schemas.workers import GPUDevicesInfo
+from gpustack.schemas.workers import GPUDevicesStatus
 from gpustack.server.bus import Event
-from gpustack.utils.hub import (
-    get_hf_text_config,
-    get_max_model_len,
-    get_pretrained_config_with_fallback_sync,
-)
+from gpustack.utils.config import apply_registry_override_to_image
+from gpustack.utils.envs import filter_env_vars
+from gpustack.utils.hub import get_hf_text_config, get_max_model_len
+from gpustack.utils.hub import get_pretrained_config
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
+from gpustack.utils.runtime import transform_workload_plan
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
@@ -66,8 +65,10 @@ class InferenceServer(ABC):
     This is set when the model instance state changes to STARTING.
     """
 
-    _pretrained_config: Optional[Dict] = None
+    _pretrained_config: Optional[PretrainedConfig] = None
     """The model configuration, if available."""
+    _pretrained_config_initialized: bool = False
+    """Whether pretrained config loading has been attempted."""
 
     _fallback_registry: Optional[str] = None
     """The fallback container registry to use if needed."""
@@ -221,15 +222,55 @@ class InferenceServer(ABC):
         Returns:
             The pretrained model configuration dictionary, or None if not available.
         """
-        if self._pretrained_config is not None:
+        if self._pretrained_config_initialized:
             return self._pretrained_config
 
+        auto_config_error: Optional[Exception] = None
         try:
-            pretrained_config = get_pretrained_config_with_fallback_sync(self._model)
+            pretrained_config = get_pretrained_config(self._model)
+            if isinstance(pretrained_config, dict):
+                # Ensure we have a PretrainedConfig object, not a dict, for consistency.
+                pretrained_config = PretrainedConfig.from_dict(pretrained_config)
+
             self._pretrained_config = pretrained_config
+            self._pretrained_config_initialized = True
+
             return pretrained_config
         except Exception as e:
-            logger.error(f"Failed to get pretrained config: {e}")
+            logger.debug(
+                f"Failed to get pretrained config via AutoConfig, falling back to local config.json. Error: {e}"
+            )
+            auto_config_error = e
+
+        try:
+            fallback_config = self._load_pretrained_config_from_local_config_json()
+            self._pretrained_config = fallback_config
+            self._pretrained_config_initialized = True
+            return fallback_config
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to load pretrained config. "
+                f"AutoConfig error: {auto_config_error}. "
+                f"Local config.json fallback error: {e}."
+            ) from e
+
+    def _load_pretrained_config_from_local_config_json(
+        self,
+    ) -> Optional[PretrainedConfig]:
+        """
+        Load PretrainedConfig from local config.json under resolved model path.
+        """
+        if not self._model_path:
+            return None
+
+        config_path = os.path.join(self._model_path, "config.json")
+        if not os.path.isfile(config_path):
+            return None
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_dict = json.load(f)
+        if isinstance(config_dict, dict):
+            return PretrainedConfig.from_dict(config_dict)
 
         return None
 
@@ -250,7 +291,9 @@ class InferenceServer(ABC):
             pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
             return get_max_model_len(pretrained_or_hf_text_config)
         except Exception as e:
-            logger.error(f"Failed to derive max model length: {e}")
+            logger.warning(
+                f"Failed to derive max model length: {e}, continuing with default"
+            )
 
         return default
 
@@ -266,7 +309,9 @@ class InferenceServer(ABC):
             if pretrained_config and hasattr(pretrained_config, "architectures"):
                 return pretrained_config.architectures
         except Exception as e:
-            logger.error(f"Failed to derive model architecture: {e}")
+            logger.warning(
+                f"Failed to derive model architecture: {e}, continuing with empty list"
+            )
 
         return []
 
@@ -282,58 +327,7 @@ class InferenceServer(ABC):
 
         env = {}
         if not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT:
-            env = {
-                # Exclude the following env vars,
-                # which are reserved for gpustack internal use.
-                # - start with GPUSTACK_, PIP_, PIPX_, UV_, POETRY_, S6_, PGCONFIG_, POSTGRES_.
-                # - end with _VISIBLE_DEVICES, _DISABLE_REQUIRE, _DRIVER_CAPABILITIES, _PATH.
-                # - miscellaneous item.
-                #
-                # FIXME(thxCode): Make this configurable.
-                k: v
-                for k, v in os.environ.items()
-                if not (
-                    k.startswith(
-                        (
-                            "GPUSTACK_",
-                            "PIP_",
-                            "PIPX_",
-                            "POETRY_",
-                            "UV_",
-                            "S6_",
-                            "PGCONFIG_",
-                            "POSTGRES_",
-                        )
-                    )
-                    or k.endswith(
-                        (
-                            "_VISIBLE_DEVICES",
-                            "_DISABLE_REQUIRE",
-                            "_DRIVER_CAPABILITIES",
-                            "_PATH",
-                            "_HOME",
-                        )
-                    )
-                    or (
-                        k
-                        in (
-                            "DEBIAN_FRONTEND",
-                            "LANG",
-                            "LANGUAGE",
-                            "LC_ALL",
-                            "PYTHON_VERSION",
-                            "HOME",
-                            "HOSTNAME",
-                            "PWD",
-                            "_",
-                            "TERM",
-                            "SHLVL",
-                            "LS_COLORS",
-                            "PATH",
-                        )
-                    )
-                )
-            }
+            env = filter_env_vars(os.environ)
 
         if self._model.env:
             env.update(self._model.env)
@@ -341,7 +335,7 @@ class InferenceServer(ABC):
         return env
 
     @lru_cache
-    def _get_selected_gpu_devices(self) -> GPUDevicesInfo:
+    def _get_selected_gpu_devices(self) -> GPUDevicesStatus:
         """
         Get the GPU devices assigned to the model instance.
 
@@ -370,7 +364,7 @@ class InferenceServer(ABC):
             gpu_indexes = sorted(self._model_instance.gpu_indexes or [])
             gpu_type = self._model_instance.gpu_type
 
-        gpu_devices: GPUDevicesInfo = []
+        gpu_devices: GPUDevicesStatus = []
         if gpu_indexes and self._worker.status.gpu_devices:
             for index in gpu_indexes:
                 gpu_device = next(
@@ -480,6 +474,54 @@ class InferenceServer(ABC):
             )
             for port in self._model_instance.ports or []
         ]
+
+    @staticmethod
+    def _get_container_env_config(env: Dict[str, str]) -> ContainerEnvConfig:
+        """
+        Read container configuration from environment variables passed to the container.
+
+        Args:
+            env: The environment variables dictionary passed to the container.
+
+        Returns:
+            A ContainerEnvConfig containing container configuration:
+            - user: Run as specific UID (int)
+            - group: Run as specific GID (int)
+            - shm_size_gib: Shared memory size in GiB (float, default 10.0)
+        """
+        config = ContainerEnvConfig()
+
+        # Read user ID
+        uid_str = env.get("GPUSTACK_MODEL_RUNTIME_UID")
+        if uid_str:
+            try:
+                config.user = int(uid_str)
+            except ValueError:
+                logger.warning(
+                    f"Invalid GPUSTACK_MODEL_RUNTIME_UID value: {uid_str}, ignoring"
+                )
+
+        # Read group ID
+        gid_str = env.get("GPUSTACK_MODEL_RUNTIME_GID")
+        if gid_str:
+            try:
+                config.group = int(gid_str)
+            except ValueError:
+                logger.warning(
+                    f"Invalid GPUSTACK_MODEL_RUNTIME_GID value: {gid_str}, ignoring"
+                )
+
+        # Read shared memory size in GiB
+        shm_str = env.get("GPUSTACK_MODEL_RUNTIME_SHM_SIZE_GIB", "10")
+        try:
+            config.shm_size_gib = float(shm_str)
+        except ValueError:
+            logger.warning(
+                f"Invalid GPUSTACK_MODEL_RUNTIME_SHM_SIZE_GIB value: {shm_str}, using default 10.0"
+            )
+            config.shm_size_gib = 10.0
+
+        return config
 
     def _get_serving_port(self) -> int:
         """
@@ -611,6 +653,7 @@ $@
                 worker_ip=self._worker.ip,
                 model_name=resolved_model_name,
                 command=version_config.run_command,
+                env=self._model.env,
             )
             if command:
                 return shlex.split(command)
@@ -634,7 +677,9 @@ $@
         # Update model backend service version at upper layer if we detected it
         if target_version:
             self._update_model_backend_service_version(target_version)
-        return self._apply_registry_override(image_name)
+        return apply_registry_override_to_image(
+            self._config, image_name, self._fallback_registry
+        )
 
     def _resolve_image(  # noqa: C901
         self,
@@ -815,49 +860,6 @@ $@
                 f"Failed to update model service version {service_version}: {e}"
             )
 
-    def _apply_registry_override(self, image: str) -> str:
-        """
-        1) If the image has an explicit registry, return it as is.
-        2) If the image does not have an explicit registry and a system default registry is configured,
-           prefix the image with the system default registry in config.
-        3) If the image does not have an explicit registry and no system default registry is configured,
-           using docker.io as default if image without "gpustack" prefix.
-        4) If the image does not have an explicit registry and no system default registry is configured,
-           and with "gpustack" prefix, using docker.io as default if docker.io is reachable.
-           Otherwise, using quay.io.
-        """
-        registry_cfg = (self._config.system_default_container_registry or "").strip()
-
-        parts = image.split("/", 1)
-        # 1) If the image has an explicit registry, return it as is.
-        has_explicit = len(parts) >= 2 and (
-            "." in parts[0] or ":" in parts[0] or parts[0] == "localhost"
-        )
-        if has_explicit:
-            return image
-        # 2) If the image does not have an explicit registry and a system default registry is configured,
-        #    prefix the image with the system default registry in config.
-        if registry_cfg:
-            registry = registry_cfg.rstrip("/")
-            final = f"{registry}/{image}"
-            logger.info(
-                f"Using system default registry '{registry}'; image resolved to: {final}"
-            )
-            return final
-
-        # 3) no explicit or configured, and not start with "gpustack" using "docker.io" as default.
-        if not image.startswith("gpustack"):
-            logger.info(
-                f"Using Docker Hub for non-gpustack image; image resolved to: {image}"
-            )
-            return image
-
-        # 4) Otherwise, use fallback registry if configured.
-        #    The fallback registry is Docker Hub or Quay.io depending on reachability.
-        #    If both are not reachable, use docker.io as default.
-        prefix = self._fallback_registry + "/" if self._fallback_registry else ""
-        return f"{prefix}{image}"
-
     def _flatten_backend_param(self) -> List[str]:
         """
         Flattens all backend parameter strings into a list of individual tokens.
@@ -866,13 +868,22 @@ $@
         arguments. This method splits them and returns a single flattened list.
         e.g.
             self._model.backend_parameters = ["--ctx-size 1024"] -> ["--ctx-size", "1024"]
+            self._model.backend_parameters = [" --ctx-size=1024"] -> ["--ctx-size=1024"]
+            self._model.backend_parameters = ["--ctx-size =1024"] -> ["--ctx-size=1024"]
         """
         result = []
         for param in self._model.backend_parameters or []:
-            if "=" in param:
-                result.append(param)
+            # Strip leading/trailing whitespace
+            param_stripped = param.strip()
+
+            if "=" in param_stripped:
+                # Handle cases like "--foo = bar" or "--foo  =bar"
+                # Split by = and strip whitespace around it
+                key, value = map(str.strip, param_stripped.split("=", 1))
+                result.append(f"{key}={value}")
                 continue
-            result.extend(shlex.split(param))
+
+            result.extend(shlex.split(param_stripped))
         return result
 
     def _transform_workload_plan(
@@ -882,18 +893,7 @@ $@
         If the deployer is docker, transform the generic WorkloadPlan to DockerWorkloadPlan,
         and fill the pause image and restart image with registry override.
         """
-        if not DockerDeployer().is_supported():
-            return workload
-        pause_image = self._apply_registry_override(GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE)
-        restart_image = self._apply_registry_override(
-            GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE
-        )
-        docker_workload = DockerWorkloadPlan(
-            pause_image=pause_image,
-            unhealthy_restart_image=restart_image,
-            **workload.__dict__,
-        )
-        return docker_workload
+        return transform_workload_plan(self._config, workload, self._fallback_registry)
 
 
 def _get_service_version_from_versioned_runner(
@@ -917,7 +917,7 @@ def _get_service_version_from_versioned_runner(
         return None
 
 
-def is_ascend_310p(devices: GPUDevicesInfo) -> bool:
+def is_ascend_310p(devices: GPUDevicesStatus) -> bool:
     """
     Check if the model instance is running on VLLM Ascend 310P.
     """
@@ -929,7 +929,7 @@ def is_ascend_310p(devices: GPUDevicesInfo) -> bool:
     )
 
 
-def is_ascend(devices: GPUDevicesInfo) -> bool:
+def is_ascend(devices: GPUDevicesStatus) -> bool:
     """
     Check if all devices are Ascend.
     """

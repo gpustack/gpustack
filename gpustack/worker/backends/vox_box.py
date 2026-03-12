@@ -3,6 +3,7 @@ import os
 from typing import Optional, List, Dict
 
 from gpustack.schemas.models import ModelInstanceDeploymentMetadata
+from gpustack.utils.command import extend_args_no_exist
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
 
@@ -80,6 +81,9 @@ class VoxBoxServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
+        # Read container config from environment variables
+        container_config = self._get_container_env_config(env)
+
         run_container = Container(
             image=image,
             name="default",
@@ -90,6 +94,8 @@ class VoxBoxServer(InferenceServer):
                 command=command,
                 command_script=command_script,
                 args=command_args,
+                run_as_user=container_config.user,
+                run_as_group=container_config.group,
             ),
             envs=[
                 ContainerEnv(
@@ -116,8 +122,10 @@ class VoxBoxServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
-            shm_size=10 * 1 << 30,  # 10 GiB
+            shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=[run_container],
+            run_as_user=container_config.user,
+            run_as_group=container_config.group,
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
@@ -140,19 +148,13 @@ class VoxBoxServer(InferenceServer):
         )
         arguments.extend(self._flatten_backend_param())
         # Append immutable arguments to ensure proper operation for accessing
-        immutable_arguments = [
-            "--host",
-            self._worker.ip,
-            "--port",
-            str(port),
-        ]
+        # Only add if not already present in arguments
+        extend_args_no_exist(
+            arguments, ("--host", self._worker.ip), ("--port", str(port))
+        )
         if self._model_instance.gpu_indexes is not None:
-            immutable_arguments.extend(
-                [
-                    "--device",
-                    f"cuda:{self._model_instance.gpu_indexes[0]}",
-                ]
+            extend_args_no_exist(
+                arguments, ("--device", f"cuda:{self._model_instance.gpu_indexes[0]}")
             )
-        arguments.extend(immutable_arguments)
 
         return arguments

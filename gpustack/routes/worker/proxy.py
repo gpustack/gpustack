@@ -1,26 +1,25 @@
 import asyncio
 import logging
 import aiohttp
-import random
-from typing import Callable, Dict, Tuple
+from typing import Callable, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 from gpustack.api.auth import worker_auth
-from gpustack.api.exceptions import GatewayTimeoutException, ServiceUnavailableException
+from gpustack.api.exceptions import (
+    GatewayTimeoutException,
+    ServiceUnavailableException,
+    NotFoundException,
+    ErrorResponse,
+)
 from gpustack import envs
-from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
-from gpustack.gateway.utils import openai_model_prefixes
 from gpustack.utils.network import use_proxy_env_for_url
+from gpustack.gateway import router_header_key
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
 logger = logging.getLogger(__name__)
-
-llm_model_prefixes = sum(
-    [prefix.flattened_prefixes() for prefix in openai_model_prefixes], []
-)
 
 
 @router.api_route(
@@ -103,56 +102,57 @@ def localhost_fallback() -> str:
     return "127.0.0.1"
 
 
-def get_model_instance_info_from_model_name(request: Request) -> Tuple[int, bool]:
+def get_model_instance_info_from_model_name(request: Request) -> int:
     """
-    Get model instance port and generic proxy support from model name in header "x-higress-llm-model"
+    Get model instance port and generic proxy support from model name in header "x-gpustack-model"
 
     Return the model instance port and support of generic proxy or not.
     """
-    model_name = request.headers.get("x-higress-llm-model", None)
-    if model_name is None:
+    model_destination = request.headers.get(router_header_key, None)
+    if model_destination is None:
         raise HTTPException(
-            status_code=400, detail="Missing x-higress-llm-model header"
+            status_code=400, detail=f"Missing {router_header_key} header"
         )
-    model_getter: Dict[int, Model] = request.app.state.model_by_instance_id
-    model_instance_getter: Dict[int, ModelInstance] = (
-        request.app.state.model_instance_by_instance_id
-    )
-    ids = [
-        mi_id
-        for mi_id, model in model_getter.items()
-        if model.name == model_name
-        and model_instance_getter.get(mi_id) is not None
-        and model_instance_getter.get(mi_id).state == ModelInstanceStateEnum.RUNNING
-    ]
-    if len(ids) == 0:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No running model instance found for model name: {model_name}",
+    # model_destination is in the format of "model-<id>-<instance.id>.<suffix>",
+    # we need to extract the model instance id from it, which is the last part of the splitted by "-",
+    # and before the first ".". For example, "model-1-2.3" -> model instance id is 2.
+    splitted = model_destination.split(".")[0].split("-")
+    try:
+        model_instance_id = int(splitted[-1])
+    except (ValueError, IndexError):
+        raise NotFoundException(
+            message=f"Invalid model destination format: {model_destination}",
         )
-    model_instance_id = random.choice(ids)
-    port = model_instance_getter[model_instance_id].port
-    generic_proxy = model_getter.get(model_instance_id).generic_proxy or False
-    logger.debug(
-        f"Found ports for model instances {ids} of model {model_name}, selected port: {port}"
+    port: Optional[int] = request.app.state.get_instance_port_by_model_instance_id(
+        model_instance_id
     )
-    return port, generic_proxy
+    if not port:
+        raise NotFoundException(
+            message=f"No running model instance found for model name: {model_destination}",
+        )
+    logger.debug(f"Found port {port} from model destination {model_destination}")
+    return port
 
 
 async def set_port_from_model_name(request: Request, call_next):
-    model_name = request.headers.get("x-higress-llm-model", None)
+    model_name = request.headers.get(router_header_key, None)
     if model_name is None:
         return await call_next(request)
     try:
-        port, generic_proxy = get_model_instance_info_from_model_name(request)
-        if request.url.path in llm_model_prefixes or generic_proxy:
-            request.scope["path"] = f"/proxy{request.url.path}"
-            request.state.x_target_port = str(port)
-            if generic_proxy:
-                logger.info(
-                    f"Using generic proxy for model {model_name} at port {port} for path: {request.url.path}"
-                )
+        port = get_model_instance_info_from_model_name(request)
+        request.scope["path"] = f"/proxy{request.url.path}"
+        request.state.x_target_port = str(port)
         return await call_next(request)
+    except NotFoundException as e:
+        logger.debug("failed to find model instance for proxying: %s", e.message)
+        return JSONResponse(
+            status_code=e.status_code,
+            content=ErrorResponse(
+                code=e.status_code,
+                reason=e.reason,
+                message=e.message,
+            ).model_dump(),
+        )
     except HTTPException as e:
         logger.debug("failed to find model instance for proxying: %s", e.detail)
         return await call_next(request)

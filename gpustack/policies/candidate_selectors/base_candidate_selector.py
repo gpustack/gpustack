@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 import enum
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from gpustack.config import Config
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.schemas.models import (
@@ -12,13 +12,11 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceSubordinateWorker,
+    is_omni_model,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.utils.hub import (
-    get_hf_text_config,
-    get_max_model_len,
-    get_pretrained_config_with_fallback_sync,
-)
+from gpustack.utils.hub import get_hf_text_config, get_max_model_len
+from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from gpustack.utils.gpu import (
     abbreviate_worker_gpu_indexes,
     group_gpu_ids_by_worker,
@@ -29,6 +27,7 @@ from gpustack.policies.utils import (
     ListMessageBuilder,
     get_computed_ram_claim,
     get_model_num_attention_heads,
+    get_model_vision_num_attention_heads,
     get_worker_allocatable_resource,
     get_worker_model_instances,
     sort_gpu_indexes_by_allocatable_rate,
@@ -86,22 +85,24 @@ class ModelParameters:
 
     is_multimodel: bool = False
     vision_config: Optional[Dict] = None
+    vision_num_attention_heads: Optional[int] = None
 
-    def from_model(self, model: Model):  # noqa: C901
+    def from_model_pretrained_config(  # noqa: C901
+        self, model: Model, pretrained_config: Any
+    ):
         """
         Parse the model's (hyper)parameters from the model.
         """
-
-        try:
-            pretrained_config = get_pretrained_config_with_fallback_sync(
-                model, trust_remote_code=True
-            )
-        except Exception as e:
-            raise e
-
         if hasattr(pretrained_config, "vision_config"):
             self.is_multimodel = True
             self.vision_config = pretrained_config.vision_config
+            self.vision_num_attention_heads = get_model_vision_num_attention_heads(
+                pretrained_config
+            )
+
+        # Get architectures first, it is not available in text_config.
+        if hasattr(pretrained_config, "architectures"):
+            self.architectures = pretrained_config.architectures
 
         pretrained_config = get_hf_text_config(pretrained_config)
         if pretrained_config is None and CategoryEnum.LLM in model.categories:
@@ -172,6 +173,7 @@ class ScheduleCandidatesSelector(ABC):
     _model_params: ModelParameters
     # Frequently used model parameter in selectors.
     _num_attention_heads: int
+    _vision_num_attention_heads: int
     # Number of GPUs required by the model.
     # Derived from GPU selectors(manual) or Parallelism parameters(auto).
     _gpu_count: int
@@ -191,22 +193,18 @@ class ScheduleCandidatesSelector(ABC):
         config: Config,
         model: Model,
         model_instances: List[ModelInstance],
-        parse_model_params: bool = True,
     ):
         self._config = config
         self._model = model
         self._model_instances = model_instances
         self._model_params = ModelParameters()
         self._num_attention_heads = 0
+        self._vision_num_attention_heads = 0
         self._gpu_count = 0
         self._selected_gpu_workers = None
         self._selected_gpu_indexes_by_gpu_type_and_worker = {}
         self._vram_totals_by_gpu_type_and_worker_and_gpu_idxs = {}
         self._workers_allocatable_resource_by_gpu_type = {}
-
-        if parse_model_params:
-            self._set_model_parameters()
-            self._num_attention_heads = self._model_params.num_attention_heads
 
     @abstractmethod
     def get_messages(self) -> List[str]:
@@ -227,9 +225,32 @@ class ScheduleCandidatesSelector(ABC):
         """
         pass
 
-    def _set_model_parameters(self):
+    @abstractmethod
+    def _should_check_vision_tp_divisibility(self) -> bool:
+        """
+        Whether this backend enforces TP divisibility for vision attention heads.
+        """
+        pass
+
+    async def _init_model_parameters(self, workers: List[Worker]):
+        if is_omni_model(self._model):
+            # Current model parameters are for llm-like models.
+            return
+
         try:
-            self._model_params.from_model(self._model)
+            pretrained_config = await get_pretrained_config_with_workers(
+                self._model,
+                workers,
+                trust_remote_code=True,
+            )
+
+            self._model_params.from_model_pretrained_config(
+                self._model, pretrained_config
+            )
+            self._num_attention_heads = self._model_params.num_attention_heads
+            self._vision_num_attention_heads = (
+                self._model_params.vision_num_attention_heads
+            )
         except Exception as e:
             raise ValueError(
                 f"Failed to parse model {self._model.name} hyperparameters: {e}"
@@ -987,7 +1008,8 @@ class ScheduleCandidatesSelector(ABC):
         """
         Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
         1. num_attention_heads
-        2. vocab_size
+        2. vision_num_attention_heads
+        3. vocab_size
 
         Notes on `tp_size` (tensor parallel size) usage in auto scheduling:
         - Single-worker multi-GPU: `tp_size` is the number of GPUs currently selected
@@ -999,6 +1021,12 @@ class ScheduleCandidatesSelector(ABC):
         if not tp_size:
             return False
         if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
+            return False
+        if (
+            self._should_check_vision_tp_divisibility()
+            and self._vision_num_attention_heads
+            and self._vision_num_attention_heads % tp_size != 0
+        ):
             return False
 
         if (
@@ -1016,7 +1044,8 @@ class ScheduleCandidatesSelector(ABC):
         """
         Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
         1. num_attention_heads
-        2. vocab_size
+        2. vision_num_attention_heads
+        3. vocab_size
 
         Return:
             None if divisibility is satisfied, otherwise an error message.
@@ -1026,6 +1055,16 @@ class ScheduleCandidatesSelector(ABC):
         if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
             return (
                 f"Total number of attention heads ({self._num_attention_heads})"
+                " must be divisible by tensor parallel size "
+                f"({tp_size})."
+            )
+        if (
+            self._should_check_vision_tp_divisibility()
+            and self._vision_num_attention_heads
+            and self._vision_num_attention_heads % tp_size != 0
+        ):
+            return (
+                f"Total number of vision attention heads ({self._vision_num_attention_heads})"
                 " must be divisible by tensor parallel size "
                 f"({tp_size})."
             )

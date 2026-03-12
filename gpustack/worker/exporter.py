@@ -25,22 +25,38 @@ unified_registry = CollectorRegistry()
 raw_registry = CollectorRegistry()
 
 
+def _safe_label(value, default: str = "unknown") -> str:
+    return default if value is None else str(value)
+
+
+def _add_metric(
+    metric: GaugeMetricFamily,
+    labels: list[str],
+    value: float | int | None,
+):
+    if value is None:
+        return
+    metric.add_metric(labels, value)
+
+
 class MetricExporter(Collector):
     _worker_ip_getter: Callable[[], str]
+    _worker_name_getter: Callable[[], str]
+    _worker_id_getter: Callable[[], int]
     _collector: WorkerStatusCollector
 
     def __init__(
         self,
         cfg: Config,
-        worker_name: str,
         collector: WorkerStatusCollector,
+        worker_name_getter: Callable[[], str],
         worker_ip_getter: Callable[[], str],
         worker_id_getter: Callable[[], int],
         clientset_getter: Callable[[], ClientSet] = None,
         cache: dict = None,
     ):
         self._collector = collector
-        self._worker_name = worker_name
+        self._worker_name_getter = worker_name_getter
         self._worker_id_getter = worker_id_getter
         self._worker_ip_getter = worker_ip_getter
         self._port = cfg.worker_metrics_port
@@ -149,9 +165,9 @@ class MetricExporter(Collector):
             "Rate of filesystem utilization on the worker node",
             labels=filesystem_labels,
         )
-        worker_ip = self._worker_ip_getter()
-        worker_id = str(self._worker_id_getter())
-        worker_name = self._worker_name
+        worker_ip = _safe_label(self._worker_ip_getter())
+        worker_id = _safe_label(self._worker_id_getter())
+        worker_name = _safe_label(self._worker_name_getter())
         worker_label_values = [worker_id, worker_name, worker_ip]
         try:
             worker = self._collector.timed_collect(clientset=self._clientset_getter())
@@ -171,8 +187,8 @@ class MetricExporter(Collector):
                     "worker_id": worker_id,
                     "worker_name": worker_name,
                     "instance": worker_ip,
-                    "name": status.os.name,
-                    "version": status.os.version,
+                    "name": _safe_label(status.os.name),
+                    "version": _safe_label(status.os.version),
                 },
             )
 
@@ -184,31 +200,38 @@ class MetricExporter(Collector):
                     "worker_id": worker_id,
                     "worker_name": worker_name,
                     "instance": worker_ip,
-                    "name": status.kernel.name,
-                    "release": status.kernel.release,
-                    "version": status.os.version,
-                    "architecture": status.kernel.architecture,
+                    "name": _safe_label(status.kernel.name),
+                    "release": _safe_label(status.kernel.release),
+                    "version": _safe_label(status.kernel.version),
+                    "architecture": _safe_label(status.kernel.architecture),
                 },
             )
 
         # uptime
         if status.uptime is not None:
-            uptime.add_metric(worker_label_values, status.uptime.uptime)
+            _add_metric(uptime, worker_label_values, status.uptime.uptime)
 
         # cpu
         if status.cpu is not None:
-            cpu_cores.add_metric(worker_label_values, status.cpu.total)
-            cpu_utilization_rate.add_metric(
-                worker_label_values, status.cpu.utilization_rate
+            _add_metric(cpu_cores, worker_label_values, status.cpu.total)
+            _add_metric(
+                cpu_utilization_rate,
+                worker_label_values,
+                status.cpu.utilization_rate,
             )
 
         # memory
         if status.memory is not None:
-            memory_total.add_metric(worker_label_values, status.memory.total)
-            memory_used.add_metric(worker_label_values, status.memory.used)
+            _add_metric(memory_total, worker_label_values, status.memory.total)
+            _add_metric(memory_used, worker_label_values, status.memory.used)
 
-            if status.memory.total != 0 and status.memory.used is not None:
-                memory_utilization_rate.add_metric(
+            if (
+                status.memory.total is not None
+                and status.memory.used is not None
+                and status.memory.total != 0
+            ):
+                _add_metric(
+                    memory_utilization_rate,
                     worker_label_values,
                     _rate(status.memory.used, status.memory.total),
                 )
@@ -219,8 +242,8 @@ class MetricExporter(Collector):
                 gpu_chip_index = "0"  # TODO(michelia): Placeholder, replace with actual chip index if available
                 gpu_label_values = worker_label_values + [
                     str(i),
-                    d.name,
-                    gpu_chip_index,
+                    _safe_label(d.name),
+                    _safe_label(gpu_chip_index),
                 ]
                 gpu_info.add_metric(
                     gpu_labels,
@@ -229,27 +252,32 @@ class MetricExporter(Collector):
                         "worker_name": worker_name,
                         "instance": worker_ip,
                         "gpu_index": str(i),
-                        "gpu_chip_index": gpu_chip_index,
-                        "gpu_name": d.name,
+                        "gpu_chip_index": _safe_label(gpu_chip_index),
+                        "gpu_name": _safe_label(d.name),
                     },
                 )
                 if d.core is not None:
-                    gpu_cores.add_metric(gpu_label_values, d.core.total)
-                    gpu_utilization_rate.add_metric(
+                    _add_metric(gpu_cores, gpu_label_values, d.core.total)
+                    _add_metric(
+                        gpu_utilization_rate,
                         gpu_label_values,
                         d.core.utilization_rate,
                     )
 
-                if d.temperature is not None:
-                    gpu_temperature.add_metric(gpu_label_values, d.temperature)
+                _add_metric(gpu_temperature, gpu_label_values, d.temperature)
 
                 if d.memory is not None:
-                    gram_total.add_metric(gpu_label_values, d.memory.total)
-                    gram_allocated.add_metric(gpu_label_values, d.memory.allocated or 0)
-                    gram_used.add_metric(gpu_label_values, d.memory.used)
+                    _add_metric(gram_total, gpu_label_values, d.memory.total)
+                    _add_metric(gram_allocated, gpu_label_values, d.memory.allocated)
+                    _add_metric(gram_used, gpu_label_values, d.memory.used)
 
-                    if d.memory.total != 0 and d.memory.used is not None:
-                        gram_utilization_rate.add_metric(
+                    if (
+                        d.memory.total is not None
+                        and d.memory.used is not None
+                        and d.memory.total != 0
+                    ):
+                        _add_metric(
+                            gram_utilization_rate,
                             gpu_label_values,
                             _rate(d.memory.used, d.memory.total),
                         )
@@ -257,16 +285,22 @@ class MetricExporter(Collector):
         # filesystem
         if status.filesystem is not None:
             for _, d in enumerate(status.filesystem):
-                filesystem_total.add_metric(
-                    worker_label_values + [d.mount_point], d.total
-                )
-                filesystem_used.add_metric(
-                    worker_label_values + [d.mount_point], d.used
+                _add_metric(
+                    filesystem_total,
+                    worker_label_values + [_safe_label(d.mount_point)],
+                    d.total,
                 )
 
-                if d.total != 0 and d.used is not None:
-                    filesystem_utilization_rate.add_metric(
-                        worker_label_values + [d.mount_point],
+                _add_metric(
+                    filesystem_used,
+                    worker_label_values + [_safe_label(d.mount_point)],
+                    d.used,
+                )
+
+                if d.total is not None and d.used is not None and d.total != 0:
+                    _add_metric(
+                        filesystem_utilization_rate,
+                        worker_label_values + [_safe_label(d.mount_point)],
                         _rate(d.used, d.total),
                     )
 

@@ -1,5 +1,7 @@
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
+
+from tests.utils.mock import mock_async_session
 
 from tests.utils.model import make_model, new_model, new_model_instance
 from gpustack.policies.candidate_selectors import SGLangResourceFitSelector
@@ -302,6 +304,49 @@ def expected_candidate(
             ],
             0,
         ),
+        # Auto schedule 8 NPUs from 1 worker for multimodal model.
+        # Check point:
+        # - Candidate selection correctness.
+        # - vision attension heads should be divisible by tp.
+        # - should scheudle to 8 GPUs insteads of 6 because of the vision attention heads.
+        (
+            "auto_select_multimodal_1_gpus_1_worker_npu_with_vision_attention_heads_check",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen3.5-122B-A10B",
+                backend_parameters=[
+                    "--reasoning-parser=qwen3",
+                    "--context-length=32768",
+                    "--disable-radix-cache",
+                    "--chunked-prefill-size=4096",
+                    "--max-prefill-tokens=4096",
+                    "--max-total-tokens=40960",
+                ],
+            ),
+            [
+                linux_ascend_1_910b_64gx8(),
+            ],
+            [
+                expected_candidate(
+                    1,
+                    "ascend_0",
+                    [0, 1, 2, 3, 4, 5, 6, 7],
+                    {
+                        0: 55113020342,
+                        1: 55113020342,
+                        2: 55113020342,
+                        3: 55113020342,
+                        4: 55113020342,
+                        5: 55113020342,
+                        6: 55113020342,
+                        7: 55113020342,
+                    },
+                )
+            ],
+            0,
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -319,11 +364,15 @@ async def test_select_candidates(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
         m.backend = BackendEnum.SGLANG
@@ -381,11 +430,15 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -459,11 +512,15 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -541,11 +598,15 @@ async def test_manual_schedule_to_3_workers_4_gpus(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -619,11 +680,15 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -693,11 +758,15 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -777,11 +846,15 @@ async def test_auto_schedule_embedding_models(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -846,11 +919,15 @@ async def test_auto_schedule_single_work_single_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -952,11 +1029,16 @@ async def test_auto_schedule_single_work_multi_gpu(
     resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
     placement_scorer = PlacementScorer(m, mis)
 
-    if index == 1:
-        # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
-        resource_fit_selector._num_attention_heads = 25
-    if index == 3:
-        resource_fit_selector._model_params.vocab_size = 10001
+    original_init_model_params = resource_fit_selector._init_model_parameters
+
+    async def mock_init_model_parameters(self, workers):
+        if index == 1:
+            # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
+            resource_fit_selector._num_attention_heads = 25
+        elif index == 3:
+            resource_fit_selector._model_params.vocab_size = 10001
+        else:
+            await original_init_model_params(workers)
 
     with (
         patch(
@@ -965,11 +1047,20 @@ async def test_auto_schedule_single_work_multi_gpu(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
+        ),
+        patch.object(
+            SGLangResourceFitSelector,
+            '_init_model_parameters',
+            new=mock_init_model_parameters,
         ),
     ):
 
@@ -978,6 +1069,58 @@ async def test_auto_schedule_single_work_multi_gpu(
 
         # Verify detailed message content
         assert resource_fit_selector._messages == expect_msg
+
+
+@pytest.mark.asyncio
+async def test_tp_divisibility_checks_vision_heads_for_sglang(config):
+    m = new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id="Qwen/Qwen2.5-VL-7B-Instruct",
+        backend_parameters=[],
+    )
+    m.backend = BackendEnum.SGLANG
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, [])
+    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._vision_num_attention_heads = 16
+    resource_fit_selector._model_params.vocab_size = None
+
+    assert not resource_fit_selector._is_tp_size_divisible(6)
+    assert (
+        resource_fit_selector._check_tp_size_divisibility(6)
+        == "Total number of vision attention heads (16)"
+        " must be divisible by tensor parallel size (6)."
+    )
+
+
+@pytest.mark.parametrize(
+    "language_only_param",
+    [
+        "--language-only",
+    ],
+)
+@pytest.mark.asyncio
+async def test_tp_divisibility_skips_vision_heads_in_language_only_mode_for_sglang(
+    config, language_only_param
+):
+    m = new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id="Qwen/Qwen2.5-VL-7B-Instruct",
+        backend_parameters=[language_only_param],
+    )
+    m.backend = BackendEnum.SGLANG
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, [])
+    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._vision_num_attention_heads = 16
+    resource_fit_selector._model_params.vocab_size = None
+
+    assert resource_fit_selector._is_tp_size_divisible(6)
+    assert resource_fit_selector._check_tp_size_divisibility(6) is None
 
 
 @pytest.mark.asyncio
@@ -1008,11 +1151,15 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1064,11 +1211,15 @@ async def test_sglang_backend_parameters(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1112,11 +1263,15 @@ async def test_sglang_tensor_parallel_size(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1162,11 +1317,15 @@ async def test_sglang_data_parallel_size(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1208,11 +1367,15 @@ async def test_sglang_memory_fraction_static(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1253,11 +1416,15 @@ async def test_auto_schedule_extended_kv_cache_ram_size(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1311,11 +1478,15 @@ async def test_auto_schedule_extended_kv_cache_ram_ratio(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1396,11 +1567,15 @@ async def test_output_schedule_msg(config, index, workers, model, expect_msg):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1629,11 +1804,15 @@ async def test_select_candidates_from_different_gpu_types(
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
         m.backend = BackendEnum.SGLANG.value

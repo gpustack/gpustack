@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Optional, List
 from gpustack.detectors.base import (
     GPUDetector,
-    GPUDevicesInfo,
+    GPUDevicesStatus,
     SystemInfoDetector,
 )
 from gpustack.detectors.runtime.runtime import Runtime
@@ -26,7 +26,7 @@ class DetectorFactory:
         else:
             self.gpu_detectors = [Runtime()]
 
-    def detect_gpus(self) -> GPUDevicesInfo:
+    def detect_gpus(self) -> GPUDevicesStatus:
         for detector in self.gpu_detectors:
             if detector.is_available():
                 gpus = detector.gather_gpu_info()
@@ -39,8 +39,8 @@ class DetectorFactory:
         return self.system_info_detector.gather_system_info()
 
     @staticmethod
-    def _filter_gpu_devices(gpu_devices: GPUDevicesInfo) -> GPUDevicesInfo:
-        filtered: GPUDevicesInfo = []
+    def _filter_gpu_devices(gpu_devices: GPUDevicesStatus) -> GPUDevicesStatus:
+        filtered: GPUDevicesStatus = []
         for device in gpu_devices:
             if not device.memory or not device.memory.total or device.memory.total <= 0:
                 logger.debug(

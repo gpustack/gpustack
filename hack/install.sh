@@ -65,6 +65,40 @@ function copy_extra_static() {
   fi
 }
 
+# Update community backends
+function make_community_backends() {
+  local tmp_dir
+  tmp_dir=$(mktemp -d -t gpustack-community-backends.XXXXXX)
+
+  # shellcheck disable=SC2064
+  trap "rm -rf \"${tmp_dir}\"" EXIT
+
+  local target_dir="${ROOT_DIR}/gpustack/assets/"
+
+  gpustack::log::info "pulling community backends"
+
+  # Clone the repository
+  git clone https://github.com/gpustack/community-inference-backends "${tmp_dir}"
+
+  # Build the community backends
+  (
+    cd "${tmp_dir}"
+    if [[ "${UV_SYSTEM_PYTHON:-}" == "1" ]]; then
+      # In Docker build, use system Python directly
+      uv pip install PyYAML && uv run make
+    else
+      # For local development, use virtual environment
+      uv venv && source .venv/bin/activate && uv pip install PyYAML && uv run make
+    fi
+  )
+
+  # Create target directory and copy the yaml file
+  mkdir -p "${target_dir}"
+  cp "${tmp_dir}/dist/community-inference-backends.yaml" "${target_dir}/community-inference-backends.yaml"
+
+  gpustack::log::info "community backends updated successfully"
+}
+
 #
 # main
 #
@@ -73,4 +107,5 @@ gpustack::log::info "+++ DEPENDENCIES +++"
 download_deps
 download_ui
 copy_extra_static
+make_community_backends
 gpustack::log::info "--- DEPENDENCIES ---"

@@ -47,15 +47,20 @@ Please refer to the vLLM [documentation](https://docs.vllm.ai/en/stable/models/s
 
 ### Supported Features
 
-#### Multimodal Language Models
+#### Omni-Modal Support
 
-vLLM supports multimodal language models listed [here](https://docs.vllm.ai/en/stable/models/supported_models/#list-of-multimodal-language-models).
+[vLLM-Omni](https://github.com/vllm-project/vllm-omni) is an extension of vLLM designed for omni-modal inference, supporting:
 
-When users deploy a vision language model using the vLLM backend, image inputs are supported in the chat completion API.
+- **Omni Models**: Simultaneous processing of text, audio, images, and video (e.g., `Qwen3-Omni`)
+- **Image Tasks**: Image generation and editing (e.g., `Z-Image-Turbo`)
+- **Video Tasks**: Video generation and editing (e.g., `Wan2.2`)
+- **Audio Tasks**: Speech synthesis, voice cloning, and more (e.g., `Qwen3-TTS`)
+
+GPUStack integrates with vLLM-Omni to deliver a seamless experience for deploying and managing omni-modal models. When a model is deployed via the vLLM backend, GPUStack automatically detects whether it is omni-modal based on its metadata and sets the required parameters for vLLM-Omni.
 
 #### Distributed Inference Across Workers (Experimental)
 
-vLLM supports distributed inference across multiple workers using [Ray](https://ray.io). You can enable a Ray cluster in GPUStack by checking the `Allow Distributed Inference Across Workers` option when deploying a model. This allowing vLLM to run distributed inference across multiple workers.
+vLLM supports distributed inference across multiple workers using [Ray](https://ray.io). You can enable a Ray cluster in GPUStack by checking the `Allow Distributed Inference Across Workers` option when deploying a model. This allows vLLM to run distributed inference across multiple workers.
 
 !!! warning "Known Limitations"
 
@@ -251,7 +256,7 @@ To avoid directly configuring JSON, GPUStack provides a set of command line para
 
     Hence, GPUStack will override/prevent those variables. Please compare the model instance logs' output with your expectations.
 
-## Voxbox
+## VoxBox
 
 [VoxBox](https://github.com/gpustack/vox-box) is an inference engine designed for deploying Text-to-Speech and Speech-to-Text models. It also provides an API that is fully compatible with the OpenAI audio API.
 

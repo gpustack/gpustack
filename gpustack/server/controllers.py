@@ -2,7 +2,11 @@ import logging
 import random
 import string
 import asyncio
+import yaml
+from importlib.resources import files
+from functools import partial
 from typing import Any, Dict, List, Tuple, Optional, Set
+from pydantic import BaseModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
@@ -13,14 +17,28 @@ from gpustack.config.config import (
 )
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
+from gpustack.policies.scorers.score_chain import (
+    ModelInstanceScoreChain,
+)
 from gpustack.policies.base import ModelInstanceScore
 from gpustack.policies.scorers.status_scorer import StatusScorer
-from gpustack.schemas.inference_backend import InferenceBackend, get_built_in_backend
+from gpustack.schemas.inference_backend import (
+    InferenceBackend,
+    get_built_in_backend,
+    VersionConfig,
+    VersionConfigDict,
+)
 from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
+from gpustack.schemas.model_routes import (
+    ModelRoute,
+    ModelRouteTarget,
+    MyModel,
+    TargetStateEnum,
+)
 from gpustack.schemas.models import (
     BackendEnum,
+    BackendSourceEnum,
     ModelSource,
-    MyModel,
     Model,
     ModelInstance,
     ModelInstanceCreate,
@@ -30,7 +48,6 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.config import (
     GatewayModeEnum,
-    ModelInstanceProxyModeEnum,
     SensitivePredefinedConfig,
 )
 from gpustack.schemas.workers import (
@@ -54,13 +71,15 @@ from gpustack.schemas.users import (
     is_default_cluster_user,
 )
 from gpustack.server.bus import Event, EventType, event_bus
-from gpustack.server.catalog import get_catalog_draft_models
+from gpustack.utils.model_source import get_draft_model_source
+from gpustack import envs
 from gpustack.server.db import async_session
 from gpustack.server.services import (
     ModelFileService,
     ModelInstanceService,
     ModelService,
     WorkerService,
+    ModelRouteService,
 )
 from gpustack.cloud_providers.common import (
     get_client_from_provider,
@@ -77,8 +96,20 @@ from gpustack.gateway.client.networking_higress_io_v1_api import (
     NetworkingHigressIoV1Api,
     McpBridgeRegistry,
 )
+from gpustack.gateway.client.extensions_higress_io_v1_api import (
+    ExtensionsHigressIoV1Api,
+    WasmPluginMatchRule,
+    WasmPluginSpec,
+)
+from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
+    NetworkingIstioIoV1Alpha3Api,
+)
 from gpustack.gateway import utils as mcp_handler
 from gpustack.gateway import get_async_k8s_config
+from gpustack.schemas.model_provider import (
+    ModelProvider,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +117,8 @@ logger = logging.getLogger(__name__)
 class ModelController:
     def __init__(self, cfg: Config):
         self._config = cfg
-        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
         self._k8s_config = get_async_k8s_config(cfg=cfg)
+        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
         pass
 
@@ -98,13 +129,44 @@ class ModelController:
         if not self._disable_gateway:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
-            self._networking_api = k8s_client.NetworkingV1Api(api_client=base_client)
 
         async for event in Model.subscribe(source="model_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
 
             await self._reconcile(event)
+
+    async def _ensure_model_mcp_bridge(
+        self, session: AsyncSession, event_type: EventType, model: Model
+    ):
+        if self._disable_gateway:
+            return
+        model_instances = await ModelInstance.all_by_fields(
+            session,
+            fields={"model_id": model.id, "deleted_at": None},
+        )
+        worker_by_id = None
+        worker_ids = {
+            instance.worker_id for instance in model_instances if instance.worker_id
+        }
+        if worker_ids:
+            workers = await Worker.all_by_fields(
+                session,
+                extra_conditions=[
+                    Worker.id.in_(worker_ids),
+                ],
+            )
+            worker_by_id = {worker.id: worker for worker in workers}
+
+        await mcp_handler.ensure_model_mcp_bridge(
+            event_type=event_type,
+            model_id=model.id,
+            model_instances=model_instances,
+            networking_higress_api=self._higress_network_api,
+            namespace=self._config.gateway_namespace,
+            cluster_id=model.cluster_id,
+            workers=worker_by_id,
+        )
 
     async def _reconcile(self, event: Event):
         """
@@ -114,18 +176,12 @@ class ModelController:
         model: Model = event.data
         try:
             async with async_session() as session:
-                await set_default_worker_selector(session, model)
-                await sync_replicas(session, model, self._config)
-                await distribute_models_to_user(session, model, event)
-                if self._disable_gateway:
-                    return
-                await sync_gateway(
-                    session,
-                    event,
-                    self._config,
-                    model,
-                    self._networking_api,
+                await sync_replicas(session, model)
+                await notify_model_route_target(
+                    session=session, model=model, event=event
                 )
+                await sync_categories_and_meta(session, model, event)
+                await self._ensure_model_mcp_bridge(session, event.type, model)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
 
@@ -133,8 +189,6 @@ class ModelController:
 class ModelInstanceController:
     def __init__(self, cfg: Config):
         self._config = cfg
-        self._k8s_config = get_async_k8s_config(cfg=cfg)
-        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
         pass
 
@@ -142,9 +196,6 @@ class ModelInstanceController:
         """
         Start the controller.
         """
-        if not self._disable_gateway:
-            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
-            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
         async for event in ModelInstance.subscribe(source="model_instance_controller"):
             if event.type == EventType.HEARTBEAT:
@@ -164,15 +215,6 @@ class ModelInstanceController:
                 if not model:
                     return
                 model_deleting = model.deleted_at is not None
-
-                if not self._disable_gateway:
-                    await mcp_handler.ensure_model_instance_mcp_bridge(
-                        event_type=event.type,
-                        model_instance=model_instance,
-                        networking_higress_api=self._higress_network_api,
-                        namespace=self._config.gateway_namespace,
-                        cluster_id=model.cluster_id,
-                    )
 
                 if event.type == EventType.DELETED:
                     # trigger model replica sync
@@ -198,22 +240,7 @@ class ModelInstanceController:
             )
 
 
-async def set_default_worker_selector(session: AsyncSession, model: Model):
-    if model.deleted_at is not None:
-        return
-
-    model = await Model.one_by_id(session, model.id)
-    if (
-        not model.worker_selector
-        and not model.gpu_selector
-        and get_backend(model) == BackendEnum.VLLM
-    ):
-        # vLLM models are only supported on Linux
-        model.worker_selector = {"os": "linux"}
-        await ModelService(session).update(model)
-
-
-async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
+async def sync_replicas(session: AsyncSession, model: Model):
     """
     Synchronize the replicas.
     """
@@ -267,7 +294,9 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 logger.debug(f"Deleted model instances: {scale_down_instance_names}")
 
 
-async def distribute_models_to_user(session: AsyncSession, model: Model, event: Event):
+async def distribute_models_to_user(
+    session: AsyncSession, model: ModelRoute, event: Event
+):
     if len(event.changed_fields) == 0 and event.type == EventType.CREATED:
         return
     model_dict = model.model_dump(exclude={"instances", "users", "cluster"})
@@ -294,7 +323,7 @@ async def distribute_models_to_user(session: AsyncSession, model: Model, event: 
             users = await User.all_by_fields(
                 session,
                 fields={"deleted_at": None, "is_admin": False},
-                extra_conditions=[User.models.any(Model.id == model.id)],
+                extra_conditions=[User.routes.any(ModelRoute.id == model.id)],
             )
             current_user_ids = {user.id for user in users}
             to_update_model_user_ids = current_user_ids - to_create_model_user_ids
@@ -302,7 +331,7 @@ async def distribute_models_to_user(session: AsyncSession, model: Model, event: 
         users = await User.all_by_fields(
             session,
             fields={"deleted_at": None, "is_admin": False},
-            extra_conditions=[User.models.any(Model.id == model.id)],
+            extra_conditions=[User.routes.any(ModelRoute.id == model.id)],
         )
         for user in users:
             to_create_model_user_ids.add(user.id)
@@ -466,70 +495,39 @@ async def get_model_files_for_instance(
     return model_files
 
 
-def get_draft_model_source(model: Model) -> Optional[ModelSource]:
-    """
-    Get the model source for the draft model.
-    First check the catalog for the draft model.
-    If not found, get the model source empirically to support custom draft models.
-    """
-    if model.speculative_config is None or not model.speculative_config.draft_model:
-        return None
-
-    draft_model = model.speculative_config.draft_model
-    catalog_draft_models = get_catalog_draft_models()
-    for catalog_draft_model in catalog_draft_models:
-        if catalog_draft_model.name == draft_model:
-            return catalog_draft_model
-
-    # If draft_model looks like a path, assume it's a local path.
-    if draft_model.startswith("/"):
-        return ModelSource(source=SourceEnum.LOCAL_PATH, local_path=draft_model)
-
-    # Otherwise, assume it comes from the same source as the main model.
-    if model.source == SourceEnum.HUGGING_FACE:
-        return ModelSource(
-            source=SourceEnum.HUGGING_FACE,
-            huggingface_repo_id=draft_model,
-        )
-    elif model.source == SourceEnum.MODEL_SCOPE:
-        return ModelSource(
-            source=SourceEnum.MODEL_SCOPE,
-            model_scope_model_id=draft_model,
-        )
-    return None
-
-
 async def find_scale_down_candidates(
-    instances: List[ModelInstance], model: Model
+    instances: List[ModelInstance],
+    model: Model,
+    *,
+    status_max_score: Optional[float] = None,
+    offload_max_score: Optional[float] = None,
+    placement_max_score: Optional[float] = None,
+    total_max_score: Optional[float] = None,
 ) -> List[ModelInstanceScore]:
     try:
-        placement_scorer = PlacementScorer(
-            model, instances, scale_type=ScaleTypeEnum.SCALE_DOWN
+        if status_max_score is None:
+            status_max_score = envs.SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE
+        if offload_max_score is None:
+            offload_max_score = envs.SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE
+        if placement_max_score is None:
+            placement_max_score = envs.SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE
+
+        chain = ModelInstanceScoreChain(
+            scorers=[
+                StatusScorer(model, max_score=status_max_score),
+                OffloadLayerScorer(model, max_score=offload_max_score),
+                PlacementScorer(
+                    model,
+                    instances,
+                    scale_type=ScaleTypeEnum.SCALE_DOWN,
+                    max_score=placement_max_score,
+                ),
+            ],
+            total_max_score=total_max_score,
         )
-        placement_candidates = await placement_scorer.score_instances(instances)
-
-        offload_layer_scorer = OffloadLayerScorer(model)
-        offload_candidates = await offload_layer_scorer.score_instances(instances)
-
-        status_scorer = StatusScorer(model)
-        status_candidates = await status_scorer.score_instances(instances)
-
-        offload_cand_map = {cand.model_instance.id: cand for cand in offload_candidates}
-        placement_cand_map = {
-            cand.model_instance.id: cand for cand in placement_candidates
-        }
-
-        for cand in status_candidates:
-            score = cand.score * 100
-            offload_candidate = offload_cand_map.get(cand.model_instance.id)
-            score += offload_candidate.score * 10 if offload_candidate else 0
-
-            placement_candidate = placement_cand_map.get(cand.model_instance.id)
-            score += placement_candidate.score if placement_candidate else 0
-            cand.score = score / 111
-
+        final_candidates = await chain.score(instances)
         final_candidates = sorted(
-            status_candidates, key=lambda x: x.score, reverse=False
+            final_candidates, key=lambda x: x.score, reverse=False
         )
         return final_candidates
     except Exception as e:
@@ -537,6 +535,7 @@ async def find_scale_down_candidates(
             f"Failed to find scale down candidates for model {model.name}: {e}"
         )
         logger.error(state_message)
+        return []
 
 
 async def sync_ready_replicas(session: AsyncSession, model: Model):
@@ -573,81 +572,348 @@ async def get_cluster_registry(
     cluster_registry = mcp_handler.cluster_registry(cluster_user.cluster)
     if cluster_registry is None:
         return None
-    return {100: cluster_registry}
+    return cluster_registry
+
+
+async def sync_model_route_mapper(
+    cfg: Config,
+    extensions_api: ExtensionsHigressIoV1Api,
+    ingress_name: str,
+    route_name: str,
+    destinations: mcp_handler.DestinationTupleList,
+    fallback_destinations: mcp_handler.DestinationTupleList,
+):
+    """
+    Synchronize the model route mapper.
+    """
+    ingress_prefix = f"{cfg.get_namespace()}/"
+    if cfg.get_namespace() == cfg.gateway_namespace:
+        ingress_prefix = ""
+    model_name_to_registries: Dict[str, List[str]] = {}
+    for _, model_name, registry in destinations:
+        if route_name == model_name:
+            # Skip self mapping
+            continue
+        registries = model_name_to_registries.setdefault(model_name, [])
+        registries.append(registry.get_service_name())
+    fallback_model_name_to_registries: Dict[str, List[str]] = {}
+    for _, model_name, registry in fallback_destinations:
+        registries = fallback_model_name_to_registries.setdefault(model_name, [])
+        registries.append(registry.get_service_name())
+
+    expected_rules = mcp_handler.get_expected_match_list(
+        route_name=route_name,
+        ingress_prefix=ingress_prefix,
+        ingress_name=ingress_name,
+        model_name_to_registries=model_name_to_registries,
+        fallback_model_name_to_registries=fallback_model_name_to_registries,
+    )
+
+    def spec_diff(current_spec: Optional[WasmPluginSpec]) -> WasmPluginSpec:
+        # the current spec must exist. If not, it means the plugin has been deleted manually,
+        # we should not recreate it until next update event to avoid potential misconfiguration.
+        if current_spec is None:
+            return current_spec
+        to_keep_rules: List[WasmPluginMatchRule] = []
+        full_ingress_name = f"{ingress_prefix}{ingress_name}"
+
+        for rule in current_spec.matchRules or []:
+            if full_ingress_name not in rule.ingress:
+                to_keep_rules.append(rule)
+        to_keep_rules.extend(expected_rules)
+        to_keep_rules.sort(key=lambda r: r.ingress[0] if r.ingress else "")
+        current_spec.matchRules = to_keep_rules
+        return current_spec
+
+    await mcp_handler.ensure_wasm_plugin(
+        api=extensions_api,
+        name=mcp_handler.gpustack_model_mapper_name,
+        namespace=cfg.gateway_namespace,
+        spec_diff=spec_diff,
+    )
+
+
+async def ensure_route_ai_proxy_config(
+    cfg: Config,
+    model_route_id: int,
+    extensions_api: ExtensionsHigressIoV1Api,
+    route_destinations: mcp_handler.DestinationTupleList,
+    fallback_destinations: mcp_handler.DestinationTupleList,
+):
+    service_namespace_prefix = cfg.get_namespace() + "/"
+    if cfg.get_namespace() == cfg.gateway_namespace:
+        service_namespace_prefix = ""
+    operating_id = mcp_handler.model_route_cleanup_prefix(model_route_id)
+    ingress_name = mcp_handler.model_route_ingress_name(model_route_id)
+    fallback_ingress_name = mcp_handler.fallback_ingress_name(ingress_name)
+    expected_providers = []
+    expected_match_rules = []
+    # cross provider needs to configure ai_proxy
+    unique_registry_services: Set[str] = set(
+        registry.get_service_name()
+        for _, _, registry in route_destinations
+        if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+    )
+    unique_fallback_registry_services: Set[str] = set(
+        registry.get_service_name()
+        for _, _, registry in fallback_destinations
+        if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+    )
+
+    if len(unique_registry_services) + len(unique_fallback_registry_services) > 0:
+        expected_providers.append(
+            mcp_handler.ai_proxy_openai_provider_config(operating_id)
+        )
+
+    if len(unique_registry_services) > 0:
+        expected_match_rules.append(
+            WasmPluginMatchRule(
+                config={
+                    "activeProviderId": operating_id,
+                },
+                configDisable=False,
+                service=list(unique_registry_services),
+                ingress=[f"{service_namespace_prefix}{ingress_name}"],
+            )
+        )
+    # same logic for fallback
+    if len(unique_fallback_registry_services) > 0:
+        expected_match_rules.append(
+            WasmPluginMatchRule(
+                config={
+                    "activeProviderId": operating_id,
+                },
+                configDisable=False,
+                service=list(unique_fallback_registry_services),
+                ingress=[f"{service_namespace_prefix}{fallback_ingress_name}"],
+            )
+        )
+
+    await mcp_handler.ensure_wasm_plugin(
+        api=extensions_api,
+        name=mcp_handler.gpustack_ai_proxy_name,
+        namespace=cfg.gateway_namespace,
+        spec_diff=partial(
+            mcp_handler.ai_proxy_diff_spec,
+            expected_providers=expected_providers,
+            expected_match_rules=expected_match_rules,
+            operating_id_prefix=operating_id,
+        ),
+    )
 
 
 async def sync_gateway(
     session: AsyncSession,
     event: Event,
     cfg: Config,
-    model: Model,
+    model_route: ModelRoute,
     networking_api: k8s_client.NetworkingV1Api,
+    extensions_api: ExtensionsHigressIoV1Api,
+    istio_networking_api: NetworkingIstioIoV1Alpha3Api,
 ):
     event_type = event.type
-    model_from_db = await Model.one_by_id(session, model.id)
-    if not model_from_db:
+    model_route_from_db = await ModelRoute.one_by_id(
+        session,
+        model_route.id,
+        options=[selectinload(ModelRoute.route_targets)],
+    )
+    targets: List[ModelRouteTarget] = (
+        getattr(model_route_from_db, "route_targets", []) if model_route_from_db else []
+    )
+    has_fallback_target = any(
+        target
+        for target in targets
+        if target.fallback_status_codes and len(target.fallback_status_codes) > 0
+    )
+    destinations = []
+    fallback_destinations = []
+    if not model_route_from_db:
         event_type = EventType.DELETED
     if event.type != EventType.DELETED:
-        destinations = await calculate_destinations(session, model)
-    else:
-        destinations = []
+        destinations, fallback_destinations = await calculate_destinations(
+            session, model_route
+        )
+    ingress_name = mcp_handler.model_route_ingress_name(model_route.id)
+    await sync_model_route_mapper(
+        cfg=cfg,
+        extensions_api=extensions_api,
+        ingress_name=ingress_name,
+        route_name=model_route.name,
+        destinations=destinations,
+        fallback_destinations=fallback_destinations,
+    )
+    # FIXME: Copy the fallback destination to the main ingress for now to make sure the fallback
+    # route is always hit when fallback is configured, even if the main route has no valid
+    # destination. This is to avoid potential misconfiguration that causes the main route to
+    # have no destination and the fallback route is not hit at all.
     await mcp_handler.ensure_model_ingress(
         event_type=event_type,
+        ingress_name=ingress_name,
+        route_name=model_route.name,
         namespace=cfg.get_namespace(),
-        model=model,
-        destinations=destinations,
+        destinations=destinations if len(destinations) > 0 else fallback_destinations,
         networking_api=networking_api,
         included_generic_route=False,
-        included_proxy_route=model.generic_proxy,
+        included_proxy_route=model_route.generic_proxy,
     )
+    fallback_event_type = event_type
+    if not has_fallback_target:
+        fallback_event_type = EventType.DELETED
+    # Fallback ingress
+    await mcp_handler.ensure_model_ingress(
+        event_type=fallback_event_type,
+        ingress_name=mcp_handler.fallback_ingress_name(ingress_name),
+        route_name=model_route.name,
+        namespace=cfg.get_namespace(),
+        destinations=fallback_destinations,
+        networking_api=networking_api,
+        included_generic_route=False,
+        included_proxy_route=model_route.generic_proxy,
+        extra_annotations=mcp_handler.higress_http_header_matcher(
+            "exact", "x-higress-fallback-from", ingress_name
+        ),
+    )
+    # Fallback filter
+    await mcp_handler.ensure_fallback_filter(
+        event_type=fallback_event_type,
+        ingress_name=ingress_name,
+        namespace=cfg.get_namespace(),
+        networking_istio_api=istio_networking_api,
+    )
+    # ensure ai proxy config
+    await ensure_route_ai_proxy_config(
+        cfg=cfg,
+        model_route_id=model_route.id,
+        extensions_api=extensions_api,
+        route_destinations=destinations,
+        fallback_destinations=fallback_destinations,
+    )
+
+
+def flatten_destinations(
+    weight_to_count: List[Tuple[int, int, mcp_handler.DestinationTupleList]],
+    max_weight: Optional[int] = 0,
+) -> mcp_handler.DestinationTupleList:
+    persentage_list = mcp_handler.hamilton_calculate_weight(
+        [(weight, count) for weight, count, _ in weight_to_count],
+        max_weight=max_weight,
+    )
+    flatten_registry_list: mcp_handler.DestinationTupleList = []
+    index = 0
+    for _, _, registry_list_part in weight_to_count:
+        for count, model_name, registry in registry_list_part:
+            total_percentage = sum(persentage_list[index : index + count])
+            index += count
+            if total_percentage != 0:
+                flatten_registry_list.append((total_percentage, model_name, registry))
+    return flatten_registry_list
 
 
 async def calculate_destinations(
     session: AsyncSession,
-    model: Model,
-) -> List[Tuple[int, McpBridgeRegistry]]:
+    model_route: ModelRoute,
+) -> Tuple[mcp_handler.DestinationTupleList, mcp_handler.DestinationTupleList]:
     """
-    return persentage dict for each registry
+    return persentage Tuple for each registry with model name and the fallback registry
+    """
+    weight_to_count: List[Tuple[int, int, mcp_handler.DestinationTupleList]] = []
+    fallback_weight_to_count: List[
+        Tuple[int, int, mcp_handler.DestinationTupleList]
+    ] = []
+    targets = await ModelRouteTarget.all_by_field(session, "route_id", model_route.id)
+    for target in targets:
+        if target.state != TargetStateEnum.ACTIVE:
+            continue
+        to_extend: mcp_handler.DestinationTupleList = []
+        if target.model_id is not None:
+            model = await Model.one_by_id(session, target.model_id)
+            if model is None:
+                continue
+            to_extend = await calculate_model_destinations(session, model)
+        elif target.provider_id is not None:
+            to_extend = await provider_destinations(
+                session=session,
+                provider_id=target.provider_id,
+                provider_model_name=target.provider_model_name,
+            )
+        if to_extend is None or len(to_extend) == 0:
+            # no valid destination found
+            continue
+        count = sum([count for count, _, _ in to_extend])
+        weight_to_count.append((target.weight, count, to_extend))
+        if (
+            target.fallback_status_codes is not None
+            and len(target.fallback_status_codes) > 0
+        ):
+            fallback_weight_to_count.append((target.weight, count, to_extend))
+    if len(weight_to_count) == 0:
+        return [], []
+
+    flatten_registry_list = flatten_destinations(weight_to_count)
+    fallback_registry_list = []
+    if len(fallback_weight_to_count) > 0:
+        # fallback might have 0 weight, so set max_weight to 1
+        fallback_registry_list = flatten_destinations(
+            fallback_weight_to_count, max_weight=1
+        )
+
+    return flatten_registry_list, fallback_registry_list
+
+
+async def provider_destinations(
+    session: AsyncSession,
+    provider_id: int,
+    provider_model_name: str,
+) -> mcp_handler.DestinationTupleList:
+    """
+    return count dict for provider registry
+    """
+    provider = await ModelProvider.one_by_id(session, provider_id)
+    if provider is None:
+        return []
+    return [(1, provider_model_name, mcp_handler.provider_registry(provider))]
+
+
+async def calculate_model_destinations(
+    session: AsyncSession,
+    model: Model,
+) -> mcp_handler.DestinationTupleList:
+    """
+    return count dict for each registry
     """
     # find out is handling default cluster's model
     cluster_registry = await get_cluster_registry(session, model.cluster_id)
     if cluster_registry is not None:
-        return cluster_registry
+        return [(1, model.name, cluster_registry)]
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
-    # registry_dict is ip to instances
-    instances_by_worker_id: Dict[int, List[ModelInstance]] = {}
-    for instance in instances:
-        if (
-            instance.worker_ip is None
-            or instance.worker_ip == ""
-            or instance.port is None
-            or instance.state != ModelInstanceStateEnum.RUNNING
-        ):
-            continue
-        if instance.worker_id not in instances_by_worker_id:
-            instances_by_worker_id[instance.worker_id] = []
-        instances_by_worker_id[instance.worker_id].append(instance)
-
-    instances_related_workers = await Worker.all_by_fields(
+    instances = [
+        instance
+        for instance in instances
+        if instance.worker_ip is not None
+        and instance.port is not None
+        and instance.worker_ip != ""
+        and instance.state == ModelInstanceStateEnum.RUNNING
+    ]
+    worker_list = await Worker.all_by_fields(
         session=session,
-        extra_conditions=[Worker.id.in_(list(instances_by_worker_id.keys()))],
+        fields={
+            "cluster_id": model.cluster_id,
+            "deleted_at": None,
+        },
+        extra_conditions=[
+            Worker.id.in_(
+                [
+                    instance.worker_id
+                    for instance in instances
+                    if instance.worker_id is not None
+                ]
+            )
+        ],
     )
+    workers = {worker.id: worker for worker in worker_list}
+    registry_list = mcp_handler.model_instances_registry_list(instances, workers)
 
-    registry_list: List[Tuple[int, McpBridgeRegistry]] = []
-    for worker in instances_related_workers:
-        instances = instances_by_worker_id.get(worker.id, [])
-        if (
-            worker.proxy_mode is None
-            or worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER
-        ):
-            registry = mcp_handler.worker_registry(worker)
-            if registry is not None:
-                registry_list.append((len(instances), registry))
-        else:
-            registry_list.extend(mcp_handler.model_instances_registry_list(instances))
-
-    mcp_handler.replace_registry_weight(registry_list)
     return registry_list
 
 
@@ -821,22 +1087,260 @@ class WorkerController:
 
 class InferenceBackendController:
     """
-    Inference backend controller initializes built-in backends in the database.
+    Inference backend controller initializes built-in and community backends in the database.
     """
 
     async def start(self):
         async with async_session() as session:
-            for built_in_backend in get_built_in_backend():
-                if built_in_backend.backend_name == BackendEnum.CUSTOM.value:
-                    continue
-                backend = await InferenceBackend.one_by_field(
-                    session, "backend_name", built_in_backend.backend_name
+            # Initialize built-in backends
+            await self._init_built_in_backends(session)
+
+            # Initialize community backends
+            await self._init_community_backends(session)
+
+    async def _init_built_in_backends(self, session: AsyncSession):
+        """Initialize built-in backends in the database."""
+        for built_in_backend in get_built_in_backend():
+            if built_in_backend.backend_name == BackendEnum.CUSTOM.value:
+                continue
+
+            backend = await InferenceBackend.one_by_field(
+                session, "backend_name", built_in_backend.backend_name
+            )
+
+            if not backend:
+                # Create new built-in backend with backend_source
+                built_in_backend.backend_source = BackendSourceEnum.BUILT_IN
+                built_in_backend.enabled = True
+                await InferenceBackend.create(session, built_in_backend)
+                logger.info(
+                    f"Init built-in backend {built_in_backend.backend_name} in database"
                 )
-                if not backend:
-                    await InferenceBackend.create(session, built_in_backend)
-                    logger.info(
-                        f"Init built-in backend {built_in_backend.backend_name} in database"
+            elif backend.backend_source is None:
+                # Update existing backend without backend_source
+                backend.backend_source = BackendSourceEnum.BUILT_IN
+                if backend.enabled is None:
+                    backend.enabled = True
+                    await backend.update(
+                        session,
+                        {
+                            "backend_source": BackendSourceEnum.BUILT_IN,
+                            "enabled": (
+                                backend.enabled if backend.enabled is not None else True
+                            ),
+                        },
                     )
+                    logger.info(
+                        f"Updated backend_source for existing built-in backend {backend.backend_name}"
+                    )
+
+    async def _init_community_backends(self, session: AsyncSession):  # noqa: C901
+        """Load community backends from community-inference-backends.yaml into database."""
+        try:
+            # Get the path to community-inference-backends.yaml
+            yaml_file = files("gpustack.assets").joinpath(
+                "community-inference-backends.yaml"
+            )
+
+            if not yaml_file.is_file():
+                logger.debug(
+                    "community-inference-backends.yaml not found, skipping community backend initialization"
+                )
+                return
+
+            yaml_data = yaml.safe_load(yaml_file.read_text())
+
+            if not yaml_data:
+                logger.debug(
+                    "No community backends found in community-inference-backends.yaml"
+                )
+                return
+
+            if not isinstance(yaml_data, list):
+                logger.error(
+                    f"Invalid community-inference-backends.yaml format: expected list, got {type(yaml_data).__name__}"
+                )
+                return
+
+            # Collect backend names from YAML
+            yaml_backend_names = set()
+            for backend_config in yaml_data:
+                backend_name = backend_config.get("backend_name")
+                if backend_name:
+                    yaml_backend_names.add(backend_name)
+                await self._upsert_community_backend(session, backend_config)
+
+            # Query all community backends from database
+            all_backends = await InferenceBackend.all(session)
+            db_community_backends = [
+                backend
+                for backend in all_backends
+                if backend.backend_source == BackendSourceEnum.COMMUNITY
+            ]
+
+            # Delete community backends that are no longer in YAML
+            for backend in db_community_backends:
+                if backend.backend_name in yaml_backend_names:
+                    continue
+
+                if backend.enabled:
+                    # Convert to custom backend to preserve user's custom versions
+                    # Convert all built_in_frameworks versions to custom_framework versions
+                    converted_versions = {}
+                    if backend.version_configs and backend.version_configs.root:
+                        for version, config in backend.version_configs.root.items():
+                            config_data = config.model_dump()
+                            if config_data.get("built_in_frameworks"):
+                                config_data["custom_framework"] = config_data[
+                                    "built_in_frameworks"
+                                ][0]
+                                config_data["built_in_frameworks"] = None
+                            converted_versions[version] = VersionConfig(**config_data)
+
+                    # Prepare update data
+                    update_data = {
+                        "backend_source": BackendSourceEnum.CUSTOM,
+                        "enabled": False,
+                        "version_configs": VersionConfigDict(root=converted_versions),
+                    }
+                    flag_modified(backend, "version_configs")
+                    await backend.update(session, update_data)
+                    logger.info(
+                        f"Converted community backend '{backend.backend_name}' to custom backend"
+                    )
+                else:
+                    # Delete if no custom versions
+                    await backend.delete(session)
+                    logger.info(
+                        f"Deleted community backend '{backend.backend_name}' "
+                        f"(no longer in community-inference-backends.yaml)"
+                    )
+
+            logger.debug(
+                "Community backends initialized from community-inference-backends.yaml"
+            )
+
+        except (ModuleNotFoundError, FileNotFoundError):
+            # community_backends directory or yaml file does not exist
+            logger.debug(
+                "Community backends directory or file not found, skipping initialization"
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize community backends: {e}")
+
+    async def _upsert_community_backend(self, session: AsyncSession, config: dict):
+        """Create or update a community backend from YAML configuration."""
+        backend_name = config.get("backend_name")
+        if not backend_name:
+            return
+
+        # Prepare backend data
+        allowed_keys = [
+            "backend_name",
+            "version_configs",
+            "default_version",
+            "default_backend_param",
+            "default_run_command",
+            "default_entrypoint",
+            "health_check_path",
+            "description",
+            "icon",
+            "default_env",
+        ]
+        backend_data = {k: config[k] for k in allowed_keys if k in config}
+
+        # Set backend source
+        backend_data["backend_source"] = BackendSourceEnum.COMMUNITY
+        backend_data["enabled"] = False
+
+        # Convert version_configs to VersionConfigDict
+        if 'version_configs' in backend_data and backend_data['version_configs']:
+            version_config_dict = {}
+            for version, ver_config in backend_data['version_configs'].items():
+                # All versions loaded from YAML are predefined versions
+                # Convert framework information to built_in_frameworks
+
+                frameworks = None
+                if 'built_in_frameworks' in ver_config:
+                    frameworks = ver_config['built_in_frameworks']
+                elif (
+                    'custom_framework' in ver_config and ver_config['custom_framework']
+                ):
+                    # Even if YAML uses custom_framework, convert it to built_in_frameworks
+                    frameworks = [ver_config['custom_framework']]
+
+                # Set built_in_frameworks and clear custom_framework
+                if frameworks:
+                    ver_config['built_in_frameworks'] = (
+                        frameworks if isinstance(frameworks, list) else [frameworks]
+                    )
+                else:
+                    # If no framework specified, use empty list to mark as predefined version
+                    ver_config['built_in_frameworks'] = []
+
+                # Ensure custom_framework is None (predefined versions should not have custom_framework)
+                ver_config['custom_framework'] = None
+
+                version_config_dict[version] = VersionConfig(**ver_config)
+
+            backend_data['version_configs'] = VersionConfigDict(
+                root=version_config_dict
+            )
+
+        # Upsert: update if exists, create if not
+        existing = await InferenceBackend.one_by_field(
+            session, "backend_name", backend_name
+        )
+        if existing:
+            # Smart merge logic to preserve user customizations
+
+            # 1. Merge version_configs: preserve user custom versions, update YAML versions
+            if 'version_configs' in backend_data and backend_data['version_configs']:
+                yaml_versions = backend_data['version_configs'].root
+                existing_versions = (
+                    existing.version_configs.root if existing.version_configs else {}
+                )
+
+                # Create merged version dictionary
+                merged_versions = {}
+
+                # First add all YAML versions (overwrite old versions with same name)
+                for version, config in yaml_versions.items():
+                    merged_versions[version] = config
+
+                # Then add user custom versions (built_in_frameworks is None)
+                for version, config in existing_versions.items():
+                    if (
+                        config.built_in_frameworks is None
+                        and version not in yaml_versions
+                    ):
+                        # This is a user custom version not in YAML, preserve it
+                        merged_versions[version] = config
+
+                backend_data['version_configs'] = VersionConfigDict(
+                    root=merged_versions
+                )
+
+            # 2. Preserve user-modified enabled status (if user enabled it, don't reset to False)
+            if existing.enabled:
+                backend_data['enabled'] = True
+
+            # 3. Merge default_env (preserve user-added environment variables)
+            if existing.default_env:
+                if 'default_env' in backend_data and backend_data['default_env']:
+                    # Merge: YAML environment variables + user-added environment variables
+                    merged_env = dict(existing.default_env)
+                    merged_env.update(backend_data['default_env'])
+                    backend_data['default_env'] = merged_env
+                else:
+                    # YAML doesn't define it, preserve user's
+                    backend_data['default_env'] = existing.default_env
+
+            # 4. Update database
+            await existing.update(session, backend_data)
+        else:
+            backend = InferenceBackend(**backend_data)
+            await InferenceBackend.create(session, backend)
 
 
 class ModelFileController:
@@ -1246,6 +1750,7 @@ class WorkerProvisioningController:
             image_name=get_cluster_image_name(worker.cluster.worker_config),
             os_image=worker.worker_pool.os_image,
             secret_configs=secret_configs,
+            worker_name=worker.name,
         )
         ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
         if ssh_key is None:
@@ -1531,38 +2036,18 @@ class ClusterController:
                 )
                 await cluster.update(session=session, auto_commit=True)
 
-    async def _get_worker_registries(
-        self, session: AsyncSession, cluster_id: int
-    ) -> List[McpBridgeRegistry]:
-        workers = await Worker.all_by_field(
-            session,
-            "cluster_id",
-            cluster_id,
-        )
-        workers = [
-            worker
-            for worker in workers
-            if worker.deleted_at is None
-            and (worker.advertise_address or worker.ip) != ""
-            and worker.port is not None
-        ]
-        worker_registry_list = [
-            mcp_handler.worker_registry(worker)
-            for worker in workers
-            if mcp_handler.worker_registry(worker) is not None
-        ]
-        worker_registry_list.sort(key=lambda r: r.name or "")
-        return worker_registry_list
-
     async def _ensure_worker_mcp_bridge(self, event: Event):
+        """
+        The worker registry list for cluster is no longer needed.
+        Use empty list to trigger MCPBridge controller to clean up the worker registries
+        and proxies when cluster is created or deleted.
+        """
         if self._cfg.gateway_mode == GatewayModeEnum.disabled:
             return
         cluster: Cluster = event.data
-        mcp_resource_name = mcp_handler.cluster_mcp_bridge_name(cluster.id)
+        mcp_resource_name = mcp_handler.default_mcp_bridge_name
         desired_registries = []
         to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster.id)
-        async with async_session() as session:
-            desired_registries = await self._get_worker_registries(session, cluster.id)
         try:
             await mcp_handler.ensure_mcp_bridge(
                 client=self._higress_network_api,
@@ -1574,3 +2059,435 @@ class ClusterController:
         except Exception as e:
             logger.error(f"Failed to ensure MCPBridge for cluster {cluster.name}: {e}")
             raise
+
+
+async def notify_model_route_target(session: AsyncSession, model: Model, event: Event):
+    if event.type == EventType.DELETED:
+        return
+    should_notify = False
+    if event.changed_fields is not None:
+        related_fields = ["ready_replicas", "replicas"]
+        for field in related_fields:
+            if field in event.changed_fields:
+                should_notify = True
+                break
+    model: Model = await Model.one_by_id(
+        session=session,
+        id=model.id,
+        options=[
+            selectinload(Model.model_route_targets),
+        ],
+    )
+    if not model:
+        return
+    targets = model.model_route_targets
+    for target in targets:
+        if should_notify:
+            target_copy = ModelRouteTarget(**target.model_dump())
+            await event_bus.publish(
+                target_copy.__class__.__name__.lower(),
+                Event(
+                    type=EventType.UPDATED,
+                    data=target_copy,
+                    changed_fields={
+                        "model": (
+                            {},
+                            {
+                                "id": model.id,
+                                "name": model.name,
+                                "ready_replicas": model.ready_replicas,
+                                "replicas": model.replicas,
+                            },
+                        )
+                    },
+                ),
+            )
+
+
+async def sync_categories_and_meta(session: AsyncSession, model: Model, event: Event):
+    if event.type == EventType.DELETED:
+        return
+    model: Model = await Model.one_by_id(
+        session=session,
+        id=model.id,
+        options=[
+            selectinload(Model.model_routes),
+        ],
+    )
+    if not model:
+        return
+    routes = model.model_routes
+    for route in routes:
+        # created_by_model default to false if not set
+        if not route.created_by_model:
+            continue
+        if route.categories != model.categories or route.meta != model.meta:
+            await ModelRouteService(session).update(
+                model_route=route,
+                source={"categories": model.categories, "meta": model.meta},
+                auto_commit=True,
+            )
+
+
+class ModelProviderController:
+    def __init__(self, cfg: Config):
+        self._config = cfg
+        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
+
+    async def start(self):
+        if self._disable_gateway:
+            return
+        if not self._disable_gateway:
+            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
+            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
+            self._higress_extension_api = ExtensionsHigressIoV1Api(base_client)
+
+        async for event in ModelProvider.subscribe(source="model_provider_controller"):
+            try:
+                await self._reconcile(event)
+            except Exception as e:
+                logger.exception(f"Failed to reconcile model provider: {e}")
+
+    async def _ensure_provider_registry(
+        self,
+        model_provider: ModelProvider,
+        event: Event,
+    ):
+        provider_registry = mcp_handler.provider_registry(model_provider)
+        registry_to_remove = (
+            provider_registry is None or event.type == EventType.DELETED
+        )
+        to_delete_prefix = (
+            f"{mcp_handler.provider_id_prefix}{model_provider.id}"
+            if registry_to_remove
+            else None
+        )
+        desired_registries = [] if registry_to_remove else [provider_registry]
+
+        provider_proxy = mcp_handler.provider_proxy(model_provider)
+        proxy_to_remove = provider_proxy is None or event.type == EventType.DELETED
+        to_delete_proxy_prefix = (
+            f"proxy-{model_provider.id}" if proxy_to_remove else None
+        )
+        desired_proxies = [] if proxy_to_remove else [provider_proxy]
+
+        try:
+            await mcp_handler.ensure_mcp_bridge(
+                client=self._higress_network_api,
+                namespace=self._config.gateway_namespace,
+                mcp_bridge_name=mcp_handler.default_mcp_bridge_name,
+                desired_registries=desired_registries,
+                desired_proxies=desired_proxies,
+                to_delete_prefix=to_delete_prefix,
+                to_delete_proxies_prefix=to_delete_proxy_prefix,
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to ensure MCPRegistry for model provider {model_provider.name}: {e}"
+            )
+            raise
+
+    async def _ensure_provider_ai_proxy_config(self):
+        try:
+            async with async_session() as session:
+                providers = await ModelProvider.all_by_field(
+                    session,
+                    "deleted_at",
+                    None,
+                )
+                provider_config_list, match_rules = (
+                    mcp_handler.provider_proxy_plugin_spec(*providers)
+                )
+                await mcp_handler.ensure_wasm_plugin(
+                    api=self._higress_extension_api,
+                    name=mcp_handler.gpustack_ai_proxy_name,
+                    namespace=self._config.gateway_namespace,
+                    spec_diff=partial(
+                        mcp_handler.ai_proxy_diff_spec,
+                        expected_providers=provider_config_list,
+                        expected_match_rules=match_rules,
+                        operating_id_prefix=mcp_handler.provider_id_prefix,
+                    ),
+                )
+        except Exception as e:
+            logger.error(f"Failed to ensure provider's ai_proxy config: {e}")
+            raise
+
+    async def _notify_provider_model_routes(
+        self, session: AsyncSession, model_provider: ModelProvider, event: Event
+    ):
+        if event.type != EventType.UPDATED:
+            return
+        changed_fields = event.changed_fields or {}
+        should_notify = False
+        if "config" not in changed_fields:
+            return
+
+        # the changed field "config" must have old and new value, otherwise it's not a valid update event for config change.
+        # index 0 of the tuple is the old value, index 1 is the new value.
+        # each value must be a list with only 1 element as it is a norman field instead of relationship field.
+        old_config = changed_fields["config"][0][0]
+        if isinstance(changed_fields["config"][0][0], BaseModel):
+            old_config = changed_fields["config"][0][0].model_dump()
+        new_config = changed_fields["config"][1][0]
+        if isinstance(changed_fields["config"][1][0], BaseModel):
+            new_config = changed_fields["config"][1][0].model_dump()
+
+        # use hardcoded fields to determine whether to notify.
+        # For ProviderConfigType, including:
+        # - openaiCustomUrl
+        # - ollamaServerHost
+        # - difyApiUrl
+        # The above fields will affect the registry type of the provider_registry,
+        # it requires notifying ingress to regenerate registry destination.
+        related_fields = [
+            "openaiCustomUrl",
+            "ollamaServerHost",
+            "difyApiUrl",
+        ]
+        for field in related_fields:
+            if old_config.get(field) != new_config.get(field):
+                should_notify = True
+                break
+        if not should_notify:
+            return
+        targets = await ModelRouteTarget.all_by_fields(
+            session=session,
+            fields={"provider_id": model_provider.id},
+            options=[selectinload(ModelRouteTarget.model_route)],
+        )
+        unique_routes = {
+            target.model_route.id: target.model_route
+            for target in targets
+            if target.model_route is not None
+        }
+        for route in unique_routes.values():
+            route_copy = ModelRoute.model_validate(route.model_dump())
+            await event_bus.publish(
+                route_copy.__class__.__name__.lower(),
+                Event(type=EventType.UPDATED, data=route_copy),
+            )
+
+    async def _reconcile(self, event: Event):
+        """
+        Reconcile the model provider.
+        """
+        model_provider: ModelProvider = event.data
+        if not model_provider:
+            return
+        if event.type == EventType.DELETED:
+            await self._ensure_provider_registry(model_provider, event)
+            await self._ensure_provider_ai_proxy_config()
+            return
+        async with async_session() as session:
+            model_provider: ModelProvider = await ModelProvider.one_by_id(
+                session, model_provider.id
+            )
+            if not model_provider:
+                return
+            await self._ensure_provider_registry(model_provider, event)
+            await self._ensure_provider_ai_proxy_config()
+            await self._notify_provider_model_routes(session, model_provider, event)
+
+
+class ModelRouteTargetController:
+    def __init__(self, config: Config):
+        self._config = config
+
+    async def start(self):
+        async for event in ModelRouteTarget.subscribe(
+            source="model_route_target_controller"
+        ):
+            try:
+                await self._reconcile(event)
+            except Exception as e:
+                logger.exception(f"Failed to reconcile model route target: {e}")
+
+    async def _notify_parents(
+        self, session: AsyncSession, target: ModelRouteTarget, event: Event
+    ):
+        if event.type not in (EventType.UPDATED, EventType.DELETED):
+            return
+        changed_fields = event.changed_fields
+        if not target or (not changed_fields and event.type != EventType.DELETED):
+            return
+        should_notify_fields = [
+            "state",
+            "provider_id",
+            "model_id",
+            "provider_model_name",
+            "model",
+        ]
+        should_notify = event.type == EventType.DELETED
+        if not should_notify:
+            for field in should_notify_fields:
+                if field in (changed_fields or {}):
+                    should_notify = True
+                    break
+        if not should_notify:
+            return
+        try:
+            model_route: ModelRoute = await ModelRoute.one_by_id(
+                session, target.route_id
+            )
+            if not model_route:
+                return
+            copied_route = ModelRoute.model_validate(model_route.model_dump())
+            await event_bus.publish(
+                ModelRoute.__name__.lower(),
+                Event(type=EventType.UPDATED, data=copied_route),
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify model route for target {target.name}: {e}")
+
+    async def _sync_state(
+        self, session: AsyncSession, target: ModelRouteTarget, event: Event
+    ):
+        if event.type == EventType.DELETED:
+            return
+        target: ModelRouteTarget = await ModelRouteTarget.one_by_id(session, target.id)
+        if not target:
+            return
+        if target.provider_id is not None:
+            target_state = TargetStateEnum.ACTIVE
+        if target.model_id is not None:
+            model = await Model.one_by_id(session, target.model_id)
+            if not model:
+                return
+            target_state = (
+                TargetStateEnum.ACTIVE
+                if model.ready_replicas > 0
+                else TargetStateEnum.UNAVAILABLE
+            )
+        if target.state != target_state:
+            target.state = target_state
+            await target.update(session=session, auto_commit=True)
+
+    async def _update_orphan_route(
+        self, session: AsyncSession, target: ModelRouteTarget, event: Event
+    ) -> bool:
+        """
+        Update the orphan route if the target is deleted or has no associated model.
+        If the target model is not deleted, transfer model_route to a non model-created model.
+        """
+
+        if event.type != EventType.DELETED:
+            return True
+        if target.model_id is None:
+            return True
+        model = await Model.one_by_id(session, target.model_id)
+        if not model or model.deleted_at is not None:
+            return True
+        # If the model is not deleted, transfer the model route to a non model-created model route to avoid service disruption.
+        # The model route will be automatically deleted by the controller after the target is deleted.
+        orphan_route = await ModelRoute.one_by_id(session=session, id=target.route_id)
+        if (
+            not orphan_route
+            or orphan_route.deleted_at is not None
+            or not orphan_route.created_by_model
+        ):
+            # The route is already deleted or not created by model, no need to transfer.
+            # returns true to trigger parent notification and state sync to update the route state if needed.
+            return True
+        try:
+            route_service = ModelRouteService(session=session)
+            await route_service.update(
+                orphan_route, source={"created_by_model": False}, auto_commit=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to transfer model route {orphan_route.id}: {e}")
+            return True
+        return False
+
+    async def _reconcile(self, event: Event):
+        target: ModelRouteTarget = event.data
+        if not target:
+            return
+        async with async_session() as session:
+            should_notify_parents = await self._update_orphan_route(
+                session, target, event
+            )
+            if should_notify_parents:
+                await self._notify_parents(session, target, event)
+            await self._sync_state(session, target, event)
+
+
+class ModelRouteController:
+    def __init__(self, cfg: Config):
+        self._config = cfg
+        self._gateway_namespace = cfg.gateway_namespace
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
+        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
+
+    async def start(self):
+        if not self._disable_gateway:
+            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
+            self._networking_api = k8s_client.NetworkingV1Api(base_client)
+            self._higress_extension_api = ExtensionsHigressIoV1Api(base_client)
+            self._networking_istio_api = NetworkingIstioIoV1Alpha3Api(base_client)
+
+        async for event in ModelRoute.subscribe(source="model_route_controller"):
+            try:
+                await self._reconcile(event)
+            except Exception as e:
+                logger.exception(f"Failed to reconcile model route: {e}")
+
+    async def _sync_targets(self, session: AsyncSession, event: Event) -> bool:
+        if event.type == EventType.DELETED:
+            return False
+        model_route: ModelRoute = event.data
+        if not model_route:
+            return False
+        model_route: ModelRoute = await ModelRoute.one_by_id(
+            session,
+            model_route.id,
+            options=[selectinload(ModelRoute.route_targets)],
+        )
+        if not model_route:
+            return False
+        target_total = len(model_route.route_targets)
+        ready_target_total = len(
+            [
+                target
+                for target in model_route.route_targets
+                if target.state == TargetStateEnum.ACTIVE
+            ]
+        )
+        model_route_service = ModelRouteService(session=session)
+        if target_total == 0 and model_route.created_by_model:
+            await model_route_service.delete(model_route, auto_commit=True)
+            return True
+
+        if (
+            model_route.targets != target_total
+            or model_route.ready_targets != ready_target_total
+        ):
+            model_route.targets = target_total
+            model_route.ready_targets = ready_target_total
+
+            await model_route_service.update(model_route, auto_commit=True)
+            return True
+        return False
+
+    async def _reconcile(self, event: Event):
+        """
+        Reconcile the model route.
+        """
+        model_route: ModelRoute = event.data
+        if not model_route:
+            return
+        async with async_session() as session:
+            # sync targets will update model route record so make sure to do it before other operations
+            updated = await self._sync_targets(session, event)
+            if not self._disable_gateway and not updated:
+                await sync_gateway(
+                    cfg=self._config,
+                    session=session,
+                    event=event,
+                    networking_api=self._networking_api,
+                    extensions_api=self._higress_extension_api,
+                    model_route=model_route,
+                    istio_networking_api=self._networking_istio_api,
+                )
+            await distribute_models_to_user(session, model_route, event)

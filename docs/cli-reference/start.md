@@ -11,6 +11,25 @@ Run GPUStack server or worker.
 gpustack start [OPTIONS]
 ```
 
+!!! note "CLI Argument Placement"
+
+    In Docker, the actual command executed by `docker run` consists of **ENTRYPOINT** and **COMMAND**.
+
+    The `gpustack/gpustack` image sets its `ENTRYPOINT`, which can be simply understood as
+    (or considered equivalent to):
+
+        gpustack start
+
+    Therefore, CLI arguments for `gpustack start` must be placed after the image name,
+    at the end of the `docker run` command, rather than as options to `docker run` itself.
+
+    Example:
+
+        docker run [docker options] gpustack/gpustack <start-args>
+
+    In Kubernetes, these arguments should be specified using the `args` field
+    in the container specification.
+
 ## Configurations
 
 ### Common Options
@@ -47,7 +66,7 @@ gpustack start [OPTIONS]
 | `--disable-worker`                               | (empty)                                | (DEPRECATED) Disable the embedded worker for the GPUStack server. New installations will not have the embedded worker by default. Use '--enable-worker' to enable the embedded worker if needed. If neither flag is set, for backward compatibility, the embedded worker will be enabled by default for legacy installations prior to v2.0.1. |
 | `--enable-worker`                                | `False`                                | Enable the embedded worker for the GPUStack server.                                                                                                                                                                                                                                                                                           |
 | `--bootstrap-password` value                     | Auto-generated.                        | Initial password for the default admin user.                                                                                                                                                                                                                                                                                                  |
-| `--database-url` value                           | Embedded PostgreSQL.                   | URL of the database. Supports PostgreSQL 13.0+, and MySQL 8.0+. Example: postgresql://user:password@host:port/db_name or mysql://user:password@host:port/db_name                                                                                                                                                                              |
+| `--database-url` value                           | Embedded PostgreSQL.                   | URL of the database. Supports PostgreSQL 13.0+, and MySQL 8.0.36+. Example: postgresql://user:password@host:port/db_name or mysql://user:password@host:port/db_name                                                                                                                                                                           |
 | `--ssl-keyfile` value                            | (empty)                                | Path to the SSL key file.                                                                                                                                                                                                                                                                                                                     |
 | `--ssl-certfile` value                           | (empty)                                | Path to the SSL certificate file.                                                                                                                                                                                                                                                                                                             |
 | `--force-auth-localhost`                         | `False`                                | Force authentication for requests originating from localhost (127.0.0.1). When set to True, all requests from localhost will require authentication.                                                                                                                                                                                          |
@@ -83,27 +102,33 @@ gpustack start [OPTIONS]
 | `--server-external-url` value                    | (empty)                                | The external server URL for worker registration. This option is required when provisioning workers via cloud providers, ensuring that workers can connect to the server correctly.                                                                                                                                                            |
 | `--saml-sp-attribute-prefix` value               | (empty)                                | SAML Service Provider attribute prefix, used for fetching attributes specified by --external-auth-\*.                                                                                                                                                                                                                                         |
 | `--gateway-concurrency` value                    | `16`                                   | Number of concurrent connections for the embedded gateway.                                                                                                                                                                                                                                                                                    |
+| `--disable-builtin-observability`                | `False`                                | Disable embedded Grafana and Prometheus services.                                                                                                                                                                                                                                                                                             |
+| `--grafana-url` value                            | (empty)                                | Grafana base URL for dashboard redirects and proxying. Must be browser-reachable (not a container-only hostname). If set, embedded Grafana and Prometheus will be disabled. Only required for external Grafana.                                                                                                                               |
+| `--grafana-worker-dashboard-uid` value           | (empty)                                | Grafana dashboard UID for worker dashboard redirects.                                                                                                                                                                                                                                                                                         |
+| `--grafana-model-dashboard-uid` value            | (empty)                                | Grafana dashboard UID for model dashboard redirects.                                                                                                                                                                                                                                                                                          |
 
 ### Worker Options
 
-| <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                                                                     |
-| ----------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-t` value, `--token` value         | Auto-generated.                        | Shared secret used to register worker.                                                                                                                                                          |
-| `-s` value, `--server-url` value    | (empty)                                | Server to connect to.                                                                                                                                                                           |
-| `--worker-name` value               | (empty)                                | Name of the worker node. Use the hostname by default.                                                                                                                                           |
-| `--worker-ip` value                 | (empty)                                | IP address of the worker node. Auto-detected by default.                                                                                                                                        |
-| `--disable-worker-metrics`          | `False`                                | Disable metrics.                                                                                                                                                                                |
-| `--worker-metrics-port` value       | `10151`                                | Port to expose metrics.                                                                                                                                                                         |
-| `--worker-port` value               | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                             |
-| `--service-port-range` value        | `40000-40063`                          | Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                             |
-| `--ray-port-range` value            | `41000-41999`                          | Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                |
-| `--log-dir` value                   | (empty)                                | Directory to store logs.                                                                                                                                                                        |
-| `--system-reserved` value           | (empty)                                | The system reserves resources for the worker during scheduling, measured in GiB. By default, no resources are reserved, Example: '{\"ram\": 2, \"vram\": 1}'.                                   |
-| `--tools-download-base-url` value   |                                        | Base URL for downloading dependency tools.                                                                                                                                                      |
-| `--enable-hf-transfer`              | `False`                                | Enable faster downloads from the Hugging Face Hub using hf_transfer. https://huggingface.co/docs/huggingface_hub/v0.29.3/package_reference/environment_variables#hfhubenablehftransfer          |
-| `--enable-hf-xet`                   | `False`                                | Enable downloading model files using Hugging Face Xet.                                                                                                                                          |
-| `--worker-ifname` value             | (empty)                                | Network interface name of the worker node. Auto-detected by default.                                                                                                                            |
-| `--proxy-mode` value                | (empty)                                | Proxy mode for server accessing model instances: direct (server connects directly) or worker (via worker proxy). Default value is direct for embedded worker, and worker for standalone worker. |
+| <div style="width:180px">Flag</div>      | <div style="width:100px">Default</div> | Description                                                                                                                                                                                     |
+| ---------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-t` value, `--token` value              | Auto-generated.                        | Shared secret used to register worker.                                                                                                                                                          |
+| `-s` value, `--server-url` value         | (empty)                                | Server to connect to.                                                                                                                                                                           |
+| `--worker-name` value                    | (empty)                                | Name of the worker node. Use the hostname by default.                                                                                                                                           |
+| `--worker-ip` value                      | (empty)                                | IP address of the worker node. Auto-detected by default.                                                                                                                                        |
+| `--disable-worker-metrics`               | `False`                                | Disable metrics.                                                                                                                                                                                |
+| `--worker-metrics-port` value            | `10151`                                | Port to expose metrics.                                                                                                                                                                         |
+| `--worker-port` value                    | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                             |
+| `--service-port-range` value             | `40000-40063`                          | Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                             |
+| `--ray-port-range` value                 | `41000-41999`                          | Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                |
+| `--log-dir` value                        | (empty)                                | Directory to store logs.                                                                                                                                                                        |
+| `--system-reserved` value                | (empty)                                | The system reserves resources for the worker during scheduling, measured in GiB. By default, no resources are reserved, Example: '{\"ram\": 2, \"vram\": 1}'.                                   |
+| `--enable-hf-transfer`                   | `False`                                | Enable faster downloads from the Hugging Face Hub using hf_transfer. https://huggingface.co/docs/huggingface_hub/v0.29.3/package_reference/environment_variables#hfhubenablehftransfer          |
+| `--enable-hf-xet`                        | `False`                                | [Deprecated] Enable downloading model files using Hugging Face Xet.                                                                                                                                          |
+| `--worker-ifname` value                  | (empty)                                | Network interface name of the worker node. Auto-detected by default.                                                                                                                            |
+| `--proxy-mode` value                     | (empty)                                | Proxy mode for server accessing model instances: direct (server connects directly) or worker (via worker proxy). Default value is direct for embedded worker, and worker for standalone worker. |
+| `--benchmark-image-repo` value           | `gpustack/benchmark-runner`            | Override the default benchmark image repo for the GPUStack benchmark container.                                                                                                                 |
+| `--benchmark-dir` value                  | `<data-dir>/benchmarks`                | Directory to store benchmark results.                                                                                                                                                           |
+| `--benchmark-max-duration-seconds` value | (empty)                                | Max duration for a benchmark before timeout. Disabled when empty.                                                                                                                               |
 
 ### Available Environment Variables
 
@@ -121,6 +146,8 @@ advertise_address: exposed_server_or_worker_ip
 debug: false
 data_dir: /path/to/data_dir
 cache_dir: /path/to/cache_dir
+benchmark_dir: /path/to/benchmark_dir
+benchmark_image_repo: gpustack/benchmark-runner
 token: your_token
 huggingface_token: your_huggingface_token
 
@@ -175,8 +202,6 @@ log_dir: /path/to/log_dir
 system_reserved:
   ram: 2
   vram: 1
-tools_download_base_url: https://mirror.your_company.com
 enable_hf_transfer: false
-enable_hf_xet: false
 proxy_mode: worker
 ```

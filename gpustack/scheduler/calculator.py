@@ -1,21 +1,31 @@
 import argparse
 import asyncio
 import dataclasses
+import json
 from enum import Enum
 import logging
 import os
 import subprocess
 from dataclasses import dataclass
 import time
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Any
 from dataclasses_json import dataclass_json
+from transformers import PretrainedConfig
 
+from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import get_global_config
+from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
+from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
+from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.schemas.models import (
+    BackendEnum,
     Model,
     SourceEnum,
     get_mmproj_filename,
+    CategoryEnum,
+    is_audio_model,
 )
+from gpustack.schemas.workers import Worker
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.convert import parse_duration, safe_int
 from gpustack.utils.hub import (
@@ -23,6 +33,8 @@ from gpustack.utils.hub import (
     list_repo,
     match_hugging_face_files,
     match_model_scope_file_paths,
+    get_pretrained_config,
+    read_repo_file_content,
 )
 from gpustack.utils import platform
 
@@ -529,7 +541,7 @@ class GGUFParserCommandMutableParameters:
                     command.append(f"--{attr_name.replace('_', '-')}={str(attr_value)}")
 
 
-async def _gguf_parser_command(  # noqa: C901
+async def _gguf_parser_command(
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
 ):
     bin_path = pkg_resources.files("gpustack.third_party.bin.gguf-parser").joinpath(
@@ -584,9 +596,415 @@ async def _gguf_parser_command(  # noqa: C901
     return command
 
 
-async def calculate_model_resource_claim(
+async def _try_parse_on_workers(
+    model: Model,
+    workers: List[Worker],
+    offload: GPUOffloadEnum,
+    **kwargs,
+) -> Optional[ModelResourceClaim]:
+    """
+    Try to parse GGUF on specified workers concurrently.
+    """
+    if not workers:
+        return None
+
+    # Prepare parameters once
+    offload_str = offload.value  # "full", "partial", "disable"
+
+    # Prepare override parameters (only pass necessary ones)
+    parse_kwargs = {}
+    for key in ("tensor_split", "rpc"):
+        if key in kwargs:
+            parse_kwargs[key] = kwargs[key]
+
+    async def try_parse_on_worker(worker: Worker) -> Optional[ModelResourceClaim]:
+        """Try to parse GGUF on a single worker."""
+        try:
+            async with WorkerFilesystemClient() as fs_client:
+                output_dict = await fs_client.parse_gguf(
+                    worker,
+                    model,
+                    offload=offload_str,
+                    **parse_kwargs,
+                )
+                claim = GGUFParserOutput.from_dict(output_dict)
+                if offload == GPUOffloadEnum.Disable:
+                    clear_vram_claim(claim)
+
+                logger.info(
+                    f"Successfully parsed GGUF on worker {worker.name} "
+                    f"for model {model.name}"
+                )
+                return ModelResourceClaim(
+                    model=model,
+                    resource_claim_estimate=claim.estimate,
+                    resource_architecture=claim.architecture,
+                )
+        except Exception as e:
+            logger.debug(f"Failed to parse GGUF on worker {worker.name}: {e}")
+            return None
+
+    # Concurrently try all workers and return the first successful result
+    tasks = [try_parse_on_worker(worker) for worker in workers]
+
+    # Use as_completed to get results as they finish
+    for completed_task in asyncio.as_completed(tasks):
+        result = await completed_task
+        if result:
+            return result
+
+    return None
+
+
+async def get_pretrained_config_with_workers(
+    model: Model,
+    workers: Optional[List[Worker]] = None,
+    trust_remote_code: bool = False,
+) -> Optional[Any]:
+    """
+    Unified async entry point for getting pretrained config.
+
+    Handles all model sources with appropriate fallback strategies:
+    - For LOCAL_PATH model which is not available locally, get from workers
+    - For others, AutoConfig and fallback to config.json
+
+    Args:
+        model: Model to get config for
+        workers: Available workers (for LOCAL_PATH)
+        trust_remote_code: Whether to trust remote code
+
+    Returns:
+        PretrainedConfig object or None
+
+    Raises:
+        ValueError: If config is required but cannot be loaded
+    """
+    pretrained_config = None
+    timeout_in_seconds = 15
+
+    try:
+        if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
+            model.local_path
+        ):
+            pretrained_config = await get_pretrained_config_from_workers(
+                model,
+                workers,
+            )
+        else:
+            pretrained_config = await asyncio.wait_for(
+                asyncio.to_thread(
+                    get_pretrained_config, model, trust_remote_code=trust_remote_code
+                ),
+                timeout=timeout_in_seconds,
+            )
+    except Exception as e:
+        if should_fallback_load_config_json(e, model):
+            config_dict = await asyncio.wait_for(
+                asyncio.to_thread(
+                    read_repo_file_content,
+                    model,
+                    "config.json",
+                    token=get_global_config().huggingface_token,
+                ),
+                timeout=timeout_in_seconds,
+            )
+            if config_dict:
+                return PretrainedConfig.from_dict(config_dict)
+
+            # If config_dict is None for LOCAL_PATH, provide a clearer error message
+            if model.source == SourceEnum.LOCAL_PATH:
+                raise ValueError(
+                    f"Model path '{model.local_path}' does not exist or config.json is not found. "
+                    f"Please ensure the model files are available at the specified path."
+                )
+
+        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
+            return pretrained_config
+
+        # Error handling for different model categories
+        if any(
+            cat in model.categories
+            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
+        ):
+            return pretrained_config
+
+        if pretrained_config is None and (
+            CategoryEnum.LLM in model.categories or isinstance(e, ValueError)
+        ):
+            raise e
+
+    return pretrained_config
+
+
+def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
+    """
+    Determine whether to fallback to loading config.json based on the exception and model.
+
+    Args:
+        e: The exception encountered during loading
+        model: The model being processed
+    Returns:
+        bool: True if should fallback to loading config.json, False otherwise
+    """
+
+    # For LOCAL_PATH models, the path must be a valid directory
+    if model.source == SourceEnum.LOCAL_PATH and not (
+        model.local_path and os.path.isdir(model.local_path)
+    ):
+        return False
+
+    if model.backend == BackendEnum.VLLM and is_audio_model(model):
+        # TODO(michelia): Qwen3-ASR is currently supported by vLLM but not yet by Hugging Face Transformers.
+        # Track upstream progress: https://github.com/huggingface/transformers/issues/43837
+        return True
+
+    # For very new HF checkpoints, AutoConfig may fail on an older transformers.
+    # Falling back to reading config.json avoids requiring a transformers upgrade.
+    #
+    # Example upstream error message (may vary by transformers version):
+    """
+    The checkpoint you are trying to load has model type `{config_dict['model_type']}`
+    but Transformers does not recognize this architecture. This could be because of an
+    issue with the checkpoint, or because your version of Transformers is out of date.
+    You can update Transformers with the command `pip install --upgrade transformers`.
+    If this does not work, and the checkpoint is very new, then there may not be a
+    release version that supports this model yet. In this case, you can get the most
+    up-to-date code by installing Transformers from source with the command
+    `pip install git+https://github.com/huggingface/transformers.git`
+    """
+    msg = str(e).lower()
+    if (
+        "update transformers" in msg
+        or "pip install --upgrade transformers" in msg
+        or "does not recognize this architecture" in msg
+        or "install transformers from source" in msg
+    ):
+        return True
+
+    # Fallback for backend version specified or import errors
+    return model.backend_version is not None or isinstance(e, ImportError)
+
+
+async def check_diffusers_model_index_from_workers(
+    model: Model,
+    workers: List[Worker],
+) -> bool:
+    """
+    Check if a LOCAL_PATH model is a diffusers model by querying workers.
+
+    This function is specifically for LOCAL_PATH models that are not available
+    locally on the server. It uses the optimized worker query strategy.
+
+    Args:
+        model: Model with source LOCAL_PATH
+        workers: List of workers to query
+
+    Returns:
+        True if model_index.json contains _diffusers_version, False otherwise
+    """
+    if not workers:
+        return False
+
+    # Read model_index.json from workers
+    data = await read_local_path_file_from_workers(model, "model_index.json", workers)
+
+    if data is None:
+        return False
+
+    # Check for _diffusers_version key
+    if isinstance(data, dict) and "_diffusers_version" in data:
+        return True
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and "_diffusers_version" in item:
+                return True
+
+    return False
+
+
+async def read_local_path_file_from_workers(  # noqa: C901
+    model: Model,
+    file_path: str,
+    workers: List[Worker],
+) -> Optional[Dict[str, Any]]:
+    """
+    Read a file from LOCAL_PATH model by querying workers.
+
+    Steps:
+    1. Apply filters (GPU selector, label selector) to reduce broadcast scope
+    2. Broadcast to filtered workers
+
+    Args:
+        model: Model with source LOCAL_PATH
+        file_path: Relative path to the file (e.g., "config.json", "model_index.json")
+        workers: List of workers to query
+
+    Returns:
+        File content as dict if successful, None otherwise
+    """
+    if not workers:
+        return None
+
+    # Build full file path
+    fp = os.path.join(model.local_path, file_path)
+
+    async def try_read_from_worker(worker: Worker) -> Optional[Dict[str, Any]]:
+        """Try to read file from a single worker."""
+        try:
+            async with WorkerFilesystemClient() as filesystem_client:
+                logger.info(f"Trying to read {file_path} from worker {worker.id}")
+                content = await filesystem_client.read_model_config(worker, fp)
+                if content:
+                    logger.info(
+                        f"Successfully read {file_path} from worker {worker.id}"
+                    )
+                    return content
+                return None
+        except Exception as e:
+            logger.debug(f"Failed to read {file_path} from worker {worker.id}: {e}")
+            return None
+
+    # Step 1: Apply filters to reduce broadcast scope
+    filtered_workers = workers
+    messages = []
+
+    # Apply GPUMatchingFilter
+    if model.gpu_selector:
+        gpu_filter = GPUMatchingFilter(model)
+        filtered_workers, gpu_messages = await gpu_filter.filter(filtered_workers)
+        messages.extend(gpu_messages)
+
+    # Apply LabelMatchingFilter
+    if model.worker_selector:
+        label_filter = LabelMatchingFilter(model)
+        filtered_workers, label_messages = await label_filter.filter(filtered_workers)
+        messages.extend(label_messages)
+
+    # Apply LocalPathFilter for LOCAL_PATH models
+    local_path_filter = LocalPathFilter(model)
+    filtered_workers, local_path_messages = await local_path_filter.filter(
+        filtered_workers
+    )
+    messages.extend(local_path_messages)
+
+    if messages:
+        for msg in messages:
+            logger.info(f"Worker filtering for {file_path} read: {msg}")
+
+    # Step 2: Broadcast to filtered workers
+    if not filtered_workers:
+        logger.warning(f"No workers available after filtering for {file_path}")
+        return None
+
+    logger.info(
+        f"Broadcasting {file_path} read request to {len(filtered_workers)} filtered workers "
+        f"(reduced from {len(workers)} total workers)"
+    )
+    tasks = [try_read_from_worker(worker) for worker in filtered_workers]
+    for completed_task in asyncio.as_completed(tasks):
+        result = await completed_task
+        if result:
+            return result
+
+    return None
+
+
+async def get_pretrained_config_from_workers(
+    model: Model,
+    workers: List[Worker],
+) -> Optional[Any]:
+    """
+    Get pretrained config from remote workers for LOCAL_PATH models.
+
+    Args:
+        model: Model with source LOCAL_PATH
+        workers: List of workers to query
+
+    Returns:
+        PretrainedConfig object if successful, None otherwise
+    """
+    if not workers:
+        return None
+
+    config_dict = await read_local_path_file_from_workers(model, "config.json", workers)
+
+    if not config_dict:
+        return None
+
+    from transformers import PretrainedConfig
+
+    return PretrainedConfig.from_dict(config_dict)
+
+
+async def _calculate_from_workers(  # noqa: C901
+    model: Model,
+    workers: List[Worker],
+    offload: GPUOffloadEnum,
+    **kwargs,
+) -> Optional[ModelResourceClaim]:
+    """
+    Calculate model resource claim by running gguf-parser on a worker.
+
+    Args:
+        model: Model to calculate the resource claim for.
+        workers: List of available workers.
+        offload: GPU offload strategy.
+        kwargs: Additional arguments to pass to the GGUF parser.
+
+    Returns:
+        ModelResourceClaim if successful, None otherwise.
+    """
+    # Step 1: Apply worker filters before broadcasting
+    filtered_workers = workers
+    messages = []
+
+    # Apply GPUMatchingFilter
+    if model.gpu_selector:
+        from gpustack.policies.worker_filters.gpu_matching_filter import (
+            GPUMatchingFilter,
+        )
+
+        gpu_filter = GPUMatchingFilter(model)
+        filtered_workers, gpu_messages = await gpu_filter.filter(filtered_workers)
+        messages.extend(gpu_messages)
+
+    # Apply LabelMatchingFilter
+    if model.worker_selector:
+        from gpustack.policies.worker_filters.label_matching_filter import (
+            LabelMatchingFilter,
+        )
+
+        label_filter = LabelMatchingFilter(model)
+        filtered_workers, label_messages = await label_filter.filter(filtered_workers)
+        messages.extend(label_messages)
+
+    # Apply LocalPathFilter for LOCAL_PATH models
+    local_path_filter = LocalPathFilter(model)
+    filtered_workers, local_path_messages = await local_path_filter.filter(
+        filtered_workers
+    )
+    messages.extend(local_path_messages)
+
+    if messages:
+        for msg in messages:
+            logger.info(f"Worker filtering for GGUF parsing: {msg}")
+
+    # Step 2: Broadcasting to filtered workers
+    if not filtered_workers:
+        logger.warning("No workers available after filtering for GGUF parsing")
+        return None
+
+    logger.info(
+        f"Broadcasting GGUF parse request to {len(filtered_workers)} filtered workers "
+        f"(reduced from {len(workers)} total workers) for model {model.name}"
+    )
+    return await _try_parse_on_workers(model, filtered_workers, offload, **kwargs)
+
+
+async def calculate_gguf_model_resource_claim(
     model: Model,
     offload: GPUOffloadEnum = GPUOffloadEnum.Full,
+    workers: Optional[List[Worker]] = None,
     **kwargs,
 ) -> ModelResourceClaim:
     """
@@ -594,10 +1012,24 @@ async def calculate_model_resource_claim(
     Args:
         model: Model to calculate the resource claim for.
         offload: GPU offload strategy.
+        workers: Optional list of available workers for remote parsing.
         kwargs: Additional arguments to pass to the GGUF parser.
     """
 
     if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(model.local_path):
+        # Try to calculate on worker if workers are provided
+        if workers:
+            try:
+                result = await _calculate_from_workers(
+                    model, workers, offload, **kwargs
+                )
+                if result:
+                    return result
+            except Exception as e:
+                logger.warning(
+                    f"Failed to calculate on worker: {e}, falling back to empty estimate"
+                )
+
         # Skip the calculation if the model is not available, policies like spread strategy still apply.
         # TODO Support user provided resource claim for better scheduling.
         e, a = _get_empty_estimate()
@@ -680,9 +1112,7 @@ def clear_vram_claim(claim: GGUFParserOutput):
             ]
 
 
-async def _gguf_parser_command_args_from_source(  # noqa: C901
-    model: Model, **kwargs
-) -> List[str]:
+async def _gguf_parser_command_args_from_source(model: Model, **kwargs) -> List[str]:
     """
     Get the model url based on the model source.
     Args:
@@ -755,6 +1185,167 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
         raise Exception(
             f"Failed to get the file for model {model.name or model.readable_source}, error: {e}"
         )
+
+
+def read_model_index_json(path: str) -> dict:
+    """
+    Read and parse model_index.json from local directory.
+
+    Args:
+        path: Directory path containing model_index.json
+
+    Returns:
+        Parsed JSON data from model_index.json, or None if not found
+
+    Raises:
+        json.JSONDecodeError: If model_index.json is invalid
+        PermissionError: If permission denied
+        OSError: For other I/O errors
+    """
+    model_index_path = os.path.join(path, "model_index.json")
+
+    if not os.path.exists(model_index_path):
+        return None
+
+    try:
+        with open(model_index_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except PermissionError:
+        logger.error(f"Permission denied reading model_index.json: {model_index_path}")
+        raise
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse model_index.json: {e}")
+        raise
+    except OSError as e:
+        logger.error(f"Failed to read model_index.json: {e}")
+        raise
+
+
+def calculate_llm_model_weight_size(path: str) -> int:
+    """
+    Calculate total size of LLM model weights in root directory.
+
+    Args:
+        path: Directory path to scan
+
+    Returns:
+        Total size in bytes of weight files
+
+    Raises:
+        FileNotFoundError: If path doesn't exist
+        NotADirectoryError: If path is not a directory
+        PermissionError: If permission denied
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"The specified path '{path}' does not exist.")
+
+    if not os.path.isdir(path):
+        raise NotADirectoryError(f"The specified path '{path}' is not a directory.")
+
+    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
+    total_size = 0
+
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                if entry.is_file() and entry.name.endswith(weight_file_extensions):
+                    total_size += entry.stat().st_size
+    except PermissionError:
+        logger.error(f"Permission denied when accessing '{path}'.")
+        raise
+
+    return total_size
+
+
+def calculate_diffusion_model_weight_size(path: str) -> int:
+    """
+    Calculate total size of diffusion model weights.
+
+    Logic:
+    1. Read model_index.json to get pipeline components
+    2. Scan subdirectories defined in pipeline
+    3. Sum up weight files (.safetensors, .bin, .pt, .pth)
+
+    Args:
+        path: Directory path containing model_index.json
+
+    Returns:
+        Total size in bytes of weight files
+
+    Raises:
+        FileNotFoundError: If model_index.json not found or path doesn't exist
+        NotADirectoryError: If path is not a directory
+        PermissionError: If permission denied
+        json.JSONDecodeError: If model_index.json is invalid
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"The specified path '{path}' does not exist.")
+
+    if not os.path.isdir(path):
+        raise NotADirectoryError(f"The specified path '{path}' is not a directory.")
+
+    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
+
+    # Read pipeline definition
+    pipeline_data = read_model_index_json(path)
+
+    if pipeline_data is None:
+        raise FileNotFoundError(f"model_index.json not found in {path}")
+
+    if not isinstance(pipeline_data, dict):
+        raise TypeError(f"model_index.json in {path} is not a valid JSON object.")
+
+    # Remove metadata keys (starting with _)
+    component_dirs = {key for key in pipeline_data.keys() if not key.startswith('_')}
+
+    total_size = 0
+
+    # Scan each component directory
+    for component_dir in component_dirs:
+        component_path = os.path.join(path, component_dir)
+
+        if not os.path.isdir(component_path):
+            continue
+
+        # Scan files in component directory
+        try:
+            with os.scandir(component_path) as entries:
+                for entry in entries:
+                    if entry.is_file() and entry.name.endswith(weight_file_extensions):
+                        total_size += entry.stat().st_size
+        except PermissionError:
+            logger.error(f"Permission denied scanning directory: {component_path}")
+            raise
+        except OSError as e:
+            logger.error(f"Error scanning directory {component_path}: {e}")
+            raise
+
+    return total_size
+
+
+def calculate_local_model_weight_size(path: str, is_diffusion: bool = False) -> int:
+    """
+    Calculate model weight size based on model type.
+
+    Unified entry point for calculating model weight sizes.
+
+    Args:
+        path: Directory path to scan
+        is_diffusion: Whether this is a diffusion model (default: False)
+
+    Returns:
+        Total size in bytes of weight files
+
+    Raises:
+        FileNotFoundError: If path doesn't exist
+        NotADirectoryError: If path is not a directory
+        PermissionError: If permission denied
+        json.JSONDecodeError: If model_index.json is invalid (diffusion only)
+    """
+    if is_diffusion:
+        return calculate_diffusion_model_weight_size(path)
+    else:
+        return calculate_llm_model_weight_size(path)
 
 
 def hf_model_filename(

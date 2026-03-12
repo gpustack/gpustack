@@ -8,6 +8,7 @@ from gpustack.api.exceptions import (
     ConflictException,
 )
 from gpustack.security import get_secret_hash
+from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.schemas.users import (
     User,
@@ -26,7 +27,6 @@ router = APIRouter()
 
 @router.get("", response_model=UsersPublic)
 async def get_users(
-    session: SessionDep,
     params: UserListParams = Depends(),
     search: str = None,
 ):
@@ -40,17 +40,18 @@ async def get_users(
             media_type="text/event-stream",
         )
 
-    return await User.paginated_by_query(
-        session=session,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        fields={
-            "deleted_at": None,
-            "is_system": False,
-        },
-        order_by=params.order_by,
-    )
+    async with async_session() as session:
+        return await User.paginated_by_query(
+            session=session,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            fields={
+                "deleted_at": None,
+                "is_system": False,
+            },
+            order_by=params.order_by,
+        )
 
 
 @router.get("/{id}", response_model=UserPublic)

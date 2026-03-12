@@ -55,6 +55,7 @@ extra:
     provider: mike
 extra_javascript:
   - javascripts/katex.js
+  - image-selector/assets/extra.js
   - https://unpkg.com/katex@0/dist/katex.min.js
   - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
 extra_css:
@@ -101,19 +102,19 @@ nav:
               - Rerank: user-guide/playground/rerank.md
           - Model Catalog: user-guide/model-catalog.md
           - Model Deployment Management: user-guide/model-deployment-management.md
+          - Model Route Management: user-guide/model-route-management.md
+          - Model Provider Management: user-guide/model-provider-management.md
           - Inference Backend Management: user-guide/inference-backend-management.md
           - Built-in Inference Backends: user-guide/built-in-inference-backends.md
           - Compatibility Check: user-guide/compatibility-check.md
           - Model File management: user-guide/model-file-management.md
           - Cluster Management: user-guide/cluster-management.md
           - Cloud Credential Management: user-guide/cloud-credential-management.md
-          - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
-          - Image Generation APIs: user-guide/image-generation-apis.md
-          - Rerank API: user-guide/rerank-api.md
           - API Key Management: user-guide/api-key-management.md
           - User Management: user-guide/user-management.md
           - Single Sign-On (SSO) Authentication: user-guide/sso.md
           - Observability: user-guide/observability.md
+          - Benchmarking: user-guide/benchmarking.md
       - Using Models:
           - Using Large Language Models: using-models/using-large-language-models.md
           - Using Vision Language Models: using-models/using-vision-language-models.md
@@ -129,11 +130,15 @@ nav:
           - Using Custom Inference Backend: tutorials/using-custom-backends.md
           - Adding a GPU Cluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
           - Adding a GPU Cluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
+          - Managing Model Routes: tutorials/managing-model-routes.md
       - Integrations:
-          - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
+          - Inference APIs: integrations/inference-apis.md
+          - Integrate with Claude Code: integrations/integrate-with-claude-code.md
           - Integrate with Dify: integrations/integrate-with-dify.md
           - Integrate with RAGFlow: integrations/integrate-with-ragflow.md
           - Integrate with CherryStudio: integrations/integrate-with-cherrystudio.md
+          - Integrate with OpenClaw: integrations/integrate-with-openclaw.md
+          - Integrate with n8n: integrations/integrate-with-n8n.md
       - Architecture: architecture.md
       - Scheduler: scheduler.md
       - Troubleshooting: troubleshooting.md
@@ -187,3 +192,4 @@ nav:
       - References:
           - The Impact of Quantization on vLLM Inference Performance: performance-lab/references/the-impact-of-quantization-on-vllm-inference-performance.md
           - Evaluating LMCache Prefill Acceleration in vLLM: performance-lab/references/evaluating-lmcache-prefill-acceleration-in-vllm.md
+  - Container Image Selector: image-selector/index.html

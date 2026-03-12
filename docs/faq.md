@@ -2,7 +2,7 @@
 
 ## Support Matrix
 
-### Hybird Cluster Support
+### Hybrid Cluster Support
 
 GPUStack supports heterogeneous clusters spanning NVIDIA, AMD, Ascend, Hygon, Moore Threads, Iluvatar, MetaX, and Cambricon GPUs, and works across both AMD64 and ARM64 architectures.
 
@@ -181,6 +181,24 @@ Try restarting the GPUStack container where the model is scheduled. If the issue
 ### What should I do if the model is stuck in `Error` state?
 
 Move the mouse over the `Error` status to view the reason. If there is a `View More` button, click it to check the error messages in the model logs and analyze the cause of the error.
+
+### Why does the model fail to start when using a custom backend version based on the official vLLM image with `PYPI_PACKAGES_INSTALL`?
+
+When deploying a model using a custom vLLM backend version based on the official vLLM image, the model may fail to start if `PYPI_PACKAGES_INSTALL` is used to install additional Python packages.
+
+You may see an error similar to:
+
+```bash
+/gpustack-command-xxxxxxxx: 40: /path/to/your_model: Permission denied
+```
+
+This happens because the container starts with a custom command instead of the image’s default entrypoint.
+
+In `Inference Backends` → `vLLM` → `Edit` → `Versions Config`, edit the corresponding version and set Override Image Entrypoint to:
+
+```bash
+vllm serve
+```
 
 ### Why doesn’t deleting a model free up disk space?
 

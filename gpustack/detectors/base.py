@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from gpustack.schemas.workers import GPUDevicesInfo, SystemInfo
+from gpustack.schemas.workers import GPUDevicesStatus, SystemInfo
 
 
 class GPUDetector(ABC):
@@ -9,7 +9,7 @@ class GPUDetector(ABC):
         pass
 
     @abstractmethod
-    def gather_gpu_info(self) -> GPUDevicesInfo:
+    def gather_gpu_info(self) -> GPUDevicesStatus:
         pass
 
 

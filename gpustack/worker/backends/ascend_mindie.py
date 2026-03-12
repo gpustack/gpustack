@@ -1578,6 +1578,9 @@ class AscendMindIEServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
+        # Read container config from environment variables
+        container_config = self._get_container_env_config(env)
+
         run_container = Container(
             image=image,
             name="default",
@@ -1589,6 +1592,8 @@ class AscendMindIEServer(InferenceServer):
                 command_script=command_script,
                 args=command_args,
                 working_dir=working_dir,
+                run_as_user=container_config.user,
+                run_as_group=container_config.group,
             ),
             envs=[
                 ContainerEnv(
@@ -1618,8 +1623,10 @@ class AscendMindIEServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
-            shm_size=10 * 1 << 30,  # 10 GiB
+            shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=[run_container],
+            run_as_user=container_config.user,
+            run_as_group=container_config.group,
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
@@ -1797,7 +1804,17 @@ fi
         "openAiSupport" : "vllm",
         "tokenTimeout" : 600,
         "e2eTimeout" : 600,
-        "distDPServerEnabled":false
+        "distDPServerEnabled":false,
+        "layerwiseDisaggregated" : false,
+        "layerwiseDisaggregatedRoleType" : "",
+        "layerwiseDisaggregatedMasterIpAddress" : "127.0.0.3",
+        "layerwiseDisaggregatedSlaveIpAddress" : ["127.0.0.4"],
+        "layerwiseDisaggregatedDataPort" : 10024,
+        "layerwiseDisaggregatedCrtlPort" : [10001,10002],
+        "HealthCheckConfig" :
+        {
+            "npuUsageThreshold" : 0
+        }
     },
 
     "BackendConfig" : {
@@ -1860,7 +1877,15 @@ fi
             "maxQueueDelayMicroseconds" : 5000,
             "maxFirstTokenWaitTime": 2500
         }
-    }
+    },
+
+    "LogConfig": {
+        "dynamicLogLevel" : "",
+        "dynamicLogLevelValidHours" : 2,
+        "dynamicLogLevelValidTime" : ""
+    },
+
+    "EnableDynamicAdjustTimeoutConfig": false
 }
 """
         return json.loads(config_str)

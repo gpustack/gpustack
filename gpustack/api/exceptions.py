@@ -3,7 +3,11 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import httpx
+import logging
 from pydantic import BaseModel
+
+
+logger = logging.getLogger(__name__)
 
 
 class HTTPException(Exception):
@@ -70,10 +74,27 @@ GatewayTimeoutException = http_exception_factory(
 )
 
 
+async def async_raise_if_response_error(response: httpx.Response):  # noqa: C901
+    if response.status_code < status.HTTP_400_BAD_REQUEST:
+        return
+    try:
+        await response.aread()
+    except httpx.ReadError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            reason="Unknown",
+            message=str(e),
+        )
+    raise_errors(response)
+
+
 def raise_if_response_error(response: httpx.Response):  # noqa: C901
     if response.status_code < status.HTTP_400_BAD_REQUEST:
         return
+    raise_errors(response)
 
+
+def raise_errors(response: httpx.Response):
     try:
         response_json = response.json()
         # Compatible with OpenAI API error format
@@ -162,6 +183,15 @@ openai_api_error_responses = {
 def register_handlers(app: FastAPI):
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
+        if exc.status_code >= 500:
+            logger.error(
+                "HTTP server error occurred: %s %s - %s (path=%s, method=%s)",
+                exc.status_code,
+                exc.reason,
+                exc.message,
+                request.url.path,
+                request.method,
+            )
         return JSONResponse(
             status_code=exc.status_code,
             content=ErrorResponse(

@@ -7,38 +7,6 @@ services:
       - gpustack-data:/var/lib/gpustack
     ports:
       - "80:80"
-      - "10161:10161"    
-
-  prometheus:
-    image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-prom}/prometheus:${PROMETHEUS_TAG:-latest}
-    container_name: gpustack-prometheus
-    restart: unless-stopped
-    ports:
-      - "9090:9090"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--web.enable-remote-write-receiver'
-    volumes:
-      - ./prometheus:/etc/prometheus
-      - prom_data:/prometheus
-
-  grafana:
-    image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-grafana}/grafana:${GRAFANA_TAG:-latest}
-    container_name: gpustack-grafana
-    restart: unless-stopped
-    environment:
-      - GF_SERVER_HTTP_PORT=3000
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=grafana
-      - GF_FEATURE_TOGGLES_ENABLE=flameGraph traceqlSearch traceQLStreaming correlations metricsSummary traceqlEditor traceToMetrics traceToProfiles
-    volumes:
-      - ./grafana/grafana_provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/grafana_dashboards:/etc/dashboards:ro
-    ports:
-      - "3000:3000"
-
-
 
 volumes:
-  prom_data: {}
   gpustack-data: {}

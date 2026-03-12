@@ -46,9 +46,9 @@ Next, select the `OS Image`.
 
 Currently, only Nvidia series GPU Droplets are supported, as AMD GPU Droplets are often unavailable. Only Debian-based operating systems are supported.
 
+- For Nvidia AI/ML Ready (**Recommended**), which is based on Ubuntu 22.04 and includes drivers, CUDA, and container-toolkit pre-installed, no extra packages are needed.
 - For Debian distributions, the droplet is bootstrapped with the `nvidia-open` driver, CUDA 12.8, and nvidia-container-toolkit 1.17.8-1 via cloud-init.
 - For Ubuntu distributions, the droplet is bootstrapped with the `nvidia-driver-570` driver, CUDA 12.8, and nvidia-container-toolkit 1.17.8-1 via cloud-init.
-- For Nvidia AI/ML Ready (**Recommended**), which is based on Ubuntu 22.04 and includes drivers, CUDA, and container-toolkit pre-installed, no extra packages are needed.
 
 Labels and volumes are supported to set in worker pool to provision worker. The volumes created and attached for droplet won't be mount into worker container automatically. You can modify the run worker script in `/opt/gpustack-run-worker.sh` to mount the volumes as needed.
 

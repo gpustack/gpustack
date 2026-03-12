@@ -1,0 +1,12 @@
+/var/lib/gpustack/log/higress/access.log
+{
+su root root
+rotate 5
+create 644 0 0
+nocompress
+notifempty
+size 100M
+postrotate
+    ps aux|grep "envoy -c"|grep -v "grep"|awk  '{print $2}'|xargs -i kill -SIGUSR1 {}
+endscript
+}

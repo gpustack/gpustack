@@ -2,7 +2,8 @@ import re
 
 from typing import Tuple, Union, List, Callable
 
-from gpustack.schemas.workers import GPUDeviceInfo, WorkerBase
+from gpustack.schemas.benchmark import GPUSnapshots
+from gpustack.schemas.workers import GPUDeviceStatus, WorkerBase
 
 pattern = r"^(?P<worker_name>.+):(?P<device>[^:]+):(?P<gpu_index>\d+)$"
 
@@ -25,6 +26,13 @@ def parse_gpu_id(input: str) -> Tuple[bool, dict]:
     if match:
         return True, match.groupdict()
     return False, None
+
+
+def make_gpu_id(worker_name: str, device: str, gpu_index: int) -> str:
+    """
+    Generate gpu_id, format: worker_name:device:gpu_index
+    """
+    return f"{worker_name}:{device}:{gpu_index}"
 
 
 def group_gpu_ids_by_worker(gpu_ids: list) -> dict:
@@ -79,7 +87,8 @@ def group_gpu_indexes_by_gpu_type_and_worker(gpu_ids: list) -> dict:
 
 
 def all_gpu_match(
-    worker: Union[List[WorkerBase], WorkerBase], verify: Callable[[GPUDeviceInfo], bool]
+    worker: Union[List[WorkerBase], WorkerBase],
+    verify: Callable[[GPUDeviceStatus], bool],
 ) -> bool:
     """
     Check if all GPUs in the worker match the given callable condition.
@@ -103,7 +112,8 @@ def all_gpu_match(
 
 
 def any_gpu_match(
-    worker: Union[List[WorkerBase], WorkerBase], verify: Callable[[GPUDeviceInfo], bool]
+    worker: Union[List[WorkerBase], WorkerBase],
+    verify: Callable[[GPUDeviceStatus], bool],
 ) -> bool:
     """
     Check if any GPU in the worker matches the given callable condition.
@@ -125,7 +135,7 @@ def any_gpu_match(
 
 def find_one_gpu(
     worker: Union[List[WorkerBase], WorkerBase]
-) -> Union[GPUDeviceInfo, None]:
+) -> Union[GPUDeviceStatus, None]:
     if isinstance(worker, list):
         for w in worker:
             gpu = find_one_gpu(w)
@@ -234,3 +244,24 @@ def abbreviate_worker_gpu_indexes(
         msg += f" and {other_gpu_count} {'GPUs' if other_gpu_count > 1 else 'GPU'}"
         msg += f" from other {other_worker_count} {'workers' if other_worker_count > 1 else 'worker'}"
     return msg
+
+
+def summary_gpu_snapshots(gpu_snapshots: GPUSnapshots) -> Tuple[str, str]:
+    """Return a summary string of GPU snapshots."""
+    if not gpu_snapshots:
+        return "No GPUs", "No GPUs"
+
+    gpu_groups = {}
+    gpu_vendors = []
+    for _, gpu in gpu_snapshots.items():
+        if gpu.name not in gpu_groups:
+            gpu_groups[gpu.name] = 0
+        gpu_groups[gpu.name] += 1
+        gpu_vendors.append(gpu.vendor)
+
+    sorted_groups = sorted(gpu_groups.items(), key=lambda x: -x[1])
+    gpu_summary = "; ".join(
+        f"{name}" if count == 1 else f"{name}x{count}" for name, count in sorted_groups
+    )
+    gpu_vendor_summary = ", ".join(sorted(set(gpu_vendors)))
+    return gpu_summary, gpu_vendor_summary
