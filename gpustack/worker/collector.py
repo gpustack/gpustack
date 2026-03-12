@@ -166,9 +166,9 @@ class WorkerStatusCollector:
         worker_id = self._worker_id_getter()
         allocated = Allocated(ram=0, vram={})
         try:
-            # TODO avoid listing model_instances with clientset.
-            # The calculation might not be needed here.
-            model_instances = clientset.model_instances.list()
+            model_instances = clientset.model_instances.list(
+                params={"worker_id": str(worker_id)}
+            )
             for model_instance in model_instances.items:
                 if (
                     model_instance.distributed_servers
