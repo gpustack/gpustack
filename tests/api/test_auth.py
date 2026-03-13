@@ -116,9 +116,7 @@ async def test_worker_auth_falls_back_to_x_api_key_when_bearer_empty():
     assert (
         await worker_auth(
             request=request,
-            bearer_token=HTTPAuthorizationCredentials(
-                scheme="Bearer", credentials=""
-            ),
+            bearer_token=HTTPAuthorizationCredentials(scheme="Bearer", credentials=""),
             x_api_key="worker-token",
         )
         is None
