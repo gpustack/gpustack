@@ -266,15 +266,7 @@ async def worker_auth(
     ] = None,
     x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
 ):
-<<<<<<< HEAD
-<<<<<<< HEAD
     token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
-=======
-    token_value = bearer_token.credentials if bearer_token else x_api_key
->>>>>>> 7e619a82 (Support X-API-Key auth for Anthropic-compatible routes)
-=======
-    token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
->>>>>>> f99683b4 (Handle empty bearer tokens before X-API-Key fallback)
     if not token_value:
         raise UnauthorizedException(message="Invalid authentication credentials")
     token = request.app.state.token
