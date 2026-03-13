@@ -302,6 +302,15 @@ class ModelUpdate(ModelBase):
     pass
 
 
+class ModelPatch(SQLModel):
+    """Partial update - only specified fields are updated."""
+    backend_parameters: Optional[List[str]] = Field(default=None)
+    replicas: Optional[int] = None
+    backend_version: Optional[str] = None
+    worker_selector: Optional[Dict[str, str]] = None
+    env: Optional[Dict[str, str]] = None
+
+
 class ModelPublic(
     ModelBase,
 ):

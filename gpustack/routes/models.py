@@ -33,6 +33,7 @@ from gpustack.schemas.models import (
     ModelCreate,
     ModelSpecBase,
     ModelUpdate,
+    ModelPatch,
     ModelPublic,
     ModelsPublic,
 )
@@ -456,6 +457,34 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update model: {e}")
 
+    return model
+
+
+@router.patch("/{id}", response_model=ModelPublic)
+async def patch_model(
+    session: SessionDep,
+    id: int,
+    model_in: ModelPatch,
+    restart_instances: bool = Query(default=True),
+):
+    """Partially update a model. With restart_instances=true (default), deletes
+    running instances so the controller recreates them with new config."""
+    model = await Model.one_by_id(session, id)
+    if not model:
+        raise NotFoundException(message="Model not found")
+    patch_data = model_in.model_dump(exclude_unset=True)
+    if not patch_data:
+        raise BadRequestException(message="No fields to update")
+    try:
+        await ModelService(session).update(model, patch_data)
+        if restart_instances and "backend_parameters" in patch_data:
+            instances = await ModelInstance.all_by_field(session, "model_id", model.id)
+            for instance in instances:
+                await session.delete(instance)
+            await session.commit()
+    except Exception as e:
+        raise InternalServerErrorException(message=str(e))
+    await session.refresh(model)
     return model
 
 
