@@ -66,11 +66,13 @@ class SGLangServer(InferenceServer):
             is_distributed=deployment_metadata.distributed,
         )
 
-        command = None
+        command = ["python", "-m", "sglang.launch_server"]
         if self.inference_backend:
-            command = self.inference_backend.get_container_entrypoint(
+            entrypoint = self.inference_backend.get_container_entrypoint(
                 self._model.backend_version
             )
+            if entrypoint:
+                command = entrypoint
 
         command_script = self._get_serving_command_script(env)
 
@@ -101,11 +103,13 @@ class SGLangServer(InferenceServer):
             is_distributed=False,
         )
 
-        command = None
+        command = ["sglang", "serve"]
         if self.inference_backend:
-            command = self.inference_backend.get_container_entrypoint(
+            entrypoint = self.inference_backend.get_container_entrypoint(
                 self._model.backend_version
             )
+            if entrypoint:
+                command = entrypoint
 
         command_script = self._get_serving_command_script(env)
 
@@ -185,7 +189,7 @@ class SGLangServer(InferenceServer):
         logger.info(
             f"With image: {image}, "
             f"command: [{' '.join(command) if command else ''}], "
-            f"arguments: [{' '.join(command_args)}], "
+            f"arguments: [{' '.join(command_args) if command_args else ''}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
             f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
@@ -286,9 +290,6 @@ class SGLangServer(InferenceServer):
         Build SGLang command arguments for container execution.
         """
         arguments = [
-            "python",
-            "-m",
-            "sglang.launch_server",
             "--model-path",
             self._model_path,
         ]
@@ -382,8 +383,6 @@ class SGLangServer(InferenceServer):
 
     def _build_command_args_for_diffusion(self, port: int):
         arguments = [
-            "sglang",
-            "serve",
             "--model-path",
             self._model_path,
         ]
