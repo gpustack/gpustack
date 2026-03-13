@@ -127,6 +127,13 @@ spec:
               mountPath: /usr/local/PPU_SDK
               readOnly: true
             {%- endif %}
+            {%- if config.k8s_volume_mounts %}
+            {%- for vm in config.k8s_volume_mounts %}
+            - name: {{ vm.name }}
+              mountPath: {{ vm.mount_path }}
+              readOnly: {{ vm.read_only | lower }}
+            {%- endfor %}
+            {%- endif %}
           ports:
             - name: api
               containerPort: 10150
@@ -222,6 +229,12 @@ spec:
           hostPath:
             path: /usr/local/PPU_SDK
             type: DirectoryOrCreate
+        {%- endif %}
+        {%- if config.k8s_volume_mounts %}
+        {%- for vm in config.k8s_volume_mounts %}
+        - name: {{ vm.name }}
+          {{ vm.volume_source | to_yaml(indent=10) }}
+        {%- endfor %}
         {%- endif %}
       hostNetwork: true
       hostIPC: true
