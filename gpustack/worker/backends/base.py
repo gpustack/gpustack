@@ -30,7 +30,11 @@ from gpustack_runtime.deployer import WorkloadPlan
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
-from gpustack.schemas.inference_backend import InferenceBackend, ContainerEnvConfig
+from gpustack.schemas.inference_backend import (
+    InferenceBackend,
+    ContainerEnvConfig,
+    ParameterFormatEnum,
+)
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -41,6 +45,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import GPUDevicesStatus
 from gpustack.server.bus import Event
+from gpustack.utils.command import safe_split
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
 from gpustack.utils.hub import get_hf_text_config, get_max_model_len
@@ -54,6 +59,10 @@ lock = threading.Lock()
 
 
 class ModelInstanceStateError(Exception):
+    pass
+
+
+class ArgParseError(ValueError):
     pass
 
 
@@ -860,9 +869,105 @@ $@
                 f"Failed to update model service version {service_version}: {e}"
             )
 
+    def _parse_parameter_key_value(
+        self, param: str
+    ) -> Tuple[str, Optional[str], ParameterFormatEnum]:
+        """
+        Parse ONE element like:
+            "--foo bar"
+            "--foo=bar baz"
+        """
+
+        def _is_key(token: str) -> bool:
+            return token.startswith("-") and len(token) > 1
+
+        def _incorrect_json(value: str) -> bool:
+            if value.startswith("{") or value.startswith("["):
+                try:
+                    import json
+
+                    json.loads(value)
+                    return False
+                except json.JSONDecodeError:
+                    return True
+            return False
+
+        # Split the parameter string into tokens
+        tokens = safe_split(param)
+
+        if not tokens:
+            raise ArgParseError("Empty argument")
+
+        first = tokens[0]
+
+        # Validate that the first token is a valid key (starts with '-')
+        if not _is_key(first):
+            raise ArgParseError(f"Invalid key in '{param}'")
+
+        # -----------------------
+        # inline '=' mode: --key=value
+        # -----------------------
+        # Example: "--config={'key': 'value'}" or "--port=8080"
+        if "=" in first:
+            key, value_part = first.split("=", 1)
+            # Combine value_part with any remaining tokens
+            # This handles cases like: --key=value1 value2
+            value_tokens = [value_part] + tokens[1:]
+            value = " ".join(value_tokens)
+            if value == "":
+                raise ArgParseError(f"Missing value for '{key}'")
+
+            return key, value, ParameterFormatEnum.EQUAL
+
+        # -----------------------
+        # space mode: --key value
+        # -----------------------
+        # Example: "--port 8080" or "--config '{"key": "value"}'"
+        key = first
+        if len(tokens) == 1:
+            # Flag parameter with no value (e.g., "--verbose")
+            return key, None, ParameterFormatEnum.SPACE
+
+        value = tokens[1]
+        # Validate JSON format: unquoted JSON must be properly formatted
+        # This prevents errors like: --config {"key": "value"} (missing quotes)
+        if _incorrect_json(value):
+            raise ArgParseError(
+                f"JSON value must be quoted when using space separation: '{param}'"
+            )
+
+        # In space mode, we only accept exactly 2 tokens: key and value
+        # More tokens indicate incorrect usage (e.g., --key value1 value2)
+        if len(tokens) > 2:
+            raise ArgParseError(f"Too many tokens in space-separated mode: '{param}'")
+
+        return key, value, ParameterFormatEnum.SPACE
+
+    def _convert_parameter_format(
+        self, param: str, target_format: Optional[ParameterFormatEnum]
+    ) -> List[str]:
+        """Convert a parameter string to the target format."""
+
+        # Parse the parameter to extract key and value
+        key, value, source_format = self._parse_parameter_key_value(param)
+
+        # If no value (flag parameter), return as-is
+        if value is None:
+            return [f"--{key.strip().lstrip('-')}"]
+
+        def format(key: str, value: str, target_format: ParameterFormatEnum):
+            if target_format == ParameterFormatEnum.EQUAL:
+                return [f"--{key.strip().lstrip('-')}={value}"]
+            else:
+                return [f"--{key.strip().lstrip('-')}", value]
+
+        # Convert to target format
+        return format(key, value, target_format or source_format)
+
     def _flatten_backend_param(self) -> List[str]:
         """
-        Flattens all backend parameter strings into a list of individual tokens.
+        Flattens all backend parameter strings into a list of individual tokens
+        with automatic format conversion based on backend configuration.
 
         Each entry in `backend_parameters` may contain one or more whitespace-separated
         arguments. This method splits them and returns a single flattened list.
@@ -870,20 +975,27 @@ $@
             self._model.backend_parameters = ["--ctx-size 1024"] -> ["--ctx-size", "1024"]
             self._model.backend_parameters = [" --ctx-size=1024"] -> ["--ctx-size=1024"]
             self._model.backend_parameters = ["--ctx-size =1024"] -> ["--ctx-size=1024"]
+
+        If parameter_format is configured in the backend version config:
+            - 'space': converts to --key value format
+            - 'equal': converts to --key=value format
+            - None: uses default parsing (current behavior)
         """
         result = []
-        for param in self._model.backend_parameters or []:
-            # Strip leading/trailing whitespace
-            param_stripped = param.strip()
+        parameter_format = (
+            self.inference_backend.parameter_format if self.inference_backend else None
+        )
 
-            if "=" in param_stripped:
-                # Handle cases like "--foo = bar" or "--foo  =bar"
-                # Split by = and strip whitespace around it
-                key, value = map(str.strip, param_stripped.split("=", 1))
-                result.append(f"{key}={value}")
+        for param in self._model.backend_parameters or []:
+            param_stripped = param.strip()
+            if not param_stripped:
                 continue
 
-            result.extend(shlex.split(param_stripped))
+            converted_params = self._convert_parameter_format(
+                param_stripped, parameter_format
+            )
+            result.extend(converted_params)
+
         return result
 
     def _transform_workload_plan(
