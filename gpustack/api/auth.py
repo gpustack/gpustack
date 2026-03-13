@@ -82,8 +82,9 @@ async def get_current_user(
             jwt_manager: JWTManager = request.app.state.jwt_manager
             user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
         elif bearer_token or x_api_key:
-            token = bearer_token.credentials if bearer_token else x_api_key
-            user, api_key = await get_user_from_api_token(session, token)
+            token = (bearer_token.credentials if bearer_token else None) or x_api_key
+            if token is not None:
+                user, api_key = await get_user_from_api_token(session, token)
 
         if user is None and client_ip_getter(request=request) == "127.0.0.1":
             if not server_config.force_auth_localhost:
@@ -265,7 +266,7 @@ async def worker_auth(
     ] = None,
     x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
 ):
-    token_value = bearer_token.credentials if bearer_token else x_api_key
+    token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
     if not token_value:
         raise UnauthorizedException(message="Invalid authentication credentials")
     token = request.app.state.token
