@@ -82,8 +82,8 @@ migration_services = S6Services(
     S6Service("gpustack-migration", [], True, False),
 )
 observability_services = S6Services(
-    S6Service("grafana", [3000]),
-    S6Service("prometheus", [9090]),
+    S6Service("grafana", ["builtin_grafana_port"]),
+    S6Service("prometheus", ["builtin_prometheus_port"]),
     support_pipeline=True,
 )
 
