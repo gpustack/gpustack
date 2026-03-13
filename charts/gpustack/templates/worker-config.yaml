@@ -1,0 +1,11 @@
+{{- if .Values.enableWorkers }}
+apiVersion: v1
+data:
+{{ include "worker_config" . | indent 2 }}
+kind: ConfigMap
+metadata:
+  name: worker-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+{{- end }}

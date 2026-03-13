@@ -1,0 +1,159 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: gpustack-ai-statistics
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "chart_labels" . | nindent 4 }}
+spec:
+  defaultConfig:
+    attributes:
+    - apply_to_log: true
+      apply_to_span: false
+      key: consumer
+      value: x-mse-consumer
+      value_source: request_header
+  defaultConfigDisable: false
+  failStrategy: FAIL_OPEN
+  priority: 900
+  url: http://{{ include "gpustack_service_full_name" . }}{{ include "gpustack_service_port_suffix" . }}/wasm-plugins/ai-statistics/2.0.0/plugin.wasm
+status: {}
+---
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: gpustack-header-transformer
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "chart_labels" . | nindent 4 }}
+spec:
+  defaultConfig:
+    reqRules:
+    - headers:
+      - newKey: x-higress-llm-model
+        oldKey: x-gpustack-model
+      operate: rename
+  defaultConfigDisable: false
+  failStrategy: FAIL_OPEN
+  phase: AUTHN
+  priority: 410
+  url: http://{{ include "gpustack_service_full_name" . }}{{ include "gpustack_service_port_suffix" . }}/wasm-plugins/transformer/2.0.0/plugin.wasm
+status: {}
+---
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: gpustack-llm-ext-auth
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "chart_labels" . | nindent 4 }}
+spec:
+  defaultConfig:
+    http_service:
+      authorization_request:
+        allowed_headers:
+        - exact: X-GPUStack-Real-IP
+        - exact: x-higress-llm-model
+        - exact: cookie
+      authorization_response:
+        allowed_upstream_headers:
+        - exact: X-Mse-Consumer
+        - exact: Authorization
+      endpoint:
+        path: /token-auth
+        request_method: GET
+        service_name: {{ include "gpustack_service_full_name" . }}
+        service_port: {{ .Values.gpustackAPIPort }}
+      endpoint_mode: forward_auth
+      timeout: 3000
+    match_list:
+    - match_rule_path: /v1/chat/completions
+      match_rule_type: exact
+    - match_rule_path: /v1/completions
+      match_rule_type: exact
+    - match_rule_path: /v1/embeddings
+      match_rule_type: exact
+    - match_rule_path: /v1/audio/transcriptions
+      match_rule_type: exact
+    - match_rule_path: /v1/audio/speech
+      match_rule_type: exact
+    - match_rule_path: /v1/images/generations
+      match_rule_type: exact
+    - match_rule_path: /v1/images/edits
+      match_rule_type: exact
+    - match_rule_path: /v1-openai/chat/completions
+      match_rule_type: exact
+    - match_rule_path: /v1-openai/completions
+      match_rule_type: exact
+    - match_rule_path: /v1-openai/embeddings
+      match_rule_type: exact
+    - match_rule_path: /v1-openai/audio/transcriptions
+      match_rule_type: exact
+    - match_rule_path: /v1-openai/audio/speech
+      match_rule_type: exact
+    - match_rule_path: /v1-openai/images/generations
+      match_rule_type: exact
+    - match_rule_path: /v1-openai/images/edits
+      match_rule_type: exact
+    - match_rule_path: /v1/rerank
+      match_rule_type: exact
+    - match_rule_path: /model/proxy
+      match_rule_type: prefix
+    match_type: blacklist
+  defaultConfigDisable: false
+  failStrategy: FAIL_OPEN
+  phase: AUTHN
+  priority: 360
+  url: http://{{ include "gpustack_service_full_name" . }}{{ include "gpustack_service_port_suffix" . }}/wasm-plugins/ext-auth/2.0.0/plugin.wasm
+status: {}
+---
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: gpustack-model-router
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "chart_labels" . | nindent 4 }}
+spec:
+  defaultConfig:
+    enableOnPathSuffix:
+    - /v1/chat/completions
+    - /v1/completions
+    - /v1/embeddings
+    - /v1/audio/transcriptions
+    - /v1/audio/speech
+    - /v1/images/generations
+    - /v1/images/edits
+    - /v1-openai/chat/completions
+    - /v1-openai/completions
+    - /v1-openai/embeddings
+    - /v1-openai/audio/transcriptions
+    - /v1-openai/audio/speech
+    - /v1-openai/images/generations
+    - /v1-openai/images/edits
+    - /v1/rerank
+    - /model/proxy
+    modelToHeader: x-higress-llm-model
+  defaultConfigDisable: false
+  failStrategy: FAIL_OPEN
+  phase: AUTHN
+  priority: 900
+  url: http://{{ include "gpustack_service_full_name" . }}{{ include "gpustack_service_port_suffix" . }}/wasm-plugins/model-router/2.0.0/plugin.wasm
+status: {}
+---
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: gpustack-token-usage
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "chart_labels" . | nindent 4 }}
+spec:
+  defaultConfig:
+    realIPToHeader: X-GPUStack-Real-IP
+  defaultConfigDisable: false
+  failStrategy: FAIL_OPEN
+  phase: AUTHN
+  priority: 900
+  url: http://{{ include "gpustack_service_full_name" . }}{{ include "gpustack_service_port_suffix" . }}/wasm-plugins/gpustack-token-usage/1.0.0/plugin.wasm
+status: {}
