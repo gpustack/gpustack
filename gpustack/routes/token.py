@@ -128,7 +128,7 @@ async def worker_auth(
     if model_name is None:
         logger.warning("Missing X-Higress-Llm-Model header for token authentication")
         raise credentials_exception
-    token_value = bearer_token.credentials if bearer_token else x_api_key
+    token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
     if token_value is None:
         raise credentials_exception
     if token_value != token and token_value != registration_token:
