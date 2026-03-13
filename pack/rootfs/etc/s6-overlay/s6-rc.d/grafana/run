@@ -7,6 +7,8 @@
 
 SCRIPT_ROOT=/etc/s6-overlay/scripts
 source "$SCRIPT_ROOT/base.sh"
+# The config should be ready before starting
+source "$GPUSTACK_OBSERVABILITY_CONFIG"
 source "$SCRIPT_ROOT/default-variables.sh"
 
 set -e

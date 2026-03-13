@@ -186,6 +186,8 @@ class Config(WorkerConfig, BaseSettings):
     # Number of concurrent connections for the embedded gateway.
     gateway_concurrency: int = 16
     disable_builtin_observability: bool = False
+    builtin_prometheus_port: int = 19090
+    builtin_grafana_port: int = 13000
     grafana_url: Optional[str] = None
     grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"
     grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
@@ -302,7 +304,12 @@ class Config(WorkerConfig, BaseSettings):
             return self.grafana_url
         if self.disable_builtin_observability:
             return None
-        return "http://127.0.0.1:3000"
+        return f"http://127.0.0.1:{self.builtin_grafana_port}"
+
+    def get_builtin_prometheus_url(self) -> Optional[str]:
+        if self.disable_builtin_observability or self.grafana_url is not None:
+            return None
+        return f"http://127.0.0.1:{self.builtin_prometheus_port}"
 
     @staticmethod
     def check_port_range(port_range: str, diff: Optional[int] = None):

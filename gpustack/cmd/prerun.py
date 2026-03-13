@@ -70,7 +70,7 @@ def run(args: argparse.Namespace):
         if cfg.gateway_mode == GatewayModeEnum.embedded:
             prepare_gateway_config(cfg)
         if use_builtin_grafana(cfg):
-            prepare_prometheus_config(cfg)
+            prepare_observability_config(cfg)
         logger.info("Pre-run checks and setup completed successfully.")
     except Exception as e:
         logger.fatal(f"Failed to pre-check the configuration: {e}")
@@ -247,7 +247,25 @@ current-context: higress
             )
 
 
-def prepare_prometheus_config(cfg: Config):
+def prepare_observability_config(cfg: Config):
+    observability_shared_config_dir = os.getenv(
+        "GPUSTACK_OBSERVABILITY_DIR", os.path.join(cfg.data_dir, "observability")
+    )
+    os.makedirs(observability_shared_config_dir, exist_ok=True)
+
+    config_path = os.path.join(observability_shared_config_dir, ".env")
+    with open(config_path, "w") as f:
+        f.write(f"DATA_DIR={cfg.data_dir}\n")
+        f.write(f"LOG_DIR={cfg.log_dir}\n")
+        f.write(f"PROMETHEUS_PORT={cfg.builtin_prometheus_port}\n")
+        f.write(f"GF_SERVER_HTTP_PORT={cfg.builtin_grafana_port}\n")
+        f.write(f"PROMETHEUS_DATA_DIR={os.path.join(cfg.data_dir, 'prometheus')}\n")
+        f.write(f"GF_PATHS_DATA={os.path.join(cfg.data_dir, 'grafana')}\n")
+        f.write(f"GF_PATHS_LOGS={os.path.join(cfg.log_dir, 'grafana')}\n")
+        f.write(
+            f"GF_PATHS_PLUGINS={os.path.join(cfg.data_dir, 'grafana', 'plugins')}\n"
+        )
+
     config_path = os.getenv("PROMETHEUS_CONFIG_FILE", "/etc/prometheus/prometheus.yml")
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
     with open(config_path, "w") as f:
@@ -268,6 +286,28 @@ scrape_configs:
     static_configs:
       - targets:
           - 127.0.0.1:{cfg.metrics_port}
+"""
+        )
+
+    grafana_provisioning_dir = os.getenv(
+        "GF_PATHS_PROVISIONING", "/etc/grafana/provisioning"
+    )
+    datasource_dir = os.path.join(grafana_provisioning_dir, "datasources")
+    os.makedirs(datasource_dir, exist_ok=True)
+    datasource_path = os.path.join(datasource_dir, "datasource.yaml")
+    with open(datasource_path, "w") as f:
+        f.write(
+            f"""apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://127.0.0.1:{cfg.builtin_prometheus_port}/prometheus
+    isDefault: true
+    access: proxy
+    editable: true
+    orgId: 1
 """
         )
 
