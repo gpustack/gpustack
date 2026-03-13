@@ -33,3 +33,30 @@ def is_valid_version_str(version_str: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def is_worker_version_compatible(
+    worker_version: str,
+    server_version: str,
+) -> bool:
+    """
+    Check if worker and server versions are compatible.
+
+    Args:
+        worker_version: The version string of the worker.
+        server_version: The version string of the server.
+
+    Returns:
+        bool: is_compatible
+    """
+    # Skip development version
+    if worker_version == "0.0.0" or server_version == "0.0.0":
+        return True
+
+    try:
+        worker_ver = version.parse(worker_version)
+        server_ver = version.parse(server_version)
+    except Exception:
+        return False
+
+    return worker_ver == server_ver

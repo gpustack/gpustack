@@ -161,9 +161,9 @@ class Worker:
             f"Retrying to get worker ID (attempt {retry_state.attempt_number}) due to: {retry_state.outcome.exception()}"
         ),
     )
-    def _register(self):
+    async def _register(self):
         self._clientset, self._default_config = (
-            self._worker_manager.register_with_server()
+            await self._worker_manager.register_with_server()
         )
         # Worker ID is available after the worker registration.
         worker_list = self._clientset.workers.list(
@@ -235,7 +235,10 @@ class Worker:
 
         add_signal_handlers_in_loop()
 
-        self._register()
+        # Check version compatibility with server before registration
+        await self._worker_manager.check_server_version()
+
+        await self._register()
         self._config.reload_worker_config(self._default_config)
         self.log_worker_config()
         if self._exporter_enabled:
