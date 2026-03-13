@@ -71,9 +71,9 @@ If you already have an external Prometheus/Grafana stack, you can configure it m
 - **GPUStack Worker Metrics Targets**:  
   Access metrics at `http://<gpustack_server_host>:10161/metrics/targets`
 - **Prometheus UI**:  
-  Access Prometheus at `http://<host>:9090`
+  Access Prometheus at `http://<host>:19090` by default, or the port configured by `--builtin-prometheus-port` / `GPUSTACK_BUILTIN_PROMETHEUS_PORT`.
 - **Grafana UI**:  
-  Access Grafana at `http://<host>:3000`. Built-in Grafana is configured for anonymous Viewer access with the login form disabled. The admin credentials remain `admin` / `grafana` by default.
+  Access Grafana at `http://<host>:13000` by default, or the port configured by `--builtin-grafana-port` / `GPUSTACK_BUILTIN_GRAFANA_PORT`. Built-in Grafana is configured for anonymous Viewer access with the login form disabled. The admin credentials remain `admin` / `grafana` by default.
 
 ## Migration from Older Compose Setups
 
