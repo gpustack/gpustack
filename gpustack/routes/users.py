@@ -104,7 +104,7 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
             update_data["hashed_password"] = hashed_password
         del update_data["password"]
         del update_data["source"]
-        await user.update(session, update_data)
+        await UserService(session).update(user, update_data)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 
@@ -123,6 +123,10 @@ async def update_user_activation(
     if not user:
         raise NotFoundException(message="User not found")
 
+    changed = user.is_active != activation_data.is_active
+    if not changed:
+        return user
+
     if (
         user.is_active
         and activation_data.is_active is False
@@ -131,7 +135,9 @@ async def update_user_activation(
         raise ConflictException(message="Cannot deactivate the only admin user")
 
     try:
-        await user.update(session, {"is_active": activation_data.is_active})
+        await UserService(session).update(
+            user, {"is_active": activation_data.is_active}
+        )
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update user activation: {e}"
