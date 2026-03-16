@@ -4,7 +4,7 @@ import yaml
 from typing import List, Optional
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.schemas.clusters import ClusterRegistrationTokenPublic
-from gpustack.schemas.config import K8sVolumeMount
+from gpustack.schemas.clusters import K8sVolumeMount
 from gpustack_runtime.detector import ManufacturerEnum
 
 
@@ -20,11 +20,23 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
             return base64.b64encode(value.encode("utf-8")).decode("utf-8")
 
         def to_yaml(value, indent=0):
-            return (
-                yaml.dump(value, default_flow_style=False)
-                .replace("\n", "\n" + " " * indent)
-                .strip()
-            )
+            if hasattr(value, "model_dump"):
+                value = value.model_dump(by_alias=True, exclude_none=True)
+            elif isinstance(value, list):
+                value = [
+                    (
+                        v.model_dump(by_alias=True, exclude_none=True)
+                        if hasattr(v, "model_dump")
+                        else v
+                    )
+                    for v in value
+                ]
+
+            dumped = yaml.dump(value, default_flow_style=False)
+            if dumped.endswith("...\n"):
+                dumped = dumped[:-4]
+
+            return dumped.replace("\n", "\n" + " " * indent).strip()
 
         with pkg_resources.path("gpustack.k8s", "manifests.jinja") as manifest_path:
             with manifest_path.open(encoding="utf-8") as f:

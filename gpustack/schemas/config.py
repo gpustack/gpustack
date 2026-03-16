@@ -1,6 +1,6 @@
 from enum import Enum
-from typing import Any, Optional
-from pydantic import BaseModel, Field, model_validator
+from typing import Optional
+from pydantic import BaseModel, Field
 
 from gpustack import __benchmark_runner_version__
 
@@ -36,27 +36,6 @@ class ModelInstanceProxyModeEnum(str, Enum):
     WORKER = "worker"
     DIRECT = "direct"
     DELEGATED = "delegated"
-
-
-class K8sVolumeMount(BaseModel):
-    name: str
-    mount_path: str
-    read_only: bool = False
-    volume_source: Optional[dict] = Field(
-        default=None,
-        description="Kubernetes VolumeSource definition, e.g., {'hostPath': {'path': '/data', 'type': 'Directory'}}",
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_host_path(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            host_path = data.get("host_path")
-            if host_path and not data.get("volume_source"):
-                data["volume_source"] = {
-                    "hostPath": {"path": host_path, "type": "DirectoryOrCreate"}
-                }
-        return data
 
 
 class SensitivePredefinedConfig(BaseModel):

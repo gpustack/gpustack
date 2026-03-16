@@ -129,8 +129,8 @@ spec:
             {%- endif %}
             {%- if config.k8s_volume_mounts %}
             {%- for vm in config.k8s_volume_mounts %}
-            - name: {{ vm.name }}
-              mountPath: {{ vm.mount_path }}
+            - name: {{ vm.name | to_yaml }}
+              mountPath: {{ vm.mount_path | to_yaml }}
               readOnly: {{ vm.read_only | lower }}
             {%- endfor %}
             {%- endif %}
@@ -232,7 +232,7 @@ spec:
         {%- endif %}
         {%- if config.k8s_volume_mounts %}
         {%- for vm in config.k8s_volume_mounts %}
-        - name: {{ vm.name }}
+        - name: {{ vm.name | to_yaml }}
           {{ vm.volume_source | to_yaml(indent=10) }}
         {%- endfor %}
         {%- endif %}

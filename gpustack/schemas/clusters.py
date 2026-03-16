@@ -8,6 +8,7 @@ from pydantic import (
     field_validator,
     ConfigDict,
     PrivateAttr,
+    Field as PydanticField,
 )
 from sqlmodel import (
     Field,
@@ -26,7 +27,6 @@ from typing import TYPE_CHECKING
 from gpustack.schemas.config import (
     SensitivePredefinedConfig,
     PredefinedConfigNoDefaults,
-    K8sVolumeMount,
 )
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import (
@@ -63,6 +63,71 @@ class Volume(BaseModel):
         if len(v) > 60:
             raise ValueError("Volume name too long, max 60 characters")
         # allow alphanumeric characters, dashes, and periods
+        allowed_chars = set(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-."
+        )
+        if not all(c in allowed_chars for c in v):
+            raise ValueError("Volume name contains invalid characters")
+        return v
+
+
+class HostPathVolumeSource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    path: str = PydanticField(
+        ...,
+        description="Path of the directory on the host. If the path is a symlink, it will follow the link to the real path.",
+    )
+    type: Optional[str] = PydanticField(None, description="Type for HostPath Volume.")
+
+
+class PersistentVolumeClaimVolumeSource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    claim_name: str = PydanticField(
+        ...,
+        alias="claimName",
+        description="ClaimName is the name of a PersistentVolumeClaim in the same namespace as the pod using this volume.",
+    )
+    read_only: bool = PydanticField(
+        False,
+        alias="readOnly",
+        description="Will force the ReadOnly setting in VolumeMounts.",
+    )
+
+
+class ConfigMapVolumeSource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    name: str = PydanticField(..., description="Name of the referent.")
+    optional: Optional[bool] = PydanticField(
+        None, description="Specify whether the ConfigMap or its keys must be defined."
+    )
+
+
+class VolumeSource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    host_path: Optional[HostPathVolumeSource] = PydanticField(None, alias="hostPath")
+    persistent_volume_claim: Optional[PersistentVolumeClaimVolumeSource] = (
+        PydanticField(None, alias="persistentVolumeClaim")
+    )
+    config_map: Optional[ConfigMapVolumeSource] = PydanticField(None, alias="configMap")
+
+
+class K8sVolumeMount(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    name: str
+    mount_path: str = PydanticField(..., alias="mountPath")
+    read_only: bool = PydanticField(False, alias="readOnly")
+    volume_source: Optional[VolumeSource] = PydanticField(
+        default=None,
+        alias="volumeSource",
+        description='Kubernetes VolumeSource definition. e.g., `{"hostPath": {"path": "/data", "type": "Directory"}}`',
+    )
+
+    @field_validator("name")
+    def validate_name(cls, v):
+        if not v:
+            return v
+        if len(v) > 60:
+            raise ValueError("Volume name too long, max 60 characters")
         allowed_chars = set(
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-."
         )
@@ -406,7 +471,6 @@ class ClusterPublic(ClusterBase, PublicFields):
     gpus: int = Field(default=0)
     models: int = Field(default=0)
     worker_config: Optional[PredefinedConfigNoDefaults] = Field(default=None)
-    k8s_volume_mounts: Optional[List[K8sVolumeMount]] = Field(default=None)
 
 
 ClustersPublic = PaginatedList[ClusterPublic]
