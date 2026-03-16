@@ -465,6 +465,7 @@ async def get_model_usages(
     end_date: Optional[date] = None,
     model_ids: Optional[List[int]] = None,
     user_ids: Optional[List[int]] = None,
+    provider_model_names: Optional[Dict[int, Optional[List[str]]]] = None,
 ) -> List[ModelUsage]:
     if start_date is None or end_date is None:
         end_date = date.today()
@@ -476,8 +477,17 @@ async def get_model_usages(
         .where(ModelUsage.date <= end_date)
     )
 
+    or_conditions = []
     if model_ids is not None:
-        statement = statement.where(col(ModelUsage.model_id).in_(model_ids))
+        or_conditions.append(col(ModelUsage.model_id).in_(model_ids))
+    for provider_id, model_names in (provider_model_names or {}).items():
+        if provider_id is not None:
+            and_conds = [col(ModelUsage.provider_id) == provider_id]
+            if model_names:
+                and_conds.append(col(ModelUsage.model_name).in_(model_names))
+            or_conditions.append(and_(*and_conds))
+    if or_conditions:
+        statement = statement.where(or_(*or_conditions))
 
     if user_ids is not None:
         statement = statement.where(col(ModelUsage.user_id).in_(user_ids))
@@ -489,6 +499,23 @@ async def get_model_usages(
     )
 
     return (await session.exec(statement)).all()
+
+
+def get_models_by_provider_id(
+    provider_model_names: List[str],
+) -> Optional[Dict[int, Optional[List[str]]]]:
+    model_names_by_provider_id = {}
+    for id_prefix_name in provider_model_names or []:
+        if ":" not in id_prefix_name:
+            continue
+        id_str, name = id_prefix_name.split(":", 1)
+        try:
+            provider_id = int(id_str)
+        except ValueError:
+            continue
+        names: List[str] = model_names_by_provider_id.setdefault(provider_id, [])
+        names.extend([name] if name else [])
+    return model_names_by_provider_id if len(model_names_by_provider_id) > 0 else None
 
 
 @router.get("/usage")
@@ -508,6 +535,10 @@ async def usage(
     user_ids: Optional[List[int]] = Query(
         None, description="Filter by user IDs. Defaults to all users."
     ),
+    provider_model_names: Optional[List[str]] = Query(
+        None,
+        description="Filter by provider and model names. Format is 'provider_id:model_name'. To filter by provider ID only, use 'provider_id:'. Defaults to no filtering.",
+    ),
 ):
     """
     Get model usage records.
@@ -519,6 +550,7 @@ async def usage(
         end_date=end_date,
         model_ids=model_ids,
         user_ids=user_ids,
+        provider_model_names=get_models_by_provider_id(provider_model_names or []),
     )
     return ItemList[ModelUsage](items=items)
 
@@ -550,22 +582,11 @@ async def usage_stats(
     This endpoint returns aggregated statistics for model usage, including token counts and request counts.
     It can filter by date range, model IDs, user IDs, model names with provider ID prefix.
     """
-    model_names_by_provider_id = {}
-    for id_prefix_name in provider_model_names or []:
-        if ":" not in id_prefix_name:
-            continue
-        id_str, name = id_prefix_name.split(":", 1)
-        try:
-            provider_id = int(id_str)
-        except ValueError:
-            continue
-        names: List[str] = model_names_by_provider_id.setdefault(provider_id, [])
-        names.append(name)
     return await get_model_usage_stats(
         session,
         start_date=start_date,
         end_date=end_date,
         model_ids=model_ids,
         user_ids=user_ids,
-        provider_model_names=model_names_by_provider_id,
+        provider_model_names=get_models_by_provider_id(provider_model_names or []),
     )
