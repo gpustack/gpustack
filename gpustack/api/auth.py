@@ -47,8 +47,6 @@ credentials_exception = UnauthorizedException(
     message="Invalid authentication credentials"
 )
 
-unauthorized_exception = UnauthorizedException(message="Incorrect username or password")
-
 
 def client_ip_getter(request: Request) -> str:
     if request.app.state.server_config.gateway_mode == GatewayModeEnum.embedded:
@@ -250,13 +248,13 @@ async def authenticate_user(
 ) -> User:
     user = await UserService(session).get_by_username(username)
     if not user:
-        raise unauthorized_exception
+        raise UnauthorizedException(message="Incorrect username or password")
 
     if not verify_hashed_secret(user.hashed_password, password):
-        raise unauthorized_exception
+        raise UnauthorizedException(message="Incorrect username or password")
 
     if not user.is_active:
-        raise unauthorized_exception
+        raise UnauthorizedException(message="User account is deactivated")
 
     return user
 
