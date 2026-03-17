@@ -33,7 +33,10 @@ from gpustack.schemas.models import (
     is_audio_model,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.schemas.inference_backend import is_built_in_backend
 from gpustack.server.worker_selector import WorkerSelector
+from gpustack_runner import list_backend_runners
+from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack.utils.gpu import (
     all_gpu_match,
@@ -203,6 +206,7 @@ async def evaluate_model(
         (evaluate_model_input, (session, model, cluster_id)),
         (evaluate_model_metadata, (config, model, workers)),
         (evaluate_environment, (model, workers)),
+        (evaluate_runtime_version, (model, workers)),
     ]
     for evaluation, args in evaluations:
         compatible, messages = await evaluation(*args)
@@ -333,6 +337,160 @@ async def evaluate_environment(
         ]
 
     return True, []
+
+
+async def evaluate_runtime_version(
+    model: ModelSpec, workers: List[Worker]
+) -> Tuple[bool, List[str]]:
+    """
+    Evaluate if the highest GPU runtime version across all workers
+    meets the minimum requirements for the backend runner.
+
+    Args:
+        model: Model specification to evaluate
+        workers: List of workers to check
+
+    Returns:
+        Tuple of (compatible, messages):
+            - compatible: True if runtime version is sufficient, False otherwise
+            - messages: List of error messages if incompatible, empty list otherwise
+    """
+    backend_name = get_backend(model)
+
+    if not is_built_in_backend(backend_name):
+        return True, []
+
+    max_runtime_version = None
+    max_gpu_type = None
+
+    for worker in workers:
+        if not worker.status or not worker.status.gpu_devices:
+            continue
+
+        gpu = next(
+            (
+                gpu
+                for gpu in worker.status.gpu_devices
+                if gpu.type and gpu.runtime_version
+            ),
+            None,
+        )
+        if not gpu:
+            continue
+
+        if max_runtime_version is None:
+            max_runtime_version = gpu.runtime_version
+            max_gpu_type = gpu.type
+        elif compare_versions(gpu.runtime_version, max_runtime_version) > 0:
+            max_runtime_version = gpu.runtime_version
+            max_gpu_type = gpu.type
+
+    if max_runtime_version is None:
+        return True, []
+
+    is_supported, version_list = await _check_runtime_version(
+        backend_name, model.backend_version, max_gpu_type, max_runtime_version
+    )
+
+    if is_supported:
+        return True, []
+
+    msg = _format_runtime_upgrade_message(
+        backend_name, max_gpu_type, max_runtime_version, version_list
+    )
+    return False, [msg]
+
+
+async def _check_runtime_version(
+    backend_name: str,
+    model_backend_version: Optional[str],
+    gpu_type: str,
+    runtime_version: str,
+) -> Tuple[bool, List[str]]:
+    """
+    Check if the runtime version meets the minimum requirements.
+
+    Args:
+        backend_name: Name of the backend (e.g., 'vLLM', 'llama-box')
+        model_backend_version: Specific backend version requested by model
+        gpu_type: Type of GPU (e.g., 'CUDA', 'ROCm')
+        runtime_version: Current runtime version to check
+
+    Returns:
+        Tuple of (is_supported, version_list):
+            - is_supported: True if version is supported
+            - version_list: List of all supported versions if not supported
+    """
+    kwargs = {
+        "backend": gpu_type,
+        "service": backend_name.lower(),
+        "backend_version": runtime_version,
+    }
+
+    if not model_backend_version:
+        kwargs["with_deprecated"] = False
+
+    runners_list = list_backend_runners(**kwargs)
+    if runners_list and len(runners_list) > 0:
+        return True, []
+
+    kwargs.pop("backend_version")
+    all_runners = list_backend_runners(**kwargs)
+
+    if not all_runners or len(all_runners) == 0:
+        return False, []
+
+    supported_versions = []
+    for runner in all_runners[0].versions:
+        runner_version = runner.version
+        supported_versions.append(runner_version)
+
+    if not supported_versions:
+        return False, []
+
+    # Remove duplicates and sort versions
+    unique_versions = list(set(supported_versions))
+    sorted_versions = sorted(
+        unique_versions, key=lambda v: (compare_versions(v, "0.0.0"), v)
+    )
+
+    min_version = sorted_versions[0]
+
+    if compare_versions(runtime_version, min_version) < 0:
+        return False, sorted_versions
+
+    return True, []
+
+
+def _format_runtime_upgrade_message(
+    backend_name: str,
+    gpu_type: str,
+    current_version: str,
+    all_versions: List[str],
+) -> str:
+    """
+    Format an upgrade message for runtime version incompatibility.
+
+    Args:
+        backend_name: Name of the backend
+        gpu_type: Type of GPU
+        current_version: Current runtime version
+        all_versions: List of all supported versions
+
+    Returns:
+        Formatted error message
+    """
+    msg = (
+        f"The highest GPU runtime version available ({gpu_type} {current_version}) "
+        f"does not meet the requirements for backend {backend_name}. "
+    )
+
+    if all_versions:
+        versions_str = ", ".join(all_versions)
+        msg += f"Supported versions: {versions_str}. "
+        msg += f"Please upgrade to at least version {all_versions[0]}."
+
+    return msg
 
 
 async def evaluate_model_metadata(
