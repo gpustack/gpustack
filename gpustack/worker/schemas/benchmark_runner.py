@@ -105,6 +105,7 @@ class Percentiles(BaseModel):
 
     p50: float = Field(description="50th percentile (median) value")
     p90: float = Field(description="90th percentile value")
+    p95: float = Field(description="95th percentile value")
     p99: float = Field(description="99th percentile value")
 
 
