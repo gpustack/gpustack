@@ -112,6 +112,8 @@ class WorkerFilterChain:
         for policy in self.filters:
             workers, filter_messages = await policy.filter(workers)
             messages.extend(filter_messages)
+            if not workers:
+                break
         return workers, messages
 
 
