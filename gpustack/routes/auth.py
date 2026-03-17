@@ -34,7 +34,10 @@ from lxml import etree
 from gpustack.utils.convert import safe_b64decode, inflate_data
 from urllib.parse import urlencode
 
-from gpustack.utils.network import use_proxy_env_for_url
+from gpustack.utils.network import (
+    get_system_trust_store_ssl_context,
+    use_proxy_env_for_url,
+)
 
 router = APIRouter()
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
@@ -362,7 +365,10 @@ async def oidc_callback(request: Request, session: SessionDep):
     }
     token_endpoint = config.openid_configuration["token_endpoint"]
     use_proxy_env = use_proxy_env_for_url(token_endpoint)
-    async with httpx.AsyncClient(timeout=timeout, trust_env=use_proxy_env) as client:
+    verify = get_system_trust_store_ssl_context()
+    async with httpx.AsyncClient(
+        timeout=timeout, verify=verify, trust_env=use_proxy_env
+    ) as client:
         try:
             token_res = await client.request("POST", token_endpoint, data=data)
             res_data = json.loads(token_res.text)
