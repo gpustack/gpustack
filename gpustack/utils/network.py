@@ -11,8 +11,10 @@ import aiohttp
 import psutil
 from datetime import datetime, timezone
 import ipaddress
+import ssl
 
 import requests
+import truststore
 
 
 def normalize_route_path(path: str) -> str:
@@ -330,3 +332,12 @@ def use_proxy_env_for_url(url: str) -> bool:
     except Exception:
         # On any error (e.g., malformed URL), default to using proxy
         return True
+
+
+@lru_cache(maxsize=1)
+def get_system_trust_store_ssl_context() -> ssl.SSLContext:
+    """
+    Return an SSL context backed by the operating system trust store.
+    """
+
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
