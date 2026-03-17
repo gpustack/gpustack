@@ -4,6 +4,7 @@ from enum import Enum
 from typing import List, Optional, Dict
 from urllib.parse import urlparse
 import ipaddress
+import httpx
 
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
@@ -12,7 +13,6 @@ from gpustack_runtime.detector import (
 )
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-import requests
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
     CPUInfo,
@@ -41,7 +41,11 @@ from gpustack.config.registration import (
     read_worker_token,
     determine_default_registry,
 )
-from gpustack.utils.network import get_first_non_loopback_ip
+from gpustack.utils.network import (
+    get_first_non_loopback_ip,
+    get_system_trust_store_ssl_context,
+    use_proxy_env_for_url,
+)
 from gpustack.utils import platform
 
 _config = None
@@ -846,9 +850,12 @@ def get_openid_configuration(issuer: str) -> dict:
     """Fetch OpenID configuration from the issuer."""
     url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
     try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
+        use_proxy_env = use_proxy_env_for_url(url)
+        verify = get_system_trust_store_ssl_context()
+        with httpx.Client(timeout=10, verify=verify, trust_env=use_proxy_env) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            return resp.json()
     except Exception as e:
         raise Exception(
             f"Failed to get OpenID configuration: {str(e)}. Please check the issuer URL and ensure {url} is accessible."
