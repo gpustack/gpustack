@@ -300,7 +300,7 @@ class Scheduler:
 
         async with async_session() as session:
             workers = await Worker.all(session)
-            if len(workers) == 0:
+            if not workers:
                 state_message = "No available workers"
 
             model = await Model.one_by_id(session, instance.model_id)
@@ -413,6 +413,8 @@ async def find_candidate(
     messages = []
     if filter_messages:
         messages.append(str(ListMessageBuilder(filter_messages)) + "\n")
+    if len(workers) == 0:
+        return None, messages
 
     # Initialize candidate selector.
     try:
