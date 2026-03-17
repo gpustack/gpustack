@@ -547,6 +547,11 @@ class ServeManager:
             return
 
         if event.type == EventType.CREATED:
+            if mi.state == ModelInstanceStateEnum.RUNNING:
+                logger.warning(
+                    f"Model instance {mi.name} is already running. Skipping start."
+                )
+                return
             self._start_model_instance(mi)
             logger.trace(f"CREATED event: started created model instance {mi.name}.")
 
