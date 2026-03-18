@@ -20,7 +20,7 @@
 # - GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS: Semicolon-separated list of labels to filter mirrored images when deploying mirrored deployment.
 # - HIGRESS_VERSION: Version of Higress to use.
 # - HIGRESS_APISERVER_VERSION: Version of Higress API server to use.
-ARG PYTHON_VERSION=3.12
+ARG PYTHON_VERSION=3.11
 ARG GPUSTACK_BASE_IMAGE=base
 ARG GPUSTACK_RUNTIME_ROCM_VERSION=7.0.2
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
