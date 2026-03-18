@@ -8,3 +8,4 @@ dist/
 *.ma
 
 .cache/
+.python-version
