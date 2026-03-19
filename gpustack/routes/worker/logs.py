@@ -1,381 +1,463 @@
 import asyncio
 import logging
-import time
+import re
 from pathlib import Path
+from typing import Dict, List, Optional
 
 from tenacity import RetryError
-from typing import Optional
 
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse
-from gpustack_runtime.deployer import logs_workload
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.worker.logs import LogOptions, LogOptionsDep, log_generator
 from gpustack.utils import file
 from gpustack.server.deps import SessionDep
-from gpustack import envs
-
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
 
-def is_container_logs_ready(model_instance_name: str) -> bool:
-    """Probe whether container logs have any content available to output."""
-    try:
-        logs_workload(
-            name=model_instance_name,
-            tail=1,
-            follow=False,
-        )
-        return True
-    except Exception:
-        return False
-
-
-async def wait_for_container_generator(
-    model_instance_name: str,
-    options: LogOptionsDep,
-    poll_interval: float = 5,
-    timeout: float = envs.PROXY_TIMEOUT,
-):
-    """Wait until container logs are ready, then return the async generator.
-
-    Keeps probing until logs are ready and the container_log_generator can be constructed.
-    """
-    gen = None
-    start_time = time.monotonic()
-    while gen is None and (time.monotonic() - start_time) < timeout:
-        if is_container_logs_ready(model_instance_name):
-            try:
-                gen = container_log_generator(model_instance_name, options)
-            except Exception as e:
-                logger.error(
-                    f"Failed to initialize container logs for {model_instance_name}: {e}"
-                )
-                gen = None
-        if gen is None:
-            await asyncio.sleep(poll_interval)
-    if gen is None:
-        elapsed = time.monotonic() - start_time
-        logger.warning(
-            f"Waiting for container logs timed out after {elapsed:.0f}s for {model_instance_name}."
-        )
-        raise asyncio.TimeoutError(
-            f"Timed out waiting for container logs for {model_instance_name} after {elapsed:.0f}s"
-        )
-    return gen
-
-
-async def _await_next_or_preempt(
-    pending_tasks: dict, stop_event: Optional[asyncio.Event]
-):
-    """Wait for the next available task to complete, or preempt if stop_event is set.
-
-    Returns a tuple of (done_tasks, preempting_flag).
-    """
-    if stop_event is not None:
-        preempt_task = asyncio.create_task(stop_event.wait())
-        wait_set = set(pending_tasks.keys()) | {preempt_task}
-        done_set, _ = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
-        preempting = preempt_task in done_set
-        if preempting:
-            done = set(
-                t for t in done_set if t is not preempt_task and t in pending_tasks
-            )
-        else:
-            done = set(done_set)
-        preempt_task.cancel()
-        return done, preempting
-    else:
-        done_set, _ = await asyncio.wait(
-            pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-        )
-        return set(done_set), False
-
-
-async def _cancel_all(pending_tasks: dict):
-    """Cancel all tasks in the pending_tasks dict and wait for cancellation."""
-    tasks = list(pending_tasks.keys())
-    for t in tasks:
-        t.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
-async def merge_async_generators(
-    *generators, stop_event: Optional[asyncio.Event] = None
-):
-    """Merge multiple async generators into a single stream, with optional preemption."""
-
-    # Wrap each generator to yield plain items (no index needed)
-    async def _wrap_gen(g):
-        async for item in g:
-            yield item
-
-    tasks = [_wrap_gen(gen) for gen in generators]
-    if not tasks:
-        return
-
-    pending_tasks = {asyncio.create_task(gen.__anext__()): gen for gen in tasks}
-
-    try:
-        while pending_tasks:
-            # If already preempting, flush any completed tasks; otherwise wait
-            if stop_event and stop_event.is_set():
-                done = set(t for t in pending_tasks.keys() if t.done())
-                if not done:
-                    await _cancel_all(pending_tasks)
-                    break
-                preempting = True
-            else:
-                done, preempting = await _await_next_or_preempt(
-                    pending_tasks, stop_event
-                )
-
-            for task in done:
-                gen = pending_tasks.pop(task)
-                try:
-                    result = task.result()
-                    yield result
-                    if not preempting:
-                        new_task = asyncio.create_task(gen.__anext__())
-                        pending_tasks[new_task] = gen
-                except StopAsyncIteration:
-                    pass
-                except Exception as e:
-                    logger.error(f"Error processing generator output: {e}")
-
-            if preempting:
-                await _cancel_all(pending_tasks)
-                break
-    finally:
-        await _cancel_all(pending_tasks)
-
-
-async def container_log_generator(model_instance_name: str, options: LogOptionsDep):
-    """
-    Generate logs from CustomServer Docker container.
+def extract_restart_count(filename: str) -> int:
+    """Extract restart count from filename like '123.5.log'.
 
     Args:
-        model_instance_name: Workload name
+        filename: Log filename in format {id}.{restart_count}.log
+
+    Returns:
+        Restart count as integer, or 0 if pattern doesn't match
+    """
+    match = re.match(r'\d+\.(\d+)\.log', filename)
+    return int(match.group(1)) if match else 0
+
+
+def extract_container_restart_count(filename: str) -> int:
+    """Extract restart count from container log filename.
+
+    Args:
+        filename: Log filename in format {id}.container.{restart_count}.log
+
+    Returns:
+        Restart count as integer, or 0 if pattern doesn't match
+    """
+    match = re.match(r'\d+\.container\.(\d+)\.log', filename)
+    return int(match.group(1)) if match else 0
+
+
+async def has_log_content(log_file: Path) -> bool:
+    """Check if log file has any actual content.
+
+    Args:
+        log_file: Path to log file
+
+    Returns:
+        True if file exists and has size > 0
+    """
+    return await asyncio.to_thread(
+        lambda: log_file.exists() and log_file.stat().st_size > 0
+    )
+
+
+async def get_all_log_files(
+    log_dir: Path,
+    model_instance_id: int,
+    container: bool = False,
+    restart_count: Optional[int] = None,
+) -> List[Path]:
+    """Get all log files sorted by restart count.
+
+    Args:
+        log_dir: Directory containing log files
+        model_instance_id: Model instance ID
+        container: If True, get container logs; if False, get main logs
+        restart_count: If specified, only return logs for this restart count
+
+    Returns:
+        List of log file paths sorted by restart count (oldest first)
+    """
+    if container:
+        pattern = f"{model_instance_id}.container.*.log"
+        extract_fn = extract_container_restart_count
+    else:
+        pattern = f"{model_instance_id}.*.log"
+        extract_fn = extract_restart_count
+
+    files = await asyncio.to_thread(lambda: list(log_dir.glob(pattern)))
+
+    # Exclude container log files when getting main logs
+    if not container:
+        files = [f for f in files if '.container.' not in f.name]
+
+    # Filter by restart_count if specified
+    if restart_count is not None:
+        files = [f for f in files if extract_fn(f.name) == restart_count]
+
+    return sorted(files, key=lambda p: extract_fn(p.name))
+
+
+async def historical_log_generator(
+    log_dir: Path,
+    model_instance_id: int,
+    options: LogOptions,
+    stop_event: Optional[asyncio.Event] = None,
+    container: bool = False,
+):
+    """Generate logs from historical log files.
+
+    Args:
+        log_dir: Directory containing log files
+        model_instance_id: Model instance ID
         options: Log options (tail, follow)
+        stop_event: Event to signal stopping
+        container: If True, read container logs; if False, read main logs
+
+    Yields:
+        Log lines from log files
     """
-    try:
-        # Convert LogOptions to container log parameters
-        tail = options.tail if options.tail else -1
-        follow = options.follow
+    log_files = await get_all_log_files(log_dir, model_instance_id, container=container)
 
-        # Get logs from the workload
-        log_stream = logs_workload(
-            name=model_instance_name,
-            tail=tail,
-            follow=follow,
-        )
+    if not log_files:
+        if container:
+            logger.debug(
+                f"No container log files found for model instance "
+                f"{model_instance_id}"
+            )
+        return
 
-        # Handle different return types based on follow parameter
-        if follow:
-            # Offload blocking iteration to a background thread to avoid event loop blocking
-            try:
-                iterator = iter(log_stream)
-            except Exception as e:
-                logger.error(
-                    f"logs_workload did not return an iterable for {model_instance_name}: {e}"
-                )
-                return
-
-            while True:
-                try:
-                    log_line = await asyncio.to_thread(next, iterator)
-                except StopIteration:
-                    break
-                except Exception as e:
-                    logger.error(
-                        f"Error reading container log for {model_instance_name}: {e}"
+    if options.tail > 0:
+        # Only read the last N lines from the most recent log file
+        if log_files:
+            file_options = LogOptions(
+                tail=options.tail, follow=options.follow, stop_event=stop_event
+            )
+            async for line in log_generator(str(log_files[-1]), file_options):
+                if stop_event and stop_event.is_set():
+                    logger.debug(
+                        "Historical log generator stopping due to stop event 1"
                     )
-                    break
+                    return
+                yield line
+    else:
+        # Read all logs in order
+        for i, log_file in enumerate(log_files):
+            # For all files except the last one, don't follow
+            is_last_file = i == len(log_files) - 1
+            file_options = LogOptions(
+                tail=-1,
+                follow=options.follow if is_last_file else False,
+                stop_event=stop_event,
+            )
+            async for line in log_generator(str(log_file), file_options):
+                if stop_event and stop_event.is_set():
+                    logger.debug(
+                        "Historical log generator stopping due to stop event 2"
+                    )
+                    return
+                yield line
 
-                if isinstance(log_line, bytes):
-                    yield log_line.decode('utf-8', errors='replace')
-                else:
-                    yield str(log_line)
-        else:
-            # When follow=False, logs_workload returns a string or bytes
-            if isinstance(log_stream, bytes):
-                yield log_stream.decode('utf-8', errors='replace')
-            else:
-                yield str(log_stream)
 
-    except Exception as e:
-        cause = getattr(e, "__cause__", None)
-        cause_text = f": {cause}" if cause else ""
-        logger.error(
-            f"Failed to get container logs for {model_instance_name}: {e}{cause_text}"
+async def merged_log_generator(  # noqa: C901
+    log_paths: List[str],
+    options: LogOptions,
+    stop_event: Optional[asyncio.Event] = None,
+):
+    """Merge multiple log sources and yield lines as they become available.
+
+    Args:
+        log_paths: List of log file paths to read
+        options: Log options (tail, follow)
+        stop_event: Event to signal stopping
+
+    Yields:
+        Log lines from all sources in the order they become available
+    """
+    if not log_paths:
+        return
+
+    queues: List[asyncio.Queue] = []
+
+    async def read_to_queue(queue: asyncio.Queue, log_path: str, opts: LogOptions):
+        try:
+            async for line in log_generator(log_path, opts):
+                if stop_event and stop_event.is_set():
+                    return
+                await queue.put(("data", line))
+        except Exception as e:
+            logger.error(f"Error reading log {log_path}: {e}")
+            await queue.put(("error", str(e)))
+        finally:
+            await queue.put(None)  # Signal end of this source
+
+    # Create tasks for all log generators
+    tasks = []
+    for path in log_paths:
+        queue = asyncio.Queue()
+        queues.append(queue)
+        task = asyncio.create_task(read_to_queue(queue, path, options))
+        tasks.append(task)
+
+    get_tasks: Dict[asyncio.Task, asyncio.Queue] = {}
+    for q in queues:
+        task = asyncio.create_task(q.get())
+        get_tasks[task] = q
+
+    # Yield lines as they become available from any source
+    active_count = len(queues)
+    while active_count > 0:
+        if stop_event and stop_event.is_set():
+            # Cancel remaining tasks
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            break
+
+        # Wait for any queue to have data (with timeout to check stop_event periodically)
+        done, _ = await asyncio.wait(
+            get_tasks.keys(), return_when=asyncio.FIRST_COMPLETED, timeout=0.5
         )
 
+        # Check stop_event after timeout
+        if stop_event and stop_event.is_set():
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            break
 
-async def _stream_file_logs_preempt_to_container(
-    file_tasks,
-    options,
-    model_instance_name: str,
-):
-    """
-    Stream file logs (download + main) in follow mode until the container produces
-    its first log line, then preempt and switch to container logs.
-    """
-    preempt_event = asyncio.Event()
-    container_queue: asyncio.Queue = asyncio.Queue()
-
-    async def pump_container_logs():
-        first_item_emitted = False
-        try:
-            gen = await wait_for_container_generator(
-                model_instance_name,
-                options,
-                poll_interval=5,
-                timeout=envs.PROXY_TIMEOUT,
-            )
-            async for cline in gen:
-                if not first_item_emitted:
-                    first_item_emitted = True
-                    logger.info(f"Preempting file logs for {model_instance_name}")
-                    preempt_event.set()
-                await container_queue.put(cline)
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"Pump container logs timed out for {model_instance_name} after {envs.PROXY_TIMEOUT}s"
-            )
-        except Exception as e:
-            logger.error(f"Error streaming container logs: {e}")
-        finally:
-            await container_queue.put(None)
-
-    # Start container pumping concurrently
-    pump_task = asyncio.create_task(pump_container_logs())
-
-    try:
-        # Emit file logs until preempted
-        async for line in merge_async_generators(*file_tasks, stop_event=preempt_event):
-            yield line
-
-        # Now switch to container logs (if any)
-        logger.info(f"Switching to container logs for {model_instance_name}")
-        while True:
-            item = await container_queue.get()
-            if item is None:
-                break
-            yield item
-    finally:
-        # Cancel the container pump task
-        pump_task.cancel()
+        for future in done:
+            queue = get_tasks.pop(future)
+            try:
+                result = future.result()
+            except asyncio.CancelledError:
+                continue
+            if result is None:
+                active_count -= 1
+            else:
+                msg_type, content = result
+                if msg_type == "data":
+                    yield content
+                # error type is logged in read_to_queue, continue streaming
+                # Only recreate the task for the completed queue
+                new_task = asyncio.create_task(queue.get())
+                get_tasks[new_task] = queue
 
 
-async def _emit_file_then_container_logs(
-    file_tasks,
-    options,
-    container_ready: bool,
-    model_instance_name: str,
-):
-    """
-    Emit file logs first, then stream or snapshot container logs depending on options.follow.
-    """
-    if file_tasks:
-        async for line in merge_async_generators(*file_tasks):
-            yield line
-
-    try:
-        if options.follow:
-            gen = await wait_for_container_generator(
-                model_instance_name, options, timeout=envs.PROXY_TIMEOUT
-            )
-            async for line in gen:
-                yield line
-        else:
-            if container_ready:
-                async for line in container_log_generator(model_instance_name, options):
-                    yield line
-    except Exception as e:
-        logger.error(f"Failed to stream container logs: {e}")
-
-
-async def combined_log_generator(
-    main_log_path: str,
+async def combined_log_generator(  # noqa: C901
+    log_dir: Path | str,
+    model_instance_id: int,
     download_log_path: str,
     options: LogOptionsDep,
     model_instance_name: str,
-    file_log_exists: bool = True,
 ):
-    """Unified log streaming across three startup phases.
+    """Unified log streaming from three file sources.
 
-    Behavior:
-    1) main_log and download_log are interleaved and emitted first.
-       - If follow=True and container logs are not yet available, file logs are streamed in follow mode.
-       - When container logs produce the first line, file log streaming is preempted:
-         any already-ready file lines are flushed, then following is stopped and we switch to container logs.
+    Reads logs in order:
+    1) Download logs (if exists)
+    2) Historical main logs (all restart_count files)
+    3) Container logs (from persisted files)
 
-    2) If the request arrives after container logs are already available and follow=True:
-       - Emit main_log and download_log non-streaming (follow=False) first (respecting tail).
-       - Then stream container_log.
-
-    3) If follow=False:
-       - Emit file logs non-streaming.
-       - Emit container logs as a single snapshot (non-streaming) if available.
-
-    Additional notes:
-    - Container readiness is probed via logs_workload(name, tail=1, follow=False).
-    - Preemption only happens when file log merge is waiting for new content (no immediate line ready),
-      ensuring newly produced file lines are not discarded.
-    - If the workload isn't ready at request time, a background probe keeps checking and starts
-      streaming container logs once content becomes available, without requiring the client to reconnect.
-    - If neither file logs nor container logs are available, NotFoundException is raised.
+    Args:
+        log_dir: Directory containing log files (Path or str)
+        model_instance_id: Model instance ID
+        download_log_path: Path to download log file
+        options: Log options (tail, follow)
+        model_instance_name: Model instance name (unused, kept for API compatibility)
     """
+    log_dir = Path(log_dir)
 
-    # Phase 1: file logs (download + main) merged together
-    file_tasks = []
+    has_any_logs = False
+    main_log_files = []
 
-    # Decide how to handle file logs based on whether container logs are already available
-    file_options = options
-    container_ready = False
-    try:
-        # Quick probe: check if container logs have content available now
-        container_ready = is_container_logs_ready(model_instance_name)
+    # Phase 1+2: Download log + Main log (merged)
+    log_paths = []
 
-        # If the client requested follow but container logs are already available,
-        # emit file logs non-streaming first, then stream container logs.
-        if options and options.follow and container_ready:
-            file_options = LogOptions(tail=options.tail, follow=False)
-    except Exception:
-        file_options = options
+    # Add download log if exists (or wait for it in follow mode)
+    if download_log_path:
+        if await asyncio.to_thread(lambda: Path(download_log_path).exists()):
+            log_paths.append(download_log_path)
+            has_any_logs = True
+        elif options.follow:
+            # Wait for download log file to appear
+            try:
 
-    # Add download log if needed and file exists
-    if download_log_path and Path(download_log_path).exists():
-        file_tasks.append(log_generator(download_log_path, file_options))
+                async def check_download_log():
+                    if not await asyncio.to_thread(Path(download_log_path).exists):
+                        raise FileNotFoundError(
+                            f"Download log file not found: {download_log_path}"
+                        )
+                    return download_log_path
 
-    if file_log_exists:
-        file_tasks.append(log_generator(main_log_path, file_options))
+                download_log_path = await file.check_with_retries(
+                    check_download_log, timeout=300
+                )
+                log_paths.append(download_log_path)
+                has_any_logs = True
+                logger.debug(
+                    f"Phase 1+2: Found download log after waiting: {download_log_path}"
+                )
+            except RetryError:
+                download_log_path = ""
 
-    # Prepare container logs (Phase 2)
-    if (
-        not file_tasks and not container_ready
-    ):  # No download/main logs and no container logs
-        raise NotFoundException(message="Log file not found")
+    # Get main log files
+    main_log_files = await get_all_log_files(
+        log_dir, model_instance_id, restart_count=options.restart_count
+    )
+    logger.debug(
+        f"Phase 1+2: Found main log files for model instance {model_instance_id}: {main_log_files}"
+    )
 
-    # If following and container not yet ready, allow interleaved streaming of file logs,
-    # but preempt as soon as container produces any output.
-    if options and options.follow and not container_ready and file_tasks:
-        async for line in _stream_file_logs_preempt_to_container(
-            file_tasks, options, model_instance_name
+    # If no main log files found but in follow mode, wait for them to appear
+    if not main_log_files and options.follow:
+        try:
+
+            async def check_main_logs():
+                files = await get_all_log_files(log_dir, model_instance_id)
+                if not files:
+                    raise FileNotFoundError(
+                        f"Log files not found for model instance {model_instance_id}"
+                    )
+                return files
+
+            main_log_files = await file.check_with_retries(check_main_logs, timeout=300)
+            logger.debug(
+                f"Phase 1+2: Found main log files after waiting: {main_log_files}"
+            )
+        except RetryError:
+            main_log_files = []
+
+    # Add main log files to merge list (skip download log when restart_count is specified)
+    if main_log_files and options.restart_count is None:
+        for f in main_log_files:
+            log_paths.append(str(f))
+        has_any_logs = True
+
+    # Check if container logs exist and have actual content
+    container_log_files = await get_all_log_files(
+        log_dir, model_instance_id, container=True, restart_count=options.restart_count
+    )
+
+    # Only stop following main log when container log has actual content
+    # (not just an empty file created during image download)
+    container_log_seen_with_content = False
+    if container_log_files:
+        for f in container_log_files:
+            if await has_log_content(f):
+                container_log_seen_with_content = True
+                break
+    logger.debug(
+        f"Phase 1+2: Container log files for model instance {model_instance_id}: {container_log_files}, has_content={container_log_seen_with_content}"
+    )
+
+    # Use merged log generator if we have log paths
+    if log_paths:
+        # Create stop event for switching from main log to container log
+        stop_event = asyncio.Event()
+
+        async def monitor_container_log():
+            """Monitor container log files for new content using has_log_content."""
+            logger.debug(
+                "Phase 1+2: Starting background task to monitor container logs for content"
+            )
+            check_interval = 1
+            while not stop_event.is_set():
+                await asyncio.sleep(check_interval)
+
+                # Get current container log files
+                current_container_files = await get_all_log_files(
+                    log_dir,
+                    model_instance_id,
+                    container=True,
+                    restart_count=options.restart_count,
+                )
+
+                # Check if any container log file now has content (was empty before)
+                current_has_content = False
+                if current_container_files:
+                    for f in current_container_files:
+                        if await has_log_content(f):
+                            current_has_content = True
+                            break
+
+                # Detect transition from no content to has content
+                if current_has_content and not container_log_seen_with_content:
+                    logger.debug(
+                        "Phase 1+2: Container log now has content, stopping main log follow"
+                    )
+                    stop_event.set()
+                    return
+
+        # Start background monitoring task when in follow mode and no initial content
+        monitor_task = None
+        if not container_log_seen_with_content and options.follow:
+            monitor_task = asyncio.create_task(monitor_container_log())
+
+        if container_log_seen_with_content or not options.follow:
+            merge_options = LogOptions(tail=-1, follow=False)
+        else:
+            merge_options = options
+
+        logger.debug(f"Phase 1+2: Streaming merged logs with options: {merge_options}")
+
+        try:
+            async for line in merged_log_generator(
+                log_paths, merge_options, stop_event
+            ):
+                yield line
+        finally:
+            # Cancel the monitoring task when done
+            if monitor_task and not monitor_task.done():
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except asyncio.CancelledError:
+                    pass
+
+    # Phase 3: Container logs (from persisted files)
+    container_log_files = await get_all_log_files(
+        log_dir, model_instance_id, container=True, restart_count=options.restart_count
+    )
+    logger.debug(
+        f"Phase 3: Checking for container log files for model instance {model_instance_id}: {container_log_files}"
+    )
+
+    # If no container logs found but in follow mode, wait for them to appear
+    if not container_log_files and options.follow:
+        if main_log_files:
+            # Extract restart count from the latest main log file
+            latest_main_log = main_log_files[-1]
+            expected_restart_count = extract_restart_count(latest_main_log.name)
+            expected_file = (
+                log_dir / f"{model_instance_id}.container.{expected_restart_count}.log"
+            )
+
+            # Wait for container log file to appear (30s timeout)
+            try:
+
+                async def check_container_log():
+                    if not await asyncio.to_thread(expected_file.exists):
+                        raise FileNotFoundError(
+                            f"Container log file not found: {expected_file}"
+                        )
+                    return expected_file
+
+                await file.check_with_retries(check_container_log, timeout=300)
+                container_log_files = [expected_file]
+                logger.debug(
+                    f"Phase 3: Found container log after waiting: {expected_file}"
+                )
+            except RetryError:
+                container_log_files = []
+
+    # Stream container logs if available
+    if container_log_files:
+        has_any_logs = True
+        async for line in historical_log_generator(
+            log_dir, model_instance_id, options, container=True
         ):
             yield line
-        return
 
-    # Default behavior: emit file logs first (non-follow if configured), then container logs
-    async for line in _emit_file_then_container_logs(
-        file_tasks, options, container_ready, model_instance_name
-    ):
-        yield line
+    if not has_any_logs:
+        raise NotFoundException(message="Log file not found")
 
 
 @router.get("/serveLogs/{id}")
@@ -388,34 +470,22 @@ async def get_serve_logs(
     model_file_id: Optional[int] = Query(default=None),
 ):
     log_dir = request.app.state.config.log_dir
-    main_log_path = Path(log_dir) / "serve" / f"{id}.log"
+    serve_log_dir = Path(log_dir) / "serve"
 
     download_log_path = ""
     # Use model file ID for shared download logs if provided
     if model_file_id is not None:
-        download_log_path = (
-            Path(log_dir) / "serve" / f"model_file_{model_file_id}.download.log"
+        download_log_path = str(
+            serve_log_dir / f"model_file_{model_file_id}.download.log"
         )
 
-    # Check if log file exists for file-based backends
-    # For custom backends, we'll try container logs first
-    try:
-        file.check_file_with_retries(main_log_path)
-        file_log_exists = True
-    except (FileNotFoundError, RetryError):
-        file_log_exists = False
-
-    if log_options.follow:
-        file_log_exists = True
-
-    # show_download_logs parameter is passed from server based on model instance state
     return StreamingResponse(
         combined_log_generator(
-            str(main_log_path),
-            str(download_log_path),
+            serve_log_dir,
+            id,
+            download_log_path,
             log_options,
             model_instance_name,
-            file_log_exists,
         ),
         media_type="application/octet-stream",
     )
@@ -432,19 +502,12 @@ async def get_benchmark_logs(
     log_dir = request.app.state.config.log_dir
     main_log_path = Path(log_dir) / "benchmarks" / f"{id}.log"
 
-    try:
-        file.check_file_with_retries(main_log_path)
-        file_log_exists = True
-    except (FileNotFoundError, RetryError):
-        file_log_exists = False
-
     return StreamingResponse(
         combined_log_generator(
             str(main_log_path),
             "",
             log_options,
             benchmark_name,
-            file_log_exists,
         ),
         media_type="application/octet-stream",
     )
