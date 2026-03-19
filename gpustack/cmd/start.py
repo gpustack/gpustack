@@ -619,7 +619,8 @@ def run(args: argparse.Namespace):
         else:
             run_server(cfg)
     except Exception as e:
-        logger.fatal(e)
+        logger.exception(e)
+        sys.exit(1)
 
 
 def run_server(cfg: Config):
@@ -633,9 +634,8 @@ def run_server(cfg: Config):
         asyncio.run(server.start())
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
-    except Exception as e:
-        logger.exception(f"Error running server: {e}")
-        # logger.error(f"Error running server: {e}")
+    except Exception:
+        raise
     finally:
         logger.info("Server has shut down.")
 

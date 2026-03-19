@@ -308,6 +308,17 @@ class Server:
 
         logger.debug("Update checker started.")
 
+    async def _monitor_sub_processes(self):
+        while self._sub_processes:
+            for process in self._sub_processes[:]:
+                if not process.is_alive():
+                    if process.exitcode != 0:
+                        raise RuntimeError(
+                            f"Sub process {process.name} died with exit code {process.exitcode}"
+                        )
+                    self._sub_processes.remove(process)
+            await asyncio.sleep(5)
+
     def _start_sub_processes(self):
         async def start_process_after_api_ready():
             api_url = f"http://127.0.0.1:{self._config.api_port}/healthz"
@@ -325,6 +336,7 @@ class Server:
 
             for process in self._sub_processes:
                 process.start()
+            await self._monitor_sub_processes()
 
         if len(self._sub_processes) == 0:
             return
