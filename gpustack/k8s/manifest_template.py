@@ -19,7 +19,7 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
         def b64encode(value):
             return base64.b64encode(value.encode("utf-8")).decode("utf-8")
 
-        def to_yaml(value, indent=0):
+        def to_yaml(value):
             if hasattr(value, "model_dump"):
                 value = value.model_dump(by_alias=True, exclude_none=True)
             elif isinstance(value, list):
@@ -36,7 +36,7 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
             if dumped.endswith("...\n"):
                 dumped = dumped[:-4]
 
-            return dumped.replace("\n", "\n" + " " * indent).strip()
+            return dumped.strip()
 
         with pkg_resources.path("gpustack.k8s", "manifests.jinja") as manifest_path:
             with manifest_path.open(encoding="utf-8") as f:

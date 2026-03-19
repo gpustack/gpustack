@@ -119,7 +119,12 @@ class K8sVolumeMount(BaseModel):
     volume_source: Optional[VolumeSource] = PydanticField(
         default=None,
         alias="volumeSource",
-        description='Kubernetes VolumeSource definition. e.g., `{"hostPath": {"path": "/data", "type": "Directory"}}`',
+        description=(
+            "Kubernetes VolumeSource definition. Examples:\n"
+            '- hostPath: `{"hostPath": {"path": "/data", "type": "Directory"}}`\n'
+            '- persistentVolumeClaim: `{"persistentVolumeClaim": {"claimName": "my-pvc"}}`\n'
+            '- configMap: `{"configMap": {"name": "my-configmap"}}`'
+        ),
     )
 
     @field_validator("name")

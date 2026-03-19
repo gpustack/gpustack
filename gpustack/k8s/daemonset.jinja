@@ -233,7 +233,7 @@ spec:
         {%- if config.k8s_volume_mounts %}
         {%- for vm in config.k8s_volume_mounts %}
         - name: {{ vm.name | to_yaml }}
-          {{ vm.volume_source | to_yaml(indent=10) }}
+          {{ vm.volume_source | to_yaml | indent(10) }}
         {%- endfor %}
         {%- endif %}
       hostNetwork: true
