@@ -50,6 +50,8 @@ from gpustack.schemas.config import (
 )
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.server.services import WorkerService
+from gpustack import __version__
+from gpustack.utils.version import is_worker_version_compatible
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
 
@@ -67,6 +69,17 @@ def to_worker_public(input: Worker, me: bool) -> WorkerPublic:
     data = input.model_dump()
     if me:
         data['me'] = me
+
+    # Check version compatibility
+    worker_version = data.get('worker_version')
+    if worker_version and worker_version != '0.0.0':
+        is_compatible = is_worker_version_compatible(worker_version, __version__)
+        if not is_compatible:
+            data['version_warning'] = (
+                f"Version mismatch detected: worker {worker_version}, server {__version__}. "
+                f"Please upgrade your worker."
+            )
+
     return WorkerPublic.model_validate(data)
 
 

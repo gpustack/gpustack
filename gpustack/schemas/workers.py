@@ -327,6 +327,9 @@ class WorkerCreate(WorkerStatusStored, WorkerUpdate):
     external_id: Optional[str] = Field(
         default=None, sa_column=Column(String(255), nullable=True)
     )
+    worker_version: Optional[str] = Field(
+        default=None, sa_column=Column(String(100), nullable=True)
+    )
 
 
 class WorkerBase(WorkerCreate):
@@ -470,6 +473,9 @@ class WorkerPublic(
     updated_at: datetime
     me: Optional[bool] = None  # Indicates if the worker is the current worker
     provision_progress: Optional[str] = None  # Indicates the provisioning progress
+    version_warning: Optional[str] = (
+        None  # Version mismatch warning, computed at runtime
+    )
 
     worker_uuid: Optional[str] = Field(default=None, exclude=True)
     machine_id: Optional[str] = Field(default=None, exclude=True)
