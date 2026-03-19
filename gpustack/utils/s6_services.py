@@ -88,15 +88,6 @@ observability_services = S6Services(
 )
 
 
-def all_dependent_services() -> List[str]:
-    return [
-        *gateway_services.dep_services,
-        *postgres_services.dep_services,
-        *migration_services.dep_services,
-        *observability_services.dep_services,
-    ]
-
-
 def all_services() -> List[str]:
     return [
         *gateway_services.all_services(),
