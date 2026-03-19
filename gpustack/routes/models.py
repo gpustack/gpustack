@@ -17,7 +17,7 @@ from gpustack.api.exceptions import (
     BadRequestException,
 )
 from gpustack.schemas.common import Pagination
-from gpustack.schemas.inference_backend import is_custom_backend
+from gpustack.schemas.inference_backend import is_custom_backend, is_built_in_backend
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
@@ -229,6 +229,13 @@ async def validate_model_in(
     if model_in.gpu_selector is not None and model_in.replicas > 0:
         await validate_gpu_ids(session, model_in, cluster_id=cluster_id)
 
+    if (
+        not is_built_in_backend(model_in.backend)
+        or model_in.backend == BackendEnum.CUSTOM.value
+    ):
+        logger.info("Skip model validation for custom backend")
+        return
+
     if model_in.backend_parameters:
         param_gpu_layers = find_parameter(
             model_in.backend_parameters, ["ngl", "gpu-layers", "n-gpu-layers"]
@@ -254,12 +261,34 @@ async def validate_model_in(
                     message="Cannot set --gpu-layers to 0 and manually select GPUs at the same time. Setting --gpu-layers to 0 means running on CPU only."
                 )
 
-        param_port = find_parameter(model_in.backend_parameters, ["port"])
+        unsupported_params = [
+            (
+                ["port"],
+                (
+                    "Setting the port using --port is not supported. Ports are "
+                    "automatically allocated by GPUStack."
+                ),
+            ),
+            (
+                ["api-key"],
+                (
+                    "Setting the API key using --api-key is not supported. API keys "
+                    "are managed by GPUStack."
+                ),
+            ),
+            (
+                ["served-model-name"],
+                (
+                    "Setting the served model name using --served-model-name is not "
+                    "supported. The model name is automatically set from your "
+                    "deployment configuration."
+                ),
+            ),
+        ]
 
-        if param_port:
-            raise BadRequestException(
-                message="Setting the port using --port is not supported."
-            )
+        for param_names, error_message in unsupported_params:
+            if find_parameter(model_in.backend_parameters, param_names):
+                raise BadRequestException(message=error_message)
 
 
 async def validate_gpu_ids(  # noqa: C901
