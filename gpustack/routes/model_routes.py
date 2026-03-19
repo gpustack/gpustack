@@ -198,7 +198,7 @@ async def update_model_route(
         )
     existing_name = existing.name
     input_name = input.name
-    input_data = input.model_dump(exclude={"targets"})
+    input_data = input.model_dump(exclude={"targets"}, include=input.model_fields_set)
     try:
         if input.targets is not None or input.name != existing.name:
             target_count, _ = await batch_handle_targets(
