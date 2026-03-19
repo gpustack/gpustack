@@ -131,13 +131,16 @@ class K8sVolumeMount(BaseModel):
     def validate_name(cls, v):
         if not v:
             return v
-        if len(v) > 60:
-            raise ValueError("Volume name too long, max 60 characters")
-        allowed_chars = set(
-            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-."
-        )
-        if not all(c in allowed_chars for c in v):
-            raise ValueError("Volume name contains invalid characters")
+        if len(v) > 63:
+            raise ValueError("Volume name must be less than 64 characters")
+        import re
+
+        if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", v):
+            raise ValueError(
+                "Volume name must be a valid DNS-1123 label (e.g. 'my-name', or '123-abc'); "
+                "it must consist of lower case alphanumeric characters or '-', "
+                "and must start and end with an alphanumeric character."
+            )
         return v
 
 
