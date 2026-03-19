@@ -59,12 +59,26 @@ if [ ! -s "$PGDATA/PG_VERSION" ]; then
 	gosu postgres initdb -D "$PGDATA" > /dev/null
 fi
 gosu postgres pg_ctl -s -D "$PGDATA" -o "-c listen_addresses='localhost' -c port='$EMBEDDED_DATABASE_PORT'" -w start > /dev/null
-if ! gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -tAc "SELECT 1 FROM pg_roles WHERE rolname='root'" | grep -q 1; then
+if ! gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -tAc "SELECT 1 FROM pg_roles WHERE rolname='root'" 2>/dev/null | grep -q 1; then
     gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -q --command "CREATE USER root WITH PASSWORD '$ROOT_PASS';" > /dev/null
 fi
-if ! gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -tAc "SELECT 1 FROM pg_database WHERE datname='gpustack'" | grep -q 1; then
+if ! gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -tAc "SELECT 1 FROM pg_database WHERE datname='gpustack'" 2>/dev/null | grep -q 1; then
     gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -q --command "CREATE DATABASE gpustack OWNER root;" > /dev/null
 fi
+## correct collation version
+PG_COLLATION_QUERY="SELECT datname, datcollversion AS recorded_version, pg_database_collation_actual_version(oid) AS actual_version FROM pg_database WHERE datcollversion IS NOT NULL;"
+gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -c "$PG_COLLATION_QUERY" 2>/dev/null
+while IFS='|' read -r DBNAME RECORDED_VERSION ACTUAL_VERSION; do
+    if [ -z "$DBNAME" ]; then continue; fi
+    if [ "$RECORDED_VERSION" != "$ACTUAL_VERSION" ]; then
+        echo "[INFO]     Altering Postgres collation version for database '$DBNAME' from '$RECORDED_VERSION' to '$ACTUAL_VERSION'."
+        echo "[INFO]         - Reindexing all indexes for database '$DBNAME' (!!! THIS MAY TAKE A LONG TIME, DO NOT INTERRUPT !!!)."
+        gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -d "$DBNAME" -tAc "REINDEX DATABASE \"$DBNAME\";" >/dev/null 2>&1
+        echo "[INFO]         - Updating recorded collation version for database '$DBNAME'."
+        gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -d "$DBNAME" -tAc "ALTER DATABASE \"$DBNAME\" REFRESH COLLATION VERSION;" >/dev/null 2>&1
+        echo "[INFO]     Altered Postgres collation version for database '$DBNAME' to '$ACTUAL_VERSION'."
+    fi
+done <<< "$(gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -tAc "$PG_COLLATION_QUERY" 2>/dev/null)"
 gosu postgres pg_ctl -p "$EMBEDDED_DATABASE_PORT" -s -D "$PGDATA" -m fast -w stop > /dev/null
 
 # Start Postgres
