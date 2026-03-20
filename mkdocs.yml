@@ -139,6 +139,7 @@ nav:
           - Integrate with CherryStudio: integrations/integrate-with-cherrystudio.md
           - Integrate with OpenClaw: integrations/integrate-with-openclaw.md
           - Integrate with n8n: integrations/integrate-with-n8n.md
+          - Integrate with MaxKB: integrations/integrate-with-maxkb.md
       - Architecture: architecture.md
       - Scheduler: scheduler.md
       - Troubleshooting: troubleshooting.md
