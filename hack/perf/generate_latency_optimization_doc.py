@@ -35,6 +35,7 @@ from perf_doc_common import (
     render_record_section,
     render_result_image,
     render_setup_list,
+    render_open_source_replacement,
     render_standard_note_block,
 )
 
@@ -307,6 +308,8 @@ def generate_latency_markdown(
         sections.extend(
             render_profile_config(profile_name, profile_configs.get(profile_name))
         )
+
+    sections.extend(render_open_source_replacement(profile_configs))
 
     sections.extend(
         [
