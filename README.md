@@ -29,36 +29,12 @@
 
 ## Overview
 
-GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment. It lets you run models efficiently on your own GPU hardware by choosing the best inference engines, scheduling GPU resources, analyzing model architectures, and automatically configuring deployment parameters.
-
-The following figure shows how GPUStack delivers improved inference throughput over the unoptimized vLLM baseline:
-
-![a100-throughput-comparison](docs/assets/a100-throughput-comparison.png)
-
-For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
-
-## Tested Inference Engines, GPUs, and Models
-
-GPUStack uses a plug-in architecture that makes it easy to add new AI models, inference engines, and GPU hardware. We work closely with partners and the open-source community to test and optimize emerging models across different inference engines and GPUs. Below is the current list of supported inference engines, GPUs, and models, which will continue to expand over time.
-
-**Tested Inference Engines:**
-- vLLM
-- SGLang
-- TensorRT-LLM
-- MindIE
-
-**Tested GPUs:**
-- NVIDIA A100
-- NVIDIA H100/H200
-- Ascend 910B
-
-**Tuned Models:**
-- Qwen3
-- gpt-oss
-- GLM-4.5-Air
-- GLM-4.x
-- DeepSeek-R1
-- DeepSeek-V3.2
+GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment. It configures and orchestrates inference engines — vLLM, SGLang, TensorRT-LLM, or your own — to optimize performance across GPU clusters. Its core features include:
+- **Multi-Cluster GPU Management.** Manages GPU clusters across multiple environments. This includes on-premises servers, Kubernetes clusters, and cloud providers.
+- **Pluggable Inference Engines.** Automatically configures high-performance inference engines such as vLLM, SGLang, and TensorRT-LLM. You can also add custom inference engines as needed.
+- **Day 0 Model Support.** GPUStack's pluggable engine architecture enables you to deploy new models on the day they are released.
+- **Performance-Optimized Configurations.** Offers pre-tuned modes for low latency or high throughput. GPUStack supports extended KV cache systems like LMCache and HiCache to reduce TTFT. It also includes built-in support for speculative decoding methods such as EAGLE3, MTP, and N-grams.
+- **Enterprise-Grade Operations.** Offers support for automated failure recovery, load balancing, monitoring, authentication, and access control.
 
 ## Architecture
 
@@ -68,11 +44,13 @@ The figure below illustrates how a single GPUStack server can manage multiple GP
 
 ![gpustack-v2-architecture](docs/assets/gpustack-v2-architecture.png)
 
-GPUStack provides a powerful framework for deploying AI models. Its core features include:
-- **Multi-Cluster GPU Management.** Manages GPU clusters across multiple environments. This includes on-premises servers, Kubernetes clusters, and cloud providers.
-- **Pluggable Inference Engines.** Automatically configures high-performance inference engines such as vLLM, SGLang, and TensorRT-LLM. You can also add custom inference engines as needed.
-- **Performance-Optimized Configurations.** Offers pre-tuned modes for low latency or high throughput. GPUStack supports extended KV cache systems like LMCache and HiCache to reduce TTFT. It also includes built-in support for speculative decoding methods such as EAGLE3, MTP, and N-grams.
-- **Enterprise-Grade Operations.** Offers support for automated failure recovery, load balancing, monitoring, authentication, and access control.
+## Optimized Inference Performance
+
+GPUStack's automated engine selection and parameter optimization deliver strong inference performance out of the box. The following figure shows throughput improvements over default vLLM configurations:
+
+![a100-throughput-comparison](docs/assets/a100-throughput-comparison.png)
+
+For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
 
 ## Quick Start
 
