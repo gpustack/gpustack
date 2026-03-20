@@ -8,12 +8,14 @@ import requests
 import setproctitle
 import os
 from typing import Dict, Optional, Set, List, Callable
+from pathlib import Path
 import logging
 
 from gpustack_runtime.deployer import (
     get_workload,
     WorkloadStatusStateEnum,
     delete_workload,
+    logs_workload,
 )
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
@@ -24,7 +26,7 @@ from gpustack.logging import (
     RedirectStdoutStderr,
 )
 from gpustack.schemas.inference_backend import InferenceBackend, is_built_in_backend
-from gpustack.utils import network, platform
+from gpustack.utils import network
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.command import find_int_parameter
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
@@ -96,6 +98,16 @@ class ServeManager:
     The mapping of model instance ID to provisioning (sub)process.
     When the (sub)process is alive, the model instance is provisioning.
     If the (sub)process exited, the model instance is either running or failed.
+    """
+    _log_persistence_threads: Dict[int, threading.Thread] = {}
+    """
+    The mapping of model instance ID to log persistence thread.
+    Used to track and clean up threads on model instance restart/stop.
+    """
+    _log_persistence_stop_events: Dict[int, threading.Event] = {}
+    """
+    The mapping of model instance ID to stop event for log persistence thread.
+    Used to signal threads to stop gracefully.
     """
     _error_model_instances: Dict[int, ModelInstance] = {}
     """
@@ -557,6 +569,211 @@ class ServeManager:
             self._start_model_instance(mi)
             logger.trace(f"CREATED event: started created model instance {mi.name}.")
 
+    def _get_numbered_log_path(self, mi: ModelInstance) -> str:
+        """Get log file path with restart count.
+
+        Args:
+            mi: The model instance.
+
+        Returns:
+            Log file path with format: {log_dir}/{model_instance_id}.{restart_count}.log
+        """
+        restart_count = mi.restart_count or 0
+        return f"{self._serve_log_dir}/{mi.id}.{restart_count}.log"
+
+    def _persist_container_logs(
+        self, workload_name: str, log_path: str, stop_event: threading.Event
+    ):
+        """Persist container logs to local file.
+
+        This is a blocking operation that runs in a separate thread.
+        Retries indefinitely until container is created.
+
+        Args:
+            workload_name: Name of the container workload
+            log_path: Path to save container logs
+            stop_event: Event to signal thread to stop
+        """
+        retry_count = 0
+
+        while not stop_event.is_set():
+            try:
+                log_stream = logs_workload(
+                    name=workload_name,
+                    tail=-1,
+                    follow=True,
+                )
+
+                if hasattr(log_stream, '__iter__'):
+                    with open(log_path, 'w', buffering=1, encoding='utf-8') as f:
+                        for line in log_stream:
+                            if stop_event.is_set():
+                                break
+
+                            if isinstance(line, bytes):
+                                f.write(line.decode('utf-8', errors='replace'))
+                            else:
+                                f.write(str(line))
+                            f.flush()
+
+                break
+
+            except Exception as e:
+                if stop_event.is_set():
+                    break
+                retry_count += 1
+                logger.debug(
+                    f"Container not ready for {workload_name}, retrying "
+                    f"(attempt {retry_count}): {e}"
+                )
+                stop_event.wait(timeout=2)
+
+        logger.debug(f"Log persistence thread for {workload_name} exiting")
+
+    def _start_container_log_persistence(self, mi: ModelInstance):
+        """Start background thread to persist container logs.
+
+        Creates a daemon thread with a stop event for graceful shutdown.
+        Tracks the thread to allow cleanup on model instance restart/stop.
+
+        Args:
+            mi: The model instance.
+        """
+
+        # Stop and clean up existing thread if any
+        self._stop_container_log_persistence(mi.id)
+
+        restart_count = mi.restart_count or 0
+        container_log_path = (
+            f"{self._serve_log_dir}/{mi.id}.container.{restart_count}.log"
+        )
+
+        # Create stop event for this thread
+        stop_event = threading.Event()
+        self._log_persistence_stop_events[mi.id] = stop_event
+
+        # Create daemon thread for log persistence
+        thread = threading.Thread(
+            target=self._persist_container_logs,
+            args=(mi.name, container_log_path, stop_event),
+            daemon=True,
+            name=f"log-persist-{mi.name}",
+        )
+        thread.start()
+        self._log_persistence_threads[mi.id] = thread
+        logger.debug(f"Started container log persistence thread for {mi.name}")
+
+    def _stop_container_log_persistence(
+        self, model_instance_id: int, timeout: float = 2.0
+    ):
+        """Stop container log persistence thread for a model instance.
+
+        Args:
+            model_instance_id: The model instance ID
+            timeout: Maximum time to wait for thread to stop (seconds)
+        """
+        # Signal thread to stop
+        stop_event = self._log_persistence_stop_events.pop(model_instance_id, None)
+        if stop_event:
+            stop_event.set()
+
+        # Wait for thread to finish
+        thread = self._log_persistence_threads.pop(model_instance_id, None)
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                logger.warning(
+                    f"Log persistence thread for model instance {model_instance_id} "
+                    f"did not stop within {timeout}s"
+                )
+
+    def _cleanup_old_logs(self, model_instance_id: int, max_files: int = 10):
+        """Clean up old log files based on rotation policy.
+
+        Always preserves the first log files (restart_count=0) for both main and container logs.
+
+        Args:
+            model_instance_id: Model instance ID
+            max_files: Maximum number of log files to keep per type (default: 10)
+        """
+        try:
+            log_dir = Path(self._serve_log_dir)
+
+            # Separate main logs and container logs
+            main_log_pattern = f"{model_instance_id}.*.log"
+            all_main_logs = [
+                f for f in log_dir.glob(main_log_pattern) if '.container.' not in f.name
+            ]
+
+            container_log_pattern = f"{model_instance_id}.container.*.log"
+            all_container_logs = list(log_dir.glob(container_log_pattern))
+
+            # Process main logs
+            self._cleanup_log_type(all_main_logs, model_instance_id, max_files, "main")
+
+            # Process container logs
+            self._cleanup_log_type(
+                all_container_logs, model_instance_id, max_files, "container"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup old logs for {model_instance_id}: {e}")
+
+    def _cleanup_log_type(
+        self,
+        log_files: List[Path],
+        model_instance_id: int,
+        max_files: int,
+        log_type: str,
+    ):
+        """Clean up logs of a specific type while preserving the first log.
+
+        Args:
+            log_files: List of log files to process
+            model_instance_id: Model instance ID
+            max_files: Maximum number of files to keep
+            log_type: Type of logs ('main' or 'container')
+        """
+
+        if len(log_files) <= max_files:
+            return
+
+        # Identify the first log file (restart_count=0)
+        first_log = None
+        other_logs = []
+
+        for f in log_files:
+            if log_type == "main":
+                if f.name == f"{model_instance_id}.0.log":
+                    first_log = f
+                else:
+                    other_logs.append(f)
+            else:
+                if f.name == f"{model_instance_id}.container.0.log":
+                    first_log = f
+                else:
+                    other_logs.append(f)
+
+        # If we have a first log, it's protected
+        if first_log:
+            available_slots = max_files - 1
+        else:
+            available_slots = max_files
+
+        if len(other_logs) <= available_slots:
+            return
+
+        # Sort other logs by modification time, delete oldest
+        sorted_other_logs = sorted(other_logs, key=lambda f: f.stat().st_mtime)
+        files_to_delete = sorted_other_logs[: len(other_logs) - available_slots]
+
+        for f in files_to_delete:
+            try:
+                f.unlink()
+                logger.info(f"Deleted old {log_type} log file: {f}")
+            except Exception as e:
+                logger.warning(f"Failed to delete {log_type} log file {f}: {e}")
+
     def _start_model_instance(self, mi: ModelInstance):  # noqa: C901
         """
         Start model instance through a subprocess.
@@ -569,13 +786,12 @@ class ServeManager:
             logger.warning(f"Model instance {mi.name} is provisioning. Skipping start.")
             return
 
+        # Clean up old log files before starting
+        self._cleanup_old_logs(mi.id)
+
         is_main_worker = mi.worker_id == self._worker_id
 
-        log_file_path = f"{self._serve_log_dir}/{mi.id}.log"
-        if os.path.exists(log_file_path) and platform.system() != "windows":
-            # TODO Windows does not support os.remove() on open files.
-            # Investigate file occupation issue.
-            os.remove(log_file_path)
+        log_file_path = self._get_numbered_log_path(mi)
 
         sw_pos: Optional[int] = None
         sw: Optional[ModelInstanceSubordinateWorker] = None
@@ -624,6 +840,9 @@ class ServeManager:
             process.daemon = False
             process.start()
             self._provisioning_processes[mi.id] = process
+
+            # Start container log persistence for containerized backends
+            self._start_container_log_persistence(mi)
 
             # Get patch dict for main worker.
             if is_main_worker:
@@ -808,6 +1027,9 @@ class ServeManager:
         """
 
         logger.debug(f"Stopping model instance {mi.name or mi.id}")
+
+        # Stop container log persistence thread
+        self._stop_container_log_persistence(mi.id)
 
         # Teardown provisioning process if still alive.
         if self._is_provisioning(mi):

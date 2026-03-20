@@ -138,6 +138,16 @@ async def get_serving_logs(  # noqa: C901
     request: Request, session: SessionDep, id: int, log_options: LogOptionsDep
 ):
     model_instance = await fetch_model_instance(session, id)
+
+    # Validate restart_count
+    if log_options.restart_count is not None:
+        current_restart_count = model_instance.restart_count or 0
+        if log_options.restart_count > current_restart_count:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid restart_count: {log_options.restart_count}. Current restart_count is {current_restart_count}.",
+            )
+
     worker = await fetch_worker(session, model_instance.worker_id)
 
     model_instance_log_url = (

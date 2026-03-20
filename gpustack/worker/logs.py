@@ -2,7 +2,7 @@ import asyncio
 from dataclasses import dataclass
 import os
 import logging
-from typing import Annotated
+from typing import Annotated, Optional
 
 import aiofiles
 from aiofiles.threadpool.text import AsyncTextIOWrapper
@@ -16,22 +16,31 @@ logger = logging.getLogger(__name__)
 class LogOptions:
     tail: int = -1  # -1 by default means read all logs
     follow: bool = False
+    stop_event: Optional[asyncio.Event] = None
+    restart_count: Optional[int] = None  # None means all historical logs
 
     def url_encode(self):
-        return f"tail={self.tail}&follow={self.follow}"
+        params = f"tail={self.tail}&follow={self.follow}"
+        if self.restart_count is not None:
+            params += f"&restart_count={self.restart_count}"
+        return params
 
 
 default_tail = Query(
     default=-1, description="Number of lines to read from the end of the log"
 )
 default_follow = Query(default=False, description="Whether to follow the log output")
+default_restart_count = Query(
+    default=None, description="Specific restart count to fetch logs from"
+)
 
 
 def get_log_options(
     tail: int = default_tail,
     follow: bool = default_follow,
+    restart_count: Optional[int] = default_restart_count,
 ) -> LogOptions:
-    return LogOptions(tail=tail, follow=follow)
+    return LogOptions(tail=tail, follow=follow, restart_count=restart_count)
 
 
 LogOptionsDep = Annotated[LogOptions, Depends(get_log_options)]
@@ -64,7 +73,7 @@ async def log_generator(path: str, options: LogOptions):
                     yield line
 
             if options.follow:
-                async for line in follow_file(file):
+                async for line in follow_file(file, options.stop_event):
                     yield line
     except Exception as e:
         logger.error(f"Failed to read logs from {path}. {e}")
@@ -79,9 +88,13 @@ async def read_all_lines(file: AsyncTextIOWrapper):
         yield line
 
 
-async def follow_file(file: AsyncTextIOWrapper):
+async def follow_file(
+    file: AsyncTextIOWrapper, stop_event: Optional[asyncio.Event] = None
+):
     """Follow the file and yield new lines as they are written."""
     while True:
+        if stop_event and stop_event.is_set():
+            return
         line = await file.readline()
         if not line:
             await asyncio.sleep(0.1)  # wait before retrying
