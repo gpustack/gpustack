@@ -49,8 +49,12 @@ from gpustack.schemas.models import (
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
+from gpustack import envs
 
 logger = logging.getLogger(__name__)
+
+# Inference health check error message
+_INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
 
 # Global lock for port assignment to avoid pickle serialization issues
 _port_lock = threading.Lock()
@@ -125,6 +129,10 @@ class ServeManager:
 
         # Instance-level port tracking to avoid conflicts
         self._assigned_ports: Dict[int, Set[int]] = {}
+
+        # Inference health check failure tracking
+        # {model_instance_id: failure_count}
+        self._inference_health_check_failures: Dict[int, int] = {}
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
@@ -319,6 +327,21 @@ class ServeManager:
                     if not sw_error_msg:
                         if model_instance.state == ModelInstanceStateEnum.RUNNING:
                             continue
+
+                        # Skip instances in ERROR state due to inference health check failure.
+                        # This prevents the basic health check from overwriting the ERROR state
+                        # set by inference health check, while still allowing restart mechanism
+                        # (restart_on_error) to work independently.
+                        if (
+                            model_instance.state == ModelInstanceStateEnum.ERROR
+                            and model_instance.state_message
+                            == _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE
+                        ):
+                            logger.debug(
+                                f"Model instance {model_instance.name} is in ERROR state due to inference health check failure, skipping state update to RUNNING"
+                            )
+                            continue
+
                         if not is_ready(
                             backend, model_instance, health_check_path, model
                         ):
@@ -427,6 +450,71 @@ class ServeManager:
                         f"Error provisioning model instance {mi.name}: {e}"
                     )
                     raise e
+
+    def sync_model_instances_inference_health(self):
+        """
+        Synchronize model instances' inference health by sending actual inference requests.
+
+        - For each RUNNING model instance, send a minimal inference request.
+        - Track failure count for each model instance.
+        - If failure count exceeds threshold, update state to ERROR.
+        - If inference succeeds, reset failure count.
+        """
+
+        # Get all model instances assigned to this worker.
+        model_instances_page = self._clientset.model_instances.list()
+        if not model_instances_page.items:
+            return
+
+        model_instances: List[ModelInstance] = []
+        for model_instance in model_instances_page.items:
+            if (
+                model_instance.worker_id == self._worker_id
+                and model_instance.state == ModelInstanceStateEnum.RUNNING
+            ):
+                model_instances.append(model_instance)
+
+        for model_instance in model_instances:
+            model = self._get_model(model_instance)
+            if not model:
+                continue
+
+            # Skip if the model is still provisioning.
+            if self._is_provisioning(model_instance):
+                continue
+
+            # Perform inference health check.
+            if not is_inference_ready(model_instance, model):
+                failure_count = self._inference_health_check_failures.get(
+                    model_instance.id, 0
+                )
+                failure_count += 1
+                self._inference_health_check_failures[model_instance.id] = failure_count
+
+                if (
+                    failure_count
+                    >= envs.MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD
+                ):
+                    logger.warning(
+                        f"Model instance {model_instance.name} inference health check failed "
+                        f"{failure_count} times, updating state to ERROR."
+                    )
+                    patch_dict = {
+                        "state": ModelInstanceStateEnum.ERROR,
+                        "state_message": _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
+                    }
+                    self._update_model_instance(model_instance.id, **patch_dict)
+                    # Reset failure count after marking as error.
+                    del self._inference_health_check_failures[model_instance.id]
+                else:
+                    logger.debug(
+                        f"Model instance {model_instance.name} inference health check failed "
+                        f"{failure_count}/{envs.MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD} times."
+                    )
+            else:
+                # Reset failure count on success.
+                if model_instance.id in self._inference_health_check_failures:
+                    del self._inference_health_check_failures[model_instance.id]
 
     def _handle_model_instance_event(self, event: Event):  # noqa: C901
         """
@@ -821,6 +909,7 @@ class ServeManager:
         self._error_model_instances.pop(mi.id, None)
         self._model_cache_by_instance.pop(mi.id, None)
         self._model_instance_by_instance_id.pop(mi.id, None)
+        self._inference_health_check_failures.pop(mi.id, None)
 
         logger.info(f"Stopped model instance {mi.name or mi.id}")
 
@@ -994,4 +1083,82 @@ def is_ready(
     except Exception as e:
         logger.debug(f"Error checking model instance {mi.name} health: {e}")
         pass
+    return False
+
+
+def _get_inference_endpoint_and_payload(model: Model) -> tuple[str, dict] | None:
+    """
+    Get inference endpoint and payload for the model.
+    Returns None if the model type should skip health check.
+    """
+    # Skip these model types
+    if (
+        CategoryEnum.IMAGE in model.categories
+        or CategoryEnum.SPEECH_TO_TEXT in model.categories
+        or CategoryEnum.UNKNOWN in model.categories
+    ):
+        return None
+
+    # Return endpoint and payload based on model type (priority order)
+    if CategoryEnum.EMBEDDING in model.categories:
+        return "/v1/embeddings", {"model": model.name, "input": "test"}
+
+    if CategoryEnum.RERANKER in model.categories:
+        return "/v1/rerank", {
+            "model": model.name,
+            "query": "test",
+            "documents": ["test"],
+        }
+
+    if CategoryEnum.TEXT_TO_SPEECH in model.categories:
+        return "/v1/audio/speech", {
+            "model": model.name,
+            "input": "test",
+            "voice": "alloy",
+        }
+
+    # Default to LLM (empty categories default to LLM)
+    return "/v1/chat/completions", {
+        "model": model.name,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+    }
+
+
+def is_inference_ready(mi: ModelInstance, model: Model) -> bool:
+    """
+    Send a minimal inference request to verify the inference capability is working.
+    """
+    # Check Custom backend (no standard inference API)
+    if model.backend == BackendEnum.CUSTOM or not is_built_in_backend(model.backend):
+        return True
+
+    # Check port assignment
+    if not mi.port:
+        logger.debug(f"Model instance {mi.name} does not have port assigned yet.")
+        return False
+
+    # Get endpoint and payload, None means skip health check
+    result = _get_inference_endpoint_and_payload(model)
+    if not result:
+        logger.debug(f"Skipping inference check for {mi.name}")
+        return True
+
+    endpoint_path, payload = result
+    inference_url = f"http://{mi.worker_ip}:{mi.port}{endpoint_path}"
+
+    try:
+        response = requests.post(inference_url, json=payload, timeout=15)
+        if response.status_code == 200:
+            return True
+        else:
+            logger.warning(
+                f"Model instance {mi.name} inference health check failed "
+                f"with status {response.status_code} for endpoint {endpoint_path}"
+            )
+    except Exception as e:
+        logger.debug(
+            f"Error checking model instance {mi.name} inference at {endpoint_path}: {e}"
+        )
+
     return False
