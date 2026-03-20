@@ -576,7 +576,7 @@ RUN --mount=type=bind,from=rocm-base,source=/opt/rocm/share,target=/opt/rocm/sha
 
     # Hack to avoid: Fail to open libdrm_amdgpu.so: libdrm_amdgpu.so: cannot open shared object file: No such file or directory
     TARGET_DIR="/usr/lib/$(uname -m)-linux-gnu"
-    TARGET_LIB="libdrm_amdgpu.so.1.0.0"
+    TARGET_LIB="libdrm_amdgpu.so.1"
     TARGET_LINK="libdrm_amdgpu.so"
     TARGET_LIB_EXISTED="true"
     if [[ ! -e "${TARGET_DIR}/${TARGET_LIB}" ]]; then
