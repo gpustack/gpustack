@@ -156,6 +156,8 @@ nav:
   - Inference Performance Lab:
       - Overview: performance-lab/overview.md
       - Optimizing Throughput:
+          - Qwen3.5-35B-A3B:
+              - H200: performance-lab/qwen3.5-35b-a3b/h200.md
           - GLM-4.5-Air:
               - A100: performance-lab/glm-4.5-air/a100.md
               - H100: performance-lab/glm-4.5-air/h100.md
@@ -187,6 +189,8 @@ nav:
               - A100: performance-lab/qwen3-235b-a22b/a100.md
               - H100: performance-lab/qwen3-235b-a22b/h100.md
       - Optimizing Latency:
+          - Qwen3.5-35B-A3B:
+              - H200: performance-lab/qwen3.5-35b-a3b/h200-latency.md
           - Qwen3-8B:
               - H100: performance-lab/qwen3-8b/h100-latency.md
       - References:
