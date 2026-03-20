@@ -100,7 +100,7 @@ guidellm benchmark \
   --target ${target} \
   --profile constant \
   --rate ${request_rate} \
-  --max-requests ${total_request} \
+  --max-requests ${total_requests} \
   --processor ${model_path} \
   --data ./ShareGPT_V3_unfiltered_cleaned_split.json
 ```
