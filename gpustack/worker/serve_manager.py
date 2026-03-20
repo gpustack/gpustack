@@ -334,9 +334,12 @@ class ServeManager:
                         meta = get_meta_from_running_instance(
                             model_instance, backend, model
                         )
-                        if meta and meta != model.meta:
-                            model_patch_dict = {"meta": meta}
-                            self._update_model(model.id, **model_patch_dict)
+                        if meta:
+                            # Some meta is set in server evaluation and should be preserved, so we update meta instead of overwrite.
+                            merged_meta = dict(model.meta or {})
+                            merged_meta.update(meta)
+                            if merged_meta != model.meta:
+                                self._update_model(model.id, meta=merged_meta)
                     # Otherwise, update the main worker state to ERROR.
                     else:
                         patch_dict = {
