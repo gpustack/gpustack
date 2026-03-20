@@ -38,6 +38,9 @@ def plot_throughput_comparison(
 
     # Compute improvements
     improvement = [(o - b) / b * 100 for b, o in zip(baseline_tps, optimized_tps)]
+    max_tps = max(max(baseline_tps), max(optimized_tps))
+    value_offset = max_tps * 0.015
+    improvement_offset = max_tps * 0.08
 
     x = np.arange(len(case_names))
     width = 0.35
@@ -51,7 +54,7 @@ def plot_throughput_comparison(
         # TPS values
         ax.text(
             x[i] - width / 2,
-            baseline_tps[i] + 100,
+            baseline_tps[i] + value_offset,
             f'{baseline_tps[i]:.0f}',
             ha='center',
             va='bottom',
@@ -59,18 +62,17 @@ def plot_throughput_comparison(
         )
         ax.text(
             x[i] + width / 2,
-            optimized_tps[i] + 100,
+            optimized_tps[i] + value_offset,
             f'{optimized_tps[i]:.0f}',
             ha='center',
             va='bottom',
             fontsize=9,
         )
         # Improvement percentage
-        offset = 1000
         if improvement[i] > 0:
             ax.text(
                 x[i] + width / 2,
-                optimized_tps[i] + offset,
+                optimized_tps[i] + improvement_offset,
                 f'(+{improvement[i]:.1f}%)',
                 ha='center',
                 va='bottom',
@@ -80,7 +82,7 @@ def plot_throughput_comparison(
         else:
             ax.text(
                 x[i] + width / 2,
-                optimized_tps[i] + offset,
+                optimized_tps[i] + improvement_offset,
                 f'({improvement[i]:.1f}%)',
                 ha='center',
                 va='bottom',
@@ -97,7 +99,7 @@ def plot_throughput_comparison(
     plt.xticks(rotation=30, ha='right')
 
     ax.legend()
-    plt.ylim(0, max(optimized_tps) * 1.2)
+    plt.ylim(0, max_tps * 1.18)
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
 
@@ -110,19 +112,16 @@ def plot_throughput_comparison(
 
 
 # Example usage
-model_name = "deepseek-ai/DeepSeek-V3.2"
+model_name = "Qwen3.5-350B-A3B"
 gpu_type = "H200"
 case_names = [
     "ShareGPT",
-    "Short Prompt",
-    "Medium Prompt",
-    "Long Prompt",
-    "Very Long Prompt",
-    "Ultra Long Prompt",
-    "Generation-Heavy Prompt",
+    "Input 1024 / Output 128 (Profile: Throughput)",
+    "Input 32000 / Output 100 (Profile: Long Context)",
+    "Input 1000 / Output 2000 (Profile: Generation Heavy)",
 ]
-baseline_tps = [4113.24, 10539.36, 10488.24, 9313.06, 9789.64, 6288.25, 3112.52]
-optimized_tps = [7351.59, 19778.53, 27385.86, 20094.60, 20022.76, 16442.29, 3611.95]
+baseline_tps = [9632.01, 37934.72, 44993.20, 10455.38]
+optimized_tps = [10570.88, 50464.84, 56424.42, 12258.79]
 
 plot_throughput_comparison(
     model_name,
