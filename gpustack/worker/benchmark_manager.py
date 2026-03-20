@@ -219,7 +219,6 @@ class BenchmarkManager:
             logger.warning(f"Failed to remove old log file {log_file_path}: {e}")
 
         try:
-            logger.debug(f"Starting benchmark {benchmark.name}(id={benchmark.id})")
             fallback_registry = registration.determine_default_registry(
                 self._config.system_default_container_registry
             )
@@ -325,8 +324,6 @@ class BenchmarkManager:
         Args:
             benchmark: The benchmark to stop.
         """
-
-        logger.debug(f"Stopping benchmark {benchmark.name}(id={benchmark.id})")
 
         # Teardown provisioning process if still alive.
         if self._is_provisioning(benchmark):
