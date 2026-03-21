@@ -432,6 +432,7 @@ async def get_cluster_manifests(
         cluster_suffix=cluster.hashed_suffix,
         namespace=getattr(cluster.worker_config, "namespace", None),
         runtime_enum=runtime,
+        k8s_volume_mounts=cluster.k8s_volume_mounts,
     )
     yaml_content = config.render()
     return Response(

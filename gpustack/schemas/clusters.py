@@ -2,7 +2,14 @@ import secrets
 from urllib.parse import urlparse
 from enum import Enum
 from typing import ClassVar, Optional, Dict, Any, List
-from pydantic import BaseModel, computed_field, field_validator, ConfigDict, PrivateAttr
+from pydantic import (
+    BaseModel,
+    computed_field,
+    field_validator,
+    ConfigDict,
+    PrivateAttr,
+    Field as PydanticField,
+)
 from sqlmodel import (
     Field,
     Relationship,
@@ -61,6 +68,79 @@ class Volume(BaseModel):
         )
         if not all(c in allowed_chars for c in v):
             raise ValueError("Volume name contains invalid characters")
+        return v
+
+
+class HostPathVolumeSource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    path: str = PydanticField(
+        ...,
+        description="Path of the directory on the host. If the path is a symlink, it will follow the link to the real path.",
+    )
+    type: Optional[str] = PydanticField(None, description="Type for HostPath Volume.")
+
+
+class PersistentVolumeClaimVolumeSource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    claim_name: str = PydanticField(
+        ...,
+        alias="claimName",
+        description="ClaimName is the name of a PersistentVolumeClaim in the same namespace as the pod using this volume.",
+    )
+    read_only: bool = PydanticField(
+        False,
+        alias="readOnly",
+        description="Will force the ReadOnly setting in VolumeMounts.",
+    )
+
+
+class ConfigMapVolumeSource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    name: str = PydanticField(..., description="Name of the referent.")
+    optional: Optional[bool] = PydanticField(
+        None, description="Specify whether the ConfigMap or its keys must be defined."
+    )
+
+
+class VolumeSource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    host_path: Optional[HostPathVolumeSource] = PydanticField(None, alias="hostPath")
+    persistent_volume_claim: Optional[PersistentVolumeClaimVolumeSource] = (
+        PydanticField(None, alias="persistentVolumeClaim")
+    )
+    config_map: Optional[ConfigMapVolumeSource] = PydanticField(None, alias="configMap")
+
+
+class K8sVolumeMount(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    name: str
+    mount_path: str = PydanticField(..., alias="mountPath")
+    read_only: bool = PydanticField(False, alias="readOnly")
+    volume_source: Optional[VolumeSource] = PydanticField(
+        default=None,
+        alias="volumeSource",
+        description=(
+            "Kubernetes VolumeSource definition. Examples:\n"
+            '- hostPath: `{"hostPath": {"path": "/data", "type": "Directory"}}`\n'
+            '- persistentVolumeClaim: `{"persistentVolumeClaim": {"claimName": "my-pvc"}}`\n'
+            '- configMap: `{"configMap": {"name": "my-configmap"}}`'
+        ),
+    )
+
+    @field_validator("name")
+    def validate_name(cls, v):
+        if not v:
+            return v
+        if len(v) > 63:
+            raise ValueError("Volume name must be less than 64 characters")
+        import re
+
+        if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", v):
+            raise ValueError(
+                "Volume name must be a valid DNS-1123 label (e.g. 'my-name', or '123-abc'); "
+                "it must consist of lower case alphanumeric characters or '-', "
+                "and must start and end with an alphanumeric character."
+            )
         return v
 
 
@@ -230,6 +310,17 @@ class ClusterUpdate(SQLModel):
         sa_column=Column(
             pydantic_column_type(
                 PredefinedConfigNoDefaults,
+                exclude_none=True,
+                exclude_unset=True,
+                exclude_defaults=True,
+            )
+        ),
+    )
+    k8s_volume_mounts: Optional[List[K8sVolumeMount]] = Field(
+        default=None,
+        sa_column=Column(
+            pydantic_column_type(
+                List[K8sVolumeMount],
                 exclude_none=True,
                 exclude_unset=True,
                 exclude_defaults=True,
