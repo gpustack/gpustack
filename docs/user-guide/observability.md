@@ -69,7 +69,7 @@ If you already have an external Prometheus/Grafana stack, you can configure it m
 - **GPUStack Metrics Endpoint**:  
   Access metrics at `http://<gpustack_server_host>:10161/metrics`
 - **GPUStack Worker Metrics Targets**:  
-  Access metrics at `http://<gpustack_server_host>:10161/metrics/targets`
+  Access metrics at `http://<gpustack_server_host>:10151/metrics/targets`
 - **Prometheus UI**:  
   Access Prometheus at `http://<host>:19090` by default, or the port configured by `--builtin-prometheus-port` / `GPUSTACK_BUILTIN_PROMETHEUS_PORT`.
 - **Grafana UI**:  
