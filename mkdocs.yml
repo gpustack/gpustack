@@ -1,6 +1,6 @@
 site_name: GPUStack
 site_url: https://docs.gpustack.ai
-copyright: Copyright &copy; 2024 - 2026 GPUStack
+copyright: Copyright &copy; 2026 GPUStack.ai
 theme:
   name: material
   logo: assets/logo-white.png
