@@ -52,6 +52,22 @@ GPUStack's automated engine selection and parameter optimization deliver strong 
 
 For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
 
+## Supported Accelerators
+
+GPUStack supports a wide range of accelerators for AI inference:
+
+- **NVIDIA GPU**
+- **AMD GPU**
+- **Ascend NPU**
+- **Hygon DCU**
+- **MThreads GPU**
+- **Iluvatar GPU**
+- **MetaX GPU**
+- **Cambricon MLU**
+- **T-Head PPU**
+
+For detailed requirements and setup instructions, see the [Installation Requirements](https://docs.gpustack.ai/latest/installation/requirements/) documentation.
+
 ## Quick Start
 
 ### Prerequisites
