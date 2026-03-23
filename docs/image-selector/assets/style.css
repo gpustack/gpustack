@@ -739,6 +739,13 @@ details[open] .guide-summary::after {
     animation: slideIn 0.3s ease;
 }
 
+.inline-code {
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
 @keyframes slideIn {
     from {
         transform: translateX(100%);
