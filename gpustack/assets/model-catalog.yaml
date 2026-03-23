@@ -617,6 +617,21 @@ model_sets:
         - --max-model-len=32768
         - --performance-mode=throughput
         - --enable-prefix-caching
+    - mode: latency
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.5-9B
+      backend: vLLM
+      backend_version: 0.17.1
+      backend_parameters:
+        - --reasoning-parser=qwen3
+        - --max-model-len=32768
+        - --performance-mode=interactivity
+        - --language-model-only
+      speculative_config:
+        enabled: true
+        algorithm: mtp
+        num_draft_tokens: 1
     - mode: standard
       quantization: BF16
       source: huggingface
