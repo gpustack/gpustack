@@ -33,6 +33,7 @@ theme:
     - content.code.select
     - content.action.view
     - content.action.edit
+    - navigation.top
   icon:
     repo: fontawesome/brands/github-alt
   language: en
