@@ -43,7 +43,7 @@ theme:
     - navigation.tracking
     - search.share
   icon:
-    repo: fontawesome/brands/github-alt
+    repo: fontawesome/brands/github
   language: en
 plugins:
   - glightbox
