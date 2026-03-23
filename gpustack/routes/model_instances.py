@@ -135,7 +135,11 @@ async def fetch_worker(session, worker_id):
 
 @router.get("/{id}/logs")
 async def get_serving_logs(  # noqa: C901
-    request: Request, session: SessionDep, id: int, log_options: LogOptionsDep
+    request: Request,
+    session: SessionDep,
+    id: int,
+    log_options: LogOptionsDep,
+    worker_id: Optional[int] = None,
 ):
     model_instance = await fetch_model_instance(session, id)
 
@@ -148,7 +152,25 @@ async def get_serving_logs(  # noqa: C901
                 detail=f"Invalid restart_count: {log_options.restart_count}. Current restart_count is {current_restart_count}.",
             )
 
-    worker = await fetch_worker(session, model_instance.worker_id)
+    # Build valid worker IDs (main worker + subordinate workers for distributed instances)
+    valid_worker_ids = {model_instance.worker_id}
+    if (
+        model_instance.distributed_servers
+        and model_instance.distributed_servers.subordinate_workers
+    ):
+        valid_worker_ids.update(
+            sw.worker_id
+            for sw in model_instance.distributed_servers.subordinate_workers
+        )
+
+    # Determine target worker ID
+    target_worker_id = worker_id or model_instance.worker_id
+    if target_worker_id not in valid_worker_ids:
+        raise NotFoundException(
+            message=f"Worker {target_worker_id} not found for model instance {id}"
+        )
+
+    worker = await fetch_worker(session, target_worker_id)
 
     model_instance_log_url = (
         f"http://{worker.advertise_address}:{worker.port}/serveLogs"
