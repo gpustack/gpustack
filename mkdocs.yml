@@ -82,13 +82,14 @@ markdown_extensions:
       custom_checkbox: true
   - pymdownx.arithmatex:
       generic: true
+repo_name: gpustack/gpustack
 repo_url: https://github.com/gpustack/gpustack
 edit_uri: edit/main/docs/
 nav:
   - Home:
       - Overview: overview.md
       - Quickstart: quickstart.md
-      - Installation: 
+      - Installation:
           - Requirements: installation/requirements.md
           - Installation: installation/installation.md
           - Air-Gapped Installation: installation/air-gapped.md
