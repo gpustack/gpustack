@@ -34,6 +34,7 @@ theme:
     - content.action.view
     - content.action.edit
     - navigation.top
+    - navigation.tracking
   icon:
     repo: fontawesome/brands/github-alt
   language: en
