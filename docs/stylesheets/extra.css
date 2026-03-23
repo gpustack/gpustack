@@ -13,10 +13,6 @@
     text-align: initial; /* Reset alignment for table cells */
 }
 
-.md-footer {
-    display: none;
-}
-
 .md-typeset pre > code {
     border-radius: 0.5rem;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);

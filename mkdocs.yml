@@ -1,5 +1,6 @@
 site_name: GPUStack
 site_url: https://docs.gpustack.ai
+copyright: Copyright &copy; 2024 - 2026 GPUStack
 theme:
   name: material
   logo: assets/logo-white.png
@@ -34,6 +35,7 @@ theme:
     - content.action.view
     - content.action.edit
     - navigation.top
+    - navigation.footer
     - navigation.tracking
     - search.share
   icon:
@@ -56,6 +58,17 @@ extra:
   generator: false
   version:
     provider: mike
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/gpustack
+    - icon: fontawesome/brands/docker
+      link: https://hub.docker.com/r/gpustack
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/gpustack/
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/QAzGncGs
+    - icon: fontawesome/brands/weixin
+      link: https://github.com/gpustack/gpustack/blob/main/docs/assets/wechat-group-qrcode.jpg
 extra_javascript:
   - javascripts/katex.js
   - image-selector/assets/extra.js
