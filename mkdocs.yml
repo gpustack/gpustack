@@ -58,6 +58,8 @@ plugins:
         'installation/iluvatar/installation.md': 'installation/requirements.md'
         'installation/cambricon/installation.md': 'installation/requirements.md'
         'installation/metax/installation.md': 'installation/requirements.md'
+  - minify:
+      minify_html: true
 extra:
   generator: false
   version:
