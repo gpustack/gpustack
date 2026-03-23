@@ -52,6 +52,22 @@ GPUStackの自動化されたエンジン選択とパラメータ最適化によ
 
 詳細なベンチマーク方法と結果については、[推論パフォーマンスラボ](https://docs.gpustack.ai/latest/performance-lab/overview/)をご覧ください。
 
+## サポートされているアクセラレータ
+
+GPUStack は AI 推論用の幅広いアクセラレータをサポートしています：
+
+- **NVIDIA GPU**
+- **AMD GPU**
+- **Ascend NPU**
+- **Hygon DCU**
+- **MThreads GPU**
+- **Iluvatar GPU**
+- **MetaX GPU**
+- **Cambricon MLU**
+- **T-Head PPU**
+
+詳細な要件とセットアップ手順については、[インストール要件](https://docs.gpustack.ai/latest/installation/requirements/)ドキュメントを参照してください。
+
 ## クイックスタート
 
 ### 前提条件
