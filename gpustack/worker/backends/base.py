@@ -759,6 +759,10 @@ $@
             if not backend_variant:
                 backend_variant = "910b"
 
+        logger.info(
+            f"_resolve_image query: backend={backend}, backend_variant={backend_variant}, service={service}, service_version={service_version}, platform={platform.system_arch()}"
+        )
+
         runners = list_backend_runners(
             backend=backend,
             backend_variant=backend_variant,
