@@ -95,6 +95,9 @@ markdown_extensions:
       custom_checkbox: true
   - pymdownx.arithmatex:
       generic: true
+  - pymdownx.emoji:
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
 repo_name: gpustack/gpustack
 repo_url: https://github.com/gpustack/gpustack
 edit_uri: edit/main/docs/
