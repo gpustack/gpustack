@@ -43,7 +43,7 @@ sudo docker run --rm -it --entrypoint "" gpustack/gpustack \
 
 If you cannot pull images from `Docker Hub` or the download is very slow, you can use our `Quay.io` mirror by pointing the source registry to `quay.io`:
 
-```bash
+```bash hl_lines="3"
 sudo docker run --rm -it --entrypoint "" gpustack/gpustack \
     gpustack copy-images \
     --source quay.io \
