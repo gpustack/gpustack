@@ -74,6 +74,11 @@ plugins:
         'installation/metax/installation.md': 'installation/requirements.md'
   - minify:
       minify_html: true
+      minify_css: true
+      minify_js: true
+      cache_safe: true
+      htmlmin_opts:
+        remove_comments: true
 extra:
   generator: false
   version:
