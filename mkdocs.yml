@@ -100,8 +100,13 @@ extra_css:
 markdown_extensions:
   - attr_list
   - md_in_html
-  - pymdownx.highlight
-  - pymdownx.superfences
+  - pymdownx.highlight:
+      linenums: true
+      line_spans: __span
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
   - pymdownx.tabbed:
       alternate_style: true
   - admonition
@@ -110,7 +115,6 @@ markdown_extensions:
   - pymdownx.tilde
   - pymdownx.betterem
   - pymdownx.caret
-  - pymdownx.inlinehilite
   - pymdownx.tasklist:
       custom_checkbox: true
   - pymdownx.arithmatex:
