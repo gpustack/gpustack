@@ -1,6 +1,19 @@
+# Project information
 site_name: GPUStack
 site_url: https://docs.gpustack.ai
+site_author: GPUStack.ai
+site_description: >-
+  GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment.
+  It lets you run models efficiently on your own GPU hardware by choosing the best inference engines,
+  scheduling GPU resources, analyzing model architectures, and automatically configuring deployment parameters.
+
+# Repository
+repo_name: gpustack/gpustack
+repo_url: https://github.com/gpustack/gpustack
+
+# Copyright
 copyright: Copyright &copy; 2026 GPUStack.ai
+
 theme:
   name: material
   logo: assets/logo-white.png
@@ -104,8 +117,6 @@ markdown_extensions:
   - pymdownx.emoji:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
       emoji_index: !!python/name:material.extensions.emoji.twemoji
-repo_name: gpustack/gpustack
-repo_url: https://github.com/gpustack/gpustack
 edit_uri: edit/main/docs/
 nav:
   - Home:
