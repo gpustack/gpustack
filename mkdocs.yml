@@ -95,9 +95,9 @@ extra:
     - icon: fontawesome/brands/weixin
       link: https://github.com/gpustack/gpustack/blob/main/docs/assets/wechat-group-qrcode.jpg
 extra_javascript:
-  - javascripts/katex.js
   - image-selector/assets/extra.js
   - https://unpkg.com/katex@0/dist/katex.min.js
+  - javascripts/katex.js
   - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
   - https://unpkg.com/tablesort@5.3.0/dist/tablesort.min.js
   - javascripts/tablesort.js
