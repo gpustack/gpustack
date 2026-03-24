@@ -133,6 +133,8 @@ markdown_extensions:
   - pymdownx.emoji:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
       emoji_index: !!python/name:material.extensions.emoji.twemoji
+  - pymdownx.critic
+  - pymdownx.keys
 edit_uri: edit/main/docs/
 nav:
   - Home:
