@@ -49,40 +49,8 @@ profiles:
 
   - name: ShareGPT
     description: >
-      Max throughput with realistic prompt length.
-      The most commonly used baseline for GPU and model comparison.
+      Measures maximum throughput using real conversational data.
+      Suitable for GPU and model performance benchmarking.
     dataset_name: ShareGPT
     request_rate: 1000
-    total_requests: 1000
-  
-  - name: ShareGPT 1RPS
-    description: >
-      Rate-limited ShareGPT workload with realistic prompt length.
-      Useful for stable benchmarking under a controlled request rate.
-    dataset_name: ShareGPT
-    request_rate: 1
-    total_requests: 1000
-
-  - name: ShareGPT 4RPS
-    description: >
-      Rate-limited ShareGPT workload with realistic prompt length.
-      Useful for stable benchmarking under a controlled request rate.
-    dataset_name: ShareGPT
-    request_rate: 4
-    total_requests: 1000
-
-  - name: ShareGPT 8RPS
-    description: >
-      Rate-limited ShareGPT workload with realistic prompt length.
-      Useful for stable benchmarking under a controlled request rate.
-    dataset_name: ShareGPT
-    request_rate: 8
-    total_requests: 1000
-
-  - name: ShareGPT 16RPS
-    description: >
-      Rate-limited ShareGPT workload with realistic prompt length.
-      Useful for stable benchmarking under a controlled request rate.
-    dataset_name: ShareGPT
-    request_rate: 16
     total_requests: 1000
