@@ -66,6 +66,7 @@ dependencies = [
     "cachetools>=6.0.0",
     "gpustack-runner==0.1.25.post7",
     "gpustack-runtime==0.1.44.post1",
+    "mkdocs-minify-plugin>=0.8.0",
 ]
 
 [dependency-groups]

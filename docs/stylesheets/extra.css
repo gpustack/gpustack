@@ -1,17 +1,48 @@
 :root {
-    --md-primary-fg-color:        #007BFF;
+    --md-primary-fg-color: #007BFF;
     --md-primary-fg-color--light: #2997FF;
-    --md-primary-fg-color--dark:  #0062d9;
-  }
+    --md-primary-fg-color--dark: #0062d9;
+}
 
 
 .center-table {
-  text-align: center;
-}
-.md-typeset .center-table :is(td,th):not([align]) {
-  text-align: initial; /* Reset alignment for table cells */
+    text-align: center;
 }
 
-.md-footer {
-  display: none;
+.md-typeset .center-table :is(td,th):not([align]) {
+    text-align: initial; /* Reset alignment for table cells */
+}
+
+.md-typeset pre > code {
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+}
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+    background-color: rgba(150, 150, 150, 0.4);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(150, 150, 150, 0.7);
+}
+
+.md-typeset img {
+    border-radius: 0.4rem;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.md-typeset img:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 15px rgba(0, 0, 0, 0.1);
+}
+
+.md-typeset .admonition {
+    border-radius: 0.4rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
 }
