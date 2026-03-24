@@ -55,6 +55,7 @@ theme:
     - navigation.footer
     - navigation.tracking
     - search.share
+    - toc.follow
   icon:
     repo: fontawesome/brands/github
   language: en
