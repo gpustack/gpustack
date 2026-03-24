@@ -207,6 +207,12 @@ class NoExitArgumentParser(argparse.ArgumentParser):
     def error(self, message):
         raise argparse.ArgumentError(None, message)
 
+    def exit(self, status=0, message=None):
+        if status != 0:
+            raise argparse.ArgumentError(None, message or "Unknown error")
+        # Ignore exit with status 0 (e.g., --help, --version)
+        return
+
 
 @dataclass
 class GGUFParserCommandMutableParameters:
@@ -513,7 +519,7 @@ class GGUFParserCommandMutableParameters:
                     # If reach here, that means the field is an internal property,
                     # which would not register in the argument parser.
                     pass
-        except (argparse.ArgumentError, argparse.ArgumentTypeError) as e:
+        except Exception as e:
             slogger.warning(f"Failed to parse mutable parameters: {e}")
 
     def extend_command(self, command: List[str]):
