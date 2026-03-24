@@ -1,9 +1,8 @@
 :root {
-    --md-primary-fg-color: #007BFF;
+    --md-primary-fg-color: #0D47A1;
     --md-primary-fg-color--light: #2997FF;
     --md-primary-fg-color--dark: #0062d9;
 }
-
 
 .center-table {
     text-align: center;
