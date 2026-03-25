@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import aiohttp
+from typing import Callable, Optional
 
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import async_session
 from gpustack.server.services import WorkerService
-from gpustack.utils.network import is_url_reachable
+from gpustack.server.worker_request import is_worker_reachable
 from gpustack import envs
 
 logger = logging.getLogger(__name__)
@@ -17,18 +19,31 @@ class WorkerSyncer:
     2. Performs readiness checks based on heartbeats.
     """
 
-    def __init__(self, interval=15, worker_unreachable_timeout=20):
+    def __init__(
+        self,
+        http_client_getter: Callable[[], Optional[aiohttp.ClientSession]],
+        http_client_no_proxy_getter: Callable[[], Optional[aiohttp.ClientSession]],
+        interval=15,
+        worker_unreachable_timeout=20,
+    ):
         self._interval = interval
         self._worker_unreachable_timeout = worker_unreachable_timeout
+        self._http_client_getter = http_client_getter
+        self._http_client_no_proxy_getter = http_client_no_proxy_getter
 
         logger.debug(
             f"WorkerSyncer initialized with unreachable check mode: {envs.WORKER_UNREACHABLE_CHECK_MODE}"
         )
 
     async def start(self):
+        client = self._http_client_getter()
         while True:
             await asyncio.sleep(self._interval)
             try:
+                client = client or self._http_client_getter()
+                if client is None:
+                    logger.debug("HTTP client not available, skipping worker sync")
+                    continue
                 await self._sync_workers_states()
             except Exception as e:
                 logger.error(f"Failed to sync workers: {e}")
@@ -108,7 +123,12 @@ class WorkerSyncer:
             return worker_count <= auto_threshold
 
     async def _set_worker_unreachable(self, worker: Worker):
-        worker.unreachable = not await self.is_worker_reachable(worker)
+        worker.unreachable = not await is_worker_reachable(
+            worker=worker,
+            proxy_client=self._http_client_getter(),
+            no_proxy_client=self._http_client_no_proxy_getter(),
+            timeout_in_second=self._worker_unreachable_timeout,
+        )
 
     @staticmethod
     def filter_state_change_workers(workers: list[Worker]) -> list[Worker]:
@@ -134,15 +154,3 @@ class WorkerSyncer:
             ):
                 state_changed_workers.append(worker)
         return state_changed_workers
-
-    async def is_worker_reachable(
-        self,
-        worker: Worker,
-    ) -> bool:
-        address = worker.advertise_address or worker.ip
-        healthz_url = f"http://{address}:{worker.port}/healthz"
-        reachable = await is_url_reachable(
-            healthz_url,
-            self._worker_unreachable_timeout,
-        )
-        return reachable

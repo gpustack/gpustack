@@ -943,7 +943,7 @@ class ServeManager:
             model_instance_id
         )  # Ensure the model instance is cached.
         return (
-            instance.port
+            instance.ports[0]
             if instance and instance.state == ModelInstanceStateEnum.RUNNING
             else None
         )

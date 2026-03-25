@@ -51,6 +51,7 @@ def setup_logging(debug: bool = False):
         "docker.auth",
         "kubernetes_asyncio.client.rest",
         "azure.core.pipeline.policies.http_logging_policy",
+        "websockets.client",
     ]
 
     for logger_name in disable_logger_names:

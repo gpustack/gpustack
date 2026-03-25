@@ -2,7 +2,7 @@ from sqlmodel import col
 import yaml
 from typing import Optional, Sequence
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlmodel import func
 from gpustack import envs
@@ -44,8 +44,8 @@ from gpustack.schemas.benchmark import (
 from gpustack.server.services import (
     WorkerService,
 )
+from gpustack.server.worker_request import stream_to_worker, request_to_worker
 from gpustack.utils.gpu import summary_gpu_snapshots
-from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.utils.snapshot import (
     create_model_instance_snapshot,
     create_worker_snapshot,
@@ -392,55 +392,52 @@ async def get_benchmark_logs(  # noqa: C901
     ]:
         log_options.follow = False
 
-    benchmark_log_url = (
-        f"http://{worker.advertise_address}:{worker.port}/benchmark_logs"
-        f"/{benchmark.id}?{log_options.url_encode()}&benchmark_name={benchmark.name}"
-    )
-
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
-
-    use_proxy_env = use_proxy_env_for_url(benchmark_log_url)
-    client: aiohttp.ClientSession = (
-        request.app.state.http_client
-        if use_proxy_env
-        else request.app.state.http_client_no_proxy
-    )
 
     if log_options.follow:
 
-        async def proxy_stream():
-            try:
-                async with client.get(benchmark_log_url, timeout=timeout) as resp:
-                    if resp.status != 200:
-                        body = await resp.read()
-                        yield body, resp.headers, resp.status
-                        return
-
-                    async for chunk in resp.content.iter_any():
-                        yield chunk, resp.headers, resp.status
-            except TimeoutError:
-                yield "\x1b[999;1H" + f"Log stream timed out ({timeout.total} seconds). Please reopen the log page.\n", {}, status.HTTP_500_INTERNAL_SERVER_ERROR
-            except Exception as e:
-                yield "\x1b[999;1H" + f"Error fetching benchmark logs: {str(e)}\n", {}, status.HTTP_500_INTERNAL_SERVER_ERROR
+        def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
+            msg = (
+                str(e)
+                if not isinstance(e, TimeoutError)
+                else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
+            )
+            return f"\x1b[999;1H{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
 
         return StreamingResponseWithStatusCode(
-            proxy_stream(),
+            stream_to_worker(
+                worker=worker,
+                method="GET",
+                path=f"benchmark_logs/{benchmark.id}",
+                proxy_client=request.app.state.http_client,
+                no_proxy_client=request.app.state.http_client_no_proxy,
+                params={
+                    "tail": log_options.tail,
+                    "follow": log_options.follow,
+                    "benchmark_name": benchmark.name,
+                },
+                timeout=timeout,
+                on_exception=on_exception,
+            ),
             media_type="application/octet-stream",
         )
     else:
-        try:
-            async with client.get(benchmark_log_url, timeout=timeout) as resp:
-                if resp.status != 200:
-                    raise HTTPException(
-                        status_code=resp.status,
-                        detail="Error fetching benchmark logs",
-                    )
-                content = await resp.text()
-            return PlainTextResponse(content=content, status_code=resp.status)
-        except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Error fetching benchmark logs: {str(e)}\n"
-            )
+        resp, body = await request_to_worker(
+            worker=worker,
+            method="GET",
+            path=f"benchmark_logs/{benchmark.id}",
+            proxy_client=request.app.state.http_client,
+            no_proxy_client=request.app.state.http_client_no_proxy,
+            params={
+                "tail": log_options.tail,
+                "follow": log_options.follow,
+                "benchmark_name": benchmark.name,
+            },
+            timeout=timeout,
+        )
+        return PlainTextResponse(
+            content=body.decode() if body else "", status_code=resp.status
+        )
 
 
 @router.post("/export")

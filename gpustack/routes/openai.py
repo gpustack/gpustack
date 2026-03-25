@@ -1,7 +1,8 @@
+import json
 import re
 import random
 import asyncio
-from typing import AsyncGenerator, List, Optional, Tuple
+from typing import AsyncGenerator, List, Optional, Tuple, Union, Dict
 import aiohttp
 import logging
 
@@ -25,14 +26,12 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.model_common import build_category_conditions
-from gpustack.schemas.models import (
-    BackendEnum,
-    Model,
-)
+from gpustack.schemas.models import Model
 from gpustack.schemas.model_routes import (
     ModelRoute,
     MyModel,
 )
+from gpustack.schemas.workers import Worker
 from gpustack.server.deps import SessionDep, CurrentUserDep
 from gpustack.server.services import (
     ModelInstanceService,
@@ -40,7 +39,7 @@ from gpustack.server.services import (
     WorkerService,
     UserService,
 )
-from gpustack.utils.network import use_proxy_env_for_url
+from gpustack.server.worker_request import request_to_worker, stream_to_worker
 
 
 logger = logging.getLogger(__name__)
@@ -132,39 +131,59 @@ async def proxy_request_by_model(
     mutate_request(request, model_name, body_json, form_data)
 
     instance = await get_running_instance(session, model.id)
-    worker = await WorkerService(session).get_by_id(instance.worker_id)
+    worker: Worker = await WorkerService(session).get_by_id(instance.worker_id)
     if not worker:
         raise InternalServerErrorException(
             message=f"Worker with ID {instance.worker_id} not found",
             is_openai_exception=True,
         )
-
-    url = f"http://{instance.worker_ip}:{worker.port}/proxy/v1/{endpoint}"
-    token = worker.token
     extra_headers = {
         "X-Target-Port": str(instance.port),
-        "Authorization": f"Bearer {token}",
     }
-
-    if model.backend == BackendEnum.ASCEND_MINDIE:
-        # Connectivity to the loopback address via worker proxy does not work for Ascend MindIE.
-        # Bypassing the worker proxy and directly connecting to the instance as a workaround.
-        url = f"http://{instance.worker_ip}:{instance.port}/v1/{endpoint}"
-        extra_headers = {}
-
-    logger.debug(f"proxying to {url}, instance port: {instance.port}")
+    path = f"proxy/v1/{endpoint}"
+    logger.debug(
+        f"proxying to {instance.worker_ip}:{instance.port}, instance port: {instance.port}"
+    )
 
     try:
+        headers, data = _prepare_proxy_request(
+            request,
+            body_json,
+            form_data,
+            extra_headers,
+            add_stream_options=stream,
+        )
         if stream:
-            return await handle_streaming_request(
-                request, url, body_json, form_data, extra_headers
+            return StreamingResponseWithStatusCode(
+                _stream_response(
+                    worker,
+                    request.method,
+                    path,
+                    headers,
+                    data,
+                    request.app.state.http_client,
+                    request.app.state.http_client_no_proxy,
+                ),
+                media_type="text/event-stream",
             )
         else:
-            return await handle_standard_request(
-                request, url, body_json, form_data, extra_headers
+            resp, body = await request_to_worker(
+                worker=worker,
+                method=request.method,
+                path=path,
+                proxy_client=request.app.state.http_client,
+                no_proxy_client=request.app.state.http_client_no_proxy,
+                data=data,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
+            )
+            return Response(
+                status_code=resp.status,
+                headers=dict(resp.headers),
+                content=body,
             )
     except asyncio.TimeoutError as e:
-        error_message = f"Request to {url} timed out"
+        error_message = f"Request to worker {worker.id} timed out"
         if str(e):
             error_message += f": {e}"
         raise GatewayTimeoutException(
@@ -243,127 +262,83 @@ async def parse_json_body(request: Request):
         )
 
 
-async def _stream_response_chunks(
-    resp: aiohttp.ClientResponse,
-) -> AsyncGenerator[str, None]:
-    """Stream the response content in chunks, processing each line."""
-
-    chunk_size = 4096  # 4KB
-    chunk_buffer = b""
-    async for data in resp.content.iter_chunked(chunk_size):
-        lines = (chunk_buffer + data).split(b'\n')
-        # Keep the last line in the buffer if it's incomplete
-        chunk_buffer = lines.pop(-1)
-
-        for line_bytes in lines:
-            if line_bytes:
-                yield _process_line(line_bytes)
-
-    if chunk_buffer:
-        yield _process_line(chunk_buffer)
-
-
-def _process_line(line_bytes: bytes) -> str:
-    """Process a line of bytes to ensure it is properly formatted for streaming."""
-    line = line_bytes.decode("utf-8").strip()
-    return line + "\n\n" if line else ""
-
-
-async def handle_streaming_request(
+def _prepare_proxy_request(
     request: Request,
-    url: str,
     body_json: Optional[dict],
     form_data: Optional[aiohttp.FormData],
     extra_headers: Optional[dict] = None,
-):
-    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT)
+    add_stream_options: bool = False,
+) -> Tuple[Dict[str, str], Optional[Union[bytes, aiohttp.FormData]]]:
+    """
+    Prepare headers and body for proxy requests.
+
+    Returns (headers, data) tuple.
+    """
     headers = filter_headers(request.headers)
     if extra_headers:
         headers.update(extra_headers)
 
-    if body_json and "stream_options" not in body_json:
+    if add_stream_options and body_json and "stream_options" not in body_json:
         # Defaults to include usage.
         # TODO Record usage without client awareness.
         body_json["stream_options"] = {"include_usage": True}
 
-    async def stream_generator():
-        try:
-            use_proxy_env = use_proxy_env_for_url(url)
-            http_client: aiohttp.ClientSession = (
-                request.app.state.http_client
-                if use_proxy_env
-                else request.app.state.http_client_no_proxy
-            )
-            async with http_client.request(
-                method=request.method,
-                url=url,
-                headers=headers,
-                json=body_json if body_json else None,
-                data=form_data,
-                timeout=timeout,
-            ) as resp:
-                if resp.status >= 400:
-                    yield await resp.read(), resp.headers, resp.status
-                    return
-
-                async for chunk in _stream_response_chunks(resp):
-                    yield chunk, resp.headers, resp.status
-        except aiohttp.ClientError as e:
-            error_response = OpenAIAPIErrorResponse(
-                error=OpenAIAPIError(
-                    message=f"Service unavailable. Please retry your requests after a brief wait. Original error: {e}",
-                    code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    type="ServiceUnavailable",
-                ),
-            )
-            yield error_response.model_dump_json(), {}, status.HTTP_503_SERVICE_UNAVAILABLE
-        except Exception as e:
-            error_response = OpenAIAPIErrorResponse(
-                error=OpenAIAPIError(
-                    message=f"Internal server error: {e}",
-                    code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    type="InternalServerError",
-                ),
-            )
-            yield error_response.model_dump_json(), {}, status.HTTP_500_INTERNAL_SERVER_ERROR
-
-    return StreamingResponseWithStatusCode(
-        stream_generator(), media_type="text/event-stream"
+    # Convert body to data
+    data = (
+        form_data
+        if form_data
+        else (json.dumps(body_json).encode() if body_json else None)
     )
 
+    # When using data=bytes (instead of json=), aiohttp doesn't set Content-Type
+    if body_json and not form_data:
+        headers["Content-Type"] = "application/json"
 
-async def handle_standard_request(
-    request: Request,
-    url: str,
-    body_json: Optional[dict],
-    form_data: Optional[aiohttp.FormData],
-    extra_headers: Optional[dict] = None,
-):
-    headers = filter_headers(request.headers)
-    if extra_headers:
-        headers.update(extra_headers)
+    return headers, data
 
-    use_proxy_env = use_proxy_env_for_url(url)
-    http_client: aiohttp.ClientSession = (
-        request.app.state.http_client
-        if use_proxy_env
-        else request.app.state.http_client_no_proxy
-    )
-    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT)
-    async with http_client.request(
-        method=request.method,
-        url=url,
-        headers=headers,
-        json=body_json if body_json else None,
-        data=form_data,
-        timeout=timeout,
-    ) as response:
-        content = await response.read()
-        return Response(
-            status_code=response.status,
-            headers=dict(response.headers),
-            content=content,
+
+async def _stream_response(
+    worker: Worker,
+    method: str,
+    path: str,
+    headers: Dict[str, str],
+    data: Optional[Union[bytes, aiohttp.FormData]],
+    proxy_client: aiohttp.ClientSession,
+    no_proxy_client: aiohttp.ClientSession,
+) -> AsyncGenerator[Tuple[Union[bytes, str], Dict[str, str], int], None]:
+    """
+    Stream response from worker. Yields (chunk, headers, status) tuples.
+    """
+    try:
+        async for chunk, resp_headers, resp_status in stream_to_worker(
+            worker=worker,
+            method=method,
+            path=path,
+            proxy_client=proxy_client,
+            no_proxy_client=no_proxy_client,
+            data=data,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
+        ):
+            yield chunk, resp_headers, resp_status
+    except aiohttp.ClientError as e:
+        error_response = OpenAIAPIErrorResponse(
+            error=OpenAIAPIError(
+                message=f"Service unavailable. Please retry your requests after a brief wait. Original error: {e}",
+                code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                type="ServiceUnavailable",
+            ),
         )
+        yield error_response.model_dump_json(), {}, status.HTTP_503_SERVICE_UNAVAILABLE
+    except Exception as e:
+        error_response = OpenAIAPIErrorResponse(
+            error=OpenAIAPIError(
+                message=f"Internal server error: {e}",
+                code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                type="InternalServerError",
+            ),
+        )
+        yield error_response.model_dump_json(), {}, status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
 def filter_headers(headers):

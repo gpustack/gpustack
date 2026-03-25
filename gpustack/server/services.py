@@ -327,6 +327,14 @@ class ModelInstanceService:
         self.session = session
 
     @locked_cached()
+    async def get_by_id(self, id: int) -> Optional[ModelInstance]:
+        result = await ModelInstance.one_by_id(self.session, id)
+        if result is None:
+            return None
+        self.session.expunge(result)
+        return result
+
+    @locked_cached()
     async def get_running_instances(self, model_id: int) -> List[ModelInstance]:
         results = await ModelInstance.all_by_fields(
             self.session,
@@ -349,11 +357,13 @@ class ModelInstanceService:
     ):
         result = await model_instance.update(self.session, source)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
+        await delete_cache_by_key(self.get_by_id, model_instance.id)
         return result
 
     async def delete(self, model_instance: ModelInstance):
         result = await model_instance.delete(self.session)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
+        await delete_cache_by_key(self.get_by_id, model_instance.id)
         return result
 
     async def batch_delete(self, model_instances: List[ModelInstance]):

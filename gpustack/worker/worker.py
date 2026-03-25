@@ -5,6 +5,8 @@ import logging
 from typing import Optional, Tuple
 import json
 import os
+import uuid
+from pathlib import Path
 
 import aiohttp
 from fastapi import FastAPI
@@ -25,6 +27,7 @@ from gpustack.config.config import (
 )
 from gpustack.schemas.config import (
     GatewayModeEnum,
+    ModelInstanceProxyModeEnum,
     PredefinedConfigNoDefaults,
 )
 from gpustack import envs
@@ -56,6 +59,8 @@ from gpustack.gateway import init_async_k8s_config
 from gpustack.client.generated_http_client import default_versioned_prefix
 from gpustack.worker.workload_cleaner import WorkloadCleaner
 from gpustack.utils.uuid import get_worker_name, get_legacy_uuid
+from gpustack.websocket_proxy.message_client import MessageClient
+from gpustack.api.auth import BearerTokenAuthenticator
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +309,19 @@ class Worker:
         if get_resource_injection_policy() == "kdp":
             self._create_async_task(kdp_serve_async(stop_event=asyncio.Event()))
 
+        if self._config.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL:
+            docker_sock = Path("/var/run/docker.sock")
+            sockets = [str(docker_sock)] if docker_sock.exists() else []
+            # Start websocket proxy message client to handle CONNECT_REQUEST from server
+            self._message_client = MessageClient(
+                server_endpoint=self._config.get_server_url(),
+                client_id=uuid.UUID(self.worker_uuid()),
+                cidrs=[f"{self.worker_ip()}/32" if self.worker_ip() else None],
+                unix_sockets=sockets,
+                authenticator=BearerTokenAuthenticator(headers=self._clientset.headers),
+            )
+            self._create_async_task(self._message_client.run())
+
         # wait for a while to let other tasks start
         await asyncio.sleep(0.5)
         logger.info("GPUStack worker startup completed.")
@@ -441,6 +459,12 @@ class Worker:
             params={"worker_id": str(self._worker_id)}
         ).items:
             self._clientset.model_instances.delete(instance.id)
+        loop = asyncio.get_event_loop()
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(
+                self._message_client.update_cidrs([f"{self._worker_ip}/32"])
+            )
+        )
 
     def _heartbeat(self):
         """

@@ -138,6 +138,7 @@ class Config(WorkerConfig, BaseSettings):
     tls_port: Optional[int] = 443
     # The api_port is used in gpustack server/worker serving API requests.
     api_port: Optional[int] = 30080
+    proxy_port: Optional[int] = 30079
     database_port: Optional[int] = 5432
     database_url: Optional[str] = None
     disable_worker: Optional[bool] = None  # Deprecated
@@ -812,6 +813,15 @@ class Config(WorkerConfig, BaseSettings):
             << 30
         )
         return system_reserved_in_bytes
+
+    def get_proxy_port(self) -> int:
+        return self.proxy_port
+
+    def get_proxy_listen_address(self, default: str = "0.0.0.0") -> str:
+        return "127.0.0.1" if self.gateway_mode == GatewayModeEnum.embedded else default
+
+    def get_proxy_url(self) -> Optional[str]:
+        return f"http://{self.get_proxy_listen_address(self.get_advertise_address())}:{self.get_proxy_port()}"
 
 
 def get_image_name(

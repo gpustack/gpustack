@@ -9,6 +9,7 @@ from prometheus_client.core import (
 import uvicorn
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
+from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.models import Model
 from gpustack.schemas.workers import Worker, WorkerStateEnum
@@ -234,6 +235,13 @@ class MetricExporter(Collector):
 
             @app.get("/metrics/targets")
             async def metrics_targets(session: SessionDep):
+                return await _metrics_targets(session, is_proxy=False)
+
+            @app.get("/metrics/proxy-targets")
+            async def metrics_proxy_targets(session: SessionDep):
+                return await _metrics_targets(session, is_proxy=True)
+
+            async def _metrics_targets(session: AsyncSession, is_proxy: bool):
 
                 targets = []
                 worker_list = await Worker.all(
@@ -241,16 +249,23 @@ class MetricExporter(Collector):
                 )
                 cluster_workers = {}
                 for worker in worker_list:
+                    preferred_address = (
+                        worker.advertise_address if not is_proxy else worker.ip
+                    )
                     if (
                         worker.state == WorkerStateEnum.READY
                         and worker.metrics_port
                         and worker.metrics_port > 0
+                        and (
+                            is_proxy
+                            == (worker.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL)
+                        )
                     ):
                         key = (worker.cluster_id, worker.cluster.name)
                         if key not in cluster_workers:
                             cluster_workers[key] = []
                         cluster_workers[key].append(
-                            f"{worker.advertise_address}:{worker.metrics_port}"
+                            f"{preferred_address}:{worker.metrics_port}"
                         )
                 for (cluster_id, cluster_name), endpoints in cluster_workers.items():
                     targets.append(

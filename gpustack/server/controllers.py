@@ -932,7 +932,7 @@ class WorkerController:
             try:
                 await self._reconcile(event)
                 await self._provisioning._reconcile(event)
-                await self._notify_parents(event)
+                await self._notify_relatives(event)
             except Exception as e:
                 logger.error(f"Failed to reconcile worker: {e}")
 
@@ -1029,7 +1029,7 @@ class WorkerController:
                 f"since {log_update_reason}"
             )
 
-    async def _notify_parents(self, event: Event):
+    async def _notify_relatives(self, event: Event):
         if event.type not in (EventType.UPDATED, EventType.DELETED):
             return
         worker: Worker = event.data
@@ -1042,15 +1042,22 @@ class WorkerController:
         proxy_mode_changed: Optional[Tuple[Any, Any]] = (changed_fields or {}).get(
             "proxy_mode", None
         )
-        should_notify = (
+        should_notify_parents = (
             state_changed is not None
             or proxy_mode_changed is not None
             or event.type == EventType.DELETED
         )
-        if not should_notify:
+        proxy_address_changed: Optional[Tuple[Any, Any]] = (changed_fields or {}).get(
+            "proxy_address", None
+        )
+        should_notify_children = (
+            proxy_address_changed is not None or proxy_mode_changed is not None
+        )
+
+        if not should_notify_parents and not should_notify_children:
             return
         async with async_session() as session:
-            if worker.worker_pool_id is not None:
+            if should_notify_parents and worker.worker_pool_id is not None:
                 worker_pool = await WorkerPool.one_by_id(
                     session,
                     worker.worker_pool_id,
@@ -1065,7 +1072,7 @@ class WorkerController:
                             data=copied_pool,
                         ),
                     )
-            if worker.cluster_id is not None:
+            if should_notify_parents and worker.cluster_id is not None:
                 cluster = await Cluster.one_by_id(
                     session,
                     worker.cluster_id,
@@ -1081,6 +1088,26 @@ class WorkerController:
                         Event(
                             type=EventType.UPDATED,
                             data=copied_cluster,
+                        ),
+                    )
+
+            if should_notify_children:
+                instances = await ModelInstance.all_by_fields(
+                    session,
+                    fields={"worker_id": worker.id},
+                    options=[selectinload(ModelInstance.model)],
+                )
+                notified_model = set()
+                for instance in instances:
+                    if instance.model_id in notified_model:
+                        continue
+                    notified_model.add(instance.model_id)
+                    copied_model = Model(**instance.model.model_dump())
+                    await event_bus.publish(
+                        copied_model.__class__.__name__.lower(),
+                        Event(
+                            type=EventType.UPDATED,
+                            data=copied_model,
                         ),
                     )
 

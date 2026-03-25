@@ -41,6 +41,7 @@ from gpustack.api.auth import (
     get_cluster_user,
     get_worker_user,
 )
+from gpustack.websocket_proxy.message_server import router as message_server_router
 
 versioned_prefix = "/v2"
 
@@ -249,4 +250,10 @@ api_router.include_router(
     prefix="/proxy",
     tags=["Server-Side Proxy"],
     include_in_schema=False,
+)
+
+api_router.include_router(
+    message_server_router,
+    tags=["WebSocket Proxy"],
+    include_in_schema=True,
 )
