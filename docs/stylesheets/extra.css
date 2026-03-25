@@ -46,3 +46,68 @@
     border-radius: 0.4rem;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
 }
+
+.icon-blue { color: #007BFF; }
+.icon-green { color: #28a745; }
+.icon-orange { color: #fd7e14; }
+.icon-red { color: #dc3545; }
+.icon-purple { color: #6f42c1; }
+
+/* 算力芯片徽章网格 - 深度美化版 */
+.hw-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); /* 稍微加宽一点 */
+    gap: 16px;
+    margin: 2em 0;
+}
+
+.hw-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 18px;
+    background: #ffffff;
+    border: 1px solid #eaecef;
+    border-radius: 10px;
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    cursor: default;
+    height: 56px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.02);
+}
+
+.hw-item:hover {
+    border-color: var(--md-primary-fg-color);
+    background-color: #f8fbff;
+    transform: translateY(-3px);
+    box-shadow: 0 10px 20px rgba(0, 123, 255, 0.08);
+}
+
+/* Logo 容器：固定宽度确保对齐 */
+.hw-logo-wrap {
+    flex: 0 0 45px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-right: 15px; /* 增加与文字的间距 */
+}
+
+.hw-item img {
+    max-height: 28px;
+    width: auto !important;
+    max-width: 100%;
+    margin: 0 !important;
+    transform: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    filter: grayscale(10%) contrast(110%); /* 稍微增强对比度 */
+}
+
+.hw-item span {
+    font-size: 0.9rem;
+    font-weight: 550;
+    color: #303133; /* 更深的颜色，更专业 */
+    letter-spacing: 0.02em;
+}
+
+.hw-item:hover span {
+    color: var(--md-primary-fg-color);
+}
