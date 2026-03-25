@@ -27,13 +27,41 @@
 
 ## Overview
 
-GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment. It configures and orchestrates inference engines — vLLM, SGLang, TensorRT-LLM, or your own — to optimize performance across GPU clusters. Its core features include:
+GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment. It configures and orchestrates inference engines — vLLM, SGLang, TensorRT-LLM, or your own — to optimize performance across GPU clusters.
 
-- **Multi-Cluster GPU Management.** Manages GPU clusters across multiple environments. This includes on-premises servers, Kubernetes clusters, and cloud providers.
-- **Pluggable Inference Engines.** Automatically configures high-performance inference engines such as vLLM, SGLang, and TensorRT-LLM. You can also add custom inference engines as needed.
-- **Day 0 Model Support.** GPUStack's pluggable engine architecture enables you to deploy new models on the day they are released.
-- **Performance-Optimized Configurations.** Offers pre-tuned modes for low latency or high throughput. GPUStack supports extended KV cache systems like LMCache and HiCache to reduce TTFT. It also includes built-in support for speculative decoding methods such as EAGLE3, MTP, and N-grams.
-- **Enterprise-Grade Operations.** Offers support for automated failure recovery, load balancing, monitoring, authentication, and access control.
+<div class="grid cards" markdown>
+
+-   :material-server-network:{ .lg .middle .icon-blue } __Multi-Cluster GPU Management__
+
+    ---
+
+    Manages GPU clusters across multiple environments. This includes on-premises servers, Kubernetes clusters, and cloud providers.
+
+-   :material-engine-outline:{ .lg .middle .icon-green } __Pluggable Inference Engines__
+
+    ---
+
+    Automatically configures high-performance inference engines such as vLLM, SGLang, and TensorRT-LLM. You can also add custom inference engines as needed.
+
+-   :material-rocket-launch-outline:{ .lg .middle .icon-orange } __Day 0 Model Support__
+
+    ---
+
+    GPUStack's pluggable engine architecture enables you to deploy new models on the day they are released.
+
+-   :material-speedometer:{ .lg .middle .icon-red } __Performance-Optimized__
+
+    ---
+
+    Offers pre-tuned modes for low latency or high throughput. Supports extended KV cache (LMCache, HiCache) and speculative decoding (EAGLE3, MTP).
+
+-   :material-shield-check-outline:{ .lg .middle .icon-purple } __Enterprise-Grade Operations__
+
+    ---
+
+    Offers support for automated failure recovery, load balancing, monitoring, authentication, and access control.
+
+</div>
 
 ## Architecture
 
@@ -55,14 +83,43 @@ For detailed benchmarking methods and results, visit our [Inference Performance 
 
 GPUStack supports a wide range of accelerators for AI inference:
 
-- **NVIDIA GPU**
-- **AMD GPU**
-- **Ascend NPU**
-- **Hygon DCU**
-- **MThreads GPU**
-- **Iluvatar GPU**
-- **MetaX GPU**
-- **Cambricon MLU**
-- **T-Head PPU**
+<div class="hw-grid">
+    <div class="hw-item">
+        <div class="hw-logo-wrap"><img src="../assets/logos/nvidia.png" alt="NVIDIA"></div>
+        <span>NVIDIA GPU</span>
+    </div>
+    <div class="hw-item">
+        <div class="hw-logo-wrap"><img src="../assets/logos/amd.png" alt="AMD"></div>
+        <span>AMD GPU</span>
+    </div>
+    <div class="hw-item">
+        <div class="hw-logo-wrap"><img src="../assets/logos/ascend.png" alt="Ascend"></div>
+        <span>Ascend NPU</span>
+    </div>
+    <div class="hw-item">
+        <div class="hw-logo-wrap"><img src="../assets/logos/hygon.png" alt="Hygon"></div>
+        <span>Hygon DCU</span>
+    </div>
+    <div class="hw-item">
+        <div class="hw-logo-wrap"><img src="../assets/logos/mthreads.png" alt="MThreads"></div>
+        <span>MThreads GPU</span>
+    </div>
+    <div class="hw-item">
+        <div class="hw-logo-wrap"><img src="../assets/logos/iiuvatar.png" alt="Iluvatar"></div>
+        <span>Iluvatar GPU</span>
+    </div>
+    <div class="hw-item">
+        <div class="hw-logo-wrap"><img src="../assets/logos/metax.png" alt="MetaX"></div>
+        <span>MetaX GPU</span>
+    </div>
+    <div class="hw-item">
+        <div class="hw-logo-wrap"><img src="../assets/logos/cambricon.png" alt="Cambricon"></div>
+        <span>Cambricon MLU</span>
+    </div>
+    <div class="hw-item">
+        <div class="hw-logo-wrap"><img src="../assets/logos/thead.png" alt="T-Head"></div>
+        <span>T-Head PPU</span>
+    </div>
+</div>
 
 For detailed requirements and setup instructions, see the [Installation Requirements](installation/requirements.md) documentation.
