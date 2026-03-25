@@ -511,6 +511,7 @@ class Config(WorkerConfig, BaseSettings):
             vendor = gd.get("vendor")
             memory = gd.get("memory")
             network = gd.get("network")
+            runtime_version = gd.get("runtime_version")
             type_ = gd.get("type") or manufacturer_to_backend(vendor)
 
             if not name:
@@ -563,6 +564,7 @@ class Config(WorkerConfig, BaseSettings):
                     device_chip_index=device_chip_index,
                     name=name,
                     vendor=vendor,
+                    runtime_version=runtime_version,
                     memory=MemoryInfo(
                         total=memory.get("total"),
                         is_unified_memory=memory.get("is_unified_memory", False),

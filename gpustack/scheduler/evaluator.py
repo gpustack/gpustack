@@ -33,7 +33,7 @@ from gpustack.schemas.models import (
     is_audio_model,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.schemas.inference_backend import is_built_in_backend
+from gpustack.schemas.inference_backend import is_custom_backend
 from gpustack.server.worker_selector import WorkerSelector
 from gpustack_runner import list_backend_runners
 from gpustack_runtime.deployer.__utils__ import compare_versions
@@ -357,7 +357,7 @@ async def evaluate_runtime_version(
     """
     backend_name = get_backend(model)
 
-    if not is_built_in_backend(backend_name):
+    if is_custom_backend(backend_name):
         return True, []
 
     max_runtime_version = None
@@ -396,7 +396,11 @@ async def evaluate_runtime_version(
         return True, []
 
     msg = _format_runtime_upgrade_message(
-        backend_name, max_gpu_type, max_runtime_version, version_list
+        backend_name,
+        model.backend_version,
+        max_gpu_type,
+        max_runtime_version,
+        version_list,
     )
     return False, [msg]
 
@@ -425,6 +429,7 @@ async def _check_runtime_version(
         "backend": gpu_type,
         "service": backend_name.lower(),
         "backend_version": runtime_version,
+        "service_version": model_backend_version,
     }
 
     if not model_backend_version:
@@ -464,6 +469,7 @@ async def _check_runtime_version(
 
 def _format_runtime_upgrade_message(
     backend_name: str,
+    backend_version: Optional[str],
     gpu_type: str,
     current_version: str,
     all_versions: List[str],
@@ -481,14 +487,14 @@ def _format_runtime_upgrade_message(
         Formatted error message
     """
     msg = (
-        f"The highest GPU runtime version available ({gpu_type} {current_version}) "
-        f"does not meet the requirements for backend {backend_name}. "
+        f"The highest supported GPU runtime version ({gpu_type} {current_version}) "
+        f"does not meet the requirements for backend {backend_name if not backend_version else backend_name + ' ' + backend_version}. "
     )
 
     if all_versions:
         versions_str = ", ".join(all_versions)
         msg += f"Supported versions: {versions_str}. "
-        msg += f"Please upgrade to at least version {all_versions[0]}."
+        msg += f"It is recommended to upgrade your GPU driver to a version compatible with {gpu_type} {all_versions[-1]} or later."
 
     return msg
 
