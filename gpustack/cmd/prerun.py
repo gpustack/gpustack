@@ -61,7 +61,7 @@ def run(args: argparse.Namespace):
             logger.info(
                 f"Enabled s6 services: {enabled_services}, dependencies for gpustack: {dependency_services}"
             )
-        prepare_s6_overlay(enabled_services, s6_base_path)
+        prepare_s6_overlay(enabled_services, dependency_services, s6_base_path)
 
         check_ports_availability(cfg, *enabled_services)
         if "postgres" in enabled_services:
@@ -388,6 +388,7 @@ def determine_dependency_services(cfg: Config) -> List[str]:
 
 def prepare_s6_overlay(
     enabled_services: List[str],
+    dependency_services: List[str],
     s6_base_path: Optional[str],
 ):
     if s6_base_path is None:
@@ -397,4 +398,6 @@ def prepare_s6_overlay(
     os.makedirs(s6_overlay_path, exist_ok=True)
     cleanup_s6_services(s6_overlay_path, *all_services())
 
-    create_s6_services(s6_overlay_path, *enabled_services)
+    create_s6_services(
+        s6_overlay_path, *(set(enabled_services) | set(dependency_services))
+    )
