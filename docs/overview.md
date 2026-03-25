@@ -63,13 +63,13 @@ GPUStack is an open-source GPU cluster manager designed for efficient AI model d
 
 </div>
 
-![a100-throughput-comparison](assets/a100-throughput-comparison.png)
+## Architecture
 
-For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
+GPUStack enables development teams, IT organizations, and service providers to deliver Model-as-a-Service at scale. It supports industry-standard APIs for LLM, voice, image, and video models. The platform includes built-in user authentication and access control, real-time monitoring of GPU performance and utilization, and detailed metering of token usage and API request rates.
 
-## Supported Accelerators
+The figure below illustrates how a single GPUStack server can manage multiple GPU clusters across both on-premises and cloud environments. The GPUStack scheduler allocates GPUs to maximize resource utilization and selects the appropriate inference engines for optimal performance. Administrators also gain full visibility into system health and metrics through integrated Grafana and Prometheus dashboards.
 
-GPUStack supports a wide range of accelerators for AI inference:
+![gpustack-v2-architecture](assets/gpustack-v2-architecture.png)
 
 ## Optimized Inference Performance
 
@@ -83,42 +83,33 @@ For detailed benchmarking methods and results, visit our [Inference Performance 
 
 GPUStack supports a wide range of accelerators for AI inference:
 
-<div class="hw-grid">
-    <div class="hw-item">
-        <div class="hw-logo-wrap"><img src="../assets/logos/nvidia.png" alt="NVIDIA"></div>
-        <span>NVIDIA GPU</span>
+<div class="logo-tile-grid">
+    <div class="logo-tile" data-tooltip="NVIDIA GPU">
+        <img src="../assets/logos/nvidia.png" alt="NVIDIA">
     </div>
-    <div class="hw-item">
-        <div class="hw-logo-wrap"><img src="../assets/logos/amd.png" alt="AMD"></div>
-        <span>AMD GPU</span>
+    <div class="logo-tile" data-tooltip="AMD GPU">
+        <img src="../assets/logos/amd.png" alt="AMD">
     </div>
-    <div class="hw-item">
-        <div class="hw-logo-wrap"><img src="../assets/logos/ascend.png" alt="Ascend"></div>
-        <span>Ascend NPU</span>
+    <div class="logo-tile" data-tooltip="Ascend NPU">
+        <img src="../assets/logos/ascend.png" alt="Ascend">
     </div>
-    <div class="hw-item">
-        <div class="hw-logo-wrap"><img src="../assets/logos/hygon.png" alt="Hygon"></div>
-        <span>Hygon DCU</span>
+    <div class="logo-tile" data-tooltip="Hygon DCU">
+        <img src="../assets/logos/hygon.png" alt="Hygon">
     </div>
-    <div class="hw-item">
-        <div class="hw-logo-wrap"><img src="../assets/logos/mthreads.png" alt="MThreads"></div>
-        <span>MThreads GPU</span>
+    <div class="logo-tile" data-tooltip="MThreads GPU">
+        <img src="../assets/logos/mthreads.png" alt="MThreads">
     </div>
-    <div class="hw-item">
-        <div class="hw-logo-wrap"><img src="../assets/logos/iiuvatar.png" alt="Iluvatar"></div>
-        <span>Iluvatar GPU</span>
+    <div class="logo-tile" data-tooltip="Iluvatar GPU">
+        <img src="../assets/logos/iiuvatar.png" alt="Iluvatar">
     </div>
-    <div class="hw-item">
-        <div class="hw-logo-wrap"><img src="../assets/logos/metax.png" alt="MetaX"></div>
-        <span>MetaX GPU</span>
+    <div class="logo-tile" data-tooltip="MetaX GPU">
+        <img src="../assets/logos/metax.png" alt="MetaX">
     </div>
-    <div class="hw-item">
-        <div class="hw-logo-wrap"><img src="../assets/logos/cambricon.png" alt="Cambricon"></div>
-        <span>Cambricon MLU</span>
+    <div class="logo-tile" data-tooltip="Cambricon MLU">
+        <img src="../assets/logos/cambricon.png" alt="Cambricon">
     </div>
-    <div class="hw-item">
-        <div class="hw-logo-wrap"><img src="../assets/logos/thead.png" alt="T-Head"></div>
-        <span>T-Head PPU</span>
+    <div class="logo-tile" data-tooltip="T-Head PPU">
+        <img src="../assets/logos/thead.png" alt="T-Head">
     </div>
 </div>
 

@@ -10,7 +10,7 @@
 }
 
 .md-typeset .center-table :is(td,th):not([align]) {
-    text-align: initial; /* Reset alignment for table cells */
+    text-align: initial;
 }
 
 .md-typeset pre > code {
@@ -53,61 +53,107 @@
 .icon-red { color: #dc3545; }
 .icon-purple { color: #6f42c1; }
 
-/* 算力芯片徽章网格 - 深度美化版 */
-.hw-grid {
+.logo-tile-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); /* 稍微加宽一点 */
+    grid-template-columns: repeat(3, 1fr);
     gap: 16px;
     margin: 2em 0;
 }
 
-.hw-item {
-    display: flex;
-    align-items: center;
-    padding: 12px 18px;
-    background: #ffffff;
-    border: 1px solid #eaecef;
-    border-radius: 10px;
-    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-    cursor: default;
-    height: 56px;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.02);
-}
-
-.hw-item:hover {
-    border-color: var(--md-primary-fg-color);
-    background-color: #f8fbff;
-    transform: translateY(-3px);
-    box-shadow: 0 10px 20px rgba(0, 123, 255, 0.08);
-}
-
-/* Logo 容器：固定宽度确保对齐 */
-.hw-logo-wrap {
-    flex: 0 0 45px;
+.logo-tile {
+    position: relative;
     display: flex;
     justify-content: center;
     align-items: center;
-    margin-right: 15px; /* 增加与文字的间距 */
+    background: #ffffff;
+    border: 1px solid #f0f0f2;
+    border-radius: 12px;
+    height: 100px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    padding: 24px;
 }
 
-.hw-item img {
-    max-height: 28px;
-    width: auto !important;
+.logo-tile::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(0);
+    padding: 6px 12px;
+    background-color: #333;
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 500;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s ease;
+    pointer-events: none;
+    z-index: 10;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+}
+
+.logo-tile::before {
+    content: "";
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(0);
+    border: 6px solid transparent;
+    border-top-color: #333;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s ease;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.logo-tile:hover::after {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(-12px);
+}
+
+.logo-tile:hover::before {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(-2px);
+}
+
+.logo-tile:hover {
+    border-color: var(--md-primary-fg-color);
+    box-shadow: 0 10px 30px rgba(0, 123, 255, 0.08);
+    transform: translateY(-4px);
+    z-index: 1;
+}
+
+.logo-tile img {
     max-width: 100%;
+    max-height: 45px;
+    width: auto !important;
+    height: auto !important;
     margin: 0 !important;
+    filter: grayscale(15%) opacity(0.9);
+    transition: all 0.3s ease;
     transform: none !important;
     box-shadow: none !important;
     border-radius: 0 !important;
-    filter: grayscale(10%) contrast(110%); /* 稍微增强对比度 */
 }
 
-.hw-item span {
-    font-size: 0.9rem;
-    font-weight: 550;
-    color: #303133; /* 更深的颜色，更专业 */
-    letter-spacing: 0.02em;
+.logo-tile:hover img {
+    filter: grayscale(0%) opacity(1);
+    transform: scale(1.05) !important;
 }
 
-.hw-item:hover span {
-    color: var(--md-primary-fg-color);
+@media screen and (max-width: 768px) {
+    .logo-tile-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media screen and (max-width: 480px) {
+    .logo-tile-grid {
+        grid-template-columns: 1fr;
+    }
 }
