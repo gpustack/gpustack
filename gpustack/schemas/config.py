@@ -36,6 +36,7 @@ class ModelInstanceProxyModeEnum(str, Enum):
     WORKER = "worker"
     DIRECT = "direct"
     DELEGATED = "delegated"
+    TUNNEL = "tunnel"
 
 
 class SensitivePredefinedConfig(BaseModel):

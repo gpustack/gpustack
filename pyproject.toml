@@ -68,6 +68,8 @@ dependencies = [
     "gpustack-runner==0.1.25.post7",
     "gpustack-runtime==0.1.44.post5",
     "gpustack-higress-plugins==0.2.0",
+    "websockets==16.0",
+    "py-radix>=1.1.0",
 ]
 
 [dependency-groups]
@@ -101,8 +103,8 @@ vllm = [
     "timm>=1.0.15",
 ]
 audio = [
-    "vox-box==0.0.19",
     "numba>=0.56.0",
+    "vox-box==0.0.19",
 ]
 all = [
     "vllm==0.10.1.1",

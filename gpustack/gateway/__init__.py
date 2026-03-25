@@ -56,7 +56,6 @@ supported_anthropic_routes = [
 ]
 
 async_gateway_config: Configuration = None
-router_header_key = "x-gpustack-model"
 
 
 def init_async_k8s_config(cfg: Config):

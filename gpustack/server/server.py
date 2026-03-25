@@ -5,10 +5,10 @@ import re
 import aiohttp
 
 import uvicorn
+from fastapi import FastAPI
 import logging
 import secrets
 import tenacity
-from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
 from gpustack.schemas.users import (
@@ -24,7 +24,6 @@ from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
 from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.security import (
-    JWTManager,
     generate_secure_password,
     get_secret_hash,
     API_KEY_PREFIX,
@@ -69,12 +68,18 @@ from gpustack.gateway.utils import (
     cleanup_fallback_filters,
     cleanup_ai_proxy_config,
     cleanup_mcpbridge_registry,
+    resolve_instance_address_from_model_header,
 )
 from gpustack.gateway import get_async_k8s_config
 from gpustack.envs import (
     GATEWAY_PORT_CHECK_INTERVAL,
     GATEWAY_PORT_CHECK_RETRY_COUNT,
     DEFAULT_CLUSTER_KUBERNETES,
+)
+
+from gpustack.websocket_proxy.proxy_server import HTTPSProxyServer
+from gpustack.api.auth import (
+    authenticate_worker_by_request_headers,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,11 +116,14 @@ class Server:
         if self._config.server_role() == Config.ServerRole.BOTH:
             self._sub_processes.append(self._worker_process)
 
+        # Start FastAPI server
+        app = create_app(self._config)
+
         self._start_sub_processes()
         self._start_scheduler()
         self._start_controllers()
         self._start_system_load_collector()
-        self._start_worker_syncer()
+        self._start_worker_syncer(app)
         self._start_update_checker()
         self._start_model_usage_flusher()
         self._start_worker_status_flusher()
@@ -124,20 +132,7 @@ class Server:
         self._start_gateway_metrics_collector()
         self._start_query_count_logger()
         self._start_default_registry_checker()
-
-        jwt_manager = JWTManager(self._config.jwt_secret_key)
-        # Start FastAPI server
-        app = create_app(self._config)
-        app.state.server_config = self._config
-        app.state.jwt_manager = jwt_manager
-        if self._config.enable_cors:
-            app.add_middleware(
-                CORSMiddleware,
-                allow_origins=self._config.allow_origins,
-                allow_credentials=self._config.allow_credentials,
-                allow_methods=self._config.allow_methods,
-                allow_headers=self._config.allow_headers,
-            )
+        self._start_proxy_servers(app)
 
         serving_host = (
             "127.0.0.1"
@@ -262,8 +257,11 @@ class Server:
 
         logger.debug("System load collector started.")
 
-    def _start_worker_syncer(self):
-        worker_syncer = WorkerSyncer()
+    def _start_worker_syncer(self, app: FastAPI):
+        worker_syncer = WorkerSyncer(
+            lambda: getattr(app.state, "http_client", None),
+            lambda: getattr(app.state, "http_client_no_proxy", None),
+        )
         self._create_async_task(worker_syncer.start())
 
         logger.debug("Worker syncer started.")
@@ -726,3 +724,15 @@ class Server:
             session=session, field="is_default", value=True
         )
         return cluster
+
+    def _start_proxy_servers(self, app: FastAPI) -> None:
+        _proxy_server = HTTPSProxyServer(
+            host=self._config.get_proxy_listen_address(),
+            port=self._config.get_proxy_port(),
+            connection_manager_getter=app.state.message_server_handler.get_connection_manager,
+            authenticator=lambda headers: authenticate_worker_by_request_headers(
+                headers, validate_proxy=None
+            ),
+            header_router=resolve_instance_address_from_model_header,
+        )
+        self._create_async_task(_proxy_server.start())

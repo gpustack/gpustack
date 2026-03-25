@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from enum import Enum
 from typing import ClassVar, Dict, Optional, Any
-from pydantic import ConfigDict, BaseModel
+from pydantic import ConfigDict, BaseModel, field_validator
+from urllib.parse import urlparse
 from sqlmodel import (
     Field,
     SQLModel,
@@ -397,6 +398,32 @@ class WorkerBase(WorkerCreate):
     provider_config: Optional[Dict[str, Any]] = Field(
         default=None, sa_column=Column(JSON, nullable=True)
     )
+
+    # Server side proxy field
+    proxy_address: Optional[str] = Field(
+        default=None, sa_column=Column(String(255), nullable=True)
+    )
+
+    @field_validator("proxy_address", mode="before")
+    def validate_proxy_address(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, str):
+            raise ValueError("proxy_address must be a string or None")
+        # proxy address must be in url format, e.g. http://1.2.3.4:8000
+        result = urlparse(v)
+        if not all([result.scheme, result.netloc]):
+            raise ValueError("proxy_address must be a valid URL")
+        return v
+
+    def get_proxy_address(self) -> Optional[str]:
+        """
+        Get the proxy address for the worker. If the worker has a proxy_address, return it.
+        Otherwise, return None to indicate that no proxy should be used.
+        """
+        if self.proxy_mode != ModelInstanceProxyModeEnum.TUNNEL:
+            return None
+        return self.proxy_address
 
 
 class Worker(WorkerBase, BaseModelMixin, table=True):

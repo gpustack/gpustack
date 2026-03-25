@@ -1,3 +1,4 @@
+from functools import partial
 from contextlib import asynccontextmanager
 from importlib.metadata import entry_points
 import logging
@@ -7,13 +8,18 @@ from fastapi import FastAPI
 from fastapi_cdn_host import patch_docs
 
 from gpustack import __version__
+from fastapi.middleware.cors import CORSMiddleware
 from gpustack.api import exceptions, middlewares
+from gpustack.api.auth import BearerTokenAuthenticator
 from gpustack.config.config import Config
 from gpustack import envs
 from gpustack.extension import Plugin
 from gpustack.routes import ui
 from gpustack.routes.routes import api_router
 from gpustack.utils.forwarded import ForwardedHostPortMiddleware
+from gpustack.security import JWTManager
+from gpustack.gateway.utils import worker_websocket_connect_callback
+from gpustack.websocket_proxy.message_server import MessageServerHandler
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +27,7 @@ logger = logging.getLogger(__name__)
 def create_app(cfg: Config) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        app.state.server_config = cfg
         connector = aiohttp.TCPConnector(
             limit=envs.TCP_CONNECTOR_LIMIT,
             force_close=True,
@@ -47,10 +54,32 @@ def create_app(cfg: Config) -> FastAPI:
     app.add_middleware(middlewares.RequestTimeMiddleware)
     app.add_middleware(middlewares.ModelUsageMiddleware)
     app.add_middleware(middlewares.RefreshTokenMiddleware)
+    if cfg.enable_cors:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cfg.allow_origins,
+            allow_credentials=cfg.allow_credentials,
+            allow_methods=cfg.allow_methods,
+            allow_headers=cfg.allow_headers,
+        )
     app.include_router(api_router)
     ui.register(app)
     _load_extension_plugins(app, cfg)
     exceptions.register_handlers(app)
+
+    app.state.jwt_manager = JWTManager(cfg.jwt_secret_key)
+    app.state.websocket_authenticator = BearerTokenAuthenticator()
+    app.state.message_server_handler = MessageServerHandler(
+        listen_address=cfg.get_proxy_listen_address(cfg.get_advertise_address()),
+        listen_port=cfg.api_port,
+        proxy_port=cfg.get_proxy_port(),
+        authenticator=app.state.websocket_authenticator,
+        callback_on_connect=partial(
+            worker_websocket_connect_callback,
+            proxy_address=cfg.get_proxy_url(),
+        ),
+        callback_on_disconnect=worker_websocket_connect_callback,
+    )
 
     return app
 

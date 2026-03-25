@@ -11,6 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 import gpustack
 from gpustack.migrations.utils import column_exists
+import gpustack.utils.sql_enum as sql_enum
 
 # revision identifiers, used by Alembic.
 revision: str = '8bf38a6bb3b5'
@@ -18,15 +19,31 @@ down_revision: Union[str, None] = '8ad0f94c92e8'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+model_instance_proxy_mode = sa.Enum(
+    'WORKER',
+    'DIRECT',
+    'DELEGATED',
+    name='modelinstanceproxymodeenum',
+)
+proxy_mode_to_add = ['TUNNEL']
+
 
 def upgrade() -> None:
     conn = op.get_bind()
 
-    if not column_exists('workers', 'worker_version'):
-        with op.batch_alter_table('workers', schema=None) as batch_op:
+    with op.batch_alter_table('workers', schema=None) as batch_op:
+        if not column_exists('workers', 'worker_version'):
             batch_op.add_column(
                 sa.Column('worker_version', sa.String(100), nullable=True)
             )
+        if not column_exists('workers', 'proxy_address'):
+            batch_op.add_column(sa.Column('proxy_address', sa.String(255), nullable=True))
+    
+    sql_enum.add_enum_values(
+        {'workers': 'proxy_mode'},
+        model_instance_proxy_mode,
+        *proxy_mode_to_add,
+    )
 
     ### k8s volume mount
     if not column_exists('clusters', 'k8s_volume_mounts'):
@@ -150,10 +167,18 @@ def upgrade() -> None:
     )
     ### end
 
+    
 
 def downgrade() -> None:
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.drop_column('worker_version')
+        batch_op.drop_column('proxy_address')
+
+    sql_enum.remove_enum_values(
+        {'workers': ('proxy_mode', 'WORKER')},
+        model_instance_proxy_mode,
+        *proxy_mode_to_add,
+    )
 
     ### k8s volume mount
     with op.batch_alter_table('clusters', schema=None) as batch_op:

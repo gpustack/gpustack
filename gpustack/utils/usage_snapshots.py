@@ -9,6 +9,11 @@ def format_model_snapshot_key(
     model_name: str,
     cluster_name: Optional[str] = None,
 ) -> str:
+    """Return a dict-key string for a model usage snapshot.
+
+    Format: ``"<cluster_name>/<model_name>"`` when a cluster is given,
+    otherwise just ``"<model_name>"``.
+    """
     if cluster_name:
         return f"{cluster_name}/{model_name}"
     return model_name
@@ -18,6 +23,11 @@ def format_model_snapshot_label(
     model_name: str,
     cluster_name: Optional[str] = None,
 ) -> str:
+    """Return a human-readable display label for a model usage snapshot.
+
+    Format: ``"<cluster_name> / <model_name>"`` when a cluster is given,
+    otherwise just ``"<model_name>"``.
+    """
     if cluster_name:
         return f"{cluster_name} / {model_name}"
     return model_name
@@ -29,6 +39,15 @@ def build_model_usage_snapshot(
     user: Optional[User] = None,
     api_key: Optional[ApiKey] = None,
 ) -> dict:
+    """Build a usage snapshot dict capturing the model identity at request time.
+
+    Records model ID, name, and cluster; optionally includes user and API key
+    fields when the caller supplies them. The snapshot is stored alongside usage
+    records so usage can be attributed even after models or keys are deleted.
+
+    ``cluster_name`` is resolved from ``model.cluster`` when not passed
+    explicitly.
+    """
     if cluster_name is None:
         cluster = getattr(model, "cluster", None)
         cluster_name = None if cluster is None else cluster.name
