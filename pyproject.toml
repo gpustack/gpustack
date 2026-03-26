@@ -67,7 +67,6 @@ dependencies = [
     "cachetools>=6.0.0",
     "gpustack-runner==0.1.25.post7",
     "gpustack-runtime==0.1.44.post2",
-    "mkdocs-minify-plugin>=0.8.0",
 ]
 
 [dependency-groups]
@@ -90,6 +89,7 @@ dev = [
     "mkdocs-glightbox>=0.4.0",
     "mkdocs-redirects>=1.2.2",
     "matplotlib>=3.10.7",
+    "mkdocs-minify-plugin>=0.8.0",
 ]
 
 [project.optional-dependencies]
