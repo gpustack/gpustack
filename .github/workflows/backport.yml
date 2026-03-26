@@ -1,19 +1,19 @@
 name: Backport
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   backport:
-    if: github.event.pull_request.merged == true
+    name: Backport pull request
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
+    if: github.event.pull_request.merged
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: korthout/backport-action@v3
+      - name: Create backport pull requests
+        uses: korthout/backport-action@v4
         with:
           label_pattern: "^backport/(.+)$"
