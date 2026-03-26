@@ -85,31 +85,31 @@ GPUStack supports a wide range of accelerators for AI inference:
 
 <div class="logo-tile-grid">
     <div class="logo-tile" data-tooltip="NVIDIA GPU">
-        <img src="../assets/logos/nvidia.png" alt="NVIDIA">
+        <img src="../assets/logos/nvidia.png" alt="NVIDIA" class="off-glb">
     </div>
     <div class="logo-tile" data-tooltip="AMD GPU">
-        <img src="../assets/logos/amd.png" alt="AMD">
+        <img src="../assets/logos/amd.png" alt="AMD" class="off-glb">
     </div>
     <div class="logo-tile" data-tooltip="Ascend NPU">
-        <img src="../assets/logos/ascend.png" alt="Ascend">
+        <img src="../assets/logos/ascend.png" alt="Ascend" class="off-glb">
     </div>
     <div class="logo-tile" data-tooltip="Hygon DCU">
-        <img src="../assets/logos/hygon.png" alt="Hygon">
+        <img src="../assets/logos/hygon.png" alt="Hygon" class="off-glb">
     </div>
     <div class="logo-tile" data-tooltip="MThreads GPU">
-        <img src="../assets/logos/mthreads.png" alt="MThreads">
+        <img src="../assets/logos/mthreads.png" alt="MThreads" class="off-glb">
     </div>
     <div class="logo-tile" data-tooltip="Iluvatar GPU">
-        <img src="../assets/logos/iiuvatar.png" alt="Iluvatar">
+        <img src="../assets/logos/iiuvatar.png" alt="Iluvatar" class="off-glb">
     </div>
     <div class="logo-tile" data-tooltip="MetaX GPU">
         <img src="../assets/logos/metax.png" alt="MetaX">
     </div>
     <div class="logo-tile" data-tooltip="Cambricon MLU">
-        <img src="../assets/logos/cambricon.png" alt="Cambricon">
+        <img src="../assets/logos/cambricon.png" alt="Cambricon" class="off-glb">
     </div>
     <div class="logo-tile" data-tooltip="T-Head PPU">
-        <img src="../assets/logos/thead.png" alt="T-Head">
+        <img src="../assets/logos/thead.png" alt="T-Head" class="off-glb">
     </div>
 </div>
 
