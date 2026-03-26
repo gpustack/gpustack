@@ -145,7 +145,7 @@ For example, running server and worker in host with AMD GPU, modify the docker r
 ```diff
   sudo docker run -d --name gpustack \
   ...
-- --runtime amd \
+- --runtime nvidia \
 + --runtime amd \
   ...
 ```
