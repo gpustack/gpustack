@@ -94,6 +94,23 @@ sudo docker run -d --name gpustack \
     ...
 ```
 
+### Additional Trusted CAs
+
+If GPUStack needs to communicate with services that use certificates issued by a private or corporate CA (e.g., a self-hosted Identity Provider, a Hugging Face mirror, or an internal API endpoint), mount the CA certificate into the container under `/usr/local/share/ca-certificates/`. GPUStack will automatically import the mounted CA certificates during startup and add them to the system trust store.
+
+```diff
+ sudo docker run -d --name gpustack \
+     ...
+     --volume gpustack-data:/var/lib/gpustack \
++    --volume /path/to/custom-root-ca.crt:/usr/local/share/ca-certificates/custom-root-ca.crt:ro \
+     gpustack/gpustack
+     ...
+```
+
+!!! note
+
+    The certificate file must have a `.crt` extension. You can mount multiple CA certificates by adding additional `--volume` flags.
+
 ## Installation via Docker Compose
 
 ### Prerequisites

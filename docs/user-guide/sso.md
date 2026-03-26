@@ -6,7 +6,8 @@ GPUStack supports Single Sign-On (SSO) authentication methods such as OIDC and S
 
 Any authentication provider that supports OIDC can be configured. The `email`, `name` and `picture` claims are used if available. The allowed redirect URI should include `<server-url>/auth/oidc/callback`.
 
-If your OIDC provider uses a certificate issued by a private or corporate CA, mount the CA certificate into the container under `/usr/local/share/ca-certificates/*.crt`. GPUStack will automatically import the mounted CA certificates during startup and use the system trust store for OIDC discovery and callback requests.
+If your OIDC provider uses a certificate issued by a private or corporate CA, see [Additional Trusted CAs](../installation/installation.md#additional-trusted-cas) for how to mount CA certificates into the GPUStack container.
+
 The following CLI flags are available for OIDC configuration:
 
 | <div style="width:180px">Flag</div>                   | Description                                                                                                                                                          |
