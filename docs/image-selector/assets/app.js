@@ -5,12 +5,12 @@ const CONFIG = {
     versionsBaseUrl: './versions/',
     registries: {
         'docker-hub': { 
-            name: 'Docker Hub', prefix: 'gpustack/', 
+            name: 'Docker Hub', prefix: 'gpustack/', registry: 'docker.io',
             // Special handling for Docker Hub: point to official image paths
             overrides: { 'postgres': 'postgres', 'prometheus': 'prom/prometheus', 'grafana': 'grafana/grafana' }
         },
-        'quay': { name: 'Quay.io', prefix: 'quay.io/gpustack/' },
-        'china': { name: '国内镜像源', prefix: 'swr.cn-south-1.myhuaweicloud.com/gpustack/' }
+        'quay': { name: 'Quay.io', prefix: 'quay.io/gpustack/', registry: 'quay.io' },
+        'china': { name: '国内镜像源', prefix: 'swr.cn-south-1.myhuaweicloud.com/gpustack/', registry: 'swr.cn-south-1.myhuaweicloud.com' }
     },
     // Mapping of card types to acceleration frameworks
     cardFrameworkMap: {
@@ -70,6 +70,10 @@ const CONFIG = {
                         <div style="margin-top:10px"><strong>Server + Worker 节点：</strong></div>
                         <pre><code>docker load -i gpustack-server-images.tar\ndocker load -i gpustack-worker-images.tar</code></pre>
                     </li>
+                    <li>
+                        运行 GPUStack Server 和 Worker 容器时通过 <code class="inline-code">--system-default-container-registry</code> 参数指定镜像源：
+                        <pre><code>sudo docker run -d --name gpustack \\\n    --restart unless-stopped \\\n    -p 80:80 \\\n    -p 10161:10161 \\\n    --volume gpustack-data:/var/lib/gpustack \\\n    quay.io/gpustack/gpustack:{{version}} \\\n    --system-default-container-registry {{registry}}</code></pre>
+                    </li>
                 </ol>`,
             'guide_tag_content': `
                 <p>适用于内网已有私有仓库（如 Harbor, Nexus）的场景。</p>
@@ -78,7 +82,7 @@ const CONFIG = {
                     <li>重新打标签并推送至私有仓库：
                         <pre><code>export PrivateRegistry=&lt;您的私有仓库地址&gt;\n{{tag_push_commands}}</code></pre>
                     </li>
-                    <li>运行 GPUStack Server 和 Worker 容器时，通过启动参数指定镜像地址：
+                    <li>运行 GPUStack Server 和 Worker 容器时，通过启动参数指定镜像源：
                         <pre><code>sudo docker run -d --name gpustack \\\n    --restart unless-stopped \\\n    -p 80:80 \\\n    -p 10161:10161 \\\n    --volume gpustack-data:/var/lib/gpustack \\\n    $PrivateRegistry/gpustack/gpustack:{{version}} \\\n    --system-default-container-registry $PrivateRegistry</code></pre>
                     </li>
                 </ol>`,
@@ -155,6 +159,10 @@ const CONFIG = {
                         <pre><code>docker load -i gpustack-worker-images.tar</code></pre>
                         <div style="margin-top:10px"><strong>Server + Worker Node:</strong></div>
                         <pre><code>docker load -i gpustack-server-images.tar\ndocker load -i gpustack-worker-images.tar</code></pre>
+                    </li>
+                    <li>
+                        When running GPUStack Server and Worker containers, specify the container registry using the <code class="inline-code">--system-default-container-registry</code> parameter:
+                        <pre><code>sudo docker run -d --name gpustack \\\n    --restart unless-stopped \\\n    -p 80:80 \\\n    -p 10161:10161 \\\n    --volume gpustack-data:/var/lib/gpustack \\\n    quay.io/gpustack/gpustack:{{version}} \\\n    --system-default-container-registry {{registry}}</code></pre>
                     </li>
                 </ol>`,
             'guide_tag_content': `
@@ -368,6 +376,7 @@ function updateLanguage() {
             content = content.replace(/{{server_images}}/g, serverImgs || '&lt;Server Image List&gt;');
             content = content.replace(/{{worker_images}}/g, workerImgs || '&lt;Worker Image List&gt;');
             content = content.replace(/{{tag_push_commands}}/g, tagPushCmds || '# Please select configuration to generate commands');
+            content = content.replace(/{{registry}}/g, CONFIG.registries[state.selectedRegistry].registry);
             el.innerHTML = content;
         }
     });
