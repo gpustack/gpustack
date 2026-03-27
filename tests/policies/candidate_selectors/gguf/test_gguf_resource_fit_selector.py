@@ -77,6 +77,8 @@ from tests.fixtures.estimates.fixtures import (
 
 from unittest.mock import patch, AsyncMock
 
+from tests.utils.mock import mock_async_session
+
 from tests.utils.model import new_model, new_model_instance
 from tests.utils.scheduler import compare_candidates
 
@@ -138,7 +140,7 @@ async def test_schedule_to_single_worker_single_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -227,7 +229,7 @@ async def test_schedule_to_single_worker_multi_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -291,7 +293,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -403,7 +405,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -550,7 +552,7 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -657,7 +659,7 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -751,11 +753,15 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -844,11 +850,15 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.model_file_locality_scorer.async_session',
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -942,7 +952,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1074,7 +1084,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1191,7 +1201,7 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1281,7 +1291,7 @@ async def test_manual_schedule_to_single_worker_multi_gpu_partial_offload(config
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
 
@@ -1404,7 +1414,7 @@ async def test_schedule_candidates_1x_197gx1(config, m, expected):
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
-            return_value=AsyncMock(),
+            return_value=mock_async_session(),
         ),
     ):
         actual = await resource_fit_selector.select_candidates(workers)

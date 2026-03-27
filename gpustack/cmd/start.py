@@ -588,7 +588,7 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     worker_group.add_argument(
         "--enable-hf-xet",
         action=OptionalBoolAction,
-        help="Enable downloading model files using Hugging Face Xet.",
+        help="[Deprecated] Enable downloading model files using Hugging Face Xet.",
     )
     worker_group.add_argument(
         "--proxy-mode",
@@ -778,7 +778,6 @@ def set_worker_options(args, config_data: dict):
         "system_reserved",
         "tools_download_base_url",
         "enable_hf_transfer",
-        "enable_hf_xet",
         "proxy_mode",
     ]
 
@@ -805,10 +804,6 @@ def set_third_party_env(cfg: Config):
         # https://huggingface.co/docs/huggingface_hub/guides/download#faster-downloads
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
         logger.debug("set env HF_HUB_ENABLE_HF_TRANSFER=1")
-
-    if not cfg.enable_hf_xet:
-        os.environ["HF_HUB_DISABLE_XET"] = "1"
-        logger.debug("set env HF_HUB_DISABLE_XET=1")
 
 
 # Adapted from: https://github.com/vllm-project/vllm/blob/main/vllm/utils.py#L2438
