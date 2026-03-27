@@ -100,7 +100,7 @@ GPUStack supports a wide range of accelerators for AI inference:
         <img src="../assets/logos/mthreads.png" alt="MThreads" class="off-glb">
     </div>
     <div class="logo-tile" data-tooltip="Iluvatar GPU">
-        <img src="../assets/logos/iiuvatar.png" alt="Iluvatar" class="off-glb">
+        <img src="../assets/logos/iluvatar.png" alt="Iluvatar" class="off-glb">
     </div>
     <div class="logo-tile" data-tooltip="MetaX GPU">
         <img src="../assets/logos/metax.png" alt="MetaX">
