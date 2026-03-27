@@ -63,13 +63,13 @@ GPUStack is an open-source GPU cluster manager designed for efficient AI model d
 
 </div>
 
-## Architecture
+![a100-throughput-comparison](assets/a100-throughput-comparison.png)
 
-GPUStack enables development teams, IT organizations, and service providers to deliver Model-as-a-Service at scale. It supports industry-standard APIs for LLM, voice, image, and video models. The platform includes built-in user authentication and access control, real-time monitoring of GPU performance and utilization, and detailed metering of token usage and API request rates.
+For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
 
-The figure below illustrates how a single GPUStack server can manage multiple GPU clusters across both on-premises and cloud environments. The GPUStack scheduler allocates GPUs to maximize resource utilization and selects the appropriate inference engines for optimal performance. Administrators also gain full visibility into system health and metrics through integrated Grafana and Prometheus dashboards.
+## Supported Accelerators
 
-![gpustack-v2-architecture](assets/gpustack-v2-architecture.png)
+GPUStack supports a wide range of accelerators for AI inference:
 
 ## Optimized Inference Performance
 

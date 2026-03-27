@@ -239,6 +239,8 @@ class BenchmarkRunner:
             self._api_key,
             "--backend-kwargs",
             json.dumps(backend_kwargs),
+            "--backend",
+            "openai_http_error_detail",
         ]
 
         if self._benchmark.dataset_name == DATASET_SHAREGPT:

@@ -9,7 +9,6 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.security import API_KEY_PREFIX, get_secret_hash
-from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.schemas.api_keys import (
     ApiKey,
@@ -25,8 +24,32 @@ from gpustack.server.services import APIKeyService
 router = APIRouter()
 
 
+def _get_masked_value(value: str) -> str:
+    """Return masked value with first 4 and last 4 characters visible."""
+    masked_value = "..."
+    if len(value) >= 8:
+        masked_value = f"{value[:4]}..."
+    return f"{API_KEY_PREFIX}_{masked_value}"
+
+
+def _api_key_to_public(api_key: ApiKey, value: str = None) -> ApiKeyPublic:
+    """Convert an ApiKey object to an ApiKeyPublic object."""
+    return ApiKeyPublic(
+        name=api_key.name,
+        description=api_key.description,
+        id=api_key.id,
+        value=value,
+        masked_value=_get_masked_value(api_key.access_key),
+        created_at=api_key.created_at,
+        updated_at=api_key.updated_at,
+        expires_at=api_key.expires_at,
+        allowed_model_names=api_key.allowed_model_names,
+    )
+
+
 @router.get("", response_model=ApiKeysPublic)
 async def get_api_keys(
+    session: SessionDep,
     user: CurrentUserDep,
     params: ApiKeyListParams = Depends(),
     search: str = None,
@@ -43,15 +66,19 @@ async def get_api_keys(
             media_type="text/event-stream",
         )
 
-    async with async_session() as session:
-        return await ApiKey.paginated_by_query(
-            session=session,
-            fields=fields,
-            fuzzy_fields=fuzzy_fields,
-            page=params.page,
-            per_page=params.perPage,
-            order_by=params.order_by,
-        )
+    result = await ApiKey.paginated_by_query(
+        session=session,
+        fields=fields,
+        fuzzy_fields=fuzzy_fields,
+        page=params.page,
+        per_page=params.perPage,
+        order_by=params.order_by,
+    )
+
+    # Convert ApiKey to ApiKeyPublic
+    items = [_api_key_to_public(item) for item in result.items]
+    result.items = items
+    return result
 
 
 @router.post("", response_model=ApiKeyPublic)
@@ -88,15 +115,8 @@ async def create_api_key(
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create api key: {e}")
 
-    return ApiKeyPublic(
-        name=api_key.name,
-        description=api_key.description,
-        id=api_key.id,
-        value=f"{API_KEY_PREFIX}_{access_key}_{secret_key}",
-        created_at=api_key.created_at,
-        updated_at=api_key.updated_at,
-        expires_at=api_key.expires_at,
-        allowed_model_names=api_key.allowed_model_names,
+    return _api_key_to_public(
+        api_key, value=f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
     )
 
 
@@ -125,4 +145,4 @@ async def update_api_key(
         )
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update api key: {e}")
-    return api_key
+    return _api_key_to_public(api_key)
