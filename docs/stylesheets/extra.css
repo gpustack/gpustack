@@ -47,11 +47,25 @@
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
 }
 
-.icon-blue { color: #007BFF; }
-.icon-green { color: #28a745; }
-.icon-orange { color: #fd7e14; }
-.icon-red { color: #dc3545; }
-.icon-purple { color: #6f42c1; }
+.icon-blue {
+    color: #007BFF;
+}
+
+.icon-green {
+    color: #28a745;
+}
+
+.icon-orange {
+    color: #fd7e14;
+}
+
+.icon-red {
+    color: #dc3545;
+}
+
+.icon-purple {
+    color: #6f42c1;
+}
 
 .logo-tile-grid {
     display: grid;
@@ -91,7 +105,7 @@
     transition: all 0.2s ease;
     pointer-events: none;
     z-index: 10;
-    box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
 }
 
 .logo-tile::before {
@@ -129,10 +143,10 @@
 }
 
 .logo-tile img {
-    max-width: 100%;
-    max-height: 45px;
+    height: 35px !important;
     width: auto !important;
-    height: auto !important;
+    max-width: 100%;
+    object-fit: contain;
     margin: 0 !important;
     filter: grayscale(15%) opacity(0.9);
     transition: all 0.3s ease;
