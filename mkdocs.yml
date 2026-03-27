@@ -55,6 +55,7 @@ theme:
     - navigation.footer
     - navigation.tracking
     - search.share
+    - toc.follow
   icon:
     repo: fontawesome/brands/github
   language: en
@@ -73,6 +74,11 @@ plugins:
         'installation/metax/installation.md': 'installation/requirements.md'
   - minify:
       minify_html: true
+      minify_css: true
+      minify_js: true
+      cache_safe: true
+      htmlmin_opts:
+        remove_comments: true
 extra:
   generator: false
   version:
@@ -89,18 +95,31 @@ extra:
     - icon: fontawesome/brands/weixin
       link: https://github.com/gpustack/gpustack/blob/main/docs/assets/wechat-group-qrcode.jpg
 extra_javascript:
-  - javascripts/katex.js
   - image-selector/assets/extra.js
   - https://unpkg.com/katex@0/dist/katex.min.js
+  - javascripts/katex.js
   - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
+  - https://unpkg.com/tablesort@5.3.0/dist/tablesort.min.js
+  - javascripts/tablesort.js
 extra_css:
   - stylesheets/extra.css
   - https://unpkg.com/katex@0/dist/katex.min.css
 markdown_extensions:
+  - abbr
+  - def_list
   - attr_list
   - md_in_html
-  - pymdownx.highlight
-  - pymdownx.superfences
+  - pymdownx.highlight:
+      linenums: true
+      line_spans: __span
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
   - admonition
@@ -109,7 +128,6 @@ markdown_extensions:
   - pymdownx.tilde
   - pymdownx.betterem
   - pymdownx.caret
-  - pymdownx.inlinehilite
   - pymdownx.tasklist:
       custom_checkbox: true
   - pymdownx.arithmatex:
@@ -117,6 +135,11 @@ markdown_extensions:
   - pymdownx.emoji:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
       emoji_index: !!python/name:material.extensions.emoji.twemoji
+  - pymdownx.critic
+  - pymdownx.keys
+  - pymdownx.snippets:
+      auto_append:
+        - docs/includes/abbreviations.md
 edit_uri: edit/main/docs/
 nav:
   - Home:

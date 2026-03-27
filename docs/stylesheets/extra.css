@@ -10,7 +10,7 @@
 }
 
 .md-typeset .center-table :is(td,th):not([align]) {
-    text-align: initial; /* Reset alignment for table cells */
+    text-align: initial;
 }
 
 .md-typeset pre > code {
@@ -45,4 +45,129 @@
 .md-typeset .admonition {
     border-radius: 0.4rem;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+}
+
+.icon-blue {
+    color: #007BFF;
+}
+
+.icon-green {
+    color: #28a745;
+}
+
+.icon-orange {
+    color: #fd7e14;
+}
+
+.icon-red {
+    color: #dc3545;
+}
+
+.icon-purple {
+    color: #6f42c1;
+}
+
+.logo-tile-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 2em 0;
+}
+
+.logo-tile {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #ffffff;
+    border: 1px solid #f0f0f2;
+    border-radius: 12px;
+    height: 100px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    padding: 24px;
+}
+
+.logo-tile::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(0);
+    padding: 6px 12px;
+    background-color: #333;
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 500;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s ease;
+    pointer-events: none;
+    z-index: 10;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+}
+
+.logo-tile::before {
+    content: "";
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(0);
+    border: 6px solid transparent;
+    border-top-color: #333;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s ease;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.logo-tile:hover::after {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(-12px);
+}
+
+.logo-tile:hover::before {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(-2px);
+}
+
+.logo-tile:hover {
+    border-color: var(--md-primary-fg-color);
+    box-shadow: 0 10px 30px rgba(0, 123, 255, 0.08);
+    transform: translateY(-4px);
+    z-index: 1;
+}
+
+.logo-tile img {
+    height: 35px !important;
+    width: auto !important;
+    max-width: 100%;
+    object-fit: contain;
+    margin: 0 !important;
+    filter: grayscale(15%) opacity(0.9);
+    transition: all 0.3s ease;
+    transform: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+
+.logo-tile:hover img {
+    filter: grayscale(0%) opacity(1);
+    transform: scale(1.05) !important;
+}
+
+@media screen and (max-width: 768px) {
+    .logo-tile-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media screen and (max-width: 480px) {
+    .logo-tile-grid {
+        grid-template-columns: 1fr;
+    }
 }
