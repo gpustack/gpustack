@@ -134,3 +134,6 @@ force-exclude = '''
     .*/migrations/.*
 )/
 '''
+
+[tool.uv.extra-build-dependencies]
+openai-whisper = ["setuptools~=81.0.0"]
