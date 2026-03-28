@@ -63,14 +63,6 @@ GPUStack is an open-source GPU cluster manager designed for efficient AI model d
 
 </div>
 
-![a100-throughput-comparison](assets/a100-throughput-comparison.png)
-
-For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
-
-## Supported Accelerators
-
-GPUStack supports a wide range of accelerators for AI inference:
-
 ## Optimized Inference Performance
 
 GPUStack's automated engine selection and parameter optimization deliver strong inference performance out of the box. The following figure shows throughput improvements over default vLLM configurations:
