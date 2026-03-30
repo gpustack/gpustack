@@ -1,7 +1,7 @@
-"""add worker version
+"""v2.2.0 add worker version
 
 Revision ID: 8bf38a6bb3b5
-Revises: 53667f33f000
+Revises: 8ad0f94c92e8
 Create Date: 2026-03-10 16:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '8bf38a6bb3b5'
-down_revision: Union[str, None] = '53667f33f000'
+down_revision: Union[str, None] = '8ad0f94c92e8'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
