@@ -2,6 +2,17 @@ name: Backport
 on:
   pull_request_target:
     types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to backport'
+        required: true
+        type: string
+      target_branch:
+        description: 'Target branch for backport'
+        required: true
+        type: string
+
 permissions:
   contents: write
   pull-requests: write
@@ -10,10 +21,19 @@ jobs:
   backport:
     name: Backport pull request
     runs-on: ubuntu-latest
-    if: github.event.pull_request.merged
+    if: github.event.pull_request.merged || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
-      - name: Create backport pull requests
+
+      - name: Create backport pull requests (auto)
+        if: github.event_name == 'pull_request_target'
         uses: korthout/backport-action@v4
         with:
           label_pattern: "^backport/(.+)$"
+
+      - name: Create backport pull request (manual)
+        if: github.event_name == 'workflow_dispatch'
+        uses: korthout/backport-action@v4
+        with:
+          pull_number: ${{ github.event.inputs.pr_number }}
+          target_branches: ${{ github.event.inputs.target_branch }}
