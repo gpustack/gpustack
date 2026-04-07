@@ -35,5 +35,5 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: korthout/backport-action@v4
         with:
-          pull_number: ${{ github.event.inputs.pr_number }}
+          source_pr_number: ${{ github.event.inputs.pr_number }}
           target_branches: ${{ github.event.inputs.target_branch }}
