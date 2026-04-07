@@ -382,3 +382,22 @@ def is_custom_backend(backend_name: Optional[str]) -> bool:
         not is_built_in_backend(backend_name)
         or backend_name == BackendEnum.CUSTOM.value
     )
+
+
+def is_built_in_backend_custom_version(
+    backend_name: Optional[str],
+    backend_version: Optional[str],
+    image_name: Optional[str],
+) -> bool:
+    """
+    True when a built-in backend uses user-defined runner configuration that is
+    outside gpustack-runner catalogs: explicit model image, or an inference
+    backend version key ending with '-custom' (see validate_custom_suffix).
+    """
+    if not is_built_in_backend(backend_name):
+        return False
+    if image_name:
+        return True
+    if backend_version and backend_version.lower().endswith("-custom"):
+        return True
+    return False
