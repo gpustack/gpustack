@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Union, Set, Tuple
+from typing import List, NamedTuple, Optional, Tuple, Union, Set
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -41,6 +41,13 @@ from gpustack.server.cache import (
 
 
 logger = logging.getLogger(__name__)
+
+
+class RouteTargetResolution(NamedTuple):
+    """Routing decision for a single ModelRouteTarget."""
+
+    model_id: int
+    overridden_model_name: Optional[str]
 
 
 class UserService:
@@ -588,14 +595,6 @@ class ModelRouteService:
         self.session = session
 
     @locked_cached()
-    async def get_by_name(self, name: str) -> Optional[ModelRoute]:
-        result = await ModelRoute.one_by_field(self.session, "name", name)
-        if result is None:
-            return None
-        self.session.expunge(result)
-        return result
-
-    @locked_cached()
     async def get_model_auth_info_by_name(
         self, name: str
     ) -> Optional[Tuple[AccessPolicyEnum, str]]:
@@ -642,12 +641,10 @@ class ModelRouteService:
         return route.access_policy, registration_token
 
     @locked_cached()
-    async def get_model_ids_by_model_route_name(self, name: str) -> List[Model]:
-        # Clients send the principal-prefixed effective name (e.g.
-        # "org1/qwen3-0.6b" or "user-42/qwen3-0.6b"). Targets are stored
-        # keyed by raw ``route_name``, so split off the prefix and
-        # constrain by the route's owning principal. Platform routes
-        # have no prefix — fall back to the legacy lookup.
+    async def resolve_route_targets(self, name: str) -> List[RouteTargetResolution]:
+        """Resolve a request model name to routing decisions, honoring an
+        optional `<slug>/<route>` principal prefix.
+        """
         owner_principal_id: Optional[int] = None
         raw_name = name
         if "/" in name:
@@ -669,7 +666,6 @@ class ModelRouteService:
         targets = await ModelRouteTarget.all_by_fields(
             self.session,
             fields=target_fields,
-            options=[selectinload(ModelRouteTarget.model)],
         )
         # When a principal slug was parsed, narrow to that owner's
         # route by joining through the parent ModelRoute's
@@ -686,10 +682,14 @@ class ModelRouteService:
             )
             allowed_route_ids = {r.id for r in owner_routes if r.id in route_ids}
             targets = [t for t in targets if t.route_id in allowed_route_ids]
-        models = [target.model for target in targets if target.model is not None]
-        for model in models:
-            self.session.expunge(model)
-        return models
+        return [
+            RouteTargetResolution(
+                model_id=target.model_id,
+                overridden_model_name=target.overridden_model_name,
+            )
+            for target in targets
+            if target.model_id is not None
+        ]
 
     async def update(
         self,
@@ -703,7 +703,7 @@ class ModelRouteService:
         )
         for name in names:
             await delete_cache_by_key(self.get_model_auth_info_by_name, name)
-            await delete_cache_by_key(self.get_model_ids_by_model_route_name, name)
+            await delete_cache_by_key(self.resolve_route_targets, name)
         return result
 
     async def delete(self, model_route: ModelRoute, auto_commit: bool = True):
@@ -714,7 +714,7 @@ class ModelRouteService:
         result = await model_route.delete(self.session, auto_commit=auto_commit)
         for name in names:
             await delete_cache_by_key(self.get_model_auth_info_by_name, name)
-            await delete_cache_by_key(self.get_model_ids_by_model_route_name, name)
+            await delete_cache_by_key(self.resolve_route_targets, name)
         return result
 
 
@@ -738,8 +738,14 @@ class ModelService:
         self.session.expunge(result)
         return result
 
-    async def update(self, model: Model, source: Union[dict, SQLModel, None] = None):
-        result = await model.update(self.session, source)
+    async def update(
+        self,
+        model: Model,
+        source: Union[dict, SQLModel, None] = None,
+        *,
+        auto_commit: bool = True,
+    ):
+        result = await model.update(self.session, source, auto_commit=auto_commit)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
         return result
@@ -781,9 +787,7 @@ class ModelService:
 
         route_service = ModelRouteService(self.session)
         for route_name in route_names:
-            await delete_cache_by_key(
-                route_service.get_model_ids_by_model_route_name, route_name
-            )
+            await delete_cache_by_key(route_service.resolve_route_targets, route_name)
             await delete_cache_by_key(
                 route_service.get_model_auth_info_by_name, route_name
             )

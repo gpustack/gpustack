@@ -14,6 +14,7 @@ import gpustack
 from gpustack.migrations.utils import column_exists, table_exists
 import gpustack.utils.sql_enum as sql_enum
 from gpustack.schemas.common import UTCDateTime
+from gpustack.schemas.stmt import model_user_after_drop_view_stmt
 
 # revision identifiers, used by Alembic.
 revision: str = '8bf38a6bb3b5'
@@ -457,6 +458,9 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint('id'),
         )
         _create_details_indexes('model_usage_details_archive')
+
+    ### LoRA
+    _upgrade_lora()
     ### end
 
     ### inference_backends parameter_format & common_parameters
@@ -471,6 +475,120 @@ def upgrade() -> None:
             )
     ### end
 
+
+
+def _upgrade_lora() -> None:
+    with op.batch_alter_table("model_files", schema=None) as batch_op:
+        if not column_exists("model_files", "is_lora"):
+            batch_op.add_column(
+                sa.Column(
+                    "is_lora",
+                    sa.Boolean(),
+                    nullable=False,
+                    server_default=sa.false(),
+                )
+            )
+        if not column_exists("model_files", "base_model"):
+            batch_op.add_column(
+                sa.Column("base_model", sa.String(length=512), nullable=True)
+            )
+
+    with op.batch_alter_table("models", schema=None) as batch_op:
+        if not column_exists("models", "lora_list"):
+            batch_op.add_column(
+                sa.Column("lora_list", gpustack.schemas.common.JSON(), nullable=True)
+            )
+
+    with op.batch_alter_table("model_instances", schema=None) as batch_op:
+        if not column_exists("model_instances", "mounted_loras"):
+            batch_op.add_column(
+                sa.Column(
+                    "mounted_loras", gpustack.schemas.common.JSON(), nullable=True
+                )
+            )
+
+    with op.batch_alter_table("model_routes", schema=None) as batch_op:
+        batch_op.add_column(
+            sa.Column("created_model_id", sa.Integer(), nullable=True)
+        )
+
+    op.execute(
+        """
+        UPDATE model_routes
+        SET created_model_id = (
+            SELECT mrt.model_id FROM model_route_targets mrt
+            WHERE mrt.route_id = model_routes.id
+              AND mrt.model_id IS NOT NULL
+            LIMIT 1
+        )
+        WHERE created_by_model = true
+        """
+    )
+
+    # View depends on model_routes.*; drop it so DROP COLUMN below
+    # isn't blocked on PG. init_db re-creates it at next server start.
+    op.execute(model_user_after_drop_view_stmt)
+
+    with op.batch_alter_table("model_routes", schema=None) as batch_op:
+        batch_op.drop_column("created_by_model")
+
+    op.create_index(
+        "ix_model_routes_created_model_id_name",
+        "model_routes",
+        ["created_model_id", "name"],
+        unique=False,
+    )
+
+    with op.batch_alter_table("model_route_targets", schema=None) as batch_op:
+        batch_op.alter_column(
+            "provider_model_name",
+            new_column_name="overridden_model_name",
+            existing_type=sa.String(length=512),
+            existing_nullable=True,
+        )
+
+
+def _downgrade_lora() -> None:
+    with op.batch_alter_table("model_route_targets", schema=None) as batch_op:
+        batch_op.alter_column(
+            "overridden_model_name",
+            new_column_name="provider_model_name",
+            existing_type=sa.String(length=512),
+            existing_nullable=True,
+        )
+
+    op.drop_index("ix_model_routes_created_model_id_name", table_name="model_routes")
+
+    # Same dependency dance as upgrade — DROP COLUMN created_model_id
+    # below is blocked while non_admin_user_models references it.
+    op.execute(model_user_after_drop_view_stmt)
+
+    with op.batch_alter_table("model_routes", schema=None) as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                "created_by_model",
+                sa.Boolean(),
+                nullable=False,
+                server_default=sa.false(),
+            )
+        )
+
+    op.execute(
+        "UPDATE model_routes SET created_by_model = true WHERE created_model_id IS NOT NULL"
+    )
+
+    with op.batch_alter_table("model_routes", schema=None) as batch_op:
+        batch_op.drop_column("created_model_id")
+
+    with op.batch_alter_table("model_instances", schema=None) as batch_op:
+        batch_op.drop_column("mounted_loras")
+
+    with op.batch_alter_table("models", schema=None) as batch_op:
+        batch_op.drop_column("lora_list")
+
+    with op.batch_alter_table("model_files", schema=None) as batch_op:
+        batch_op.drop_column("base_model")
+        batch_op.drop_column("is_lora")
 
 
 def downgrade() -> None:
@@ -562,6 +680,9 @@ def downgrade() -> None:
         op.drop_index(f'ix_{details_table}_model_id', table_name=details_table)
         op.drop_index(f'ix_{details_table}_date', table_name=details_table)
         op.drop_table(details_table)
+
+    ### LoRA
+    _downgrade_lora()
     ### end
 
     ### Remove inference_backends parameter_format & common_parameters

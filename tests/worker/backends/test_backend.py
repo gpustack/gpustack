@@ -491,8 +491,10 @@ def test_vllm_command_args_include_late_system_flags_as_injected():
         gpu_indexes=[],
         ports=[4000],
         computed_resource_claim=None,
+        mounted_loras=None,
     )
     backend._model = types.SimpleNamespace(
+        name="llm",
         backend=BackendEnum.VLLM,
         backend_parameters=[],
         backend_version=None,
@@ -536,8 +538,10 @@ def test_vllm_command_args_exclude_user_backend_parameters_from_injected():
         gpu_indexes=[],
         ports=[4000],
         computed_resource_claim=None,
+        mounted_loras=None,
     )
     backend._model = types.SimpleNamespace(
+        name="llm",
         backend=BackendEnum.VLLM,
         backend_parameters=["--host", "0.0.0.0", "--temperature", "0.2"],
         backend_version=None,
@@ -568,6 +572,7 @@ def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
         gpu_indexes=[],
         ports=[4000],
         computed_resource_claim=None,
+        mounted_loras=None,
     )
     backend._model = types.SimpleNamespace(
         backend_parameters=[],

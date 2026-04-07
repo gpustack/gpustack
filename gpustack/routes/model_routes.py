@@ -482,7 +482,7 @@ async def update_model_route_targets(
             continue
         to_compare_fields = {
             "route_name",
-            "provider_model_name",
+            "overridden_model_name",
             "weight",
             "model_id",
             "provider_id",
@@ -609,7 +609,7 @@ async def validate_targets(
                 raise NotFoundException(
                     f"ModelProvider with id '{target.provider_id}' not found."
                 )
-            validate_provider_model_name(provider, target.provider_model_name)
+            validate_provider_model_name(provider, target.overridden_model_name)
             _assert_target_tenant_aligned(
                 route_owner_principal_id,
                 getattr(provider, "owner_principal_id", None),
@@ -637,7 +637,7 @@ def validate_provider_model_name(
     model_names = [model.name for model in supported_models]
     if model_name not in model_names:
         raise InvalidException(
-            f"provider_model_name '{model_name}' is not supported by provider '{provider.name}'. Supported models: {', '.join(model_names)}"
+            f"overridden_model_name '{model_name}' is not supported by provider '{provider.name}'. Supported models: {', '.join(model_names)}"
         )
 
 

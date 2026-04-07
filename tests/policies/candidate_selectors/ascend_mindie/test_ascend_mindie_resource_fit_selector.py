@@ -1,5 +1,6 @@
 import pytest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from tests.utils.model import new_model
 from gpustack.policies.candidate_selectors import AscendMindIEResourceFitSelector
@@ -8,10 +9,12 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
 )
 from gpustack.schemas.models import (
     BackendEnum,
+    LoraListEntry,
     ModelInstance,
     ComputedResourceClaim,
     ModelInstanceSubordinateWorker,
     GPUSelector,
+    SourceEnum,
 )
 from tests.fixtures.workers.fixtures import (
     linux_ascend_1_910b_64gx8,
@@ -2042,3 +2045,206 @@ async def test_select_candidates(config, case_name, m, workers, expected_candida
     ):
         actual = await resource_fit_selector.select_candidates(workers)
         compare_candidates(actual, expected_candidates)
+
+
+# ---------------------------------------------------------------------------
+# LoRA VRAM – schedule through AscendMindIEResourceFitSelector (ModelScope source)
+#
+# AscendMindIE allocates per-NPU VRAM = int(total × npu_memory_fraction).
+# Default npu_memory_fraction = 0.8, Ascend 910B 64 GiB NPU:
+#   int(68_719_476_736 × 0.8) = 54_975_581_388
+#
+# LoRA adapter weights are added to the base model weight term in _estimate_usage.
+# When adapter weights cannot be resolved, the extra term is zero and scheduling
+# matches the no-LoRA baseline (see test_lora_vram_estimation).
+# ---------------------------------------------------------------------------
+
+_MINDIE_NPU_PER_DEVICE_VRAM = int(68_719_476_736 * 0.8)  # 54_975_581_388
+
+_MOCK_PRETRAINED_MINDIE_LORA_EST = SimpleNamespace(
+    architectures=["Qwen2ForCausalLM"],
+    num_attention_heads=64,
+    num_key_value_heads=8,
+    hidden_size=4096,
+    vocab_size=152064,
+    num_hidden_layers=32,
+    head_dim=128,
+    torch_dtype="bfloat16",
+    max_position_embeddings=8192,
+)
+
+
+@pytest.mark.parametrize(
+    "case_name, lora_list",
+    [
+        # LoRA adapters configured: same placement when extra LoRA weight still fits.
+        (
+            "with_lora",
+            [
+                LoraListEntry(
+                    lora_name="adapter1",
+                    lora_repo_name="user/adapter1",
+                    source=SourceEnum.MODEL_SCOPE.value,
+                )
+            ],
+        ),
+        # No LoRA: baseline scheduling output.
+        (
+            "no_lora",
+            None,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_lora_vram_estimation(config, case_name, lora_list):
+    model = new_model(
+        id=1,
+        name="test-mindie-lora",
+        model_scope_model_id="Qwen/Qwen3-4B",
+        lora_list=lora_list,
+    )
+    workers = [linux_ascend_1_910b_64gx8(return_device=1)]
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, model, [])
+
+    def fake_weight_size(m, token=None):
+        return 2 * 1024**3
+
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=_MOCK_PRETRAINED_MINDIE_LORA_EST),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.ascend_mindie_resource_fit_selector.get_model_weight_size",
+            side_effect=fake_weight_size,
+        ),
+        patch(
+            "gpustack.policies.utils.get_model_weight_size",
+            side_effect=fake_weight_size,
+        ),
+        patch(
+            "gpustack.policies.utils.get_worker_model_instances",
+            return_value=[],
+        ),
+        patch(
+            "gpustack.schemas.workers.Worker.all",
+            return_value=workers,
+        ),
+    ):
+        actual_candidates = await resource_fit_selector.select_candidates(workers)
+    expected = [
+        expected_candidate(1, "ascend_0", [0], {0: _MINDIE_NPU_PER_DEVICE_VRAM}),
+    ]
+    try:
+        compare_candidates(actual_candidates, expected)
+    except AssertionError as e:
+        raise AssertionError(f"Test case '{case_name}' failed: {str(e)}") from e
+
+
+@pytest.mark.asyncio
+async def test_lora_vram_claim_in_diagnostic_message(config):
+    """
+    LoRA weights are included in MindIE VRAM estimation (added to base weight).
+    The diagnostic message line reports the combined VRAM when resources are insufficient.
+    """
+    base_bytes = 50 * 1024**3
+    lora_bytes = 4 * 1024**3
+    lora_repo = "user/lora-adapter-vram-test"
+
+    mock_pretrained = SimpleNamespace(
+        architectures=["Qwen2ForCausalLM"],
+        num_attention_heads=64,
+        num_key_value_heads=8,
+        hidden_size=4096,
+        vocab_size=152064,
+        num_hidden_layers=4,
+        head_dim=128,
+        torch_dtype="bfloat16",
+        max_position_embeddings=2048,
+    )
+
+    def fake_get_model_weight_size(model, token=None):
+        if getattr(model, "huggingface_repo_id", None) == lora_repo:
+            return lora_bytes
+        return base_bytes
+
+    model_with_lora = new_model(
+        id=1,
+        name="test-mindie-lora-vram-msg",
+        replicas=1,
+        huggingface_repo_id="Qwen/Qwen3-4B",
+        cpu_offloading=False,
+        backend=BackendEnum.ASCEND_MINDIE.value,
+        backend_parameters=[
+            "--max-seq-len=512",
+            "--max-batch-size=1",
+            "--npu-memory-fraction=0.8",
+            "--trust-remote-code",
+        ],
+        distributed_inference_across_workers=False,
+        lora_list=[
+            LoraListEntry(
+                lora_name="adapter1",
+                lora_repo_name=lora_repo,
+                source=SourceEnum.HUGGING_FACE.value,
+            )
+        ],
+    )
+    model_no_lora = new_model(
+        id=1,
+        name="test-mindie-lora-vram-msg",
+        replicas=1,
+        huggingface_repo_id="Qwen/Qwen3-4B",
+        cpu_offloading=False,
+        backend=BackendEnum.ASCEND_MINDIE.value,
+        backend_parameters=model_with_lora.backend_parameters,
+        distributed_inference_across_workers=False,
+        lora_list=None,
+    )
+    workers = [linux_ascend_1_910b_64gx8(return_device=1)]
+
+    expect_msg = [
+        "- The model requires approximately 57.01 GiB VRAM and 0.5 GiB RAM.\n"
+        "- With --npu-memory-fraction=0.8, all GPUs combined need to provide at least 71.26 GiB of total VRAM and each GPU needs 80% of allocatable VRAM.\n"
+        "- The largest available worker has 51.2 GiB allocatable VRAM, 1/1 of GPUs meet the VRAM utilization ratio, providing 40.96 GiB of allocatable VRAM."
+    ]
+
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=mock_pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.ascend_mindie_resource_fit_selector.get_model_weight_size",
+            side_effect=fake_get_model_weight_size,
+        ),
+        patch(
+            "gpustack.policies.utils.get_model_weight_size",
+            side_effect=fake_get_model_weight_size,
+        ),
+        patch(
+            "gpustack.policies.utils.get_worker_model_instances",
+            return_value=[],
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances",
+            return_value=[],
+        ),
+        patch(
+            "gpustack.schemas.workers.Worker.all",
+            return_value=workers,
+        ),
+    ):
+        s_a = AscendMindIEResourceFitSelector(config, model_with_lora, [])
+        await s_a._init_model_parameters(workers)
+        u_with = await s_a._estimate_usage(workers)
+        s_b = AscendMindIEResourceFitSelector(config, model_no_lora, [])
+        await s_b._init_model_parameters(workers)
+        u_no = await s_b._estimate_usage(workers)
+        assert u_with.vram - u_no.vram == lora_bytes
+
+        selector = AscendMindIEResourceFitSelector(config, model_with_lora, [])
+        await selector._init_model_parameters(workers)
+        await selector.select_candidates(workers)
+
+    assert selector._diagnostic_messages == expect_msg

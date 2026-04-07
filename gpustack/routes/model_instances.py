@@ -4,7 +4,6 @@ import aiohttp
 from fastapi import APIRouter, Request, status, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
 from urllib.parse import urlencode
-from sqlalchemy.orm import selectinload
 
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
@@ -177,9 +176,7 @@ async def get_model_instance_dashboard(
 
 
 async def fetch_model_instance(session, id):
-    model_instance = await ModelInstance.one_by_id(
-        session, id, options=[selectinload(ModelInstance.model_files)]
-    )
+    model_instance = await ModelInstance.one_by_id_with_model_files(session, id)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
     if not model_instance.worker_id:

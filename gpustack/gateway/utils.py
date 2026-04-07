@@ -107,6 +107,7 @@ class RoutePrefix:
         ]
 
 
+# Paths routed like OpenAI (model-name resolution / same ingress); includes vLLM extras.
 openai_model_prefixes: List[RoutePrefix] = [
     RoutePrefix(
         [
@@ -568,13 +569,14 @@ def generate_model_ingress(
     ingress_class_name: str = "higress",
 ) -> k8s_client.V1Ingress:
     retry_policies = "error,timeout,http_503,http_502,non_idempotent"
+    matcher_op = "exact"
     annotations = {
         "higress.io/rewrite-target": "/$1$3",
         "higress.io/destination": destinations,
         "higress.io/ignore-path-case": 'true',
         "higress.io/proxy-next-upstream-tries": '2',
         "higress.io/proxy-next-upstream": retry_policies,
-        **higress_http_header_matcher("exact", "x-higress-llm-model", route_name),
+        **higress_http_header_matcher(matcher_op, "x-higress-llm-model", route_name),
     }
     if extra_annotations is not None:
         annotations.update(extra_annotations)
@@ -754,6 +756,7 @@ def hamilton_calculate_weight(
 def model_instances_registry_list(
     model_instances: List[Union[ModelInstance, ModelInstancePublic]],
     workers: Optional[Dict[int, Worker]] = None,
+    downstream_model_name: Optional[str] = None,
 ) -> DestinationTupleList:
     registries: DestinationTupleList = []
     for model_instance in model_instances:
@@ -764,7 +767,9 @@ def model_instances_registry_list(
         )
         registry = model_instance_registry(model_instance, worker=worker)
         if registry is not None:
-            registries.append((1, model_instance.model_name, registry))
+            registries.append(
+                (1, downstream_model_name or model_instance.model_name, registry)
+            )
     return registries
 
 

@@ -15,6 +15,7 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
 )
 from gpustack.policies.event_recorder.recorder import EventCollector
 from gpustack.policies.utils import (
+    estimate_lora_weights_bytes,
     get_worker_allocatable_resource,
     ListMessageBuilder,
     get_local_model_weight_size,
@@ -239,6 +240,19 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             )
         except Exception as e:
             logger.warning(f"Cannot get weight size for model {self._model.name}: {e}")
+
+        if self._model.lora_list:
+            try:
+                lora_w = await estimate_lora_weights_bytes(
+                    self._model, self._config.huggingface_token, workers, None
+                )
+                vram_weight += int(lora_w or 0)
+            except Exception as e:
+                logger.warning(
+                    "LoRA weight size estimation skipped for model %s: %s",
+                    self._model.name,
+                    e,
+                )
 
         n_tokens = self._serving_params.max_seq_len
         n_layers = self._model_params.num_hidden_layers or 0

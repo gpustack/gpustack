@@ -21,7 +21,7 @@ from gpustack.schemas.users import (
     default_cluster_user_name,
 )
 from gpustack.schemas.principals import PLATFORM_PRINCIPAL_ID
-from gpustack.schemas.models import ModelInstance
+from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
@@ -56,6 +56,11 @@ from gpustack.server.controllers import (
     GPUInstanceSSHPublicKeyController,
 )
 from gpustack.server.db import async_session
+from gpustack.server.lora_model_routes import (
+    cleanup_orphan_lora_routes,
+    create_lora_model_routes,
+)
+from gpustack.utils.lora_model_source import normalized_lora_list
 from gpustack.server.init_db import init_db, get_query_count
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
@@ -449,9 +454,32 @@ class Server:
             self._ensure_registration_token,
             self._cleanup_orphaned_gateway_data,
             sync_builtin_templates_to_db,
+            self._reconcile_lora_model_routes,
         ]
         for init_data_func in init_data_funcs:
             await init_data_func(session)
+
+    async def _reconcile_lora_model_routes(self, session: AsyncSession):
+        """Bring per-LoRA ModelRoute rows in sync with each Model.lora_list:
+        create missing ones and remove orphans (LoRA child routes whose
+        name `<base>:<lora>` is no longer in lora_list and not mounted
+        on any RUNNING instance).
+        """
+        all_models = await Model.all_by_fields(session, fields={"deleted_at": None})
+        models_with_lora = [m for m in all_models if normalized_lora_list(m)]
+        for model in models_with_lora:
+            await create_lora_model_routes(
+                session,
+                model,
+                access_policy=model.access_policy,
+                generic_proxy=model.generic_proxy,
+            )
+            await cleanup_orphan_lora_routes(session, model)
+
+        await session.commit()
+        logger.info(
+            f"LoRA model route reconcile: {len(models_with_lora)} models with lora_list scanned"
+        )
 
     async def _init_user(self, session: AsyncSession):
         # Skip bootstrap when any non-system admin already exists, so that

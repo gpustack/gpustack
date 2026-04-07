@@ -190,6 +190,31 @@ def test_extend_args_no_exist(initial_args, new_args, expected):
             ['--max-prefill-tokens', '-1', '--no-metrics'],
             ['--max-prefill-tokens=-1', '--no-metrics'],
         ),
+        # Multi-value flag (argparse nargs='+'): vLLM --lora-modules with
+        # multiple JSON adapter specs must keep flag + values as separate
+        # space-separated tokens; collapsing to "--lora-modules=<json>"
+        # would orphan every adapter past the first.
+        (
+            [
+                '--lora-modules',
+                '{"name":"a","path":"/a"}',
+                '{"name":"b","path":"/b"}',
+                '--port',
+                '8080',
+            ],
+            [
+                '--lora-modules',
+                '{"name":"a","path":"/a"}',
+                '{"name":"b","path":"/b"}',
+                '--port=8080',
+            ],
+        ),
+        # SGLang --lora-paths uses key=value syntax for each adapter; multiple
+        # values must remain separate tokens after the flag.
+        (
+            ['--lora-paths', 'a=/a', 'b=/b', '--port', '8080'],
+            ['--lora-paths', 'a=/a', 'b=/b', '--port=8080'],
+        ),
         (None, []),
     ],
 )

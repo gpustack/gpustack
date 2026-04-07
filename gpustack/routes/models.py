@@ -1,6 +1,6 @@
 import logging
 import math
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
 from urllib.parse import urlencode
@@ -31,8 +31,14 @@ from gpustack.api.tenant import (
     tenant_list_conditions,
 )
 from gpustack.server.db import async_session
-from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
+from gpustack.server.deps import (
+    CurrentUserDep,
+    ListParamsDep,
+    SessionDep,
+    TenantContextDep,
+)
 from gpustack.schemas.models import (
+    LoraListEntry,
     Model,
     ModelCreate,
     ModelSpecBase,
@@ -49,6 +55,12 @@ from gpustack.server.services import (
     ModelService,
     WorkerService,
     revoke_model_access_cache,
+)
+from gpustack.server.lora_adapters_discovery import list_adapters_for_base
+from gpustack.server.lora_model_routes import (
+    cleanup_orphan_lora_routes,
+    create_lora_model_routes,
+    is_lora_list_stale,
 )
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
@@ -154,13 +166,43 @@ async def get_models(
         )
 
 
+@router.get("/adapters", response_model=Dict[str, Any])
+async def get_model_adapters(
+    session: SessionDep,
+    user: CurrentUserDep,
+    base: str = Query(
+        ...,
+        description=(
+            "Base model repo id (e.g. Qwen/Qwen3-8B) for HF/ModelScope adapter discovery; "
+            "also used to match local cached LoRAs."
+        ),
+    ),
+    q: Optional[str] = Query(
+        None,
+        description="Optional keyword (Hugging Face search, ModelScope Search).",
+    ),
+    limit: int = Query(
+        40,
+        ge=1,
+        le=200,
+        description="Max adapter entries per remote source (HF and ModelScope).",
+    ),
+):
+    _ = user
+    return await list_adapters_for_base(session, base, q=q, limit=limit)
+
+
 @router.get("/{id}", response_model=ModelPublic)
 async def get_model(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
 ):
-    return await _get_model(session=session, ctx=ctx, id=id)
+    model = await Model.one_by_id(session, id, options=[selectinload(Model.instances)])
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
+    public = ModelPublic.model_validate(model)
+    public.has_stale_lora_instances = is_lora_list_stale(model)
+    return public
 
 
 @router.get("/{id}/dashboard")
@@ -300,6 +342,54 @@ async def validate_model_in(
         for param_names, error_message in unsupported_params:
             if find_parameter(model_in.backend_parameters, param_names):
                 raise BadRequestException(message=error_message)
+
+    validate_and_normalize_lora_list(model_in)
+
+
+def validate_and_normalize_lora_list(
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+) -> None:
+    """Mutates model_in.lora_list to force each lora_name into "<base>:<suffix>" form.
+
+    Short names are auto-prepended with the base prefix; wrong/missing prefixes,
+    empty names, missing suffixes, and duplicates are rejected (rewriting wrong
+    prefixes would mask client bugs).
+    """
+    lora_list = getattr(model_in, "lora_list", None)
+    if not lora_list:
+        return
+
+    expected_prefix = f"{model_in.name}:"
+    seen: set = set()
+    for i, item in enumerate(lora_list):
+        entry = LoraListEntry.model_validate(item) if isinstance(item, dict) else item
+        if not entry.lora_name:
+            raise BadRequestException(
+                message="lora_name must not be empty in lora_list."
+            )
+        if entry.lora_name == expected_prefix:
+            raise BadRequestException(
+                message=(
+                    f"lora_name '{entry.lora_name}' is missing the suffix "
+                    f"after the base model prefix '{expected_prefix}'."
+                )
+            )
+        if not entry.lora_name.startswith(expected_prefix):
+            if ":" in entry.lora_name:
+                raise BadRequestException(
+                    message=(
+                        f"lora_name '{entry.lora_name}' does not start with the "
+                        f"base model prefix '{expected_prefix}'. Set lora_name "
+                        f"to '{expected_prefix}<your-suffix>'."
+                    )
+                )
+            entry.lora_name = f"{expected_prefix}{entry.lora_name}"
+        lora_list[i] = entry
+        if entry.lora_name in seen:
+            raise BadRequestException(
+                message=f"Duplicate lora_name '{entry.lora_name}' in lora_list."
+            )
+        seen.add(entry.lora_name)
 
 
 async def validate_gpu_ids(  # noqa: C901
@@ -475,7 +565,7 @@ async def create_model(
                 description=model.description,
                 categories=model.categories,
                 generic_proxy=model.generic_proxy,
-                created_by_model=True,
+                created_model_id=model.id,
                 access_policy=model.access_policy,
                 owner_principal_id=model.owner_principal_id,
             )
@@ -496,9 +586,19 @@ async def create_model(
                 source=model_route_target,
                 auto_commit=False,
             )
+            await create_lora_model_routes(
+                session,
+                model,
+                access_policy=model.access_policy,
+                generic_proxy=model.generic_proxy,
+            )
             await session.commit()
             await revoke_model_access_cache(session=session)
+    except BadRequestException:
+        await session.rollback()
+        raise
     except Exception as e:
+        await session.rollback()
         raise InternalServerErrorException(message=f"Failed to create model: {e}")
 
     return model
@@ -522,11 +622,29 @@ async def update_model(
         model_in = patch
 
     try:
-        await ModelService(session).update(model, model_in)
+        await ModelService(session).update(model, model_in, auto_commit=False)
+        updated = await Model.one_by_id(session, id)
+        if not updated:
+            raise RuntimeError("Model not found after update")
+        base_route = await ModelRoute.one_by_field(session, "name", updated.name)
+        if base_route:
+            await create_lora_model_routes(
+                session,
+                updated,
+                access_policy=updated.access_policy,
+                generic_proxy=updated.generic_proxy,
+            )
+            await cleanup_orphan_lora_routes(session, updated)
+        await session.commit()
+        await revoke_model_access_cache(session=session)
+    except BadRequestException:
+        await session.rollback()
+        raise
     except Exception as e:
+        await session.rollback()
         raise InternalServerErrorException(message=f"Failed to update model: {e}")
 
-    return model
+    return updated
 
 
 @router.delete("/{id}")

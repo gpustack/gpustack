@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import JSON, Column, ForeignKey, Integer
-from sqlmodel import Field, Relationship, SQLModel, Text
+from sqlalchemy.orm import selectinload
+from sqlmodel import Field, Relationship, SQLModel, Text, select
 
 from gpustack.schemas.common import (
     ListParams,
@@ -79,6 +80,30 @@ class GPUSelector(BaseModel):
     # format of each element: "worker_name:device:gpu_index", example: "worker1:cuda:0"
     gpu_ids: Optional[List[str]] = None
     gpus_per_replica: Optional[int] = None
+
+
+class LoraListEntry(BaseModel):
+    """
+    One LoRA adapter configured on a base Model (download + runtime + optional route).
+    """
+
+    lora_name: str = Field(..., min_length=1)
+    """Fully-qualified LoRA id in the form "<base_model_name>:<suffix>"."""
+
+    lora_repo_name: Optional[str] = None
+    """HuggingFace repo id, ModelScope model id, or absolute filesystem path
+    (used as a fallback when source=local_path and local_path is empty)."""
+
+    source: str = SourceEnum.HUGGING_FACE.value
+    huggingface_filename: Optional[str] = None
+    model_scope_file_path: Optional[str] = None
+    local_path: Optional[str] = None
+
+    # Runtime fields populated when mounted on an instance.
+    path: Optional[str] = None
+    """Resolved filesystem path when mounted on an instance."""
+    model_file_id: Optional[int] = None
+    """ID of the ModelFile record backing this adapter."""
 
 
 class ExtendedKVCacheConfig(BaseModel):
@@ -231,6 +256,11 @@ class ModelSpecBase(SQLModel, ModelSource):
     # is migrated to ModelAccess. Keeping this field for backward compatibility
     generic_proxy: Optional[bool] = Field(default=False)
 
+    lora_list: Optional[List[LoraListEntry]] = Field(
+        default=None,
+        sa_column=Column(pydantic_column_type(List[LoraListEntry]), nullable=True),
+    )
+
     @model_validator(mode="after")
     def set_defaults(self):
         backend = get_backend(self)
@@ -317,6 +347,8 @@ class ModelPublic(
     id: int
     created_at: datetime
     updated_at: datetime
+    # Populated only by the detail endpoint; None on list responses.
+    has_stale_lora_instances: Optional[bool] = None
 
 
 ModelsPublic = PaginatedList[ModelPublic]
@@ -505,6 +537,11 @@ class ModelInstanceBase(SQLModel, ModelSource):
         ),
     )
 
+    mounted_loras: Optional[List[LoraListEntry]] = Field(
+        default=None,
+        sa_column=Column(pydantic_column_type(List[LoraListEntry]), nullable=True),
+    )
+
     def get_deployment_metadata(
         self,
         worker_id: int,
@@ -581,6 +618,26 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
         back_populates="cluster_model_instances",
         sa_relationship_kwargs={"lazy": "noload"},
     )
+
+    @classmethod
+    async def one_by_id_with_model_files(
+        cls,
+        session,
+        instance_id: int,
+        populate_existing: bool = True,
+    ) -> Optional["ModelInstance"]:
+        """Load a model instance with primary/LoRA and draft model_files eagerly loaded."""
+        stmt = (
+            select(cls)
+            .where(cls.id == instance_id)
+            .options(
+                selectinload(cls.model_files),
+                selectinload(cls.draft_model_files),
+            )
+        )
+        if populate_existing:
+            stmt = stmt.execution_options(populate_existing=True)
+        return (await session.exec(stmt)).first()
 
     # overwrite the hash to use in uniquequeue
     def __hash__(self):

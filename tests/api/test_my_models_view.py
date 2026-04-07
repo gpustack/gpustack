@@ -145,11 +145,11 @@ def _seed(engine):
                 text(
                     f"""
                     INSERT INTO model_routes
-                        (name, access_policy, organization_id, created_by_model,
+                        (name, access_policy, organization_id,
                          targets, ready_targets, generic_proxy,
                          categories, meta,
                          created_at, updated_at)
-                    VALUES (:n, '{policy}', 1, false, 0, 0, false,
+                    VALUES (:n, '{policy}', 1, 0, 0, false,
                             '[]'::jsonb, '{{}}'::jsonb, NOW(), NOW())
                     RETURNING id
                     """
