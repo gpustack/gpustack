@@ -600,7 +600,7 @@ fi
 # Execute
 #
 
-$@
+exec "$@"
 """
 
     def build_versioned_command_args(
