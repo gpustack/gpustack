@@ -1764,7 +1764,7 @@ export TORCH_AIE_PRINT_TO_FILE=0
 if [ -x ${CANN_HOME}/mindie/latest/mindie-service/bin/mindieservice_daemon_ ]; then
     ${CANN_HOME}/mindie/latest/mindie-service/bin/mindieservice_daemon_
 else
-    $@
+    exec "$@"
 fi
 """
 
