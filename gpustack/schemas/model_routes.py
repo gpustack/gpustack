@@ -28,12 +28,14 @@ if TYPE_CHECKING:
 
 
 # Route names intentionally exclude `/` — the dispatch parser
-# (`UserService.get_model_ids_by_model_route_name`) splits the inbound
+# (`ModelRouteService.resolve_route_targets`) splits the inbound
 # `model` string on the first `/` to separate Org slug from raw name.
 # Allowing `/` inside route names would create irresolvable ambiguity
 # (e.g. literal route "a/b" in platform Org vs. route "b" in Org with
-# slug "a"). Keep the two char sets disjoint.
-name_pattern = r'^[A-Za-z](?:[A-Za-z0-9_\-\.]*[A-Za-z0-9])?$'
+# slug "a"). `:` IS allowed — LoRA child routes use the form
+# `<base>:<lora>`, which is unambiguous since the Org-prefix split
+# happens before `:` is ever consulted.
+name_pattern = r'^[A-Za-z](?:[A-Za-z0-9_\-\.:]*[A-Za-z0-9])?$'
 
 
 def effective_route_name(
@@ -86,7 +88,7 @@ class FallbackStatusEnum(str, Enum):
 
 
 class ModelRouteTargetUpdate(SQLModel):
-    provider_model_name: Optional[str] = Field(default=None, nullable=True)
+    overridden_model_name: Optional[str] = Field(default=None, nullable=True)
     weight: int = Field(default=0, nullable=False, ge=0)
     model_id: Optional[int] = Field(
         default=None,
@@ -111,25 +113,44 @@ class ModelRouteTargetUpdate(SQLModel):
         ),
     )
 
+    @field_validator("overridden_model_name", mode="before")
+    def validate_overridden_model_name(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, str):
+            raise ValueError("overridden_model_name must be a string")
+        if not re.match(name_pattern, v):
+            raise ValueError(
+                "overridden_model_name must start with a letter and contain only "
+                "letters, numbers, hyphens, underscores, dots, or colons"
+            )
+        return v
+
     @model_validator(mode="after")
     def check_provider_or_model(self):
         both_set = self.provider_id is not None and self.model_id is not None
         both_none = self.provider_id is None and self.model_id is None
-        name_missing = self.provider_model_name is None and self.provider_id is not None
-        invalid_name = (
-            self.provider_model_name is not None and self.model_id is not None
-        )
 
         if both_none:
             raise ValueError("Either provider_id or model_id must be provided.")
         if both_set:
             raise ValueError("Only one of provider_id or model_id can be provided.")
-        if name_missing:
+        if self.provider_id is not None and self.overridden_model_name is None:
             raise ValueError(
-                "provider_model_name must be provided when provider_id is set."
+                "overridden_model_name must be provided when provider_id is set."
             )
-        if invalid_name:
-            raise ValueError("provider_model_name must be None when model_id is set.")
+        # Local-model targets only accept overridden_model_name shaped like
+        # "<base_model_name>:<lora_name>". The full base-prefix check lives in
+        # the service layer (lora_route_name_for); schema only enforces shape.
+        if (
+            self.model_id is not None
+            and self.overridden_model_name is not None
+            and ":" not in self.overridden_model_name
+        ):
+            raise ValueError(
+                "overridden_model_name for a local-model target must be of the "
+                "form '<base_model_name>:<lora_name>'."
+            )
         return self
 
 
@@ -177,7 +198,8 @@ class ModelRouteTargetBase(ModelRouteTargetCreate):
             raise ValueError("route_name must be a string")
         if not re.match(name_pattern, v):
             raise ValueError(
-                "route_name must start with a letter, only contain letters, numbers, hyphens, underscores, and not end with hyphen or underscore"
+                "route_name must start with a letter, only contain letters, numbers, hyphens, "
+                "underscores, or dots, and not end with hyphen or underscore"
             )
         return v
 
@@ -249,15 +271,17 @@ class ModelRouteUpdateBase(SQLModel):
                 raise ValueError(f"Invalid category: {category}")
         return v
 
-    @field_validator("name", mode="before")
-    def validate_name(cls, v):
-        if not isinstance(v, str):
+    @model_validator(mode="after")
+    def validate_name(self):
+        name = self.name
+        if not isinstance(name, str):
             raise ValueError("name must be a string")
-        if not re.match(name_pattern, v):
+        if not re.match(name_pattern, name):
             raise ValueError(
-                "name must start with a letter, only contain letters, numbers, hyphens, underscores, and not end with hyphen or underscore"
+                "name must start with a letter and contain only letters, numbers, hyphens, "
+                "underscores, or dots, and not end with hyphen or underscore"
             )
-        return v
+        return self
 
 
 class ModelRouteUpdate(ModelRouteUpdateBase):
@@ -271,7 +295,8 @@ class ModelRouteCreate(ModelRouteUpdate):
 
 
 class ModelRouteBase(ModelRouteUpdateBase):
-    created_by_model: Optional[bool] = Field(default=False, nullable=False)
+    # NULL for hand-created routes.
+    created_model_id: Optional[int] = Field(default=None, nullable=True)
     targets: int = Field(default=0, nullable=False, ge=0)
     ready_targets: int = Field(default=0, nullable=False, ge=0)
     access_policy: AccessPolicyEnum = Field(default=AccessPolicyEnum.AUTHED)

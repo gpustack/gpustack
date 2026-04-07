@@ -234,7 +234,7 @@ async def update_model_provider(
                 session=session,
                 fields={"provider_id": id},
                 extra_conditions=[
-                    ModelRouteTarget.provider_model_name.in_(deleted_models)
+                    ModelRouteTarget.overridden_model_name.in_(deleted_models)
                 ],
             )
             for route in routes:

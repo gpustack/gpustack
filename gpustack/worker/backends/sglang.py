@@ -19,6 +19,7 @@ from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
+    LoraListEntry,
     ModelInstance,
     SpeculativeAlgorithmEnum,
     CategoryEnum,
@@ -39,6 +40,39 @@ from gpustack.worker.backends.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def extend_sglang_mounted_lora_arguments(
+    arguments: List[str],
+    mounted_loras: Optional[List[LoraListEntry]],
+    backend_parameters: Optional[List[str]],
+) -> None:
+    """Inject SGLang --lora-paths flags. Skipped when caller already set them.
+    m.lora_name is the fully-qualified "<base>:<lora>" id; registered verbatim.
+    """
+    if not mounted_loras:
+        return
+    if find_parameter(backend_parameters or [], ["lora-paths", "lora_paths"]):
+        return
+    if find_parameter(arguments, ["lora-paths", "lora_paths"]):
+        return
+
+    modules: List[Tuple[str, str]] = []
+    for m in mounted_loras:
+        if not m.lora_name or not m.path:
+            continue
+        modules.append((m.lora_name, m.path))
+    if not modules:
+        return
+
+    extend_args_no_exist(arguments, "--enable-lora")
+    arguments.append("--lora-paths")
+    for name, path in modules:
+        arguments.append(f"{name}={path}")
+    extend_args_no_exist(
+        arguments,
+        ("--max-loras-per-batch", str(max(len(modules) + 1, 2))),
+    )
 
 
 class SGLangServer(InferenceServer):
@@ -409,6 +443,12 @@ class SGLangServer(InferenceServer):
                         ),
                     ]
                 )
+
+        extend_sglang_mounted_lora_arguments(
+            arguments,
+            self._model_instance.mounted_loras,
+            self._model.backend_parameters,
+        )
 
         # Add platform-specific parameters before user params so they appear in injected slice.
         if is_ascend(self._get_selected_gpu_devices()):

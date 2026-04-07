@@ -38,6 +38,8 @@ from gpustack.server.deps import SessionDep, CurrentUserDep
 from gpustack.server.services import (
     ModelInstanceService,
     ModelRouteService,
+    ModelService,
+    RouteTargetResolution,
     WorkerService,
     UserService,
 )
@@ -107,44 +109,55 @@ async def list_models(
         conditions = build_category_conditions(session, target_class, categories)
         statement = statement.where(or_(*conditions))
 
-    models = (await session.exec(statement)).all()
-    # Bulk-load owner principals to resolve each route's effective
-    # name (slug-prefixed for non-platform owners). Without the prefix,
-    # two owners holding routes named "qwen3-0.6b" would publish the
-    # same ``id`` here and Higress's AI proxy would dispatch
-    # ambiguously.
-    principal_ids = {
-        m.owner_principal_id for m in models if m.owner_principal_id is not None
-    }
-    principal_by_id: Dict[int, Principal] = {}
-    if principal_ids:
-        rows = (
-            await session.exec(select(Principal).where(Principal.id.in_(principal_ids)))
-        ).all()
-        principal_by_id = {p.id: p for p in rows}
+    routes = (await session.exec(statement)).all()
+    principal_by_id = await _prefetch_owner_principals(session, routes)
+    return SyncPage[OAIModel](
+        data=[
+            _route_to_oai_model(route, principal_by_id, with_meta) for route in routes
+        ],
+        object="list",
+    )
 
-    result = SyncPage[OAIModel](data=[], object="list")
-    for model in models:
-        owner = (
-            principal_by_id.get(model.owner_principal_id)
-            if model.owner_principal_id
-            else None
-        )
-        eff_name = effective_route_name(
-            model.name,
+
+def _route_to_oai_model(
+    route, principal_by_id: Dict[int, Principal], with_meta: Optional[bool]
+) -> OAIModel:
+    # Wrap the route name through ``effective_route_name`` so non-platform
+    # owners get a `<slug>/` prefix in the published id — this matches the
+    # gateway's ingress dispatch.
+    owner = (
+        principal_by_id.get(route.owner_principal_id)
+        if route.owner_principal_id
+        else None
+    )
+    return OAIModel(
+        id=effective_route_name(
+            route.name,
             getattr(owner, "slug", None),
             getattr(owner, "id", None) == PLATFORM_PRINCIPAL_ID,
-        )
-        result.data.append(
-            OAIModel(
-                id=eff_name,
-                object="model",
-                created=int(model.created_at.timestamp()),
-                owned_by="gpustack",
-                meta=model.meta if with_meta else None,
-            )
-        )
-    return result
+        ),
+        object="model",
+        created=int(route.created_at.timestamp()),
+        owned_by="gpustack",
+        meta=route.meta if with_meta else None,
+    )
+
+
+async def _prefetch_owner_principals(
+    session: AsyncSession, routes
+) -> Dict[int, Principal]:
+    """Bulk-load owner principals so each route's published id is
+    slug-prefixed for non-platform owners. Empty when all routes belong
+    to the platform Org."""
+    principal_ids = {
+        r.owner_principal_id for r in routes if r.owner_principal_id is not None
+    }
+    if not principal_ids:
+        return {}
+    rows = (
+        await session.exec(select(Principal).where(Principal.id.in_(principal_ids)))
+    ).all()
+    return {p.id: p for p in rows}
 
 
 async def proxy_request_by_model(
@@ -152,11 +165,11 @@ async def proxy_request_by_model(
     user: CurrentUserDep,
     session: SessionDep,
 ):
-    endpoint = re.sub(r"^/(v1|v1-openai)/", "", request.url.path)
     """
     Proxy the request to the model instance that is running the model specified in the
     request body.
     """
+    endpoint = re.sub(r"^/(v1|v1-openai)/", "", request.url.path)
     model_name, stream, body_json, form_data = await parse_request_body(request)
     if not await UserService(session).model_allowed_for_user(
         model_name=model_name,
@@ -168,17 +181,24 @@ async def proxy_request_by_model(
             is_openai_exception=True,
         )
     model_route_service = ModelRouteService(session)
-    models: List[Model] = await model_route_service.get_model_ids_by_model_route_name(
-        model_name
+    route_targets: List[RouteTargetResolution] = (
+        await model_route_service.resolve_route_targets(model_name)
     )
-    if len(models) == 0:
+    if not route_targets:
         raise NotFoundException(
             message="Model not found or no running instances available",
             is_openai_exception=True,
         )
     request.state.stream = stream
-    model = random.choice(models)
+    target = random.choice(route_targets)
+    model = await ModelService(session).get_by_id(target.model_id)
+    if not model:
+        raise NotFoundException(
+            message="Model not found",
+            is_openai_exception=True,
+        )
     request.state.model = model
+    request.state.overridden_model_name = target.overridden_model_name
 
     # Resolve the route id so downstream middleware (usage recording) can
     # attribute the request to the route it entered through. The lookup
@@ -188,7 +208,9 @@ async def proxy_request_by_model(
 
     mutate_request(request, model_name, body_json, form_data)
 
-    instance = await get_running_instance(session, model.id)
+    instance = await get_running_instance(
+        session, model.id, target.overridden_model_name
+    )
     worker: Worker = await WorkerService(session).get_by_id(instance.worker_id)
     if not worker:
         raise InternalServerErrorException(
@@ -411,7 +433,16 @@ def filter_headers(headers):
     }
 
 
-async def get_running_instance(session: AsyncSession, model_id: int):
+async def get_running_instance(
+    session: AsyncSession,
+    model_id: int,
+    overridden_model_name: Optional[str] = None,
+):
+    """Pick a RUNNING instance, narrowing by ``mounted_loras`` when a
+    LoRA ``overridden_model_name`` is given. The filter is needed
+    because ``mounted_loras`` is a one-shot snapshot taken at STARTING
+    and never hot-reloaded
+    """
     running_instances = await ModelInstanceService(session).get_running_instances(
         model_id
     )
@@ -420,6 +451,21 @@ async def get_running_instance(session: AsyncSession, model_id: int):
             message="No running instances available",
             is_openai_exception=True,
         )
+    if overridden_model_name:
+        running_instances = [
+            inst
+            for inst in running_instances
+            if inst.mounted_loras
+            and any(m.lora_name == overridden_model_name for m in inst.mounted_loras)
+        ]
+        if not running_instances:
+            raise ServiceUnavailableException(
+                message=(
+                    f"No running instances with LoRA '{overridden_model_name}' mounted. "
+                    f"Restart instances after updating lora_list to apply changes."
+                ),
+                is_openai_exception=True,
+            )
     return await load_balancer.get_instance(running_instances)
 
 
@@ -438,11 +484,13 @@ def mutate_request(
         and model.env.get("GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES", False)
     ):
         apply_qwen3_reranker_templates(body_json)
-    if model_name != model.name:
+
+    override = getattr(request.state, "overridden_model_name", None) or model.name
+    if model_name != override:
         if body_json is not None:
-            body_json["model"] = model.name
+            body_json["model"] = override
         elif form_data is not None:
-            form_data.add_field("model", model.name)
+            form_data.add_field("model", override)
 
 
 def apply_qwen3_reranker_templates(body_json: dict):

@@ -113,6 +113,11 @@ class AscendMindIEParameters:
     enable_buffer_response: bool = False
     prefill_expected_time_ms: Optional[int] = None
     decode_expected_time_ms: Optional[int] = None
+    #
+    # LoRA config
+    #
+    max_loras: int = 0  # 0 = auto (equals to the number of mounted LoRAs)
+    max_lora_rank: int = 64
 
     def changed_backend_parameters(
         self,
@@ -606,6 +611,23 @@ class AscendMindIEParameters:
             required=False,
             help="RoPE theta configuration. "
             "This will merge into the `config.json` of the model structure.",
+        )
+        #
+        # LoRA config
+        #
+        parser.add_argument(
+            "--max-loras",
+            type=int,
+            default=self.max_loras,
+            help="Maximum number of LoRA adapters. "
+            "0 means auto (equals to the number of mounted LoRAs).",
+        )
+        parser.add_argument(
+            "--max-lora-rank",
+            type=int,
+            default=self.max_lora_rank,
+            help="Maximum LoRA rank. "
+            f"If unspecified, will use the default value of {self.max_lora_rank}.",
         )
 
         if args:
@@ -1473,6 +1495,30 @@ class AscendMindIEServer(InferenceServer):
                 schedule_config["bufferResponseEnabled"] = True
                 schedule_config["prefillExpectedTime"] = params.prefill_expected_time_ms
                 schedule_config["decodeExpectedTime"] = params.decode_expected_time_ms
+
+        # - LoRA config
+        loras = self._model_instance.mounted_loras
+        if loras:
+            lora_modules = []
+            for m in loras:
+                if not m.lora_name or not m.path:
+                    continue
+                lora_modules.append(
+                    {
+                        # m.lora_name is the fully-qualified "<base>:<lora>" id;
+                        # registered verbatim.
+                        "name": m.lora_name,
+                        "path": m.path,
+                        "baseModelName": self._model.name,
+                    }
+                )
+            if lora_modules:
+                max_loras = (
+                    params.max_loras if params.max_loras > 0 else len(lora_modules)
+                )
+                model_deploy_config["maxLoras"] = max_loras
+                model_deploy_config["maxLoraRank"] = params.max_lora_rank
+                model_deploy_config["LoraModules"] = lora_modules
 
         # Generate rank table file if needed,
         # see https://www.hiascend.com/document/detail/zh/mindie/20RC2/envdeployment/instg/mindie_instg_0027.html,

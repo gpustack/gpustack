@@ -51,6 +51,7 @@ from gpustack.schemas.principals import (
 from gpustack.schemas.models import (
     BackendEnum,
     BackendSourceEnum,
+    LoraListEntry,
     ModelSource,
     Model,
     ModelInstance,
@@ -58,6 +59,16 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
     SourceEnum,
     get_backend,
+)
+from gpustack.schemas.links import (
+    ModelInstanceModelFileLink,
+    ModelInstanceDraftModelFileLink,
+)
+from gpustack.utils.lora_model_source import (
+    lora_entry_to_model_source,
+    lora_route_name_for,
+    normalized_lora_list,
+    model_base_descriptor,
 )
 from gpustack.schemas.config import (
     GatewayModeEnum,
@@ -95,7 +106,9 @@ from gpustack.server.services import (
     WorkerService,
     ModelRouteService,
     collect_route_cache_names,
+    revoke_model_access_cache,
 )
+from gpustack.server.lora_model_routes import cleanup_orphan_lora_routes
 from gpustack.utils.model_instance_workers import get_model_instance_worker_match
 from gpustack.cloud_providers.common import (
     get_client_from_provider,
@@ -260,8 +273,23 @@ class ModelInstanceController:
                 if model_deleting:
                     return
 
+                should_cleanup_lora_routes = event.type == EventType.DELETED or (
+                    event.type == EventType.UPDATED
+                    and "state" in (event.changed_fields or {})
+                    and model_instance.state != ModelInstanceStateEnum.RUNNING
+                )
+                any_lora_route_deleted = False
+                if should_cleanup_lora_routes:
+                    any_lora_route_deleted = await cleanup_orphan_lora_routes(
+                        session, model
+                    )
+
                 await model.refresh(session)
-                await sync_ready_replicas(session, model)
+                replicas_updated = await sync_ready_replicas(session, model)
+                if any_lora_route_deleted and not replicas_updated:
+                    await session.commit()
+                if any_lora_route_deleted:
+                    await revoke_model_access_cache(session=session)
         except Exception as e:
             logger.error(
                 f"Failed to reconcile model instance {model_instance.name}: {e}"
@@ -404,6 +432,151 @@ async def distribute_models_to_user(
         await asyncio.gather(*tasks)
 
 
+def _instance_model_files_complete(
+    instance: ModelInstance, model: Optional[Model]
+) -> bool:
+    """Check if all expected model files already exist and none need retry."""
+    worker_ids = _get_worker_ids_for_file_download(instance)
+    if not worker_ids:
+        return False
+
+    existing = instance.model_files or []
+    if any(f.state == ModelFileStateEnum.ERROR for f in existing):
+        return False
+
+    # Primary model files: each worker should have a non-LoRA file
+    primary_worker_ids = {f.worker_id for f in existing if not f.is_lora}
+    if not all(wid in primary_worker_ids for wid in worker_ids):
+        return False
+
+    # LoRA files: each LoRA entry × each worker should have a file
+    expected_lora_count = len(normalized_lora_list(model)) if model else 0
+    if expected_lora_count > 0:
+        lora_files = [f for f in existing if f.is_lora]
+        if len(lora_files) < expected_lora_count * len(worker_ids):
+            return False
+
+    # Draft model files
+    if instance.draft_model_source:
+        draft_files = instance.draft_model_files or []
+        if any(f.state == ModelFileStateEnum.ERROR for f in draft_files):
+            return False
+        draft_worker_ids = {f.worker_id for f in draft_files}
+        if not all(wid in draft_worker_ids for wid in worker_ids):
+            return False
+
+    return True
+
+
+async def _link_instance_primary_model_files(
+    session: AsyncSession, instance_id: int, files: List[ModelFile]
+):
+    """Insert missing instance↔model_file links; caller's session will flush/commit."""
+    for f in files:
+        if f.id is None:
+            continue
+        stmt = select(ModelInstanceModelFileLink).where(
+            ModelInstanceModelFileLink.model_instance_id == instance_id,
+            ModelInstanceModelFileLink.model_file_id == f.id,
+        )
+        if (await session.exec(stmt)).first() is None:
+            session.add(
+                ModelInstanceModelFileLink(
+                    model_instance_id=instance_id, model_file_id=f.id
+                )
+            )
+
+
+async def _link_instance_draft_model_files(
+    session: AsyncSession, instance_id: int, files: List[ModelFile]
+):
+    """Same as primary links but for draft-model file associations."""
+    for f in files:
+        if f.id is None:
+            continue
+        stmt = select(ModelInstanceDraftModelFileLink).where(
+            ModelInstanceDraftModelFileLink.model_instance_id == instance_id,
+            ModelInstanceDraftModelFileLink.model_file_id == f.id,
+        )
+        if (await session.exec(stmt)).first() is None:
+            session.add(
+                ModelInstanceDraftModelFileLink(
+                    model_instance_id=instance_id, model_file_id=f.id
+                )
+            )
+
+
+def _is_primary_instance_model_file(
+    file: ModelFile, instance: ModelInstance, is_draft_model: bool
+) -> bool:
+    if is_draft_model:
+        return False
+    if file.is_lora:
+        return False
+    return True
+
+
+async def get_or_create_lora_model_files_for_instance(
+    session: AsyncSession, instance: ModelInstance, model: Model
+) -> List[ModelFile]:
+    """Ensure ModelFile rows exist for model.lora_list on the instance's workers (same session as caller)."""
+    entries = normalized_lora_list(model)
+    if not entries:
+        return []
+    worker_ids = _get_worker_ids_for_file_download(instance)
+    base_desc = model_base_descriptor(model)
+    out: List[ModelFile] = []
+    seen_ids: Set[int] = set()
+
+    for entry in entries:
+        try:
+            lora_src = lora_entry_to_model_source(entry)
+        except ValueError as e:
+            logger.warning(
+                "Skip invalid LoRA entry %r for instance %s; ModelFile will not be created: %s",
+                entry.lora_name,
+                instance.name,
+                e,
+            )
+            continue
+        # Query once per entry, reuse across workers
+        existing_list = await ModelFileService(session).get_by_source_index(
+            lora_src.model_source_index
+        )
+        existing_list = existing_list or []
+        for worker_id in worker_ids:
+            hit = next((f for f in existing_list if f.worker_id == worker_id), None)
+            if hit:
+                if not hit.is_lora:
+                    hit.is_lora = True
+                if hit.base_model != base_desc:
+                    hit.base_model = base_desc
+                    await hit.update(session, auto_commit=False)
+                if hit.id is not None and hit.id not in seen_ids:
+                    out.append(hit)
+                    seen_ids.add(hit.id)
+            else:
+                nf = ModelFile(
+                    source=lora_src.source,
+                    huggingface_repo_id=lora_src.huggingface_repo_id,
+                    huggingface_filename=lora_src.huggingface_filename,
+                    model_scope_model_id=lora_src.model_scope_model_id,
+                    model_scope_file_path=lora_src.model_scope_file_path,
+                    local_path=lora_src.local_path,
+                    is_lora=True,
+                    base_model=base_desc,
+                    state=ModelFileStateEnum.DOWNLOADING,
+                    worker_id=worker_id,
+                    source_index=lora_src.model_source_index,
+                )
+                created = await ModelFile.create(session, nf, auto_commit=False)
+                mf = created or nf
+                if mf.id is not None and mf.id not in seen_ids:
+                    out.append(mf)
+                    seen_ids.add(mf.id)
+    return out
+
+
 async def ensure_instance_model_file(session: AsyncSession, instance: ModelInstance):
     """
     Synchronize the model file of the model instance.
@@ -417,13 +590,18 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
         instance.id,
         options=[
             selectinload(ModelInstance.model_files),
+            selectinload(ModelInstance.draft_model_files),
         ],
     )
     if not instance:
         return
 
-    if len(instance.model_files) > 0:
-        await sync_instance_files_state(session, instance, instance.model_files)
+    model = await Model.one_by_id(session, instance.model_id)
+
+    # Early-return: skip expensive get_or_create queries when all files are ready
+    if _instance_model_files_complete(instance, model):
+        all_files = list(instance.model_files) + list(instance.draft_model_files)
+        await sync_instance_files_state(session, instance, all_files)
         return
 
     retry_model_files = []
@@ -433,7 +611,13 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
         draft_model_files = await get_or_create_model_files_for_instance(
             session, instance, is_draft_model=True
         )
-    for model_file in model_files + draft_model_files:
+    lora_model_files: List[ModelFile] = []
+    if model:
+        lora_model_files = await get_or_create_lora_model_files_for_instance(
+            session, instance, model
+        )
+
+    for model_file in model_files + draft_model_files + lora_model_files:
         if model_file.state == ModelFileStateEnum.ERROR:
             # Retry the download
             retry_model_files.append(model_file.readable_source)
@@ -443,16 +627,28 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
             model_file.state_message = ""
             await model_file.update(session, auto_commit=False)
 
+    await _link_instance_primary_model_files(
+        session, instance.id, model_files + lora_model_files
+    )
+    await _link_instance_draft_model_files(session, instance.id, draft_model_files)
+    # Commit file creation, retry resets, and instance <--> file links in one
+    # transaction.  ModelFile events are published by the after_commit hook,
+    # so ModelFileController._reconcile will only see these files after the
+    # links already exist — preventing a race where reconcile queries
+    # file.instances before the links are committed.
+    await session.commit()
+
     if retry_model_files:
-        await session.commit()
         logger.info(
             f"Retrying download for model files {retry_model_files} for model instance {instance.name}"
         )
 
     instance = await ModelInstance.one_by_id(session, instance.id)
-    instance.model_files = model_files
-    instance.draft_model_files = draft_model_files
-    await sync_instance_files_state(session, instance, model_files + draft_model_files)
+    await sync_instance_files_state(
+        session,
+        instance,
+        model_files + draft_model_files + lora_model_files,
+    )
 
 
 async def get_or_create_model_files_for_instance(
@@ -493,7 +689,7 @@ async def get_or_create_model_files_for_instance(
             worker_id=worker_id,
             source_index=model_source.model_source_index,
         )
-        await ModelFile.create(session, model_file)
+        await ModelFile.create(session, model_file, auto_commit=False)
         logger.info(
             f"Created model file for model instance {instance.name} and worker {worker_id}"
         )
@@ -586,13 +782,15 @@ async def find_scale_down_candidates(
         return []
 
 
-async def sync_ready_replicas(session: AsyncSession, model: Model):
+async def sync_ready_replicas(session: AsyncSession, model: Model) -> bool:
     """
     Synchronize the ready replicas.
+
+    Returns True if the model row was updated (and the session was committed).
     """
 
     if model.deleted_at is not None:
-        return
+        return False
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
 
@@ -604,6 +802,8 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
     if model.ready_replicas != ready_replicas:
         model.ready_replicas = ready_replicas
         await ModelService(session).update(model)
+        return True
+    return False
 
 
 async def get_cluster_registry(
@@ -930,12 +1130,14 @@ async def calculate_destinations(
             model = await Model.one_by_id(session, target.model_id)
             if model is None:
                 continue
-            to_extend = await calculate_model_destinations(session, model)
+            to_extend = await calculate_model_destinations(
+                session, model, target.overridden_model_name
+            )
         elif target.provider_id is not None:
             to_extend = await provider_destinations(
                 session=session,
                 provider_id=target.provider_id,
-                provider_model_name=target.provider_model_name,
+                provider_model_name=target.overridden_model_name,
             )
         if to_extend is None or len(to_extend) == 0:
             # no valid destination found
@@ -978,14 +1180,17 @@ async def provider_destinations(
 async def calculate_model_destinations(
     session: AsyncSession,
     model: Model,
+    overridden_model_name: Optional[str] = None,
 ) -> mcp_handler.DestinationTupleList:
+    """Build destinations for a local-model target. LoRA child routes pass
+    ``overridden_model_name=<base>:<lora>`` so the gateway's modelMapping
+    becomes a self-map (skipped at sync_model_route_mapper), letting the
+    LoRA module name reach vLLM intact.
     """
-    return count dict for each registry
-    """
-    # find out is handling default cluster's model
+    downstream_model_name = overridden_model_name or model.name
     cluster_registry = await get_cluster_registry(session, model.cluster_id)
     if cluster_registry is not None:
-        return [(1, model.name, cluster_registry)]
+        return [(1, downstream_model_name, cluster_registry)]
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
     instances = [
@@ -1013,9 +1218,9 @@ async def calculate_model_destinations(
         ],
     )
     workers = {worker.id: worker for worker in worker_list}
-    registry_list = mcp_handler.model_instances_registry_list(instances, workers)
-
-    return registry_list
+    return mcp_handler.model_instances_registry_list(
+        instances, workers, downstream_model_name=downstream_model_name
+    )
 
 
 class WorkerController:
@@ -1583,7 +1788,42 @@ def _is_draft_model_file(file: ModelFile, instance: ModelInstance) -> bool:
     return False
 
 
-async def sync_main_worker_model_file_state(
+def _aggregate_instance_download_progress(
+    instance: ModelInstance,
+    current_file: ModelFile,
+    override_progress: Optional[float] = None,
+    override_state: Optional[ModelFileStateEnum] = None,
+) -> Optional[float]:
+    """
+    Average download_progress over not-yet-READY ModelFile rows so the bar
+    tracks active downloads (e.g. just the new LoRA when base is already cached).
+    Returns 100.0 if all files are READY, None if no files. `override_progress`
+    / `override_state` represent a transition not yet persisted to the DB row.
+    """
+    files = list(instance.model_files or [])
+    if not files:
+        return None
+    active_values: List[float] = []
+    for f in files:
+        if current_file.id is not None and f.id == current_file.id:
+            p = (
+                override_progress
+                if override_progress is not None
+                else current_file.download_progress
+            )
+            s = override_state if override_state is not None else current_file.state
+        else:
+            p = f.download_progress
+            s = f.state
+        if s == ModelFileStateEnum.READY:
+            continue
+        active_values.append(float(p) if p is not None else 0.0)
+    if not active_values:
+        return 100.0
+    return sum(active_values) / len(active_values)
+
+
+async def sync_main_worker_model_file_state(  # noqa: C901
     session: AsyncSession,
     file: ModelFile,
     instance: ModelInstance,
@@ -1592,6 +1832,19 @@ async def sync_main_worker_model_file_state(
     """
     Sync the model file state to the related model instance.
     """
+
+    # Re-load instance into this session to avoid identity map conflicts.
+    # The caller (ModelFileController._reconcile) may pass a detached instance
+    # from a closed session.  Later helpers like model_instance_download_completed
+    # load the same row via get_by_id_with_model_files, creating a *different*
+    # persistent object in this session.  session.add(detached_obj) then fails
+    # with InvalidRequestError because the identity map already holds another
+    # object with the same primary key.
+    # Eager-load model_files so progress aggregation can read sibling rows
+    # (base + every LoRA adapter) without an extra round-trip.
+    instance = await ModelInstance.one_by_id_with_model_files(session, instance.id)
+    if not instance:
+        return
 
     if instance.state == ModelInstanceStateEnum.ERROR:
         return
@@ -1606,9 +1859,18 @@ async def sync_main_worker_model_file_state(
     # Downloading
     if file.state == ModelFileStateEnum.DOWNLOADING:
         if instance.state == ModelInstanceStateEnum.INITIALIZING:
-            # Download started
+            # Download started. Seed instance.download_progress from the
+            # aggregate over the *active* (not-yet-READY) files. When the user
+            # added a new LoRA to a model whose base is already cached, the
+            # active set is just the LoRA, so the bar honestly starts at the
+            # LoRA's current progress (typically 0) rather than reporting a
+            # misleading "50%" from averaging in an already-completed base.
             instance.state = ModelInstanceStateEnum.DOWNLOADING
-            instance.download_progress = 0
+            if is_draft_model:
+                instance.download_progress = 0
+            else:
+                aggregate = _aggregate_instance_download_progress(instance, file)
+                instance.download_progress = aggregate if aggregate is not None else 0
             instance.state_message = ""
             need_update = True
         elif instance.state == ModelInstanceStateEnum.DOWNLOADING:
@@ -1621,13 +1883,13 @@ async def sync_main_worker_model_file_state(
                 # For the draft model file
                 instance.draft_model_download_progress = file.download_progress
                 need_update = True
-            elif (
-                file.download_progress != instance.download_progress
-                and instance.download_progress != 100
-            ):
-                # For the main model file
-                instance.download_progress = file.download_progress
-                need_update = True
+            elif not is_draft_model and instance.download_progress != 100:
+                # For the primary model file or any LoRA adapter file: aggregate
+                # the per-file progress into a single instance-level percentage.
+                aggregate = _aggregate_instance_download_progress(instance, file)
+                if aggregate is not None and aggregate != instance.download_progress:
+                    instance.download_progress = aggregate
+                    need_update = True
 
     # Download completed
     elif file.state == ModelFileStateEnum.READY and (
@@ -1642,18 +1904,40 @@ async def sync_main_worker_model_file_state(
             instance.draft_model_download_progress = 100
             instance.draft_model_resolved_path = file.resolved_paths[0]
             need_update = True
-        elif not is_draft_model and (
-            instance.download_progress != 100 or not instance.resolved_path
-        ):
-            # Download completed for the main model file
-            instance.download_progress = 100
-            instance.resolved_path = file.resolved_paths[0]
-            need_update = True
+        elif not is_draft_model:
+            # Only the base (primary) ModelFile owns instance.resolved_path; LoRA
+            # files are surfaced via mounted_loras instead.
+            if (
+                _is_primary_instance_model_file(file, instance, is_draft_model)
+                and not instance.resolved_path
+            ):
+                instance.resolved_path = file.resolved_paths[0]
+                need_update = True
+            # Re-aggregate progress, treating the just-completed file as 100%
+            # AND as READY, so it is excluded from the "still active" set.
+            # Without this, a LoRA finishing as the last download would leave
+            # the bar parked at its previous value instead of advancing to 100.
+            if instance.download_progress != 100:
+                aggregate = _aggregate_instance_download_progress(
+                    instance,
+                    file,
+                    override_progress=100.0,
+                    override_state=ModelFileStateEnum.READY,
+                )
+                if aggregate is not None and aggregate != instance.download_progress:
+                    instance.download_progress = aggregate
+                    need_update = True
 
-        if model_instance_download_completed(instance):
-            # All files are downloaded
+        if await model_instance_download_completed(session, instance):
+            # Every linked ModelFile is READY: compute LoRA paths for vLLM before STARTING.
+            # Workers read mounted_loras from the model_instance event payload when state becomes STARTING.
+            mounted, lora_skipped = await _build_mounted_loras_payload(
+                session, instance
+            )
+            if mounted is not None:
+                instance.mounted_loras = mounted
             instance.state = ModelInstanceStateEnum.STARTING
-            instance.state_message = ""
+            instance.state_message = "; ".join(lora_skipped) if lora_skipped else ""
             need_update = True
         elif instance.state == ModelInstanceStateEnum.INITIALIZING:
             # one but not all files downloaded, turn to DOWNLOADING state
@@ -1677,6 +1961,12 @@ async def sync_distributed_model_file_state(  # noqa: C901
     """
     Sync the model file state to the related model instance.
     """
+
+    # Re-load instance to avoid identity map conflicts (same reason as
+    # sync_main_worker_model_file_state).
+    instance = await ModelInstance.one_by_id(session, instance.id)
+    if not instance:
+        return
 
     if instance.state == ModelInstanceStateEnum.ERROR:
         return
@@ -1706,10 +1996,17 @@ async def sync_distributed_model_file_state(  # noqa: C901
                 file.state == ModelFileStateEnum.READY and item.download_progress != 100
             ):
                 item.download_progress = 100
-                if model_instance_download_completed(instance):
-                    # All files are downloaded
+                if await model_instance_download_completed(session, instance):
+                    # Mirror non-distributed path: attach LoRA mount list then move to STARTING.
+                    mounted, lora_skipped = await _build_mounted_loras_payload(
+                        session, instance
+                    )
+                    if mounted is not None:
+                        instance.mounted_loras = mounted
                     instance.state = ModelInstanceStateEnum.STARTING
-                    instance.state_message = ""
+                    instance.state_message = (
+                        "; ".join(lora_skipped) if lora_skipped else ""
+                    )
                 need_update = True
             elif file.state == ModelFileStateEnum.ERROR:
                 instance.state = ModelInstanceStateEnum.ERROR
@@ -1721,18 +2018,84 @@ async def sync_distributed_model_file_state(  # noqa: C901
         await ModelInstanceService(session).update(instance)
 
 
-def model_instance_download_completed(instance: ModelInstance):
-    if instance.download_progress != 100:
+async def _build_mounted_loras_payload(
+    session: AsyncSession, instance: ModelInstance
+) -> Tuple[Optional[List[LoraListEntry]], List[str]]:
+    """
+    Build LoraListEntry list for Model.lora_list entries whose LoRA ModelFile
+    is READY on this instance. Used once when transitioning to STARTING.
+
+    Returns (mounted_loras, skip_messages). skip_messages collects per-entry
+    reasons for any LoRA that could not be resolved (invalid source config),
+    so callers can surface them via instance.state_message.
+    """
+    model = await Model.one_by_id(session, instance.model_id)
+    if not model:
+        return None, []
+    entries = normalized_lora_list(model)
+    if not entries:
+        return None, []
+    inst = await ModelInstance.one_by_id_with_model_files(session, instance.id)
+    if not inst:
+        return None, []
+    out: List[LoraListEntry] = []
+    skipped: List[str] = []
+    for entry in entries:
+        try:
+            src = lora_entry_to_model_source(entry)
+        except ValueError as e:
+            msg = f"LoRA {entry.lora_name!r} skipped: {e}"
+            logger.warning("%s (instance=%s, entry=%s)", msg, instance.name, entry)
+            skipped.append(msg)
+            continue
+        for f in inst.model_files or []:
+            if not getattr(f, "is_lora", False):
+                continue
+            if f.model_source_index != src.model_source_index:
+                continue
+            if f.state != ModelFileStateEnum.READY or not f.resolved_paths:
+                continue
+            out.append(
+                LoraListEntry(
+                    lora_name=lora_route_name_for(model.name, entry.lora_name),
+                    lora_repo_name=entry.lora_repo_name,
+                    source=entry.source,
+                    huggingface_filename=entry.huggingface_filename,
+                    model_scope_file_path=entry.model_scope_file_path,
+                    local_path=entry.local_path,
+                    path=f.resolved_paths[0],
+                    model_file_id=f.id,
+                )
+            )
+            break
+    return (out or None), skipped
+
+
+async def model_instance_download_completed(
+    session: AsyncSession, instance: ModelInstance
+) -> bool:
+    inst = await ModelInstance.one_by_id_with_model_files(session, instance.id)
+    if inst is None:
         return False
 
-    if instance.draft_model_source and instance.draft_model_download_progress != 100:
+    if not inst.model_files and not inst.draft_model_source:
         return False
 
-    if (
-        instance.distributed_servers
-        and instance.distributed_servers.download_model_files
-    ):
-        for subworker in instance.distributed_servers.subordinate_workers or []:
+    for f in inst.model_files or []:
+        if f.state != ModelFileStateEnum.READY:
+            return False
+
+    if inst.draft_model_source:
+        draft_files = inst.draft_model_files or []
+        if not draft_files:
+            return False
+        for f in draft_files:
+            if f.state != ModelFileStateEnum.READY:
+                return False
+
+    # Distributed worker progress check (restored from pre-refactor).
+    if inst.distributed_servers and inst.distributed_servers.download_model_files:
+        for subworker in inst.distributed_servers.subordinate_workers or []:
             if subworker.download_progress != 100:
                 return False
 
@@ -2317,8 +2680,7 @@ async def sync_categories_and_meta(session: AsyncSession, model: Model, event: E
         return
     routes = model.model_routes
     for route in routes:
-        # created_by_model default to false if not set
-        if not route.created_by_model:
+        if route.created_model_id is None:
             continue
         if route.categories != model.categories or route.meta != model.meta:
             await ModelRouteService(session).update(
@@ -2515,7 +2877,7 @@ class ModelRouteTargetController:
             "state",
             "provider_id",
             "model_id",
-            "provider_model_name",
+            "overridden_model_name",
             "model",
         ]
         should_notify = event.type == EventType.DELETED
@@ -2592,7 +2954,7 @@ class ModelRouteTargetController:
         if (
             not orphan_route
             or orphan_route.deleted_at is not None
-            or not orphan_route.created_by_model
+            or orphan_route.created_model_id is None
         ):
             # The route is already deleted or not created by model, no need to transfer.
             # returns true to trigger parent notification and state sync to update the route state if needed.
@@ -2600,7 +2962,7 @@ class ModelRouteTargetController:
         try:
             route_service = ModelRouteService(session=session)
             await route_service.update(
-                orphan_route, source={"created_by_model": False}, auto_commit=True
+                orphan_route, source={"created_model_id": None}, auto_commit=True
             )
         except Exception as e:
             logger.error(f"Failed to transfer model route {orphan_route.id}: {e}")
@@ -2623,7 +2985,7 @@ class ModelRouteTargetController:
                     )
                     for name in names:
                         await delete_cache_by_key(
-                            route_service.get_model_ids_by_model_route_name, name
+                            route_service.resolve_route_targets, name
                         )
                         await delete_cache_by_key(
                             route_service.get_model_auth_info_by_name, name
@@ -2687,7 +3049,7 @@ class ModelRouteController:
             ]
         )
         model_route_service = ModelRouteService(session=session)
-        if target_total == 0 and model_route.created_by_model:
+        if target_total == 0 and model_route.created_model_id is not None:
             await model_route_service.delete(model_route, auto_commit=True)
             return True
 

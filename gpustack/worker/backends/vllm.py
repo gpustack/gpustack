@@ -44,6 +44,51 @@ from gpustack.worker.backends.base import (
 logger = logging.getLogger(__name__)
 
 
+def extend_vllm_mounted_lora_arguments(
+    arguments: List[str],
+    mounted_loras: Optional[list],
+    base_model_name: str,
+    backend_parameters: Optional[List[str]],
+) -> None:
+    """
+    Inject vLLM LoRA flags from model instance mounted_loras.
+
+    Skips when the user already set --lora-modules in backend_parameters.
+
+    vLLM expects adapters via --lora-modules {json} ... where each JSON object
+    contains name, path, and base_model_name.
+    """
+    if not mounted_loras:
+        return
+    if find_parameter(backend_parameters or [], ["lora-modules", "lora_modules"]):
+        return
+
+    modules = []
+    for m in mounted_loras:
+        if not m.lora_name or not m.path:
+            continue
+        modules.append(
+            {
+                # m.lora_name is the fully-qualified "<base>:<lora>" id; passed
+                # through so the engine registers under the same name clients send.
+                "name": m.lora_name,
+                "path": m.path,
+                "base_model_name": base_model_name,
+            }
+        )
+    if not modules:
+        return
+
+    extend_args_no_exist(arguments, "--enable-lora")
+    extend_args_no_exist(arguments, ("--max-loras", str(len(modules))))
+    if not any(
+        a == "--lora-modules" or a.startswith("--lora-modules=") for a in arguments
+    ):
+        arguments.append("--lora-modules")
+        for m in modules:
+            arguments.append(json.dumps(m))
+
+
 class VLLMServer(InferenceServer):
     """
     Containerized vLLM inference server backend using gpustack-runtime.
@@ -566,6 +611,13 @@ class VLLMServer(InferenceServer):
                     "float16",
                 ]
             )
+
+        extend_vllm_mounted_lora_arguments(
+            arguments,
+            self._model_instance.mounted_loras,
+            self._model.name,
+            self._model.backend_parameters,
+        )
 
         # Inject user-defined backend parameters
         user_backend_parameters = self._flatten_backend_param()

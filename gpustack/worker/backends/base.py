@@ -231,6 +231,7 @@ class InferenceServer(ABC):
                 self._draft_model_path = str(
                     Path(event.data["draft_model_resolved_path"]).absolute()
                 )
+            self._model_instance = ModelInstance.model_validate(event.data)
             return True
 
         return False

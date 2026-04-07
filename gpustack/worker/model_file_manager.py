@@ -1,4 +1,5 @@
 import asyncio
+import json
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import glob
@@ -8,7 +9,7 @@ from pathlib import Path
 import platform
 import time
 import threading
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from filelock import Timeout
 from modelscope.hub.constants import TEMPORARY_FOLDER_NAME, API_FILE_DOWNLOAD_CHUNK_SIZE
@@ -518,6 +519,39 @@ class ModelFileDownloadTask:
                 state_message=str(e),
             )
 
+    def _validate_lora_adapter_config(self, model_paths) -> Optional[str]:
+        """Return error message if LoRA adapter_config is missing or mismatched."""
+        if not getattr(self._model_file, "is_lora", False):
+            return None
+        if not model_paths:
+            return "Empty resolved_paths for LoRA"
+        root = Path(model_paths[0])
+        cfg_path = root / "adapter_config.json"
+        if not cfg_path.is_file():
+            return "adapter_config.json not found in LoRA directory"
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            return f"Invalid adapter_config.json: {e}"
+        base = data.get("base_model_name_or_path") or data.get("base_model_name")
+        expected = (getattr(self._model_file, "base_model", None) or "").strip()
+        if expected and base:
+            nb = str(base).strip().strip("/").lower()
+            ne = expected.strip("/").lower()
+            if nb == ne:
+                return None
+            # Fall back to basename when exactly one side is a local-path style
+            # (no "/"): a repo id "org/Qwen3-4B" should still match a local
+            # directory ".../Qwen3-4B". Two repo ids must match in full to
+            # avoid OrgA/Qwen3-4B silently mounting on OrgB/Qwen3-4B.
+            if ("/" in nb) != ("/" in ne):
+                if nb.rsplit("/", 1)[-1] == ne.rsplit("/", 1)[-1]:
+                    return None
+            return (
+                f"adapter_config base_model mismatch: {base!r} vs expected {expected!r}"
+            )
+        return None
+
     def _download_model_file(self):
         self._write_to_instance_download_logs(
             f"Downloading model file: {self._model_file.readable_source}"
@@ -530,6 +564,20 @@ class ModelFileDownloadTask:
             huggingface_token=self._config.huggingface_token,
         )
         self._download_completed = True
+        if self._model_file.is_lora:
+            err = self._validate_lora_adapter_config(model_paths)
+            if err:
+                self._update_model_file(
+                    self._model_file.id,
+                    state=ModelFileStateEnum.ERROR,
+                    state_message=err,
+                )
+                self._write_to_instance_download_logs(
+                    f"LoRA adapter validation failed: {err}",
+                    is_error=True,
+                )
+                return
+
         self._update_model_file(
             self._model_file.id,
             state=ModelFileStateEnum.READY,

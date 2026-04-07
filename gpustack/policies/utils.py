@@ -10,6 +10,7 @@ from gpustack.policies.base import (
     Allocated,
 )
 from gpustack.scheduler.calculator import calculate_local_model_weight_size
+from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.models import (
     ModelInstance,
     Model,
@@ -17,12 +18,15 @@ from gpustack.schemas.models import (
     SourceEnum,
     is_llm_model,
 )
-from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.workers import Worker, GPUDevicesStatus, GPUDeviceStatus
 from pydantic import BaseModel
 
 from gpustack.server.services import ModelFileService
 from gpustack.utils.hub import get_model_weight_size, get_diffusion_model_weight_size
+from gpustack.utils.lora_model_source import (
+    lora_entry_to_model_source,
+    normalized_lora_list,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +284,76 @@ async def _get_cached_model_size(
     return None
 
 
+async def estimate_lora_weights_bytes(
+    model: Model,
+    token: Optional[str],
+    workers: Optional[List[Worker]],
+    session: Optional[AsyncSession],
+) -> int:
+    total = 0
+    for entry in normalized_lora_list(model):
+        try:
+            src = lora_entry_to_model_source(entry)
+        except ValueError:
+            continue
+        cached_used = False
+        if session:
+            mfs = await ModelFileService(session).get_by_source_index(
+                src.model_source_index
+            )
+            for mf in mfs or []:
+                if mf.state == ModelFileStateEnum.READY and mf.size:
+                    total += mf.size
+                    cached_used = True
+                    break
+        if cached_used:
+            continue
+        try:
+            if src.source in (
+                SourceEnum.HUGGING_FACE,
+                SourceEnum.MODEL_SCOPE,
+            ):
+                lm = Model(
+                    name=model.name,
+                    source=src.source,
+                    huggingface_repo_id=src.huggingface_repo_id,
+                    huggingface_filename=src.huggingface_filename,
+                    model_scope_model_id=src.model_scope_model_id,
+                    model_scope_file_path=src.model_scope_file_path,
+                    local_path=src.local_path,
+                    categories=model.categories or [],
+                    meta={},
+                    replicas=1,
+                    ready_replicas=0,
+                    cluster_id=model.cluster_id,
+                    access_policy=model.access_policy,
+                )
+                w = await asyncio.wait_for(
+                    asyncio.to_thread(get_model_weight_size, lm, token),
+                    timeout=15,
+                )
+                total += int(w or 0)
+            elif (
+                src.source == SourceEnum.LOCAL_PATH
+                and workers
+                and model.source == SourceEnum.LOCAL_PATH
+            ):
+                if not src.local_path:
+                    continue
+                w = await get_local_model_weight_size(
+                    src.local_path, workers, is_diffusion=False
+                )
+                total += int(w or 0)
+        except Exception as e:
+            logger.warning(
+                "Cannot estimate LoRA weight size for model %s entry %s: %s",
+                model.name,
+                entry,
+                e,
+            )
+    return total
+
+
 async def estimate_model_vram(
     model: Model,
     token: Optional[str] = None,
@@ -357,7 +431,21 @@ async def estimate_model_vram(
     # For non-LLM models like embedding, set a smaller overhead
     framework_overhead = 2 * 1024**3 if is_llm_model(model) else 512 * 1024**2
 
-    return int(weight_size * activation_overhead_factor) + framework_overhead
+    lora_extra = 0
+    if model.lora_list:
+        try:
+            lora_extra = await estimate_lora_weights_bytes(
+                model, token, workers, session
+            )
+        except Exception as e:
+            logger.warning(
+                "LoRA VRAM estimation skipped for model %s: %s", model.name, e
+            )
+
+    return (
+        int((weight_size + lora_extra) * activation_overhead_factor)
+        + framework_overhead
+    )
 
 
 async def estimate_diffusion_model_vram(

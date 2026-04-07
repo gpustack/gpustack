@@ -173,6 +173,8 @@ def format_backend_parameters(parameters: Optional[List[str]]) -> List[str]:
         ["--max-model-len", "8192", "--enable-prefix-caching"]
             -> ["--max-model-len=8192", "--enable-prefix-caching"]
         ["--dtype=float16"] -> ["--dtype=float16"]
+        ["--lora-modules", "{a}", "{b}", "{c}"]
+            -> ["--lora-modules", "{a}", "{b}", "{c}"]
     """
     if not parameters:
         return []
@@ -186,15 +188,23 @@ def format_backend_parameters(parameters: Optional[List[str]]) -> List[str]:
             index += 1
             continue
 
-        if index + 1 < len(parameters) and not _looks_like_parameter(
-            parameters[index + 1]
-        ):
-            formatted.append(f"{parameter}={parameters[index + 1]}")
-            index += 2
-            continue
+        # Collect every consecutive non-flag token as a value of this flag.
+        values: List[str] = []
+        j = index + 1
+        while j < len(parameters) and not _looks_like_parameter(parameters[j]):
+            values.append(parameters[j])
+            j += 1
 
-        formatted.append(parameter)
-        index += 1
+        if len(values) == 0:
+            formatted.append(parameter)
+        elif len(values) == 1:
+            formatted.append(f"{parameter}={values[0]}")
+        else:
+            # Multi-value flag: keep flag + values as separate tokens
+            # (space-separated on the command line) so none get orphaned.
+            formatted.append(parameter)
+            formatted.extend(values)
+        index = j
 
     return formatted
 
