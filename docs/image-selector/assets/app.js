@@ -72,7 +72,7 @@ const CONFIG = {
                     </li>
                     <li>
                         运行 GPUStack Server 和 Worker 容器时通过 <code class="inline-code">--system-default-container-registry</code> 参数指定镜像源：
-                        <pre><code>sudo docker run -d --name gpustack \\\n    --restart unless-stopped \\\n    -p 80:80 \\\n    -p 10161:10161 \\\n    --volume gpustack-data:/var/lib/gpustack \\\n    quay.io/gpustack/gpustack:{{version}} \\\n    --system-default-container-registry {{registry}}</code></pre>
+                        <pre><code>sudo docker run -d --name gpustack \\\n    --restart unless-stopped \\\n    -p 80:80 \\\n    -p 10161:10161 \\\n    --volume gpustack-data:/var/lib/gpustack \\\n    {{registry}}/gpustack/gpustack:{{version}} \\\n    --system-default-container-registry {{registry}}</code></pre>
                     </li>
                 </ol>`,
             'guide_tag_content': `
@@ -162,7 +162,7 @@ const CONFIG = {
                     </li>
                     <li>
                         When running GPUStack Server and Worker containers, specify the container registry using the <code class="inline-code">--system-default-container-registry</code> parameter:
-                        <pre><code>sudo docker run -d --name gpustack \\\n    --restart unless-stopped \\\n    -p 80:80 \\\n    -p 10161:10161 \\\n    --volume gpustack-data:/var/lib/gpustack \\\n    quay.io/gpustack/gpustack:{{version}} \\\n    --system-default-container-registry {{registry}}</code></pre>
+                        <pre><code>sudo docker run -d --name gpustack \\\n    --restart unless-stopped \\\n    -p 80:80 \\\n    -p 10161:10161 \\\n    --volume gpustack-data:/var/lib/gpustack \\\n    {{registry}}/gpustack/gpustack:{{version}} \\\n    --system-default-container-registry {{registry}}</code></pre>
                     </li>
                 </ol>`,
             'guide_tag_content': `
