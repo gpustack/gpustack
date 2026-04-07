@@ -33,7 +33,10 @@ from gpustack.schemas.models import (
     is_audio_model,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.schemas.inference_backend import is_custom_backend
+from gpustack.schemas.inference_backend import (
+    is_built_in_backend_custom_version,
+    is_custom_backend,
+)
 from gpustack.server.worker_selector import WorkerSelector
 from gpustack_runner import list_backend_runners
 from gpustack_runtime.deployer.__utils__ import compare_versions
@@ -358,6 +361,11 @@ async def evaluate_runtime_version(
     backend_name = get_backend(model)
 
     if is_custom_backend(backend_name):
+        return True, []
+
+    if is_built_in_backend_custom_version(
+        backend_name, model.backend_version, model.image_name
+    ):
         return True, []
 
     max_runtime_version = None

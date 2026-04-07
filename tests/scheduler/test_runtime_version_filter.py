@@ -139,3 +139,31 @@ async def test_all_workers_below_requirement():
     assert len(messages) == 1, "Should have one error message"
     assert "12.4" in messages[0], "Message should contain highest version 12.4"
     assert "12.6" in messages[0], "Message should contain minimum version 12.6"
+
+
+@pytest.mark.asyncio
+async def test_built_in_custom_backend_version_skips_runtime_check():
+    """
+    User-defined versions on built-in backends (suffix -custom) use their own
+    images; gpustack-runner runtime matrix does not apply.
+    """
+    model = create_vllm_model().model_copy(update={"backend_version": "0.0.1-custom"})
+    workers = [create_cuda_worker("12.2", "worker-below-default-req")]
+
+    compatible, messages = await evaluate_runtime_version(model, workers)
+
+    assert compatible is True
+    assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_built_in_explicit_image_skips_runtime_check():
+    model = create_vllm_model().model_copy(
+        update={"image_name": "example.com/my-vllm:tag"}
+    )
+    workers = [create_cuda_worker("12.2", "worker-below-default-req")]
+
+    compatible, messages = await evaluate_runtime_version(model, workers)
+
+    assert compatible is True
+    assert messages == []
