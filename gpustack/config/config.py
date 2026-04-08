@@ -336,13 +336,10 @@ class Config(WorkerConfig, BaseSettings):
         os.makedirs(self.bin_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(self.benchmark_dir, exist_ok=True)
-        # prepare gateway dirs
-        os.makedirs(
-            os.getenv("GPUSTACK_GATEWAY_DIR", self.higress_base_dir()),
-            exist_ok=True,
-        )
         # ensure higress data dir exists
         os.makedirs(self.higress_base_dir(), exist_ok=True)
+        if self.server_role() != self.ServerRole.WORKER:
+            os.makedirs(self.postgres_base_dir(), exist_ok=True)
 
     def get_system_info(self) -> SystemInfo:  # noqa: C901
         """get system info from resources
