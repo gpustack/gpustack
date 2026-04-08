@@ -686,11 +686,15 @@ async def get_pretrained_config_with_workers(
         if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
             model.local_path
         ):
+            logger.info(
+                f"Model path '{model.local_path}' does not exist in server node. Trying workers..."
+            )
             pretrained_config = await get_pretrained_config_from_workers(
                 model,
                 workers,
             )
         else:
+            logger.info(f"Trying to get pretrained config from {model.source}")
             pretrained_config = await asyncio.wait_for(
                 asyncio.to_thread(
                     get_pretrained_config, model, trust_remote_code=trust_remote_code
@@ -806,7 +810,13 @@ async def check_diffusers_model_index_from_workers(
         return False
 
     # Read model_index.json from workers
-    data = await read_local_path_file_from_workers(model, "model_index.json", workers)
+    try:
+        data = await read_local_path_file_from_workers(
+            model, "model_index.json", workers
+        )
+    except Exception as e:
+        logger.info(f"Failed to read model_index.json from workers: {e}")
+        return False
 
     if data is None:
         return False
@@ -840,61 +850,85 @@ async def read_local_path_file_from_workers(  # noqa: C901
         workers: List of workers to query
 
     Returns:
-        File content as dict if successful, None otherwise
+        File content as dict if successful
+
+    Raises:
+        ValueError: If the file cannot be read from any worker, with per-worker diagnostic details.
     """
     if not workers:
-        return None
+        raise ValueError(
+            f"No workers are available to read '{file_path}' for model '{model.name}'. "
+        )
 
     # Build full file path
     fp = os.path.join(model.local_path, file_path)
+
+    worker_errors: Dict[str, str] = {}
 
     async def try_read_from_worker(worker: Worker) -> Optional[Dict[str, Any]]:
         """Try to read file from a single worker."""
         try:
             async with WorkerFilesystemClient() as filesystem_client:
-                logger.info(f"Trying to read {file_path} from worker {worker.id}")
+                logger.info(f"Trying to read {file_path} from worker {worker.name}")
                 content = await filesystem_client.read_model_config(worker, fp)
                 if content:
                     logger.info(
-                        f"Successfully read {file_path} from worker {worker.id}"
+                        f"Successfully read {file_path} from worker {worker.name}"
                     )
                     return content
+                worker_errors[worker.name] = "file not found or empty"
                 return None
         except Exception as e:
-            logger.debug(f"Failed to read {file_path} from worker {worker.id}: {e}")
+            error_msg = str(e)
+            logger.info(
+                f"Failed to read {file_path} from worker {worker.name}: {error_msg}"
+            )
+            worker_errors[worker.name] = error_msg
             return None
 
     # Step 1: Apply filters to reduce broadcast scope
     filtered_workers = workers
-    messages = []
+    filter_messages = []
 
     # Apply GPUMatchingFilter
     if model.gpu_selector:
         gpu_filter = GPUMatchingFilter(model)
         filtered_workers, gpu_messages = await gpu_filter.filter(filtered_workers)
-        messages.extend(gpu_messages)
+        filter_messages.extend(gpu_messages)
 
     # Apply LabelMatchingFilter
     if model.worker_selector:
         label_filter = LabelMatchingFilter(model)
         filtered_workers, label_messages = await label_filter.filter(filtered_workers)
-        messages.extend(label_messages)
+        filter_messages.extend(label_messages)
 
     # Apply LocalPathFilter for LOCAL_PATH models
     local_path_filter = LocalPathFilter(model)
     filtered_workers, local_path_messages = await local_path_filter.filter(
         filtered_workers
     )
-    messages.extend(local_path_messages)
+    filter_messages.extend(local_path_messages)
 
-    if messages:
-        for msg in messages:
+    if filter_messages:
+        for msg in filter_messages:
             logger.info(f"Worker filtering for {file_path} read: {msg}")
 
     # Step 2: Broadcast to filtered workers
     if not filtered_workers:
-        logger.warning(f"No workers available after filtering for {file_path}")
-        return None
+        if filter_messages:
+            shown = filter_messages[:3]
+            suffix = (
+                f" (+{len(filter_messages) - 3} more)"
+                if len(filter_messages) > 3
+                else ""
+            )
+            detail = "; ".join(shown) + suffix
+        else:
+            detail = "no workers matched the current filters"
+        raise ValueError(
+            f"No workers are available after filtering to read '{file_path}' "
+            f"for model '{model.name}'. {detail}"
+        )
 
     logger.info(
         f"Broadcasting {file_path} read request to {len(filtered_workers)} filtered workers "
@@ -906,7 +940,14 @@ async def read_local_path_file_from_workers(  # noqa: C901
         if result:
             return result
 
-    return None
+    error_items = list(worker_errors.items())
+    shown_errors = "; ".join(f"{name}: {err}" for name, err in error_items[:3])
+    if len(error_items) > 3:
+        shown_errors += f" (+{len(error_items) - 3} more)"
+    raise ValueError(
+        f"Failed to read '{file_path}' from all {len(filtered_workers)} available "
+        f"worker(s) for model '{model.name}'. Per-worker details: {shown_errors}"
+    )
 
 
 async def get_pretrained_config_from_workers(
@@ -921,15 +962,12 @@ async def get_pretrained_config_from_workers(
         workers: List of workers to query
 
     Returns:
-        PretrainedConfig object if successful, None otherwise
+        PretrainedConfig object if successful
+
+    Raises:
+        ValueError: If config.json cannot be read from any worker.
     """
-    if not workers:
-        return None
-
     config_dict = await read_local_path_file_from_workers(model, "config.json", workers)
-
-    if not config_dict:
-        return None
 
     from transformers import PretrainedConfig
 
