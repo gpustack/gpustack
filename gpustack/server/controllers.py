@@ -81,6 +81,7 @@ from gpustack.server.services import (
     WorkerService,
     ModelRouteService,
 )
+from gpustack.utils.model_instance_workers import get_model_instance_worker_match
 from gpustack.cloud_providers.common import (
     get_client_from_provider,
     construct_cloud_instance,
@@ -958,15 +959,26 @@ class WorkerController:
                 return
 
         async with async_session() as session:
-            instances = await ModelInstance.all_by_field(
-                session, "worker_name", worker.name
+            all_instances = await ModelInstance.all_by_field(
+                session, "cluster_id", worker.cluster_id
             )
-            if not instances:
+            if not all_instances:
+                return
+            matched_instances = []
+            for instance in all_instances:
+                match = get_model_instance_worker_match(
+                    instance,
+                    worker_name=worker.name,
+                    worker_id=worker.id,
+                )
+                if match.matched:
+                    matched_instances.append((instance, match))
+            if not matched_instances:
                 return
 
             if event.type == EventType.DELETED:
                 instance_names = await ModelInstanceService(session).batch_delete(
-                    instances
+                    [instance for instance, _ in matched_instances]
                 )
                 if instance_names:
                     logger.info(
@@ -980,53 +992,62 @@ class WorkerController:
                 or worker.state == WorkerStateEnum.UNREACHABLE
                 or worker.state == WorkerStateEnum.NOT_READY
             ):
-                await self.update_instance_states(
+                await self.update_impacted_instance_states_to_unreachable(
                     session,
-                    instances,
-                    ModelInstanceStateEnum.RUNNING,
-                    ModelInstanceStateEnum.UNREACHABLE,
-                    "Worker is unreachable from the server",
-                    "worker is unreachable from the server",
+                    matched_instances,
+                    worker.name,
                 )
                 return
 
-            if worker.state == WorkerStateEnum.READY:
-                await self.update_instance_states(
-                    session,
-                    instances,
-                    ModelInstanceStateEnum.UNREACHABLE,
-                    ModelInstanceStateEnum.RUNNING,
-                    "",
-                    "worker is ready",
-                )
-                return
-
-    async def update_instance_states(
+    async def update_impacted_instance_states_to_unreachable(
         self,
         session,
-        instances,
-        old_state,
-        new_state,
-        new_state_message,
-        log_update_reason,
+        matched_instances,
+        worker_name,
     ):
-        instance_names = []
-        update_instances = []
+        instance_names = set()
+        subordinate_worker_names = set()
+        for instance, match in matched_instances:
+            patch = {}
+            distributed_servers_changed = False
+            if (
+                match.is_main_worker
+                and instance.state == ModelInstanceStateEnum.RUNNING
+            ):
+                patch["state"] = ModelInstanceStateEnum.UNREACHABLE
+                patch["state_message"] = "Worker is unreachable from the server"
+                instance_names.add(instance.name)
 
-        for instance in instances:
-            if instance.state == old_state:
-                update_instances.append(instance)
+            for index in match.subordinate_worker_indexes:
+                subordinate_worker = instance.distributed_servers.subordinate_workers[
+                    index
+                ]
+                if subordinate_worker.state == ModelInstanceStateEnum.UNREACHABLE:
+                    continue
+                subordinate_worker.state = ModelInstanceStateEnum.UNREACHABLE
+                subordinate_worker.state_message = (
+                    "Worker is unreachable from the server"
+                )
+                subordinate_worker_names.add(
+                    f"{instance.name}:{subordinate_worker.worker_name}"
+                )
+                distributed_servers_changed = True
 
-        if update_instances:
-            patch = {"state": new_state, "state_message": new_state_message}
-            instance_names = await ModelInstanceService(session).batch_update(
-                update_instances, patch
-            )
+            if distributed_servers_changed:
+                patch["distributed_servers"] = instance.distributed_servers
+                flag_modified(instance, "distributed_servers")
 
+            if patch:
+                await ModelInstanceService(session).update(instance, patch)
         if instance_names:
             logger.info(
-                f"Marked instance {', '.join(instance_names)} {new_state} "
-                f"since {log_update_reason}"
+                f"Marked instance {', '.join(instance_names)} unreachable "
+                f"since worker {worker_name} is unreachable from the server"
+            )
+        if subordinate_worker_names:
+            logger.info(
+                f"Marked subordinate workers {', '.join(subordinate_worker_names)} unreachable "
+                f"since worker {worker_name} is unreachable from the server"
             )
 
     async def _notify_parents(self, event: Event):
