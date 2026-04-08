@@ -303,20 +303,10 @@ class ServeManager:
             with contextlib.suppress(NotFoundException):
                 # Get patch dict for main worker.
                 if is_main_worker:
-                    sw_error_msg = None
-                    if (
-                        model_instance.distributed_servers
-                        and model_instance.distributed_servers.subordinate_workers
-                    ):
-                        for (
-                            sw
-                        ) in model_instance.distributed_servers.subordinate_workers:
-                            if sw.state == ModelInstanceStateEnum.ERROR:
-                                sw_error_msg = f"Distributed serving error in subordinate worker {sw.worker_ip}: {sw.state_message}."
-                                break
-                    # If there is no error message from subordinate workers,
-                    # check whether the main worker is healthy.
-                    if not sw_error_msg:
+                    subordinate_state = self._get_main_worker_distributed_state(
+                        model_instance
+                    )
+                    if subordinate_state is None:
                         if model_instance.state == ModelInstanceStateEnum.RUNNING:
                             continue
                         if not is_ready(
@@ -340,12 +330,13 @@ class ServeManager:
                             merged_meta.update(meta)
                             if merged_meta != model.meta:
                                 self._update_model(model.id, meta=merged_meta)
-                    # Otherwise, update the main worker state to ERROR.
-                    else:
+                    elif subordinate_state["should_update"]:
                         patch_dict = {
-                            "state": ModelInstanceStateEnum.ERROR,
-                            "state_message": sw_error_msg,
+                            "state": subordinate_state["state"],
+                            "state_message": subordinate_state["state_message"],
                         }
+                    else:
+                        continue
                 # Get patch dict for subordinate worker.
                 else:
                     # For initialize later mode, the state is set to RUNNING directly,
@@ -375,6 +366,63 @@ class ServeManager:
                     }
                 # Update model instance.
                 self._update_model_instance(model_instance.id, **patch_dict)
+
+    @staticmethod
+    def _get_main_worker_distributed_state(
+        model_instance: ModelInstance,
+    ) -> Optional[dict]:
+        subordinate_workers = (
+            model_instance.distributed_servers.subordinate_workers
+            if (
+                model_instance.distributed_servers
+                and model_instance.distributed_servers.subordinate_workers
+            )
+            else []
+        )
+
+        if not subordinate_workers:
+            return None
+
+        error_sw = None
+        unreachable_sw = None
+        all_running = True
+        for sw in subordinate_workers:
+            if sw.state == ModelInstanceStateEnum.ERROR:
+                error_sw = sw
+                break
+            if (
+                sw.state == ModelInstanceStateEnum.UNREACHABLE
+                and unreachable_sw is None
+            ):
+                unreachable_sw = sw
+            if sw.state != ModelInstanceStateEnum.RUNNING:
+                all_running = False
+
+        if error_sw:
+            return {
+                "should_update": model_instance.state != ModelInstanceStateEnum.ERROR,
+                "state": ModelInstanceStateEnum.ERROR,
+                "state_message": (
+                    f"Distributed serving error in subordinate worker "
+                    f"{error_sw.worker_ip}: {error_sw.state_message}."
+                ),
+            }
+
+        if unreachable_sw:
+            return {
+                "should_update": model_instance.state
+                != ModelInstanceStateEnum.UNREACHABLE,
+                "state": ModelInstanceStateEnum.UNREACHABLE,
+                "state_message": (
+                    f"Distributed serving unreachable in subordinate worker "
+                    f"{unreachable_sw.worker_ip}: {unreachable_sw.state_message}."
+                ),
+            }
+
+        if not all_running:
+            return {"should_update": False}
+
+        return None
 
     @staticmethod
     def _serve_model_instance(
