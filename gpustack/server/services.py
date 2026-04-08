@@ -135,6 +135,11 @@ class APIKeyService:
             self.session.expunge(result)
         return results
 
+    async def update(self, api_key: ApiKey, source: Union[dict, SQLModel, None] = None):
+        result = await api_key.update(self.session, source)
+        await delete_cache_by_key(self.get_by_access_key, api_key.access_key)
+        return result
+
     async def delete(self, api_key: ApiKey):
         result = await api_key.delete(self.session)
         await delete_cache_by_key(self.get_by_access_key, api_key.access_key)
