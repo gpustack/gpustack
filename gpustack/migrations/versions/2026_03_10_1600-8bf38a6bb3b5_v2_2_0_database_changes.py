@@ -27,6 +27,20 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('k8s_volume_mounts', gpustack.schemas.common.JSON(), nullable=True))
     ### end
 
+    ### custom API_KEY
+    with op.batch_alter_table('api_keys', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('is_custom', sa.Boolean(), nullable=True))
+        batch_op.add_column(sa.Column('scope', gpustack.schemas.common.JSON(), nullable=True))
+
+    # Update existing API keys to have full access scope
+    op.execute("UPDATE api_keys SET scope = '[\"*\"]' WHERE scope IS NULL")
+    op.execute("UPDATE api_keys SET is_custom = false WHERE is_custom IS NULL")
+
+    # Set scope to NOT NULL
+    with op.batch_alter_table('api_keys', schema=None) as batch_op:
+        batch_op.alter_column('scope', nullable=False)
+        batch_op.alter_column('is_custom', nullable=False)
+
 
 def downgrade() -> None:
     with op.batch_alter_table('workers', schema=None) as batch_op:
@@ -35,4 +49,11 @@ def downgrade() -> None:
     ### k8s volume mount
     with op.batch_alter_table('clusters', schema=None) as batch_op:
         batch_op.drop_column('k8s_volume_mounts')
+    ### end
+
+    ### custom API_KEY
+    op.execute("DELETE FROM api_keys WHERE is_custom = true")
+    with op.batch_alter_table('api_keys', schema=None) as batch_op:
+        batch_op.drop_column('is_custom')
+        batch_op.drop_column('scope')
     ### end

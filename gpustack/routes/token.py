@@ -20,6 +20,7 @@ from gpustack.api.auth import (
     bearer_auth,
     get_current_user,
     credentials_exception,
+    inference_scope,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,8 @@ async def server_auth(
         raise credentials_exception
 
     if policy != AccessPolicyEnum.PUBLIC:
+        # llm_scope will raise exception if the api key is not allowed to access llm.
+        inference_scope(request, user)
         if not await UserService(session).model_allowed_for_user(
             model_name=model_name,
             user_id=user.id,

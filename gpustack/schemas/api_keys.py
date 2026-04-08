@@ -1,3 +1,4 @@
+from enum import Enum
 from datetime import datetime
 from typing import ClassVar, Optional, List, TYPE_CHECKING
 from sqlalchemy import Column, UniqueConstraint
@@ -10,6 +11,23 @@ if TYPE_CHECKING:
     from gpustack.schemas.users import User
 
 
+class PermissionScope(str, Enum):
+    """
+    Permission scope for API key access control.
+
+    Currently supports coarse-grained scopes. Future extensions may include:
+    - management.readonly: Read-only API access (GET requests only)
+    - management.write: Full API write access
+    - inference.chat: Chat completion endpoints only
+    - inference.embeddings: Embeddings endpoints only
+    - inference.completions: Completions endpoints only
+    """
+
+    ALL = "*"
+    MANAGEMENT = "management"
+    INFERENCE = "inference"
+
+
 class ApiKeyUpdate(SQLModel):
     allowed_model_names: Optional[List[str]] = Field(
         default=None,
@@ -17,6 +35,10 @@ class ApiKeyUpdate(SQLModel):
     )
     description: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
+    )
+    scope: List[PermissionScope] = Field(
+        default=[PermissionScope.ALL],
+        sa_column=Column(JSON, nullable=False),
     )
 
 
@@ -36,6 +58,7 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
         back_populates="api_keys",
         sa_relationship_kwargs={"lazy": "noload"},
     )
+    is_custom: bool = Field(default=False, nullable=False)
 
 
 class ApiKeyListParams(ListParams):
@@ -49,12 +72,14 @@ class ApiKeyListParams(ListParams):
 
 class ApiKeyCreate(ApiKeyBase):
     expires_in: Optional[int] = None
+    custom: Optional[str] = None
 
 
 class ApiKeyPublic(ApiKeyBase):
     id: int
     value: Optional[str] = None  # only available when creating
     masked_value: Optional[str] = None  # partial characters for identification
+    is_custom: bool
     created_at: datetime
     updated_at: datetime
     expires_at: Optional[datetime] = None

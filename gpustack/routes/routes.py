@@ -40,30 +40,27 @@ from gpustack.api.auth import (
     get_current_user,
     get_cluster_user,
     get_worker_user,
+    management_scope,
+    inference_scope,
 )
 
 versioned_prefix = "/v2"
 
 api_router = APIRouter(responses=error_responses)
-api_router.include_router(
+management_router = APIRouter(dependencies=[Depends(management_scope)])
+management_router.include_router(
     grafana.router,
     prefix="/grafana",
     dependencies=[Depends(get_admin_user)],
     include_in_schema=False,
 )
-api_router.include_router(
+management_router.include_router(
     prometheus.router,
     prefix="/prometheus",
     dependencies=[Depends(get_admin_user)],
     include_in_schema=False,
 )
-api_router.include_router(probes.router, tags=["Probes"])
-api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
-api_router.include_router(
-    router=token.router,
-    prefix="/token-auth",
-    include_in_schema=False,
-)
+
 
 # authed routes
 
@@ -189,64 +186,78 @@ v1_admin_router = APIRouter()
 for admin_router in admin_routers:
     v1_admin_router.include_router(**admin_router)
 
-api_router.include_router(
+management_router.include_router(
     worker_client_router,
     dependencies=[Depends(get_worker_user)],
     prefix=versioned_prefix,
 )
-api_router.include_router(
+management_router.include_router(
     cluster_client_router,
     dependencies=[Depends(get_cluster_user)],
     prefix=versioned_prefix,
 )
-api_router.include_router(
+management_router.include_router(
     v1_base_router, dependencies=[Depends(get_current_user)], prefix=versioned_prefix
 )
-api_router.include_router(
+management_router.include_router(
     v1_admin_router, dependencies=[Depends(get_admin_user)], prefix=versioned_prefix
 )
-api_router.include_router(
+management_router.include_router(
     config.router,
     dependencies=[Depends(get_admin_user)],
     prefix=versioned_prefix,
     include_in_schema=False,
 )
-api_router.include_router(
+management_router.include_router(
     debug.router,
     dependencies=[Depends(get_admin_user)],
     prefix="/debug",
     include_in_schema=False,
 )
-api_router.include_router(
+management_router.include_router(
     update.router,
     dependencies=[Depends(get_admin_user)],
     prefix="/update",
     include_in_schema=False,
 )
-api_router.include_router(
-    openai.router,
-    dependencies=[Depends(get_current_user)],
-    prefix="/v1-openai",
-    responses=openai_api_error_responses,
-    tags=["OpenAI-Compatible APIs"],
-)
-api_router.include_router(
-    openai.router,
-    dependencies=[Depends(get_current_user)],
-    prefix="/v1",
-    responses=openai_api_error_responses,
-    tags=["OpenAI-Compatible APIs using the /v1 alias"],
-)
-api_router.include_router(
-    rerank.router,
-    dependencies=[Depends(get_current_user)],
-    prefix="/v1",
-    tags=["Rerank"],
-)
-api_router.include_router(
+management_router.include_router(
     proxy.router,
     dependencies=[Depends(get_current_user)],
     prefix="/proxy",
     tags=["Server-Side Proxy"],
     include_in_schema=False,
 )
+
+inference_router = APIRouter(
+    dependencies=[Depends(get_current_user), Depends(inference_scope)]
+)
+
+inference_router.include_router(
+    openai.router,
+    prefix="/v1-openai",
+    responses=openai_api_error_responses,
+    tags=["OpenAI-Compatible APIs"],
+)
+inference_router.include_router(
+    openai.router,
+    prefix="/v1",
+    responses=openai_api_error_responses,
+    tags=["OpenAI-Compatible APIs using the /v1 alias"],
+)
+inference_router.include_router(
+    rerank.router,
+    prefix="/v1",
+    tags=["Rerank"],
+)
+
+# Following routes should not check api scope as it is publicly accessible and used for authentication by external services.
+api_router.include_router(probes.router, tags=["Probes"])
+api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
+api_router.include_router(
+    router=token.router,
+    prefix="/token-auth",
+    include_in_schema=False,
+)
+
+api_router.include_router(management_router)
+api_router.include_router(inference_router)
