@@ -7,6 +7,7 @@ import asyncio
 from typing import Optional, List, Dict, Any, Set
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Response, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
@@ -447,7 +448,10 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
             # determine if existing worker already has an user and api key
             existing_user = (
                 await User.one_by_field(
-                    session=session, field="worker_id", value=existing_worker.id
+                    session=session,
+                    field="worker_id",
+                    value=existing_worker.id,
+                    options=[selectinload(User.api_keys)],
                 )
                 if existing_worker
                 else None
