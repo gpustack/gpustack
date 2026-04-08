@@ -9,7 +9,7 @@ source "$SCRIPT_ROOT/base.sh"
 source "$GPUSTACK_POSTGRES_CONFIG"
 source "$SCRIPT_ROOT/default-variables.sh"
 
-PGDATA="${GPUSTACK_POSTGRES_DIR}/data"
+PGDATA="${POSTGRES_DATA_DIR}"
 
 echo "[INFO] PostgreSQL service is stopping..."
 

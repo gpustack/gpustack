@@ -2,8 +2,9 @@ import os
 import sys
 import argparse
 import logging
+from pathlib import Path
 from shutil import move
-from typing import List, Dict, Optional
+from typing import List, Dict
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.envs import MIGRATION_DATA_DIR, DATA_MIGRATION
@@ -61,7 +62,7 @@ def run(args: argparse.Namespace):
             logger.info(
                 f"Enabled s6 services: {enabled_services}, dependencies for gpustack: {dependency_services}"
             )
-        prepare_s6_overlay(enabled_services, dependency_services, s6_base_path)
+        prepare_s6_overlay(enabled_services, dependency_services, Path(s6_base_path))
 
         check_ports_availability(cfg, *enabled_services)
         if "postgres" in enabled_services:
@@ -130,20 +131,18 @@ def check_ports_availability(cfg: Config, *services: str):
         raise Exception("One or more required ports are not available.")
 
 
-def cleanup_s6_services(base_path: str, *services: str):
+def cleanup_s6_services(base_path: Path, *services: str):
     for service in services:
-        service_path = os.path.join(base_path, service)
-        if os.path.exists(service_path):
-            # it should be a normal file
-            os.remove(service_path)
+        service_path = base_path / service
+        if service_path.exists():
+            service_path.unlink()
 
 
-def create_s6_services(base_path: str, *services: str):
+def create_s6_services(base_path: Path, *services: str):
     for service in services:
-        service_path = os.path.join(base_path, service)
-        os.makedirs(os.path.dirname(service_path), exist_ok=True)
-        with open(service_path, "w"):
-            pass
+        service_path = base_path / service
+        service_path.parent.mkdir(parents=True, exist_ok=True)
+        service_path.touch()
 
 
 def migrate_hardcode_postgres_data_and_password(
@@ -155,18 +154,15 @@ def migrate_hardcode_postgres_data_and_password(
     # in post 2.0.0 versions, we support custom data dir via cfg.data_dir.
     # here we migrate the data from hardcoded paths to the new paths if needed.
     pair = {
-        "/var/lib/gpustack/postgres/data": os.path.join(
-            cfg.postgres_base_dir(), "data"
-        ),
-        "/var/lib/gpustack/postgres_root_pass": os.path.join(
-            cfg.data_dir, "postgres_root_pass"
-        ),
-        "/var/lib/gpustack/run/migration_done": get_migration_done_file(cfg),
+        Path("/var/lib/gpustack/postgres/data"): Path(cfg.postgres_base_dir()) / "data",
+        Path("/var/lib/gpustack/postgres_root_pass"): Path(cfg.data_dir)
+        / "postgres_root_pass",
+        Path("/var/lib/gpustack/run/migration_done"): get_migration_done_file(cfg),
     }
     for hardcode_path, target_path in pair.items():
-        if hardcode_path == target_path or not os.path.exists(hardcode_path):
+        if hardcode_path == target_path or not hardcode_path.exists():
             continue
-        if os.path.exists(target_path):
+        if target_path.exists():
             logger.warning(
                 f"Both hardcoded postgres file/dir {hardcode_path} and postgres file/dir with data_dir {target_path} exist. Only {target_path} will be used."
             )
@@ -174,20 +170,14 @@ def migrate_hardcode_postgres_data_and_password(
         logger.info(
             f"Migrating hardcoded postgres file/dir {hardcode_path} to {target_path}"
         )
-        os.makedirs(cfg.postgres_base_dir(), exist_ok=True)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
         move(hardcode_path, target_path)
 
 
 def prepare_postgres_config(cfg: Config):
     # prepare postgres dirs
     # same reason as gateway_shared_config_dir
-    postgres_shared_config_dir = os.getenv(
-        "GPUSTACK_POSTGRES_DIR", cfg.postgres_base_dir()
-    )
-    os.makedirs(postgres_shared_config_dir, exist_ok=True)
-    os.makedirs(cfg.postgres_base_dir(), exist_ok=True)
-
-    config_path = os.path.join(postgres_shared_config_dir, ".env")
+    config_path = prepare_env("GPUSTACK_POSTGRES_CONFIG", "postgresql")
     with open(config_path, "w") as f:
         f.write(f"DATA_DIR={cfg.data_dir}\n")
         f.write(f"LOG_DIR={cfg.log_dir}\n")
@@ -196,24 +186,14 @@ def prepare_postgres_config(cfg: Config):
         f.write(f"POSTGRES_DATA_DIR={os.path.join(cfg.postgres_base_dir(), 'data')}\n")
 
 
-def get_migration_done_file(cfg: Config) -> str:
-    return os.path.join(cfg.data_dir, "run/state_migration_done")
+def get_migration_done_file(cfg: Config) -> Path:
+    return Path(cfg.data_dir) / "run" / "state_migration_done"
 
 
 def prepare_gateway_config(cfg: Config):
     # prepare gateway dirs
-    # In most cases gateway_shared_config_dir is equal to higress_base_dir.
-    # If user customized cfg.data_dir, we need to ensure both dirs exist.
-    # gateway_shared_config_dir is to store the environment variables for gateway services
-    gateway_shared_config_dir = os.getenv(
-        "GPUSTACK_GATEWAY_DIR", cfg.higress_base_dir()
-    )
-    os.makedirs(gateway_shared_config_dir, exist_ok=True)
-    # cfg.higress_base_dir is to store gateway configurations like kubeconfig and apiserver data
-    os.makedirs(cfg.higress_base_dir(), exist_ok=True)
-
-    config_path = os.path.join(gateway_shared_config_dir, ".env")
-    higress_embedded_kubeconfig = os.path.join(cfg.higress_base_dir(), "kubeconfig")
+    config_path = prepare_env("GPUSTACK_GATEWAY_CONFIG", "gateway")
+    higress_embedded_kubeconfig = Path(cfg.higress_base_dir()) / "kubeconfig"
 
     if cfg.gateway_mode == GatewayModeEnum.embedded:
         with open(config_path, "w") as f:
@@ -247,12 +227,7 @@ current-context: higress
 
 
 def prepare_observability_config(cfg: Config):
-    observability_shared_config_dir = os.getenv(
-        "GPUSTACK_OBSERVABILITY_DIR", os.path.join(cfg.data_dir, "observability")
-    )
-    os.makedirs(observability_shared_config_dir, exist_ok=True)
-
-    env_config_path = os.path.join(observability_shared_config_dir, ".env")
+    env_config_path = prepare_env("GPUSTACK_OBSERVABILITY_CONFIG", "observability")
     with open(env_config_path, "w") as f:
         f.write(f"DATA_DIR={cfg.data_dir}\n")
         f.write(f"LOG_DIR={cfg.log_dir}\n")
@@ -265,13 +240,12 @@ def prepare_observability_config(cfg: Config):
             f"GF_PATHS_PLUGINS={os.path.join(cfg.data_dir, 'grafana', 'plugins')}\n"
         )
 
-    prometheus_config_path = os.getenv(
-        "PROMETHEUS_CONFIG_FILE", "/etc/prometheus/prometheus.yml"
+    prometheus_config_path = Path(
+        os.getenv("PROMETHEUS_CONFIG_FILE", "/etc/prometheus/prometheus.yml")
     )
-    os.makedirs(os.path.dirname(prometheus_config_path), exist_ok=True)
-    with open(prometheus_config_path, "w") as f:
-        f.write(
-            f"""# Managed by GPUStack
+    prometheus_config_path.parent.mkdir(parents=True, exist_ok=True)
+    prometheus_config_path.write_text(
+        f"""# Managed by GPUStack
 global:
   scrape_interval: 15s
   scrape_timeout: 10s
@@ -288,17 +262,15 @@ scrape_configs:
       - targets:
           - 127.0.0.1:{cfg.metrics_port}
 """
-        )
-
-    grafana_provisioning_dir = os.getenv(
-        "GF_PATHS_PROVISIONING", "/etc/grafana/provisioning"
     )
-    datasource_dir = os.path.join(grafana_provisioning_dir, "datasources")
-    os.makedirs(datasource_dir, exist_ok=True)
-    datasource_path = os.path.join(datasource_dir, "datasource.yaml")
-    with open(datasource_path, "w") as f:
-        f.write(
-            f"""apiVersion: 1
+
+    grafana_provisioning_dir = Path(
+        os.getenv("GF_PATHS_PROVISIONING", "/etc/grafana/provisioning")
+    )
+    datasource_path = grafana_provisioning_dir / "datasources" / "datasource.yaml"
+    datasource_path.parent.mkdir(parents=True, exist_ok=True)
+    datasource_path.write_text(
+        f"""apiVersion: 1
 
 datasources:
   - name: Prometheus
@@ -310,7 +282,7 @@ datasources:
     editable: true
     orgId: 1
 """
-        )
+    )
 
 
 def determine_enabled_services(cfg: Config) -> List[str]:
@@ -358,19 +330,17 @@ def determine_dependency_services(cfg: Config) -> List[str]:
             dependencies.extend(postgres_services.dep_services)
 
         # migration
-        old_db_file = os.path.join(cfg.data_dir, "database.db")
+        old_db_file = Path(cfg.data_dir) / "database.db"
         should_migrate = (
             MIGRATION_DATA_DIR is not None or DATA_MIGRATION
-        ) and os.path.exists(old_db_file)
+        ) and old_db_file.exists()
         if should_migrate and MIGRATION_DATA_DIR is not None:
             logger.warning(
                 f"The environment variable GPUSTACK_MIGRATION_DATA_DIR is deprecated. The migration target dir will be set to {cfg.data_dir} instead."
             )
         # This is the hardcooded migration done file path
-        migration_done = os.path.exists(get_migration_done_file(cfg))
-        postgres_data_exists = os.path.exists(
-            os.path.join(cfg.data_dir, "postgres", "data")
-        )
+        migration_done = get_migration_done_file(cfg).exists()
+        postgres_data_exists = (Path(cfg.data_dir) / "postgres" / "data").exists()
         if (
             cfg.database_url is None
             and should_migrate
@@ -389,15 +359,25 @@ def determine_dependency_services(cfg: Config) -> List[str]:
 def prepare_s6_overlay(
     enabled_services: List[str],
     dependency_services: List[str],
-    s6_base_path: Optional[str],
+    s6_base_path: Path = Path("/etc/s6-overlay/s6-rc.d"),
 ):
-    if s6_base_path is None:
-        s6_base_path = "/etc/s6-overlay/s6-rc.d"
 
-    s6_overlay_path = os.path.join(s6_base_path, "user/contents.d")
-    os.makedirs(s6_overlay_path, exist_ok=True)
+    s6_overlay_path = s6_base_path / "user/contents.d"
+    s6_overlay_path.mkdir(parents=True, exist_ok=True)
     cleanup_s6_services(s6_overlay_path, *all_services())
 
     create_s6_services(
         s6_overlay_path, *(set(enabled_services) | set(dependency_services))
     )
+
+
+def prepare_env(env_name: str, scope: str, env_file_name: str = ".env") -> Path:
+    config_path = os.getenv(env_name)
+    if config_path is None:
+        base_dir = Path(os.getenv("GPUSTACK_RUN_DIR", "/run/gpustack"))
+        config_path = base_dir / scope / env_file_name
+    else:
+        config_path = Path(config_path)
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    return config_path
