@@ -34,9 +34,11 @@ logger = logging.getLogger(__name__)
 LIST_REPO_CACHE_DIR = "repo-skeleton"
 
 
+# Only root config.json plus Python modules (custom configs / trust_remote_code).
+# Avoid '*.json' so large files like tokenizer.json are not pulled during evaluation.
 MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN = [
-    '*.json',
-    '*.py',
+    "config.json",
+    "*.py",
 ]
 
 
@@ -464,19 +466,39 @@ def get_pretrained_config(model: Model, **kwargs):
         repo_cache_dir = os.path.join(
             model_scope_cache_dir, *model.model_scope_model_id.split('/')
         )
-        local_files_only = False
-        pretrained_model_name_or_path = model.model_scope_model_id
-        if os.path.exists(repo_cache_dir):
-            local_files_only = True
-            pretrained_model_name_or_path = repo_cache_dir
-        with get_model_lock(model.model_scope_model_id):
-            pretrained_config = AutoConfig.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=trust_remote_code,
-                allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
-                cache_dir=model_scope_cache_dir,
-                local_files_only=local_files_only,
+        ms_config_json = os.path.join(repo_cache_dir, "config.json")
+        # ModelScope's wrapped AutoConfig passes kwargs to HF from_pretrained after
+        # snapshot_download; cache_dir/local_dir are not forwarded to snapshot_download,
+        # so downloads must use modelscope_snapshot_download with local_dir here.
+        # Require config.json (not merely an existing dir) so empty directories still fetch.
+        if not os.path.isfile(ms_config_json):
+            logger.info(
+                f"Downloading ModelScope files required for config to {repo_cache_dir} "
+                f"(model_id={model.model_scope_model_id})"
             )
+            with get_model_lock(model.model_scope_model_id):
+                if not os.path.isfile(ms_config_json):
+                    modelscope_snapshot_download(
+                        model_id=model.model_scope_model_id,
+                        local_dir=repo_cache_dir,
+                        allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
+                    )
+        else:
+            logger.info(f"Repo cache dir: {repo_cache_dir}")
+
+        logger.info(
+            f"Loading pretrained config for ModelScope model {model.model_scope_model_id} "
+            f"from {repo_cache_dir}"
+        )
+        pretrained_config = AutoConfig.from_pretrained(
+            repo_cache_dir,
+            trust_remote_code=trust_remote_code,
+            allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
+            local_files_only=True,
+        )
+        logger.info(
+            f"Successfully loaded pretrained config for ModelScope model {model.model_scope_model_id}"
+        )
     elif model.source == SourceEnum.LOCAL_PATH:
         if not os.path.exists(model.local_path):
             logger.warning(
