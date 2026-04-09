@@ -71,6 +71,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("API_PORT"),
     )
     common_group.add_argument(
+        "--proxy-port",
+        type=int,
+        help="Port to bind the GPUStack proxy server to.",
+        default=get_gpustack_env("PROXY_PORT"),
+    )
+    common_group.add_argument(
         "--config-file",
         type=str,
         help="Path to the YAML config file.",
@@ -692,6 +698,7 @@ def set_common_options(args, config_data: dict):
         "port",
         "tls_port",
         "api_port",
+        "proxy_port",
         "gateway_mode",
         "gateway_kubeconfig",
         "gateway_namespace",

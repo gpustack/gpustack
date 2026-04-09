@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi_cdn_host import patch_docs
 
 from gpustack import __version__
+from fastapi.middleware.cors import CORSMiddleware
 from gpustack.api import exceptions, middlewares
 from gpustack.config.config import Config
 from gpustack import envs
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 def create_app(cfg: Config) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        app.state.server_config = cfg
         connector = aiohttp.TCPConnector(
             limit=envs.TCP_CONNECTOR_LIMIT,
             force_close=True,
@@ -48,6 +50,14 @@ def create_app(cfg: Config) -> FastAPI:
     app.add_middleware(middlewares.RequestTimeMiddleware)
     app.add_middleware(middlewares.ModelUsageMiddleware)
     app.add_middleware(middlewares.RefreshTokenMiddleware)
+    if cfg.enable_cors:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cfg.allow_origins,
+            allow_credentials=cfg.allow_credentials,
+            allow_methods=cfg.allow_methods,
+            allow_headers=cfg.allow_headers,
+        )
     app.include_router(api_router)
     ui.register(app)
     register_gateway_plugins(cfg=cfg, app=app)

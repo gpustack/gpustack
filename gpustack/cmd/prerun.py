@@ -96,6 +96,7 @@ def ports_for_services(cfg: Config) -> Dict[int, str]:
     enabled_tls = cfg.ssl_certfile is not None and cfg.ssl_keyfile is not None
     if is_server:
         ports[cfg.port] = gpustack_service_name
+        ports[cfg.proxy_port] = gpustack_service_name
         if enabled_tls:
             ports[cfg.tls_port] = gpustack_service_name
         if not cfg.disable_metrics:
@@ -255,6 +256,12 @@ scrape_configs:
     scrape_interval: 5s
     http_sd_configs:
       - url: "http://127.0.0.1:{cfg.metrics_port}/metrics/targets"
+        refresh_interval: 1m
+  - job_name: gpustack-proxy-worker-discovery
+    scrape_interval: 5s
+    proxy_url: "http://127.0.0.1:{cfg.get_proxy_port()}"
+    http_sd_configs:
+      - url: "http://127.0.0.1:{cfg.metrics_port}/metrics/proxy-targets"
         refresh_interval: 1m
   - job_name: gpustack-server
     scrape_interval: 5s

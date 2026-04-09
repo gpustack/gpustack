@@ -1,6 +1,6 @@
 from typing import Optional
 import aiohttp
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Request, status
 from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
 from urllib.parse import urlencode
 from sqlalchemy.orm import selectinload
@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.server.services import ModelInstanceService
-from gpustack.utils.network import use_proxy_env_for_url
+from gpustack.server.worker_request import request_to_worker, stream_to_worker
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -134,69 +134,62 @@ async def fetch_worker(session, worker_id):
 
 
 @router.get("/{id}/logs")
-async def get_serving_logs(  # noqa: C901
+async def get_serving_logs(
     request: Request, session: SessionDep, id: int, log_options: LogOptionsDep
 ):
     model_instance = await fetch_model_instance(session, id)
     worker = await fetch_worker(session, model_instance.worker_id)
 
-    model_instance_log_url = (
-        f"http://{worker.advertise_address}:{worker.port}/serveLogs"
-        f"/{model_instance.id}?{log_options.url_encode()}"
-        f"&model_instance_name={model_instance.name}"
-    )
+    params = {
+        "tail": log_options.tail,
+        "follow": log_options.follow,
+        "model_instance_name": model_instance.name,
+    }
     if (
         model_instance.state != ModelInstanceStateEnum.RUNNING
         and model_instance.model_files
         and model_instance.model_files[0].state != ModelFileStateEnum.READY
     ):
-        # Get model file ID for injected download logs if instance is downloading
-        model_instance_log_url += f"&model_file_id={model_instance.model_files[0].id}"
+        params["model_file_id"] = model_instance.model_files[0].id
 
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
 
-    use_proxy_env = use_proxy_env_for_url(model_instance_log_url)
-    client: aiohttp.ClientSession = (
-        request.app.state.http_client
-        if use_proxy_env
-        else request.app.state.http_client_no_proxy
-    )
-
     if log_options.follow:
 
-        async def proxy_stream():
-            try:
-                async with client.get(model_instance_log_url, timeout=timeout) as resp:
-                    if resp.status != 200:
-                        body = await resp.read()
-                        yield body, resp.headers, resp.status
-                        return
-
-                    async for chunk in resp.content.iter_any():
-                        yield chunk, resp.headers, resp.status
-            except TimeoutError:
-                yield "\x1b[999;1H" + f"Log stream timed out ({timeout.total} seconds). Please reopen the log page.\n", {}, status.HTTP_500_INTERNAL_SERVER_ERROR
-            except Exception as e:
-                yield "\x1b[999;1H" + f"Error fetching serving logs: {str(e)}\n", {}, status.HTTP_500_INTERNAL_SERVER_ERROR
+        def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
+            msg = (
+                str(e)
+                if not isinstance(e, TimeoutError)
+                else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
+            )
+            return f"\x1b[999;1H{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
 
         return StreamingResponseWithStatusCode(
-            proxy_stream(),
+            stream_to_worker(
+                worker=worker,
+                method="GET",
+                path=f"serveLogs/{model_instance.id}",
+                proxy_client=request.app.state.http_client,
+                no_proxy_client=request.app.state.http_client_no_proxy,
+                params=params,
+                timeout=timeout,
+                on_exception=on_exception,
+            ),
             media_type="application/octet-stream",
         )
     else:
-        try:
-            async with client.get(model_instance_log_url, timeout=timeout) as resp:
-                if resp.status != 200:
-                    raise HTTPException(
-                        status_code=resp.status,
-                        detail="Error fetching serving logs",
-                    )
-                content = await resp.text()
-            return PlainTextResponse(content=content, status_code=resp.status)
-        except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Error fetching serving logs: {str(e)}\n"
-            )
+        resp, body = await request_to_worker(
+            worker=worker,
+            method="GET",
+            path=f"serveLogs/{model_instance.id}",
+            proxy_client=request.app.state.http_client,
+            no_proxy_client=request.app.state.http_client_no_proxy,
+            params=params,
+            timeout=timeout,
+        )
+        return PlainTextResponse(
+            content=body.decode() if body else "", status_code=resp.status
+        )
 
 
 @router.post("", response_model=ModelInstancePublic)

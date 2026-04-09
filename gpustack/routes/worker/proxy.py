@@ -15,7 +15,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack import envs
 from gpustack.utils.network import use_proxy_env_for_url
-from gpustack.gateway import router_header_key
+from gpustack.gateway.utils import get_instance_id_from_header, router_header_key
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
@@ -108,29 +108,15 @@ def get_model_instance_info_from_model_name(request: Request) -> int:
 
     Return the model instance port and support of generic proxy or not.
     """
-    model_destination = request.headers.get(router_header_key, None)
-    if model_destination is None:
-        raise HTTPException(
-            status_code=400, detail=f"Missing {router_header_key} header"
-        )
-    # model_destination is in the format of "model-<id>-<instance.id>.<suffix>",
-    # we need to extract the model instance id from it, which is the last part of the splitted by "-",
-    # and before the first ".". For example, "model-1-2.3" -> model instance id is 2.
-    splitted = model_destination.split(".")[0].split("-")
-    try:
-        model_instance_id = int(splitted[-1])
-    except (ValueError, IndexError):
-        raise NotFoundException(
-            message=f"Invalid model destination format: {model_destination}",
-        )
+    model_instance_id = get_instance_id_from_header(request.headers)
     port: Optional[int] = request.app.state.get_instance_port_by_model_instance_id(
         model_instance_id
     )
     if not port:
         raise NotFoundException(
-            message=f"No running model instance found for model name: {model_destination}",
+            message=f"No running model instance found for model name: {model_instance_id}",
         )
-    logger.debug(f"Found port {port} from model destination {model_destination}")
+    logger.debug(f"Found port {port} from model instance id {model_instance_id}")
     return port
 
 

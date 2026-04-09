@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union, Dict, Any, Literal, Callable
 from tenacity import retry, stop_after_attempt, wait_fixed
+from fastapi import HTTPException
+from starlette.datastructures import Headers
 from gpustack.gateway.labels_annotations import managed_labels, match_labels
 from gpustack.gateway import ai_proxy_types
 from gpustack.gateway.client.networking_higress_io_v1_api import (
@@ -36,6 +38,8 @@ from gpustack.schemas.model_provider import (
 )
 from gpustack.schemas.model_routes import ModelRoute
 from gpustack.server.bus import EventType
+from gpustack.server.db import async_session
+from gpustack.server.services import ModelInstanceService, WorkerService
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
@@ -43,6 +47,8 @@ from gpustack.utils.network import is_ipaddress
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException, V1IngressTLS
 from gpustack.envs import GATEWAY_MIRROR_INGRESS_NAME
+from gpustack.api.exceptions import NotFoundException
+from gpustack.websocket_proxy.message import ServerInfo, RegisteredClientInfo
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +59,8 @@ model_ingress_prefix = "ai-route-model-"
 model_route_ingress_prefix = "ai-route-route-"
 provider_id_prefix = "provider-"
 model_id_prefix = "model-"
+
+router_header_key = "x-gpustack-model"
 
 # Type alias for destination tuples
 # Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
@@ -207,8 +215,11 @@ def model_instance_registry(
     worker: Optional[Worker] = None,
 ) -> Optional[McpBridgeRegistry]:
     name = model_instance_prefix(model_instance)
-    if worker is not None and worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER:
-        return worker_registry(worker, name_override=name)
+    if worker is not None:
+        if worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER:
+            return _worker_reserve_proxy_registry(worker, name)
+        elif worker.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL:
+            return _worker_tunnel_proxy_registry(worker, name)
     address = model_instance.worker_advertise_address or model_instance.worker_ip
     if address is None or address == "" or model_instance.port is None:
         return None
@@ -228,16 +239,11 @@ def model_instance_registry(
     )
 
 
-def worker_registry(
+def _worker_reserve_proxy_registry(
     worker: Worker, name_override: Optional[str] = None
-) -> Optional[McpBridgeRegistry]:
+) -> McpBridgeRegistry:
     address = worker.advertise_address or worker.ip
-    if (
-        address is None
-        or address == ""
-        or worker.port is None
-        or worker.proxy_mode != ModelInstanceProxyModeEnum.WORKER
-    ):
+    if address is None or address == "" or worker.port is None:
         return None
     domain = address
     port = worker.port
@@ -252,6 +258,24 @@ def worker_registry(
         name=name_override or f"{cluster_worker_prefix(worker.cluster_id)}{worker.id}",
         protocol="http",
         type=registry_type,
+    )
+
+
+def _worker_tunnel_proxy_registry(
+    worker: Worker, name_override: Optional[str] = None
+) -> McpBridgeRegistry:
+    if worker.get_proxy_address() is None:
+        return None
+    # proxy address must be a valid URL and the netloc must be a valid IP.
+    result = urlparse(worker.get_proxy_address())
+    protocol = "http" if result.scheme == "http" else "https"
+    port = result.port or (80 if protocol == "http" else 443)
+    return McpBridgeRegistry(
+        domain=f"{result.hostname}:{port}",
+        port=80,
+        name=name_override or f"{cluster_worker_prefix(worker.cluster_id)}{worker.id}",
+        protocol=protocol,
+        type="static",
     )
 
 
@@ -1309,3 +1333,66 @@ def ai_proxy_diff_spec(
         operating_id_prefix=operating_id_prefix,
     )
     return current_spec
+
+
+def get_instance_id_from_header(headers: Headers) -> int:
+    model_destination = headers.get(router_header_key, None)
+    if model_destination is None:
+        raise HTTPException(
+            status_code=400, detail=f"Missing {router_header_key} header"
+        )
+
+    # Match pattern: model-<model_id>-<instance_id>.suffix
+    # instance_id is the last numeric segment before the first dot
+    match = re.match(r'^model-.*-(\d+)\..+', model_destination)
+    if not match:
+        raise NotFoundException(
+            message=f"Invalid model destination format: {model_destination}"
+        )
+
+    return int(match.group(1))
+
+
+async def proxy_header_router(headers: Dict[str, str]) -> Tuple[Optional[str], int]:
+    try:
+        instance_id = get_instance_id_from_header(headers)
+    except HTTPException as e:
+        logger.trace(f"direct proxying request as: {e}")
+        return None, 0
+    except Exception as e:
+        logger.debug(f"Error parsing model destination header: {e}")
+        return None, 0
+    async with async_session() as session:
+        model_instance_service = ModelInstanceService(session)
+        model_instance: ModelInstance = await model_instance_service.get_by_id(
+            instance_id
+        )
+        if model_instance is None:
+            logger.error(f"Model instance with ID {instance_id} not found.")
+            return None, 0
+        if model_instance.worker_ip is None or len(model_instance.ports) == 0:
+            logger.error(
+                f"Model instance with ID {instance_id} do not get scheduled yet."
+            )
+            return None, 0
+        return model_instance.worker_ip, model_instance.ports[0]
+
+
+async def worker_websocket_connect_callback(
+    _server: Optional[ServerInfo],
+    client: Optional[RegisteredClientInfo],
+    proxy_address: Optional[str] = None,
+) -> None:
+    if client is None:
+        return
+    async with async_session() as session:
+        worker = await Worker.one_by_field(
+            session=session, field="worker_uuid", value=str(client.client_id)
+        )
+        if worker is None:
+            logger.error(f"Worker with UUID {client.client_id} not found.")
+            return
+        if worker.proxy_address == proxy_address:
+            return
+        worker.proxy_address = proxy_address
+        await WorkerService(session).update(worker)

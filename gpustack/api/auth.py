@@ -3,11 +3,12 @@ from datetime import datetime, timezone
 import logging
 import aiohttp
 from aiocache import cached
-from fastapi import Depends, Request
+from fastapi import Depends, Request, WebSocket
+from starlette.datastructures import Headers
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
-from gpustack.server.db import get_session
-from typing import Annotated, Optional, Tuple
+from gpustack.server.db import get_session, async_session
+from typing import Annotated, Optional, Tuple, Dict
 from fastapi.security import (
     APIKeyCookie,
     APIKeyHeader,
@@ -16,6 +17,7 @@ from fastapi.security import (
     HTTPBasicCredentials,
     HTTPBearer,
 )
+from fastapi.security.utils import get_authorization_scheme_param
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.api.exceptions import (
     ForbiddenException,
@@ -29,7 +31,10 @@ from gpustack.security import (
     JWTManager,
     verify_hashed_secret,
 )
-from gpustack.server.services import APIKeyService, UserService
+from gpustack.server.services import APIKeyService, UserService, WorkerService
+from gpustack.websocket_proxy.authenticator import (
+    Authenticator as WebsocketAuthenticator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -304,3 +309,89 @@ def make_auth_token_via_server(client: aiohttp.ClientSession):
             return False
 
     return inner
+
+
+async def AuthenticateWorkerByRequestHeaders(
+    header_dict: Dict[str, str],
+    validate_proxy: Optional[bool] = None,
+) -> Optional[User]:
+    """
+    Authenticate a worker based on request headers, used for both WebSocket and non-WebSocket requests.
+    For WebSocket requests, the Bearer token is expected in the "Authorization" header.
+    For non-WebSocket requests (e.g. HTTP requests to the proxy), the Bearer token can be in either "Authorization"
+    or "Proxy-Authorization" header, with "Proxy-Authorization" taking precedence if both are present.
+    """
+    # TODO: add proxy target ip to validate the ip matches the worker's registered ip or not.
+    headers = Headers(header_dict)
+    authorization: Optional[str] = None
+    # proxy_authorization = headers.get("Proxy-Authorization")
+    # to_verify: Optional[str] = None
+    if validate_proxy:
+        authorization = headers.get("Proxy-Authorization")
+    elif validate_proxy is not None:
+        authorization = headers.get("Authorization")
+    else:
+        # if validate_proxy is None, it means we are in a context where both headers could be used (e.g. WebSocket connection from the proxy)
+        # in this case we give precedence to Proxy-Authorization if it exists, otherwise fall back to Authorization
+        authorization = headers.get("Proxy-Authorization") or headers.get(
+            "Authorization"
+        )
+    async with async_session() as session:
+        scheme, credentials = get_authorization_scheme_param(authorization)
+        if not (authorization and scheme and credentials) or scheme.lower() != "bearer":
+            return None
+        bearer_token = HTTPAuthorizationCredentials(
+            scheme=scheme, credentials=credentials
+        )
+        user, _ = await get_user_from_api_token(session, bearer_token.credentials)
+        if user is None:
+            return None
+        if user.worker_id is not None:
+            user.worker = await WorkerService(session).get_by_id(user.worker_id)
+        return user
+
+
+class BearerTokenAuthenticator(WebsocketAuthenticator):
+    """Websocket authenticator that verifies bearer tokens via the main server."""
+
+    token: Optional[str]
+
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ):
+        self.token = token
+        if not self.token and headers:
+            parsed_headers = Headers(headers)
+            self.token = parsed_headers.get("Authorization", "").replace("Bearer ", "")
+
+    def inject_headers(
+        self,
+        headers: Dict[str, str],
+    ) -> None:
+        # No need to inject headers for outgoing connections from the proxy
+        for key in list(headers.keys()):
+            if key.lower() == "authorization":
+                headers.pop(key)
+        if self.token:
+            headers.setdefault("Authorization", f"Bearer {self.token}")
+
+    async def authenticate(self, websocket: WebSocket) -> bool:
+        user = await AuthenticateWorkerByRequestHeaders(
+            websocket.headers, validate_proxy=False
+        )
+        if user is None:
+            return False
+        if user.worker is None:
+            logger.debug(
+                f"Authenticated user {user.id} with bearer token but it is not associated with any worker"
+            )
+            return False
+        if websocket.headers.get("x-client-id") != user.worker.worker_uuid:
+            logger.debug(
+                f"Authenticated worker {user.worker_id} with bearer token but client_id {websocket.headers.get('x-client-id')} does not match worker_uuid {user.worker.worker_uuid}"
+            )
+            return False
+        websocket.scope["user"] = user
+        return True

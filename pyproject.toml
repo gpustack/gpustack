@@ -36,7 +36,7 @@ dependencies = [
     "cryptography>=43.0.0",
     "tzdata>=2024.1",
     "modelscope>=1.28",
-    "uvicorn>=0.32.0",
+    "uvicorn>=0.41.0",
     "transformers>=4.51.3,!=4.57.0",
     "fastapi-cdn-host>=0.8.0",
     "wmi>=1.5.1; platform_system == 'Windows'",
@@ -67,6 +67,9 @@ dependencies = [
     "cachetools>=6.0.0",
     "gpustack-runner==0.1.25.post7",
     "gpustack-runtime==0.1.44.post4",
+    "mkdocs-minify-plugin>=0.8.0",
+    "websockets==16.0",
+    "py-radix>=1.1.0",
 ]
 
 [dependency-groups]
@@ -100,7 +103,6 @@ vllm = [
     "timm>=1.0.15",
 ]
 audio = [
-    "vox-box==0.0.19",
     "numba>=0.56.0",
 ]
 all = [
@@ -108,7 +110,6 @@ all = [
     "mistral_common[opencv]>=1.4.3",
     "bitsandbytes>=0.45.2",
     "timm>=1.0.15",
-    "vox-box==0.0.19",
 ]
 
 [project.scripts]
