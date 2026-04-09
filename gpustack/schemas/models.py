@@ -586,6 +586,22 @@ class ModelInstancePublic(
 ModelInstancesPublic = PaginatedList[ModelInstancePublic]
 
 
+class ModelInstanceLogWorker(BaseModel):
+    id: int
+    name: str
+
+
+class ModelInstanceLogOptions(BaseModel):
+    restart_counts: List[int]
+    workers: List[ModelInstanceLogWorker]
+
+
+class ServeLogOptionsResponse(BaseModel):
+    """Available main-log restart_count values on this worker's disk."""
+
+    restart_counts: List[int]
+
+
 def is_gguf_model(model: Union[Model, ModelSource]):
     """
     Check if the model is a GGUF model.

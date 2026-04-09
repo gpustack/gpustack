@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import NotFoundException
+from gpustack.schemas.models import ServeLogOptionsResponse
 from gpustack.worker.logs import LogOptions, LogOptionsDep, log_generator
 from gpustack.worker.log_sources import (
     ContainerLogSource,
@@ -341,6 +342,16 @@ async def combined_log_generator(
 
     if not has_any_logs:
         raise NotFoundException(message="Log file not found")
+
+
+@router.get("/serveLogOptions/{id}", response_model=ServeLogOptionsResponse)
+async def get_serve_log_options(request: Request, id: int):
+    """List restart_count values for which main serve log files exist locally."""
+    log_dir = request.app.state.config.log_dir
+    serve_log_dir = Path(log_dir) / "serve"
+    files = await get_all_log_files(serve_log_dir, id, container=False)
+    restart_counts = sorted({extract_restart_count(f.name) for f in files})
+    return ServeLogOptionsResponse(restart_counts=restart_counts)
 
 
 @router.get("/serveLogs/{id}")
