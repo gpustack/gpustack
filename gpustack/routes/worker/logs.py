@@ -1,13 +1,19 @@
 import asyncio
 import logging
 import re
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import NotFoundException
+from gpustack.schemas.models import (
+    ModelInstanceLogRestartEntry,
+    ServeLogOptionsResponse,
+)
 from gpustack.worker.logs import LogOptions, LogOptionsDep, log_generator
 from gpustack.worker.log_sources import (
     ContainerLogSource,
@@ -85,12 +91,70 @@ async def get_all_log_files(
     return sorted(files, key=lambda p: extract_fn(p.name))
 
 
+async def resolve_restart_count(
+    log_dir: Path, model_instance_id: int, previous: bool
+) -> Optional[int]:
+    """Resolve ``previous`` flag to an actual restart_count from disk files.
+
+    Returns:
+        The restart_count integer for the target log set, or ``None`` when
+        no log files exist on disk yet.
+    """
+    files = await get_all_log_files(log_dir, model_instance_id, container=False)
+    if not files:
+        return None
+    counts = sorted(set(extract_restart_count(f.name) for f in files))
+    if previous and len(counts) >= 2:
+        return counts[-2]
+    return counts[-1]
+
+
+def _path_started_at_utc(path: Path) -> datetime:
+    st = path.stat()
+    ts = getattr(st, "st_birthtime", None)
+    if ts is None or ts <= 0:
+        ts = st.st_mtime
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+def restart_entries_from_main_log_files(
+    files: List[Path],
+) -> List[ModelInstanceLogRestartEntry]:
+    """Build restart entries from main log paths; one entry per restart_count.
+
+    Entries are ordered by restart_count descending (newest first).
+    The highest restart_count maps to ``previous=False`` (current);
+    the second highest maps to ``previous=True``.
+
+    If multiple files share a restart_count, use the lexicographically smallest
+    name as the representative path for stat.
+    """
+    by_count: Dict[int, List[Path]] = defaultdict(list)
+    for f in files:
+        by_count[extract_restart_count(f.name)].append(f)
+
+    sorted_counts = sorted(by_count.keys(), reverse=True)
+    entries: List[ModelInstanceLogRestartEntry] = []
+    for i, rc in enumerate(sorted_counts):
+        paths = sorted(by_count[rc], key=lambda p: p.name)
+        path = paths[0]
+        try:
+            started_at = _path_started_at_utc(path)
+        except OSError:
+            started_at = None
+        entries.append(
+            ModelInstanceLogRestartEntry(previous=i > 0, started_at=started_at)
+        )
+    return entries
+
+
 async def historical_log_generator(
     log_dir: Path,
     model_instance_id: int,
     options: LogOptions,
     stop_event: Optional[asyncio.Event] = None,
     container: bool = False,
+    restart_count: Optional[int] = None,
 ):
     """Generate logs from historical log files.
 
@@ -100,6 +164,7 @@ async def historical_log_generator(
         options: Log options (tail, follow)
         stop_event: Event to signal stopping
         container: If True, read container logs; if False, read main logs
+        restart_count: Resolved restart count to filter log files
 
     Yields:
         Log lines from log files
@@ -108,7 +173,7 @@ async def historical_log_generator(
         log_dir,
         model_instance_id,
         container=container,
-        restart_count=options.restart_count,
+        restart_count=restart_count,
     )
 
     if not log_files:
@@ -198,43 +263,47 @@ async def merged_log_generator(  # noqa: C901
 
     # Yield lines as they become available from any source
     active_count = len(queues)
-    while active_count > 0:
-        if stop_event and stop_event.is_set():
-            # Cancel remaining tasks
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            break
+    try:
+        while active_count > 0:
+            if stop_event and stop_event.is_set():
+                break
 
-        # Wait for any queue to have data
-        # (with timeout to check stop_event periodically)
-        done, _ = await asyncio.wait(
-            get_tasks.keys(), return_when=asyncio.FIRST_COMPLETED, timeout=0.5
-        )
+            # Wait for any queue to have data
+            # (with timeout to check stop_event periodically)
+            done, _ = await asyncio.wait(
+                get_tasks.keys(),
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=0.5,
+            )
 
-        # Check stop_event after timeout
-        if stop_event and stop_event.is_set():
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            break
+            # Check stop_event after timeout
+            if stop_event and stop_event.is_set():
+                break
 
-        for future in done:
-            queue = get_tasks.pop(future)
-            try:
-                result = future.result()
-            except asyncio.CancelledError:
-                continue
-            if result is None:
-                active_count -= 1
-            else:
-                msg_type, content = result
-                if msg_type == "data":
-                    yield content
-                # error type is logged in read_to_queue, continue streaming
-                # Only recreate the task for the completed queue
-                new_task = asyncio.create_task(queue.get())
-                get_tasks[new_task] = queue
+            for future in done:
+                queue = get_tasks.pop(future)
+                try:
+                    result = future.result()
+                except asyncio.CancelledError:
+                    continue
+                if result is None:
+                    active_count -= 1
+                else:
+                    msg_type, content = result
+                    if msg_type == "data":
+                        yield content
+                    # error type is logged in read_to_queue, continue streaming
+                    # Only recreate the task for the completed queue
+                    new_task = asyncio.create_task(queue.get())
+                    get_tasks[new_task] = queue
+    finally:
+        # Cancel all background tasks to prevent leaks when the generator
+        # is closed early (e.g. client disconnect).
+        all_tasks = list(tasks) + list(get_tasks.keys())
+        for t in all_tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*all_tasks, return_exceptions=True)
 
 
 async def combined_log_generator(
@@ -260,17 +329,21 @@ async def combined_log_generator(
     """
     log_dir = Path(log_dir)
 
+    restart_count = await resolve_restart_count(
+        log_dir, model_instance_id, options.previous
+    )
+
     download_source = DownloadLogSource(download_log_path)
     main_source = MainLogSource(
         log_dir,
         model_instance_id,
-        options.restart_count,
+        restart_count,
         get_all_log_files_fn=get_all_log_files,
     )
     container_source = ContainerLogSource(
         log_dir,
         model_instance_id,
-        options.restart_count,
+        restart_count,
         get_all_log_files_fn=get_all_log_files,
         extract_restart_count_fn=extract_restart_count,
     )
@@ -335,12 +408,26 @@ async def combined_log_generator(
     if container_log_files:
         has_any_logs = True
         async for line in historical_log_generator(
-            log_dir, model_instance_id, options, container=True
+            log_dir,
+            model_instance_id,
+            options,
+            container=True,
+            restart_count=restart_count,
         ):
             yield line
 
     if not has_any_logs:
         raise NotFoundException(message="Log file not found")
+
+
+@router.get("/serveLogOptions/{id}", response_model=ServeLogOptionsResponse)
+async def get_serve_log_options(request: Request, id: int):
+    """List restart_count values for which main serve log files exist locally."""
+    log_dir = request.app.state.config.log_dir
+    serve_log_dir = Path(log_dir) / "serve"
+    files = await get_all_log_files(serve_log_dir, id, container=False)
+    restarts = await asyncio.to_thread(restart_entries_from_main_log_files, files)
+    return ServeLogOptionsResponse(restarts=restarts)
 
 
 @router.get("/serveLogs/{id}")

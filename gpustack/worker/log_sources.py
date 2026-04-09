@@ -390,7 +390,6 @@ class LogSourceChain:
             check_interval: Time between checks in seconds
         """
         logger.debug("Starting background task to monitor container logs for content")
-        initial_has_content = await container_source.has_content()
 
         while not stop_event.is_set():
             await asyncio.sleep(check_interval)
@@ -398,9 +397,7 @@ class LogSourceChain:
             if stop_event.is_set():
                 return
 
-            current_has_content = await container_source.has_content()
-
-            if current_has_content and not initial_has_content:
+            if await container_source.has_content():
                 logger.debug("Container log now has content, stopping main log follow")
                 stop_event.set()
                 return

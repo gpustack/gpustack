@@ -31,6 +31,11 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     ModelInstancePublic,
     ModelInstancesPublic,
+    ModelInstanceLogOptions,
+    ModelInstanceLogRestartEntry,
+    ModelInstanceLogWorker,
+    ModelInstanceLogWorkerOption,
+    ServeLogOptionsResponse,
     ComputedResourceClaim,
 )
 from gpustack.schemas.model_files import (
@@ -122,6 +127,11 @@ __all__ = [
     "ModelInstanceUpdate",
     "ModelInstancePublic",
     "ModelInstancesPublic",
+    "ModelInstanceLogWorker",
+    "ModelInstanceLogWorkerOption",
+    "ModelInstanceLogRestartEntry",
+    "ModelInstanceLogOptions",
+    "ServeLogOptionsResponse",
     "ComputedResourceClaim",
     "User",
     "UserCreate",

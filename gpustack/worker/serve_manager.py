@@ -39,6 +39,10 @@ from gpustack.worker.backends.sglang import SGLangServer
 from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.custom import CustomServer
+from gpustack.routes.worker.logs import (
+    extract_container_restart_count,
+    extract_restart_count,
+)
 from gpustack.worker.model_meta import get_meta_from_running_instance
 from gpustack.client import ClientSet
 from gpustack.schemas.models import (
@@ -101,33 +105,33 @@ class ServeManager:
     """
     The inference backend manager.
     """
-    _provisioning_processes: Dict[int, multiprocessing.Process] = {}
+    _provisioning_processes: Dict[int, multiprocessing.Process]
     """
     The mapping of model instance ID to provisioning (sub)process.
     When the (sub)process is alive, the model instance is provisioning.
     If the (sub)process exited, the model instance is either running or failed.
     """
-    _log_persistence_threads: Dict[int, threading.Thread] = {}
+    _log_persistence_threads: Dict[int, threading.Thread]
     """
     The mapping of model instance ID to log persistence thread.
     Used to track and clean up threads on model instance restart/stop.
     """
-    _log_persistence_stop_events: Dict[int, threading.Event] = {}
+    _log_persistence_stop_events: Dict[int, threading.Event]
     """
     The mapping of model instance ID to stop event for log persistence thread.
     Used to signal threads to stop gracefully.
     """
-    _error_model_instances: Dict[int, ModelInstance] = {}
+    _error_model_instances: Dict[int, ModelInstance]
     """
     The mapping of model instance ID to error model instances.
     Used to restart error model instances.
     """
-    _model_cache_by_instance: Dict[int, Model] = {}
+    _model_cache_by_instance: Dict[int, Model]
     """
     The cache of models by model instance ID.
     Used to avoid redundant API calls to get model information.
     """
-    _model_instance_by_instance_id: Dict[int, ModelInstance] = {}
+    _model_instance_by_instance_id: Dict[int, ModelInstance]
 
     _clientset_getter: Callable[[], ClientSet]
     _worker_id_getter: Callable[[], int]
@@ -142,6 +146,13 @@ class ServeManager:
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._clientset_getter = clientset_getter
+
+        self._provisioning_processes = {}
+        self._log_persistence_threads = {}
+        self._log_persistence_stop_events = {}
+        self._error_model_instances = {}
+        self._model_cache_by_instance = {}
+        self._model_instance_by_instance_id = {}
 
         # Instance-level port tracking to avoid conflicts
         self._assigned_ports: Dict[int, Set[int]] = {}
@@ -251,8 +262,24 @@ class ServeManager:
                 )
                 continue
 
+            is_main_worker = model_instance.worker_id == self._worker_id
+
             # Skip if the workload is still launching.
-            workload = get_workload(model_instance.name)
+            # Use deployment metadata name for subordinate workers (e.g., "model-f0")
+            # since their workload name differs from the model instance name.
+            if is_main_worker:
+                workload = get_workload(model_instance.name)
+            else:
+                deployment_metadata = model_instance.get_deployment_metadata(
+                    self._worker_id
+                )
+                workload_name = (
+                    deployment_metadata.name
+                    if deployment_metadata
+                    else model_instance.name
+                )
+                workload = get_workload(workload_name)
+
             if workload and workload.state in [
                 WorkloadStatusStateEnum.PENDING,
                 WorkloadStatusStateEnum.INITIALIZING,
@@ -262,8 +289,6 @@ class ServeManager:
                 )
                 continue
 
-            is_main_worker = model_instance.worker_id == self._worker_id
-
             # Update model instance state to ERROR if the workload is not existed, unhealthy, inactive or failed.
             if not workload or workload.state in [
                 WorkloadStatusStateEnum.UNKNOWN,  # Rare, but possible, for example, leaving pause container.
@@ -271,14 +296,6 @@ class ServeManager:
                 WorkloadStatusStateEnum.INACTIVE,
                 WorkloadStatusStateEnum.FAILED,
             ]:
-                # NB(thxCode): Since the `sync_model_instances_state` and `watch_model_instances_event` are in different loops,
-                # subordinate workers haven't had time to create the workload yet even though the model instance's state is expected.
-                # So we skip if the subordinate worker didn't have workload yet.
-                #
-                # FIXME(thxCode): Another problem caused by skipping this check is that if we actively delete the workload on the subordinate worker,
-                #                 we may not be able to correct the state of the subordinate worker.
-                if not is_main_worker and not workload:
-                    continue
                 # Only if not in ERROR state yet.
                 if model_instance.state != ModelInstanceStateEnum.ERROR:
                     with contextlib.suppress(NotFoundException):
@@ -684,7 +701,11 @@ class ServeManager:
 
             # Start on subordinate worker if not started yet.
             if not is_main_worker:
-                workload = get_workload(mi.name)
+                deployment_metadata = mi.get_deployment_metadata(self._worker_id)
+                workload_name = (
+                    deployment_metadata.name if deployment_metadata else mi.name
+                )
+                workload = get_workload(workload_name)
                 if not workload:
                     self._start_model_instance(mi)
                     logger.trace(
@@ -776,6 +797,11 @@ class ServeManager:
         # Stop and clean up existing thread if any
         self._stop_container_log_persistence(mi.id)
 
+        # Use deployment metadata name for the actual workload name,
+        # which differs for subordinate workers (e.g., "model-f0").
+        deployment_metadata = mi.get_deployment_metadata(self._worker_id)
+        workload_name = deployment_metadata.name if deployment_metadata else mi.name
+
         restart_count = mi.restart_count or 0
         container_log_path = (
             f"{self._serve_log_dir}/{mi.id}.container.{restart_count}.log"
@@ -788,9 +814,9 @@ class ServeManager:
         # Create daemon thread for log persistence
         thread = threading.Thread(
             target=self._persist_container_logs,
-            args=(mi.name, container_log_path, stop_event),
+            args=(workload_name, container_log_path, stop_event),
             daemon=True,
-            name=f"log-persist-{mi.name}",
+            name=f"log-persist-{workload_name}",
         )
         thread.start()
         self._log_persistence_threads[mi.id] = thread
@@ -820,14 +846,15 @@ class ServeManager:
                     f"did not stop within {timeout}s"
                 )
 
-    def _cleanup_old_logs(self, model_instance_id: int, max_files: int = 10):
-        """Clean up old log files based on rotation policy.
+    def _cleanup_old_logs(self, model_instance_id: int, current_restart_count: int):
+        """Remove serve log files except the current and previous restart_count.
 
-        Always preserves the first log files (restart_count=0) for both main and container logs.
+        Keeps files for restart_count in {R, R-1} where R is current_restart_count;
+        when R is 0, only R is kept.
 
         Args:
             model_instance_id: Model instance ID
-            max_files: Maximum number of log files to keep per type (default: 10)
+            current_restart_count: Restart count for the upcoming run (same as log path).
         """
         try:
             log_dir = Path(self._serve_log_dir)
@@ -841,12 +868,9 @@ class ServeManager:
             container_log_pattern = f"{model_instance_id}.container.*.log"
             all_container_logs = list(log_dir.glob(container_log_pattern))
 
-            # Process main logs
-            self._cleanup_log_type(all_main_logs, model_instance_id, max_files, "main")
-
-            # Process container logs
+            self._cleanup_log_type(all_main_logs, current_restart_count, "main")
             self._cleanup_log_type(
-                all_container_logs, model_instance_id, max_files, "container"
+                all_container_logs, current_restart_count, "container"
             )
 
         except Exception as e:
@@ -855,52 +879,25 @@ class ServeManager:
     def _cleanup_log_type(
         self,
         log_files: List[Path],
-        model_instance_id: int,
-        max_files: int,
+        current_restart_count: int,
         log_type: str,
     ):
-        """Clean up logs of a specific type while preserving the first log.
+        """Delete log files whose restart_count is not current or previous."""
 
-        Args:
-            log_files: List of log files to process
-            model_instance_id: Model instance ID
-            max_files: Maximum number of files to keep
-            log_type: Type of logs ('main' or 'container')
-        """
+        keep = {current_restart_count}
+        if current_restart_count > 0:
+            keep.add(current_restart_count - 1)
 
-        if len(log_files) <= max_files:
-            return
-
-        # Identify the first log file (restart_count=0)
-        first_log = None
-        other_logs = []
+        extract_fn = (
+            extract_restart_count
+            if log_type == "main"
+            else extract_container_restart_count
+        )
 
         for f in log_files:
-            if log_type == "main":
-                if f.name == f"{model_instance_id}.0.log":
-                    first_log = f
-                else:
-                    other_logs.append(f)
-            else:
-                if f.name == f"{model_instance_id}.container.0.log":
-                    first_log = f
-                else:
-                    other_logs.append(f)
-
-        # If we have a first log, it's protected
-        if first_log:
-            available_slots = max_files - 1
-        else:
-            available_slots = max_files
-
-        if len(other_logs) <= available_slots:
-            return
-
-        # Sort other logs by modification time, delete oldest
-        sorted_other_logs = sorted(other_logs, key=lambda f: f.stat().st_mtime)
-        files_to_delete = sorted_other_logs[: len(other_logs) - available_slots]
-
-        for f in files_to_delete:
+            rc = extract_fn(f.name)
+            if rc in keep:
+                continue
             try:
                 f.unlink()
                 logger.info(f"Deleted old {log_type} log file: {f}")
@@ -920,7 +917,7 @@ class ServeManager:
             return
 
         # Clean up old log files before starting
-        self._cleanup_old_logs(mi.id)
+        self._cleanup_old_logs(mi.id, mi.restart_count or 0)
 
         is_main_worker = mi.worker_id == self._worker_id
 

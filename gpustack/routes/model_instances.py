@@ -1,6 +1,7 @@
-from typing import Optional
+import asyncio
+from typing import List, Optional, Tuple
 import aiohttp
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Request, status, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
 from urllib.parse import urlencode
 from sqlalchemy.orm import selectinload
@@ -9,6 +10,7 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.server.services import ModelInstanceService
 from gpustack.server.worker_request import request_to_worker, stream_to_worker
+from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -21,10 +23,13 @@ from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceCreate,
+    ModelInstanceLogOptions,
+    ModelInstanceLogWorkerOption,
     ModelInstancePublic,
     ModelInstanceUpdate,
     ModelInstancesPublic,
     ModelInstanceStateEnum,
+    ServeLogOptionsResponse,
 )
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.config.config import get_global_config
@@ -143,15 +148,6 @@ async def get_serving_logs(  # noqa: C901
 ):
     model_instance = await fetch_model_instance(session, id)
 
-    # Validate restart_count
-    if log_options.restart_count is not None:
-        current_restart_count = model_instance.restart_count or 0
-        if log_options.restart_count > current_restart_count:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid restart_count: {log_options.restart_count}. Current restart_count is {current_restart_count}.",
-            )
-
     # Build valid worker IDs (main worker + subordinate workers for distributed instances)
     valid_worker_ids = {model_instance.worker_id}
     if (
@@ -176,6 +172,7 @@ async def get_serving_logs(  # noqa: C901
         "tail": log_options.tail,
         "follow": log_options.follow,
         "model_instance_name": model_instance.name,
+        "previous": log_options.previous,
     }
     if (
         model_instance.state != ModelInstanceStateEnum.RUNNING
@@ -223,6 +220,132 @@ async def get_serving_logs(  # noqa: C901
         return PlainTextResponse(
             content=body.decode() if body else "", status_code=resp.status
         )
+
+
+async def resolve_instance_log_worker_targets(
+    session, model_instance: ModelInstance
+) -> List[Tuple[int, str, Optional[Worker]]]:
+    """
+    Ordered targets: main worker, then distributed subordinate workers.
+    Worker may be None if the subordinate id is not present in DB (cannot proxy HTTP).
+    """
+    targets: List[Tuple[int, str, Optional[Worker]]] = []
+    seen: set[int] = set()
+
+    main_id = model_instance.worker_id
+    if main_id is not None and main_id not in seen:
+        main_worker = await fetch_worker(session, main_id)
+        targets.append((main_id, main_worker.name or "", main_worker))
+        seen.add(main_id)
+
+    dservers = model_instance.distributed_servers
+    if dservers and dservers.subordinate_workers:
+        for sw in dservers.subordinate_workers:
+            wid = sw.worker_id
+            if wid is None or wid in seen:
+                continue
+            name = sw.worker_name or ""
+            w = await Worker.one_by_id(session, wid)
+            if not name:
+                name = w.name if w else ""
+            targets.append((wid, name or "", w))
+            seen.add(wid)
+
+    return targets
+
+
+async def fetch_serve_log_options_from_worker(
+    request: Request,
+    worker: Worker,
+    model_instance_id: int,
+) -> ServeLogOptionsResponse:
+    log_options_url = (
+        f"http://{worker.advertise_address}:{worker.port}/serveLogOptions"
+        f"/{model_instance_id}"
+    )
+    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
+    use_proxy_env = use_proxy_env_for_url(log_options_url)
+    client: aiohttp.ClientSession = (
+        request.app.state.http_client
+        if use_proxy_env
+        else request.app.state.http_client_no_proxy
+    )
+    try:
+        async with client.get(log_options_url, timeout=timeout) as resp:
+            if resp.status != 200:
+                raise ValueError(
+                    f"HTTP {resp.status}: error fetching model instance log options"
+                )
+            data = await resp.json()
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(str(e)) from e
+
+    return ServeLogOptionsResponse.model_validate(
+        data if isinstance(data, dict) else {}
+    )
+
+
+@router.get("/{id}/log-options", response_model=ModelInstanceLogOptions)
+async def get_model_instance_log_options(
+    request: Request,
+    session: SessionDep,
+    id: int,
+):
+    """Return per-worker restart_count values that exist on disk for this model instance."""
+    model_instance = await fetch_model_instance(session, id)
+    targets = await resolve_instance_log_worker_targets(session, model_instance)
+
+    async def fetch_one(
+        target: Tuple[int, str, Optional[Worker]],
+    ) -> ModelInstanceLogWorkerOption:
+        wid, name, worker = target
+        display_name = name
+        if worker is None:
+            return ModelInstanceLogWorkerOption(
+                worker_id=wid,
+                name=display_name,
+                restarts=[],
+                error="Worker not found in database",
+            )
+        if not display_name:
+            display_name = worker.name or ""
+        try:
+            payload = await fetch_serve_log_options_from_worker(
+                request, worker, model_instance.id
+            )
+            return ModelInstanceLogWorkerOption(
+                worker_id=wid,
+                name=display_name,
+                restarts=payload.restarts,
+                error=None,
+            )
+        except Exception as e:
+            return ModelInstanceLogWorkerOption(
+                worker_id=wid,
+                name=display_name,
+                restarts=[],
+                error=str(e),
+            )
+
+    worker_options = await asyncio.gather(
+        *[fetch_one(t) for t in targets],
+    )
+
+    if worker_options and all(o.error for o in worker_options):
+        detail = "; ".join(
+            f"{o.worker_id}: {o.error}" for o in worker_options if o.error
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch log options from all workers: {detail}",
+        )
+
+    return ModelInstanceLogOptions(
+        main_worker_id=model_instance.worker_id,
+        workers=list(worker_options),
+    )
 
 
 @router.post("", response_model=ModelInstancePublic)

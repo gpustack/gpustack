@@ -17,12 +17,12 @@ class LogOptions:
     tail: int = -1  # -1 by default means read all logs
     follow: bool = False
     stop_event: Optional[asyncio.Event] = None
-    restart_count: Optional[int] = None  # None means all historical logs
+    previous: bool = False
 
     def url_encode(self):
         params = f"tail={self.tail}&follow={self.follow}"
-        if self.restart_count is not None:
-            params += f"&restart_count={self.restart_count}"
+        if self.previous:
+            params += "&previous=true"
         return params
 
 
@@ -30,17 +30,17 @@ default_tail = Query(
     default=-1, description="Number of lines to read from the end of the log"
 )
 default_follow = Query(default=False, description="Whether to follow the log output")
-default_restart_count = Query(
-    default=None, description="Specific restart count to fetch logs from"
+default_previous = Query(
+    default=False, description="Whether to fetch logs from the previous restart"
 )
 
 
 def get_log_options(
     tail: int = default_tail,
     follow: bool = default_follow,
-    restart_count: Optional[int] = default_restart_count,
+    previous: bool = default_previous,
 ) -> LogOptions:
-    return LogOptions(tail=tail, follow=follow, restart_count=restart_count)
+    return LogOptions(tail=tail, follow=follow, previous=previous)
 
 
 LogOptionsDep = Annotated[LogOptions, Depends(get_log_options)]

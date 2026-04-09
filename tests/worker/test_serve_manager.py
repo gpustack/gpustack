@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
@@ -121,3 +122,48 @@ def test_restart_model_instance_preserves_transient_backoff_count():
         manager._restart_model_instance(model_instance)
 
     assert manager._restart_backoff_counts[model_instance.id] == 1
+
+
+def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path):
+    """Keep main/container logs for R and R-1; delete older restart_count files."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir(parents=True)
+    mid = 42
+    for name in (
+        f"{mid}.0.log",
+        f"{mid}.1.log",
+        f"{mid}.2.log",
+        f"{mid}.container.0.log",
+        f"{mid}.container.1.log",
+        f"{mid}.container.2.log",
+    ):
+        (serve_dir / name).write_text("x", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+
+    manager._cleanup_old_logs(mid, 2)
+
+    remaining = sorted(p.name for p in serve_dir.iterdir())
+    assert remaining == [
+        f"{mid}.1.log",
+        f"{mid}.2.log",
+        f"{mid}.container.1.log",
+        f"{mid}.container.2.log",
+    ]
+
+
+def test_cleanup_old_logs_restart_zero_keeps_only_zero(tmp_path: Path):
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir(parents=True)
+    mid = 7
+    for name in (f"{mid}.0.log", f"{mid}.1.log", f"{mid}.container.1.log"):
+        (serve_dir / name).write_text("x", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+
+    manager._cleanup_old_logs(mid, 0)
+
+    remaining = sorted(p.name for p in serve_dir.iterdir())
+    assert remaining == [f"{mid}.0.log"]

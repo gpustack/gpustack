@@ -586,6 +586,83 @@ class ModelInstancePublic(
 ModelInstancesPublic = PaginatedList[ModelInstancePublic]
 
 
+class ModelInstanceLogWorker(BaseModel):
+    id: int
+    name: str
+
+
+class ModelInstanceLogRestartEntry(BaseModel):
+    """One main serve log session on disk, with optional UX label time."""
+
+    previous: bool = False
+    started_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Approximate start time from the main log file metadata "
+            "(birthtime if available, else mtime), UTC."
+        ),
+    )
+
+
+class ModelInstanceLogWorkerOption(BaseModel):
+    """Per-worker result for GET /model-instances/{id}/log-options (one node on disk)."""
+
+    worker_id: int
+    name: str = ""
+    restarts: List[ModelInstanceLogRestartEntry] = Field(default_factory=list)
+    error: Optional[str] = Field(
+        default=None,
+        description="If set, log options could not be fetched from this worker.",
+    )
+
+
+class ServeLogOptionsResponse(BaseModel):
+    """Worker GET /serveLogOptions JSON; also validates that payload when the server proxies."""
+
+    restarts: List[ModelInstanceLogRestartEntry] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_restart_counts(cls, data: Any) -> Any:
+        """Old workers only sent restart_counts; expand to restarts when `restarts` is absent."""
+        if not isinstance(data, dict):
+            return data
+        if "restarts" in data:
+            return data
+        raw = data.get("restart_counts")
+        if not isinstance(raw, list):
+            return {**data, "restarts": []}
+        counts: List[int] = []
+        for x in raw:
+            try:
+                counts.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        counts.sort(reverse=True)
+        # Map the highest restart_count to previous=False (current),
+        # the second highest to previous=True.
+        entries = []
+        for i, c in enumerate(counts):
+            entries.append({"previous": i > 0, "started_at": None})
+        return {**data, "restarts": entries}
+
+
+class ModelInstanceLogOptions(BaseModel):
+    """Server GET /model-instances/{id}/log-options: per-worker serve log distribution."""
+
+    main_worker_id: Optional[int] = Field(
+        default=None,
+        description="same as model instance worker_id.",
+    )
+    workers: List[ModelInstanceLogWorkerOption] = Field(
+        default_factory=list,
+        description=(
+            "Ordered list: main worker first, then subordinate workers. "
+            "Each entry reflects that worker's local serve logs."
+        ),
+    )
+
+
 def is_gguf_model(model: Union[Model, ModelSource]):
     """
     Check if the model is a GGUF model.
