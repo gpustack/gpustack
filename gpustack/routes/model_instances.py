@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 import aiohttp
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
@@ -21,6 +21,8 @@ from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceCreate,
+    ModelInstanceLogOptions,
+    ModelInstanceLogWorker,
     ModelInstancePublic,
     ModelInstanceUpdate,
     ModelInstancesPublic,
@@ -135,10 +137,42 @@ async def fetch_worker(session, worker_id):
 
 @router.get("/{id}/logs")
 async def get_serving_logs(  # noqa: C901
-    request: Request, session: SessionDep, id: int, log_options: LogOptionsDep
+    request: Request,
+    session: SessionDep,
+    id: int,
+    log_options: LogOptionsDep,
+    worker_id: Optional[int] = None,
 ):
     model_instance = await fetch_model_instance(session, id)
-    worker = await fetch_worker(session, model_instance.worker_id)
+
+    # Validate restart_count
+    if log_options.restart_count is not None:
+        current_restart_count = model_instance.restart_count or 0
+        if log_options.restart_count > current_restart_count:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid restart_count: {log_options.restart_count}. Current restart_count is {current_restart_count}.",
+            )
+
+    # Build valid worker IDs (main worker + subordinate workers for distributed instances)
+    valid_worker_ids = {model_instance.worker_id}
+    if (
+        model_instance.distributed_servers
+        and model_instance.distributed_servers.subordinate_workers
+    ):
+        valid_worker_ids.update(
+            sw.worker_id
+            for sw in model_instance.distributed_servers.subordinate_workers
+        )
+
+    # Determine target worker ID
+    target_worker_id = worker_id or model_instance.worker_id
+    if target_worker_id not in valid_worker_ids:
+        raise NotFoundException(
+            message=f"Worker {target_worker_id} not found for model instance {id}"
+        )
+
+    worker = await fetch_worker(session, target_worker_id)
 
     model_instance_log_url = (
         f"http://{worker.advertise_address}:{worker.port}/serveLogs"
@@ -197,6 +231,110 @@ async def get_serving_logs(  # noqa: C901
             raise HTTPException(
                 status_code=500, detail=f"Error fetching serving logs: {str(e)}\n"
             )
+
+
+async def build_model_instance_log_workers(
+    session, model_instance: ModelInstance
+) -> List[ModelInstanceLogWorker]:
+    seen: set[int] = set()
+    workers: List[ModelInstanceLogWorker] = []
+
+    main_id = model_instance.worker_id
+    if main_id is not None and main_id not in seen:
+        main_worker = await fetch_worker(session, main_id)
+        workers.append(ModelInstanceLogWorker(id=main_id, name=main_worker.name or ""))
+        seen.add(main_id)
+
+    dservers = model_instance.distributed_servers
+    if dservers and dservers.subordinate_workers:
+        for sw in dservers.subordinate_workers:
+            wid = sw.worker_id
+            if wid is None or wid in seen:
+                continue
+            name = sw.worker_name or ""
+            if not name:
+                w = await Worker.one_by_id(session, wid)
+                name = w.name if w else ""
+            workers.append(ModelInstanceLogWorker(id=wid, name=name or ""))
+            seen.add(wid)
+
+    return workers
+
+
+@router.get("/{id}/log-options", response_model=ModelInstanceLogOptions)
+async def get_model_instance_log_options(
+    request: Request,
+    session: SessionDep,
+    id: int,
+    worker_id: Optional[int] = None,
+):
+    """Return restart_count values that exist on disk (worker) and workers for log queries."""
+    model_instance = await fetch_model_instance(session, id)
+
+    valid_worker_ids = {model_instance.worker_id}
+    if (
+        model_instance.distributed_servers
+        and model_instance.distributed_servers.subordinate_workers
+    ):
+        valid_worker_ids.update(
+            sw.worker_id
+            for sw in model_instance.distributed_servers.subordinate_workers
+            if sw.worker_id is not None
+        )
+
+    target_worker_id = worker_id or model_instance.worker_id
+    if target_worker_id not in valid_worker_ids:
+        raise NotFoundException(
+            message=f"Worker {target_worker_id} not found for model instance {id}"
+        )
+
+    worker = await fetch_worker(session, target_worker_id)
+    log_options_url = (
+        f"http://{worker.advertise_address}:{worker.port}/serveLogOptions"
+        f"/{model_instance.id}"
+    )
+
+    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
+    use_proxy_env = use_proxy_env_for_url(log_options_url)
+    client: aiohttp.ClientSession = (
+        request.app.state.http_client
+        if use_proxy_env
+        else request.app.state.http_client_no_proxy
+    )
+
+    try:
+        async with client.get(log_options_url, timeout=timeout) as resp:
+            if resp.status != 200:
+                raise HTTPException(
+                    status_code=resp.status,
+                    detail="Error fetching model instance log options",
+                )
+            data = await resp.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching model instance log options: {str(e)}",
+        )
+
+    raw_restart_counts = data.get("restart_counts", [])
+    if not isinstance(raw_restart_counts, list):
+        raw_restart_counts = []
+
+    parsed_restart_counts: List[int] = []
+    for x in raw_restart_counts:
+        try:
+            parsed_restart_counts.append(int(x))
+        except (TypeError, ValueError):
+            continue
+
+    workers_list = await build_model_instance_log_workers(session, model_instance)
+
+    return ModelInstanceLogOptions(
+        restart_counts=parsed_restart_counts,
+        workers=workers_list,
+    )
 
 
 @router.post("", response_model=ModelInstancePublic)

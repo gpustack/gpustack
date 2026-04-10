@@ -2,7 +2,9 @@ import glob
 import os
 import re
 import shutil
+import asyncio
 from pathlib import Path
+from typing import Callable
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from gpustack.utils import platform
@@ -36,6 +38,44 @@ def copy_owner_recursively(src, dst):
 def check_file_with_retries(path: Path):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Log file not found: {path}")
+
+
+async def check_with_retries(checker: Callable, timeout: int = 30, interval: int = 1):
+    """Generic async retry wrapper for checking operations.
+
+    Args:
+        checker: A callable (sync or async) that performs the check and returns a result.
+                 Should raise an exception if the check fails (triggers retry).
+        timeout: Maximum time to wait in seconds (default: 30)
+        interval: Time between retries in seconds (default: 1)
+
+    Returns:
+        The result from the checker function
+
+    Raises:
+        Exception: Whatever exception the checker raises on final failure
+
+    Example:
+        def check_files():
+            files = get_files()
+            if not files:
+                raise FileNotFoundError("No files found")
+            return files
+
+        files = await check_with_retries(check_files, timeout=60, interval=1)
+    """
+    elapsed = 0
+    while elapsed < timeout:
+        try:
+            if asyncio.iscoroutinefunction(checker):
+                return await checker()
+            else:
+                return checker()
+        except Exception:
+            elapsed += interval
+            if elapsed >= timeout:
+                raise
+            await asyncio.sleep(interval)
 
 
 def delete_path(path: str):
