@@ -24,12 +24,21 @@ def copy_with_owner(src, dst):
 def copy_owner_recursively(src, dst):
     if platform.system() in ["linux", "darwin"]:
         st = os.stat(src)
-        os.chown(dst, st.st_uid, st.st_gid)
+        try:
+            os.chown(dst, st.st_uid, st.st_gid)
+        except PermissionError:
+            return
         for dirpath, dirnames, filenames in os.walk(dst):
             for dirname in dirnames:
-                os.chown(os.path.join(dirpath, dirname), st.st_uid, st.st_gid)
+                try:
+                    os.chown(os.path.join(dirpath, dirname), st.st_uid, st.st_gid)
+                except PermissionError:
+                    pass
             for filename in filenames:
-                os.chown(os.path.join(dirpath, filename), st.st_uid, st.st_gid)
+                try:
+                    os.chown(os.path.join(dirpath, filename), st.st_uid, st.st_gid)
+                except PermissionError:
+                    pass
 
 
 @retry(stop=stop_after_attempt(10), wait=wait_fixed(1))
