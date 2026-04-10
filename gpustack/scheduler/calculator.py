@@ -731,17 +731,13 @@ async def get_pretrained_config_with_workers(
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             return pretrained_config
 
-        # Error handling for different model categories
-        if any(
+        if model.categories and any(
             cat in model.categories
             for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
         ):
             return pretrained_config
 
-        if pretrained_config is None and (
-            CategoryEnum.LLM in model.categories or isinstance(e, ValueError)
-        ):
-            raise e
+        raise e
 
     return pretrained_config
 
