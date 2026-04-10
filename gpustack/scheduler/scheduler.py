@@ -729,7 +729,7 @@ async def evaluate_pretrained_config(
                 f"Failed to get config for model {model.name or model.readable_source}, ValueError: {e}"
             )
             raise simplify_auto_config_value_error(e)
-        except TimeoutError as e:
+        except (TimeoutError, asyncio.TimeoutError) as e:
             raise Exception(
                 f"Timeout while getting config for model {model.name or model.readable_source}: {e}."
             )
