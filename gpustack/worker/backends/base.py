@@ -724,11 +724,11 @@ $@
             # Return directly if there is not a valid device.
             # GPUStack-Runner does not provide CPU-only platform images.
             # To use a CPU-only version, user must configure in `Inference Backend` page.
-            return None
+            return None, None
 
         if backend not in available_backends():
             # Return directly if found backend is not within the available backends.
-            return None
+            return None, None
 
         """
         Retrieve runners by queries.
