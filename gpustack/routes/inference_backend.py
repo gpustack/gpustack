@@ -992,6 +992,8 @@ async def create_inference_backend_from_yaml(
             "default_env",
             "enabled",
             "backend_source",
+            "parameter_format",
+            "common_parameters",
         ]
         yaml_data = {k: req_yaml_data[k] for k in allowed_keys if k in req_yaml_data}
 
@@ -1076,6 +1078,8 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             "default_env",
             "enabled",
             "backend_source",
+            "parameter_format",
+            "common_parameters",
         ]
         if not is_built_in_backend(backend.backend_name):
             allowed_keys.append("default_version")
