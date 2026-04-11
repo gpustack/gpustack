@@ -112,6 +112,8 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_WORKER_ORPHAN_BENCHMARK_WORKLOAD_CLEANUP_GRACE_PERIOD` | Worker orphan benchmark workload cleanup grace period in seconds.                                                    | `300`   | Worker     |
 | `GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS`             | Add debug log for slow worker status collection if it exceeds this time in seconds.                                  | `180`   | Worker     |
 | `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`                  | Model instance health check interval in seconds.                                                                     | `3`     | Worker     |
+| `GPUSTACK_MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_INTERVAL`        | Model instance inference health check interval in seconds. Set to `0` to disable inference health check.             | `300`   | Worker     |
+| `GPUSTACK_MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD` | Number of consecutive inference health check failures before marking instance as unhealthy.                        | `3`     | Worker     |
 | `GPUSTACK_DISABLE_OS_FILELOCK`                                   | Disable OS file lock.                                                                                                | `false` | Worker     |
 
 ### Benchmark Configuration
