@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlmodel import SQLModel
-from sqlalchemy import DDL, event
+from sqlalchemy import DDL, event, text
 
 from gpustack import envs
 from gpustack.server import db
@@ -31,6 +31,7 @@ from gpustack.schemas.stmt import (
     worker_after_drop_view_stmt_sqlite,
     worker_after_create_view_stmt_postgres,
     worker_after_drop_view_stmt_postgres,
+    worker_after_create_view_stmt_opengauss,
     worker_after_create_view_stmt_mysql,
     worker_after_drop_view_stmt_mysql,
     model_user_after_drop_view_stmt,
@@ -124,24 +125,34 @@ async def create_db_and_tables(engine: AsyncEngine):
 
 
 def listen_events(engine: AsyncEngine):
-    if engine.dialect.name == "postgresql":
-        worker_after_drop_view_stmt = worker_after_drop_view_stmt_postgres
-        worker_after_create_view_stmt = worker_after_create_view_stmt_postgres
-    elif engine.dialect.name == "mysql":
-        worker_after_drop_view_stmt = worker_after_drop_view_stmt_mysql
-        worker_after_create_view_stmt = worker_after_create_view_stmt_mysql
-    else:
-        worker_after_drop_view_stmt = worker_after_drop_view_stmt_sqlite
-        worker_after_create_view_stmt = worker_after_create_view_stmt_sqlite
-    event.listen(Worker.metadata, "after_create", DDL(worker_after_drop_view_stmt))
-    event.listen(Worker.metadata, "after_create", DDL(worker_after_create_view_stmt))
+    dialect_name = engine.dialect.name
+
+    def _manage_worker_view(target, connection, **kw):
+        d = connection.dialect.name
+        if d == "postgresql":
+            ver = connection.execute(text("SELECT version()")).scalar()
+            create_stmt = (
+                worker_after_create_view_stmt_opengauss
+                if 'openGauss' in (ver or '')
+                else worker_after_create_view_stmt_postgres
+            )
+            connection.execute(text(worker_after_drop_view_stmt_postgres))
+            connection.execute(text(create_stmt))
+        elif d == "mysql":
+            connection.execute(text(worker_after_drop_view_stmt_mysql))
+            connection.execute(text(worker_after_create_view_stmt_mysql))
+        else:
+            connection.execute(text(worker_after_drop_view_stmt_sqlite))
+            connection.execute(text(worker_after_create_view_stmt_sqlite))
+
+    event.listen(Worker.metadata, "after_create", _manage_worker_view)
     event.listen(
         SQLModel.metadata, "after_create", DDL(model_user_after_drop_view_stmt)
     )
     event.listen(
         SQLModel.metadata,
         "after_create",
-        DDL(model_user_after_create_view_stmt(engine.dialect.name)),
+        DDL(model_user_after_create_view_stmt(dialect_name)),
     )
 
     if engine.dialect.name == "sqlite":

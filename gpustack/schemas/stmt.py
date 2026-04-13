@@ -106,6 +106,42 @@ WHERE
     json_typeof(w.status::json->'gpu_devices') = 'array';
 """
 
+# openGauss does not support json_array_elements (added in PostgreSQL 9.3).
+# Use generate_series + integer-index -> operator to expand the JSONB array instead.
+worker_after_create_view_stmt_opengauss = """
+CREATE VIEW gpu_devices_view AS
+SELECT
+    w.name || ':' || (w.status::jsonb->'gpu_devices'->s.idx->>'type') || ':' || (w.status::jsonb->'gpu_devices'->s.idx->>'index') AS "id",
+    w.id AS "worker_id",
+    w.name AS "worker_name",
+    w.ip AS "worker_ip",
+    w.ifname AS "worker_ifname",
+    w.cluster_id,
+    w.created_at,
+    w.updated_at,
+    w.deleted_at,
+    (w.status::jsonb->'gpu_devices'->s.idx->>'vendor') AS "vendor",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'type') AS "type",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'index')::INTEGER AS "index",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'device_index')::INTEGER AS "device_index",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'device_chip_index')::INTEGER AS "device_chip_index",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'arch_family') AS "arch_family",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'name') AS "name",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'uuid') AS "uuid",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'driver_version') AS "driver_version",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'runtime_version') AS "runtime_version",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'compute_capability') AS "compute_capability",
+    (w.status::jsonb->'gpu_devices'->s.idx->'core')::JSONB AS "core",
+    (w.status::jsonb->'gpu_devices'->s.idx->'memory')::JSONB AS "memory",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'temperature')::FLOAT AS "temperature",
+    (w.status::jsonb->'gpu_devices'->s.idx->'network')::JSONB AS "network"
+FROM
+    workers w,
+    generate_series(0, jsonb_array_length(w.status::jsonb->'gpu_devices') - 1) AS s(idx)
+WHERE
+    jsonb_typeof(w.status::jsonb->'gpu_devices') = 'array';
+"""
+
 model_user_after_drop_view_stmt = "DROP VIEW IF EXISTS non_admin_user_models"
 
 

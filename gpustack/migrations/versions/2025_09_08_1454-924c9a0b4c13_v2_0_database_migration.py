@@ -82,7 +82,7 @@ def upgrade() -> None:
         sa.Column('state', cluster_state_enum, nullable=False, default='PROVISIONING'),
         sa.Column('state_message', sa.Text(), nullable=True),
         sa.Column('hashed_suffix', sa.String(length=12), nullable=False),
-        sa.Column('registration_token', sa.String(length=58), nullable=False),
+        sa.Column('registration_token', sa.String(length=58), nullable=True),
         sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func()),
         sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func(), onupdate=now_func()),
         sa.Column('deleted_at', sa.DateTime(), nullable=True),

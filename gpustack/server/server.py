@@ -453,7 +453,7 @@ class Server:
                 "Default cluster does not exist, skipping legacy token migration."
             )
             return
-        if default_cluster.registration_token != "":
+        if default_cluster.registration_token:
             return
         try:
             default_cluster.registration_token = self._config.token
@@ -565,7 +565,7 @@ class Server:
             )
             return
         token = cluster_user.cluster.registration_token
-        if token == "":
+        if not token:
             try:
                 access_key = secrets.token_hex(8)
                 secret_key = secrets.token_hex(16)

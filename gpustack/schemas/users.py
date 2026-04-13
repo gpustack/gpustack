@@ -134,7 +134,7 @@ class UpdatePassword(SQLModel):
 class User(UserBase, BaseModelMixin, table=True):
     __tablename__ = 'users'
     id: Optional[int] = Field(default=None, primary_key=True)
-    hashed_password: str
+    hashed_password: Optional[str] = None
 
     cluster: Optional[Cluster] = Relationship(
         back_populates="cluster_users", sa_relationship_kwargs={"lazy": "noload"}

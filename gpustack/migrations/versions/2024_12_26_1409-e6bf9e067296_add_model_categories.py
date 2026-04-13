@@ -12,6 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 import sqlmodel
 import gpustack
+from gpustack.migrations.utils import is_opengauss
 
 
 # revision identifiers, used by Alembic.
@@ -74,37 +75,65 @@ def upgrade() -> None:
             conn.execute(
                 sa.text("ALTER TYPE operationenum ADD VALUE 'AUDIO_SPEECH'"))
 
-        conn.execute(
-            sa.text("""
-                UPDATE workers
-                SET status = (
-                    SELECT jsonb_set(
-                        status::jsonb,
-                        '{gpu_devices}',
-                        (
-                            SELECT jsonb_agg(
-                                jsonb_set(
+        if is_opengauss(conn):
+            # openGauss lacks jsonb_agg and jsonb_array_elements; process rows in Python.
+            rows = conn.execute(sa.text("SELECT id, status FROM workers")).fetchall()
+            for row in rows:
+                worker_id = row[0]
+                status_content = row[1]
+                if status_content is None:
+                    continue
+                status = status_content if isinstance(status_content, dict) else json.loads(status_content)
+                if 'gpu_devices' in status:
+                    for device in status.get('gpu_devices', []):
+                        device['labels'] = {}
+                        vendor = device.get('vendor', '')
+                        if vendor == 'NVIDIA':
+                            device['type'] = 'cuda'
+                        elif vendor == 'Moore Threads':
+                            device['type'] = 'musa'
+                        elif vendor == 'Apple':
+                            device['type'] = 'mps'
+                        elif vendor == 'AMD':
+                            device['type'] = 'rocm'
+                        else:
+                            device['type'] = 'unknown'
+                    conn.execute(
+                        sa.text("UPDATE workers SET status = :status::jsonb WHERE id = :id"),
+                        {'status': json.dumps(status), 'id': worker_id}
+                    )
+        else:
+            conn.execute(
+                sa.text("""
+                    UPDATE workers
+                    SET status = (
+                        SELECT jsonb_set(
+                            status::jsonb,
+                            '{gpu_devices}',
+                            (
+                                SELECT jsonb_agg(
                                     jsonb_set(
-                                        gpu_device,
-                                        '{labels}',
-                                        '{}'::jsonb
-                                    ),
-                                    '{type}',
-                                    CASE
-                                        WHEN gpu_device->>'vendor' = 'NVIDIA' THEN '"cuda"'
-                                        WHEN gpu_device->>'vendor' = 'Moore Threads' THEN '"musa"'
-                                        WHEN gpu_device->>'vendor' = 'Apple' THEN '"mps"'
-                                        WHEN gpu_device->>'vendor' = 'AMD' THEN '"rocm"'
-                                        ELSE '"unknown"'::jsonb
-                                    END
+                                        jsonb_set(
+                                            gpu_device,
+                                            '{labels}',
+                                            '{}'::jsonb
+                                        ),
+                                        '{type}',
+                                        CASE
+                                            WHEN gpu_device->>'vendor' = 'NVIDIA' THEN '"cuda"'
+                                            WHEN gpu_device->>'vendor' = 'Moore Threads' THEN '"musa"'
+                                            WHEN gpu_device->>'vendor' = 'Apple' THEN '"mps"'
+                                            WHEN gpu_device->>'vendor' = 'AMD' THEN '"rocm"'
+                                            ELSE '"unknown"'::jsonb
+                                        END
+                                    )
                                 )
-                            )
-                            FROM jsonb_array_elements(status::jsonb->'gpu_devices') AS gpu_device
-                        )::jsonb
-                    )::json
-                )
-            """)
-        )
+                                FROM jsonb_array_elements(status::jsonb->'gpu_devices') AS gpu_device
+                            )::jsonb
+                        )::json
+                    )
+                """)
+            )
     elif conn.dialect.name == 'mysql':
         # Get existing modelinstancestateenum values
         result = conn.execute(

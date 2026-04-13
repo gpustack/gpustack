@@ -74,7 +74,7 @@ def upgrade() -> None:
     sa.Column('full_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('require_password_change', sa.Boolean(), nullable=False),
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('hashed_password', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('hashed_password', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
     sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
     sa.PrimaryKeyConstraint('id')

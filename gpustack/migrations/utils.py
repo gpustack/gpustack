@@ -3,6 +3,23 @@ import sqlalchemy as sa
 from sqlalchemy.engine.reflection import Inspector
 
 
+def is_opengauss(conn) -> bool:
+    """Check if the database is openGauss (presents as postgresql dialect).
+
+    openGauss is a PostgreSQL-compatible database that lacks certain aggregate
+    functions such as jsonb_agg and set-returning functions like
+    jsonb_array_elements. Migrations that use those functions must detect this
+    and fall back to Python-based processing instead.
+    """
+    if conn.dialect.name != 'postgresql':
+        return False
+    try:
+        version = conn.execute(sa.text("SELECT version()")).scalar()
+        return 'openGauss' in (version or '')
+    except Exception:
+        return False
+
+
 def column_exists(table_name, column_name) -> bool:
     """Check if a column exists in a table.
     Args:
