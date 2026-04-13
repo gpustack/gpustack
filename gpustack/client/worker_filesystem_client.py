@@ -203,9 +203,10 @@ class WorkerFilesystemClient:
         url = f"http://{worker.advertise_address or worker.ip}:{worker.port}/files/parse-gguf"
         headers = {"Authorization": f"Bearer {worker.token}"}
 
-        # Build request payload
+        # Build request payload (mode="json" so datetimes etc. are JSON-serializable
+        # for aiohttp's json= encoder).
         payload = {
-            "model_dict": model.model_dump(),  # Serialize Model object
+            "model_dict": model.model_dump(mode="json"),
             "offload": offload,
         }
 

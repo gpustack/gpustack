@@ -607,12 +607,20 @@ async def _try_parse_on_workers(
     workers: List[Worker],
     offload: GPUOffloadEnum,
     **kwargs,
-) -> Optional[ModelResourceClaim]:
+) -> ModelResourceClaim:
     """
     Try to parse GGUF on specified workers concurrently.
+
+    Returns:
+        ModelResourceClaim from the first worker that succeeds.
+
+    Raises:
+        ValueError: If no workers are given, or every worker fails (with per-worker details).
     """
     if not workers:
-        return None
+        raise ValueError(
+            f"No workers are available to run gguf-parser for model '{model.name}'."
+        )
 
     # Prepare parameters once
     offload_str = offload.value  # "full", "partial", "disable"
@@ -622,6 +630,8 @@ async def _try_parse_on_workers(
     for key in ("tensor_split", "rpc"):
         if key in kwargs:
             parse_kwargs[key] = kwargs[key]
+
+    worker_errors: Dict[str, str] = {}
 
     async def try_parse_on_worker(worker: Worker) -> Optional[ModelResourceClaim]:
         """Try to parse GGUF on a single worker."""
@@ -647,7 +657,12 @@ async def _try_parse_on_workers(
                     resource_architecture=claim.architecture,
                 )
         except Exception as e:
-            logger.debug(f"Failed to parse GGUF on worker {worker.name}: {e}")
+            error_msg = str(e)
+            logger.info(
+                f"Failed to parse GGUF on worker {worker.name} for model "
+                f"{model.name}: {error_msg}"
+            )
+            worker_errors[worker.name] = error_msg
             return None
 
     # Concurrently try all workers and return the first successful result
@@ -659,7 +674,15 @@ async def _try_parse_on_workers(
         if result:
             return result
 
-    return None
+    error_items = list(worker_errors.items())
+    shown_errors = "; \n".join(f"{name}: {err}" for name, err in error_items[:3])
+    if len(error_items) > 3:
+        shown_errors += f" (+{len(error_items) - 3} more)"
+    raise ValueError(
+        f"Failed to run gguf-parser on all {len(workers)} available worker(s) "
+        f"for model '{model.name}'.\n"
+        f"Per-worker details:\n{shown_errors}"
+    )
 
 
 async def get_pretrained_config_with_workers(
@@ -947,12 +970,13 @@ async def read_local_path_file_from_workers(  # noqa: C901
             return result
 
     error_items = list(worker_errors.items())
-    shown_errors = "; ".join(f"{name}: {err}" for name, err in error_items[:3])
+    shown_errors = ";\n".join(f"{name}: {err}" for name, err in error_items[:3])
     if len(error_items) > 3:
         shown_errors += f" (+{len(error_items) - 3} more)"
     raise ValueError(
         f"Failed to read '{file_path}' from all {len(filtered_workers)} available "
-        f"worker(s) for model '{model.name}'. Per-worker details: {shown_errors}"
+        f"worker(s) for model '{model.name}'.\n"
+        f"Per-worker details:\n{shown_errors}"
     )
 
 
@@ -985,7 +1009,7 @@ async def _calculate_from_workers(  # noqa: C901
     workers: List[Worker],
     offload: GPUOffloadEnum,
     **kwargs,
-) -> Optional[ModelResourceClaim]:
+) -> ModelResourceClaim:
     """
     Calculate model resource claim by running gguf-parser on a worker.
 
@@ -996,11 +1020,14 @@ async def _calculate_from_workers(  # noqa: C901
         kwargs: Additional arguments to pass to the GGUF parser.
 
     Returns:
-        ModelResourceClaim if successful, None otherwise.
+        ModelResourceClaim from the first worker that succeeds.
+
+    Raises:
+        ValueError: If no worker remains after filtering, or gguf-parser fails on every worker.
     """
     # Step 1: Apply worker filters before broadcasting
     filtered_workers = workers
-    messages = []
+    filter_messages = []
 
     # Apply GPUMatchingFilter
     if model.gpu_selector:
@@ -1010,7 +1037,7 @@ async def _calculate_from_workers(  # noqa: C901
 
         gpu_filter = GPUMatchingFilter(model)
         filtered_workers, gpu_messages = await gpu_filter.filter(filtered_workers)
-        messages.extend(gpu_messages)
+        filter_messages.extend(gpu_messages)
 
     # Apply LabelMatchingFilter
     if model.worker_selector:
@@ -1020,23 +1047,35 @@ async def _calculate_from_workers(  # noqa: C901
 
         label_filter = LabelMatchingFilter(model)
         filtered_workers, label_messages = await label_filter.filter(filtered_workers)
-        messages.extend(label_messages)
+        filter_messages.extend(label_messages)
 
     # Apply LocalPathFilter for LOCAL_PATH models
     local_path_filter = LocalPathFilter(model)
     filtered_workers, local_path_messages = await local_path_filter.filter(
         filtered_workers
     )
-    messages.extend(local_path_messages)
+    filter_messages.extend(local_path_messages)
 
-    if messages:
-        for msg in messages:
+    if filter_messages:
+        for msg in filter_messages:
             logger.info(f"Worker filtering for GGUF parsing: {msg}")
 
     # Step 2: Broadcasting to filtered workers
     if not filtered_workers:
-        logger.warning("No workers available after filtering for GGUF parsing")
-        return None
+        if filter_messages:
+            shown = filter_messages[:3]
+            suffix = (
+                f" (+{len(filter_messages) - 3} more)"
+                if len(filter_messages) > 3
+                else ""
+            )
+            detail = "; ".join(shown) + suffix
+        else:
+            detail = "no workers matched the current filters"
+        raise ValueError(
+            f"No workers are available after filtering to run gguf-parser "
+            f"for model '{model.name}'. {detail}"
+        )
 
     logger.info(
         f"Broadcasting GGUF parse request to {len(filtered_workers)} filtered workers "
@@ -1063,16 +1102,11 @@ async def calculate_gguf_model_resource_claim(
     if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(model.local_path):
         # Try to calculate on worker if workers are provided
         if workers:
-            try:
-                result = await _calculate_from_workers(
-                    model, workers, offload, **kwargs
-                )
-                if result:
-                    return result
-            except Exception as e:
-                logger.warning(
-                    f"Failed to calculate on worker: {e}, falling back to empty estimate"
-                )
+            logger.info(
+                f"Model path '{model.local_path}' does not exist on the server node. "
+                f"Running gguf-parser on workers for model {model.name}..."
+            )
+            return await _calculate_from_workers(model, workers, offload, **kwargs)
 
         # Skip the calculation if the model is not available, policies like spread strategy still apply.
         # TODO Support user provided resource claim for better scheduling.

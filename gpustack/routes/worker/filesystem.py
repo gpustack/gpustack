@@ -4,11 +4,12 @@ import logging
 import os
 import subprocess
 import traceback
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from gpustack.api.auth import worker_auth
-from gpustack.config.config import get_global_config
+from gpustack.config.config import Config
 from gpustack.schemas.filesystem import (
     FileExistsResponse,
     GGUFParseRequest,
@@ -250,7 +251,7 @@ async def get_model_weight_size(
 
 
 @router.post("/files/parse-gguf", response_model=GGUFParseResponse)
-async def parse_gguf_file(request: GGUFParseRequest):
+async def parse_gguf_file(http_request: Request, body: GGUFParseRequest):
     """
     Parse a GGUF file using gguf-parser binary on the worker.
 
@@ -261,7 +262,7 @@ async def parse_gguf_file(request: GGUFParseRequest):
     """
     try:
         # 1. Deserialize Model object
-        model = Model.model_validate(request.model_dict)
+        model = Model.model_validate(body.model_dict)
 
         # 2. Path validation - use validate_path_security for robust security
         validated_path = validate_path_security(model.local_path)
@@ -282,19 +283,19 @@ async def parse_gguf_file(request: GGUFParseRequest):
         model.local_path = validated_path
 
         # 3. Build offload enum
-        offload_enum = GPUOffloadEnum(request.offload)
+        offload_enum = GPUOffloadEnum(body.offload)
 
         # 4. Prepare kwargs (override parameters)
         kwargs = {}
-        if request.tensor_split:
-            kwargs["tensor_split"] = request.tensor_split
-        if request.rpc:
-            kwargs["rpc"] = request.rpc
+        if body.tensor_split:
+            kwargs["tensor_split"] = body.tensor_split
+        if body.rpc:
+            kwargs["rpc"] = body.rpc
 
-        # Worker should use its own cache_dir from config, not from server.
-        # The cache_dir is node-local and server's path may not exist on worker.
-        worker_config = get_global_config()
-        kwargs["cache_dir"] = worker_config.cache_dir
+        # cache_dir from this worker's app.state.config (Worker._serve_apis), not from body.
+        worker_cfg: Optional[Config] = getattr(http_request.app.state, "config", None)
+        if worker_cfg is not None:
+            kwargs["cache_dir"] = worker_cfg.cache_dir
 
         # 5. Reuse _gguf_parser_command to build command
         command = await _gguf_parser_command(model, offload_enum, **kwargs)
