@@ -95,6 +95,10 @@ class PersistentVolumeClaimVolumeSource(BaseModel):
 
 
 class ConfigMapVolumeSource(BaseModel):
+    """
+    This source will not be used for now. You won't be able to create this kind of volume through UI.
+    """
+
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
     name: str = PydanticField(..., description="Name of the referent.")
     optional: Optional[bool] = PydanticField(

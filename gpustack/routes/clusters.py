@@ -202,6 +202,34 @@ def create_update_check(
         raise InvalidException(
             message=f"server_url is required for provider {provider}"
         )
+    if provider == ClusterProvider.Kubernetes:
+        # check for volume mounts
+        if input.k8s_volume_mounts is None or len(input.k8s_volume_mounts) < 1:
+            # at least one volume mount is required, and the default one is for gpustack data dir.
+            raise InvalidException(
+                message="At least one k8s_volume_mount is required, and the default one is for gpustack data dir."
+            )
+        if (
+            input.k8s_volume_mounts[0].volume_source is None
+            or input.k8s_volume_mounts[0].volume_source.host_path is None
+        ):
+            raise InvalidException(
+                message="The first k8s_volume_mount must be for gpustack data dir with hostPath volume source."
+            )
+
+
+def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
+    """
+    Assuming the first item of k8s_volume_mounts is for gpustack data dir, enforce that it is always present and has the correct settings.
+    """
+    # the first volume must exist as it's validated in create_update_check, and it must be for gpustack data dir, so we enforce it here.
+    data_dir_mount = input.k8s_volume_mounts[0]
+    data_dir_mount.name = "gpustack-data-dir"
+    data_dir_mount.mount_path = "/var/lib/gpustack"
+    data_dir_mount.read_only = False
+    data_dir_mount.volume_source.host_path.type = "DirectoryOrCreate"
+    data_dir_mount.volume_source.config_map = None
+    data_dir_mount.volume_source.persistent_volume_claim = None
 
 
 @router.post("", response_model=ClusterPublic, response_model_exclude_none=True)
@@ -214,6 +242,8 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
         raise AlreadyExistsException(message=f"cluster {input.name} already exists")
 
     create_update_check(input.provider, input)
+    if input.provider == ClusterProvider.Kubernetes:
+        enforce_data_dir_mounts(input)
 
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
@@ -282,6 +312,8 @@ async def update_cluster(session: SessionDep, id: int, input: ClusterUpdate):
         raise NotFoundException(message=f"cluster {id} not found")
 
     create_update_check(cluster.provider, input)
+    if cluster.provider == ClusterProvider.Kubernetes:
+        enforce_data_dir_mounts(input)
 
     try:
         await cluster.update(session=session, source=input)
