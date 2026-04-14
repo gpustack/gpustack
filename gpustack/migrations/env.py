@@ -1,10 +1,12 @@
 from logging.config import fileConfig
 import os
 import re
+import warnings
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from sqlalchemy.dialects.postgresql import base as pg_base
+from sqlalchemy.exc import SAWarning
 
 from alembic import context
 
@@ -29,6 +31,13 @@ def _patched_get_server_version_info(self, connection):
 
 
 pg_base.PGDialect._get_server_version_info = _patched_get_server_version_info
+
+
+# OceanBase DDL contains syntax (e.g. BLOCK_SIZE, non-standard FK format) that
+# SQLAlchemy's MySQL dialect doesn't recognise during reflection. These warnings
+# are harmless — suppress them so they don't clutter migration output.
+warnings.filterwarnings("ignore", message=r"Unknown schema content", category=SAWarning)
+
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
