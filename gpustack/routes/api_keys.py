@@ -19,16 +19,9 @@ from gpustack.schemas.api_keys import (
     ApiKeyUpdate,
 )
 from gpustack.server.services import APIKeyService
+from gpustack.utils.api_keys import get_masked_api_key_value
 
 router = APIRouter()
-
-
-def _get_masked_value(value: str) -> str:
-    """Return masked value with first 4 and last 4 characters visible."""
-    masked_value = "..."
-    if len(value) >= 8:
-        masked_value = f"{value[:4]}..."
-    return f"{API_KEY_PREFIX}_{masked_value}"
 
 
 def _api_key_to_public(api_key: ApiKey, value: str = None) -> ApiKeyPublic:
@@ -38,9 +31,7 @@ def _api_key_to_public(api_key: ApiKey, value: str = None) -> ApiKeyPublic:
         description=api_key.description,
         id=api_key.id,
         value=value,
-        masked_value=(
-            None if api_key.is_custom else _get_masked_value(api_key.access_key)
-        ),
+        masked_value=get_masked_api_key_value(api_key.access_key, api_key.is_custom),
         created_at=api_key.created_at,
         updated_at=api_key.updated_at,
         expires_at=api_key.expires_at,
@@ -105,7 +96,10 @@ async def create_api_key(
                 existing_key.expires_at is not None
                 and existing_key.expires_at <= datetime.now(timezone.utc)
             )
-            message = f"Custom API Key duplicate with existing key {existing_key.name} (id: {existing_key.id}, expired: {expired})"
+            message = (
+                "Custom API Key duplicate with existing key "
+                f"{existing_key.name} (id: {existing_key.id}, expired: {expired})"
+            )
             raise AlreadyExistsException(message=message)
 
     current = datetime.now(timezone.utc)

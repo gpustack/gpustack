@@ -21,6 +21,7 @@ from gpustack.routes import (
     models,
     openai,
     workers,
+    usage,
     cloud_credentials,
     worker_pools,
     clusters,
@@ -69,6 +70,7 @@ management_router.include_router(
 v1_base_router = APIRouter(dependencies=[Depends(get_current_user)])
 v1_base_router.include_router(users.me_router, prefix="/users", tags=["Users"])
 v1_base_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
+v1_base_router.include_router(usage.router, prefix="/usage", tags=["Usage"])
 v1_base_router.include_router(
     metrics.router, prefix="/metrics", include_in_schema=False
 )

@@ -15,6 +15,9 @@ from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
 from gpustack.schemas.model_provider import ModelProvider
+from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.api_keys import ApiKey
+from gpustack.utils.usage_snapshots import build_model_usage_snapshot
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack import envs
 
@@ -45,6 +48,8 @@ class ModelUsageMetrics:
     model_id: Optional[int] = None
     provider_id: Optional[int] = None
     access_key: Optional[str] = None
+    api_key_id: Optional[int] = None
+    api_key_name: Optional[str] = None
 
 
 # here is the example metrics to parse
@@ -299,6 +304,7 @@ class GatewayMetricsCollector:
     async def _store_metrics(self, metrics: List[ModelUsageMetrics]):
         dedup_model_names = {m.model for m in metrics}
         dedup_user_ids = {m.user_id for m in metrics if m.user_id is not None}
+        dedup_access_keys = {m.access_key for m in metrics if m.access_key is not None}
         async with async_session() as session:
             try:
                 models = await Model.all_by_fields(
@@ -315,24 +321,76 @@ class GatewayMetricsCollector:
                     fields={},
                     extra_conditions=[User.id.in_(dedup_user_ids)],
                 )
+                api_keys = await ApiKey.all_by_fields(
+                    session=session,
+                    fields={},
+                    extra_conditions=(
+                        [ApiKey.access_key.in_(dedup_access_keys)]
+                        if dedup_access_keys
+                        else []
+                    ),
+                )
                 validated_user_ids = {u.id for u in users}
+                user_by_id = {u.id: u for u in users}
+                api_key_by_access_key = {k.access_key: k for k in api_keys}
                 model_by_id = {m.id: m for m in models}
+                cluster_ids = {m.cluster_id for m in models if m.cluster_id is not None}
+                clusters = await Cluster.all_by_fields(
+                    session=session,
+                    fields={},
+                    extra_conditions=(
+                        [Cluster.id.in_(cluster_ids)] if cluster_ids else []
+                    ),
+                )
+                cluster_names_by_id = {c.id: c.name for c in clusters}
                 provider_by_id = {p.id: p for p in providers}
                 for metric in metrics:
                     if not self._validate_metrics(
                         metric, model_by_id, provider_by_id, validated_user_ids
                     ):
                         continue
+                    user = user_by_id.get(metric.user_id)
+                    api_key = api_key_by_access_key.get(metric.access_key)
+                    model = model_by_id.get(metric.model_id)
+                    if model is None:
+                        snapshot = {
+                            "model_id": metric.model_id,
+                            "model_name": metric.model,
+                            "cluster_name": None,
+                        }
+                        if user is not None:
+                            snapshot.update(
+                                {
+                                    "user_id": user.id,
+                                    "user_name": user.username,
+                                }
+                            )
+                        if api_key is not None:
+                            snapshot.update(
+                                {
+                                    "api_key_id": api_key.id,
+                                    "api_key_name": api_key.name,
+                                    "access_key": api_key.access_key,
+                                    "api_key_is_custom": api_key.is_custom,
+                                }
+                            )
+                    else:
+                        snapshot = build_model_usage_snapshot(
+                            model,
+                            cluster_name=cluster_names_by_id.get(model.cluster_id),
+                            user=user,
+                            api_key=api_key,
+                        )
+                    snapshot.setdefault("user_id", metric.user_id)
+                    snapshot.setdefault("access_key", metric.access_key)
+                    snapshot.setdefault("api_key_is_custom", None)
                     model_usage = ModelUsage(
-                        model_id=metric.model_id,
                         provider_id=metric.provider_id,
-                        model_name=metric.model,
-                        user_id=metric.user_id,
-                        access_key=metric.access_key,
                         date=date.today(),
                         prompt_token_count=metric.input_token,
                         completion_token_count=metric.output_token,
                         request_count=metric.request_count,
+                        **snapshot,
                     )
                     await create_or_update_model_usage(
                         session, model_usage, auto_commit=False

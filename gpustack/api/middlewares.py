@@ -19,6 +19,7 @@ from gpustack.api.exceptions import ErrorResponse
 from gpustack.routes.rerank import RerankResponse, RerankUsage
 from gpustack.schemas.images import ImageGenerationChunk, ImagesResponse
 from gpustack.schemas.model_usage import ModelUsage, OperationEnum
+from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
 from gpustack.security import JWTManager
@@ -26,7 +27,8 @@ from gpustack import envs
 from gpustack.api.auth import SESSION_COOKIE_NAME
 from gpustack.server.db import async_session
 
-from gpustack.server.services import ModelUsageService
+from gpustack.server.services import ClusterService, ModelUsageService
+from gpustack.utils.usage_snapshots import build_model_usage_snapshot
 from gpustack.api.types.openai_ext import CreateEmbeddingResponseExt, CompletionExt
 
 
@@ -171,20 +173,33 @@ async def record_model_usage(
 
     user: User = request.state.user
     model: Model = request.state.model
+    api_key: ApiKey | None = getattr(request.state, "api_key", None)
+    cluster_name = None
     fields = {
-        "user_id": user.id,
-        "model_id": model.id,
-        "model_name": model.name,
         "date": date.today(),
         "operation": operation,
     }
-    model_usage = ModelUsage(
-        **fields,
-        completion_token_count=completion_tokens,
-        prompt_token_count=prompt_tokens,
-        request_count=1,
-    )
     async with async_session() as session:
+        if model.cluster_id is not None:
+            cluster = await ClusterService(session).get_by_id(model.cluster_id)
+            cluster_name = None if cluster is None else cluster.name
+        snapshot = build_model_usage_snapshot(
+            model,
+            cluster_name=cluster_name,
+            user=user,
+            api_key=api_key,
+        )
+        fields.update(snapshot)
+        fields.setdefault("api_key_id", None)
+        fields.setdefault("api_key_name", None)
+        fields.setdefault("access_key", None)
+        fields.setdefault("api_key_is_custom", None)
+        model_usage = ModelUsage(
+            **fields,
+            completion_token_count=completion_tokens,
+            prompt_token_count=prompt_tokens,
+            request_count=1,
+        )
         model_usage_service = ModelUsageService(session)
         current_model_usage = await model_usage_service.get_by_fields(fields)
         if current_model_usage:

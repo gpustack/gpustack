@@ -10,6 +10,7 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 import gpustack
+from gpustack.migrations.utils import column_exists
 
 # revision identifiers, used by Alembic.
 revision: str = '8bf38a6bb3b5'
@@ -19,6 +20,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.add_column(sa.Column('worker_version', sa.String(100), nullable=True))
     
@@ -40,6 +43,90 @@ def upgrade() -> None:
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         batch_op.alter_column('scope', nullable=False)
         batch_op.alter_column('is_custom', nullable=False)
+        
+    ### Usage
+    with op.batch_alter_table("model_usages", schema=None) as batch_op:
+        if not column_exists("model_usages", "cluster_name"):
+            batch_op.add_column(sa.Column("cluster_name", sa.String(255), nullable=True))
+        if not column_exists("model_usages", "user_name"):
+            batch_op.add_column(sa.Column("user_name", sa.String(255), nullable=True))
+        if not column_exists("model_usages", "api_key_id"):
+            batch_op.add_column(sa.Column("api_key_id", sa.Integer(), nullable=True))
+        if not column_exists("model_usages", "api_key_name"):
+            batch_op.add_column(sa.Column("api_key_name", sa.String(255), nullable=True))
+        if not column_exists("model_usages", "api_key_is_custom"):
+            batch_op.add_column(
+                sa.Column("api_key_is_custom", sa.Boolean(), nullable=True)
+            )
+        batch_op.drop_constraint("fk_model_usages_user_id_users", type_="foreignkey")
+        batch_op.drop_constraint("fk_model_usages_model_id_models", type_="foreignkey")
+        batch_op.drop_constraint(
+            "fk_model_usages_provider_id_model_providers", type_="foreignkey"
+        )
+        batch_op.create_foreign_key(
+            "fk_model_usages_user_id_users",
+            "users",
+            ["user_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
+        batch_op.create_foreign_key(
+            "fk_model_usages_model_id_models",
+            "models",
+            ["model_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
+        batch_op.create_foreign_key(
+            "fk_model_usages_provider_id_model_providers",
+            "model_providers",
+            ["provider_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
+        batch_op.create_foreign_key(
+            "fk_model_usages_api_key_id_api_keys",
+            "api_keys",
+            ["api_key_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
+
+    conn.execute(
+        sa.text(
+            """
+            UPDATE model_usages
+            SET
+                cluster_name = (
+                    SELECT clusters.name
+                    FROM models
+                    LEFT JOIN clusters ON clusters.id = models.cluster_id
+                    WHERE models.id = model_usages.model_id
+                ),
+                user_name = (
+                    SELECT users.username
+                    FROM users
+                    WHERE users.id = model_usages.user_id
+                ),
+                api_key_id = (
+                    SELECT api_keys.id
+                    FROM api_keys
+                    WHERE api_keys.access_key = model_usages.access_key
+                ),
+                api_key_name = (
+                    SELECT api_keys.name
+                    FROM api_keys
+                    WHERE api_keys.access_key = model_usages.access_key
+                ),
+                api_key_is_custom = (
+                    SELECT api_keys.is_custom
+                    FROM api_keys
+                    WHERE api_keys.access_key = model_usages.access_key
+                )
+            """
+        )
+    )
+    ### end
 
 
 def downgrade() -> None:
@@ -56,4 +143,42 @@ def downgrade() -> None:
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         batch_op.drop_column('is_custom')
         batch_op.drop_column('scope')
+    ### end
+    
+    ### Usage
+    with op.batch_alter_table("model_usages", schema=None) as batch_op:
+        batch_op.drop_constraint(
+            "fk_model_usages_api_key_id_api_keys", type_="foreignkey"
+        )
+        batch_op.drop_constraint("fk_model_usages_user_id_users", type_="foreignkey")
+        batch_op.drop_constraint("fk_model_usages_model_id_models", type_="foreignkey")
+        batch_op.drop_constraint(
+            "fk_model_usages_provider_id_model_providers", type_="foreignkey"
+        )
+        batch_op.create_foreign_key(
+            "fk_model_usages_user_id_users",
+            "users",
+            ["user_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+        batch_op.create_foreign_key(
+            "fk_model_usages_model_id_models",
+            "models",
+            ["model_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+        batch_op.create_foreign_key(
+            "fk_model_usages_provider_id_model_providers",
+            "model_providers",
+            ["provider_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+        batch_op.drop_column("api_key_is_custom")
+        batch_op.drop_column("api_key_name")
+        batch_op.drop_column("api_key_id")
+        batch_op.drop_column("user_name")
+        batch_op.drop_column("cluster_name")
     ### end

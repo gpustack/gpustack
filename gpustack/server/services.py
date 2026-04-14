@@ -146,6 +146,19 @@ class APIKeyService:
         return result
 
 
+class ClusterService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    @locked_cached()
+    async def get_by_id(self, cluster_id: int) -> Optional[Cluster]:
+        result = await Cluster.one_by_id(self.session, cluster_id)
+        if result is None:
+            return None
+        self.session.expunge(result)
+        return result
+
+
 class WorkerService:
     def __init__(self, session: AsyncSession):
         self.session = session
