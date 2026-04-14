@@ -386,7 +386,6 @@ EOF
 # Initialize configurations
 COPY pack/rootfs/ /
 COPY docker-compose/grafana/grafana_dashboards/ /etc/dashboards/
-ENV GPUSTACK_HIGRESS_PLUGIN_DIR=/usr/local/share/gpustack-higress/plugins
 ## END Install Higress standalone components
 
 ## Install Skopeo
@@ -489,8 +488,7 @@ EOF
 ## Install GPUStack
 
 RUN --mount=type=cache,target=/root/.cache \
-    --mount=type=bind,target=/workspace/gpustack,rw \
-    --mount=type=bind,from=ghcr.io/oras-project/oras:v1.3.0,source=/bin/oras,dst=/bin/oras <<EOF
+    --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # Install GPUStack
 
     export POETRY_NO_CACHE=0
@@ -527,10 +525,6 @@ RUN --mount=type=cache,target=/root/.cache \
     uv pip tree \
         --package gpustack
     gpustack version
-
-    # Download wasm-plugins
-    export ORAS_CACHE=/root/cache/oras
-    python gpustack/gateway/pull_plugins.py
 
     # Try to update PCI IDs
     if ! update-pciids; then

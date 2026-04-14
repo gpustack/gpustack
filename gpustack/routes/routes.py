@@ -44,6 +44,8 @@ from gpustack.api.auth import (
     inference_scope,
 )
 
+from gpustack_higress_plugins.server import router as higress_plugins_router
+
 versioned_prefix = "/v2"
 
 api_router = APIRouter(responses=error_responses)
@@ -261,3 +263,4 @@ api_router.include_router(
 
 api_router.include_router(management_router)
 api_router.include_router(inference_router)
+api_router.include_router(higress_plugins_router, include_in_schema=False)

@@ -113,13 +113,12 @@ def wait_for_apiserver_ready(cfg: Config, timeout: int = 60, interval: int = 5):
 
 
 def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
-    # this is only for non-incluster mode.
-    # In this case, the related resource will be installed into gateway namespace.
-    # default to incluster mode
     registry_type = "dns"
-    domain = f"{cfg.service_discovery_name}.{cfg.gateway_namespace}.svc"
+    domain = f"{cfg.service_discovery_name}.{cfg.get_namespace()}.svc"
+    mcp_port = cfg.get_api_port()
     if cfg.gateway_mode != GatewayModeEnum.incluster:
         registry_type = "static"
+        mcp_port = mcp_registry_port
         port = cfg.get_api_port()
         if cfg.gateway_mode == GatewayModeEnum.external:
             address = cfg.get_advertise_address()
@@ -135,7 +134,7 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
     registry = McpBridgeRegistry(
         type=registry_type,
         name=mcp_registry_name,
-        port=mcp_registry_port,
+        port=mcp_port,
         protocol="http",
         domain=domain,
     )
@@ -692,6 +691,8 @@ def spec_replace(
     if current_spec is None:
         return expected_spec
     if create_only:
+        if current_spec.url != expected_spec.url:
+            current_spec.url = expected_spec.url
         return current_spec
     return expected_spec
 
@@ -712,6 +713,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
     if cfg.gateway_mode in [
         GatewayModeEnum.embedded,
         GatewayModeEnum.external,
+        GatewayModeEnum.incluster,
     ]:
         validate_ai_statistics_plugin_content_types()
         plugin_list: List[Tuple[str, WasmPluginSpec]] = [
@@ -730,10 +732,11 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             api_client = k8s_client.ApiClient(
                 configuration=get_async_k8s_config(cfg=cfg)
             )
-            await ensure_gateway_timeout(cfg=cfg, api_client=api_client)
             await ensure_tls_secret(cfg=cfg, api_client=api_client)
             await ensure_mcp_resources(cfg=cfg, api_client=api_client)
-            await ensure_ingress_resources(cfg=cfg, api_client=api_client)
+            if cfg.gateway_mode != GatewayModeEnum.incluster:
+                await ensure_gateway_timeout(cfg=cfg, api_client=api_client)
+                await ensure_ingress_resources(cfg=cfg, api_client=api_client)
             for plugin_name, plugin_spec in plugin_list:
                 create_only = plugin_name in [
                     gpustack_ai_proxy_name,

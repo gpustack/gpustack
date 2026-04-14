@@ -274,6 +274,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         help="Number of concurrent connections for the embedded gateway. The default is 16.",
         default=get_gpustack_env("GATEWAY_CONCURRENCY"),
     )
+    server_group.add_argument(
+        "--gateway-plugin-server-url",
+        type=str,
+        help=argparse.SUPPRESS,
+        default=get_gpustack_env("GATEWAY_PLUGIN_SERVER_URL"),
+    )
 
     # Observability settings
     server_group.add_argument(
@@ -748,6 +754,7 @@ def set_server_options(args, config_data: dict):
         "saml_security",
         "server_external_url",
         "gateway_concurrency",
+        "gateway_plugin_server_url",
         "disable_builtin_observability",
         "builtin_prometheus_port",
         "builtin_grafana_port",

@@ -128,6 +128,7 @@ class Config(WorkerConfig, BaseSettings):
         grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
         grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
         grafana_model_dashboard_uid: Grafana dashboard UID for model dashboard.
+        gateway_plugin_server_url: URL to fetch gateway plugin manifest for embedded gateway.
     """
 
     # Server options
@@ -189,6 +190,7 @@ class Config(WorkerConfig, BaseSettings):
     external_auth_post_logout_redirect_key: Optional[str] = None
     # Number of concurrent connections for the embedded gateway.
     gateway_concurrency: int = 16
+    gateway_plugin_server_url: Optional[str] = None
     disable_builtin_observability: bool = False
     builtin_prometheus_port: int = 19090
     builtin_grafana_port: int = 13000
@@ -678,6 +680,21 @@ class Config(WorkerConfig, BaseSettings):
             and not platform.is_supported_higress(self.gateway_kubeconfig)
         ):
             raise Exception("The k8s cluster for gpustack does not support Higress.")
+
+        if self.gateway_plugin_server_url is None:
+            # for embedded gateway model, higress will fetch plugins from gpustack server
+            # for disabled gateway model, gateway_plugin_server_url is not used, so it doesn't matter if it's set or not.
+            address = "127.0.0.1"
+            if self.gateway_mode == GatewayModeEnum.incluster:
+                address = get_first_non_loopback_ip()
+            elif self.gateway_mode == GatewayModeEnum.external:
+                address = self.get_advertise_address()
+            self.gateway_plugin_server_url = f"http://{address}:{self.get_api_port()}"
+        else:
+            if self.gateway_mode == GatewayModeEnum.embedded:
+                raise Exception(
+                    "Cannot set gateway_plugin_server_url when running embedded gateway, as the embedded gateway will use the local plugin server."
+                )
 
     class ServerRole(Enum):
         SERVER = "server"

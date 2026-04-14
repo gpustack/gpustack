@@ -14,7 +14,6 @@ from gpustack.extension import Plugin
 from gpustack.routes import ui
 from gpustack.routes.routes import api_router
 from gpustack.utils.forwarded import ForwardedHostPortMiddleware
-from gpustack.gateway.plugins import register as register_gateway_plugins
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,6 @@ def create_app(cfg: Config) -> FastAPI:
     app.add_middleware(middlewares.RefreshTokenMiddleware)
     app.include_router(api_router)
     ui.register(app)
-    register_gateway_plugins(cfg=cfg, app=app)
     _load_extension_plugins(app, cfg)
     exceptions.register_handlers(app)
 
