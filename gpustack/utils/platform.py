@@ -66,7 +66,9 @@ def is_inside_kubernetes() -> bool:
     )
 
 
-def is_supported_higress(kubeconfig: Optional[str] = None) -> bool:
+def is_supported_higress(
+    target_ingress_class: str = "higress", kubeconfig: Optional[str] = None
+) -> bool:
     configuration = Configuration()
     if kubeconfig and os.path.exists(kubeconfig):
         cfg_loader = KubeConfigLoader(config_dict=KubeConfigMerger(kubeconfig).config)
@@ -86,10 +88,12 @@ def is_supported_higress(kubeconfig: Optional[str] = None) -> bool:
     try:
         api_client = client.ApiClient(configuration=configuration)
         networking_client = client.NetworkingV1Api(api_client=api_client)
-        networking_client.read_ingress_class(name="higress")
+        if not target_ingress_class:
+            return False
+        networking_client.read_ingress_class(name=target_ingress_class)
         return True
     except ApiException as e:
         if e.status == 404:
             return False
-        logger.debug(f"Error checking for Higress IngressClass: {e}")
+        logger.debug(f"Error checking for {target_ingress_class} IngressClass: {e}")
         return False

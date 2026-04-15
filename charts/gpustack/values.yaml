@@ -2,7 +2,9 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 debug: false
-registrationToken: random_generated_token_change_me
+# registrationToken is used to authenticate workers with the server.
+# If null, a random 32-character token is generated on first install and reused on upgrades.
+registrationToken: null
 defaultDataDir: /var/lib/gpustack
 enableWorkers: true
 systemDefaultContainerRegistry: null
@@ -39,14 +41,53 @@ server:
   environmentConfig: {}
 clusterDomain: cluster.local
 gateway:
-  # if ingress class is not higress, it will set gateway mode to embedded
+  # IngressClass name for the Higress gateway; GPUStack checks if it exists in the cluster to enable in-cluster gateway mode
   ingressClassname: higress
+
+# higress-core sub-chart configuration.
+# Set enabled: true to deploy Higress gateway alongside GPUStack.
+# If you already have Higress installed in the cluster, leave this disabled
+# and ensure gateway.ingressClassname matches your existing Higress instance.
+# Full list of available values: https://higress.io/helm-charts
+higress-core:
+  enabled: true
+  global:
+    # Must match gateway.ingressClassname above
+    ingressClass: higress
+    # GPUStack manages its own plugin server; disable the built-in one
+    enablePluginServer: false
+    hub: docker.io/gpustack
+  downstream:
+    idleTimeout: 1800
+  upstream:
+    idleTimeout: 3
+  gateway:
+    hub: null
+    image: mirrored-higress-gateway
+  controller:
+    hub: null
+    image: mirrored-higress-higress
+  pilot:
+    hub: null
+    image: mirrored-higress-pilot
 higressPlugins:
   image:
     repository: gpustack/higress-plugins
     pullPolicy: IfNotPresent
     tag: "0.2.0"
 worker:
+  # GPU vendor for the worker nodes. Controls driver volume mounts and runtimeClassName.
+  # Supported values:
+  #   null      - no vendor-specific driver mounts or runtimeClassName (e.g. CPU-only nodes)
+  #   nvidia    - NVIDIA GPU; sets runtimeClassName to "nvidia"
+  #   mthreads  - Moore Threads GPU; sets runtimeClassName to "mthreads"
+  #   amd       - AMD GPU (ROCm); mounts /opt/rocm
+  #   ascend    - Huawei Ascend NPU; mounts /usr/local/Ascend/driver and /usr/local/Ascend/ascend-toolkit
+  #   hygon     - Hygon DCU; mounts /opt/hyhal and /opt/dtk
+  #   metax     - MetaX GPU; mounts /opt/mxdriver and /opt/maca
+  #   iluvatar  - Iluvatar GPU; mounts /usr/local/corex
+  #   cambricon - Cambricon MLU; mounts /usr/bin/cnmon and /usr/local/neuware
+  #   thead     - T-Head PPU; mounts /usr/local/PPU_SDK
   gpuVendor: nvidia
   port: 10150
   metricsPort: 10151

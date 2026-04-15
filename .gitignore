@@ -165,6 +165,9 @@ __pycache__/
 # kubernetes config
 kubeconfig
 
+# Helm chart dependencies (downloaded artifacts; Chart.lock is tracked)
+charts/gpustack/charts/
+
 # Others
 .claude
 

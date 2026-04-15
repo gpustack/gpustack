@@ -191,6 +191,7 @@ class Config(WorkerConfig, BaseSettings):
     # Number of concurrent connections for the embedded gateway.
     gateway_concurrency: int = 16
     gateway_plugin_server_url: Optional[str] = None
+    gateway_ingress_class: str = "higress"
     disable_builtin_observability: bool = False
     builtin_prometheus_port: int = 19090
     builtin_grafana_port: int = 13000
@@ -656,7 +657,7 @@ class Config(WorkerConfig, BaseSettings):
                 return
             is_embedded = self.gateway_kubeconfig is None
             in_cluster = platform.is_inside_kubernetes()
-            if in_cluster and platform.is_supported_higress():
+            if in_cluster and platform.is_supported_higress(self.gateway_ingress_class):
                 self.gateway_mode = GatewayModeEnum.incluster
             elif is_embedded:
                 # in cluster but not supported higress will fallback to embedded
@@ -677,7 +678,9 @@ class Config(WorkerConfig, BaseSettings):
             )
         if (
             self.gateway_mode == GatewayModeEnum.external
-            and not platform.is_supported_higress(self.gateway_kubeconfig)
+            and not platform.is_supported_higress(
+                self.gateway_ingress_class, self.gateway_kubeconfig
+            )
         ):
             raise Exception("The k8s cluster for gpustack does not support Higress.")
 

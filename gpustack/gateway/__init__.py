@@ -241,7 +241,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             labels=managed_labels,
         ),
         spec=k8s_client.V1IngressSpec(
-            ingress_class_name='higress',
+            ingress_class_name=cfg.gateway_ingress_class,
             rules=[expected_rule],
         ),
     )

@@ -1,4 +1,3 @@
-{{- if eq .Values.gateway.ingressClassname "higress" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,4 +37,3 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
-{{- end }}

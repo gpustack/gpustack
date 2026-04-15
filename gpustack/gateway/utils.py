@@ -508,6 +508,7 @@ def generate_model_ingress(
     included_generic_route: Optional[bool] = False,
     included_proxy_route: Optional[bool] = False,
     extra_annotations: Optional[Dict[str, str]] = None,
+    ingress_class_name: str = "higress",
 ) -> k8s_client.V1Ingress:
     retry_policies = "error,timeout,http_503,http_502,non_idempotent"
     annotations = {
@@ -540,7 +541,9 @@ def generate_model_ingress(
         expected_rule.http.paths.append(wrap_route("/", "Prefix"))
     # support for Anthropic API
     expected_rule.http.paths.extend(anthropic_routes())
-    spec = k8s_client.V1IngressSpec(ingress_class_name="higress", rules=[expected_rule])
+    spec = k8s_client.V1IngressSpec(
+        ingress_class_name=ingress_class_name, rules=[expected_rule]
+    )
     if hostname is not None:
         hostname_rule = copy.deepcopy(expected_rule)
         hostname_rule.host = hostname
@@ -701,6 +704,7 @@ def model_instances_registry_list(
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
 async def ensure_model_ingress(
     ingress_name: str,
+    ingress_class_name: str,
     route_name: str,
     namespace: str,
     destinations: DestinationTupleList,
@@ -770,6 +774,7 @@ async def ensure_model_ingress(
         included_generic_route=included_generic_route,
         included_proxy_route=included_proxy_route,
         extra_annotations=extra_annotations,
+        ingress_class_name=ingress_class_name,
     )
 
     if existing_ingress is None:
@@ -974,8 +979,7 @@ async def mirror_hostname_tls_from_ingress(
         target_ingress_name (str): The name of the ingress to mirror TLS settings from.
 
     Returns:
-        Optional[Tuple[Optional[str], Optional[str]]]: A tuple containing the hostname and TLS secret name,
-        or None if the target ingress does not exist or has no TLS settings.
+        Tuple[Optional[str], Optional[List[V1IngressTLS]]]: A tuple containing the hostname and ingress TLS settings.
     """
     try:
         ingress: k8s_client.V1Ingress = await network_v1_client.read_namespaced_ingress(
@@ -986,7 +990,7 @@ async def mirror_hostname_tls_from_ingress(
             logger.warning(
                 f"Target ingress {target_ingress_name} not found in namespace {gateway_namespace} for TLS mirroring."
             )
-            return None
+            return None, None
         else:
             raise
 

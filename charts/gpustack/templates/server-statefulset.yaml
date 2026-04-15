@@ -24,10 +24,16 @@ spec:
         - env:
             - name: GPUSTACK_GATEWAY_PLUGIN_SERVER_URL
               value: "http://{{ printf "%s-higress-plugins.%s.svc.%s:8080" .Release.Name .Release.Namespace .Values.clusterDomain }}"
+            - name: GPUSTACK_GATEWAY_INGRESS_CLASS
+              value: "{{ .Values.gateway.ingressClassname }}"
             - name: GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME
               value: "{{ .Release.Name }}"
             - name: GPUSTACK_GATEWAY_MODE
               value: incluster
+            {{- if index .Values "higress-core" "enabled" }}
+            - name: GPUSTACK_GATEWAY_NAMESPACE
+              value: "{{ .Release.Namespace }}"
+            {{- end }}
             - name: GPUSTACK_DEFAULT_CLUSTER_KUBERNETES
               value: 'true'
             - name: GPUSTACK_SERVICE_DISCOVERY_NAME

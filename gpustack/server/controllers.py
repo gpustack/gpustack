@@ -748,6 +748,7 @@ async def sync_gateway(
     # destination. This is to avoid potential misconfiguration that causes the main route to
     # have no destination and the fallback route is not hit at all.
     await mcp_handler.ensure_model_ingress(
+        ingress_class_name=cfg.gateway_ingress_class,
         event_type=event_type,
         ingress_name=ingress_name,
         route_name=model_route.name,
@@ -762,6 +763,7 @@ async def sync_gateway(
         fallback_event_type = EventType.DELETED
     # Fallback ingress
     await mcp_handler.ensure_model_ingress(
+        ingress_class_name=cfg.gateway_ingress_class,
         event_type=fallback_event_type,
         ingress_name=mcp_handler.fallback_ingress_name(ingress_name),
         route_name=model_route.name,

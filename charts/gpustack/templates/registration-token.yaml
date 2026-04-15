@@ -1,7 +1,16 @@
 {{ if .Values.enableWorkers -}}
+{{- $secret := lookup "v1" "Secret" .Release.Namespace "registration-token" -}}
+{{- $token := "" -}}
+{{- if $secret -}}
+  {{- $token = index $secret.data "GPUSTACK_TOKEN" | b64dec -}}
+{{- else if .Values.registrationToken -}}
+  {{- $token = .Values.registrationToken -}}
+{{- else -}}
+  {{- $token = randAlphaNum 32 -}}
+{{- end -}}
 apiVersion: v1
 data:
-  GPUSTACK_TOKEN: {{ .Values.registrationToken | b64enc }}
+  GPUSTACK_TOKEN: {{ $token | b64enc }}
 kind: Secret
 metadata:
   name: registration-token

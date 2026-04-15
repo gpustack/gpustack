@@ -280,6 +280,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         help=argparse.SUPPRESS,
         default=get_gpustack_env("GATEWAY_PLUGIN_SERVER_URL"),
     )
+    server_group.add_argument(
+        "--gateway-ingress-class",
+        type=str,
+        help=argparse.SUPPRESS,
+        default=get_gpustack_env("GATEWAY_INGRESS_CLASS"),
+    )
 
     # Observability settings
     server_group.add_argument(
@@ -755,6 +761,7 @@ def set_server_options(args, config_data: dict):
         "server_external_url",
         "gateway_concurrency",
         "gateway_plugin_server_url",
+        "gateway_ingress_class",
         "disable_builtin_observability",
         "builtin_prometheus_port",
         "builtin_grafana_port",

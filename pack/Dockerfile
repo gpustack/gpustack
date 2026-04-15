@@ -35,10 +35,10 @@ ARG GRAFANA_VERSION=12.2.4
 #   docker build --tag=gpustack/gpustack:base --file=pack/Dockerfile --target=base --progress=plain .
 #
 
-FROM higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/api-server:${HIGRESS_APISERVER_VERSION} AS apiserver
-FROM higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/higress:${HIGRESS_VERSION} AS controller
-FROM higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/pilot:${HIGRESS_VERSION} AS pilot
-FROM higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/gateway:${HIGRESS_VERSION} AS gateway
+FROM gpustack/mirrored-higress-api-server:${HIGRESS_APISERVER_VERSION} AS apiserver
+FROM gpustack/mirrored-higress-higress:${HIGRESS_VERSION} AS controller
+FROM gpustack/mirrored-higress-pilot:${HIGRESS_VERSION} AS pilot
+FROM gpustack/mirrored-higress-gateway:${HIGRESS_VERSION} AS gateway
 FROM ubuntu:24.04@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9 AS base
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 

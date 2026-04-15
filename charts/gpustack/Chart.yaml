@@ -16,3 +16,8 @@ annotations:
   artifacthub.io/links: |
     - name: GitHub
       url: https://github.com/gpustack/gpustack
+dependencies:
+  - name: higress-core
+    version: "2.1.9"
+    repository: "https://higress.io/helm-charts"
+    condition: higress-core.enabled
