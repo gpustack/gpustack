@@ -19,9 +19,9 @@ GPUStack supports a variety of General-Purpose Accelerators as inference backend
 - [x] AMD GPU
 - [x] Ascend NPU
 - [x] Hygon DCU
+- [x] MetaX GPU
 - [x] MThreads GPU (Experimental)
 - [x] Iluvatar GPU (Experimental)
-- [x] MetaX GPU (Experimental)
 - [x] Cambricon MLU (Experimental)
 - [x] T-Head PPU (Experimental)
 
@@ -129,6 +129,25 @@ sudo hy-smi
 - [x] [vLLM](https://github.com/vllm-project/vllm)
 - [x] Custom
 
+### MetaX GPU
+
+#### Requirements
+
+- [MetaX GPU Driver](https://developer.metax-tech.com/softnova/download?package_kind=Driver)
+- [MetaX MACA SDK](https://developer.metax-tech.com/softnova/download?package_kind=SDK)
+
+Run the following commands to verify:
+
+```bash
+sudo mx-smi
+```
+
+#### Supported Inference Backends
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang)
+- [x] Custom
+
 ### MThreads GPU
 
 #### Requirements
@@ -149,6 +168,8 @@ sudo docker info 2>/dev/null | grep -q "mthreads" \
 
 #### Supported Inference Backends
 
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang)
 - [x] Custom
 
 ### Iluvatar GPU
@@ -172,23 +193,6 @@ sudo docker info 2>/dev/null | grep -q "iluvatar" \
 #### Supported Inference Backends
 
 - [x] [vLLM](https://github.com/vllm-project/vllm)
-- [x] Custom
-
-### MetaX GPU
-
-#### Requirements
-
-- [MetaX GPU Driver](https://developer.metax-tech.com/softnova/download?package_kind=Driver)
-- [MetaX MACA SDK](https://developer.metax-tech.com/softnova/download?package_kind=SDK)
-
-Run the following commands to verify:
-
-```bash
-sudo mx-smi
-```
-
-#### Supported Inference Backends
-
 - [x] Custom
 
 ### Cambricon MLU
