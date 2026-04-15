@@ -21,19 +21,33 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     conn = op.get_bind()
-    
-    with op.batch_alter_table('workers', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('worker_version', sa.String(100), nullable=True))
-    
+
+    if not column_exists('workers', 'worker_version'):
+        with op.batch_alter_table('workers', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column('worker_version', sa.String(100), nullable=True)
+            )
+
     ### k8s volume mount
-    with op.batch_alter_table('clusters', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('k8s_volume_mounts', gpustack.schemas.common.JSON(), nullable=True))
+    if not column_exists('clusters', 'k8s_volume_mounts'):
+        with op.batch_alter_table('clusters', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    'k8s_volume_mounts',
+                    gpustack.schemas.common.JSON(),
+                    nullable=True,
+                )
+            )
     ### end
 
     ### custom API_KEY
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('is_custom', sa.Boolean(), nullable=True))
-        batch_op.add_column(sa.Column('scope', gpustack.schemas.common.JSON(), nullable=True))
+        if not column_exists('api_keys', 'is_custom'):
+            batch_op.add_column(sa.Column('is_custom', sa.Boolean(), nullable=True))
+        if not column_exists('api_keys', 'scope'):
+            batch_op.add_column(
+                sa.Column('scope', gpustack.schemas.common.JSON(), nullable=True)
+            )
 
     # Update existing API keys to have full access scope
     op.execute("UPDATE api_keys SET scope = '[\"*\"]' WHERE scope IS NULL")
@@ -41,8 +55,16 @@ def upgrade() -> None:
 
     # Set scope to NOT NULL
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
-        batch_op.alter_column('scope', nullable=False)
-        batch_op.alter_column('is_custom', nullable=False)
+        batch_op.alter_column(
+            'scope',
+            existing_type=gpustack.schemas.common.JSON(),
+            nullable=False,
+        )
+        batch_op.alter_column(
+            'is_custom',
+            existing_type=sa.Boolean(),
+            nullable=False,
+        )
         
     ### Usage
     with op.batch_alter_table("model_usages", schema=None) as batch_op:
