@@ -446,6 +446,10 @@ class VLLMServer(InferenceServer):
         speculative_config_arguments = self._get_speculative_arguments()
         arguments.extend(speculative_config_arguments)
 
+        # Suppress high-frequency /metrics access logs by default.
+        access_log_arguments = get_access_log_arguments(self._model.backend_parameters)
+        arguments.extend(access_log_arguments)
+
         if is_distributed:
             arguments.extend(["--distributed-executor-backend", "ray"])
             dps = find_int_parameter(
@@ -637,3 +641,17 @@ def get_auto_parallelism_arguments(
         ]
 
     return []
+
+
+def get_access_log_arguments(backend_parameters: List[str]) -> List[str]:
+    """
+    Get default vLLM access log filter arguments.
+    """
+    access_log_filter = find_parameter(
+        backend_parameters,
+        ["disable-access-log-for-endpoints"],
+    )
+    if access_log_filter is not None:
+        return []
+
+    return ["--disable-access-log-for-endpoints", "/metrics"]

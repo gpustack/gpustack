@@ -4,6 +4,12 @@ import pytest
 
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.worker.backends.custom import CustomServer
+from gpustack.worker.backends.sglang import (
+    get_access_log_arguments as get_sglang_access_log_arguments,
+)
+from gpustack.worker.backends.vllm import (
+    get_access_log_arguments as get_vllm_access_log_arguments,
+)
 
 
 @pytest.mark.parametrize(
@@ -150,3 +156,41 @@ def test_flatten_backend_param(backend_parameters, expected):
     backend = CustomServer.__new__(CustomServer)
     backend._model = types.SimpleNamespace(backend_parameters=backend_parameters)
     assert backend._flatten_backend_param() == expected
+
+
+@pytest.mark.parametrize(
+    "backend_parameters, expected",
+    [
+        (None, ["--disable-access-log-for-endpoints", "/metrics"]),
+        ([], ["--disable-access-log-for-endpoints", "/metrics"]),
+        (
+            ["--disable-access-log-for-endpoints=/health,/metrics"],
+            [],
+        ),
+        (
+            ["--disable-access-log-for-endpoints", "/health,/metrics"],
+            [],
+        ),
+    ],
+)
+def test_vllm_access_log_arguments(backend_parameters, expected):
+    assert get_vllm_access_log_arguments(backend_parameters) == expected
+
+
+@pytest.mark.parametrize(
+    "backend_parameters, expected",
+    [
+        (None, ["--uvicorn-access-log-exclude-prefixes", "/metrics"]),
+        ([], ["--uvicorn-access-log-exclude-prefixes", "/metrics"]),
+        (
+            ["--uvicorn-access-log-exclude-prefixes=/health"],
+            [],
+        ),
+        (
+            ["--uvicorn-access-log-exclude-prefixes", "/health"],
+            [],
+        ),
+    ],
+)
+def test_sglang_access_log_arguments(backend_parameters, expected):
+    assert get_sglang_access_log_arguments(backend_parameters) == expected

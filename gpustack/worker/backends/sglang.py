@@ -317,6 +317,10 @@ class SGLangServer(InferenceServer):
         )
         arguments.extend(metrics_arguments)
 
+        # Suppress high-frequency /metrics access logs by default.
+        access_log_arguments = get_access_log_arguments(self._model.backend_parameters)
+        arguments.extend(access_log_arguments)
+
         # Add multimodal argument if needed
         if is_multimodal_model(self._get_model_architecture()):
             arguments.append("--enable-multimodal")
@@ -680,3 +684,17 @@ def get_metrics_arguments(
         return []
 
     return ["--enable-metrics"]
+
+
+def get_access_log_arguments(backend_parameters: List[str]) -> List[str]:
+    """
+    Get default SGLang access log filter arguments.
+    """
+    access_log_filter = find_parameter(
+        backend_parameters,
+        ["uvicorn-access-log-exclude-prefixes"],
+    )
+    if access_log_filter is not None:
+        return []
+
+    return ["--uvicorn-access-log-exclude-prefixes", "/metrics"]
