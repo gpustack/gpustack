@@ -17,6 +17,7 @@ from gpustack.schemas.benchmark import (
     BenchmarkStateEnum,
     ModelInstanceSnapshot,
 )
+from gpustack.utils.command import find_bool_parameter
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars, sanitize_env
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
@@ -45,6 +46,7 @@ class BenchmarkRunner:
     _benchmark: Benchmark
     _model_path: str
     _model_endpoint: str
+    _model_backend_parameters: Optional[List[str]]
     _api_url: str
     _api_key: str
     _benchmark_dir: Optional[str]
@@ -101,6 +103,7 @@ class BenchmarkRunner:
             self._benchmark_dir = self._config.benchmark_dir
             self._model_path = instance_snapshot.resolved_path
             self._model_endpoint = f"http://{instance_snapshot.worker_ip}:{instance_snapshot.ports[0] if instance_snapshot.ports else ''}"
+            self._model_backend_parameters = instance_snapshot.backend_parameters
 
             _api_key = read_worker_token(self._config.data_dir)
             if _api_key is None:
@@ -242,6 +245,14 @@ class BenchmarkRunner:
             "--backend",
             "openai_http_error_detail",
         ]
+
+        if find_bool_parameter(self._model_backend_parameters, ["trust-remote-code"]):
+            command_args.extend(
+                [
+                    "--processor-args",
+                    json.dumps({"trust_remote_code": True}),
+                ]
+            )
 
         if self._benchmark.dataset_name == DATASET_SHAREGPT:
             data = BENCHMARK_DATASET_SHAREGPT_PATH
