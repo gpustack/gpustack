@@ -1,4 +1,4 @@
-{{ if .Values.enableWorkers -}}
+{{ if .Values.worker.enabled -}}
 {{- $secret := lookup "v1" "Secret" .Release.Namespace "registration-token" -}}
 {{- $token := "" -}}
 {{- if $secret -}}

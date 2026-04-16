@@ -1,4 +1,4 @@
-{{- if .Values.enableWorkers }}
+{{- if .Values.worker.enabled }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -154,7 +154,7 @@ spec:
       volumes:
         - name: gpustack-data-dir
           hostPath:
-            path: {{ .Values.defaultDataDir }}
+            path: {{ .Values.worker.dataDir }}
             type: DirectoryOrCreate
         - name: cdi
           hostPath:

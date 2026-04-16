@@ -7,7 +7,7 @@ metadata:
 {{ include "chart_labels" . | indent 4 }}
 spec:
   serviceName: {{ .Release.Name }}-server
-  replicas: 1
+  replicas: {{ .Values.server.replicas | default 1 }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-server
@@ -22,6 +22,11 @@ spec:
     spec:
       containers:
         - env:
+            - name: GPUSTACK_SERVER_ID
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
             - name: GPUSTACK_GATEWAY_PLUGIN_SERVER_URL
               value: "http://{{ printf "%s-higress-plugins.%s.svc.%s:8080" .Release.Name .Release.Namespace .Values.clusterDomain }}"
             - name: GPUSTACK_GATEWAY_INGRESS_CLASS
@@ -36,6 +41,8 @@ spec:
             {{- end }}
             - name: GPUSTACK_DEFAULT_CLUSTER_KUBERNETES
               value: 'true'
+            - name: GPUSTACK_DISABLE_WORKER
+              value: 'true'
             - name: GPUSTACK_SERVICE_DISCOVERY_NAME
               value: "{{ .Release.Name }}-server"
             - name: POD_NAMESPACE
@@ -44,11 +51,14 @@ spec:
                   apiVersion: v1
                   fieldPath: metadata.namespace
           envFrom:
-          {{ if .Values.enableWorkers -}}
+            {{- if .Values.worker.enabled }}
             - secretRef:
                 name: registration-token
                 optional: false
-          {{ end -}}
+            {{- end }}
+            - secretRef:
+                name: {{ .Release.Name }}-jwt-key
+                optional: false
             - configMapRef:
                 name: server-config
                 optional: true

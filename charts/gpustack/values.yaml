@@ -5,10 +5,7 @@ debug: false
 # registrationToken is used to authenticate workers with the server.
 # If null, a random 32-character token is generated on first install and reused on upgrades.
 registrationToken: null
-defaultDataDir: /var/lib/gpustack
-enableWorkers: true
 systemDefaultContainerRegistry: null
-gpustackImage: null
 image:
   repository: gpustack/gpustack
   tag: null
@@ -76,6 +73,7 @@ higressPlugins:
     pullPolicy: IfNotPresent
     tag: "0.2.0"
 worker:
+  enabled: true
   # GPU vendor for the worker nodes. Controls driver volume mounts and runtimeClassName.
   # Supported values:
   #   null      - no vendor-specific driver mounts or runtimeClassName (e.g. CPU-only nodes)
@@ -92,6 +90,8 @@ worker:
   port: 10150
   metricsPort: 10151
   environmentConfig: {}
+  # Host path for worker data directory.
+  dataDir: /var/lib/gpustack
   extraVolumeMounts: []
   # - name: custom-lib
   #   mountPath: /opt/custom/lib

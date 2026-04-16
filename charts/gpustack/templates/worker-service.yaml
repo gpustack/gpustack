@@ -1,4 +1,4 @@
-{{- if .Values.enableWorkers }}
+{{- if .Values.worker.enabled }}
 ---
 # Service
 apiVersion: v1

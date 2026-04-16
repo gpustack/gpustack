@@ -2,12 +2,11 @@
 {{- if or (and .Values.server.ingress.tls.cert (not .Values.server.ingress.tls.key)) (and .Values.server.ingress.tls.key (not .Values.server.ingress.tls.cert)) }}
 {{ fail "Both server.ingress.tls.cert and server.ingress.tls.key must be set together or both be empty." }}
 {{- end }}
-
-
-{{ define "tpl.url.ensureTrailingSlash" -}}
-{{ $url := . | trimSuffix "/" -}}
-{{ printf "%s/" $url }}
-{{- end -}}
+{{- if gt (int .Values.server.replicas) 1 }}
+{{- if not .Values.server.externalDatabaseURL }}
+{{ fail "server.externalDatabaseURL is required when server.replicas > 1." }}
+{{- end }}
+{{- end }}
 
 
 {{ define "gpustack.imageTag" -}}
@@ -15,24 +14,15 @@
 {{ end -}}
 
 
-{{ define "gpustack.image" -}}
-{{ if .Values.gpustackImage -}}
-{{ .Values.gpustackImage -}}
-{{ else -}}
-{{ printf "%s%s" (include "system_default_registry" .) (include "gpustack.imageRepo" .) -}}
-{{ end -}}
-{{ end -}}
-
-
-{{ define "gpustack.imageRepo" -}}
-{{ default "gpustack/gpustack" .Values.image.repository -}}
-{{ end -}}
-
-
 {{ define "system_default_registry" -}}
 {{ if .Values.systemDefaultContainerRegistry -}}
-{{ include "tpl.url.ensureTrailingSlash" .Values.systemDefaultContainerRegistry }}
+{{ trimSuffix "/" .Values.systemDefaultContainerRegistry }}/
 {{- end -}}
+{{ end -}}
+
+
+{{ define "gpustack.image" -}}
+{{ printf "%s%s" (include "system_default_registry" .) .Values.image.repository -}}
 {{ end -}}
 
 

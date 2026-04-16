@@ -1,4 +1,4 @@
-{{- if .Values.enableWorkers }}
+{{- if .Values.worker.enabled }}
 apiVersion: v1
 data:
 {{ include "worker_config" . | indent 2 }}
