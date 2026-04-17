@@ -17,6 +17,7 @@ from kubernetes_asyncio.config.incluster_config import (
     SERVICE_CERT_FILENAME,
 )
 from kubernetes_asyncio.client.rest import ApiException
+from gpustack.api.auth import GATEWAY_AUTH_TOKEN_HEADER
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack import envs
@@ -306,7 +307,10 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                 {"exact": "x-higress-llm-model"},
                 {"exact": "x-api-key"},
                 {"exact": "cookie"},
-            ]
+            ],
+            "headers_to_add": {
+                GATEWAY_AUTH_TOKEN_HEADER: cfg.get_derived_gateway_token(),
+            },
         },
         "authorization_response": {
             "allowed_upstream_headers": [
@@ -478,6 +482,12 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         defaultConfig={
             "reqRules": [
                 transform_header(
+                    "remove",
+                    HeaderRule(
+                        key=GATEWAY_AUTH_TOKEN_HEADER,
+                    ),
+                ),
+                transform_header(
                     "rename",
                     HeaderRule(
                         oldKey="x-gpustack-model",
@@ -542,17 +552,26 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 
 
 def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
+    registry = get_gpustack_higress_registry(cfg=cfg)
     resource_name = "gpustack-token-usage"
     expected_spec = WasmPluginSpec(
         defaultConfig={
             'realIPToHeader': "X-GPUStack-Real-IP",
+            'endpoint': {
+                "path": "/v2/usage/gateway-metrics",
+                "service_name": registry.get_service_name(),
+                "service_port": registry.port,
+            },
+            'header_add': {
+                GATEWAY_AUTH_TOKEN_HEADER: cfg.get_derived_gateway_token(),
+            },
         },
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
         imagePullPolicy="UNSPECIFIED_POLICY",
         matchRules=[],
-        phase="AUTHN",
-        priority=900,
+        phase="UNSPECIFIED_PHASE",
+        priority=910,
         url=get_plugin_url_with_name_and_version(
             name="gpustack-token-usage", version="1.0.0", cfg=cfg
         ),

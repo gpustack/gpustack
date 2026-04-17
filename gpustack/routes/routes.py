@@ -45,6 +45,7 @@ from gpustack.api.auth import (
     inference_scope,
 )
 from gpustack.websocket_proxy.message_server import router as message_server_router
+from gpustack.routes.gateway_metrics import router as gateway_metrics_router
 
 from gpustack_higress_plugins.server import router as higress_plugins_router
 
@@ -267,6 +268,11 @@ api_router.include_router(
 api_router.include_router(management_router)
 api_router.include_router(inference_router)
 api_router.include_router(higress_plugins_router, include_in_schema=False)
+api_router.include_router(
+    gateway_metrics_router,
+    prefix=f"{versioned_prefix}/usage",
+    include_in_schema=False,
+)
 api_router.include_router(
     message_server_router,
     tags=["WebSocket Proxy"],

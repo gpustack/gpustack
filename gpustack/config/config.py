@@ -5,6 +5,8 @@ from typing import List, Optional, Dict
 from urllib.parse import urlparse
 import ipaddress
 import httpx
+import hmac
+import hashlib
 
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
@@ -201,6 +203,7 @@ class Config(WorkerConfig, BaseSettings):
     grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
 
     _set_worker_fields = {}
+    _derive_gateway_token = None
 
     model_config = SettingsConfigDict(
         env_prefix="GPUSTACK_", protected_namespaces=('settings_',)
@@ -270,6 +273,10 @@ class Config(WorkerConfig, BaseSettings):
         # default to worker proxy mode if running as worker
         if self.proxy_mode is None:
             self.proxy_mode = ModelInstanceProxyModeEnum.WORKER
+
+        self._derive_gateway_token = hmac.new(
+            self.jwt_secret_key.encode(), b"gateway-metrics-push", hashlib.sha256
+        ).hexdigest()
 
     @model_validator(mode="after")
     def check_all(self):  # noqa: C901
@@ -839,6 +846,9 @@ class Config(WorkerConfig, BaseSettings):
 
     def get_proxy_url(self) -> Optional[str]:
         return f"http://{self.get_proxy_listen_address(self.get_advertise_address())}:{self.get_proxy_port()}"
+
+    def get_derived_gateway_token(self) -> str:
+        return self._derive_gateway_token
 
 
 def get_image_name(

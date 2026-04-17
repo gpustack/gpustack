@@ -52,9 +52,9 @@ from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.usage_buffer import flush_usage_to_db
 from gpustack.server.worker_status_buffer import flush_worker_status_to_db
+from gpustack.server.metrics_collector import flush_gateway_metrics_to_db
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
-from gpustack.server.metrics_collector import GatewayMetricsCollector
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
@@ -127,9 +127,9 @@ class Server:
         self._start_update_checker()
         self._start_model_usage_flusher()
         self._start_worker_status_flusher()
+        self._start_gateway_metrics_flusher()
         self._start_worker_instance_cleaner()
         self._start_metrics_exporter()
-        self._start_gateway_metrics_collector()
         self._start_query_count_logger()
         self._start_default_registry_checker()
         self._start_proxy_servers(app)
@@ -276,26 +276,18 @@ class Server:
 
         logger.debug("Worker status flusher started.")
 
+    def _start_gateway_metrics_flusher(self):
+        if self._config.gateway_mode == GatewayModeEnum.disabled:
+            return
+        self._create_async_task(flush_gateway_metrics_to_db())
+
+        logger.debug("Gateway metrics flusher started.")
+
     def _start_worker_instance_cleaner(self):
         worker_instance_cleaner = WorkerInstanceCleaner()
         self._create_async_task(worker_instance_cleaner.start())
 
         logger.debug("Worker instance cleaner started.")
-
-    def _start_gateway_metrics_collector(self):
-        if self._config.gateway_mode not in [
-            GatewayModeEnum.embedded,
-            GatewayModeEnum.external,
-        ]:
-            return
-        collector = GatewayMetricsCollector(cfg=self._config)
-
-        async def _start_collector_after_port_ready():
-            await self._wait_for_gateway_ready()
-            await collector.start()
-            logger.debug("Gateway metrics collector started.")
-
-        self._create_async_task(_start_collector_after_port_ready())
 
     def _start_update_checker(self):
         if self._config.disable_update_check:

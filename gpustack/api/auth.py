@@ -44,14 +44,27 @@ OIDC_ID_TOKEN_COOKIE_NAME = "gpustack_oidc_id_token"
 SSO_LOGIN_COOKIE_NAME = "gpustack_sso_login"
 SYSTEM_USER_PREFIX = "system/"
 SYSTEM_WORKER_USER_PREFIX = "system/worker/"
+GATEWAY_AUTH_TOKEN_HEADER = "X-GPUStack-Auth-Token"
 basic_auth = HTTPBasic(auto_error=False)
 bearer_auth = HTTPBearer(auto_error=False)
 api_key_header_auth = APIKeyHeader(name="X-API-Key", auto_error=False)
 cookie_auth = APIKeyCookie(name=SESSION_COOKIE_NAME, auto_error=False)
+_gateway_auth_header = APIKeyHeader(name=GATEWAY_AUTH_TOKEN_HEADER, auto_error=False)
 
 credentials_exception = UnauthorizedException(
     message="Invalid authentication credentials"
 )
+
+
+def gateway_token_auth(
+    request: Request,
+    token: Annotated[Optional[str], Depends(_gateway_auth_header)] = None,
+):
+    if not token:
+        raise UnauthorizedException(message="Missing authentication token")
+    cfg: Config = request.app.state.server_config
+    if token != cfg.get_derived_gateway_token():
+        raise UnauthorizedException(message="Invalid gateway token")
 
 
 def client_ip_getter(request: Request) -> str:

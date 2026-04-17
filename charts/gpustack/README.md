@@ -19,7 +19,6 @@ Please note the following limitations when deploying GPUStack on Kubernetes:
 - GPUStack Server is deployed as a StatefulSet and currently does not support more than one replica.
 - By default, the built-in `Postgres` database is used at startup. It is recommended to specify an external database using the `server.externalDatabaseURL` parameter.
 - By default, the StatefulSet uses `volumeClaimTemplates` (10Gi PVC), which requires a default `StorageClass` to be configured in your cluster (in k3s, the default is `local-path`). Alternatively, set `server.dataVolume.hostPath` to use a host path volume instead of a PVC.
-- In the current version, token usage statistics are not available in Kubernetes deployments. This is because the statistics logic relies on metrics from the Higress gateway, and in this deployment mode, it is currently unable to automatically discover the gateway pod IP address for metrics collection. This limitation will be addressed in future versions.
 - Higress plugins are served by a dedicated `gpustack/higress-plugins` Deployment installed alongside GPUStack. When the Higress gateway restarts, it will attempt to download the plugins from this service. If the service is unavailable, the gateway's startup will be blocked until the plugins are accessible.
 - The bundled `higress-core` sub-chart deploys Higress as the cluster's ingress controller. If another ingress controller is already running in the cluster, set `higress-core.enabled=false` and configure `gateway.ingressClassname` to use the existing Higress instance instead.
 
