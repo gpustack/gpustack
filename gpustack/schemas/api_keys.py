@@ -60,6 +60,10 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
     )
     is_custom: bool = Field(default=False, nullable=False)
 
+    @property
+    def user_name(self) -> Optional[str]:
+        return self.user.username if self.user else None
+
 
 class ApiKeyListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
@@ -77,6 +81,7 @@ class ApiKeyCreate(ApiKeyBase):
 
 class ApiKeyPublic(ApiKeyBase):
     id: int
+    user_name: Optional[str] = None
     value: Optional[str] = None  # only available when creating
     masked_value: Optional[str] = None  # partial characters for identification
     is_custom: bool

@@ -1,11 +1,15 @@
 from datetime import datetime, timedelta, timezone
 import secrets
-from fastapi import APIRouter, Depends
+from typing import Optional
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import selectinload
+from sqlmodel import col
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
+    InvalidException,
     NotFoundException,
 )
 from gpustack.security import API_KEY_PREFIX, get_secret_hash, get_key_pair
@@ -23,13 +27,18 @@ from gpustack.utils.api_keys import get_masked_api_key_value
 
 router = APIRouter()
 
+SYSTEM_API_KEY_NAME_PREFIX = "system/"
 
-def _api_key_to_public(api_key: ApiKey, value: str = None) -> ApiKeyPublic:
+
+def _api_key_to_public(
+    api_key: ApiKey, value: str = None, user_name: str = None
+) -> ApiKeyPublic:
     """Convert an ApiKey object to an ApiKeyPublic object."""
     return ApiKeyPublic(
         name=api_key.name,
         description=api_key.description,
         id=api_key.id,
+        user_name=user_name or api_key.user_name,
         value=value,
         masked_value=get_masked_api_key_value(api_key.access_key, api_key.is_custom),
         created_at=api_key.created_at,
@@ -41,22 +50,44 @@ def _api_key_to_public(api_key: ApiKey, value: str = None) -> ApiKeyPublic:
     )
 
 
+def _is_system_api_key(api_key: ApiKey) -> bool:
+    return api_key.name.startswith(SYSTEM_API_KEY_NAME_PREFIX)
+
+
 @router.get("", response_model=ApiKeysPublic)
 async def get_api_keys(
     session: SessionDep,
     user: CurrentUserDep,
     params: ApiKeyListParams = Depends(),
+    user_id: Optional[str] = Query(
+        None, description="Filter by user_id. Admin can use '*' to list all users."
+    ),
     search: str = None,
 ):
     fields = {"user_id": user.id}
+    if user.is_admin and user_id is not None:
+        if user_id == "*":
+            fields = {}
+        else:
+            try:
+                fields = {"user_id": int(user_id)}
+            except ValueError:
+                raise InvalidException(message="user_id must be an integer or '*'")
 
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search}
 
+    extra_conditions = [col(ApiKey.name).not_like(f"{SYSTEM_API_KEY_NAME_PREFIX}%")]
+
     if params.watch:
         return StreamingResponse(
-            ApiKey.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
+            ApiKey.streaming(
+                fields=fields,
+                fuzzy_fields=fuzzy_fields,
+                filter_func=lambda api_key: not _is_system_api_key(api_key),
+                options=[selectinload(ApiKey.user)],
+            ),
             media_type="text/event-stream",
         )
 
@@ -64,9 +95,11 @@ async def get_api_keys(
         session=session,
         fields=fields,
         fuzzy_fields=fuzzy_fields,
+        extra_conditions=extra_conditions,
         page=params.page,
         per_page=params.perPage,
         order_by=params.order_by,
+        options=[selectinload(ApiKey.user)],
     )
 
     # Convert ApiKey to ApiKeyPublic
@@ -128,13 +161,13 @@ async def create_api_key(
         if key_in.custom
         else f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
     )
-    return _api_key_to_public(api_key, value=value)
+    return _api_key_to_public(api_key, value=value, user_name=user.username)
 
 
 @router.delete("/{id}")
 async def delete_api_key(session: SessionDep, user: CurrentUserDep, id: int):
     api_key = await ApiKey.one_by_id(session, id)
-    if not api_key or api_key.user_id != user.id:
+    if not api_key or (api_key.user_id != user.id and not user.is_admin):
         raise NotFoundException(message="Api key not found")
 
     try:
@@ -147,8 +180,9 @@ async def delete_api_key(session: SessionDep, user: CurrentUserDep, id: int):
 async def update_api_key(
     session: SessionDep, user: CurrentUserDep, id: int, key_in: ApiKeyUpdate
 ):
-    api_key = await ApiKey.one_by_id(session, id)
-    if not api_key or api_key.user_id != user.id:
+    api_key = await ApiKey.one_by_id(session, id, options=[selectinload(ApiKey.user)])
+    user_name = api_key.user.username if api_key and api_key.user else None
+    if not api_key or (api_key.user_id != user.id and not user.is_admin):
         raise NotFoundException(message="Api key not found")
     try:
         await APIKeyService(session).update(
@@ -157,4 +191,4 @@ async def update_api_key(
         )
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update api key: {e}")
-    return _api_key_to_public(api_key)
+    return _api_key_to_public(api_key, user_name=user_name)
