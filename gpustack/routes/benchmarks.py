@@ -54,8 +54,33 @@ from gpustack.worker.logs import LogOptionsDep
 from sqlalchemy.orm import defer
 
 MAX_EXPORT_RECORDS = 20
+BENCHMARK_EXPORT_FIELD_ORDER = [
+    "name",
+    "model_name",
+    "model_instance_name",
+    "profile",
+    "dataset_name",
+    "request_rate",
+    "total_requests",
+    "dataset_input_tokens",
+    "dataset_output_tokens",
+    "dataset_seed",
+]
 
 router = APIRouter()
+
+
+def order_benchmark_export_fields(benchmark: dict) -> dict:
+    ordered = {}
+    for field in BENCHMARK_EXPORT_FIELD_ORDER:
+        if field in benchmark:
+            ordered[field] = benchmark[field]
+
+    for field, value in benchmark.items():
+        if field not in ordered:
+            ordered[field] = value
+
+    return ordered
 
 
 @router.get("", response_model=BenchmarksPublic)
@@ -476,7 +501,7 @@ async def export_benchmarks(
     exported_benchmarks = []
     for b in benchmarks:
         eb = b.model_dump(exclude=set(exclude_fields))
-        exported_benchmarks.append(eb)
+        exported_benchmarks.append(order_benchmark_export_fields(eb))
 
     export_data = {"benchmarks": exported_benchmarks}
     yaml_str = yaml.safe_dump(export_data, allow_unicode=True, sort_keys=False)
