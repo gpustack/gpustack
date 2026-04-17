@@ -125,6 +125,7 @@ class ServeManager:
 
         # Instance-level port tracking to avoid conflicts
         self._assigned_ports: Dict[int, Set[int]] = {}
+        self._restart_backoff_counts: Dict[int, int] = {}
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
@@ -308,12 +309,14 @@ class ServeManager:
                     )
                     if subordinate_state is None:
                         if model_instance.state == ModelInstanceStateEnum.RUNNING:
+                            self._restart_backoff_counts.pop(model_instance.id, None)
                             continue
                         if not is_ready(
                             backend, model_instance, health_check_path, model
                         ):
                             continue
 
+                        self._restart_backoff_counts.pop(model_instance.id, None)
                         patch_dict = {
                             "state": ModelInstanceStateEnum.RUNNING,
                             "state_message": "",
@@ -801,7 +804,7 @@ class ServeManager:
             mi: The model instance to restart.
         """
 
-        self._stop_model_instance(mi)
+        self._stop_model_instance(mi, clear_restart_backoff=False)
         self._start_model_instance(mi)
 
     def _update_model(self, id: int, **kwargs):
@@ -846,12 +849,15 @@ class ServeManager:
                 f"Model instance with ID {id} not found when trying to update."
             )
 
-    def _stop_model_instance(self, mi: ModelInstance):
+    def _stop_model_instance(
+        self, mi: ModelInstance, clear_restart_backoff: bool = True
+    ):
         """
         Stop model instance and clean up.
 
         Args:
             mi: The model instance to stop.
+            clear_restart_backoff: Whether to clear transient restart backoff state.
         """
 
         logger.debug(f"Stopping model instance {mi.name or mi.id}")
@@ -871,6 +877,8 @@ class ServeManager:
         self._error_model_instances.pop(mi.id, None)
         self._model_cache_by_instance.pop(mi.id, None)
         self._model_instance_by_instance_id.pop(mi.id, None)
+        if clear_restart_backoff:
+            self._restart_backoff_counts.pop(mi.id, None)
 
         logger.info(f"Stopped model instance {mi.name or mi.id}")
 
@@ -887,11 +895,12 @@ class ServeManager:
             return
 
         restart_count = mi.restart_count or 0
+        backoff_count = self._restart_backoff_counts.get(mi.id, 0)
         last_restart_time = mi.last_restart_time or mi.updated_at
 
         current_time = datetime.now(timezone.utc)
-        delay = min(10 * (2 ** (restart_count - 1)), 300)
-        if restart_count > 0 and last_restart_time:
+        delay = min(10 * (2 ** (backoff_count - 1)), 300) if backoff_count > 0 else 0
+        if backoff_count > 0 and last_restart_time:
             elapsed_time = (current_time - last_restart_time).total_seconds()
             if elapsed_time < delay:
                 logger.trace(
@@ -900,10 +909,12 @@ class ServeManager:
                 return
 
         logger.info(
-            f"Restarting model instance {mi.name} (attempt {restart_count + 1}) after {delay} seconds delay."
+            f"Restarting model instance {mi.name} "
+            f"(attempt {backoff_count + 1}) after {delay} seconds delay."
         )
 
         with contextlib.suppress(NotFoundException):
+            self._restart_backoff_counts[mi.id] = backoff_count + 1
             self._update_model_instance(
                 mi.id,
                 restart_count=restart_count + 1,

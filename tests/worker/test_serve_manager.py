@@ -1,5 +1,6 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from gpustack.schemas.models import (
     BackendEnum,
@@ -72,3 +73,51 @@ def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unre
             "10.0.0.2: Worker is unreachable from the server."
         ),
     )
+
+
+def test_restart_error_model_instance_uses_transient_backoff_count():
+    manager, _ = _build_serve_manager()
+    model_instance = new_model_instance(
+        1,
+        "restarted-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.ERROR,
+    )
+    model_instance.restart_count = 20
+    model_instance.last_restart_time = datetime.now(timezone.utc)
+
+    with (
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+        patch("gpustack.worker.serve_manager.logger"),
+    ):
+        manager._restart_error_model_instance(model_instance)
+
+    update_model_instance.assert_called_once_with(
+        model_instance.id,
+        restart_count=21,
+        last_restart_time=ANY,
+        state=ModelInstanceStateEnum.SCHEDULED,
+        state_message="",
+    )
+
+
+def test_restart_model_instance_preserves_transient_backoff_count():
+    manager, _ = _build_serve_manager()
+    model_instance = new_model_instance(
+        1,
+        "restarted-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.SCHEDULED,
+    )
+    manager._restart_backoff_counts[model_instance.id] = 1
+
+    with (
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_start_model_instance"),
+    ):
+        manager._restart_model_instance(model_instance)
+
+    assert manager._restart_backoff_counts[model_instance.id] == 1
