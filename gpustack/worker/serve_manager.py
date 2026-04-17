@@ -316,7 +316,6 @@ class ServeManager:
 
                         patch_dict = {
                             "state": ModelInstanceStateEnum.RUNNING,
-                            "restart_count": 0,  # Reset restart count on successful run.
                             "state_message": "",
                         }
 
@@ -879,9 +878,6 @@ class ServeManager:
         """
         Restart error model instance with exponential backoff,
         maximum delay 5 minutes.
-
-        When `sync_model_instances_state` catches once RUNNING,
-        the accumulated `restart_count` will be reset.
 
         Args:
             mi: The model instance to restart.
