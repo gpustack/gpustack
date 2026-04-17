@@ -67,6 +67,8 @@ class UsageOption(BaseModel):
 class UsageIdentityValue(BaseModel):
     cluster_name: Optional[str] = None
     model_name: Optional[str] = None
+    provider_name: Optional[str] = None
+    provider_type: Optional[str] = None
     user_name: Optional[str] = None
     api_key_name: Optional[str] = None
     access_key: Optional[str] = None
@@ -75,6 +77,7 @@ class UsageIdentityValue(BaseModel):
 
 class UsageIdentityCurrent(BaseModel):
     model_id: Optional[int] = None
+    provider_id: Optional[int] = None
     user_id: Optional[int] = None
     api_key_id: Optional[int] = None
 
@@ -250,6 +253,8 @@ class UsageBreakdownItem(BaseModel):
     deleted: bool
     cluster_name: Optional[str] = None
     model_name: Optional[str] = None
+    provider_name: Optional[str] = None
+    provider_type: Optional[str] = None
     user_name: Optional[str] = None
     api_key_name: Optional[str] = None
     input_tokens: int = 0

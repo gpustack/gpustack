@@ -47,8 +47,11 @@ from gpustack.schemas.usage import (
 )
 from gpustack.schemas.common import Pagination
 from gpustack.server.deps import CurrentUserDep, SessionDep
-from gpustack.utils.api_keys import get_masked_api_key_value
-from gpustack.utils.usage_snapshots import format_model_snapshot_label
+from gpustack.utils.usage_snapshots import (
+    format_usage_api_key_label,
+    format_usage_model_label,
+    format_usage_user_label,
+)
 
 router = APIRouter()
 
@@ -92,12 +95,28 @@ def _model_key_expression():
     )
 
 
-def _metric_columns() -> Dict[str, Any]:
-    model_identity = (
+def _model_identity_expression():
+    """Distinct identity for counting models called.
+
+    Include current IDs and snapshot fields so direct deployments, provider
+    models, and deleted historical records with the same model name remain
+    separate identities.
+    """
+    return (
         func.coalesce(cast(ModelUsage.model_id, String), literal("deleted"))
+        + literal("|")
+        + func.coalesce(cast(ModelUsage.provider_id, String), literal("no-provider"))
+        + literal("|")
+        + func.coalesce(ModelUsage.provider_name, literal(""))
+        + literal("|")
+        + func.coalesce(ModelUsage.provider_type, literal(""))
         + literal("|")
         + _model_key_expression()
     )
+
+
+def _metric_columns() -> Dict[str, Any]:
+    model_identity = _model_identity_expression()
     return {
         USAGE_METRIC_INPUT_TOKENS: func.coalesce(
             func.sum(ModelUsage.prompt_token_count), 0
@@ -120,10 +139,16 @@ def _group_columns(group_by: str):
             ModelUsage.cluster_name.label("group_cluster_name"),
             ModelUsage.model_name.label("group_model_name"),
             ModelUsage.model_id.label("group_model_id"),
+            ModelUsage.provider_name.label("group_provider_name"),
+            ModelUsage.provider_type.label("group_provider_type"),
+            ModelUsage.provider_id.label("group_provider_id"),
         ], [
             ModelUsage.cluster_name,
             ModelUsage.model_name,
             ModelUsage.model_id,
+            ModelUsage.provider_name,
+            ModelUsage.provider_type,
+            ModelUsage.provider_id,
         ]
     if group_by == USAGE_GROUP_BY_USER:
         return [
@@ -150,15 +175,19 @@ def _group_columns(group_by: str):
 def _row_identity(group_by: str, row: Any) -> UsageIdentity:
     if group_by == USAGE_GROUP_BY_MODEL:
         model_id = getattr(row, "group_model_id", None)
+        provider_id = getattr(row, "group_provider_id", None)
         current = None
-        if model_id is not None:
+        if model_id is not None or provider_id is not None:
             current = UsageIdentityCurrent(
                 model_id=model_id,
+                provider_id=provider_id,
             )
         return UsageIdentity(
             value=UsageIdentityValue(
                 cluster_name=getattr(row, "group_cluster_name", None),
                 model_name=getattr(row, "group_model_name", None),
+                provider_name=getattr(row, "group_provider_name", None),
+                provider_type=getattr(row, "group_provider_type", None),
             ),
             current=current,
         )
@@ -190,11 +219,14 @@ def _identity_key(identity: UsageIdentity) -> tuple:
     return (
         identity.value.cluster_name,
         identity.value.model_name,
+        identity.value.provider_name,
+        identity.value.provider_type,
         identity.value.user_name,
         identity.value.api_key_name,
         identity.value.access_key,
         identity.value.api_key_is_custom,
         None if identity.current is None else identity.current.model_id,
+        None if identity.current is None else identity.current.provider_id,
         None if identity.current is None else identity.current.user_id,
         None if identity.current is None else identity.current.api_key_id,
     )
@@ -207,26 +239,20 @@ def _identity_deleted(identity: UsageIdentity) -> bool:
 def _identity_label(group_by: str, identity: UsageIdentity) -> str:
     value = identity.value
     if group_by == USAGE_GROUP_BY_MODEL:
-        label = (
-            format_model_snapshot_label(value.model_name, value.cluster_name)
-            if value.model_name
-            else "Unknown Model"
+        label = format_usage_model_label(
+            model_name=value.model_name,
+            cluster_name=value.cluster_name,
+            provider_name=value.provider_name,
         )
     elif group_by == USAGE_GROUP_BY_USER:
-        label = value.user_name or "Unknown User"
+        label = format_usage_user_label(value.user_name)
     else:
-        parts = []
-        if value.user_name:
-            parts.append(value.user_name)
-        if value.api_key_name:
-            parts.append(value.api_key_name)
-        if value.access_key:
-            parts.append(
-                get_masked_api_key_value(value.access_key, value.api_key_is_custom)
-            )
-        else:
-            parts.append("Unknown API Key")
-        label = " / ".join(parts) if parts else "Unknown API Key"
+        label = format_usage_api_key_label(
+            user_name=value.user_name,
+            api_key_name=value.api_key_name,
+            access_key=value.access_key,
+            api_key_is_custom=value.api_key_is_custom,
+        )
 
     if _identity_deleted(identity):
         label = f"{label} (Deleted)"
@@ -242,12 +268,18 @@ def _filter_condition(group_by: str, item: UsageFilterItem):
             [
                 _null_safe_column_filter(ModelUsage.cluster_name, value.cluster_name),
                 _null_safe_column_filter(ModelUsage.model_name, value.model_name),
+                _null_safe_column_filter(ModelUsage.provider_name, value.provider_name),
+                _null_safe_column_filter(ModelUsage.provider_type, value.provider_type),
             ]
         )
         if current is None or current.model_id is None:
             conditions.append(ModelUsage.model_id.is_(None))
         else:
             conditions.append(ModelUsage.model_id == current.model_id)
+        if current is None or current.provider_id is None:
+            conditions.append(ModelUsage.provider_id.is_(None))
+        else:
+            conditions.append(ModelUsage.provider_id == current.provider_id)
     elif group_by == USAGE_GROUP_BY_USER:
         conditions.append(
             _null_safe_column_filter(ModelUsage.user_name, value.user_name)
@@ -546,6 +578,8 @@ def _build_breakdown_item(group_by: str, row: Any) -> UsageBreakdownItem:
     if group_by == USAGE_GROUP_BY_MODEL:
         item.cluster_name = identity.value.cluster_name
         item.model_name = identity.value.model_name
+        item.provider_name = identity.value.provider_name
+        item.provider_type = identity.value.provider_type
     elif group_by == USAGE_GROUP_BY_USER:
         item.user_name = identity.value.user_name or "Unknown User"
         item.models_called = int(getattr(row, USAGE_METRIC_MODELS_CALLED, 0) or 0)

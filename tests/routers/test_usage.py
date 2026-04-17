@@ -38,11 +38,25 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
                         group_cluster_name="cluster-a",
                         group_model_name="qwen3.5-9b",
                         group_model_id=7,
+                        group_provider_id=None,
+                        group_provider_name=None,
+                        group_provider_type=None,
+                    ),
+                    SimpleNamespace(
+                        group_cluster_name=None,
+                        group_model_name="gpt-4o",
+                        group_model_id=None,
+                        group_provider_id=9,
+                        group_provider_name="openai-prod",
+                        group_provider_type="openai",
                     ),
                     SimpleNamespace(
                         group_cluster_name="cluster-a",
                         group_model_name="qwen3.5-9b",
                         group_model_id=None,
+                        group_provider_id=None,
+                        group_provider_name=None,
+                        group_provider_type=None,
                     ),
                 ]
             ),
@@ -87,8 +101,13 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
     assert response.filters.models[0].label == "cluster-a / qwen3.5-9b"
     assert response.filters.models[0].deleted is False
     assert response.filters.models[0].identity.current.model_id == 7
-    assert response.filters.models[1].label == "cluster-a / qwen3.5-9b (Deleted)"
-    assert response.filters.models[1].identity.current is None
+    assert response.filters.models[1].label == "openai-prod / gpt-4o"
+    assert response.filters.models[1].deleted is False
+    assert response.filters.models[1].identity.current.provider_id == 9
+    assert response.filters.models[1].identity.value.provider_name == "openai-prod"
+    assert response.filters.models[1].identity.value.provider_type == "openai"
+    assert response.filters.models[2].label == "cluster-a / qwen3.5-9b (Deleted)"
+    assert response.filters.models[2].identity.current is None
     assert response.filters.users[1].label == "alice (Deleted)"
     assert response.filters.api_keys[0].label == "alice / test / gpustack_abcd***"
     assert response.filters.api_keys[0].identity.value.access_key == "abcd1234"

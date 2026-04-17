@@ -37,6 +37,8 @@ class ModelUsage(SQLModel, ActiveRecordMixin, table=True):
             Integer, ForeignKey("model_providers.id", ondelete="SET NULL")
         ),
     )
+    provider_name: Optional[str] = Field(default=None)
+    provider_type: Optional[str] = Field(default=None)
     cluster_name: Optional[str] = Field(default=None)
     api_key_id: Optional[int] = Field(
         default=None,

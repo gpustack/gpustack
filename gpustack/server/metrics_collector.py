@@ -47,6 +47,8 @@ class ModelUsageMetrics:
     user_id: Optional[int] = None
     model_id: Optional[int] = None
     provider_id: Optional[int] = None
+    provider_name: Optional[str] = None
+    provider_type: Optional[str] = None
     access_key: Optional[str] = None
     api_key_id: Optional[int] = None
     api_key_name: Optional[str] = None
@@ -164,6 +166,8 @@ async def create_or_update_model_usage(
             "model_id": metric.model_id,
             "user_id": metric.user_id,
             "provider_id": metric.provider_id,
+            "provider_name": metric.provider_name,
+            "provider_type": metric.provider_type,
             "model_name": metric.model_name,
             "access_key": metric.access_key,
             "date": metric.date,
@@ -352,12 +356,28 @@ class GatewayMetricsCollector:
                     user = user_by_id.get(metric.user_id)
                     api_key = api_key_by_access_key.get(metric.access_key)
                     model = model_by_id.get(metric.model_id)
+                    provider = provider_by_id.get(metric.provider_id)
                     if model is None:
                         snapshot = {
                             "model_id": metric.model_id,
                             "model_name": metric.model,
                             "cluster_name": None,
                         }
+                        if provider is not None:
+                            provider_type = getattr(
+                                getattr(provider, "config", None), "type", None
+                            )
+                            if provider_type is not None and hasattr(
+                                provider_type, "value"
+                            ):
+                                provider_type = provider_type.value
+                            snapshot.update(
+                                {
+                                    "provider_id": provider.id,
+                                    "provider_name": provider.name,
+                                    "provider_type": provider_type,
+                                }
+                            )
                         if user is not None:
                             snapshot.update(
                                 {
@@ -380,12 +400,15 @@ class GatewayMetricsCollector:
                             cluster_name=cluster_names_by_id.get(model.cluster_id),
                             user=user,
                             api_key=api_key,
+                            provider=provider,
                         )
                     snapshot.setdefault("user_id", metric.user_id)
+                    snapshot.setdefault("provider_id", metric.provider_id)
+                    snapshot.setdefault("provider_name", metric.provider_name)
+                    snapshot.setdefault("provider_type", metric.provider_type)
                     snapshot.setdefault("access_key", metric.access_key)
                     snapshot.setdefault("api_key_is_custom", None)
                     model_usage = ModelUsage(
-                        provider_id=metric.provider_id,
                         date=date.today(),
                         prompt_token_count=metric.input_token,
                         completion_token_count=metric.output_token,

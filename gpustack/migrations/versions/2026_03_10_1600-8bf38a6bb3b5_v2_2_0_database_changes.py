@@ -5,6 +5,7 @@ Revises: 8ad0f94c92e8
 Create Date: 2026-03-10 16:00:00.000000
 
 """
+import json
 from typing import Sequence, Union
 
 from alembic import op
@@ -93,6 +94,10 @@ def upgrade() -> None:
             batch_op.add_column(sa.Column("api_key_id", sa.Integer(), nullable=True))
         if not column_exists("model_usages", "api_key_name"):
             batch_op.add_column(sa.Column("api_key_name", sa.String(255), nullable=True))
+        if not column_exists("model_usages", "provider_name"):
+            batch_op.add_column(sa.Column("provider_name", sa.String(255), nullable=True))
+        if not column_exists("model_usages", "provider_type"):
+            batch_op.add_column(sa.Column("provider_type", sa.String(255), nullable=True))
         if not column_exists("model_usages", "api_key_is_custom"):
             batch_op.add_column(
                 sa.Column("api_key_is_custom", sa.Boolean(), nullable=True)
@@ -165,6 +170,37 @@ def upgrade() -> None:
             """
         )
     )
+    provider_rows = conn.execute(
+        sa.text("SELECT id, name, config FROM model_providers")
+    ).fetchall()
+    provider_snapshots = []
+    for provider_id, provider_name, config in provider_rows:
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except json.JSONDecodeError:
+                config = {}
+        provider_type = config.get("type") if isinstance(config, dict) else None
+        provider_snapshots.append(
+            {
+                "provider_id": provider_id,
+                "provider_name": provider_name,
+                "provider_type": provider_type,
+            }
+        )
+    if provider_snapshots:
+        conn.execute(
+            sa.text(
+                """
+                UPDATE model_usages
+                SET
+                    provider_name = :provider_name,
+                    provider_type = :provider_type
+                WHERE provider_id = :provider_id
+                """
+            ),
+            provider_snapshots,
+        )
     ### end
 
     
@@ -224,6 +260,8 @@ def downgrade() -> None:
             ondelete="CASCADE",
         )
         batch_op.drop_column("api_key_is_custom")
+        batch_op.drop_column("provider_type")
+        batch_op.drop_column("provider_name")
         batch_op.drop_column("api_key_name")
         batch_op.drop_column("api_key_id")
         batch_op.drop_column("user_name")
