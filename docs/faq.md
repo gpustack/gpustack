@@ -4,7 +4,7 @@
 
 ### Hybrid Cluster Support
 
-GPUStack supports heterogeneous clusters spanning NVIDIA, AMD, Ascend, Hygon, Moore Threads, Iluvatar, MetaX, and Cambricon GPUs, and works across both AMD64 and ARM64 architectures.
+GPUStack supports heterogeneous clusters spanning NVIDIA, AMD, Ascend NPUs, Hygon DCUs, Moore Threads, Iluvatar, MetaX, Cambricon and T-head PPUs, and works across both AMD64 and ARM64 architectures.
 
 ### Distributed Inference Support
 

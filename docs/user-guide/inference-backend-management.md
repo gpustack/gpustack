@@ -104,17 +104,32 @@ These are essentially custom backends with a "community" source label, allowing 
 1. On the Inference Backend page, locate the vLLM inference backend. From the card's top-right dropdown menu, choose "Edit".
 2. In the Version Configs section, click "Add Version".
 3. Fill in the fields as follows:
-   - Version: `0.16.0`
-   - Image Name: `vllm/vllm-openai:v0.16.0`
-   - Framework: `cuda`
-   - Override Image Entrypoint: `vllm serve`
-   - Execution Command: `{{model_path}} --host {{worker_ip}} --port {{port}} --served-model-name {{model_name}}`
+
+- Version: `0.19.0`
+- Image Name: `vllm/vllm-openai:v0.19.0`
+- Framework: `cuda`
+- Override Image Entrypoint: `vllm serve`
+- Execution Command: `{{model_path}} --host {{worker_ip}} --port {{port}} --served-model-name {{model_name}}`
 
 4. Click "Save" to submit.
 
 !!! note
 
-    vLLM has changed the entrypoint of its Docker image since v0.11.1. Therefore, when adding a custom version for vLLM v0.11.1 or later, you must specify the `Execution Command` field; otherwise, the model will fail to start. If you use newer versions of `gpustack/runner` images, you don't need to set the `Execution Command` field.
+    vLLM has changed the entrypoint of its Docker image since v0.11.1. Therefore, when adding a custom version for vLLM v0.11.1 or later, you must specify the `Override Image Entrypoint` and `Execution Command` field; otherwise, the model will fail to start. If you use newer versions of `gpustack/runner` images, you don't need to set the `Execution Command` field.
+
+### Example: Add a Custom Version to the Built-in SGLang Inference Backend
+
+1. On the Inference Backend page, locate the SGLang inference backend. From the card's top-right dropdown menu, choose "Edit".
+2. In the Version Configs section, click "Add Version".
+3. Fill in the fields as follows:
+
+- Version: `0.5.10`
+- Image Name: `lmsysorg/sglang:v0.5.10`
+- Framework: `cuda`
+- Override Image Entrypoint: `sglang serve`
+- Execution Command: `--model-path {{model_path}} --host {{worker_ip}} --port {{port}}`
+
+4. Click "Save" to submit.
 
 ## Delete Custom Inference Backend
 
