@@ -88,6 +88,16 @@ class MetricExporter(Collector):
             "Model instance status",
             labels=model_instance_labels + ["state"],
         )
+        model_instance_restart_count = GaugeMetricFamily(
+            metric_name("model_instance_restart_count"),
+            "Model instance restart count",
+            labels=model_instance_labels,
+        )
+        model_instance_latest_restart_time = GaugeMetricFamily(
+            metric_name("model_instance_latest_restart_time"),
+            "Model instance latest restart time as Unix timestamp seconds",
+            labels=model_instance_labels,
+        )
 
         metrics = [
             cluster_info,
@@ -98,6 +108,8 @@ class MetricExporter(Collector):
             model_desired_instances,
             model_running_instances,
             model_instance_status,
+            model_instance_restart_count,
+            model_instance_latest_restart_time,
         ]
 
         # cluster metrics
@@ -209,11 +221,22 @@ class MetricExporter(Collector):
                         str(model.id),
                         model.name,
                         mi.name,
-                        mi.state,
                     ]
                     model_instance_status.add_metric(
-                        mi_label_values,
+                        mi_label_values + [mi.state],
                         1,
+                    )
+                    model_instance_restart_count.add_metric(
+                        mi_label_values,
+                        mi.restart_count or 0,
+                    )
+                    model_instance_latest_restart_time.add_metric(
+                        mi_label_values,
+                        (
+                            mi.last_restart_time.timestamp()
+                            if mi.last_restart_time
+                            else 0
+                        ),
                     )
 
         # return all metrics
