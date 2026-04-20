@@ -28,6 +28,7 @@ from gpustack.utils.api_keys import get_masked_api_key_value
 router = APIRouter()
 
 SYSTEM_API_KEY_NAME_PREFIX = "system/"
+LEGACY_CLUSTER_TOKEN_NAME = "Legacy Cluster Token"
 
 
 def _api_key_to_public(
@@ -50,8 +51,11 @@ def _api_key_to_public(
     )
 
 
-def _is_system_api_key(api_key: ApiKey) -> bool:
-    return api_key.name.startswith(SYSTEM_API_KEY_NAME_PREFIX)
+def _is_hidden_api_key(api_key: ApiKey) -> bool:
+    return (
+        api_key.name.startswith(SYSTEM_API_KEY_NAME_PREFIX)
+        or api_key.name == LEGACY_CLUSTER_TOKEN_NAME
+    )
 
 
 @router.get("", response_model=ApiKeysPublic)
@@ -78,14 +82,17 @@ async def get_api_keys(
     if search:
         fuzzy_fields = {"name": search}
 
-    extra_conditions = [col(ApiKey.name).not_like(f"{SYSTEM_API_KEY_NAME_PREFIX}%")]
+    extra_conditions = [
+        col(ApiKey.name).not_like(f"{SYSTEM_API_KEY_NAME_PREFIX}%"),
+        col(ApiKey.name) != LEGACY_CLUSTER_TOKEN_NAME,
+    ]
 
     if params.watch:
         return StreamingResponse(
             ApiKey.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=lambda api_key: not _is_system_api_key(api_key),
+                filter_func=lambda api_key: not _is_hidden_api_key(api_key),
                 options=[selectinload(ApiKey.user)],
             ),
             media_type="text/event-stream",
