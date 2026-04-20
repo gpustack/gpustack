@@ -1,10 +1,10 @@
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from math import ceil
 from typing import Any, Dict, List
 
 from fastapi import APIRouter
-from sqlalchemy import Select, String, and_, asc, cast, desc, literal
+from sqlalchemy import Date, Select, String, and_, asc, cast, desc, literal
 from sqlmodel import func, or_, select
 
 from gpustack.api.exceptions import ForbiddenException
@@ -15,11 +15,13 @@ from gpustack.schemas.usage import (
     USAGE_GRANULARITY_DAY,
     USAGE_GRANULARITY_WEEK,
     USAGE_GROUP_BY_API_KEY,
+    USAGE_GROUP_BY_DATE,
     USAGE_GROUP_BY_MODEL,
     USAGE_GROUP_BY_USER,
     USAGE_METRIC_API_KEYS_USED,
     USAGE_METRIC_API_REQUESTS,
     USAGE_METRIC_AVG_TOKENS_PER_REQUEST,
+    USAGE_METRIC_DATE,
     USAGE_METRIC_INPUT_TOKENS,
     USAGE_METRIC_LAST_ACTIVE,
     USAGE_METRIC_MODELS_CALLED,
@@ -28,6 +30,8 @@ from gpustack.schemas.usage import (
     USAGE_SCOPE_ALL,
     USAGE_SCOPE_SELF,
     USAGE_SORT_DESC,
+    UsageBreakdownDateDimension,
+    UsageBreakdownDimension,
     UsageBreakdownItem,
     UsageBreakdownRequest,
     UsageBreakdownResponse,
@@ -67,10 +71,12 @@ GRANULARITY_OPTIONS = [
     UsageOption(key=USAGE_GRANULARITY_MONTH, label="Month"),
 ]
 SELF_GROUP_BY_OPTIONS = [
+    UsageOption(key=USAGE_GROUP_BY_DATE, label="Date", scope=["breakdown"]),
     UsageOption(key=USAGE_GROUP_BY_MODEL, label="Model"),
     UsageOption(key=USAGE_GROUP_BY_API_KEY, label="API Key"),
 ]
 ADMIN_GROUP_BY_OPTIONS = [
+    UsageOption(key=USAGE_GROUP_BY_DATE, label="Date", scope=["breakdown"]),
     UsageOption(key=USAGE_GROUP_BY_MODEL, label="Model"),
     UsageOption(key=USAGE_GROUP_BY_USER, label="User"),
     UsageOption(key=USAGE_GROUP_BY_API_KEY, label="API Key"),
@@ -133,7 +139,32 @@ def _metric_columns() -> Dict[str, Any]:
     }
 
 
-def _group_columns(group_by: str):
+def _date_bucket_expression(session, granularity: str):
+    if granularity == USAGE_GRANULARITY_DAY:
+        return ModelUsage.date
+
+    dialect = session.get_bind().dialect.name
+    if granularity == USAGE_GRANULARITY_WEEK:
+        if dialect == "postgresql":
+            return cast(func.date_trunc("week", ModelUsage.date), Date)
+        if dialect == "mysql":
+            return func.subdate(ModelUsage.date, func.weekday(ModelUsage.date))
+    if granularity == USAGE_GRANULARITY_MONTH:
+        if dialect == "postgresql":
+            return cast(func.date_trunc("month", ModelUsage.date), Date)
+        if dialect == "mysql":
+            return func.str_to_date(
+                func.date_format(ModelUsage.date, "%Y-%m-01"), "%Y-%m-%d"
+            )
+
+    return ModelUsage.date
+
+
+def _group_columns(group_by: str, *, date_bucket_expr=None):
+    if group_by == USAGE_GROUP_BY_DATE:
+        if date_bucket_expr is None:
+            date_bucket_expr = ModelUsage.date
+        return [date_bucket_expr.label("group_date")], [date_bucket_expr]
     if group_by == USAGE_GROUP_BY_MODEL:
         return [
             ModelUsage.cluster_name.label("group_cluster_name"),
@@ -170,6 +201,30 @@ def _group_columns(group_by: str):
         ModelUsage.user_id,
         ModelUsage.api_key_id,
     ]
+
+
+def _combined_group_columns(group_bys: List[str], *, date_bucket_expr=None):
+    select_columns = []
+    select_column_keys = set()
+    group_columns = []
+    group_column_keys = set()
+    for group_by in group_bys:
+        current_select_columns, current_group_columns = _group_columns(
+            group_by, date_bucket_expr=date_bucket_expr
+        )
+        for column in current_select_columns:
+            key = getattr(column, "key", None) or str(column)
+            if key in select_column_keys:
+                continue
+            select_column_keys.add(key)
+            select_columns.append(column)
+        for column in current_group_columns:
+            key = str(column)
+            if key in group_column_keys:
+                continue
+            group_column_keys.add(key)
+            group_columns.append(column)
+    return select_columns, group_columns
 
 
 def _row_identity(group_by: str, row: Any) -> UsageIdentity:
@@ -212,6 +267,38 @@ def _row_identity(group_by: str, row: Any) -> UsageIdentity:
             api_key_is_custom=getattr(row, "group_api_key_is_custom", None),
         ),
         current=current,
+    )
+
+
+def _row_date_dimension(row: Any, granularity: str) -> UsageBreakdownDateDimension:
+    value = _coerce_date(row.group_date)
+    return UsageBreakdownDateDimension(value=value, label=value.isoformat())
+
+
+def _coerce_date(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value[:10])
+    return value
+
+
+def _row_dimension(group_by: str, row: Any) -> UsageBreakdownDimension:
+    if group_by == USAGE_GROUP_BY_API_KEY and not getattr(
+        row, "group_api_key_name", None
+    ):
+        return UsageBreakdownDimension(
+            identity=None,
+            label="No API Key",
+            deleted=False,
+        )
+    identity = _row_identity(group_by, row)
+    return UsageBreakdownDimension(
+        identity=identity,
+        label=_identity_label(group_by, identity),
+        deleted=_identity_deleted(identity),
     )
 
 
@@ -415,7 +502,7 @@ async def _get_filter_options(
     ]
 
 
-@router.get("/meta", response_model=UsageMetaResponse)
+@router.get("/meta", response_model=UsageMetaResponse, response_model_exclude_none=True)
 async def get_usage_meta(session: SessionDep, user: CurrentUserDep):
     base_statement = _base_statement()
     if not user.is_admin:
@@ -449,7 +536,9 @@ async def get_usage_meta(session: SessionDep, user: CurrentUserDep):
 def _check_permission(user: User, request) -> None:
     if request.scope == USAGE_SCOPE_ALL and not user.is_admin:
         raise ForbiddenException(message="No permission to access all users usage")
-    if request.group_by == USAGE_GROUP_BY_USER and not user.is_admin:
+    group_by = request.group_by
+    group_bys = group_by if isinstance(group_by, list) else [group_by]
+    if USAGE_GROUP_BY_USER in group_bys and not user.is_admin:
         raise ForbiddenException(message="No permission to group by user")
     if request.filters.users and not user.is_admin:
         raise ForbiddenException(message="No permission to filter by user")
@@ -480,6 +569,38 @@ async def get_usage_timeseries(
     summary_row = await _get_first_row(
         session, scoped_statement.with_only_columns(*summary_columns)
     )
+
+    if request.group_by is None:
+        timeline_rows = await _get_rows(
+            session,
+            scoped_statement.with_only_columns(
+                ModelUsage.date.label("date"),
+                metric_columns[request.metric].label("value"),
+            )
+            .group_by(ModelUsage.date)
+            .order_by(ModelUsage.date),
+        )
+        timeline: Dict[date, int] = defaultdict(int)
+        for row in timeline_rows:
+            point_date = _bucket_date(row.date, request.granularity)
+            timeline[point_date] += int(getattr(row, "value", 0) or 0)
+        return UsageTimeSeriesResponse(
+            summary=_summary_from_row(summary_row),
+            metric=request.metric,
+            group_by=None,
+            granularity=request.granularity,
+            series=[
+                UsageSeries(
+                    identity=None,
+                    label="All Usage",
+                    deleted=False,
+                    timeline=[
+                        UsageTimelinePoint(date=item[0], value=item[1])
+                        for item in sorted(timeline.items())
+                    ],
+                )
+            ],
+        )
 
     select_columns, group_columns = _group_columns(request.group_by)
     timeline_rows = await _get_rows(
@@ -525,7 +646,9 @@ async def get_usage_timeseries(
     )
 
 
-def _sort_expression(sort_by: str, metric_columns: Dict[str, Any]):
+def _sort_expression(sort_by: str, metric_columns: Dict[str, Any], date_sort_expr=None):
+    if sort_by == USAGE_METRIC_DATE:
+        return date_sort_expr if date_sort_expr is not None else ModelUsage.date
     if sort_by == USAGE_METRIC_AVG_TOKENS_PER_REQUEST:
         return metric_columns[USAGE_METRIC_TOTAL_TOKENS] / func.nullif(
             metric_columns[USAGE_METRIC_API_REQUESTS], 0
@@ -539,13 +662,15 @@ def _sort_expression(sort_by: str, metric_columns: Dict[str, Any]):
     return metric_columns[USAGE_METRIC_TOTAL_TOKENS]
 
 
-def _order_expression(order_by: List[tuple[str, str]], metric_columns: Dict[str, Any]):
+def _order_expression(
+    order_by: List[tuple[str, str]], metric_columns: Dict[str, Any], date_sort_expr=None
+):
     if not order_by:
         order_by = [(USAGE_METRIC_TOTAL_TOKENS, USAGE_SORT_DESC)]
 
     sort_exprs = []
     for sort_by, direction in order_by:
-        sort_expr = _sort_expression(sort_by, metric_columns)
+        sort_expr = _sort_expression(sort_by, metric_columns, date_sort_expr)
         sort_exprs.append(
             desc(sort_expr) if direction == USAGE_SORT_DESC else asc(sort_expr)
         )
@@ -560,14 +685,22 @@ def _row_count_value(row: Any) -> int:
     return int(row or 0)
 
 
-def _build_breakdown_item(group_by: str, row: Any) -> UsageBreakdownItem:
-    identity = _row_identity(group_by, row)
+def _single_group_by(group_bys: List[str], group_by: str) -> bool:
+    return len(group_bys) == 1 and group_bys[0] == group_by
+
+
+def _breakdown_bucket_granularity(request: UsageBreakdownRequest) -> str:
+    if USAGE_GROUP_BY_DATE not in request.group_by:
+        return USAGE_GRANULARITY_DAY
+    return request.granularity or USAGE_GRANULARITY_DAY
+
+
+def _build_breakdown_item(
+    group_bys: List[str], row: Any, granularity: str
+) -> UsageBreakdownItem:
     api_requests = int(getattr(row, USAGE_METRIC_API_REQUESTS, 0) or 0)
     total_tokens = int(getattr(row, USAGE_METRIC_TOTAL_TOKENS, 0) or 0)
-    item = UsageBreakdownItem(
-        identity=identity,
-        label=_identity_label(group_by, identity),
-        deleted=_identity_deleted(identity),
+    breakdown_item = UsageBreakdownItem(
         input_tokens=int(getattr(row, USAGE_METRIC_INPUT_TOKENS, 0) or 0),
         output_tokens=int(getattr(row, USAGE_METRIC_OUTPUT_TOKENS, 0) or 0),
         total_tokens=total_tokens,
@@ -575,23 +708,34 @@ def _build_breakdown_item(group_by: str, row: Any) -> UsageBreakdownItem:
         avg_tokens_per_request=total_tokens / api_requests if api_requests else 0,
         last_active=getattr(row, USAGE_METRIC_LAST_ACTIVE, None),
     )
-    if group_by == USAGE_GROUP_BY_MODEL:
-        item.cluster_name = identity.value.cluster_name
-        item.model_name = identity.value.model_name
-        item.provider_name = identity.value.provider_name
-        item.provider_type = identity.value.provider_type
-    elif group_by == USAGE_GROUP_BY_USER:
-        item.user_name = identity.value.user_name or "Unknown User"
-        item.models_called = int(getattr(row, USAGE_METRIC_MODELS_CALLED, 0) or 0)
-        item.api_keys_used = int(getattr(row, USAGE_METRIC_API_KEYS_USED, 0) or 0)
-    else:
-        item.user_name = identity.value.user_name or "Unknown User"
-        item.api_key_name = identity.value.api_key_name
-        item.models_called = int(getattr(row, USAGE_METRIC_MODELS_CALLED, 0) or 0)
-    return item
+    if USAGE_GROUP_BY_DATE in group_bys:
+        breakdown_item.date = _row_date_dimension(row, granularity)
+    if USAGE_GROUP_BY_MODEL in group_bys:
+        breakdown_item.model = _row_dimension(USAGE_GROUP_BY_MODEL, row)
+    if USAGE_GROUP_BY_USER in group_bys:
+        breakdown_item.user = _row_dimension(USAGE_GROUP_BY_USER, row)
+    if USAGE_GROUP_BY_API_KEY in group_bys:
+        breakdown_item.api_key = _row_dimension(USAGE_GROUP_BY_API_KEY, row)
+
+    if _single_group_by(group_bys, USAGE_GROUP_BY_USER):
+        breakdown_item.models_called = int(
+            getattr(row, USAGE_METRIC_MODELS_CALLED, 0) or 0
+        )
+        breakdown_item.api_keys_used = int(
+            getattr(row, USAGE_METRIC_API_KEYS_USED, 0) or 0
+        )
+    elif _single_group_by(group_bys, USAGE_GROUP_BY_API_KEY):
+        breakdown_item.models_called = int(
+            getattr(row, USAGE_METRIC_MODELS_CALLED, 0) or 0
+        )
+    return breakdown_item
 
 
-@router.post("/breakdown", response_model=UsageBreakdownResponse)
+@router.post(
+    "/breakdown",
+    response_model=UsageBreakdownResponse,
+    response_model_exclude_none=True,
+)
 async def get_usage_breakdown(
     session: SessionDep,
     user: CurrentUserDep,
@@ -606,12 +750,16 @@ async def get_usage_breakdown(
         scope=request.scope,
         filters=request.filters,
     )
-    if request.group_by == USAGE_GROUP_BY_API_KEY:
+    if _single_group_by(request.group_by, USAGE_GROUP_BY_API_KEY):
         base_statement = _exclude_incomplete_api_key_identity(base_statement)
     scoped_statement = _date_scoped_statement(
         base_statement, request.start_date, request.end_date
     )
-    select_columns, group_columns = _group_columns(request.group_by)
+    granularity = _breakdown_bucket_granularity(request)
+    date_bucket_expr = _date_bucket_expression(session, granularity)
+    select_columns, group_columns = _combined_group_columns(
+        request.group_by, date_bucket_expr=date_bucket_expr
+    )
     aggregate_columns = [
         metric_columns[USAGE_METRIC_INPUT_TOKENS].label(USAGE_METRIC_INPUT_TOKENS),
         metric_columns[USAGE_METRIC_OUTPUT_TOKENS].label(USAGE_METRIC_OUTPUT_TOKENS),
@@ -626,9 +774,14 @@ async def get_usage_breakdown(
     grouped_statement = scoped_statement.with_only_columns(
         *select_columns, *aggregate_columns
     ).group_by(*group_columns)
-    count_statement = select(func.count()).select_from(grouped_statement.subquery())
 
-    sort_exprs = _order_expression(request.order_by, metric_columns)
+    count_statement = select(func.count()).select_from(grouped_statement.subquery())
+    date_sort_expr = (
+        date_bucket_expr
+        if USAGE_GROUP_BY_DATE in request.group_by
+        else func.max(ModelUsage.date)
+    )
+    sort_exprs = _order_expression(request.order_by, metric_columns, date_sort_expr)
     items_statement = (
         grouped_statement.order_by(*sort_exprs)
         .offset((request.page - 1) * request.perPage)
@@ -640,11 +793,15 @@ async def get_usage_breakdown(
 
     return UsageBreakdownResponse(
         group_by=request.group_by,
+        granularity=granularity if USAGE_GROUP_BY_DATE in request.group_by else None,
         pagination=Pagination(
             page=request.page,
             perPage=request.perPage,
             total=total,
             totalPage=ceil(total / request.perPage) if total else 0,
         ),
-        items=[_build_breakdown_item(request.group_by, row) for row in item_rows],
+        items=[
+            _build_breakdown_item(request.group_by, row, granularity)
+            for row in item_rows
+        ],
     )

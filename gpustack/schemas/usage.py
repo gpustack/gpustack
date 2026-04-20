@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date as Date
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, computed_field, field_validator
@@ -15,7 +15,9 @@ USAGE_METRIC_MODELS_CALLED = "models_called"
 USAGE_METRIC_API_KEYS_USED = "api_keys_used"
 USAGE_METRIC_AVG_TOKENS_PER_REQUEST = "avg_tokens_per_request"
 USAGE_METRIC_LAST_ACTIVE = "last_active"
+USAGE_METRIC_DATE = "date"
 
+USAGE_GROUP_BY_DATE = "date"
 USAGE_GROUP_BY_MODEL = "model"
 USAGE_GROUP_BY_USER = "user"
 USAGE_GROUP_BY_API_KEY = "api_key"
@@ -37,6 +39,12 @@ USAGE_METRICS = {
     USAGE_METRIC_API_REQUESTS,
 }
 USAGE_GROUP_BYS = {
+    USAGE_GROUP_BY_DATE,
+    USAGE_GROUP_BY_MODEL,
+    USAGE_GROUP_BY_USER,
+    USAGE_GROUP_BY_API_KEY,
+}
+USAGE_TIMESERIES_GROUP_BYS = {
     USAGE_GROUP_BY_MODEL,
     USAGE_GROUP_BY_USER,
     USAGE_GROUP_BY_API_KEY,
@@ -56,12 +64,14 @@ USAGE_SORTABLE_FIELDS = {
     USAGE_METRIC_MODELS_CALLED,
     USAGE_METRIC_API_KEYS_USED,
     USAGE_METRIC_LAST_ACTIVE,
+    USAGE_METRIC_DATE,
 }
 
 
 class UsageOption(BaseModel):
     key: str
     label: str
+    scope: Optional[List[str]] = None
 
 
 class UsageIdentityValue(BaseModel):
@@ -117,8 +127,8 @@ class UsageFilterRequest(BaseModel):
 
 
 class UsageBaseRequest(BaseModel):
-    start_date: date
-    end_date: date
+    start_date: Date
+    end_date: Date
     scope: str = USAGE_SCOPE_SELF
     filters: UsageFilterRequest = Field(default_factory=UsageFilterRequest)
 
@@ -131,7 +141,7 @@ class UsageBaseRequest(BaseModel):
 
     @field_validator("end_date")
     @classmethod
-    def validate_date_range(cls, value: date, info) -> date:
+    def validate_date_range(cls, value: Date, info) -> Date:
         start_date = info.data.get("start_date")
         if start_date and value < start_date:
             raise ValueError("end_date must be on or after start_date")
@@ -140,7 +150,7 @@ class UsageBaseRequest(BaseModel):
 
 class UsageTimeSeriesRequest(UsageBaseRequest):
     metric: str
-    group_by: str
+    group_by: Optional[str] = None
     granularity: str = USAGE_GRANULARITY_DAY
 
     @field_validator("metric")
@@ -152,8 +162,10 @@ class UsageTimeSeriesRequest(UsageBaseRequest):
 
     @field_validator("group_by")
     @classmethod
-    def validate_group_by(cls, value: str) -> str:
-        if value not in USAGE_GROUP_BYS:
+    def validate_group_by(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        if value not in USAGE_TIMESERIES_GROUP_BYS:
             raise ValueError(f"Unsupported group_by: {value}")
         return value
 
@@ -166,16 +178,29 @@ class UsageTimeSeriesRequest(UsageBaseRequest):
 
 
 class UsageBreakdownRequest(UsageBaseRequest):
-    group_by: str
+    group_by: List[str]
+    granularity: Optional[str] = None
     sort_by: Optional[str] = f"-{USAGE_METRIC_TOTAL_TOKENS}"
     page: int = 1
     perPage: int = 20
 
     @field_validator("group_by")
     @classmethod
-    def validate_group_by(cls, value: str) -> str:
-        if value not in USAGE_GROUP_BYS:
-            raise ValueError(f"Unsupported group_by: {value}")
+    def validate_group_by(cls, value: List[str]) -> List[str]:
+        if not value:
+            raise ValueError("group_by must not be empty")
+        unsupported = [item for item in value if item not in USAGE_GROUP_BYS]
+        if unsupported:
+            raise ValueError(f"Unsupported group_by: {', '.join(unsupported)}")
+        if len(value) != len(set(value)):
+            raise ValueError("group_by must not contain duplicate values")
+        return value
+
+    @field_validator("granularity")
+    @classmethod
+    def validate_granularity(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in USAGE_GRANULARITIES:
+            raise ValueError(f"Unsupported granularity: {value}")
         return value
 
     @field_validator("sort_by")
@@ -228,12 +253,12 @@ class UsageSummary(BaseModel):
 
 
 class UsageTimelinePoint(BaseModel):
-    date: date
+    date: Date
     value: int
 
 
 class UsageSeries(BaseModel):
-    identity: UsageIdentity
+    identity: Optional[UsageIdentity] = None
     label: str
     deleted: bool
     timeline: List[UsageTimelinePoint]
@@ -242,21 +267,28 @@ class UsageSeries(BaseModel):
 class UsageTimeSeriesResponse(BaseModel):
     summary: UsageSummary
     metric: str
-    group_by: str
+    group_by: Optional[str] = None
     granularity: str
     series: List[UsageSeries]
 
 
-class UsageBreakdownItem(BaseModel):
-    identity: UsageIdentity
+class UsageBreakdownDimension(BaseModel):
+    identity: Optional[UsageIdentity] = None
     label: str
     deleted: bool
-    cluster_name: Optional[str] = None
-    model_name: Optional[str] = None
-    provider_name: Optional[str] = None
-    provider_type: Optional[str] = None
-    user_name: Optional[str] = None
-    api_key_name: Optional[str] = None
+
+
+class UsageBreakdownDateDimension(BaseModel):
+    value: Date
+    label: str
+    deleted: bool = False
+
+
+class UsageBreakdownItem(BaseModel):
+    date: Optional[UsageBreakdownDateDimension] = None
+    model: Optional[UsageBreakdownDimension] = None
+    user: Optional[UsageBreakdownDimension] = None
+    api_key: Optional[UsageBreakdownDimension] = None
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
@@ -264,10 +296,11 @@ class UsageBreakdownItem(BaseModel):
     avg_tokens_per_request: float = 0
     models_called: Optional[int] = None
     api_keys_used: Optional[int] = None
-    last_active: Optional[date] = None
+    last_active: Optional[Date] = None
 
 
 class UsageBreakdownResponse(BaseModel):
-    group_by: str
+    group_by: List[str]
+    granularity: Optional[str] = None
     pagination: Pagination
     items: List[UsageBreakdownItem]

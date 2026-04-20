@@ -93,10 +93,12 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
     response = await get_usage_meta(session=session, user=user)
 
     assert [item.key for item in response.group_bys] == [
+        "date",
         "model",
         "user",
         "api_key",
     ]
+    assert response.group_bys[0].scope == ["breakdown"]
     assert [item.key for item in response.scopes] == ["all", "self"]
     assert response.filters.models[0].label == "cluster-a / qwen3.5-9b"
     assert response.filters.models[0].deleted is False
@@ -155,7 +157,7 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
 
     response = await get_usage_meta(session=session, user=user)
 
-    assert [item.key for item in response.group_bys] == ["model", "api_key"]
+    assert [item.key for item in response.group_bys] == ["date", "model", "api_key"]
     assert [item.key for item in response.scopes] == ["self"]
     assert response.filters.users == []
     assert response.filters.models[0].label == "cluster-a / qwen3.5-9b"
@@ -235,6 +237,52 @@ async def test_get_usage_timeseries_returns_weekly_identity_series():
 
 
 @pytest.mark.asyncio
+async def test_get_usage_timeseries_returns_overall_series_without_group_by():
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=500,
+                        output_tokens=200,
+                        total_tokens=700,
+                        api_requests=3,
+                        models_called=2,
+                    ),
+                ]
+            ),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(date=date(2026, 4, 1), value=100),
+                    SimpleNamespace(date=date(2026, 4, 2), value=200),
+                ]
+            ),
+        ]
+    )
+    user = User(id=1, username="admin", hashed_password="x", is_admin=True)
+    request = UsageTimeSeriesRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        scope="all",
+        metric="input_tokens",
+        group_by=None,
+        granularity="week",
+    )
+
+    response = await get_usage_timeseries(session=session, user=user, request=request)
+
+    assert response.group_by is None
+    assert len(response.series) == 1
+    assert response.series[0].identity is None
+    assert response.series[0].label == "All Usage"
+    assert response.series[0].deleted is False
+    assert [(point.date, point.value) for point in response.series[0].timeline] == [
+        (date(2026, 3, 30), 300),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_usage_breakdown_returns_paginated_model_items():
     session = MagicMock()
     session.exec = AsyncMock(
@@ -246,6 +294,9 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
                         group_cluster_name="cluster-a",
                         group_model_name="qwen3.5-9b",
                         group_model_id=7,
+                        group_provider_id=None,
+                        group_provider_name=None,
+                        group_provider_type=None,
                         input_tokens=300,
                         output_tokens=120,
                         total_tokens=420,
@@ -253,7 +304,22 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
                         models_called=1,
                         api_keys_used=2,
                         last_active=date(2026, 4, 2),
-                    )
+                    ),
+                    SimpleNamespace(
+                        group_cluster_name="cluster-b",
+                        group_model_name="deepseek-v3",
+                        group_model_id=8,
+                        group_provider_id=None,
+                        group_provider_name=None,
+                        group_provider_type=None,
+                        input_tokens=100,
+                        output_tokens=20,
+                        total_tokens=120,
+                        api_requests=1,
+                        models_called=1,
+                        api_keys_used=1,
+                        last_active=date(2026, 4, 1),
+                    ),
                 ]
             ),
         ]
@@ -263,7 +329,7 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
         scope="all",
-        group_by="model",
+        group_by=["model"],
         sort_by="-total_tokens",
         page=1,
         perPage=20,
@@ -271,20 +337,110 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
 
     response = await get_usage_breakdown(session=session, user=user, request=request)
 
-    assert response.group_by == "model"
+    assert response.group_by == ["model"]
     assert response.pagination.page == 1
     assert response.pagination.perPage == 20
     assert response.pagination.total == 2
     assert response.pagination.totalPage == 1
-    assert len(response.items) == 1
+    assert len(response.items) == 2
     item = response.items[0]
-    assert item.identity.value.model_name == "qwen3.5-9b"
-    assert item.identity.current.model_id == 7
-    assert item.label == "cluster-a / qwen3.5-9b"
-    assert item.cluster_name == "cluster-a"
-    assert item.model_name == "qwen3.5-9b"
+    assert item.model.identity.value.model_name == "qwen3.5-9b"
+    assert item.model.identity.current.model_id == 7
+    assert item.model.label == "cluster-a / qwen3.5-9b"
     assert item.avg_tokens_per_request == 140
     assert item.last_active == date(2026, 4, 2)
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_api_key():
+    session = MagicMock()
+    session.get_bind.return_value = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql")
+    )
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result([2]),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        group_date=date(2026, 3, 30),
+                        group_user_name="alice",
+                        group_user_id=12,
+                        group_api_key_name="test",
+                        group_access_key="abcd1234",
+                        group_api_key_is_custom=False,
+                        group_api_key_id=34,
+                        group_cluster_name="cluster-a",
+                        group_model_name="gpt-4o",
+                        group_model_id=7,
+                        group_provider_id=3,
+                        group_provider_name="openai-prod",
+                        group_provider_type="openai",
+                        input_tokens=300,
+                        output_tokens=120,
+                        total_tokens=420,
+                        api_requests=5,
+                        models_called=1,
+                        api_keys_used=1,
+                        last_active=date(2026, 4, 1),
+                    ),
+                    SimpleNamespace(
+                        group_date=date(2026, 3, 30),
+                        group_user_name="alice",
+                        group_user_id=12,
+                        group_api_key_name=None,
+                        group_access_key=None,
+                        group_api_key_is_custom=None,
+                        group_api_key_id=None,
+                        group_cluster_name="cluster-a",
+                        group_model_name="qwen3.5-9b",
+                        group_model_id=8,
+                        group_provider_id=None,
+                        group_provider_name=None,
+                        group_provider_type=None,
+                        input_tokens=100,
+                        output_tokens=40,
+                        total_tokens=140,
+                        api_requests=2,
+                        models_called=1,
+                        api_keys_used=0,
+                        last_active=date(2026, 4, 2),
+                    ),
+                ]
+            ),
+        ]
+    )
+    user = User(id=1, username="admin", hashed_password="x", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        scope="all",
+        group_by=["date", "user", "api_key", "model"],
+        granularity="week",
+        sort_by="date",
+        page=1,
+        perPage=20,
+    )
+
+    response = await get_usage_breakdown(session=session, user=user, request=request)
+
+    assert response.group_by == ["date", "user", "api_key", "model"]
+    assert response.granularity == "week"
+    assert response.pagination.total == 2
+    assert response.items[0].date.value == date(2026, 3, 30)
+    assert response.items[0].user.label == "alice"
+    assert response.items[0].api_key.label == "alice / test / gpustack_abcd***"
+    assert response.items[0].model.label == "cluster-a / openai-prod / gpt-4o"
+    assert response.items[1].date.value == date(2026, 3, 30)
+    assert response.items[1].api_key.identity is None
+    assert response.items[1].api_key.label == "No API Key"
+
+    count_sql = str(session.exec.call_args_list[0].args[0])
+    items_sql = str(session.exec.call_args_list[1].args[0])
+    assert "date_trunc" in count_sql
+    assert "LIMIT" in items_sql
+    assert "api_key_name IS NOT NULL" not in count_sql
+    assert "access_key IS NOT NULL" not in count_sql
 
 
 @pytest.mark.asyncio
@@ -301,7 +457,7 @@ async def test_get_usage_breakdown_ignores_incomplete_api_key_identity_groups():
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
         scope="all",
-        group_by="api_key",
+        group_by=["api_key"],
     )
 
     response = await get_usage_breakdown(session=session, user=user, request=request)
@@ -381,7 +537,7 @@ async def test_get_usage_breakdown_rejects_regular_user_user_group():
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
         scope="self",
-        group_by="user",
+        group_by=["user"],
     )
 
     with pytest.raises(ForbiddenException):
