@@ -76,7 +76,7 @@ async def server_auth(
         )
         raise credentials_exception if user is None else model_name_missing_exception
     pair = await ModelRouteService(session=session).get_model_auth_info_by_name(
-        name=model_name
+        model_name
     )
     if pair is None:
         raise credentials_exception if user is None else model_not_found_exception
