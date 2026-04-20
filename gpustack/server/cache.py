@@ -1,3 +1,4 @@
+import inspect
 import asyncio
 import logging
 import functools
@@ -19,10 +20,23 @@ _cache_locks: LRUCache[str, asyncio.Lock] = LRUCache(
 
 
 def build_cache_key(func: Callable, *args, **kwargs):
-    if kwargs is None:
-        kwargs = {}
-    ordered_kwargs = sorted(kwargs.items())
-    return func.__qualname__ + str(args) + str(ordered_kwargs)
+    sig = inspect.signature(func)
+    params = list(sig.parameters.values())
+    # locked_cached.decorator strips 'self' before calling here, but unbound
+    # functions still have 'self' in their signature. Strip it so keys match
+    # when delete_cache_by_key is called with a bound method (no self in sig).
+    if params and params[0].name in ("self", "cls") and not hasattr(func, "__self__"):
+        sig = sig.replace(parameters=params[1:])
+    try:
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        # bound.arguments follows declaration order, so kwargs ordering is stable.
+        return func.__qualname__ + str(tuple(bound.arguments.values()))
+    except TypeError:
+        # Fallback for callers that pass args not matching the function signature
+        # (e.g. build_cache_key used as a manual key-construction helper).
+        # Sort kwargs for a stable key regardless of call-site ordering.
+        return func.__qualname__ + str(args) + str(sorted(kwargs.items()))
 
 
 async def delete_cache_by_key(func=None, *args, **kwargs):
