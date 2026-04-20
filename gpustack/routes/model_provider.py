@@ -362,6 +362,16 @@ async def get_models_from_specific_provider(
     )
 
 
+def _get_model_output_token_dict(model_name: str) -> Dict[str, Any]:
+    name = model_name.lower().rsplit("/", 1)[-1]
+    max_token_key = (
+        "max_completion_tokens"
+        if name.startswith(("gpt-5", "o1", "o3", "o4"))
+        else "max_tokens"
+    )
+    return {max_token_key: 16}
+
+
 @router.post(
     "/test-model",
     response_model=TestProviderModelResult,
@@ -380,7 +390,7 @@ async def try_model_with_provider(
         raise InvalidException(
             message=f"provider type {input.config.type} does not support testing model accessibility"
         )
-    max_output_token_dict = {"max_tokens": 16}
+    max_output_token_dict = _get_model_output_token_dict(input.model_name)
     data = {
         "model": input.model_name,
         "messages": [{"role": "user", "content": "Ping"}],
