@@ -61,6 +61,8 @@ provider_id_prefix = "provider-"
 model_id_prefix = "model-"
 
 router_header_key = "X-GPUStack-Model-Instance"
+gpustack_original_path_header = "x-gpustack-original-path"
+gpustack_fallback_path_header = "x-gpustack-fallback-path"
 
 # Type alias for destination tuples
 # Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
@@ -1166,6 +1168,9 @@ async def ensure_fallback_filter(
         ingress_name=ingress_name,
         namespace=namespace,
         labels={**managed_labels},
+        extra_req_headers={
+            gpustack_fallback_path_header: f'%REQ({gpustack_original_path_header.upper()})%'
+        },
     )
     if existing_filter is None:
         await networking_istio_api.create_envoyfilter(

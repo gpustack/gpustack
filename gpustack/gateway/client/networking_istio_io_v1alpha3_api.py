@@ -223,18 +223,30 @@ class NetworkingIstioIoV1Alpha3Api:
 def get_4xx_5xx_fallback_value(
     ingress_name: str,
     fallback_header: str = "x-higress-fallback-from",
+    extra_req_headers: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    header = {
-        "append": False,
-        "header": {"key": fallback_header, "value": ingress_name},
-    }
+    response_headers = [
+        {
+            "append": False,
+            "header": {"key": fallback_header, "value": ingress_name},
+        }
+    ]
+    request_headers = response_headers.copy()
+    if extra_req_headers:
+        for key, value in extra_req_headers.items():
+            request_headers.append(
+                {
+                    "append": False,
+                    "header": {"key": key, "value": value},
+                }
+            )
 
     redirect_policy = {
         "keep_original_response_code": False,
         "max_internal_redirects": 10,
         "only_redirect_upstream_code": False,
-        "request_headers_to_add": [header],
-        "response_headers_to_add": [header],
+        "request_headers_to_add": request_headers,
+        "response_headers_to_add": response_headers,
         "use_original_request_body": True,
         "use_original_request_uri": True,
     }
@@ -293,7 +305,8 @@ def get_ingress_fallback_envoyfilter(
     ingress_name: str,
     namespace: str,
     fallback_header: str = "x-higress-fallback-from",
-    labels: Optional[Dict[str, str]] = {},
+    labels: Optional[Dict[str, str]] = None,
+    extra_req_headers: Optional[Dict[str, str]] = None,
 ) -> EnvoyFilter:
     object_match = EnvoyConfigObjectMatch(
         context=MatchContextEnum.GATEWAY,
@@ -309,7 +322,7 @@ def get_ingress_fallback_envoyfilter(
         metadata={
             "name": ingress_name,
             "namespace": namespace,
-            "labels": labels,
+            "labels": labels or {},
         },
         spec=EnvoyFilterSpec(
             configPatches=[
@@ -318,7 +331,9 @@ def get_ingress_fallback_envoyfilter(
                     match=object_match,
                     patch=Patch(
                         operation=OperationStringEnum.MERGE,
-                        value=get_4xx_5xx_fallback_value(ingress_name, fallback_header),
+                        value=get_4xx_5xx_fallback_value(
+                            ingress_name, fallback_header, extra_req_headers
+                        ),
                     ),
                 )
             ]

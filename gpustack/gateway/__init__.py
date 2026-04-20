@@ -40,6 +40,8 @@ from gpustack.gateway.utils import (
     get_default_mcpbridge_ref,
     ensure_wasm_plugin,
     router_header_key,
+    gpustack_original_path_header,
+    gpustack_fallback_path_header,
 )
 from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
@@ -499,7 +501,7 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                         newKey="x-higress-llm-model",
                     ),
                     HeaderRule(
-                        oldKey="x-gpustack-original-path",
+                        oldKey=gpustack_fallback_path_header,
                         newKey=":path",
                     ),
                 ),
@@ -522,7 +524,13 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     "map",
                     HeaderRule(
                         fromKey=':path',
-                        toKey='x-gpustack-original-path',
+                        toKey=gpustack_original_path_header,
+                    ),
+                ),
+                transform_header(
+                    "remove",
+                    HeaderRule(
+                        key=gpustack_fallback_path_header,
                     ),
                 ),
             ],
