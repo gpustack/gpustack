@@ -1825,9 +1825,20 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         if self._param_tensor_split:
             # use specified tensor split when the param is set.
             total_gpu = len(worker.status.gpu_devices) or len(self._selected_gpu_ids)
-            if total_gpu < len(self._param_tensor_split.split(",")):
+            n_split = len(self._param_tensor_split.split(","))
+            if total_gpu < n_split:
                 return None, False
-            gpu_combinations = self._generate_combinations_given_tensor_split()
+            # User-provided tensor-split values are proportional hints for llama.cpp,
+            # not byte sizes. Using them as VRAM causes the vram_sum check in
+            # _find_single_worker_multi_gpu_full_offloading_candidates_with_combinations
+            # to fail (e.g. sum([1,1,1]) << required VRAM). Use actual GPU VRAM instead.
+            sorted_gpus = sorted(
+                allocatable.vram.items(), key=lambda x: x[1], reverse=True
+            )
+            selected_gpus = sorted_gpus[:n_split]
+            gpu_combinations = [
+                tuple((gpu_idx, vram) for gpu_idx, vram in selected_gpus)
+            ]
             return gpu_combinations, False
 
         if self._selected_gpu_ids_by_worker.get(worker.name):
