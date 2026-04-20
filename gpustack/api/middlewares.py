@@ -204,7 +204,7 @@ async def record_model_usage(
         current_model_usage = await model_usage_service.get_by_fields(fields)
         if current_model_usage:
             await model_usage_service.update(
-                current_model_usage, completion_tokens, prompt_tokens
+                current_model_usage, completion_tokens, prompt_tokens, fields
             )
         else:
             await model_usage_service.create(model_usage)

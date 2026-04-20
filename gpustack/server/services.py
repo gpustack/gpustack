@@ -453,18 +453,13 @@ class ModelUsageService:
         model_usage: ModelUsage,
         completion_token_count: int,
         prompt_token_count: int,
+        fields: dict,
     ):
         model_usage.completion_token_count += completion_token_count
         model_usage.prompt_token_count += prompt_token_count
         model_usage.request_count += 1
 
-        key = build_cache_key(
-            self.get_by_fields,
-            model_usage.user_id,
-            model_usage.model_id,
-            model_usage.operation,
-            model_usage.date,
-        )
+        key = build_cache_key(self.get_by_fields, fields)
         await set_cache_by_key(key, model_usage)
         usage_flush_buffer[key] = model_usage
         return model_usage
