@@ -1,4 +1,5 @@
 import logging
+from datetime import timedelta
 from typing import Optional, Annotated
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi import APIRouter, Request, Response, Depends
@@ -24,6 +25,7 @@ from gpustack.api.auth import (
     gateway_token_auth,
     inference_scope,
 )
+from gpustack.security import JWTManager, AUTH_CACHE_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,24 @@ async def server_auth(
     request: Request,
     session: SessionDep,
 ):
+    jwt_manager: JWTManager = request.app.state.jwt_manager
+    cached = request.headers.get(AUTH_CACHE_HEADER)
+    request_model = request.headers.get("x-higress-llm-model")
+    if cached and request_model:
+        try:
+            data = jwt_manager.decode_jwt_data(cached)
+            if data.get("model") == request_model:
+                return Response(
+                    status_code=200,
+                    headers={
+                        "X-Mse-Consumer": data["consumer"],
+                        "Authorization": "Bearer " + data["token"],
+                        "cookie": "dummy=dummy",
+                    },
+                )
+        except Exception:
+            pass
+
     user: Optional[User] = None
     api_key: Optional[ApiKey] = None
     access_key: Optional[str] = None
@@ -108,27 +128,18 @@ async def server_auth(
             raise ForbiddenException(
                 message=f"Api key not allowed to access model {model_name}"
             )
-    headers = {
-        "X-Mse-Consumer": consumer,
-        "Authorization": f"Bearer {registration_token}",
-    }
-    # FIXME: The original info should be removed beforing routing.
-    # Remove this FIXME after we remove the original header in the gateway.
-    # Might need to customize the fallback plugin as this can't be achieved by
-    # the current fallback function.
-    auth_to_keep = request.headers.get("authorization")
-    if auth_to_keep is None and x_api_key is not None:
-        # bearer overrides api key in header, but we still want to keep the original api key for backward compatibility and some special use cases.
-        auth_to_keep = f'Bearer {x_api_key}'
-    if auth_to_keep is not None:
-        headers["x-gpustack-original-authorization"] = auth_to_keep
-    if cookie_token is not None:
-        headers["x-gpustack-original-cookies"] = request.headers.get("cookie", "")
-        # backup the cookie in higress
-        headers["cookie"] = "dummy=dummy"
+    cache_token = jwt_manager.create_token(
+        {"consumer": consumer, "token": registration_token, "model": model_name},
+        expires_delta=timedelta(minutes=5),
+    )
     return Response(
         status_code=200,
-        headers=headers,
+        headers={
+            "X-Mse-Consumer": consumer,
+            "Authorization": f"Bearer {registration_token}",
+            AUTH_CACHE_HEADER: cache_token,
+            "cookie": "dummy=dummy",
+        },
     )
 
 

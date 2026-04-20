@@ -39,10 +39,12 @@ from gpustack.gateway.utils import (
     mcp_ingress_equal,
     get_default_mcpbridge_ref,
     ensure_wasm_plugin,
+    router_header_key,
 )
 from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
 )
+from gpustack.security import AUTH_CACHE_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +309,7 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                 {"exact": "x-higress-llm-model"},
                 {"exact": "x-api-key"},
                 {"exact": "cookie"},
+                {"exact": AUTH_CACHE_HEADER},
             ],
             "headers_to_add": {
                 GATEWAY_AUTH_TOKEN_HEADER: cfg.get_derived_gateway_token(),
@@ -317,8 +320,7 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                 {"exact": "X-Mse-Consumer"},
                 {"exact": "Authorization"},
                 {"exact": "cookie"},
-                {"exact": "X-GPUStack-Original-Cookies"},
-                {"exact": "X-GPUStack-Original-Authorization"},
+                {"exact": AUTH_CACHE_HEADER},
             ]
         },
         "endpoint": {
@@ -418,7 +420,7 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     enabled_path_prefixes = ["/model/proxy"]
     expected_spec = WasmPluginSpec(
         defaultConfig={
-            'clusterNameHeader': 'X-GPUStack-Model',
+            'clusterNameHeader': router_header_key,
             'routeNameHeader': 'X-GPUStack-Route-Name',
             'enableOnPathSuffix': enabled_path_suffixes,
             'enableOnPathPrefix': enabled_path_prefixes,
@@ -486,6 +488,9 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     HeaderRule(
                         key=GATEWAY_AUTH_TOKEN_HEADER,
                     ),
+                    HeaderRule(
+                        key=router_header_key,
+                    ),
                 ),
                 transform_header(
                     "rename",
@@ -496,14 +501,6 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     HeaderRule(
                         oldKey="x-gpustack-original-path",
                         newKey=":path",
-                    ),
-                    HeaderRule(
-                        oldKey="x-gpustack-original-cookies",
-                        newKey="cookie",
-                    ),
-                    HeaderRule(
-                        oldKey="x-gpustack-original-authorization",
-                        newKey="authorization",
                     ),
                 ),
                 transform_header(
@@ -518,14 +515,6 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     ),
                     HeaderRule(
                         key=":path",
-                        strategy="RETAIN_LAST",
-                    ),
-                    HeaderRule(
-                        key="cookie",
-                        strategy="RETAIN_LAST",
-                    ),
-                    HeaderRule(
-                        key="authorization",
                         strategy="RETAIN_LAST",
                     ),
                 ),

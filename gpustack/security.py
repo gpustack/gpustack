@@ -89,6 +89,9 @@ def get_key_pair(key: str) -> Tuple[str, str]:
     return access_key, secret_key
 
 
+AUTH_CACHE_HEADER = "x-gpustack-auth-cache"
+
+
 class JWTManager:
     def __init__(
         self,
@@ -109,5 +112,13 @@ class JWTManager:
         encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
         return encoded_jwt
 
+    def create_token(self, payload: dict, expires_delta: Optional[timedelta] = None):
+        delta = expires_delta if expires_delta is not None else self.expires_delta
+        to_encode = {"data": payload, "exp": datetime.now(timezone.utc) + delta}
+        return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+
     def decode_jwt_token(self, token: str):
         return jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+
+    def decode_jwt_data(self, token: str) -> dict:
+        return self.decode_jwt_token(token)["data"]

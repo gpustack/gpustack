@@ -60,7 +60,7 @@ model_route_ingress_prefix = "ai-route-route-"
 provider_id_prefix = "provider-"
 model_id_prefix = "model-"
 
-router_header_key = "x-gpustack-model"
+router_header_key = "X-GPUStack-Model-Instance"
 
 # Type alias for destination tuples
 # Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
@@ -1360,7 +1360,7 @@ def ai_proxy_diff_spec(
 
 
 def get_instance_id_from_header(headers: Headers) -> int:
-    """Parse the model instance ID from the ``x-gpustack-model`` routing header.
+    """Parse the model instance ID from the ``x-gpustack-model-instance`` routing header.
 
     The header value follows the pattern ``model-<model_id>-<instance_id>.<suffix>``
     injected by the API gateway. The instance ID is the last numeric segment
@@ -1392,7 +1392,7 @@ async def resolve_instance_address_from_model_header(
 ) -> Tuple[Optional[str], int]:
     """Resolve the target worker (IP, port) for an inference request.
 
-    Parses the ``x-gpustack-model`` routing header injected by the API gateway
+    Parses the ``x-gpustack-model-instance`` routing header injected by the API gateway
     to extract the model instance ID, then queries the database for that
     instance's worker IP and inference port.
 

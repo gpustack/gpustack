@@ -104,7 +104,7 @@ def localhost_fallback() -> str:
 
 def get_model_instance_info_from_model_name(request: Request) -> int:
     """
-    Get model instance port and generic proxy support from model name in header "x-gpustack-model"
+    Get model instance port and generic proxy support from model name in header "x-gpustack-model-instance".
 
     Return the model instance port and support of generic proxy or not.
     """
