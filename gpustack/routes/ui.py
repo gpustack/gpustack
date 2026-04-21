@@ -2,7 +2,6 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from gpustack.config.config import Config
 
 
 def register(app: FastAPI):
@@ -20,18 +19,17 @@ def register(app: FastAPI):
     @app.get("/", include_in_schema=False)
     async def index(request: Request):
         """
-        Serve the main index.html with optional CAS login button injection.
+        Serve the main index.html with CAS login button support.
+        The frontend will dynamically check auth config to determine
+        if CAS authentication is enabled.
         """
-        config: Config = request.app.state.server_config
         index_path = os.path.join(ui_dir, "index.html")
 
-        # If CAS is enabled, inject custom CSS and JS for CAS login button
-        if config.cas_server_url:
-            with open(index_path, "r", encoding="utf-8") as f:
-                content = f.read()
+        with open(index_path, "r", encoding="utf-8") as f:
+            content = f.read()
 
-            # Inject custom CSS for CAS button styling
-            cas_css = """
+        # Inject CSS for CAS button styling (always inject, button shown based on API response)
+        cas_css = """
 <style>
 .gpustack-cas-login-btn {
     display: inline-flex;
@@ -77,19 +75,31 @@ def register(app: FastAPI):
 }
 </style>
 """
-            # Inject CSS before </head>
-            content = content.replace("</head>", cas_css + "</head>")
+        content = content.replace("</head>", cas_css + "</head>")
 
-            # Inject JS to add CAS login button to the login page
-            cas_js = """
+        # Inject JS that checks auth config API to determine if CAS is enabled
+        cas_js = """
 <script>
 (function() {
     'use strict';
 
+    let isCasEnabled = false;
+
+    // Fetch auth config to check if CAS is enabled
+    async function checkCasEnabled() {
+        try {
+            const response = await fetch('/auth/config');
+            const config = await response.json();
+            isCasEnabled = config.is_cas === true;
+        } catch (e) {
+            console.error('Failed to fetch auth config:', e);
+            isCasEnabled = false;
+        }
+    }
+
     // Check if current page is the login page
     function isLoginPage() {
         const hash = window.location.hash;
-        // Only show on login page or root
         return hash === '#/login' || hash === '' || hash === '#';
     }
 
@@ -101,9 +111,9 @@ def register(app: FastAPI):
         if (divider) divider.remove();
     }
 
-    // Add or remove CAS button based on current page
+    // Add CAS button to login page if CAS is enabled
     function updateCasButton() {
-        if (!isLoginPage()) {
+        if (!isLoginPage() || !isCasEnabled) {
             removeCasButton();
             return;
         }
@@ -135,7 +145,7 @@ def register(app: FastAPI):
             window.location.href = '/auth/cas/login';
         };
 
-        // Insert button after the login form or at appropriate position
+        // Insert button after the login form
         const submitBtn = loginForm.querySelector('button[type="submit"]') || loginForm.querySelector('button');
         if (submitBtn && submitBtn.parentNode) {
             submitBtn.parentNode.insertBefore(divider, submitBtn.nextSibling);
@@ -146,40 +156,43 @@ def register(app: FastAPI):
         }
     }
 
-    // Initial check
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', updateCasButton);
-    } else {
-        updateCasButton();
+    // Initialize
+    async function init() {
+        await checkCasEnabled();
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', updateCasButton);
+        } else {
+            updateCasButton();
+        }
+
+        // Retry for SPA frameworks
+        setTimeout(updateCasButton, 500);
+        setTimeout(updateCasButton, 1000);
+        setTimeout(updateCasButton, 2000);
     }
 
-    // Also try after a delay for SPA frameworks
-    setTimeout(updateCasButton, 500);
-    setTimeout(updateCasButton, 1000);
-    setTimeout(updateCasButton, 2000);
-
-    // Listen for hash changes (SPA navigation) and remove button when leaving login page
+    // Listen for hash changes (SPA navigation)
     window.addEventListener('hashchange', function() {
-        if (!isLoginPage()) {
+        if (!isLoginPage() || !isCasEnabled) {
             removeCasButton();
         } else {
             setTimeout(updateCasButton, 100);
         }
     });
 
-    // Use MutationObserver to detect SPA navigation and remove button
+    // Use MutationObserver to detect SPA navigation
     const observer = new MutationObserver(function() {
-        if (!isLoginPage()) {
+        if (!isLoginPage() || !isCasEnabled) {
             removeCasButton();
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
+
+    init();
 })();
 </script>
 """
-            # Inject JS before </body>
-            content = content.replace("</body>", cas_js + "</body>")
+        content = content.replace("</body>", cas_js + "</body>")
 
-            return HTMLResponse(content=content)
-
-        return FileResponse(index_path)
+        return HTMLResponse(content=content)
