@@ -10,7 +10,7 @@ from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.model_usage import ModelUsage
-from gpustack.schemas.models import Model
+from gpustack.schemas.models import Model, is_embedding_model, is_renaker_model
 from gpustack.schemas.users import User
 from gpustack.server.db import async_session
 from gpustack.utils.usage_snapshots import build_model_usage_snapshot
@@ -50,6 +50,20 @@ def _make_buffer_key(metric: ModelUsageMetrics) -> str:
             metric.access_key,
         ]
     )
+
+
+def _resolve_usage_tokens(
+    metric: ModelUsageMetrics, model: Optional[Model]
+) -> tuple[int, int]:
+    prompt_tokens = metric.input_token
+    completion_tokens = metric.output_token
+    if (
+        model is not None
+        and (is_renaker_model(model) or is_embedding_model(model))
+        and metric.total_token > (prompt_tokens + completion_tokens)
+    ):
+        return metric.total_token - completion_tokens, completion_tokens
+    return prompt_tokens, completion_tokens
 
 
 async def accumulate_gateway_metrics(metrics: List[ModelUsageMetrics]):
@@ -249,6 +263,7 @@ async def store_usage_metrics(metrics: List[ModelUsageMetrics]):
                         api_key=api_key,
                         provider=provider,
                     )
+                prompt_tokens, completion_tokens = _resolve_usage_tokens(metric, model)
                 snapshot.setdefault("user_id", metric.user_id)
                 snapshot.setdefault("provider_id", metric.provider_id)
                 snapshot.setdefault("provider_name", metric.provider_name)
@@ -257,8 +272,8 @@ async def store_usage_metrics(metrics: List[ModelUsageMetrics]):
                 snapshot.setdefault("api_key_is_custom", None)
                 model_usage = ModelUsage(
                     date=date.today(),
-                    prompt_token_count=metric.input_token,
-                    completion_token_count=metric.output_token,
+                    prompt_token_count=prompt_tokens,
+                    completion_token_count=completion_tokens,
                     request_count=metric.request_count,
                     **snapshot,
                 )

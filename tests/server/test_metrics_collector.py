@@ -5,6 +5,7 @@ import pytest
 from gpustack.server.metrics_collector import (
     ModelUsageMetrics,
     _make_buffer_key,
+    _resolve_usage_tokens,
     accumulate_gateway_metrics,
     gateway_metrics_buffer,
 )
@@ -96,3 +97,13 @@ def test_accumulate_total_token_summed():
     asyncio.run(accumulate_gateway_metrics([m2]))
     entry = list(gateway_metrics_buffer.values())[0]
     assert entry.total_token == 400
+
+
+def test_resolve_usage_tokens_falls_back_total_for_reranker_model():
+    metric = ModelUsageMetrics(model="bge-m3", total_token=77)
+    model = type("StubModel", (), {"categories": ["reranker"]})()
+
+    prompt_tokens, completion_tokens = _resolve_usage_tokens(metric, model)
+
+    assert prompt_tokens == 77
+    assert completion_tokens == 0
