@@ -32,7 +32,8 @@ from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
 from lxml import etree
 from gpustack.utils.convert import safe_b64decode, inflate_data
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
+from xml.etree import ElementTree as ET
 
 from gpustack.utils.network import (
     get_system_trust_store_ssl_context,
@@ -466,6 +467,210 @@ async def oidc_callback(request: Request, session: SessionDep):
     return response
 
 
+# CAS (Central Authentication Service) login and callback endpoints
+
+
+async def validate_cas_ticket(
+    client: httpx.AsyncClient,
+    ticket: str,
+    service: str,
+    config: Config,
+) -> Dict[str, str]:
+    """
+    Validate CAS service ticket and return user attributes.
+
+    Args:
+        client: HTTP client for making requests
+        ticket: CAS service ticket
+        service: The service URL (callback URL)
+        config: Application configuration
+
+    Returns:
+        Dictionary containing user attributes (username, full_name, avatar_url)
+    """
+    validate_endpoint = config.cas_validate_endpoint or "/serviceValidate"
+    cas_server_url = config.cas_server_url.rstrip('/')
+    validate_url = f"{cas_server_url}{validate_endpoint}?ticket={ticket}&service={quote(service)}"
+
+    logger.info(f"CAS validate URL: {validate_url}")
+    logger.info(f"CAS service URL: {service}")
+
+    try:
+        response = await client.get(validate_url)
+        logger.info(f"CAS validation response status: {response.status_code}")
+        logger.info(f"CAS validation response body: {response.text}")
+        response.raise_for_status()
+
+        # Parse CAS XML response
+        root = ET.fromstring(response.text)
+
+        # Find the authentication success element
+        ns = {'cas': 'http://www.yale.edu/tp/cas'}
+
+        # Try with namespace first, then without
+        success_elem = root.find('.//cas:authenticationSuccess', ns)
+        if success_elem is None:
+            success_elem = root.find('.//authenticationSuccess')
+
+        if success_elem is None:
+            # Check for failure
+            failure_elem = root.find('.//cas:authenticationFailure', ns)
+            if failure_elem is None:
+                failure_elem = root.find('.//authenticationFailure')
+            if failure_elem is not None:
+                code = failure_elem.get('code', 'UNKNOWN')
+                message = failure_elem.text or 'Authentication failed'
+                raise UnauthorizedException(message=f"CAS authentication failed: {code} - {message}")
+            raise UnauthorizedException(message="CAS authentication failed: invalid response")
+
+        # Extract user attributes
+        user_data = {}
+
+        # Get username (cas:user element)
+        user_elem = success_elem.find('cas:user', ns)
+        if user_elem is None:
+            user_elem = success_elem.find('user')
+        if user_elem is not None and user_elem.text:
+            user_data['username'] = user_elem.text.strip()
+
+        # Get attributes if present
+        attributes_elem = success_elem.find('cas:attributes', ns)
+        if attributes_elem is None:
+            attributes_elem = success_elem.find('attributes')
+
+        if attributes_elem is not None:
+            for child in attributes_elem:
+                # Remove namespace prefix if present
+                tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                if child.text:
+                    user_data[tag_name] = child.text.strip()
+
+        if not user_data.get('username'):
+            raise UnauthorizedException(message="No username found in CAS response")
+
+        return user_data
+
+    except httpx.HTTPStatusError as e:
+        raise UnauthorizedException(message=f"CAS validation failed: {e.response.status_code}")
+    except ET.ParseError as e:
+        raise UnauthorizedException(message=f"Failed to parse CAS response: {str(e)}")
+    except Exception as e:
+        if isinstance(e, UnauthorizedException):
+            raise
+        raise UnauthorizedException(message=f"CAS validation error: {str(e)}")
+
+
+@router.get("/cas/login")
+async def cas_login(request: Request):
+    """
+    Redirect user to CAS server for authentication.
+    """
+    config: Config = request.app.state.server_config
+    service = config.cas_callback_url or str(request.url_for('cas_callback'))
+
+    cas_server_url = config.cas_server_url.rstrip('/')
+    login_url = f"{cas_server_url}/login?service={quote(service)}"
+
+    return RedirectResponse(url=login_url)
+
+
+@router.get("/cas/callback")
+async def cas_callback(request: Request, session: SessionDep):
+    """
+    Handle CAS callback after successful authentication.
+    """
+    logger.debug("Invoke CAS callback.")
+    config: Config = request.app.state.server_config
+
+    ticket = request.query_params.get('ticket')
+    if not ticket:
+        raise BadRequestException(message="Missing CAS ticket parameter")
+
+    service = config.cas_callback_url or str(request.url_for('cas_callback'))
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        # Validate ticket and get user data
+        cas_user_data = await validate_cas_ticket(client, ticket, service, config)
+        logger.info(f"CAS user data: {cas_user_data}")
+        logger.info(f"Config username attribute: {config.cas_username_attribute}")
+        logger.info(f"Config full_name attribute: {config.cas_full_name_attribute}")
+
+        # Map CAS attributes to GPUStack user fields
+        if config.cas_username_attribute:
+            username = cas_user_data.get(config.cas_username_attribute)
+        else:
+            username = cas_user_data.get('username')
+
+        logger.info(f"Extracted username: {username}")
+
+        if not username:
+            raise UnauthorizedException(message="Failed to get username from CAS")
+
+        # Get full name
+        full_name = ""
+        if config.cas_full_name_attribute:
+            full_name = cas_user_data.get(config.cas_full_name_attribute, "")
+        elif 'displayName' in cas_user_data:
+            full_name = cas_user_data.get('displayName', "")
+        elif 'first_name' in cas_user_data:
+            full_name = cas_user_data.get('first_name', "")
+        elif 'name' in cas_user_data:
+            full_name = cas_user_data.get('name', "")
+
+        logger.info(f"Extracted full_name: {full_name}")
+
+        # Get avatar URL
+        avatar_url = None
+        if config.cas_avatar_attribute:
+            avatar_url = cas_user_data.get(config.cas_avatar_attribute)
+        elif 'avatar' in cas_user_data:
+            avatar_url = cas_user_data.get('avatar')
+
+    # Check if user already exists
+    user = await User.first_by_field(session=session, field="username", value=username)
+    logger.info(f"User exists: {user is not None}")
+
+    # Create user if not exists
+    if not user:
+        user_info = User(
+            username=username,
+            full_name=full_name,
+            avatar_url=avatar_url,
+            hashed_password="",
+            is_admin=False,
+            is_active=not config.external_auth_default_inactive,
+            source=AuthProviderEnum.CAS,
+            require_password_change=False,
+        )
+        await User.create(session, user_info)
+        logger.info(f"Created new CAS user: {username}")
+
+    # Generate JWT token
+    jwt_manager: JWTManager = request.app.state.jwt_manager
+    access_token = jwt_manager.create_jwt_token(username=username)
+    logger.info(f"Generated JWT token for user: {username}")
+
+    # Set cookies and redirect
+    response = RedirectResponse(url='/')
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=access_token,
+        httponly=True,
+        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    response.set_cookie(
+        key=SSO_LOGIN_COOKIE_NAME,
+        value="true",
+        httponly=True,
+        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+    logger.info(f"CAS login successful for user: {username}")
+    return response
+
+
 # Local authentication endpoints
 
 
@@ -561,9 +766,13 @@ async def get_auth_config(request: Request):
 
     auth_type = (config.external_auth_type or "Local").lower()
     if auth_type == "oidc":
-        req_dict = {"is_oidc": True, "is_saml": False}
+        req_dict = {"is_oidc": True, "is_saml": False, "is_cas": False}
     elif auth_type == "saml":
-        req_dict = {"is_oidc": False, "is_saml": True}
+        req_dict = {"is_oidc": False, "is_saml": True, "is_cas": False}
+    elif auth_type == "cas":
+        req_dict = {"is_oidc": False, "is_saml": False, "is_cas": True}
+    else:
+        req_dict = {"is_oidc": False, "is_saml": False, "is_cas": False}
 
     initial_password_file = Path(config.data_dir) / "initial_admin_password"
     if initial_password_file.exists():

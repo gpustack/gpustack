@@ -177,6 +177,14 @@ class Config(WorkerConfig, BaseSettings):
         None  # Deprecated, use oidc_skip_userinfo instead
     )
     openid_configuration: Optional[dict] = None  # fetched openid configuration
+    # CAS (Central Authentication Service) settings
+    cas_server_url: Optional[str] = None  # CAS server base URL, e.g., https://cas.example.com/cas
+    cas_callback_url: Optional[str] = None  # CAS callback URL
+    cas_validate_endpoint: Optional[str] = "/serviceValidate"  # CAS validation endpoint
+    cas_username_attribute: Optional[str] = None  # CAS attribute for username
+    cas_full_name_attribute: Optional[str] = None  # CAS attribute for full name
+    cas_avatar_attribute: Optional[str] = None  # CAS attribute for avatar URL
+    # SAML settings
     saml_sp_entity_id: Optional[str] = None  # saml sp_entity_id
     saml_sp_acs_url: Optional[str] = None  # saml sp_acs_url
     saml_sp_x509_cert: Optional[str] = ''  # saml sp_x509_cert
@@ -618,6 +626,8 @@ class Config(WorkerConfig, BaseSettings):
         if self.oidc_issuer:
             self.external_auth_type = AuthProviderEnum.OIDC
             self.openid_configuration = get_openid_configuration(self.oidc_issuer)
+        elif self.cas_server_url:
+            self.external_auth_type = AuthProviderEnum.CAS
         elif self.saml_idp_server_url:
             self.external_auth_type = AuthProviderEnum.SAML
 
