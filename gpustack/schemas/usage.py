@@ -22,9 +22,6 @@ USAGE_GROUP_BY_MODEL = "model"
 USAGE_GROUP_BY_USER = "user"
 USAGE_GROUP_BY_API_KEY = "api_key"
 
-USAGE_SCOPE_ALL = "all"
-USAGE_SCOPE_SELF = "self"
-
 USAGE_GRANULARITY_DAY = "day"
 USAGE_GRANULARITY_WEEK = "week"
 USAGE_GRANULARITY_MONTH = "month"
@@ -49,7 +46,6 @@ USAGE_TIMESERIES_GROUP_BYS = {
     USAGE_GROUP_BY_USER,
     USAGE_GROUP_BY_API_KEY,
 }
-USAGE_SCOPES = {USAGE_SCOPE_ALL, USAGE_SCOPE_SELF}
 USAGE_GRANULARITIES = {
     USAGE_GRANULARITY_DAY,
     USAGE_GRANULARITY_WEEK,
@@ -113,7 +109,6 @@ class UsageFilters(BaseModel):
 
 
 class UsageMetaResponse(BaseModel):
-    scopes: List[UsageOption] = Field(default_factory=list)
     metrics: List[UsageOption]
     granularities: List[UsageOption]
     group_bys: List[UsageOption]
@@ -129,15 +124,7 @@ class UsageFilterRequest(BaseModel):
 class UsageBaseRequest(BaseModel):
     start_date: Date
     end_date: Date
-    scope: str = USAGE_SCOPE_SELF
     filters: UsageFilterRequest = Field(default_factory=UsageFilterRequest)
-
-    @field_validator("scope")
-    @classmethod
-    def validate_scope(cls, value: str) -> str:
-        if value not in USAGE_SCOPES:
-            raise ValueError(f"Unsupported scope: {value}")
-        return value
 
     @field_validator("end_date")
     @classmethod

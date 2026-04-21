@@ -99,7 +99,6 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
         "api_key",
     ]
     assert response.group_bys[0].scope == ["breakdown"]
-    assert [item.key for item in response.scopes] == ["all", "self"]
     assert response.filters.models[0].label == "cluster-a / qwen3.5-9b"
     assert response.filters.models[0].deleted is False
     assert response.filters.models[0].identity.current.model_id == 7
@@ -158,7 +157,6 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
     response = await get_usage_meta(session=session, user=user)
 
     assert [item.key for item in response.group_bys] == ["date", "model", "api_key"]
-    assert [item.key for item in response.scopes] == ["self"]
     assert response.filters.users == []
     assert response.filters.models[0].label == "cluster-a / qwen3.5-9b"
 
@@ -207,7 +205,6 @@ async def test_get_usage_timeseries_returns_weekly_identity_series():
     request = UsageTimeSeriesRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        scope="all",
         metric="input_tokens",
         group_by="user",
         granularity="week",
@@ -264,7 +261,6 @@ async def test_get_usage_timeseries_returns_overall_series_without_group_by():
     request = UsageTimeSeriesRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        scope="all",
         metric="input_tokens",
         group_by=None,
         granularity="week",
@@ -328,7 +324,6 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        scope="all",
         group_by=["model"],
         sort_by="-total_tokens",
         page=1,
@@ -414,7 +409,6 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        scope="all",
         group_by=["date", "user", "api_key", "model"],
         granularity="week",
         sort_by="date",
@@ -456,7 +450,6 @@ async def test_get_usage_breakdown_ignores_incomplete_api_key_identity_groups():
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        scope="all",
         group_by=["api_key"],
     )
 
@@ -481,7 +474,6 @@ async def test_get_usage_timeseries_filters_deleted_api_key_by_value_and_current
     request = UsageTimeSeriesRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        scope="all",
         metric="input_tokens",
         group_by="api_key",
         filters=UsageFilterRequest(
@@ -514,19 +506,26 @@ async def test_get_usage_timeseries_filters_deleted_api_key_by_value_and_current
 
 
 @pytest.mark.asyncio
-async def test_get_usage_timeseries_rejects_non_admin_global_scope():
+async def test_get_usage_timeseries_defaults_regular_user_to_self_scope():
     session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result([SimpleNamespace()]),
+            _mock_exec_result([]),
+        ]
+    )
     user = User(id=2, username="alice", hashed_password="x", is_admin=False)
     request = UsageTimeSeriesRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        scope="all",
         metric="input_tokens",
         group_by="model",
     )
 
-    with pytest.raises(ForbiddenException):
-        await get_usage_timeseries(session=session, user=user, request=request)
+    await get_usage_timeseries(session=session, user=user, request=request)
+
+    executed_sql = str(session.exec.call_args_list[0].args[0])
+    assert "model_usages.user_id =" in executed_sql
 
 
 @pytest.mark.asyncio
@@ -536,7 +535,6 @@ async def test_get_usage_breakdown_rejects_regular_user_user_group():
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        scope="self",
         group_by=["user"],
     )
 

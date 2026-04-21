@@ -27,8 +27,6 @@ from gpustack.schemas.usage import (
     USAGE_METRIC_MODELS_CALLED,
     USAGE_METRIC_OUTPUT_TOKENS,
     USAGE_METRIC_TOTAL_TOKENS,
-    USAGE_SCOPE_ALL,
-    USAGE_SCOPE_SELF,
     USAGE_SORT_DESC,
     UsageBreakdownDateDimension,
     UsageBreakdownDimension,
@@ -81,11 +79,6 @@ ADMIN_GROUP_BY_OPTIONS = [
     UsageOption(key=USAGE_GROUP_BY_USER, label="User"),
     UsageOption(key=USAGE_GROUP_BY_API_KEY, label="API Key"),
 ]
-ADMIN_SCOPES = [
-    UsageOption(key=USAGE_SCOPE_ALL, label="All Users"),
-    UsageOption(key=USAGE_SCOPE_SELF, label="My Usage"),
-]
-SELF_SCOPES = [UsageOption(key=USAGE_SCOPE_SELF, label="My Usage")]
 
 
 def _null_safe_column_filter(column, value: Any):
@@ -401,10 +394,9 @@ def _apply_usage_scope_and_filters(
     statement: Select,
     *,
     user: User,
-    scope: str,
     filters,
 ) -> Select:
-    if not user.is_admin or scope == USAGE_SCOPE_SELF:
+    if not user.is_admin:
         statement = statement.where(ModelUsage.user_id == user.id)
 
     for group_by, items in [
@@ -519,7 +511,6 @@ async def get_usage_meta(session: SessionDep, user: CurrentUserDep):
     )
 
     return UsageMetaResponse(
-        scopes=ADMIN_SCOPES if user.is_admin else SELF_SCOPES,
         metrics=METRIC_OPTIONS,
         granularities=GRANULARITY_OPTIONS,
         group_bys=ADMIN_GROUP_BY_OPTIONS if user.is_admin else SELF_GROUP_BY_OPTIONS,
@@ -532,8 +523,6 @@ async def get_usage_meta(session: SessionDep, user: CurrentUserDep):
 
 
 def _check_permission(user: User, request) -> None:
-    if request.scope == USAGE_SCOPE_ALL and not user.is_admin:
-        raise ForbiddenException(message="No permission to access all users usage")
     group_by = request.group_by
     group_bys = group_by if isinstance(group_by, list) else [group_by]
     if USAGE_GROUP_BY_USER in group_bys and not user.is_admin:
@@ -554,7 +543,6 @@ async def get_usage_timeseries(
     base_statement = _apply_usage_scope_and_filters(
         _base_statement(),
         user=user,
-        scope=request.scope,
         filters=request.filters,
     )
     if request.group_by == USAGE_GROUP_BY_API_KEY:
@@ -745,7 +733,6 @@ async def get_usage_breakdown(
     base_statement = _apply_usage_scope_and_filters(
         _base_statement(),
         user=user,
-        scope=request.scope,
         filters=request.filters,
     )
     if _single_group_by(request.group_by, USAGE_GROUP_BY_API_KEY):
