@@ -291,7 +291,7 @@ def _row_dimension(group_by: str, row: Any) -> UsageBreakdownDimension:
     ):
         return UsageBreakdownDimension(
             identity=None,
-            label="No API Key",
+            label="-",
             deleted=False,
         )
     identity = _row_identity(group_by, row)
@@ -337,8 +337,6 @@ def _identity_label(group_by: str, identity: UsageIdentity) -> str:
         label = format_usage_api_key_label(
             user_name=value.user_name,
             api_key_name=value.api_key_name,
-            access_key=value.access_key,
-            api_key_is_custom=value.api_key_is_custom,
         )
 
     if _identity_deleted(identity):
@@ -592,7 +590,7 @@ async def get_usage_timeseries(
             series=[
                 UsageSeries(
                     identity=None,
-                    label="All Usage",
+                    label="All",
                     deleted=False,
                     timeline=[
                         UsageTimelinePoint(date=item[0], value=item[1])

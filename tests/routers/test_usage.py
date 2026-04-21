@@ -111,11 +111,11 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
     assert response.filters.models[2].label == "cluster-a / qwen3.5-9b (Deleted)"
     assert response.filters.models[2].identity.current is None
     assert response.filters.users[1].label == "alice (Deleted)"
-    assert response.filters.api_keys[0].label == "alice / test / gpustack_abcd***"
+    assert response.filters.api_keys[0].label == "alice / test"
     assert response.filters.api_keys[0].identity.value.access_key == "abcd1234"
     assert response.filters.api_keys[0].identity.value.api_key_is_custom is False
     assert response.filters.api_keys[0].identity.current.api_key_id == 34
-    assert response.filters.api_keys[1].label == "alice / custom / Custom API Key"
+    assert response.filters.api_keys[1].label == "alice / custom"
     assert response.filters.api_keys[1].identity.value.access_key == "hash1234"
     assert response.filters.api_keys[1].identity.value.api_key_is_custom is True
     assert [item.key for item in response.granularities] == ["day", "week", "month"]
@@ -275,7 +275,7 @@ async def test_get_usage_timeseries_returns_overall_series_without_group_by():
     assert response.group_by is None
     assert len(response.series) == 1
     assert response.series[0].identity is None
-    assert response.series[0].label == "All Usage"
+    assert response.series[0].label == "All"
     assert response.series[0].deleted is False
     assert [(point.date, point.value) for point in response.series[0].timeline] == [
         (date(2026, 3, 30), 300),
@@ -429,11 +429,11 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
     assert response.pagination.total == 2
     assert response.items[0].date.value == date(2026, 3, 30)
     assert response.items[0].user.label == "alice"
-    assert response.items[0].api_key.label == "alice / test / gpustack_abcd***"
+    assert response.items[0].api_key.label == "alice / test"
     assert response.items[0].model.label == "cluster-a / openai-prod / gpt-4o"
     assert response.items[1].date.value == date(2026, 3, 30)
     assert response.items[1].api_key.identity is None
-    assert response.items[1].api_key.label == "No API Key"
+    assert response.items[1].api_key.label == "-"
 
     count_sql = str(session.exec.call_args_list[0].args[0])
     items_sql = str(session.exec.call_args_list[1].args[0])

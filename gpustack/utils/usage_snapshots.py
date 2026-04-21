@@ -4,7 +4,6 @@ from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
-from gpustack.utils.api_keys import get_masked_api_key_value
 
 
 def format_model_snapshot_label(
@@ -48,19 +47,9 @@ def format_usage_user_label(user_name: Optional[str]) -> str:
 def format_usage_api_key_label(
     user_name: Optional[str] = None,
     api_key_name: Optional[str] = None,
-    access_key: Optional[str] = None,
-    api_key_is_custom: Optional[bool] = None,
 ) -> str:
-    parts = []
-    if user_name:
-        parts.append(user_name)
-    if api_key_name:
-        parts.append(api_key_name)
-    if access_key:
-        parts.append(get_masked_api_key_value(access_key, api_key_is_custom))
-    else:
-        parts.append("Unknown API Key")
-    return " / ".join(parts) if parts else "Unknown API Key"
+    parts = [p for p in [user_name, api_key_name] if p]
+    return " / ".join(parts) or "-"
 
 
 def build_model_usage_snapshot(
