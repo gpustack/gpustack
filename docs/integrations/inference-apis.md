@@ -135,15 +135,23 @@ Example output:
 
 For other API types, GPUStack allows you to enable the **Generic Proxy** feature when deploying a model.
 
-When the Generic Proxy is enabled, GPUStack determines which model to forward the request to by checking either:
+Once enabled, there are two ways to address the target model:
 
-- the `model` field in the JSON body, or
-- the `X-GPUStack-Model` header.
-
-Once enabled, you can forward API requests to the target model via the `/model/proxy` endpoint. For example:
+**Path-based form (recommended)** — encode the model route id directly in the URL as `/model/proxy/<model_route_id>/<upstream-path>`. No extra header is required:
 
 ```bash
 export GPUSTACK_API_KEY=your_api_key
+# Assume the model route id is 42.
+curl http://your_gpustack_server_url/model/proxy/42/embed \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GPUSTACK_API_KEY" \
+  -d '{"inputs": ["What is Deep Learning?", "Deep Learning is not..."]}'
+```
+
+**Header-based form (deprecated)** — send to `/model/proxy/<upstream-path>` and specify the target model via the `X-GPUStack-Model` header or the `model` field in the JSON body:
+
+```bash
 curl http://your_gpustack_server_url/model/proxy/embed \
   -X POST \
   -H "Content-Type: application/json" \
@@ -151,5 +159,7 @@ curl http://your_gpustack_server_url/model/proxy/embed \
   -H "X-GPUStack-Model: bge-m3" \
   -d '{"inputs": ["What is Deep Learning?", "Deep Learning is not..."]}'
 ```
+
+The header-based form is retained for backward compatibility and will be removed in a future release; new integrations should use the path-based form.
 
 For more details, see [Enable Generic Proxy](../user-guide/model-deployment-management.md#enable-generic-proxy).

@@ -4,7 +4,8 @@ import copy
 import math
 from urllib.parse import urlparse
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union, Dict, Any, Literal, Callable
+from functools import partial
+from typing import List, Optional, Tuple, Union, Dict, Any, Literal, Callable, Set
 from tenacity import retry, stop_after_attempt, wait_fixed
 from fastapi import HTTPException
 from starlette.datastructures import Headers
@@ -55,6 +56,7 @@ logger = logging.getLogger(__name__)
 default_mcp_bridge_name = "default"
 gpustack_ai_proxy_name = "gpustack-ai-proxy"
 gpustack_model_mapper_name = "gpustack-model-mapper"
+gpustack_generic_route_transformer_name = "gpustack-generic-route-transformer"
 model_ingress_prefix = "ai-route-model-"
 model_route_ingress_prefix = "ai-route-route-"
 provider_id_prefix = "provider-"
@@ -585,7 +587,17 @@ def generate_model_ingress(
     expected_rule = ingress_rule_for_model()
 
     if included_proxy_route:
-        # to compatible with rewrite-target /$1$3, the first capturing group is empty
+        # to compatible with rewrite-target /$1$3, the first capturing group is empty.
+        # The /\d+ variant strips the route-id segment from /model/proxy/<id>/<path>
+        # so the upstream receives /<path>. The id-less variant preserves the legacy
+        # /model/proxy/<path> + X-GPUStack-Model header form. The more specific rule
+        # is listed first so Higress tries id-based matching before falling back.
+        expected_rule.http.paths.append(
+            wrap_route(
+                r"/()model/proxy/\d+(/|$)(.*)",
+                "ImplementationSpecific",
+            )
+        )
         expected_rule.http.paths.append(
             wrap_route(
                 "/()model/proxy(/|$)(.*)",
@@ -1304,6 +1316,195 @@ async def cleanup_ai_proxy_config(
             f"Failed to cleanup gpustack AI proxy wasmplugin {gpustack_ai_proxy_name}: {e}"
         )
         raise
+
+
+def build_generic_route_path_pattern(route_id: int) -> str:
+    """Path pattern matching /model/proxy/<id> and /model/proxy/<id>/<anything>.
+
+    The Higress transformer plugin treats `add` + `path_pattern` + `value` as a
+    regex substitution: the portion of :path that matches path_pattern is
+    replaced by value, and the resulting string is written to the target header.
+    So the pattern MUST consume the entire path — otherwise the unmatched tail
+    gets concatenated onto the header value (e.g. `<route_name>v1/models`).
+
+    The `(/.*)?$` tail keeps the `/` boundary after <id> so `/model/proxy/10`
+    doesn't spuriously match id=1.
+    """
+    return f"^/model/proxy/{route_id}(/.*)?$"
+
+
+def build_generic_route_header_rule(route_id: int, route_name: str) -> Dict[str, Any]:
+    """HeaderRule dict injecting x-higress-llm-model when /model/proxy/<id>/ is hit.
+
+    Example for ``route_id=1, route_name="qwen3-0.6b"``::
+
+        {
+            "key": "x-higress-llm-model",
+            "value": "qwen3-0.6b",
+            "path_pattern": "^/model/proxy/1(/.*)?$",
+        }
+
+    At runtime Higress substitutes the portion of ``:path`` that matches
+    ``path_pattern`` with ``value`` and writes the result to ``key``.
+    ``path_pattern`` anchors both ends so every matched path reduces to just
+    ``value`` — see build_generic_route_path_pattern for why.
+    """
+    return {
+        "key": "x-higress-llm-model",
+        "value": route_name,
+        "path_pattern": build_generic_route_path_pattern(route_id),
+    }
+
+
+# Generic-route rules are identified by the shape of their path_pattern — this
+# lets the diff/cleanup code coexist with other reqRules blocks a future
+# contributor might add for unrelated purposes, instead of assuming the
+# generic-route block is the only `add` block in the plugin.
+_GENERIC_ROUTE_PATH_PATTERN_RE = re.compile(r"^\^/model/proxy/\d+")
+
+
+def _is_generic_route_header(header: Dict[str, Any]) -> bool:
+    return bool(_GENERIC_ROUTE_PATH_PATTERN_RE.match(header.get("path_pattern", "")))
+
+
+def _split_generic_route_req_rules(
+    req_rules: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Partition existing reqRules into (blocks_to_preserve, generic_route_headers).
+
+    - Any ``add`` block contributes generic-route headers (identified by
+      path_pattern shape) to the second list. Non-generic headers from the same
+      block are retained verbatim in the first list, so mixed ownership is safe.
+    - Blocks with any other ``operate`` (rename, remove, map, ...) are preserved
+      untouched.
+    """
+    preserve: List[Dict[str, Any]] = []
+    generic_headers: List[Dict[str, Any]] = []
+    for rule in req_rules:
+        if rule.get("operate") != "add":
+            preserve.append(rule)
+            continue
+        foreign_headers: List[Dict[str, Any]] = []
+        for header in rule.get("headers", []):
+            if _is_generic_route_header(header):
+                generic_headers.append(header)
+            else:
+                foreign_headers.append(header)
+        if foreign_headers:
+            preserve.append({**rule, "headers": foreign_headers})
+    return preserve, generic_headers
+
+
+def _set_generic_route_headers(
+    current_spec: WasmPluginSpec, headers: List[Dict[str, Any]]
+) -> WasmPluginSpec:
+    # Do NOT touch defaultConfigDisable here — flipping it rewrites Envoy's
+    # filter chain and tears down every live connection. Only the reqRules
+    # list changes between reconciliations; the enable flag is locked at
+    # plugin creation (see generic_route_transformer_plugin).
+    default_config = current_spec.defaultConfig or {}
+    preserve, _ = _split_generic_route_req_rules(default_config.get("reqRules", []))
+    new_req_rules: List[Dict[str, Any]] = list(preserve)
+    if headers:
+        sorted_headers = sorted(headers, key=lambda h: h.get("path_pattern", ""))
+        new_req_rules.append({"operate": "add", "headers": sorted_headers})
+    current_spec.defaultConfig = {"reqRules": new_req_rules}
+    return current_spec
+
+
+def generic_route_transformer_diff_spec(
+    current_spec: Optional[WasmPluginSpec],
+    expected_header_rules: List[Dict[str, Any]],
+    operating_path_pattern: str,
+) -> Optional[WasmPluginSpec]:
+    """
+    Merge expected_header_rules into the current spec, replacing any existing rule
+    whose path_pattern equals operating_path_pattern. Other routes' rules stay
+    untouched, as do unrelated reqRules blocks added by other subsystems.
+    Returns None if the plugin doesn't exist yet — init handles that.
+
+    Example — reconciling route id=2 renamed to "route-two-renamed" while route
+    id=1 is already registered:
+
+        # current_spec.defaultConfig.reqRules (before)
+        [{"operate": "add", "headers": [
+            {"key": "x-higress-llm-model", "value": "route-one",
+             "path_pattern": "^/model/proxy/1(/.*)?$"},
+            {"key": "x-higress-llm-model", "value": "route-two",
+             "path_pattern": "^/model/proxy/2(/.*)?$"},
+        ]}]
+
+        # call
+        generic_route_transformer_diff_spec(
+            current_spec,
+            expected_header_rules=[build_generic_route_header_rule(2, "route-two-renamed")],
+            operating_path_pattern="^/model/proxy/2(/.*)?$",
+        )
+
+        # current_spec.defaultConfig.reqRules (after)
+        [{"operate": "add", "headers": [
+            {"key": "x-higress-llm-model", "value": "route-one",
+             "path_pattern": "^/model/proxy/1(/.*)?$"},
+            {"key": "x-higress-llm-model", "value": "route-two-renamed",
+             "path_pattern": "^/model/proxy/2(/.*)?$"},
+        ]}]
+
+    Pass expected_header_rules=[] to remove the rule for this route (e.g. when
+    generic_proxy is toggled off or the route is deleted).
+    """
+    if current_spec is None:
+        return current_spec
+    req_rules = (current_spec.defaultConfig or {}).get("reqRules", [])
+    _, generic_headers = _split_generic_route_req_rules(req_rules)
+    retained = [
+        h for h in generic_headers if h.get("path_pattern") != operating_path_pattern
+    ]
+    return _set_generic_route_headers(current_spec, retained + expected_header_rules)
+
+
+def cleanup_generic_route_transformer_spec_diff(
+    current_spec: Optional[WasmPluginSpec],
+    expected_path_patterns: Set[str],
+) -> Optional[WasmPluginSpec]:
+    """
+    Drop generic-route HeaderRules whose path_pattern is not in
+    expected_path_patterns. Non-generic rules (any shape that doesn't look like
+    ``^/model/proxy/<id>``) are left untouched. Used on startup to prune rules
+    for routes that were deleted or had generic_proxy toggled off while the
+    server was down.
+    """
+    if current_spec is None:
+        return current_spec
+    req_rules = (current_spec.defaultConfig or {}).get("reqRules", [])
+    _, generic_headers = _split_generic_route_req_rules(req_rules)
+    retained = [
+        h for h in generic_headers if h.get("path_pattern") in expected_path_patterns
+    ]
+    return _set_generic_route_headers(current_spec, retained)
+
+
+async def cleanup_generic_route_transformer(
+    routes: List[ModelRoute],
+    k8s_config: k8s_client.Configuration,
+    namespace: str,
+):
+    """Prune generic-route transformer rules to those for existing generic_proxy routes."""
+    expected_patterns = {
+        build_generic_route_path_pattern(route.id)
+        for route in routes
+        if getattr(route, "generic_proxy", False)
+    }
+    api = ExtensionsHigressIoV1Api(k8s_client.ApiClient(k8s_config))
+    await ensure_wasm_plugin(
+        api=api,
+        name=gpustack_generic_route_transformer_name,
+        namespace=namespace,
+        spec_diff=partial(
+            cleanup_generic_route_transformer_spec_diff,
+            expected_path_patterns=expected_patterns,
+        ),
+    )
 
 
 async def cleanup_mcpbridge_registry(

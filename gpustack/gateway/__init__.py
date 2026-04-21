@@ -36,6 +36,7 @@ from gpustack.gateway.utils import (
     anthropic_model_exact,
     gpustack_ai_proxy_name,
     gpustack_model_mapper_name,
+    gpustack_generic_route_transformer_name,
     mcp_ingress_equal,
     get_default_mcpbridge_ref,
     ensure_wasm_plugin,
@@ -548,6 +549,59 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     return resource_name, expected_spec
 
 
+def generic_route_transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
+    """
+    Pre-route transformer that injects x-higress-llm-model based on the route id
+    captured from /model/proxy/<id>/... paths. Per-route HeaderRules are merged
+    into defaultConfig.reqRules by the per-route reconciler.
+
+    defaultConfigDisable is fixed to False for the lifetime of the plugin —
+    toggling it rewrites Envoy's filter chain and drops every in-flight
+    connection through the gateway.
+
+    Runtime shape after two generic routes (id=1 "route-one", id=2 "route-two")
+    have been reconciled — the reconciler only mutates the `headers` list:
+
+        apiVersion: extensions.higress.io/v1alpha1
+        kind: WasmPlugin
+        metadata:
+          name: gpustack-generic-route-transformer
+        spec:
+          phase: AUTHN
+          priority: 905
+          defaultConfigDisable: false
+          defaultConfig:
+            reqRules:
+              - operate: add
+                headers:
+                  - key: x-higress-llm-model
+                    value: route-one
+                    path_pattern: ^/model/proxy/1(/.*)?$
+                  - key: x-higress-llm-model
+                    value: route-two
+                    path_pattern: ^/model/proxy/2(/.*)?$
+
+    On a request for ``/model/proxy/1/v1/chat/completions`` Higress rewrites the
+    match of path_pattern inside ``:path`` with ``value`` — the whole path is
+    consumed by the pattern (``(/.*)?$`` tail), so the header becomes exactly
+    ``route-one`` and routing falls through to the main ingress's header
+    matcher.
+    """
+    expected_spec = WasmPluginSpec(
+        defaultConfig={"reqRules": []},
+        defaultConfigDisable=False,
+        failStrategy="FAIL_OPEN",
+        imagePullPolicy="UNSPECIFIED_POLICY",
+        matchRules=[],
+        phase="AUTHN",
+        priority=905,  # ahead of model-router (900) so header wins
+        url=get_plugin_url_with_name_and_version(
+            name="transformer", version="2.0.0", cfg=cfg
+        ),
+    )
+    return gpustack_generic_route_transformer_name, expected_spec
+
+
 def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     registry = get_gpustack_higress_registry(cfg=cfg)
     resource_name = "gpustack-token-usage"
@@ -738,6 +792,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             ai_proxy_plugin(cfg=cfg),
             model_pre_route_plugin(cfg=cfg),
             model_mapper_plugin(cfg=cfg),
+            generic_route_transformer_plugin(cfg=cfg),
         ]
         if cfg.server_role() != Config.ServerRole.WORKER:
             plugin_list.append(transformer_plugin(cfg=cfg))
@@ -756,6 +811,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
                 create_only = plugin_name in [
                     gpustack_ai_proxy_name,
                     gpustack_model_mapper_name,
+                    gpustack_generic_route_transformer_name,
                 ]
                 spec_diff_func = partial(
                     spec_replace, expected_spec=plugin_spec, create_only=create_only

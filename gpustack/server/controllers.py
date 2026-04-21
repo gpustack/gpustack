@@ -634,6 +634,39 @@ async def sync_model_route_mapper(
     )
 
 
+async def ensure_route_generic_transformer_config(
+    cfg: Config,
+    model_route: ModelRoute,
+    extensions_api: ExtensionsHigressIoV1Api,
+    generic_proxy_enabled: bool,
+):
+    """
+    Reconcile the single HeaderRule that maps /model/proxy/<route_id>/... to this
+    route's x-higress-llm-model. When generic_proxy_enabled is False (generic proxy
+    disabled or route deleted), the rule is removed and other routes are untouched.
+    """
+    operating_path_pattern = mcp_handler.build_generic_route_path_pattern(
+        model_route.id
+    )
+    expected_header_rules: List[Dict[str, Any]] = []
+    if generic_proxy_enabled:
+        expected_header_rules.append(
+            mcp_handler.build_generic_route_header_rule(
+                model_route.id, model_route.name
+            )
+        )
+    await mcp_handler.ensure_wasm_plugin(
+        api=extensions_api,
+        name=mcp_handler.gpustack_generic_route_transformer_name,
+        namespace=cfg.gateway_namespace,
+        spec_diff=partial(
+            mcp_handler.generic_route_transformer_diff_spec,
+            expected_header_rules=expected_header_rules,
+            operating_path_pattern=operating_path_pattern,
+        ),
+    )
+
+
 async def ensure_route_ai_proxy_config(
     cfg: Config,
     model_route_id: int,
@@ -782,6 +815,16 @@ async def sync_gateway(
         ingress_name=ingress_name,
         namespace=cfg.get_namespace(),
         networking_istio_api=istio_networking_api,
+    )
+    # Generic-route transformer: inject x-higress-llm-model when /model/proxy/<id>/
+    # is hit, so the existing main ingress header matcher + fallback chain apply.
+    await ensure_route_generic_transformer_config(
+        cfg=cfg,
+        model_route=model_route,
+        extensions_api=extensions_api,
+        generic_proxy_enabled=(
+            event_type != EventType.DELETED and bool(model_route.generic_proxy)
+        ),
     )
     # ensure ai proxy config
     await ensure_route_ai_proxy_config(

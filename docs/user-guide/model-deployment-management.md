@@ -238,7 +238,36 @@ Enable automatic restart of the model instance if it encounters an error. This f
 
 While it is common practice to integrate with the OpenAI compatible APIs, users may have different requirements for their use cases. GPUStack supports any inference APIs other than the OpenAI-compatible ones and make it more flexible for AI application development.
 
-Below is an example of how to use the generic proxy with curl to access model instances:
+GPUStack offers two ways to address the target model when Generic Proxy is enabled. The **path-based form** is recommended; the **header-based form** is retained for backward compatibility and is deprecated.
+
+#### Path-based form (recommended)
+
+Append the numeric model route id to the proxy prefix — `/model/proxy/<model_route_id>/<upstream-path>` — and GPUStack dispatches the request to that route's targets. No extra header is needed.
+
+```bash
+# Assume the model route id is 42.
+curl http://<server-url>/model/proxy/42/embed \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <GPUSTACK_API_KEY>" \
+  -d '{"inputs":["What is Deep Learning?", "Deep Learning is not..."]}'
+```
+
+The gateway strips `/model/proxy/<id>` before forwarding, so the upstream inference server sees:
+
+```bash
+curl http://<inference-server-url>/embed \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"inputs":["What is Deep Learning?", "Deep Learning is not..."]}'
+```
+
+The model route id is stable across renames and can be found on the model detail page or retrieved from `GET /v2/model-routes`.
+
+#### Header-based form (deprecated)
+
+!!! warning "Deprecated"
+    The `/model/proxy` + `X-GPUStack-Model` form is kept for backward compatibility and will be removed in a future release. Migrate to the path-based form above.
 
 ```bash
 curl http://<server-url>/model/proxy/embed \
@@ -249,7 +278,7 @@ curl http://<server-url>/model/proxy/embed \
   -d '{"inputs":["What is Deep Learning?", "Deep Learning is not..."]}'
 ```
 
-When using the generic proxy endpoint, the path prefix `/model/proxy` will be removed before forwarding the request. You must provide either the `X-GPUStack-Model` header or the `model` attribute in the JSON body. On the model inference server, the request will look like:
+The path prefix `/model/proxy` is stripped before forwarding. You must provide either the `X-GPUStack-Model` header or the `model` attribute in the JSON body so the gateway can resolve the target model. On the upstream inference server the request looks like:
 
 ```bash
 curl http://<inference-server-url>/embed \

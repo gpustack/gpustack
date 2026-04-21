@@ -242,13 +242,13 @@ inference_router.include_router(
     openai.get_legacy_api_router(),
     prefix="/v1-openai",
     responses=openai_api_error_responses,
-    tags=["OpenAI-Compatible APIs"],
+    tags=["OpenAI-Compatible APIs (Legacy alias)"],
 )
 inference_router.include_router(
     openai.get_api_router(),
     prefix="/v1",
     responses=openai_api_error_responses,
-    tags=["OpenAI-Compatible APIs using the /v1 alias"],
+    tags=["OpenAI-Compatible APIs"],
 )
 inference_router.include_router(
     rerank.router,
