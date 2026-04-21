@@ -10,7 +10,8 @@ from gpustack.gateway.client.networking_higress_io_v1_api import McpBridgeRegist
 
 def test_flattened_prefixes():
     assert RoutePrefix(
-        ["/chat/completions", "/completions", "/responses"]
+        ["/chat/completions", "/completions", "/responses"],
+        support_legacy=True,
     ).flattened_prefixes() == [
         "/v1/chat/completions",
         "/v1/completions",
@@ -19,19 +20,25 @@ def test_flattened_prefixes():
         "/v1-openai/completions",
         "/v1-openai/responses",
     ]
+    assert RoutePrefix(
+        ["/chat/completions", "/completions", "/responses"]
+    ).flattened_prefixes() == [
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/responses",
+    ]
 
 
 def test_regex_prefixes():
     assert RoutePrefix(
-        ["/chat/completions", "/completions", "/responses"]
+        ["/chat/completions", "/completions", "/responses"],
+        support_legacy=True,
     ).regex_prefixes() == [
         r"/(v1)(-openai)?(/chat/completions)",
         r"/(v1)(-openai)?(/completions)",
         r"/(v1)(-openai)?(/responses)",
     ]
-    assert RoutePrefix(
-        ["/chat/completions", "/completions"], support_legacy=False
-    ).regex_prefixes() == [
+    assert RoutePrefix(["/chat/completions", "/completions"]).regex_prefixes() == [
         r"/(v1)()(/chat/completions)",
         r"/(v1)()(/completions)",
     ]

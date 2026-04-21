@@ -40,6 +40,7 @@ from gpustack.server.services import (
     UserService,
 )
 from gpustack.server.worker_request import request_to_worker, stream_to_worker
+from gpustack.gateway.utils import openai_model_prefixes
 
 
 logger = logging.getLogger(__name__)
@@ -47,10 +48,37 @@ logger = logging.getLogger(__name__)
 load_balancer = LoadBalancer()
 
 
-router = APIRouter()
+# Endpoints served by a dedicated server router (e.g. rerank.router), so the
+# auto-registration must skip them to avoid duplicate /v1/<endpoint> registration.
+_server_managed_elsewhere = {"/rerank"}
 
 
-@router.get("/models")
+def get_api_router() -> APIRouter:
+    """Full OpenAI-compatible endpoint set, mounted at /v1."""
+    router = APIRouter()
+    router.add_api_route("/models", list_models, methods=["GET"])
+    for rp in openai_model_prefixes:
+        for endpoint in rp.prefixes:
+            if endpoint in _server_managed_elsewhere:
+                continue
+            router.add_api_route(endpoint, proxy_request_by_model, methods=["POST"])
+    return router
+
+
+def get_legacy_api_router() -> APIRouter:
+    """Legacy subset, mounted at /v1-openai. Frozen — new endpoints go to /v1 only."""
+    router = APIRouter()
+    router.add_api_route("/models", list_models, methods=["GET"])
+    for rp in openai_model_prefixes:
+        if not rp.support_legacy:
+            continue
+        for endpoint in rp.prefixes:
+            if endpoint in _server_managed_elsewhere:
+                continue
+            router.add_api_route(endpoint, proxy_request_by_model, methods=["POST"])
+    return router
+
+
 async def list_models(
     user: CurrentUserDep,
     session: SessionDep,
@@ -88,14 +116,6 @@ async def list_models(
     return result
 
 
-@router.post("/completions")
-@router.post("/chat/completions")
-@router.post("/responses")
-@router.post("/embeddings")
-@router.post("/images/generations")
-@router.post("/images/edits")
-@router.post("/audio/speech")
-@router.post("/audio/transcriptions")
 async def proxy_request_by_model(
     request: Request,
     user: CurrentUserDep,

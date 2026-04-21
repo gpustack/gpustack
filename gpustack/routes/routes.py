@@ -239,13 +239,13 @@ inference_router = APIRouter(
 )
 
 inference_router.include_router(
-    openai.router,
+    openai.get_legacy_api_router(),
     prefix="/v1-openai",
     responses=openai_api_error_responses,
     tags=["OpenAI-Compatible APIs"],
 )
 inference_router.include_router(
-    openai.router,
+    openai.get_api_router(),
     prefix="/v1",
     responses=openai_api_error_responses,
     tags=["OpenAI-Compatible APIs using the /v1 alias"],

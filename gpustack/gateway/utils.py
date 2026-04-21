@@ -72,7 +72,7 @@ DestinationTupleList = List[Tuple[int, str, McpBridgeRegistry]]
 @dataclass
 class RoutePrefix:
     prefixes: List[str]
-    support_legacy: bool = True
+    support_legacy: bool = False
     additional_versions: Optional[List[str]] = None
 
     def flattened_prefixes(self) -> List[str]:
@@ -116,13 +116,22 @@ openai_model_prefixes: List[RoutePrefix] = [
             "/audio/speech",
             "/images/generations",
             "/images/edits",
+        ],
+        True,
+    ),
+    RoutePrefix(
+        [
+            "/audio/translations",
+            "/images/variations",
+            "/moderations",
+            "/score",
         ]
     ),
-    RoutePrefix(["/rerank"], False, ["/v2"]),
+    RoutePrefix(["/rerank"], additional_versions=["/v2"]),
 ]
 
 anthropic_model_exact: List[RoutePrefix] = [
-    RoutePrefix(["/messages", "/messages/count_tokens", "/complete"], False),
+    RoutePrefix(["/messages", "/messages/count_tokens", "/complete"]),
 ]
 
 
