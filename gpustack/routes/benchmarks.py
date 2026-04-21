@@ -20,7 +20,7 @@ from gpustack.schemas.models import (
     is_audio_model,
     is_embedding_model,
     is_image_model,
-    is_renaker_model,
+    is_reranker_model,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import async_session
@@ -248,7 +248,7 @@ async def validate_and_mutate_benchmark_in(
         is_image_model(model)
         or is_audio_model(model)
         or is_embedding_model(model)
-        or is_renaker_model(model)
+        or is_reranker_model(model)
     ):
         raise BadRequestException(
             message=f"Benchmarking is not supported for model type '{model.type.value}'"

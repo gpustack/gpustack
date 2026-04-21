@@ -10,7 +10,7 @@ from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.model_usage import ModelUsage
-from gpustack.schemas.models import Model, is_embedding_model, is_renaker_model
+from gpustack.schemas.models import Model, is_embedding_model, is_reranker_model
 from gpustack.schemas.users import User
 from gpustack.server.db import async_session
 from gpustack.utils.usage_snapshots import build_model_usage_snapshot
@@ -59,7 +59,7 @@ def _resolve_usage_tokens(
     completion_tokens = metric.output_token
     if (
         model is not None
-        and (is_renaker_model(model) or is_embedding_model(model))
+        and (is_reranker_model(model) or is_embedding_model(model))
         and metric.total_token > (prompt_tokens + completion_tokens)
     ):
         return metric.total_token - completion_tokens, completion_tokens

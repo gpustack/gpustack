@@ -674,7 +674,7 @@ def is_embedding_model(model: Model):
     return "embedding" in model.categories
 
 
-def is_renaker_model(model: Model):
+def is_reranker_model(model: Model):
     """
     Check if the model is a reranker model.
     Args:
