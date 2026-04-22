@@ -85,21 +85,26 @@ def create_app(cfg: Config) -> FastAPI:
 
 
 def _load_extension_plugins(app: FastAPI, cfg: Config):
-    """Load extension plugins registered via entry points."""
+    """Load extension plugins registered via entry points.
+
+    Each entry point is expected to resolve to a ``Plugin`` subclass
+    whose ``__init__(app, cfg)`` performs the full registration.
+    """
     app.state.extension_plugins = []
     eps = entry_points(group="gpustack.plugins")
     for ep in eps:
         try:
             plugin_factory = ep.load()
-            plugin = plugin_factory()
-            if not isinstance(plugin, Plugin):
+            if not (
+                isinstance(plugin_factory, type) and issubclass(plugin_factory, Plugin)
+            ):
                 logger.warning(
                     f"Extension plugin {ep.name} does not implement "
                     "the Plugin interface."
                 )
                 continue
 
-            plugin.register(app, cfg)
+            plugin = plugin_factory(app, cfg)
             app.state.extension_plugins.append(plugin)
             logger.info(f"Loaded extension plugin: {ep.name}")
         except Exception:

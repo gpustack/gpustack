@@ -134,6 +134,7 @@ class Server:
         self._start_query_count_logger()
         self._start_default_registry_checker()
         self._start_proxy_servers(app)
+        self._start_extension_plugins(app)
 
         serving_host = (
             "127.0.0.1"
@@ -734,3 +735,14 @@ class Server:
             header_router=resolve_instance_address_from_model_header,
         )
         self._create_async_task(_proxy_server.start())
+
+    def _start_extension_plugins(self, app: FastAPI) -> None:
+        for plugin in getattr(app.state, "extension_plugins", []):
+            try:
+                for coro in plugin.async_tasks():
+                    self._create_async_task(coro)
+            except Exception:
+                logger.exception(
+                    "Failed to start async tasks from extension plugin %s",
+                    type(plugin).__name__,
+                )
