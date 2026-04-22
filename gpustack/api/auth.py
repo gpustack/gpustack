@@ -24,6 +24,7 @@ from gpustack.api.exceptions import (
     ForbiddenException,
     InternalServerErrorException,
     UnauthorizedException,
+    HTTPException,
 )
 from gpustack.schemas.api_keys import ApiKey, PermissionScope
 from gpustack.schemas.users import User, UserRole
@@ -116,7 +117,7 @@ async def get_current_user(
                 request.state.api_key = api_key
             return user
 
-    except UnauthorizedException:
+    except HTTPException:
         raise
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to authenticate user: {e}")
