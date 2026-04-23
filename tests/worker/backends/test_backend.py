@@ -160,41 +160,51 @@ def test_flatten_backend_param(backend_parameters, expected):
 
 
 @pytest.mark.parametrize(
-    "backend_parameters, expected",
+    "backend_parameters, backend_version, expected",
     [
-        (None, ["--disable-access-log-for-endpoints", "/metrics"]),
-        ([], ["--disable-access-log-for-endpoints", "/metrics"]),
+        (None, None, []),
+        ([], "0.15.2", []),
+        ([], "0.16.0", ["--disable-access-log-for-endpoints", "/metrics"]),
         (
             ["--disable-access-log-for-endpoints=/health,/metrics"],
+            "0.16.0",
             [],
         ),
         (
             ["--disable-access-log-for-endpoints", "/health,/metrics"],
+            "0.16.0",
             [],
         ),
     ],
 )
-def test_vllm_access_log_arguments(backend_parameters, expected):
-    assert get_vllm_access_log_arguments(backend_parameters) == expected
+def test_vllm_access_log_arguments(backend_parameters, backend_version, expected):
+    assert (
+        get_vllm_access_log_arguments(backend_parameters, backend_version) == expected
+    )
 
 
 @pytest.mark.parametrize(
-    "backend_parameters, expected",
+    "backend_parameters, backend_version, expected",
     [
-        (None, ["--uvicorn-access-log-exclude-prefixes", "/metrics"]),
-        ([], ["--uvicorn-access-log-exclude-prefixes", "/metrics"]),
+        (None, None, []),
+        ([], "0.5.8", []),
+        ([], "0.5.8.post1", ["--uvicorn-access-log-exclude-prefixes", "/metrics"]),
         (
             ["--uvicorn-access-log-exclude-prefixes=/health"],
+            "0.5.8.post1",
             [],
         ),
         (
             ["--uvicorn-access-log-exclude-prefixes", "/health"],
+            "0.5.8.post1",
             [],
         ),
     ],
 )
-def test_sglang_access_log_arguments(backend_parameters, expected):
-    assert get_sglang_access_log_arguments(backend_parameters) == expected
+def test_sglang_access_log_arguments(backend_parameters, backend_version, expected):
+    assert (
+        get_sglang_access_log_arguments(backend_parameters, backend_version) == expected
+    )
 
 
 def test_vllm_set_cache_env_defaults_to_config_cache_dir(tmp_path):

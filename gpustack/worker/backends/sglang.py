@@ -66,6 +66,12 @@ class SGLangServer(InferenceServer):
             is_distributed=deployment_metadata.distributed,
         )
 
+        # Resolve image first so that backend_version is populated before
+        # building command args (version-gated arguments depend on it).
+        image = self._get_configured_image()
+        if not image:
+            raise ValueError("Can't find compatible SGLang image")
+
         command = None
         if self.inference_backend:
             command = self.inference_backend.get_container_entrypoint(
@@ -87,6 +93,7 @@ class SGLangServer(InferenceServer):
             command_script=command_script,
             command_args=command_args,
             env=env,
+            image=image,
         )
 
     def _start_diffusion(self):
@@ -100,6 +107,12 @@ class SGLangServer(InferenceServer):
         env = self._get_configured_env(
             is_distributed=False,
         )
+
+        # Resolve image first so that backend_version is populated before
+        # building command args (version-gated arguments depend on it).
+        image = self._get_configured_image()
+        if not image:
+            raise ValueError("Can't find compatible SGLang image")
 
         command = None
         if self.inference_backend:
@@ -119,6 +132,7 @@ class SGLangServer(InferenceServer):
             command_script=command_script,
             command_args=command_args,
             env=env,
+            image=image,
         )
 
     def _create_workload(
@@ -128,11 +142,8 @@ class SGLangServer(InferenceServer):
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
+        image: str,
     ):
-        image = self._get_configured_image()
-        if not image:
-            raise ValueError("Can't find compatible SGLang image")
-
         if (
             self.is_diffusion
             and compare_versions(self._model.backend_version, "0.5.5") < 0
@@ -318,7 +329,9 @@ class SGLangServer(InferenceServer):
         arguments.extend(metrics_arguments)
 
         # Suppress high-frequency /metrics access logs by default.
-        access_log_arguments = get_access_log_arguments(self._model.backend_parameters)
+        access_log_arguments = get_access_log_arguments(
+            self._model.backend_parameters, self._model.backend_version
+        )
         arguments.extend(access_log_arguments)
 
         # Add multimodal argument if needed
@@ -686,10 +699,18 @@ def get_metrics_arguments(
     return ["--enable-metrics"]
 
 
-def get_access_log_arguments(backend_parameters: List[str]) -> List[str]:
+def get_access_log_arguments(
+    backend_parameters: List[str], backend_version: Optional[str] = None
+) -> List[str]:
     """
     Get default SGLang access log filter arguments.
+    --uvicorn-access-log-exclude-prefixes was introduced in SGLang v0.5.8.post1.
     """
+    if not backend_version:
+        return []
+    if compare_versions(backend_version, "0.5.8.post1") < 0:
+        return []
+
     access_log_filter = find_parameter(
         backend_parameters,
         ["uvicorn-access-log-exclude-prefixes"],

@@ -14,6 +14,7 @@ from gpustack_runtime.deployer import (
     ContainerPort,
     ContainerRestartPolicyEnum,
 )
+from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector import ManufacturerEnum, manufacturer_to_backend
 from gpustack.schemas.models import (
     ModelInstance,
@@ -66,6 +67,12 @@ class VLLMServer(InferenceServer):
             is_distributed=deployment_metadata.distributed,
         )
 
+        # Resolve image first so that backend_version is populated before
+        # building command args (version-gated arguments depend on it).
+        image = self._get_configured_image()
+        if not image:
+            raise ValueError("Failed to get vLLM backend image")
+
         command = None
         if self.inference_backend:
             command = self.inference_backend.get_container_entrypoint(
@@ -85,6 +92,7 @@ class VLLMServer(InferenceServer):
             command_script=command_script,
             command_args=command_args,
             env=env,
+            image=image,
         )
 
     def _create_workload(
@@ -94,11 +102,8 @@ class VLLMServer(InferenceServer):
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
+        image: str,
     ):
-        image = self._get_configured_image()
-        if not image:
-            raise ValueError("Failed to get vLLM backend image")
-
         # Command script will override the given command,
         # so we need to prepend command to command args.
         if command_script and command:
@@ -472,7 +477,9 @@ class VLLMServer(InferenceServer):
         arguments.extend(speculative_config_arguments)
 
         # Suppress high-frequency /metrics access logs by default.
-        access_log_arguments = get_access_log_arguments(self._model.backend_parameters)
+        access_log_arguments = get_access_log_arguments(
+            self._model.backend_parameters, self._model.backend_version
+        )
         arguments.extend(access_log_arguments)
 
         if is_distributed:
@@ -668,10 +675,18 @@ def get_auto_parallelism_arguments(
     return []
 
 
-def get_access_log_arguments(backend_parameters: List[str]) -> List[str]:
+def get_access_log_arguments(
+    backend_parameters: List[str], backend_version: Optional[str] = None
+) -> List[str]:
     """
     Get default vLLM access log filter arguments.
+    --disable-access-log-for-endpoints was introduced in vLLM 0.16.0.
     """
+    if not backend_version:
+        return []
+    if compare_versions(backend_version, "0.16.0") < 0:
+        return []
+
     access_log_filter = find_parameter(
         backend_parameters,
         ["disable-access-log-for-endpoints"],
