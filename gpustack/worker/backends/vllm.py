@@ -241,6 +241,9 @@ class VLLMServer(InferenceServer):
         )
         env["RUNAI_STREAMER_LOG_LEVEL"] = env.pop("RUNAI_STREAMER_LOG_LEVEL", "INFO")
 
+        # Persist the torch compile cache so repeated starts don't recompile.
+        self._set_cache_env(env)
+
         # Apply LMCache environment variables if extended KV cache is enabled
         self._set_lmcache_env(env)
 
@@ -253,6 +256,28 @@ class VLLMServer(InferenceServer):
             self._set_ascend_env(env)
 
         return env
+
+    def _set_cache_env(self, env: Dict[str, str]):
+        """
+        Point VLLM_CACHE_ROOT at a persistent directory under gpustack's data dir
+        so the torch compile cache survives container restarts. The directory is
+        inherited by the inference container via gpustack-runtime's mirrored
+        deployment (worker's data-dir mount is replicated to the vLLM container).
+        """
+        if "VLLM_CACHE_ROOT" in env:
+            return
+        if not self._config or not self._config.cache_dir:
+            return
+        cache_dir = os.path.join(self._config.cache_dir, "vllm")
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+        except OSError as e:
+            logger.warning(
+                f"Failed to create vLLM cache dir {cache_dir}: {e}. "
+                "Torch compile cache will not be persisted."
+            )
+            return
+        env["VLLM_CACHE_ROOT"] = cache_dir
 
     def _set_lmcache_env(self, env: Dict[str, str]):
         """

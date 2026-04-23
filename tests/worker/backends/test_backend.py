@@ -8,6 +8,7 @@ from gpustack.worker.backends.sglang import (
     get_access_log_arguments as get_sglang_access_log_arguments,
 )
 from gpustack.worker.backends.vllm import (
+    VLLMServer,
     get_access_log_arguments as get_vllm_access_log_arguments,
 )
 
@@ -194,3 +195,27 @@ def test_vllm_access_log_arguments(backend_parameters, expected):
 )
 def test_sglang_access_log_arguments(backend_parameters, expected):
     assert get_sglang_access_log_arguments(backend_parameters) == expected
+
+
+def test_vllm_set_cache_env_defaults_to_config_cache_dir(tmp_path):
+    backend = VLLMServer.__new__(VLLMServer)
+    backend._config = types.SimpleNamespace(cache_dir=str(tmp_path))
+
+    env = {}
+    backend._set_cache_env(env)
+
+    expected = tmp_path / "vllm"
+    assert env["VLLM_CACHE_ROOT"] == str(expected)
+    assert expected.is_dir()
+
+
+def test_vllm_set_cache_env_respects_user_override(tmp_path):
+    backend = VLLMServer.__new__(VLLMServer)
+    backend._config = types.SimpleNamespace(cache_dir=str(tmp_path))
+
+    env = {"VLLM_CACHE_ROOT": "/custom/cache"}
+    backend._set_cache_env(env)
+
+    assert env["VLLM_CACHE_ROOT"] == "/custom/cache"
+    # Default cache dir should not be created when the user overrode it.
+    assert not (tmp_path / "vllm").exists()
