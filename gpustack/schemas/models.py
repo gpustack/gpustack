@@ -93,6 +93,9 @@ class ExtendedKVCacheConfig(BaseModel):
     chunk_size: Optional[int] = None
     """ Size for each KV cache chunk (unit: number of tokens). """
 
+    disk_size: Optional[int] = None
+    """ Maximum size of the KV cache to be stored on disk (unit: GiB). Only used when disk_path is set at worker level."""
+
 
 class ModelSource(BaseModel):
     source: SourceEnum
