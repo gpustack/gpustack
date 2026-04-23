@@ -602,6 +602,14 @@ class ModelInstanceLogRestartEntry(BaseModel):
             "(birthtime if available, else mtime), UTC."
         ),
     )
+    containers: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Available container names for this restart. "
+            "'default' is the main workload container; others are sidecars "
+            "(e.g., ['default', 'ray-head'])."
+        ),
+    )
 
 
 class ModelInstanceLogWorkerOption(BaseModel):

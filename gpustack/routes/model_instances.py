@@ -1,5 +1,5 @@
 import asyncio
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Request, status, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
@@ -21,6 +21,7 @@ from gpustack.schemas.clusters import Cluster
 from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
+    BackendEnum,
     ModelInstance,
     ModelInstanceCreate,
     ModelInstanceLogOptions,
@@ -36,6 +37,40 @@ from gpustack.config.config import get_global_config
 from gpustack.utils.grafana import resolve_grafana_base_url
 
 router = APIRouter()
+
+
+# Subordinate-worker display names, keyed by BackendEnum values.
+_SUBORDINATE_DISPLAY_NAMES: Dict[str, str] = {
+    BackendEnum.VLLM: "ray-worker",
+}
+
+
+def _default_display_name(backend: Optional[str], is_main_worker: bool) -> str:
+    """Resolve the UI display name for the internal 'default' container."""
+    if is_main_worker:
+        return backend or "default"
+    if backend and backend in _SUBORDINATE_DISPLAY_NAMES:
+        return _SUBORDINATE_DISPLAY_NAMES[backend]
+    # Generic subordinate: "sub-<backend>" or just "subordinate".
+    return f"sub-{backend}" if backend else "subordinate"
+
+
+def _map_container_display_name(
+    internal_name: str, backend: Optional[str], is_main_worker: bool
+) -> str:
+    """Forward-map an internal container name to its UI display name."""
+    if internal_name != "default":
+        return internal_name
+    return _default_display_name(backend, is_main_worker)
+
+
+def _unmap_container_display_name(
+    display_name: str, backend: Optional[str], is_main_worker: bool
+) -> str:
+    """Reverse-map a UI display name back to the internal container name."""
+    if display_name == _default_display_name(backend, is_main_worker):
+        return "default"
+    return display_name
 
 
 @router.get("", response_model=ModelInstancesPublic)
@@ -145,8 +180,16 @@ async def get_serving_logs(  # noqa: C901
     id: int,
     log_options: LogOptionsDep,
     worker_id: Optional[int] = None,
+    container_name: Optional[str] = None,
 ):
     model_instance = await fetch_model_instance(session, id)
+
+    # Reverse-map: convert UI display name back to internal container name.
+    if container_name:
+        is_main = (worker_id or model_instance.worker_id) == model_instance.worker_id
+        container_name = _unmap_container_display_name(
+            container_name, model_instance.backend, is_main
+        )
 
     # Build valid worker IDs (main worker + subordinate workers for distributed instances)
     valid_worker_ids = {model_instance.worker_id}
@@ -174,6 +217,8 @@ async def get_serving_logs(  # noqa: C901
         "model_instance_name": model_instance.name,
         "previous": log_options.previous,
     }
+    if container_name:
+        params["container_name"] = container_name
     if (
         model_instance.state != ModelInstanceStateEnum.RUNNING
         and model_instance.model_files
@@ -332,6 +377,14 @@ async def get_model_instance_log_options(
     worker_options = await asyncio.gather(
         *[fetch_one(t) for t in targets],
     )
+
+    for wo in worker_options:
+        is_main = wo.worker_id == model_instance.worker_id
+        for entry in wo.restarts:
+            entry.containers = [
+                _map_container_display_name(c, model_instance.backend, is_main)
+                for c in entry.containers
+            ]
 
     if worker_options and all(o.error for o in worker_options):
         detail = "; ".join(

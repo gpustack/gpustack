@@ -54,11 +54,44 @@ def extract_container_restart_count(filename: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def extract_sidecar_container_restart_count(filename: str) -> int:
+    """Extract restart count from sidecar container log filename.
+
+    Args:
+        filename: Log filename in format {id}.container.{name}.{restart_count}.log
+
+    Returns:
+        Restart count as integer, or 0 if pattern doesn't match
+    """
+    match = re.match(r'\d+\.container\.[^.]+\.(\d+)\.log', filename)
+    return int(match.group(1)) if match else 0
+
+
+def extract_sidecar_container_name(filename: str) -> str:
+    """Extract container name from sidecar container log filename.
+
+    Args:
+        filename: Log filename in format {id}.container.{name}.{restart_count}.log
+
+    Returns:
+        Container name as string, or empty string if pattern doesn't match
+    """
+    match = re.match(r'\d+\.container\.([^.]+)\.\d+\.log', filename)
+    if not match:
+        return ""
+    name = match.group(1)
+    # Exclude pure numeric names (those are default container restart counts)
+    if name.isdigit():
+        return ""
+    return name
+
+
 async def get_all_log_files(
     log_dir: Path,
     model_instance_id: int,
     container: bool = False,
     restart_count: Optional[int] = None,
+    container_name: Optional[str] = None,
 ) -> List[Path]:
     """Get all log files sorted by restart count.
 
@@ -67,11 +100,19 @@ async def get_all_log_files(
         model_instance_id: Model instance ID
         container: If True, get container logs; if False, get main logs
         restart_count: If specified, only return logs for this restart count
+        container_name: If specified with container=True, get sidecar container
+            logs for this container name (e.g., "ray-head").
+            Pattern: {id}.container.{name}.{restart_count}.log
 
     Returns:
         List of log file paths sorted by restart count (oldest first)
     """
-    if container:
+    if container and container_name:
+        # Sidecar container logs: {id}.container.{name}.{restart_count}.log
+        pattern = f"{model_instance_id}.container.{container_name}.*.log"
+        extract_fn = extract_sidecar_container_restart_count
+    elif container:
+        # Default container logs: {id}.container.{restart_count}.log
         pattern = f"{model_instance_id}.container.*.log"
         extract_fn = extract_container_restart_count
     else:
@@ -83,6 +124,11 @@ async def get_all_log_files(
     # Exclude container log files when getting main logs
     if not container:
         files = [f for f in files if '.container.' not in f.name]
+
+    # When getting default container logs (no container_name),
+    # exclude sidecar container logs (those with non-numeric segment after "container.").
+    if container and not container_name:
+        files = [f for f in files if not extract_sidecar_container_name(f.name)]
 
     # Filter by restart_count if specified
     if restart_count is not None:
@@ -119,6 +165,7 @@ def _path_started_at_utc(path: Path) -> datetime:
 
 def restart_entries_from_main_log_files(
     files: List[Path],
+    sidecar_names_by_restart: Optional[Dict[int, List[str]]] = None,
 ) -> List[ModelInstanceLogRestartEntry]:
     """Build restart entries from main log paths; one entry per restart_count.
 
@@ -128,10 +175,47 @@ def restart_entries_from_main_log_files(
 
     If multiple files share a restart_count, use the lexicographically smallest
     name as the representative path for stat.
+
+    Args:
+        files: Main log file paths.
+        sidecar_names_by_restart: Mapping from restart_count to sidecar
+            container names found on disk for that restart.
     """
     by_count: Dict[int, List[Path]] = defaultdict(list)
     for f in files:
         by_count[extract_restart_count(f.name)].append(f)
+
+    sorted_counts = sorted(by_count.keys(), reverse=True)
+    entries: List[ModelInstanceLogRestartEntry] = []
+    for i, rc in enumerate(sorted_counts):
+        paths = sorted(by_count[rc], key=lambda p: p.name)
+        path = paths[0]
+        try:
+            started_at = _path_started_at_utc(path)
+        except OSError:
+            started_at = None
+        containers = (
+            sidecar_names_by_restart.get(rc, []) if sidecar_names_by_restart else []
+        )
+        entries.append(
+            ModelInstanceLogRestartEntry(
+                previous=i > 0, started_at=started_at, containers=containers
+            )
+        )
+    return entries
+
+
+def restart_entries_from_sidecar_log_files(
+    files: List[Path],
+) -> List[ModelInstanceLogRestartEntry]:
+    """Build restart entries from sidecar container log paths.
+
+    Same logic as restart_entries_from_main_log_files but uses
+    extract_sidecar_container_restart_count for the file name pattern.
+    """
+    by_count: Dict[int, List[Path]] = defaultdict(list)
+    for f in files:
+        by_count[extract_sidecar_container_restart_count(f.name)].append(f)
 
     sorted_counts = sorted(by_count.keys(), reverse=True)
     entries: List[ModelInstanceLogRestartEntry] = []
@@ -155,6 +239,7 @@ async def historical_log_generator(
     stop_event: Optional[asyncio.Event] = None,
     container: bool = False,
     restart_count: Optional[int] = None,
+    container_name: Optional[str] = None,
 ):
     """Generate logs from historical log files.
 
@@ -165,6 +250,7 @@ async def historical_log_generator(
         stop_event: Event to signal stopping
         container: If True, read container logs; if False, read main logs
         restart_count: Resolved restart count to filter log files
+        container_name: If specified with container=True, read sidecar container logs.
 
     Yields:
         Log lines from log files
@@ -174,6 +260,7 @@ async def historical_log_generator(
         model_instance_id,
         container=container,
         restart_count=restart_count,
+        container_name=container_name,
     )
 
     if not log_files:
@@ -312,6 +399,7 @@ async def combined_log_generator(
     download_log_path: str,
     options: LogOptionsDep,
     model_instance_name: str,
+    container_name: Optional[str] = None,
 ):
     """Unified log streaming from three file sources using LogSourceChain.
 
@@ -320,18 +408,36 @@ async def combined_log_generator(
     2) Historical main logs (all restart_count files)
     3) Container logs (from persisted files)
 
+    When container_name is specified, only sidecar container logs are streamed
+    (download and main logs are skipped).
+
     Args:
         log_dir: Directory containing log files (Path or str)
         model_instance_id: Model instance ID
         download_log_path: Path to download log file
         options: Log options (tail, follow)
         model_instance_name: Model instance name (unused, kept for API compatibility)
+        container_name: If specified, stream only this sidecar container's logs.
     """
     log_dir = Path(log_dir)
 
     restart_count = await resolve_restart_count(
         log_dir, model_instance_id, options.previous
     )
+
+    # When a specific sidecar container is requested, stream only its logs.
+    # "default" means the main container — fall through to the normal path.
+    if container_name and container_name != "default":
+        async for line in historical_log_generator(
+            log_dir,
+            model_instance_id,
+            options,
+            container=True,
+            restart_count=restart_count,
+            container_name=container_name,
+        ):
+            yield line
+        return
 
     download_source = DownloadLogSource(download_log_path)
     main_source = MainLogSource(
@@ -426,7 +532,49 @@ async def get_serve_log_options(request: Request, id: int):
     log_dir = request.app.state.config.log_dir
     serve_log_dir = Path(log_dir) / "serve"
     files = await get_all_log_files(serve_log_dir, id, container=False)
-    restarts = await asyncio.to_thread(restart_entries_from_main_log_files, files)
+
+    # Discover sidecar container names grouped by restart_count.
+    container_pattern = f"{id}.container.*.*.log"
+    all_sidecar_files = await asyncio.to_thread(
+        lambda: list(serve_log_dir.glob(container_pattern))
+    )
+    sidecar_names_by_restart: Dict[int, List[str]] = defaultdict(list)
+    seen: set = set()
+    for f in all_sidecar_files:
+        cname = extract_sidecar_container_name(f.name)
+        if not cname:
+            continue
+        rc = extract_sidecar_container_restart_count(f.name)
+        key = (rc, cname)
+        if key not in seen:
+            sidecar_names_by_restart[rc].append(cname)
+            seen.add(key)
+
+    # Build per-restart container lists: "default" (main) + sidecar names.
+    # "default" is always included when container log files exist for that restart.
+    container_log_pattern = f"{id}.container.*.log"
+    all_container_files = await asyncio.to_thread(
+        lambda: list(serve_log_dir.glob(container_log_pattern))
+    )
+    container_names_by_restart: Dict[int, List[str]] = defaultdict(list)
+    for rc in sidecar_names_by_restart:
+        container_names_by_restart[rc] = ["default"] + sorted(
+            sidecar_names_by_restart[rc]
+        )
+    # Also add "default" for restarts that have container logs but no sidecars.
+    default_container_rcs = {
+        extract_container_restart_count(f.name)
+        for f in all_container_files
+        if not extract_sidecar_container_name(f.name)
+    }
+    for rc in default_container_rcs:
+        if rc not in container_names_by_restart:
+            container_names_by_restart[rc] = ["default"]
+
+    restarts = await asyncio.to_thread(
+        restart_entries_from_main_log_files, files, container_names_by_restart
+    )
+
     return ServeLogOptionsResponse(restarts=restarts)
 
 
@@ -438,6 +586,7 @@ async def get_serve_logs(
     log_options: LogOptionsDep,
     model_instance_name: str = Query(default=""),
     model_file_id: Optional[int] = Query(default=None),
+    container_name: Optional[str] = Query(default=None),
 ):
     log_dir = request.app.state.config.log_dir
     serve_log_dir = Path(log_dir) / "serve"
@@ -456,6 +605,7 @@ async def get_serve_logs(
             download_log_path,
             log_options,
             model_instance_name,
+            container_name=container_name,
         ),
         media_type="application/octet-stream",
     )

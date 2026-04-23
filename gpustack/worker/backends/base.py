@@ -185,15 +185,44 @@ class InferenceServer(ABC):
         error_message = f"Failed to run {self._model.backend}: {error}{cause_text}"
 
         try:
-            patch_dict = {
-                "state_message": error_message,
-                "state": ModelInstanceStateEnum.ERROR,
-            }
-            self._update_model_instance(self._model_instance.id, **patch_dict)
+            is_main_worker = self._model_instance.worker_id == self._worker.id
+            if is_main_worker:
+                patch_dict = {
+                    "state_message": error_message,
+                    "state": ModelInstanceStateEnum.ERROR,
+                }
+                self._update_model_instance(self._model_instance.id, **patch_dict)
+            else:
+                # For subordinate workers, update sw.state instead of mi.state
+                # to avoid race conditions with the main worker's state management.
+                self._update_subordinate_worker_error(error_message)
         except Exception as ue:
             logger.error(f"Failed to update model instance: {ue}")
 
         raise error
+
+    def _update_subordinate_worker_error(self, error_message: str):
+        """
+        Update the subordinate worker's state to ERROR.
+        Fetches the latest model instance to get the current subordinate worker state,
+        then updates only this worker's entry.
+        """
+        mi_public = self._clientset.model_instances.get(id=self._model_instance.id)
+        mi = ModelInstanceUpdate(**mi_public.model_dump())
+        sw_pos = next(
+            (
+                i
+                for i, sw in enumerate(mi.distributed_servers.subordinate_workers)
+                if sw.worker_id == self._worker.id
+            ),
+        )
+        mi.distributed_servers.subordinate_workers[sw_pos].state = (
+            ModelInstanceStateEnum.ERROR
+        )
+        mi.distributed_servers.subordinate_workers[sw_pos].state_message = error_message
+        self._clientset.model_instances.update(
+            id=self._model_instance.id, model_update=mi
+        )
 
     def _get_deployment_metadata(self) -> ModelInstanceDeploymentMetadata:
         """

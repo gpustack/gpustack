@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 from datetime import datetime, timezone
 import multiprocessing
+import re
 import threading
 
 import requests
@@ -111,14 +112,14 @@ class ServeManager:
     When the (sub)process is alive, the model instance is provisioning.
     If the (sub)process exited, the model instance is either running or failed.
     """
-    _log_persistence_threads: Dict[int, threading.Thread]
+    _log_persistence_threads: Dict[int, List[threading.Thread]]
     """
-    The mapping of model instance ID to log persistence thread.
-    Used to track and clean up threads on model instance restart/stop.
+    The mapping of model instance ID to log persistence threads.
+    Each model instance may have multiple threads (one per loggable container).
     """
-    _log_persistence_stop_events: Dict[int, threading.Event]
+    _log_persistence_stop_events: Dict[int, List[threading.Event]]
     """
-    The mapping of model instance ID to stop event for log persistence thread.
+    The mapping of model instance ID to stop events for log persistence threads.
     Used to signal threads to stop gracefully.
     """
     _error_model_instances: Dict[int, ModelInstance]
@@ -699,7 +700,7 @@ class ServeManager:
                     f"UPDATED event: restarted scheduled model instance {mi.name}."
                 )
 
-            # Start on subordinate worker if not started yet.
+            # Start on subordinate worker if not started yet, or restart if failed.
             if not is_main_worker:
                 deployment_metadata = mi.get_deployment_metadata(self._worker_id)
                 workload_name = (
@@ -710,6 +711,17 @@ class ServeManager:
                     self._start_model_instance(mi)
                     logger.trace(
                         f"UPDATED event: started model instance {mi.name} on subordinate worker."
+                    )
+                elif workload.state in [
+                    WorkloadStatusStateEnum.UNKNOWN,
+                    WorkloadStatusStateEnum.UNHEALTHY,
+                    WorkloadStatusStateEnum.INACTIVE,
+                    WorkloadStatusStateEnum.FAILED,
+                ]:
+                    self._stop_model_instance(mi, clear_restart_backoff=False)
+                    self._start_model_instance(mi)
+                    logger.trace(
+                        f"UPDATED event: restarted failed model instance {mi.name} on subordinate worker."
                     )
 
             return
@@ -736,7 +748,11 @@ class ServeManager:
         return f"{self._serve_log_dir}/{mi.id}.{restart_count}.log"
 
     def _persist_container_logs(
-        self, workload_name: str, log_path: str, stop_event: threading.Event
+        self,
+        workload_name: str,
+        log_path: str,
+        stop_event: threading.Event,
+        token: Optional[str] = None,
     ):
         """Persist container logs to local file.
 
@@ -747,6 +763,8 @@ class ServeManager:
             workload_name: Name of the container workload
             log_path: Path to save container logs
             stop_event: Event to signal thread to stop
+            token: Operation token identifying a specific container in the workload.
+                If None, logs from the default (index=0) container are fetched.
         """
         retry_count = 0
 
@@ -754,6 +772,7 @@ class ServeManager:
             try:
                 log_stream = logs_workload(
                     name=workload_name,
+                    token=token,
                     tail=-1,
                     follow=True,
                 )
@@ -784,17 +803,103 @@ class ServeManager:
 
         logger.debug(f"Log persistence thread for {workload_name} exiting")
 
-    def _start_container_log_persistence(self, mi: ModelInstance):
-        """Start background thread to persist container logs.
+    def _discover_sidecar_logs(
+        self,
+        mi_id: int,
+        workload_name: str,
+        restart_count: int,
+        stop_event: threading.Event,
+    ):
+        """Background thread that waits for sidecar containers to appear.
 
-        Creates a daemon thread with a stop event for graceful shutdown.
-        Tracks the thread to allow cleanup on model instance restart/stop.
+        Polls get_workload() until sidecar containers are found in the
+        loggable list, then starts log persistence threads for each.
+        Exits when sidecars are found or stop_event is set.
+
+        Args:
+            mi_id: Model instance ID
+            workload_name: Workload name
+            restart_count: Current restart count for log file naming
+            stop_event: Event to signal thread to stop
+        """
+        while not stop_event.is_set():
+            try:
+                workload = get_workload(workload_name)
+                if workload and workload.loggable:
+                    sidecars = [op for op in workload.loggable if op.name != "default"]
+                    if sidecars:
+                        self._start_sidecar_log_threads(
+                            mi_id,
+                            workload_name,
+                            workload.loggable,
+                            restart_count,
+                        )
+                        logger.debug(f"Sidecar discovery for {workload_name} complete")
+                        return
+            except Exception:
+                pass
+            stop_event.wait(timeout=2)
+
+    def _start_sidecar_log_threads(
+        self,
+        mi_id: int,
+        workload_name: str,
+        loggable_ops: list,
+        restart_count: int,
+    ):
+        """Start additional log persistence threads for sidecar containers.
+
+        Called from the main log persistence thread once the workload is available
+        and multiple loggable containers are discovered.
+
+        Args:
+            mi_id: Model instance ID
+            workload_name: Workload name
+            loggable_ops: List of WorkloadStatusOperation from workload.loggable
+            restart_count: Current restart count for log file naming
+        """
+        names = []
+        for op in loggable_ops:
+            if op.name == "default":
+                continue  # Main container handled by caller thread
+
+            log_path = (
+                f"{self._serve_log_dir}/{mi_id}.container."
+                f"{op.name}.{restart_count}.log"
+            )
+            stop_event = threading.Event()
+
+            thread = threading.Thread(
+                target=self._persist_container_logs,
+                args=(workload_name, log_path, stop_event, op.token),
+                daemon=True,
+                name=f"log-persist-{workload_name}-{op.name}",
+            )
+            thread.start()
+
+            # Append to existing tracking lists.
+            self._log_persistence_threads.setdefault(mi_id, []).append(thread)
+            self._log_persistence_stop_events.setdefault(mi_id, []).append(stop_event)
+            names.append(op.name)
+
+        if names:
+            logger.debug(
+                f"Started sidecar log persistence threads for {workload_name}: "
+                f"{names}"
+            )
+
+    def _start_container_log_persistence(self, mi: ModelInstance):
+        """Start a background thread to persist container logs.
+
+        Starts a single "main" log persistence thread. The thread will
+        automatically discover sidecar containers (e.g., Ray head) once
+        the workload is created, and spawn additional threads for each.
 
         Args:
             mi: The model instance.
         """
 
-        # Stop and clean up existing thread if any
+        # Stop and clean up existing threads if any
         self._stop_container_log_persistence(mi.id)
 
         # Use deployment metadata name for the actual workload name,
@@ -803,48 +908,57 @@ class ServeManager:
         workload_name = deployment_metadata.name if deployment_metadata else mi.name
 
         restart_count = mi.restart_count or 0
-        container_log_path = (
-            f"{self._serve_log_dir}/{mi.id}.container.{restart_count}.log"
-        )
+        log_path = f"{self._serve_log_dir}/{mi.id}.container.{restart_count}.log"
 
-        # Create stop event for this thread
         stop_event = threading.Event()
-        self._log_persistence_stop_events[mi.id] = stop_event
 
-        # Create daemon thread for log persistence
+        # Main container log thread.
         thread = threading.Thread(
             target=self._persist_container_logs,
-            args=(workload_name, container_log_path, stop_event),
+            args=(workload_name, log_path, stop_event),
             daemon=True,
             name=f"log-persist-{workload_name}",
         )
         thread.start()
-        self._log_persistence_threads[mi.id] = thread
+
+        # Sidecar discovery thread — polls until sidecar containers appear,
+        # then starts additional log threads for each.
+        discovery_thread = threading.Thread(
+            target=self._discover_sidecar_logs,
+            args=(mi.id, workload_name, restart_count, stop_event),
+            daemon=True,
+            name=f"log-discover-{workload_name}",
+        )
+        discovery_thread.start()
+
+        self._log_persistence_threads[mi.id] = [thread, discovery_thread]
+        self._log_persistence_stop_events[mi.id] = [stop_event]
         logger.debug(f"Started container log persistence thread for {mi.name}")
 
     def _stop_container_log_persistence(
         self, model_instance_id: int, timeout: float = 2.0
     ):
-        """Stop container log persistence thread for a model instance.
+        """Stop all container log persistence threads for a model instance.
 
         Args:
             model_instance_id: The model instance ID
-            timeout: Maximum time to wait for thread to stop (seconds)
+            timeout: Maximum time to wait for each thread to stop (seconds)
         """
-        # Signal thread to stop
-        stop_event = self._log_persistence_stop_events.pop(model_instance_id, None)
-        if stop_event:
+        # Signal all threads to stop
+        stop_events = self._log_persistence_stop_events.pop(model_instance_id, [])
+        for stop_event in stop_events:
             stop_event.set()
 
-        # Wait for thread to finish
-        thread = self._log_persistence_threads.pop(model_instance_id, None)
-        if thread and thread.is_alive():
-            thread.join(timeout=timeout)
-            if thread.is_alive():
-                logger.warning(
-                    f"Log persistence thread for model instance {model_instance_id} "
-                    f"did not stop within {timeout}s"
-                )
+        # Wait for all threads to finish
+        threads = self._log_persistence_threads.pop(model_instance_id, [])
+        for thread in threads:
+            if thread and thread.is_alive():
+                thread.join(timeout=timeout)
+                if thread.is_alive():
+                    logger.warning(
+                        f"Log persistence thread {thread.name} for model instance "
+                        f"{model_instance_id} did not stop within {timeout}s"
+                    )
 
     def _cleanup_old_logs(self, model_instance_id: int, current_restart_count: int):
         """Remove serve log files except the current and previous restart_count.
@@ -859,18 +973,33 @@ class ServeManager:
         try:
             log_dir = Path(self._serve_log_dir)
 
-            # Separate main logs and container logs
+            # Separate main logs, container logs, and sidecar container logs
             main_log_pattern = f"{model_instance_id}.*.log"
             all_main_logs = [
                 f for f in log_dir.glob(main_log_pattern) if '.container.' not in f.name
             ]
 
             container_log_pattern = f"{model_instance_id}.container.*.log"
-            all_container_logs = list(log_dir.glob(container_log_pattern))
+            all_container_files = list(log_dir.glob(container_log_pattern))
+
+            # Split into default container logs (e.g., 42.container.0.log)
+            # and sidecar container logs (e.g., 42.container.ray-head.0.log)
+            default_container_logs = [
+                f
+                for f in all_container_files
+                if extract_container_restart_count(f.name) > 0
+                or re.match(rf'{model_instance_id}\.container\.\d+\.log', f.name)
+            ]
+            sidecar_container_logs = [
+                f for f in all_container_files if f not in default_container_logs
+            ]
 
             self._cleanup_log_type(all_main_logs, current_restart_count, "main")
             self._cleanup_log_type(
-                all_container_logs, current_restart_count, "container"
+                default_container_logs, current_restart_count, "container"
+            )
+            self._cleanup_log_type(
+                sidecar_container_logs, current_restart_count, "sidecar_container"
             )
 
         except Exception as e:
@@ -888,11 +1017,17 @@ class ServeManager:
         if current_restart_count > 0:
             keep.add(current_restart_count - 1)
 
-        extract_fn = (
-            extract_restart_count
-            if log_type == "main"
-            else extract_container_restart_count
-        )
+        def _extract_sidecar_restart_count(filename: str) -> int:
+            """Extract restart count from {id}.container.{name}.{restart_count}.log"""
+            match = re.match(r'\d+\.container\.[^.]+\.(\d+)\.log', filename)
+            return int(match.group(1)) if match else 0
+
+        extract_fns = {
+            "main": extract_restart_count,
+            "container": extract_container_restart_count,
+            "sidecar_container": _extract_sidecar_restart_count,
+        }
+        extract_fn = extract_fns.get(log_type, extract_container_restart_count)
 
         for f in log_files:
             rc = extract_fn(f.name)

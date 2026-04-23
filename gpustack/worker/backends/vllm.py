@@ -176,6 +176,20 @@ class VLLMServer(InferenceServer):
                 ray_command_args = ray_command + ray_command_args
                 ray_command = None
 
+            # Copy envs and override RAY_LOG_TO_STDERR for the sidecar
+            # so Ray head logs go to stderr (captured by container log stream),
+            # while keeping RAY_LOG_TO_STDERR=0 in the main container to avoid
+            # polluting vLLM's log output with Ray worker logs.
+            sidecar_envs = list(run_container.envs)
+            ray_stderr_found = False
+            for i, e in enumerate(sidecar_envs):
+                if e.name == "RAY_LOG_TO_STDERR":
+                    sidecar_envs[i] = ContainerEnv(name="RAY_LOG_TO_STDERR", value="1")
+                    ray_stderr_found = True
+                    break
+            if not ray_stderr_found:
+                sidecar_envs.append(ContainerEnv(name="RAY_LOG_TO_STDERR", value="1"))
+
             sidecar_container = Container(
                 image=image,
                 name="ray-head",
@@ -189,7 +203,7 @@ class VLLMServer(InferenceServer):
                     run_as_user=container_config.user,
                     run_as_group=container_config.group,
                 ),
-                envs=run_container.envs,
+                envs=sidecar_envs,
                 resources=run_container.resources,
                 mounts=run_container.mounts,
                 ports=ray_ports,
