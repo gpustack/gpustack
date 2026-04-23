@@ -47,6 +47,10 @@ gpustack_metrics:
     type: Histogram
     description: "Number of generation tokens processed."
 
+  gpustack:prompt_tokens_cached:
+    type: Counter
+    description: "Total number of prompt tokens served from cache."
+
   gpustack:time_to_first_token_seconds:
     type: Histogram
     description: "Time to generate first token."
@@ -59,6 +63,34 @@ gpustack_metrics:
     type: Histogram
     description: "End-to-end request latency."
 
+  gpustack:request_queue_time_seconds:
+    type: Histogram
+    description: "Time spent waiting in the request queue."
+
+  gpustack:request_inference_time_seconds:
+    type: Histogram
+    description: "Time spent in the running/inference phase."
+
+  gpustack:request_prefill_time_seconds:
+    type: Histogram
+    description: "Time spent in the prefill phase."
+
+  gpustack:request_decode_time_seconds:
+    type: Histogram
+    description: "Time spent in the decode phase."
+
+  gpustack:request_prefill_kv_computed_tokens:
+    type: Histogram
+    description: "Number of new KV tokens computed during prefill, excluding cache hits."
+
+  gpustack:request_params_n:
+    type: Histogram
+    description: "Requested number of parallel completions per request."
+
+  gpustack:request_params_max_tokens:
+    type: Histogram
+    description: "Requested max_tokens value per request."
+
   gpustack:request_success:
     type: Counter
     description: "Total number of successful requests."
@@ -67,27 +99,49 @@ gpustack_metrics:
     type: Histogram
     description: "Time to generate the next token after the previous token has been produced."
 
+  gpustack:spec_decode_accept_rate:
+    type: Gauge
+    description: "Average speculative decoding acceptance rate."
+
+  gpustack:spec_decode_accepted_tokens:
+    type: Counter
+    description: "Total number of accepted speculative draft tokens."
+
+  gpustack:spec_decode_draft_tokens:
+    type: Counter
+    description: "Total number of speculative draft tokens."
+
 
 # -----------------------------
 # Runtime Metrics Mapping (user-configurable)
 # -----------------------------
 runtime_mapping:
   vLLM:
-    "*": # 0.14.1
+    "*": # 0.19.1
       vllm:num_requests_running: gpustack:num_requests_running
       vllm:num_requests_waiting: gpustack:num_requests_waiting
       vllm:prefix_cache_hits: gpustack:prefix_cache_hits
       vllm:prefix_cache_queries: gpustack:prefix_cache_queries
       vllm:kv_cache_usage_perc: gpustack:kv_cache_usage_ratio
       vllm:prompt_tokens: gpustack:prompt_tokens
+      vllm:prompt_tokens_cached: gpustack:prompt_tokens_cached
       vllm:generation_tokens: gpustack:generation_tokens
       vllm:time_to_first_token_seconds: gpustack:time_to_first_token_seconds
       vllm:request_time_per_output_token_seconds: gpustack:time_per_output_token_seconds
       vllm:e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
+      vllm:request_queue_time_seconds: gpustack:request_queue_time_seconds
+      vllm:request_inference_time_seconds: gpustack:request_inference_time_seconds
+      vllm:request_prefill_time_seconds: gpustack:request_prefill_time_seconds
+      vllm:request_decode_time_seconds: gpustack:request_decode_time_seconds
+      vllm:request_prefill_kv_computed_tokens: gpustack:request_prefill_kv_computed_tokens
+      vllm:request_params_n: gpustack:request_params_n
+      vllm:request_params_max_tokens: gpustack:request_params_max_tokens
       vllm:request_success: gpustack:request_success
       vllm:request_prompt_tokens: gpustack:request_prompt_tokens
       vllm:request_generation_tokens: gpustack:request_generation_tokens
       vllm:inter_token_latency_seconds: gpustack:inter_token_latency_seconds
+      vllm:spec_decode_num_accepted_tokens: gpustack:spec_decode_accepted_tokens
+      vllm:spec_decode_num_draft_tokens: gpustack:spec_decode_draft_tokens
     "<0.11.1":
       vllm:num_requests_swapped: gpustack:num_requests_swapped
     "<0.11.0":
@@ -98,17 +152,19 @@ runtime_mapping:
        vllm:gpu_cache_usage_perc: gpustack:kv_cache_usage_ratio
 
   SGLang:
-    "*": # 0.5.8
+    "*": # 0.5.10.post1
       sglang:num_running_reqs: gpustack:num_requests_running
       sglang:num_queue_reqs: gpustack:num_requests_waiting
-      sglang:cached_tokens_total: gpustack:prefix_cache_hits
       sglang:cache_hit_rate: gpustack:prefix_cache_hit_rate
       sglang:token_usage: gpustack:kv_cache_usage_ratio
       sglang:prompt_tokens: gpustack:prompt_tokens
+      sglang:cached_tokens: gpustack:prompt_tokens_cached
       sglang:generation_tokens: gpustack:generation_tokens
       sglang:time_to_first_token_seconds: gpustack:time_to_first_token_seconds
       sglang:e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
+      sglang:queue_time_seconds: gpustack:request_queue_time_seconds
       sglang:inter_token_latency_seconds: gpustack:inter_token_latency_seconds
+      sglang:spec_accept_rate: gpustack:spec_decode_accept_rate
     "<=0.4.4":
       sglang:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
       
