@@ -72,6 +72,14 @@ DISABLE_OS_FILELOCK = os.getenv("GPUSTACK_DISABLE_OS_FILELOCK", "false").lower()
     "true",
     "1",
 ]
+
+# Opt out of automatically writing gpustack's configured port ranges to
+# /proc/sys/net/ipv4/ip_local_reserved_ports. Use when the environment already
+# manages the reservation, or when the configured ranges would starve the
+# ephemeral pool after reservation.
+SKIP_RESERVE_EPHEMERAL_PORTS = os.getenv(
+    "GPUSTACK_SKIP_RESERVE_EPHEMERAL_PORTS", "false"
+).lower() in ["true", "1"]
 # Add debug logs for slow worker status collection, default to 3 minutes
 WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS = float(
     os.getenv("GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS", 180)

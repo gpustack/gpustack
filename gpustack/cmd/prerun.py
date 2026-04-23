@@ -14,7 +14,8 @@ from gpustack.cmd.start import (
     parse_args,
 )
 from gpustack.utils.envs import get_gpustack_env
-from gpustack.utils.network import is_port_available
+from gpustack.utils.ephemeral_ports import ensure_reserved_against_ephemeral
+from gpustack.utils.network import is_port_available, parse_port_range
 from gpustack.utils.s6_services import (
     gateway_services,
     postgres_services,
@@ -65,6 +66,7 @@ def run(args: argparse.Namespace):
         prepare_s6_overlay(enabled_services, dependency_services, Path(s6_base_path))
 
         check_ports_availability(cfg, *enabled_services)
+        reserve_ports_against_ephemeral(cfg)
         if "postgres" in enabled_services:
             prepare_postgres_config(cfg)
         if cfg.gateway_mode == GatewayModeEnum.embedded:
@@ -130,6 +132,34 @@ def check_ports_availability(cfg: Config, *services: str):
             should_fail = True
     if should_fail:
         raise Exception("One or more required ports are not available.")
+
+
+def reserve_ports_against_ephemeral(cfg: Config):
+    """
+    Reserve gpustack's service and Ray port ranges against the kernel's
+    ephemeral port range so outbound connections (by gpustack, higress, or
+    any other sibling process sharing the netns) don't transiently squat on
+    ports that Ray or inference servers will later bind().
+
+    Runs here (in prerun) rather than inside the worker so the reservation
+    is applied before any s6 service starts. Skipped on server-only hosts:
+    the configured ranges are only bound by model instances and Ray, both
+    of which run on worker hosts.
+    """
+    if cfg.server_role() not in [Config.ServerRole.WORKER, Config.ServerRole.BOTH]:
+        return
+
+    ranges = []
+    for name in ("service_port_range", "ray_port_range"):
+        value = getattr(cfg, name, None)
+        if not value:
+            continue
+        try:
+            ranges.append((name, parse_port_range(value)))
+        except ValueError:
+            logger.debug("Skipping unparseable %s=%r", name, value)
+    if ranges:
+        ensure_reserved_against_ephemeral(ranges)
 
 
 def cleanup_s6_services(base_path: Path, *services: str):
