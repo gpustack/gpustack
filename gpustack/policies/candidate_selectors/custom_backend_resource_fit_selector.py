@@ -300,8 +300,11 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                     largest_worker_vram = total_available_vram
                     largest_worker_gpu_count = len(available_gpus)
 
-        if not candidates:
-            # Add diagnostic message similar to vLLM multi-GPU path (without utilization)
+        if not candidates and largest_worker_gpu_count >= 2:
+            # Only emit the multi-GPU diagnostic when at least one worker with
+            # >=2 GPUs was actually considered; otherwise this message would
+            # report "0.0 GiB across 0 GPUs" and mask the more relevant
+            # single-GPU diagnostic.
             event_msg_list = ListMessageBuilder(
                 f"The largest available worker has {byte_to_gib(largest_worker_vram)} GiB allocatable VRAM across {largest_worker_gpu_count} GPUs."
             )

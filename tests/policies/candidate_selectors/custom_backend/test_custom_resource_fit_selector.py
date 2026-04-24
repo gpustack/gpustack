@@ -8,7 +8,11 @@ from gpustack.policies.candidate_selectors.custom_backend_resource_fit_selector 
     CustomBackendResourceFitSelector,
 )
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
-from tests.fixtures.workers.fixtures import linux_nvidia_4_4080_16gx4, linux_cpu_1
+from tests.fixtures.workers.fixtures import (
+    linux_nvidia_0_4090_24gx1,
+    linux_nvidia_4_4080_16gx4,
+    linux_cpu_1,
+)
 from tests.policies.candidate_selectors.vllm.test_vllm_resource_fit_selector import (
     make_model,
 )
@@ -99,6 +103,18 @@ async def test_schedule_single_work_multi_gpu(
             [
                 '- The model requires approximately 700.0 GiB of VRAM and 70.0 GiB of RAM.\n'
                 '- CPU-only inference is supported. Requires at least 70.0 GiB RAM.'
+            ],
+        ),
+        (
+            # Single-GPU worker that cannot fit the model: the multi-GPU
+            # diagnostic must not appear (no worker has >=2 GPUs), otherwise
+            # the user sees a misleading "0.0 GiB across 0 GPUs" message.
+            [linux_nvidia_0_4090_24gx1()],
+            make_model(1, None, "Qwen/Qwen-Image-Edit"),
+            {"GPUSTACK_MODEL_VRAM_CLAIM": str(54 * 1024**3)},
+            [
+                '- The model requires approximately 54.0 GiB of VRAM and 5.4 GiB of RAM.\n'
+                '- The current available GPU only has 24.23 GiB allocatable VRAM.'
             ],
         ),
     ],
