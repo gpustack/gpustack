@@ -62,6 +62,7 @@ def create_model_instance_snapshot(
         backend_version=model_instance.backend_version,
         api_detected_backend_version=model_instance.api_detected_backend_version,
         backend_parameters=model.backend_parameters,
+        injected_backend_parameters=model_instance.injected_backend_parameters,
         env=model.env,
         image_name=model.image_name,
         run_command=model.run_command,

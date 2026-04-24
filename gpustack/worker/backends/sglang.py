@@ -28,6 +28,7 @@ from gpustack.utils.command import (
     find_bool_parameter,
     find_parameter,
     extend_args_no_exist,
+    format_backend_parameters,
 )
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import (
@@ -85,11 +86,21 @@ class SGLangServer(InferenceServer):
         command_script = self._get_serving_command_script(env)
 
         # Build SGLang command arguments
-        command_args = self._build_command_args(
+        command_args, injected = self._build_command_args(
             port=self._get_serving_port(),
             is_distributed=deployment_metadata.distributed,
             is_distributed_leader=deployment_metadata.distributed_leader,
         )
+
+        try:
+            self._update_model_instance(
+                self._model_instance.id,
+                injected_backend_parameters=format_backend_parameters(injected) or None,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to persist injected backend parameters for {self._model_instance.name}: {e}"
+            )
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
@@ -126,9 +137,19 @@ class SGLangServer(InferenceServer):
 
         command_script = self._get_serving_command_script(env)
 
-        command_args = self._build_command_args_for_diffusion(
+        command_args, injected = self._build_command_args_for_diffusion(
             port=self._get_serving_port(),
         )
+
+        try:
+            self._update_model_instance(
+                self._model_instance.id,
+                injected_backend_parameters=format_backend_parameters(injected) or None,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to persist injected backend parameters for {self._model_instance.name}: {e}"
+            )
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
@@ -296,9 +317,14 @@ class SGLangServer(InferenceServer):
         port: int,
         is_distributed: bool,
         is_distributed_leader: bool,
-    ) -> List[str]:
+    ) -> Tuple[List[str], List[str]]:
         """
         Build SGLang command arguments for container execution.
+
+        Returns:
+            A tuple of (full_arguments, injected_backend_parameters) where
+            injected_backend_parameters contains only the arguments automatically
+            added by GPUStack, excluding user-specified and infrastructure args.
         """
         arguments = [
             "python",
@@ -310,6 +336,10 @@ class SGLangServer(InferenceServer):
 
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
+
+        # Mark the boundary after the command prefix; everything added up to
+        # this point before user params is GPUStack-injected.
+        prefix_len = len(arguments)
 
         specified_max_model_len = find_parameter(
             self._model.backend_parameters,
@@ -380,10 +410,7 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
-        # Add user-defined backend parameters
-        arguments.extend(self._flatten_backend_param())
-
-        # Add platform-specific parameters
+        # Add platform-specific parameters before user params so they appear in injected slice.
         if is_ascend(self._get_selected_gpu_devices()):
             # See https://github.com/sgl-project/sglang/pull/7722.
             arguments.extend(
@@ -400,14 +427,22 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
+        # All GPUStack-injected args have been added; slice before appending user params.
+        injected = arguments[prefix_len:]
+
+        # Add user-defined backend parameters
+        arguments.extend(self._flatten_backend_param())
+
         # Set host and port
         extend_args_no_exist(
             arguments, ("--host", self._worker.ip), ("--port", str(port))
         )
 
-        return arguments
+        return arguments, injected
 
-    def _build_command_args_for_diffusion(self, port: int):
+    def _build_command_args_for_diffusion(
+        self, port: int
+    ) -> Tuple[List[str], List[str]]:
         arguments = [
             "sglang",
             "serve",
@@ -418,6 +453,8 @@ class SGLangServer(InferenceServer):
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
 
+        prefix_len = len(arguments)
+
         # Add auto parallelism arguments if needed
         auto_parallelism_arguments = get_auto_parallelism_arguments(
             self._model.backend_parameters, self._model_instance, False
@@ -427,6 +464,8 @@ class SGLangServer(InferenceServer):
         attention_arguments = self._get_attention_backend_for_diffusion()
         arguments.extend(attention_arguments)
 
+        injected = arguments[prefix_len:]
+
         # Add user-defined backend parameters
         arguments.extend(self._flatten_backend_param())
 
@@ -435,7 +474,7 @@ class SGLangServer(InferenceServer):
             arguments, ("--host", self._worker.ip), ("--port", str(port))
         )
 
-        return arguments
+        return arguments, injected
 
     def _get_attention_backend_for_diffusion(self) -> List[str]:
         if (

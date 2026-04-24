@@ -1,6 +1,9 @@
 import argparse
 
-from gpustack.worker.backends.ascend_mindie import AscendMindIEParameters
+from gpustack.worker.backends.ascend_mindie import (
+    AscendMindIEParameters,
+    AscendMindIEServer,
+)
 import pytest
 
 
@@ -341,3 +344,49 @@ async def test_ascend_mindie_parameters_parallelism_violation(
             local_world_size=local_world_size,
         )
         params.from_args_and_envs(args)
+
+
+def test_ascend_mindie_parameters_changed_backend_parameters():
+    baseline = AscendMindIEParameters(max_seq_len=32768)
+    baseline.from_args_and_envs([])
+
+    params = AscendMindIEParameters(max_seq_len=32768)
+    params.from_args_and_envs(["--max-seq-len", "8192", "--dtype", "float16"])
+
+    assert params.changed_backend_parameters(baseline) == [
+        "--max-seq-len",
+        "8192",
+        "--max-input-token-len",
+        "8192",
+        "--max-prefill-tokens",
+        "8192",
+        "--max-iter-times",
+        "8192",
+        "--dtype",
+        "float16",
+    ]
+
+
+def test_filter_user_defined_parameters():
+    parameters = [
+        "--max-seq-len",
+        "8192",
+        "--max-input-token-len",
+        "8192",
+        "--dtype",
+        "float16",
+    ]
+    user_backend_parameters = ["--max-input-token-len", "4096", "--dtype=bfloat16"]
+
+    assert AscendMindIEServer._filter_user_defined_parameters(
+        parameters,
+        user_backend_parameters,
+    ) == ["--max-seq-len", "8192"]
+
+
+def test_backend_parameter_name_keeps_store_true_no_prefix():
+    assert AscendMindIEServer._backend_parameter_name("--no-metrics") == "no-metrics"
+    assert (
+        AscendMindIEServer._backend_parameter_name("--no-enable-split")
+        == "enable-split"
+    )

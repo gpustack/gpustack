@@ -475,6 +475,9 @@ class ModelInstanceBase(SQLModel, ModelSource):
     backend: Optional[str] = None
     backend_version: Optional[str] = None
     api_detected_backend_version: Optional[str] = None
+    injected_backend_parameters: Optional[List[str]] = Field(
+        sa_column=Column(JSON), default=None
+    )
 
     distributed_servers: Optional[DistributedServers] = Field(
         sa_column=Column(pydantic_column_type(DistributedServers)), default=None

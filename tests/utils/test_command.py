@@ -7,6 +7,7 @@ from gpustack.utils.command import (
     find_bool_parameter,
     get_versioned_command,
     extend_args_no_exist,
+    format_backend_parameters,
 )
 
 
@@ -141,3 +142,30 @@ def test_get_versioned_command(command_name, version, expected):
 def test_extend_args_no_exist(initial_args, new_args, expected):
     extend_args_no_exist(initial_args, *new_args)
     assert initial_args == expected
+
+
+@pytest.mark.parametrize(
+    'parameters,expected',
+    [
+        (
+            [
+                '--max-model-len',
+                '8192',
+                '--disable-access-log-for-endpoints',
+                '/metrics',
+            ],
+            ['--max-model-len=8192', '--disable-access-log-for-endpoints=/metrics'],
+        ),
+        (
+            ['--enable-prefix-caching', '--max-seq-len=32768'],
+            ['--enable-prefix-caching', '--max-seq-len=32768'],
+        ),
+        (
+            ['--max-prefill-tokens', '-1', '--no-metrics'],
+            ['--max-prefill-tokens=-1', '--no-metrics'],
+        ),
+        (None, []),
+    ],
+)
+def test_format_backend_parameters(parameters, expected):
+    assert format_backend_parameters(parameters) == expected

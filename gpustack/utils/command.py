@@ -132,3 +132,49 @@ def extend_args_no_exist(
             # Single flag without value
             if arg not in arguments:
                 arguments.append(arg)
+
+
+def format_backend_parameters(parameters: Optional[List[str]]) -> List[str]:
+    """
+    Format flattened command-line tokens as backend parameter entries.
+
+    Examples:
+        ["--max-model-len", "8192", "--enable-prefix-caching"]
+            -> ["--max-model-len=8192", "--enable-prefix-caching"]
+        ["--dtype=float16"] -> ["--dtype=float16"]
+    """
+    if not parameters:
+        return []
+
+    formatted = []
+    index = 0
+    while index < len(parameters):
+        parameter = parameters[index]
+        if not parameter.startswith("-") or "=" in parameter:
+            formatted.append(parameter)
+            index += 1
+            continue
+
+        if index + 1 < len(parameters) and not _looks_like_parameter(
+            parameters[index + 1]
+        ):
+            formatted.append(f"{parameter}={parameters[index + 1]}")
+            index += 2
+            continue
+
+        formatted.append(parameter)
+        index += 1
+
+    return formatted
+
+
+def _looks_like_parameter(value: str) -> bool:
+    if not value.startswith("-"):
+        return False
+
+    # Negative numeric values are parameter values, not flags.
+    try:
+        float(value)
+        return False
+    except ValueError:
+        return True

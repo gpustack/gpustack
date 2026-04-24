@@ -213,6 +213,17 @@ def upgrade() -> None:
         )
     ### end
     
+    ### Ensure model_instances has injected_backend_parameters column
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        if not column_exists('model_instances', 'injected_backend_parameters'):
+            batch_op.add_column(
+                sa.Column(
+                    'injected_backend_parameters',
+                    gpustack.schemas.common.JSON(),
+                    nullable=True,
+                )
+            )
+    ### end
 
     
 
@@ -278,4 +289,9 @@ def downgrade() -> None:
         batch_op.drop_column("user_name")
         batch_op.drop_column("cluster_name")
         batch_op.drop_column("prompt_cached_token_count")
+    ### end
+    
+    ### Remove injected_backend_parameters column from model_instances
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.drop_column('injected_backend_parameters')
     ### end

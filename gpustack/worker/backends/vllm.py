@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.deployer import (
     Container,
@@ -30,6 +30,7 @@ from gpustack.utils.command import (
     find_bool_parameter,
     find_int_parameter,
     extend_args_no_exist,
+    format_backend_parameters,
 )
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
@@ -81,10 +82,20 @@ class VLLMServer(InferenceServer):
 
         command_script = self._get_serving_command_script(env)
 
-        command_args = self._build_command_args(
+        command_args, injected = self._build_command_args(
             port=self._get_serving_port(),
             is_distributed=deployment_metadata.distributed,
         )
+
+        try:
+            self._update_model_instance(
+                self._model_instance.id,
+                injected_backend_parameters=format_backend_parameters(injected) or None,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to persist injected backend parameters for {self._model_instance.name}: {e}"
+            )
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
@@ -440,9 +451,14 @@ class VLLMServer(InferenceServer):
         self,
         port: int,
         is_distributed: bool,
-    ) -> List[str]:
+    ) -> Tuple[List[str], List[str]]:
         """
         Build vLLM command arguments for container execution.
+
+        Returns:
+            A tuple of (full_arguments, injected_backend_parameters) where
+            injected_backend_parameters contains only the arguments automatically
+            added by GPUStack, excluding user-specified and infrastructure args.
         """
         arguments = [
             "vllm",
@@ -452,6 +468,10 @@ class VLLMServer(InferenceServer):
 
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
+
+        # Mark the boundary after the command prefix; everything added up to
+        # this point before user params is GPUStack-injected.
+        prefix_len = len(arguments)
 
         # Omni modalities
         omni_enabled = find_bool_parameter(
@@ -548,6 +568,9 @@ class VLLMServer(InferenceServer):
                 ]
             )
 
+        # All GPUStack-injected args have been added; slice before appending user params.
+        injected = arguments[prefix_len:]
+
         # Inject user-defined backend parameters
         arguments.extend(self._flatten_backend_param())
 
@@ -560,7 +583,7 @@ class VLLMServer(InferenceServer):
             ("--served-model-name", self._model_instance.model_name),
         )
 
-        return arguments
+        return arguments, injected
 
     def _build_ray_configuration(
         self,

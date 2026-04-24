@@ -5,7 +5,7 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from gpustack_runtime.deployer import (
     Container,
@@ -20,6 +20,7 @@ from gpustack_runtime.deployer import (
 from gpustack_runtime.envs import to_bool
 
 from gpustack.schemas.models import ModelInstanceDeploymentMetadata
+from gpustack.utils.command import find_parameter, format_backend_parameters
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
 
@@ -112,6 +113,60 @@ class AscendMindIEParameters:
     enable_buffer_response: bool = False
     prefill_expected_time_ms: Optional[int] = None
     decode_expected_time_ms: Optional[int] = None
+
+    def changed_backend_parameters(
+        self,
+        baseline: "AscendMindIEParameters",
+        exclude_names: Optional[set] = None,
+    ) -> List[str]:
+        exclude_names = exclude_names or set()
+        parameters = []
+        # Add here when the field has no corresponding CLI flag. Cases:
+        #   - `*_parsed`: derived form of another raw input field, not a flag.
+        #   - `local_world_size` / `world_size`: set externally from GPU topology
+        #     via constructor, never registered with argparse.
+        skipped_fields = {
+            "kv_pool_config_parsed",
+            "models_parsed",
+            "override_generation_config_parsed",
+            "rope_scaling_parsed",
+            "local_world_size",
+            "world_size",
+        }
+        # Add here when argparse uses `action='store_true'` (no `--no-foo`).
+        # Should not add fields using `BooleanOptionalAction` — they support `--no-foo`.
+        store_true_fields = {
+            "trust_remote_code",
+            "memory_decoding_dynamic_algo",
+            "no_metrics",
+            "enforce_eager",
+        }
+
+        for field in dataclasses.fields(self):
+            name = field.name
+            if name in skipped_fields:
+                continue
+
+            flag_name = name.replace("_", "-")
+            if flag_name in exclude_names:
+                continue
+
+            value = getattr(self, name)
+            if value == getattr(baseline, name):
+                continue
+
+            flag = f"--{flag_name}"
+            if isinstance(value, bool):
+                if value:
+                    parameters.append(flag)
+                elif name not in store_true_fields:
+                    parameters.append(f"--no-{flag_name}")
+                continue
+
+            if value is not None:
+                parameters.extend([flag, str(value)])
+
+        return parameters
 
     def from_args_and_envs(
         self, args: List[str], envs: Optional[Dict[str, str]] = None
@@ -1185,11 +1240,25 @@ class AscendMindIEServer(InferenceServer):
 
         # - Model config
         derived_max_seq_len = self._derive_max_model_len(default=8192)
-        max_seq_len = derived_max_seq_len
-        # -- Mutate default max sequence length (aka. context length),
-        #    but allow to change it with below advanced parameters.
-        if max_seq_len > 8192:
-            max_seq_len = 8192
+        user_backend_parameters = self._flatten_backend_param()
+        local_world_size = len(self._model_instance.gpu_indexes)
+        world_size = local_world_size
+        if deployment_metadata.distributed:
+            world_size = local_world_size * (len(subworkers) + 1)
+
+        (
+            params,
+            injected_backend_parameters,
+            apply_backend_parameters,
+        ) = self._prepare_backend_parameters(
+            local_world_size=local_world_size,
+            world_size=world_size,
+            derived_max_seq_len=derived_max_seq_len,
+            user_backend_parameters=user_backend_parameters,
+            env=env,
+        )
+
+        max_seq_len = params.max_seq_len
         model_deploy_config["maxSeqLen"] = max_seq_len
         model_deploy_config["maxInputTokenLen"] = max_seq_len
         model_deploy_config["truncation"] = False
@@ -1206,27 +1275,7 @@ class AscendMindIEServer(InferenceServer):
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0009.html,
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0300.html,
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0425.html.
-        local_world_size = len(self._model_instance.gpu_indexes)
-        world_size = local_world_size
-        if deployment_metadata.distributed:
-            world_size = local_world_size * (len(subworkers) + 1)
-        params = AscendMindIEParameters(
-            local_world_size=local_world_size,
-            world_size=world_size,
-            max_seq_len=max_seq_len,
-        )
-        # For Ascend 310P, we need to default dtype to float16.
-        # As a workaround, we should allow users to override this with backend parameters.
-        if is_ascend_310p(self._get_selected_gpu_devices()):
-            original_params = self._model.backend_parameters or []
-            self._model.backend_parameters = ["--dtype=float16"]
-            self._model.backend_parameters.extend(original_params)
-        if self._model.backend_parameters:
-            logger.debug(
-                f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
-            )
-            params.from_args_and_envs(self._flatten_backend_param(), env)
-
+        if apply_backend_parameters:
             # -- Log config
             log_config["logLevel"] = params.log_level
             env["MINDIE_LOG_LEVEL"] = params.log_level.upper()
@@ -1550,6 +1599,20 @@ class AscendMindIEServer(InferenceServer):
             ]
         )
 
+        try:
+            self._update_model_instance(
+                self._model_instance.id,
+                injected_backend_parameters=format_backend_parameters(
+                    injected_backend_parameters
+                )
+                or None,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to persist injected backend parameters for "
+                f"{self._model_instance.name}: {e}"
+            )
+
         self._create_workload(
             deployment_metadata=deployment_metadata,
             command=command,
@@ -1559,6 +1622,188 @@ class AscendMindIEServer(InferenceServer):
             config_files=config_files,
             working_dir=str(install_path.joinpath("bin")),
         )
+
+    def _prepare_backend_parameters(
+        self,
+        local_world_size: int,
+        world_size: int,
+        derived_max_seq_len: int,
+        user_backend_parameters: List[str],
+        env: Dict[str, str],
+    ) -> Tuple[AscendMindIEParameters, List[str], bool]:
+        baseline_params = AscendMindIEParameters()
+        baseline_params.from_args_and_envs([], env)
+
+        implicit_backend_parameters = self._get_implicit_backend_parameters(
+            user_backend_parameters,
+            derived_max_seq_len,
+        )
+        params = self._new_parameters(
+            local_world_size,
+            world_size,
+            self._get_effective_max_seq_len(
+                user_backend_parameters,
+                derived_max_seq_len,
+            ),
+        )
+        effective_backend_parameters = (
+            implicit_backend_parameters + user_backend_parameters
+        )
+        apply_backend_parameters = bool(user_backend_parameters) or (
+            find_parameter(implicit_backend_parameters, ["dtype"]) is not None
+        )
+        if apply_backend_parameters:
+            formatted_backend_parameters = os.linesep.join(effective_backend_parameters)
+            logger.debug(
+                f"Parsing given parameters: {os.linesep}"
+                f"{formatted_backend_parameters}"
+            )
+            params.from_args_and_envs(effective_backend_parameters, env)
+
+        parameters_diff = []
+        if apply_backend_parameters:
+            parameters_diff = params.changed_backend_parameters(
+                baseline_params,
+                exclude_names=self._backend_parameter_names(
+                    implicit_backend_parameters
+                ),
+            )
+        injected_backend_parameters = self._filter_user_defined_parameters(
+            implicit_backend_parameters + parameters_diff,
+            user_backend_parameters,
+        )
+
+        return params, injected_backend_parameters, apply_backend_parameters
+
+    def _get_implicit_backend_parameters(
+        self,
+        user_backend_parameters: List[str],
+        derived_max_seq_len: int,
+    ) -> List[str]:
+        implicit_backend_parameters = []
+
+        effective_max_seq_len = self._get_effective_max_seq_len(
+            user_backend_parameters,
+            derived_max_seq_len,
+        )
+        if effective_max_seq_len != derived_max_seq_len:
+            implicit_backend_parameters.extend(
+                ["--max-seq-len", str(effective_max_seq_len)]
+            )
+
+        # For Ascend 310P, default dtype to float16 before user parameters
+        # so users can still override it.
+        if (
+            is_ascend_310p(self._get_selected_gpu_devices())
+            and find_parameter(user_backend_parameters, ["dtype"]) is None
+        ):
+            implicit_backend_parameters.extend(["--dtype", "float16"])
+
+        return implicit_backend_parameters
+
+    @staticmethod
+    def _new_parameters(
+        local_world_size: int,
+        world_size: int,
+        max_seq_len: int,
+    ) -> AscendMindIEParameters:
+        return AscendMindIEParameters(
+            local_world_size=local_world_size,
+            world_size=world_size,
+            max_seq_len=max_seq_len,
+        )
+
+    @staticmethod
+    def _filter_user_defined_parameters(
+        parameters: List[str],
+        user_backend_parameters: List[str],
+    ) -> List[str]:
+        user_parameter_names = AscendMindIEServer._backend_parameter_names(
+            user_backend_parameters
+        )
+
+        filtered = []
+        index = 0
+        while index < len(parameters):
+            parameter = parameters[index]
+            if not parameter.startswith("-"):
+                filtered.append(parameter)
+                index += 1
+                continue
+
+            if (
+                AscendMindIEServer._backend_parameter_name(parameter)
+                in user_parameter_names
+            ):
+                index += 1
+                if (
+                    "=" not in parameter
+                    and index < len(parameters)
+                    and not parameters[index].startswith("-")
+                ):
+                    index += 1
+                continue
+
+            filtered.append(parameter)
+            index += 1
+            if (
+                "=" not in parameter
+                and index < len(parameters)
+                and not parameters[index].startswith("-")
+            ):
+                filtered.append(parameters[index])
+                index += 1
+
+        return filtered
+
+    @staticmethod
+    def _backend_parameter_names(parameters: List[str]) -> set:
+        names = set()
+        for parameter in parameters:
+            if parameter.startswith("-"):
+                names.add(AscendMindIEServer._backend_parameter_name(parameter))
+        return names
+
+    @staticmethod
+    def _backend_parameter_name(parameter: str) -> str:
+        aliases = {
+            "pp": "pipeline-parallel-size",
+            "dp": "data-parallel-size",
+            "cp": "context-parallel-size",
+            "tp": "tensor-parallel-size",
+            "sp": "sequence-parallel-size",
+            "moe-ep": "moe-expert-parallel-size",
+            "moe-tp": "moe-tensor-parallel-size",
+        }
+        boolean_optional_parameters = {
+            "truncation",
+            "support-select-batch",
+            "enable-memory-decoding",
+            "enable-lookahead",
+            "enable-buffer-response",
+            "enable-split",
+            "enable-multi-token-prediction",
+            "enable-prefix-caching",
+        }
+        name = parameter.split("=", 1)[0].lstrip("-")
+        if name.startswith("no-") and name.removeprefix("no-") in (
+            boolean_optional_parameters
+        ):
+            name = name.removeprefix("no-")
+        return aliases.get(name, name)
+
+    @staticmethod
+    def _get_effective_max_seq_len(
+        user_backend_parameters: List[str],
+        derived_max_seq_len: int,
+    ) -> int:
+        if (
+            derived_max_seq_len > 8192
+            and find_parameter(user_backend_parameters, ["max-seq-len"]) is None
+        ):
+            return 8192
+
+        return derived_max_seq_len
 
     def _create_workload(
         self,
