@@ -289,3 +289,7 @@ To avoid directly configuring JSON, GPUStack provides a set of command line para
 #### Allow GPU/CPU Offloading
 
 VoxBox supports deploying models to NVIDIA GPUs. If GPU resources are insufficient, it will automatically deploy the models to the CPU.
+
+!!! note "Streaming Not Supported"
+
+    VoxBox does not support streaming for Text-to-Speech (`/v1/audio/speech`) or Speech-to-Text (`/v1/audio/transcriptions`). To use streaming audio APIs, deploy a vLLM-compatible audio model on the `vLLM` backend instead.

@@ -53,6 +53,10 @@ curl ${SERVER_URL}/v1/audio/transcriptions \
 
 This will return streaming transcription results as they become available.
 
+!!! note
+
+    Streaming transcription is only supported when the Speech-to-Text model is deployed on the `vLLM` backend. The `VoxBox` backend does not support streaming.
+
 ## Running Text-to-Speech Model
 
 ### Step 1: Deploy Text-to-Speech Model
@@ -101,6 +105,10 @@ curl ${SERVER_URL}/v1/audio/speech \
 ```
 
 This will stream the audio output directly and play it using the `play` command. The audio is streamed in PCM format at 24kHz sample rate with 16-bit signed encoding and mono channel.
+
+!!! note
+
+    Streaming speech is only supported when the Text-to-Speech model is deployed on the `vLLM` backend. The `VoxBox` backend does not support streaming.
 
 ## Voice Cloning Using Qwen3-TTS
 
