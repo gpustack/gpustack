@@ -10,7 +10,6 @@ from dataclasses import dataclass
 import time
 from typing import List, Optional, Dict, Tuple, Any
 from dataclasses_json import dataclass_json
-from transformers import PretrainedConfig
 
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import get_global_config
@@ -35,6 +34,7 @@ from gpustack.utils.hub import (
     match_model_scope_file_paths,
     get_pretrained_config,
     read_repo_file_content,
+    safe_pretrained_config_from_dict,
 )
 from gpustack.utils import platform
 
@@ -742,7 +742,7 @@ async def get_pretrained_config_with_workers(
                 timeout=timeout_in_seconds,
             )
             if config_dict:
-                return PretrainedConfig.from_dict(config_dict)
+                return safe_pretrained_config_from_dict(config_dict)
 
             # If config_dict is None for LOCAL_PATH, provide a clearer error message
             if model.source == SourceEnum.LOCAL_PATH:
@@ -995,9 +995,7 @@ async def get_pretrained_config_from_workers(
     """
     config_dict = await read_local_path_file_from_workers(model, "config.json", workers)
 
-    from transformers import PretrainedConfig
-
-    return PretrainedConfig.from_dict(config_dict)
+    return safe_pretrained_config_from_dict(config_dict)
 
 
 async def _calculate_from_workers(  # noqa: C901

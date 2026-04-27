@@ -44,7 +44,7 @@ from gpustack.server.bus import Event
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
 from gpustack.utils.hub import get_hf_text_config, get_max_model_len
-from gpustack.utils.hub import get_pretrained_config
+from gpustack.utils.hub import get_pretrained_config, safe_pretrained_config_from_dict
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 from gpustack.utils.runtime import transform_workload_plan
@@ -230,7 +230,7 @@ class InferenceServer(ABC):
             pretrained_config = get_pretrained_config(self._model)
             if isinstance(pretrained_config, dict):
                 # Ensure we have a PretrainedConfig object, not a dict, for consistency.
-                pretrained_config = PretrainedConfig.from_dict(pretrained_config)
+                pretrained_config = safe_pretrained_config_from_dict(pretrained_config)
 
             self._pretrained_config = pretrained_config
             self._pretrained_config_initialized = True
@@ -270,7 +270,7 @@ class InferenceServer(ABC):
         with open(config_path, "r", encoding="utf-8") as f:
             config_dict = json.load(f)
         if isinstance(config_dict, dict):
-            return PretrainedConfig.from_dict(config_dict)
+            return safe_pretrained_config_from_dict(config_dict)
 
         return None
 

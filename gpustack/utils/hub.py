@@ -521,6 +521,23 @@ def get_pretrained_config(model: Model, **kwargs):
     return pretrained_config
 
 
+def safe_pretrained_config_from_dict(config_dict: Dict) -> PretrainedConfig:
+    """
+    Reconstruct a PretrainedConfig from a raw config.json dict.
+
+    Works around a transformers v5 bug where __post_init__'s RoPE
+    standardization reads self.max_position_embeddings before kwargs are
+    applied as attributes, which raises AttributeError on configs that
+    still use the legacy `rope_scaling` key.
+    """
+    config_dict = dict(config_dict)
+    rope_scaling = config_dict.pop("rope_scaling", None)
+    config = PretrainedConfig.from_dict(config_dict)
+    if rope_scaling is not None:
+        config.rope_scaling = rope_scaling
+    return config
+
+
 # Simplified from vllm.config._get_and_verify_max_len
 # Keep in our codebase to avoid dependency on vllm's internal
 # APIs which may change unexpectedly.
@@ -600,7 +617,7 @@ def get_hf_text_config(config: PretrainedConfig):
         text_config = config.get_text_config()
         if text_config is not None:
             if isinstance(text_config, dict):
-                text_config = PretrainedConfig.from_dict(text_config)
+                text_config = safe_pretrained_config_from_dict(text_config)
             if hasattr(text_config, "num_attention_heads"):
                 return text_config
 
