@@ -75,7 +75,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
     system_reserved: Optional[dict] = None
     pipx_path: Optional[str] = None
     tools_download_base_url: Optional[str] = None
-    enable_hf_transfer: bool = False
+    enable_hf_transfer: bool = False  # Deprecated
     enable_hf_xet: bool = False  # Deprecated
     proxy_mode: Optional[ModelInstanceProxyModeEnum] = None
 
@@ -83,7 +83,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
 class PredefinedConfigNoDefaults(PredefinedConfig):
     debug: Optional[bool] = None
     disable_worker_metrics: Optional[bool] = None
-    enable_hf_transfer: Optional[bool] = None
+    enable_hf_transfer: Optional[bool] = None  # Deprecated
     enable_hf_xet: Optional[bool] = None  # Deprecated
     worker_port: Optional[int] = None
     worker_metrics_port: Optional[int] = None

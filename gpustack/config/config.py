@@ -110,7 +110,7 @@ class Config(WorkerConfig, BaseSettings):
         pipx_path: Path to the pipx executable, used to install versioned backends.
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
-        enable_hf_transfer: Speed up file transfers with the huggingface Hub.
+        enable_hf_transfer: [Deprecated] No-op since huggingface_hub v1.0 removed hf_transfer support; hf_xet is now the default downloader.
         enable_cors: Enable CORS in server.
         allow_origins: A list of origins that should be permitted to make cross-origin requests.
         allow_credentials: Indicate that cookies should be supported for cross-origin requests.

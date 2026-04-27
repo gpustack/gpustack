@@ -600,7 +600,7 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     worker_group.add_argument(
         "--enable-hf-transfer",
         action=OptionalBoolAction,
-        help="Enable faster downloads from the Hugging Face Hub using hf_transfer.",
+        help="[Deprecated] hf_transfer support was removed in huggingface_hub v1.0; this flag is a no-op.",
         default=os.getenv("HF_HUB_ENABLE_HF_TRANSFER"),
     )
     worker_group.add_argument(
@@ -821,6 +821,7 @@ def start_tracemalloc_if_debug(cfg: Config):
 
 def set_third_party_env(cfg: Config):
     if cfg.enable_hf_transfer:
-        # https://huggingface.co/docs/huggingface_hub/guides/download#faster-downloads
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-        logger.debug("set env HF_HUB_ENABLE_HF_TRANSFER=1")
+        logger.warning(
+            "enable_hf_transfer is deprecated and ignored: hf_transfer support was "
+            "removed in huggingface_hub v1.0. hf_xet is now the default downloader."
+        )

@@ -110,8 +110,6 @@ class HfDownloader:
                 The Hugging Face API token.
             local_dir:
                 The local directory to save the model to.
-            local_dir_use_symlinks:
-                Whether to use symlinks when downloading the model.
             max_workers (`int`, *optional*):
                 Number of concurrent threads to download files (1 thread = 1 file download).
                 Defaults to 8.
@@ -160,7 +158,6 @@ class HfDownloader:
             filename: A filename or glob pattern to match the model file in the repo.
             token: The Hugging Face API token.
             local_dir: The local directory to save the model to.
-            local_dir_use_symlinks: Whether to use symlinks when downloading the model.
         Returns:
             The path to the downloaded model.
         """
