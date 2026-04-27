@@ -2125,6 +2125,8 @@ model_sets:
       source: huggingface
       huggingface_repo_id: gpustack/CosyVoice2-0.5B
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "3221225472" # 3 GiB, CosyVoice family empirical estimate.
 - name: CosyVoice-300M
   description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
   home: https://github.com/FunAudioLLM
@@ -2142,6 +2144,8 @@ model_sets:
       source: huggingface
       huggingface_repo_id: gpustack/CosyVoice-300M
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "3221225472" # 3 GiB, CosyVoice family empirical estimate.
 - name: CosyVoice-300M-SFT
   description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
   home: https://github.com/FunAudioLLM
@@ -2159,6 +2163,8 @@ model_sets:
       source: huggingface
       huggingface_repo_id: gpustack/CosyVoice-300M-SFT
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "3221225472" # 3 GiB, CosyVoice family empirical estimate.
 - name: CosyVoice-300M-Instruct
   description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
   home: https://github.com/FunAudioLLM
@@ -2176,6 +2182,8 @@ model_sets:
       source: huggingface
       huggingface_repo_id: gpustack/CosyVoice-300M-Instruct
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "3221225472" # 3 GiB, CosyVoice family empirical estimate.
 - name: Faster-Whisper-Large-V3
   description: Whisper is a state-of-the-art model for automatic speech recognition (ASR) and speech translation, proposed in the paper Robust Speech Recognition via Large-Scale Weak Supervision by Alec Radford et al. from OpenAI. Trained on >5M hours of labeled data, Whisper demonstrates a strong ability to generalise to many datasets and domains in a zero-shot setting. This is the conversion of openai/whisper-large-v3 to the CTranslate2 model format.
   home: https://huggingface.co/Systran
@@ -2192,6 +2200,8 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Systran/faster-whisper-large-v3
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "10737418240" # 10 GiB, per OpenAI Whisper large reference VRAM.
 - name: Faster-Whisper-Medium
   description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-medium to the CTranslate2 model format.
   home: https://huggingface.co/Systran
@@ -2209,6 +2219,8 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Systran/faster-whisper-medium
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "5368709120" # 5 GiB, per OpenAI Whisper medium reference VRAM.
 - name: Faster-Whisper-Small
   description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-small to the CTranslate2 model format.
   home: https://huggingface.co/Systran
@@ -2226,6 +2238,8 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Systran/faster-whisper-small
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "2147483648" # 2 GiB, per OpenAI Whisper small reference VRAM.
 - name: Whisper-Large-V3-Turbo
   description: Whisper large-v3-turbo is a finetuned version of a pruned Whisper large-v3. In other words, it's the exact same model, except that the number of decoding layers have reduced from 32 to 4. As a result, the model is way faster, at the expense of a minor quality degradation.
   home: https://openai.com
@@ -2361,6 +2375,8 @@ model_sets:
       source: huggingface
       huggingface_repo_id: nari-labs/Dia-1.6B
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "10737418240" # 10 GiB, Dia model empirical estimate.
 - name: Qwen3-TTS-12Hz-1.7B-Base
   description: Qwen3-TTS-12Hz-1.7B-Base is a text-to-speech model from the Qwen3-TTS series with 1.7B parameters, supporting 12kHz audio generation.
   home: https://qwen.ai

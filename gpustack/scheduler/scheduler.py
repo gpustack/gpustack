@@ -25,7 +25,6 @@ from gpustack.policies.candidate_selectors import (
     GGUFResourceFitSelector,
     SGLangResourceFitSelector,
     VLLMResourceFitSelector,
-    VoxBoxResourceFitSelector,
 )
 from gpustack.policies.candidate_selectors.custom_backend_resource_fit_selector import (
     CustomBackendResourceFitSelector,
@@ -97,9 +96,6 @@ class Scheduler:
         if self._config.cache_dir is not None:
             self._cache_dir = os.path.join(self._config.cache_dir, "gguf-parser")
             os.makedirs(self._cache_dir, exist_ok=True)
-
-            self._vox_box_cache_dir = os.path.join(self._config.cache_dir, "vox-box")
-            os.makedirs(self._vox_box_cache_dir, exist_ok=True)
 
     async def start(self):
         """
@@ -184,10 +180,6 @@ class Scheduler:
                             session, model, instance
                         ):
                             return
-                    elif model.backend == BackendEnum.VOX_BOX:
-                        should_update_model = await evaluate_vox_box_model(
-                            self._config, model
-                        )
                     else:
                         should_update_model = await evaluate_pretrained_config(
                             model,
@@ -422,10 +414,6 @@ async def find_candidate(
             candidates_selector = GGUFResourceFitSelector(
                 model, model_instances, config.cache_dir
             )
-        elif model.backend == BackendEnum.VOX_BOX:
-            candidates_selector = VoxBoxResourceFitSelector(
-                config, model, model_instances, config.cache_dir
-            )
         elif model.backend == BackendEnum.ASCEND_MINDIE:
             candidates_selector = AscendMindIEResourceFitSelector(
                 config, model, model_instances
@@ -549,51 +537,6 @@ async def evaluate_gguf_model(
 
         gpus_per_replica_modified = set_model_gpus_per_replica(model)
         should_update = should_update or gpus_per_replica_modified
-
-    return should_update
-
-
-async def evaluate_vox_box_model(
-    config: Config,
-    model: Model,
-) -> bool:
-    try:
-        from vox_box.estimator.estimate import estimate_model
-        from vox_box.config import Config as VoxBoxConfig
-    except ImportError:
-        raise Exception("vox_box is not installed.")
-
-    cfg = VoxBoxConfig()
-    cfg.cache_dir = os.path.join(config.cache_dir, "vox-box")
-    cfg.model = model.local_path
-    cfg.huggingface_repo_id = model.huggingface_repo_id
-    cfg.model_scope_model_id = model.model_scope_model_id
-
-    try:
-        timeout_in_seconds = 15
-        model_dict = await asyncio.wait_for(
-            asyncio.to_thread(estimate_model, cfg),
-            timeout=timeout_in_seconds,
-        )
-    except Exception as e:
-        raise Exception(
-            f"Failed to estimate model {model.name or model.readable_source}: {e}"
-        )
-
-    supported = model_dict.get("supported", False)
-    if not supported:
-        raise ValueError(
-            "Unsupported model. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
-        )
-
-    should_update = False
-    task_type = model_dict.get("task_type")
-    if task_type == "tts" and not model.categories:
-        model.categories = [CategoryEnum.TEXT_TO_SPEECH]
-        should_update = True
-    elif task_type == "stt" and not model.categories:
-        model.categories = [CategoryEnum.SPEECH_TO_TEXT]
-        should_update = True
 
     return should_update
 

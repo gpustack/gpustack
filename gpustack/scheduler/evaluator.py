@@ -563,8 +563,6 @@ async def evaluate_model_metadata(
 
         if is_gguf_model(model):
             await scheduler.evaluate_gguf_model(model, workers=workers)
-        elif model.backend == BackendEnum.VOX_BOX:
-            await scheduler.evaluate_vox_box_model(config, model)
         elif not is_audio_model(model):
             await scheduler.evaluate_pretrained_config(model, workers=workers)
     except Exception as e:

@@ -104,14 +104,12 @@ vllm = [
 ]
 audio = [
     "numba>=0.56.0",
-    "vox-box==0.0.19",
 ]
 all = [
     "vllm==0.10.1.1",
     "mistral_common[opencv]>=1.4.3",
     "bitsandbytes>=0.45.2",
     "timm>=1.0.15",
-    "vox-box==0.0.19",
 ]
 
 [project.scripts]

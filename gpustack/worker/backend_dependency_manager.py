@@ -53,9 +53,6 @@ class BackendDependencyManager:
         # Initialize default dependencies for each backend using version specifiers
         # Format: {backend: {version_specifier: [dependencies]}}
         self.default_dependencies_specs: Dict[str, Dict[str, List[str]]] = {
-            BackendEnum.VOX_BOX: {
-                "<=0.0.20": ["transformers==4.51.3"],
-            },
             BackendEnum.VLLM: {
                 "<=0.10.0": ["transformers==4.53.3"],
             },
