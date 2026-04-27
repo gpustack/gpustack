@@ -1154,7 +1154,12 @@ class MemFractionStaticCalculator:
             # a base mem_fraction_static factor for regular Vit
             base_mem_fraction_reduction_ratio = 0.95
 
-            vit_num_layers = getattr(vision_config, "num_hidden_layers", 24)
+            # Qwen-VL family configs name the ViT layer count `depth` rather than `num_hidden_layers`.
+            vit_num_layers = (
+                getattr(vision_config, "num_hidden_layers", None)
+                or getattr(vision_config, "depth", None)
+                or 24
+            )
             vit_hidden_size = getattr(vision_config, "hidden_size", 1024)
 
             # baseline ViT params (ViT-L/14)
