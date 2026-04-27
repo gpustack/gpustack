@@ -40,7 +40,9 @@ async def proxy(path: str, request: Request):
         logger.debug(
             f"Proxying request to worker at port {target_service_port} for path: {path}"
         )
-        url = f"http://{worker_ip_getter()}:{target_service_port}/{path}"
+        query_string = request.url.query
+        full_path = f"{path}?{query_string}" if query_string else path
+        url = f"http://{worker_ip_getter()}:{target_service_port}/{full_path}"
         headers = dict(request.headers)
         headers.pop("host", None)
         headers.pop("transfer-encoding", None)
