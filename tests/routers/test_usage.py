@@ -518,6 +518,44 @@ async def test_get_usage_breakdown_ignores_incomplete_api_key_identity_groups():
 
 
 @pytest.mark.asyncio
+async def test_get_usage_breakdown_formats_month_date_label_as_year_month():
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result([1]),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        group_date=date(2026, 4, 1),
+                        input_tokens=100,
+                        output_tokens=40,
+                        input_cached_tokens=10,
+                        total_tokens=150,
+                        api_requests=2,
+                        models_called=1,
+                        api_keys_used=1,
+                        last_active=date(2026, 4, 20),
+                    ),
+                ]
+            ),
+        ]
+    )
+    user = User(id=1, username="admin", hashed_password="x", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 30),
+        group_by=["date"],
+        granularity="month",
+    )
+
+    response = await get_usage_breakdown(session=session, user=user, request=request)
+
+    assert response.granularity == "month"
+    assert response.items[0].date.value == date(2026, 4, 1)
+    assert response.items[0].date.label == "2026-04"
+
+
+@pytest.mark.asyncio
 async def test_get_usage_timeseries_filters_deleted_api_key_by_value_and_current():
     session = MagicMock()
     session.exec = AsyncMock(

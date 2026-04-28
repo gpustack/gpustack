@@ -1,8 +1,10 @@
 from typing import Optional
+from datetime import date
 
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.models import Model
+from gpustack.schemas.usage import USAGE_GRANULARITY_MONTH
 from gpustack.schemas.users import User
 
 
@@ -50,6 +52,12 @@ def format_usage_api_key_label(
 ) -> str:
     parts = [p for p in [user_name, api_key_name] if p]
     return " / ".join(parts) or "-"
+
+
+def format_usage_date_label(value: date, granularity: str) -> str:
+    if granularity == USAGE_GRANULARITY_MONTH:
+        return value.strftime("%Y-%m")
+    return value.isoformat()
 
 
 def build_model_usage_snapshot(

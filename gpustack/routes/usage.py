@@ -52,6 +52,7 @@ from gpustack.schemas.common import Pagination
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.utils.usage_snapshots import (
     format_usage_api_key_label,
+    format_usage_date_label,
     format_usage_model_label,
     format_usage_user_label,
 )
@@ -270,7 +271,9 @@ def _row_identity(group_by: str, row: Any) -> UsageIdentity:
 
 def _row_date_dimension(row: Any, granularity: str) -> UsageBreakdownDateDimension:
     value = _coerce_date(row.group_date)
-    return UsageBreakdownDateDimension(value=value, label=value.isoformat())
+    return UsageBreakdownDateDimension(
+        value=value, label=format_usage_date_label(value, granularity)
+    )
 
 
 def _coerce_date(value: Any) -> date:
