@@ -136,7 +136,7 @@
   health_check_path: /v1/models
   default_run_command: mineru-vllm-server --port {{port}} --served-model-name {{model_name}}
   version_configs:
-    2.7.0:
+    v2.7.0:
       image_name: gpustackcommunity/mineru:v2.7.0
       custom_framework: cuda
     3.0.5:
