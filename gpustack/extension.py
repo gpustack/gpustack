@@ -79,3 +79,19 @@ class Plugin:
         not depend on instance state.
         """
         pass
+
+    @classmethod
+    def contribute_config(cls, args, config_data: dict) -> None:
+        """Forward plugin-contributed CLI args into the ``Config`` kwargs dict.
+
+        Called after argparse parsing and core's ``set_*_options`` have
+        populated ``config_data``, but before ``Config(**config_data)`` is
+        constructed. Args registered via ``setup_start_cmd`` end up on the
+        ``args`` namespace but are not automatically forwarded — override
+        this method to copy the relevant fields. Because ``Config`` uses
+        ``extra="allow"``, copied keys appear as attributes on ``cfg``.
+
+        Plugins should not overwrite keys that core already set unless the
+        intent is to override; this hook runs last and last-write-wins.
+        """
+        pass

@@ -642,6 +642,25 @@ def _setup_plugin_start_args(parser: argparse.ArgumentParser):
             ) from e
 
 
+def _contribute_plugin_config(args: argparse.Namespace, config_data: dict):
+    """Allow plugins to forward their CLI args into the ``Config`` kwargs.
+
+    Plugin-contributed argparse fields land on ``args`` but are not picked
+    up by core's ``set_*_options`` whitelists; this hook bridges the gap so
+    plugins can expose their settings on the resulting ``cfg`` (which uses
+    Pydantic ``extra="allow"``).
+    """
+    for name, plugin_class in iter_plugin_classes():
+        if not (isinstance(plugin_class, type) and issubclass(plugin_class, Plugin)):
+            continue
+        try:
+            plugin_class.contribute_config(args, config_data)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to contribute config from plugin '{name}': {e}"
+            ) from e
+
+
 def run(args: argparse.Namespace):
     try:
         cfg = parse_args(args)
@@ -699,6 +718,7 @@ def parse_args(args: argparse.Namespace) -> Config:
     set_common_options(args, config_data)
     set_server_options(args, config_data)
     set_worker_options(args, config_data)
+    _contribute_plugin_config(args, config_data)
 
     try:
         cfg = Config(**config_data)
