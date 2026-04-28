@@ -664,10 +664,9 @@ def run(args: argparse.Namespace):
 
 
 def run_server(cfg: Config):
-    worker = Worker(cfg)
-
     server = Server(
-        config=cfg, worker_process=multiprocessing.Process(target=worker.start)
+        config=cfg,
+        worker_process=multiprocessing.Process(target=run_worker, args=(cfg,)),
     )
 
     try:
@@ -681,8 +680,8 @@ def run_server(cfg: Config):
 
 
 def run_worker(cfg: Config):
+    set_global_config(cfg)
     worker = Worker(cfg)
-
     worker.start()
 
 
