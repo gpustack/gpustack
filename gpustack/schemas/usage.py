@@ -9,6 +9,7 @@ from gpustack.schemas.common import Pagination
 
 USAGE_METRIC_INPUT_TOKENS = "input_tokens"
 USAGE_METRIC_OUTPUT_TOKENS = "output_tokens"
+USAGE_METRIC_INPUT_CACHED_TOKENS = "input_cached_tokens"
 USAGE_METRIC_TOTAL_TOKENS = "total_tokens"
 USAGE_METRIC_API_REQUESTS = "api_requests"
 USAGE_METRIC_MODELS_CALLED = "models_called"
@@ -32,6 +33,7 @@ USAGE_SORT_DESC = "desc"
 USAGE_METRICS = {
     USAGE_METRIC_INPUT_TOKENS,
     USAGE_METRIC_OUTPUT_TOKENS,
+    USAGE_METRIC_INPUT_CACHED_TOKENS,
     USAGE_METRIC_TOTAL_TOKENS,
     USAGE_METRIC_API_REQUESTS,
 }
@@ -54,6 +56,7 @@ USAGE_GRANULARITIES = {
 USAGE_SORTABLE_FIELDS = {
     USAGE_METRIC_INPUT_TOKENS,
     USAGE_METRIC_OUTPUT_TOKENS,
+    USAGE_METRIC_INPUT_CACHED_TOKENS,
     USAGE_METRIC_TOTAL_TOKENS,
     USAGE_METRIC_API_REQUESTS,
     USAGE_METRIC_AVG_TOKENS_PER_REQUEST,
@@ -234,6 +237,7 @@ class UsageBreakdownRequest(UsageBaseRequest):
 class UsageSummary(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
+    input_cached_tokens: int = 0
     total_tokens: int = 0
     api_requests: int = 0
     models_called: int = 0
@@ -278,6 +282,7 @@ class UsageBreakdownItem(BaseModel):
     api_key: Optional[UsageBreakdownDimension] = None
     input_tokens: int = 0
     output_tokens: int = 0
+    input_cached_tokens: int = 0
     total_tokens: int = 0
     api_requests: int = 0
     avg_tokens_per_request: float = 0

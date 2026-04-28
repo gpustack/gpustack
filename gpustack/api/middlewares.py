@@ -170,6 +170,15 @@ async def record_model_usage(
         getattr(usage, 'completion_tokens', total_tokens - prompt_tokens)
         or total_tokens - prompt_tokens
     )
+    prompt_token_details = (
+        getattr(usage, "prompt_tokens_details", None) if usage else None
+    )
+    input_cached_tokens = 0
+    if prompt_token_details:
+        if isinstance(prompt_token_details, dict):
+            input_cached_tokens = prompt_token_details.get("cached_tokens", 0) or 0
+        else:
+            input_cached_tokens = getattr(prompt_token_details, "cached_tokens", 0) or 0
 
     user: User = request.state.user
     model: Model = request.state.model
@@ -198,13 +207,18 @@ async def record_model_usage(
             **fields,
             completion_token_count=completion_tokens,
             prompt_token_count=prompt_tokens,
+            prompt_cached_token_count=input_cached_tokens,
             request_count=1,
         )
         model_usage_service = ModelUsageService(session)
         current_model_usage = await model_usage_service.get_by_fields(fields)
         if current_model_usage:
             await model_usage_service.update(
-                current_model_usage, completion_tokens, prompt_tokens, fields
+                current_model_usage,
+                completion_tokens,
+                prompt_tokens,
+                input_cached_tokens,
+                fields,
             )
         else:
             await model_usage_service.create(model_usage)

@@ -29,6 +29,9 @@ async def flush_usage_to_db():
                     to_update = await ModelUsage.one_by_id(session, usage.id)
                     to_update.prompt_token_count = usage.prompt_token_count
                     to_update.completion_token_count = usage.completion_token_count
+                    to_update.prompt_cached_token_count = (
+                        usage.prompt_cached_token_count
+                    )
                     to_update.request_count = usage.request_count
                     session.add(to_update)
 

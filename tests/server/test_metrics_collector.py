@@ -23,6 +23,7 @@ def test_model_usage_metrics_defaults():
     assert m.input_token == 0
     assert m.output_token == 0
     assert m.total_token == 0
+    assert m.input_cached_token == 0
     assert m.request_count == 1
     assert m.user_id is None
     assert m.model_id is None
@@ -47,6 +48,7 @@ def test_accumulate_new_entry():
         user_id=2,
         input_token=100,
         output_token=200,
+        input_cached_token=60,
         request_count=1,
     )
     asyncio.run(accumulate_gateway_metrics([m]))
@@ -54,6 +56,7 @@ def test_accumulate_new_entry():
     entry = list(gateway_metrics_buffer.values())[0]
     assert entry.input_token == 100
     assert entry.output_token == 200
+    assert entry.input_cached_token == 60
     assert entry.request_count == 1
 
 
@@ -64,6 +67,7 @@ def test_accumulate_same_key_sums_values():
         user_id=2,
         input_token=100,
         output_token=200,
+        input_cached_token=60,
         request_count=1,
     )
     m2 = ModelUsageMetrics(
@@ -72,6 +76,7 @@ def test_accumulate_same_key_sums_values():
         user_id=2,
         input_token=50,
         output_token=80,
+        input_cached_token=15,
         request_count=1,
     )
     asyncio.run(accumulate_gateway_metrics([m1]))
@@ -80,6 +85,7 @@ def test_accumulate_same_key_sums_values():
     entry = list(gateway_metrics_buffer.values())[0]
     assert entry.input_token == 150
     assert entry.output_token == 280
+    assert entry.input_cached_token == 75
     assert entry.request_count == 2
 
 

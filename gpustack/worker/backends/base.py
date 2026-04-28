@@ -57,6 +57,37 @@ class ModelInstanceStateError(Exception):
     pass
 
 
+# Reference: requirements for `usage.prompt_tokens_details.cached_tokens` to
+# appear in OpenAI-compatible responses, per backend.
+#
+# Tracked in https://github.com/gpustack/gpustack/issues/5189.
+#
+# vLLM
+# ----
+#   - Prefix caching must be on. V1 enables it by default; V0 requires
+#     `--enable-prefix-caching`. *User responsibility.*
+#   - `--enable-prompt-tokens-details` is required to populate the field.
+#     Broken in V1 prior to v0.9.0.1
+#     (https://github.com/vllm-project/vllm/pull/18149).
+#   - GPUStack auto-injects `--enable-prompt-tokens-details` for vLLM
+#     >= 0.9.0.1. See `gpustack.worker.backends.vllm.get_cache_report_arguments`.
+#
+# SGLang
+# ------
+#   - RadixAttention prefix caching is on by default; no extra flag.
+#   - `--enable-cache-report` is required to populate the field (since v0.3.4).
+#   - GPUStack auto-injects `--enable-cache-report` for SGLang >= 0.3.4. See
+#     `gpustack.worker.backends.sglang.get_cache_report_arguments`.
+#
+# Ascend MindIE
+# -------------
+#   - Prefix caching must be on. *User responsibility:* add
+#     `--enable-prefix-caching` to the model's backend parameters. Conflicts
+#     with `--rope-scaling` and `--data-parallel-size > 1` (validated by
+#     `AscendMindIEParameters._validate`).
+#   - Cache token details require MindIE >= 2.3.0, GPUStack does not auto-inject any cache-related flag for MindIE.
+
+
 class InferenceServer(ABC):
     _model_path: Optional[str] = None
     _draft_model_path: Optional[str] = None

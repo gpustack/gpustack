@@ -30,6 +30,7 @@ class ModelUsageMetrics(BaseModel):
     input_token: int = 0
     output_token: int = 0
     total_token: int = 0
+    input_cached_token: int = 0
     request_count: int = 1
     user_id: Optional[int] = None
     model_id: Optional[int] = None
@@ -77,6 +78,7 @@ async def accumulate_gateway_metrics(metrics: List[ModelUsageMetrics]):
                 existing.input_token += metric.input_token
                 existing.output_token += metric.output_token
                 existing.total_token += metric.total_token
+                existing.input_cached_token += metric.input_cached_token
                 existing.request_count += metric.request_count
 
 
@@ -121,6 +123,7 @@ async def create_or_update_model_usage(
     else:
         current_usage.prompt_token_count += metric.prompt_token_count
         current_usage.completion_token_count += metric.completion_token_count
+        current_usage.prompt_cached_token_count += metric.prompt_cached_token_count
         current_usage.request_count += metric.request_count
         await current_usage.save(session=session, auto_commit=auto_commit)
 
@@ -274,6 +277,7 @@ async def store_usage_metrics(metrics: List[ModelUsageMetrics]):
                     date=date.today(),
                     prompt_token_count=prompt_tokens,
                     completion_token_count=completion_tokens,
+                    prompt_cached_token_count=metric.input_cached_token,
                     request_count=metric.request_count,
                     **snapshot,
                 )

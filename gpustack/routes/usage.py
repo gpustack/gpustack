@@ -21,6 +21,7 @@ from gpustack.schemas.usage import (
     USAGE_METRIC_API_KEYS_USED,
     USAGE_METRIC_API_REQUESTS,
     USAGE_METRIC_AVG_TOKENS_PER_REQUEST,
+    USAGE_METRIC_INPUT_CACHED_TOKENS,
     USAGE_METRIC_DATE,
     USAGE_METRIC_INPUT_TOKENS,
     USAGE_METRIC_LAST_ACTIVE,
@@ -60,6 +61,7 @@ router = APIRouter()
 METRIC_OPTIONS = [
     UsageOption(key=USAGE_METRIC_INPUT_TOKENS, label="Input Tokens"),
     UsageOption(key=USAGE_METRIC_OUTPUT_TOKENS, label="Output Tokens"),
+    UsageOption(key=USAGE_METRIC_INPUT_CACHED_TOKENS, label="Input Cached Tokens"),
     UsageOption(key=USAGE_METRIC_TOTAL_TOKENS, label="Total Tokens"),
     UsageOption(key=USAGE_METRIC_API_REQUESTS, label="API Requests"),
 ]
@@ -122,6 +124,9 @@ def _metric_columns() -> Dict[str, Any]:
         ),
         USAGE_METRIC_OUTPUT_TOKENS: func.coalesce(
             func.sum(ModelUsage.completion_token_count), 0
+        ),
+        USAGE_METRIC_INPUT_CACHED_TOKENS: func.coalesce(
+            func.sum(ModelUsage.prompt_cached_token_count), 0
         ),
         USAGE_METRIC_TOTAL_TOKENS: func.coalesce(
             func.sum(ModelUsage.prompt_token_count + ModelUsage.completion_token_count),
@@ -458,6 +463,7 @@ def _summary_from_row(row: Any) -> UsageSummary:
     return UsageSummary(
         input_tokens=int(getattr(row, USAGE_METRIC_INPUT_TOKENS, 0) or 0),
         output_tokens=int(getattr(row, USAGE_METRIC_OUTPUT_TOKENS, 0) or 0),
+        input_cached_tokens=int(getattr(row, USAGE_METRIC_INPUT_CACHED_TOKENS, 0) or 0),
         total_tokens=int(getattr(row, USAGE_METRIC_TOTAL_TOKENS, 0) or 0),
         api_requests=int(getattr(row, USAGE_METRIC_API_REQUESTS, 0) or 0),
         models_called=int(getattr(row, USAGE_METRIC_MODELS_CALLED, 0) or 0),
@@ -689,6 +695,7 @@ def _build_breakdown_item(
     breakdown_item = UsageBreakdownItem(
         input_tokens=int(getattr(row, USAGE_METRIC_INPUT_TOKENS, 0) or 0),
         output_tokens=int(getattr(row, USAGE_METRIC_OUTPUT_TOKENS, 0) or 0),
+        input_cached_tokens=int(getattr(row, USAGE_METRIC_INPUT_CACHED_TOKENS, 0) or 0),
         total_tokens=total_tokens,
         api_requests=api_requests,
         avg_tokens_per_request=total_tokens / api_requests if api_requests else 0,
@@ -748,6 +755,9 @@ async def get_usage_breakdown(
     aggregate_columns = [
         metric_columns[USAGE_METRIC_INPUT_TOKENS].label(USAGE_METRIC_INPUT_TOKENS),
         metric_columns[USAGE_METRIC_OUTPUT_TOKENS].label(USAGE_METRIC_OUTPUT_TOKENS),
+        metric_columns[USAGE_METRIC_INPUT_CACHED_TOKENS].label(
+            USAGE_METRIC_INPUT_CACHED_TOKENS
+        ),
         metric_columns[USAGE_METRIC_TOTAL_TOKENS].label(USAGE_METRIC_TOTAL_TOKENS),
         metric_columns[USAGE_METRIC_API_REQUESTS].label(USAGE_METRIC_API_REQUESTS),
         metric_columns[USAGE_METRIC_MODELS_CALLED].label(USAGE_METRIC_MODELS_CALLED),

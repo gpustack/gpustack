@@ -102,6 +102,16 @@ def upgrade() -> None:
             batch_op.add_column(
                 sa.Column("api_key_is_custom", sa.Boolean(), nullable=True)
             )
+        if not column_exists("model_usages", "prompt_cached_token_count"):
+            batch_op.add_column(
+                sa.Column(
+                    "prompt_cached_token_count",
+                    sa.BigInteger(),
+                    nullable=False,
+                    server_default="0",
+                )
+            )
+        
         batch_op.drop_constraint("fk_model_usages_user_id_users", type_="foreignkey")
         batch_op.drop_constraint("fk_model_usages_model_id_models", type_="foreignkey")
         batch_op.drop_constraint(
@@ -202,6 +212,7 @@ def upgrade() -> None:
             provider_snapshots,
         )
     ### end
+    
 
     
 
@@ -266,4 +277,5 @@ def downgrade() -> None:
         batch_op.drop_column("api_key_id")
         batch_op.drop_column("user_name")
         batch_op.drop_column("cluster_name")
+        batch_op.drop_column("prompt_cached_token_count")
     ### end

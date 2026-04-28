@@ -98,6 +98,13 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
         "user",
         "api_key",
     ]
+    assert [item.key for item in response.metrics] == [
+        "input_tokens",
+        "output_tokens",
+        "input_cached_tokens",
+        "total_tokens",
+        "api_requests",
+    ]
     assert response.group_bys[0].scope == ["breakdown"]
     assert response.filters.models[0].label == "cluster-a / qwen3.5-9b"
     assert response.filters.models[0].deleted is False
@@ -171,6 +178,7 @@ async def test_get_usage_timeseries_returns_weekly_identity_series():
                     SimpleNamespace(
                         input_tokens=500,
                         output_tokens=200,
+                        input_cached_tokens=180,
                         total_tokens=700,
                         api_requests=3,
                         models_called=2,
@@ -213,6 +221,7 @@ async def test_get_usage_timeseries_returns_weekly_identity_series():
     response = await get_usage_timeseries(session=session, user=user, request=request)
 
     assert response.summary.input_tokens == 500
+    assert response.summary.input_cached_tokens == 180
     assert response.summary.models_called == 2
     assert response.metric == "input_tokens"
     assert response.group_by == "user"
@@ -295,6 +304,7 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
                         group_provider_type=None,
                         input_tokens=300,
                         output_tokens=120,
+                        input_cached_tokens=90,
                         total_tokens=420,
                         api_requests=3,
                         models_called=1,
@@ -310,6 +320,7 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
                         group_provider_type=None,
                         input_tokens=100,
                         output_tokens=20,
+                        input_cached_tokens=10,
                         total_tokens=120,
                         api_requests=1,
                         models_called=1,
@@ -342,8 +353,53 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
     assert item.model.identity.value.model_name == "qwen3.5-9b"
     assert item.model.identity.current.model_id == 7
     assert item.model.label == "cluster-a / qwen3.5-9b"
+    assert item.input_cached_tokens == 90
     assert item.avg_tokens_per_request == 140
     assert item.last_active == date(2026, 4, 2)
+
+
+@pytest.mark.asyncio
+async def test_get_usage_timeseries_supports_input_cached_tokens_metric():
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=500,
+                        output_tokens=200,
+                        input_cached_tokens=180,
+                        total_tokens=700,
+                        api_requests=3,
+                        models_called=2,
+                    ),
+                ]
+            ),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(date=date(2026, 4, 1), value=75),
+                    SimpleNamespace(date=date(2026, 4, 2), value=105),
+                ]
+            ),
+        ]
+    )
+    user = User(id=1, username="admin", hashed_password="x", is_admin=True)
+    request = UsageTimeSeriesRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        metric="input_cached_tokens",
+        group_by=None,
+        granularity="day",
+    )
+
+    response = await get_usage_timeseries(session=session, user=user, request=request)
+
+    assert response.metric == "input_cached_tokens"
+    assert response.summary.input_cached_tokens == 180
+    assert [(point.date, point.value) for point in response.series[0].timeline] == [
+        (date(2026, 4, 1), 75),
+        (date(2026, 4, 2), 105),
+    ]
 
 
 @pytest.mark.asyncio

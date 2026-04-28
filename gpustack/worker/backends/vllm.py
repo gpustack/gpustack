@@ -482,6 +482,12 @@ class VLLMServer(InferenceServer):
         )
         arguments.extend(access_log_arguments)
 
+        # Expose prefix-cache hits as cached_tokens in OpenAI usage.
+        cache_report_arguments = get_cache_report_arguments(
+            self._model.backend_parameters, self._model.backend_version
+        )
+        arguments.extend(cache_report_arguments)
+
         if is_distributed:
             arguments.extend(["--distributed-executor-backend", "ray"])
             dps = find_int_parameter(
@@ -695,3 +701,28 @@ def get_access_log_arguments(
         return []
 
     return ["--disable-access-log-for-endpoints", "/metrics"]
+
+
+def get_cache_report_arguments(
+    backend_parameters: List[str], backend_version: Optional[str] = None
+) -> List[str]:
+    """
+    Auto-inject `--enable-prompt-tokens-details` so vLLM populates
+    `usage.prompt_tokens_details.cached_tokens` in OpenAI responses.
+
+    Only injected for vLLM >= v0.9.0.1 — earlier V1 builds silently dropped
+    the field (https://github.com/vllm-project/vllm/pull/18149).
+
+    Prefix caching itself is the user's responsibility (`--enable-prefix-caching`):
+    V1 has it on by default, V0 does not.
+    """
+    if not backend_version:
+        return []
+    if compare_versions(backend_version, "0.9.0.1") < 0:
+        return []
+    if find_bool_parameter(
+        backend_parameters,
+        ["enable-prompt-tokens-details", "no-enable-prompt-tokens-details"],
+    ):
+        return []
+    return ["--enable-prompt-tokens-details"]

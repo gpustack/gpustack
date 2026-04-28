@@ -54,6 +54,9 @@ class ModelUsage(SQLModel, ActiveRecordMixin, table=True):
     completion_token_count: int = Field(
         default=..., sa_column=Column(BigInteger, nullable=False)
     )
+    prompt_cached_token_count: int = Field(
+        default=0, sa_column=Column(BigInteger, nullable=False, default=0)
+    )
     request_count: int = Field(
         default=..., sa_column=Column(BigInteger, nullable=False)
     )

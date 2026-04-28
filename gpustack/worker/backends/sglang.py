@@ -24,7 +24,11 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ModelInstanceDeploymentMetadata,
 )
-from gpustack.utils.command import find_parameter, extend_args_no_exist
+from gpustack.utils.command import (
+    find_bool_parameter,
+    find_parameter,
+    extend_args_no_exist,
+)
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import (
     InferenceServer,
@@ -333,6 +337,12 @@ class SGLangServer(InferenceServer):
             self._model.backend_parameters, self._model.backend_version
         )
         arguments.extend(access_log_arguments)
+
+        # Expose prefix-cache hits as cached_tokens in OpenAI usage.
+        cache_report_arguments = get_cache_report_arguments(
+            self._model.backend_parameters, self._model.backend_version
+        )
+        arguments.extend(cache_report_arguments)
 
         # Add multimodal argument if needed
         if is_multimodal_model(self._get_model_architecture()):
@@ -719,3 +729,21 @@ def get_access_log_arguments(
         return []
 
     return ["--uvicorn-access-log-exclude-prefixes", "/metrics"]
+
+
+def get_cache_report_arguments(
+    backend_parameters: List[str], backend_version: Optional[str] = None
+) -> List[str]:
+    """
+    Auto-inject SGLang's --enable-cache-report so OpenAI responses include
+    `usage.prompt_tokens_details.cached_tokens`. The flag has existed since
+    SGLang v0.3.4. RadixAttention prefix caching is on by default, so no
+    separate cache-enable flag is needed.
+    """
+    if not backend_version:
+        return []
+    if compare_versions(backend_version, "0.3.4") < 0:
+        return []
+    if find_bool_parameter(backend_parameters, ["enable-cache-report"]):
+        return []
+    return ["--enable-cache-report"]

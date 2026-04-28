@@ -6,10 +6,12 @@ from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.worker.backends.custom import CustomServer
 from gpustack.worker.backends.sglang import (
     get_access_log_arguments as get_sglang_access_log_arguments,
+    get_cache_report_arguments as get_sglang_cache_report_arguments,
 )
 from gpustack.worker.backends.vllm import (
     VLLMServer,
     get_access_log_arguments as get_vllm_access_log_arguments,
+    get_cache_report_arguments as get_vllm_cache_report_arguments,
 )
 
 
@@ -204,6 +206,51 @@ def test_vllm_access_log_arguments(backend_parameters, backend_version, expected
 def test_sglang_access_log_arguments(backend_parameters, backend_version, expected):
     assert (
         get_sglang_access_log_arguments(backend_parameters, backend_version) == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "backend_parameters, backend_version, expected",
+    [
+        # Unknown version: do not inject (we cannot version-gate it).
+        (None, None, []),
+        # Below the v0.9.0.1 cutoff: skipped (V1 silently dropped the field).
+        ([], "0.9.0", []),
+        # At/after the cutoff: injected.
+        ([], "0.9.0.1", ["--enable-prompt-tokens-details"]),
+        ([], "0.10.0", ["--enable-prompt-tokens-details"]),
+        # User explicitly opted in: do not duplicate.
+        (["--enable-prompt-tokens-details"], "0.10.0", []),
+        # User explicitly opted out: respect their choice.
+        (["--no-enable-prompt-tokens-details"], "0.10.0", []),
+        # Prefix-caching flags are not GPUStack's responsibility — left to the user.
+        (["--enable-prefix-caching"], "0.10.0", ["--enable-prompt-tokens-details"]),
+    ],
+)
+def test_vllm_cache_report_arguments(backend_parameters, backend_version, expected):
+    assert (
+        get_vllm_cache_report_arguments(backend_parameters, backend_version) == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "backend_parameters, backend_version, expected",
+    [
+        # Unknown version: do not inject (we cannot version-gate it).
+        (None, None, []),
+        # Below the v0.3.4 cutoff: skipped.
+        ([], "0.3.3", []),
+        # At/after the cutoff: injected.
+        ([], "0.3.4", ["--enable-cache-report"]),
+        ([], "0.5.8.post1", ["--enable-cache-report"]),
+        # User already passed it: do not duplicate.
+        (["--enable-cache-report"], "0.5.8.post1", []),
+    ],
+)
+def test_sglang_cache_report_arguments(backend_parameters, backend_version, expected):
+    assert (
+        get_sglang_cache_report_arguments(backend_parameters, backend_version)
+        == expected
     )
 
 
