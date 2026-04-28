@@ -750,6 +750,11 @@ async def get_usage_breakdown(
     scoped_statement = _date_scoped_statement(
         base_statement, request.start_date, request.end_date
     )
+    summary_columns = [metric_columns[item].label(item) for item in metric_columns]
+    summary_row = await _get_first_row(
+        session, scoped_statement.with_only_columns(*summary_columns)
+    )
+
     granularity = _breakdown_bucket_granularity(request)
     date_bucket_expr = _date_bucket_expression(session, granularity)
     select_columns, group_columns = _combined_group_columns(
@@ -790,6 +795,7 @@ async def get_usage_breakdown(
     item_rows = await _get_rows(session, items_statement)
 
     return UsageBreakdownResponse(
+        summary=_summary_from_row(summary_row),
         group_by=request.group_by,
         granularity=granularity if USAGE_GROUP_BY_DATE in request.group_by else None,
         pagination=Pagination(

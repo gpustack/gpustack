@@ -292,6 +292,7 @@ class UsageBreakdownItem(BaseModel):
 
 
 class UsageBreakdownResponse(BaseModel):
+    summary: UsageSummary
     group_by: List[str]
     granularity: Optional[str] = None
     pagination: Pagination
