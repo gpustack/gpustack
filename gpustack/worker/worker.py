@@ -290,11 +290,12 @@ class Worker:
             self._serve_manager.sync_model_instances_state,
             envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL,
         )
-        if envs.MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_INTERVAL > 0:
-            run_periodically_in_thread(
-                self._serve_manager.sync_model_instances_inference_health,
-                envs.MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_INTERVAL,
-            )
+        # Use a short fixed loop interval so that per-model intervals
+        # shorter than the global default can still be honoured.
+        run_periodically_in_thread(
+            self._serve_manager.sync_model_instances_inference_health,
+            10,
+        )
         run_periodically_in_thread(
             self._workload_cleaner.cleanup_orphan_workloads, 120, 15
         )
@@ -364,6 +365,9 @@ class Worker:
         app.state.worker_ip_getter = self.worker_ip
         app.state.get_instance_port_by_model_instance_id = (
             self._serve_manager.get_instance_port_by_model_instance_id
+        )
+        app.state.record_successful_inference = (
+            self._serve_manager.record_successful_inference
         )
         app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
         app.include_router(route_config.router, prefix=default_versioned_prefix)

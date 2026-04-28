@@ -40,7 +40,11 @@ from gpustack.server.services import (
     UserService,
 )
 from gpustack.server.worker_request import request_to_worker, stream_to_worker
-from gpustack.gateway.utils import openai_model_prefixes
+from gpustack.gateway.utils import (
+    model_instance_prefix,
+    openai_model_prefixes,
+    router_header_key,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -158,9 +162,9 @@ async def proxy_request_by_model(
             is_openai_exception=True,
         )
     extra_headers = {
-        "X-Target-Port": str(instance.port),
+        router_header_key: f"{model_instance_prefix(instance)}.static",
     }
-    path = f"proxy/v1/{endpoint}"
+    path = f"v1/{endpoint}"
     logger.debug(
         f"proxying to {instance.worker_ip}:{instance.port}, instance port: {instance.port}"
     )

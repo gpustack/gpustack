@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import multiprocessing
 import re
 import threading
+import time
 
 import requests
 import setproctitle
@@ -32,6 +33,7 @@ from gpustack.schemas.inference_backend import (
     is_custom_backend,
 )
 from gpustack.utils import network
+from gpustack.utils.convert import safe_int
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.command import find_int_parameter
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
@@ -60,7 +62,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
-from gpustack import envs
+
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +165,16 @@ class ServeManager:
         # {model_instance_id: failure_count}
         self._inference_health_check_failures: Dict[int, int] = {}
 
+        # Track last successful inference per port (set by worker proxy)
+        self._last_successful_inference: Dict[int, float] = {}
+        # Track last health check time per model instance
+        self._last_health_check_time: Dict[int, float] = {}
+
         os.makedirs(self._serve_log_dir, exist_ok=True)
+
+    def record_successful_inference(self, instance_id: int):
+        """Called by worker proxy on successful inference response."""
+        self._last_successful_inference[instance_id] = time.time()
 
     async def watch_models(self):
         """
@@ -531,48 +542,72 @@ class ServeManager:
         """
         Synchronize model instances' inference health by sending actual inference requests.
 
-        - For each RUNNING model instance, send a minimal inference request.
-        - Track failure count for each model instance.
-        - If failure count exceeds threshold, update state to ERROR.
-        - If inference succeeds, reset failure count.
+        Per-model configuration is read from model.env:
+        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED: "true"/"false" (default: false)
+        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_INTERVAL: seconds (default: global env)
+        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT: seconds (default: 15)
+        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD: count (default: global env)
+
+        If the model has received successful inference traffic recently
+        (within the configured interval), the active health check is skipped.
         """
 
-        # Model instances where this worker is the main worker (same filter as API worker_id).
-        model_instances_page = self._clientset.model_instances.list(
-            params={"worker_id": str(self._worker_id)}
-        )
-        if not model_instances_page.items:
+        # Use the event-driven local cache instead of an API call.
+        model_instances = [
+            mi
+            for mi in self._model_instance_by_instance_id.values()
+            if mi.state == ModelInstanceStateEnum.RUNNING
+        ]
+        if not model_instances:
             return
 
-        model_instances: List[ModelInstance] = []
-        for model_instance in model_instances_page.items:
-            if (
-                model_instance.worker_id == self._worker_id
-                and model_instance.state == ModelInstanceStateEnum.RUNNING
-            ):
-                model_instances.append(model_instance)
+        now = time.time()
 
         for model_instance in model_instances:
             model = self._get_model(model_instance)
             if not model:
                 continue
 
+            # Read per-model config from model.env.
+            config = _get_inference_health_check_config(model)
+            if not config["enabled"]:
+                continue
+
+            interval = config["interval"]
+            timeout = config["timeout"]
+            threshold = config["threshold"]
+
             # Skip if the model is still provisioning.
             if self._is_provisioning(model_instance):
                 continue
 
+            # Skip if not enough time has passed since last check.
+            last_check = self._last_health_check_time.get(model_instance.id, 0)
+            if now - last_check < interval:
+                continue
+
+            self._last_health_check_time[model_instance.id] = now
+
+            # Skip if recent successful inference was observed for this instance.
+            last_success = self._last_successful_inference.get(model_instance.id, 0)
+            if last_success > now - interval:
+                logger.debug(
+                    f"Model instance {model_instance.name} had recent successful "
+                    f"inference, skipping health check."
+                )
+                # Reset failure count since real traffic is succeeding.
+                self._inference_health_check_failures.pop(model_instance.id, None)
+                continue
+
             # Perform inference health check.
-            if not is_inference_ready(model_instance, model):
+            if not is_inference_ready(model_instance, model, timeout=timeout):
                 failure_count = self._inference_health_check_failures.get(
                     model_instance.id, 0
                 )
                 failure_count += 1
                 self._inference_health_check_failures[model_instance.id] = failure_count
 
-                if (
-                    failure_count
-                    >= envs.MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD
-                ):
+                if failure_count >= threshold:
                     logger.warning(
                         f"Model instance {model_instance.name} inference health check failed "
                         f"{failure_count} times, updating state to ERROR."
@@ -587,12 +622,11 @@ class ServeManager:
                 else:
                     logger.debug(
                         f"Model instance {model_instance.name} inference health check failed "
-                        f"{failure_count}/{envs.MODEL_INSTANCE_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD} times."
+                        f"{failure_count}/{threshold} times."
                     )
             else:
                 # Reset failure count on success.
-                if model_instance.id in self._inference_health_check_failures:
-                    del self._inference_health_check_failures[model_instance.id]
+                self._inference_health_check_failures.pop(model_instance.id, None)
 
     def _handle_model_instance_event(self, event: Event):  # noqa: C901
         """
@@ -1320,6 +1354,8 @@ class ServeManager:
         if clear_restart_backoff:
             self._restart_backoff_counts.pop(mi.id, None)
         self._inference_health_check_failures.pop(mi.id, None)
+        self._last_health_check_time.pop(mi.id, None)
+        self._last_successful_inference.pop(mi.id, None)
 
         logger.info(f"Stopped model instance {mi.name or mi.id}")
 
@@ -1529,7 +1565,36 @@ def _get_inference_endpoint_and_payload(model: Model) -> tuple[str, dict] | None
     }
 
 
-def is_inference_ready(mi: ModelInstance, model: Model) -> bool:
+def _get_inference_health_check_config(model: Model) -> dict:
+    """Read per-model inference health check config from model.env."""
+    env = model.env or {}
+    enabled = env.get(
+        "GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED", "false"
+    ).lower() in (
+        "true",
+        "1",
+    )
+    interval = safe_int(
+        env.get("GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_INTERVAL"),
+        300,
+    )
+    timeout = safe_int(
+        env.get("GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT"),
+        15,
+    )
+    threshold = safe_int(
+        env.get("GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD"),
+        3,
+    )
+    return {
+        "enabled": enabled,
+        "interval": interval,
+        "timeout": timeout,
+        "threshold": threshold,
+    }
+
+
+def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bool:
     """
     Send a minimal inference request to verify the inference capability is working.
     """
@@ -1552,7 +1617,7 @@ def is_inference_ready(mi: ModelInstance, model: Model) -> bool:
     inference_url = f"http://{mi.worker_ip}:{mi.port}{endpoint_path}"
 
     try:
-        response = requests.post(inference_url, json=payload, timeout=15)
+        response = requests.post(inference_url, json=payload, timeout=timeout)
         if response.status_code == 200:
             return True
         else:

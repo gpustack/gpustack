@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import aiohttp
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
@@ -30,11 +30,12 @@ async def proxy(path: str, request: Request):
     worker_ip_getter: Callable[[], str] = request.app.state.worker_ip_getter
     if worker_ip_getter is None:
         worker_ip_getter = localhost_fallback
-    target_service_port = getattr(
-        request.state, "x_target_port", request.headers.get("X-Target-Port")
-    )
+    target_service_port = getattr(request.state, "x_target_port", None)
     if not target_service_port:
-        raise HTTPException(status_code=400, detail="Missing X-Target-Port header")
+        raise HTTPException(
+            status_code=400,
+            detail="Missing target port; ensure the request includes the routing header",
+        )
 
     try:
         logger.debug(
@@ -73,6 +74,17 @@ async def proxy(path: str, request: Request):
             timeout=timeout,
         )
 
+        # Heuristic: treat a non-error HTTP status as a successful inference
+        # signal so the active health-check loop can skip this instance.
+        # For streaming responses the status is available before body
+        # transfer, so a mid-stream failure will still be counted — this is
+        # acceptable as a best-effort optimisation.
+        target_instance_id = getattr(request.state, "x_target_instance_id", None)
+        if resp.status < 400 and target_instance_id:
+            record_fn = getattr(request.app.state, "record_successful_inference", None)
+            if record_fn:
+                record_fn(int(target_instance_id))
+
         return StreamingResponse(
             stream_response(resp),
             status_code=resp.status,
@@ -102,11 +114,14 @@ def localhost_fallback() -> str:
     return "127.0.0.1"
 
 
-def get_model_instance_info_from_model_name(request: Request) -> int:
+def get_model_instance_info_from_model_name(
+    request: Request,
+) -> Tuple[int, int]:
     """
-    Get model instance port and generic proxy support from model name in header "x-gpustack-model-instance".
+    Get model instance port and instance id from model name in header
+    "x-gpustack-model-instance".
 
-    Return the model instance port and support of generic proxy or not.
+    Return (port, model_instance_id).
     """
     model_instance_id = get_instance_id_from_header(request.headers)
     port: Optional[int] = request.app.state.get_instance_port_by_model_instance_id(
@@ -117,7 +132,7 @@ def get_model_instance_info_from_model_name(request: Request) -> int:
             message=f"No running model instance found for model name: {model_instance_id}",
         )
     logger.debug(f"Found port {port} from model instance id {model_instance_id}")
-    return port
+    return port, model_instance_id
 
 
 async def set_port_from_model_name(request: Request, call_next):
@@ -125,9 +140,10 @@ async def set_port_from_model_name(request: Request, call_next):
     if model_name is None:
         return await call_next(request)
     try:
-        port = get_model_instance_info_from_model_name(request)
+        port, model_instance_id = get_model_instance_info_from_model_name(request)
         request.scope["path"] = f"/proxy{request.url.path}"
         request.state.x_target_port = str(port)
+        request.state.x_target_instance_id = model_instance_id
         return await call_next(request)
     except NotFoundException as e:
         logger.debug("failed to find model instance for proxying: %s", e.message)
