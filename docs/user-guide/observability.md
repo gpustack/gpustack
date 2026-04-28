@@ -185,13 +185,15 @@ These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as 
 
 ### Server Metrics
 
-| Metric Name                      | Type  | Description                                       |
-| -------------------------------- | ----- | ------------------------------------------------- |
-| gpustack:cluster                 | Info  | Cluster information (ID, name, provider).         |
-| gpustack:cluster_status          | Gauge | Cluster status (with state label).                |
-| gpustack:model                   | Info  | Model information (ID, name, runtime, source).    |
-| gpustack:model_desired_instances | Gauge | Desired number of model instances.                |
-| gpustack:model_running_instances | Gauge | Number of running model instances.                |
-| gpustack:model_instance_status   | Gauge | Status of each model instance (with state label). |
+| Metric Name                                 | Type  | Description                                                   |
+| ------------------------------------------- | ----- | ------------------------------------------------------------- |
+| gpustack:cluster                            | Info  | Cluster information (ID, name, provider).                     |
+| gpustack:cluster_status                     | Gauge | Cluster status (with state label).                            |
+| gpustack:model                              | Info  | Model information (ID, name, runtime, source).                |
+| gpustack:model_desired_instances            | Gauge | Desired number of model instances.                            |
+| gpustack:model_running_instances            | Gauge | Number of running model instances.                            |
+| gpustack:model_instance_status              | Gauge | Status of each model instance (with state label).             |
+| gpustack:model_instance_restart_count       | Gauge | Model instance restart count.                                 |
+| gpustack:model_instance_latest_restart_time | Gauge | Model instance latest restart time as Unix timestamp seconds. |
 
 > **Note**: All metrics are labeled with relevant identifiers (cluster, worker, model, instance, user) for fine-grained monitoring and filtering.
