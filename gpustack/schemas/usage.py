@@ -30,20 +30,8 @@ USAGE_GRANULARITY_MONTH = "month"
 USAGE_SORT_ASC = "asc"
 USAGE_SORT_DESC = "desc"
 
-USAGE_METRICS = {
-    USAGE_METRIC_INPUT_TOKENS,
-    USAGE_METRIC_OUTPUT_TOKENS,
-    USAGE_METRIC_INPUT_CACHED_TOKENS,
-    USAGE_METRIC_TOTAL_TOKENS,
-    USAGE_METRIC_API_REQUESTS,
-}
 USAGE_GROUP_BYS = {
     USAGE_GROUP_BY_DATE,
-    USAGE_GROUP_BY_MODEL,
-    USAGE_GROUP_BY_USER,
-    USAGE_GROUP_BY_API_KEY,
-}
-USAGE_TIMESERIES_GROUP_BYS = {
     USAGE_GROUP_BY_MODEL,
     USAGE_GROUP_BY_USER,
     USAGE_GROUP_BY_API_KEY,
@@ -70,7 +58,6 @@ USAGE_SORTABLE_FIELDS = {
 class UsageOption(BaseModel):
     key: str
     label: str
-    scope: Optional[List[str]] = None
 
 
 class UsageIdentityValue(BaseModel):
@@ -135,35 +122,6 @@ class UsageBaseRequest(BaseModel):
         start_date = info.data.get("start_date")
         if start_date and value < start_date:
             raise ValueError("end_date must be on or after start_date")
-        return value
-
-
-class UsageTimeSeriesRequest(UsageBaseRequest):
-    metric: str
-    group_by: Optional[str] = None
-    granularity: str = USAGE_GRANULARITY_DAY
-
-    @field_validator("metric")
-    @classmethod
-    def validate_metric(cls, value: str) -> str:
-        if value not in USAGE_METRICS:
-            raise ValueError(f"Unsupported metric: {value}")
-        return value
-
-    @field_validator("group_by")
-    @classmethod
-    def validate_group_by(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        if value not in USAGE_TIMESERIES_GROUP_BYS:
-            raise ValueError(f"Unsupported group_by: {value}")
-        return value
-
-    @field_validator("granularity")
-    @classmethod
-    def validate_granularity(cls, value: str) -> str:
-        if value not in USAGE_GRANULARITIES:
-            raise ValueError(f"Unsupported granularity: {value}")
         return value
 
 
@@ -241,26 +199,6 @@ class UsageSummary(BaseModel):
     total_tokens: int = 0
     api_requests: int = 0
     models_called: int = 0
-
-
-class UsageTimelinePoint(BaseModel):
-    date: Date
-    value: int
-
-
-class UsageSeries(BaseModel):
-    identity: Optional[UsageIdentity] = None
-    label: str
-    deleted: bool
-    timeline: List[UsageTimelinePoint]
-
-
-class UsageTimeSeriesResponse(BaseModel):
-    summary: UsageSummary
-    metric: str
-    group_by: Optional[str] = None
-    granularity: str
-    series: List[UsageSeries]
 
 
 class UsageBreakdownDimension(BaseModel):

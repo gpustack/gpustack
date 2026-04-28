@@ -1,5 +1,4 @@
-from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from math import ceil
 from typing import Any, Dict, List
 
@@ -42,11 +41,7 @@ from gpustack.schemas.usage import (
     UsageIdentityValue,
     UsageMetaResponse,
     UsageOption,
-    UsageSeries,
     UsageSummary,
-    UsageTimeSeriesRequest,
-    UsageTimeSeriesResponse,
-    UsageTimelinePoint,
 )
 from gpustack.schemas.common import Pagination
 from gpustack.server.deps import CurrentUserDep, SessionDep
@@ -72,12 +67,12 @@ GRANULARITY_OPTIONS = [
     UsageOption(key=USAGE_GRANULARITY_MONTH, label="Month"),
 ]
 SELF_GROUP_BY_OPTIONS = [
-    UsageOption(key=USAGE_GROUP_BY_DATE, label="Date", scope=["breakdown"]),
+    UsageOption(key=USAGE_GROUP_BY_DATE, label="Date"),
     UsageOption(key=USAGE_GROUP_BY_MODEL, label="Model"),
     UsageOption(key=USAGE_GROUP_BY_API_KEY, label="API Key"),
 ]
 ADMIN_GROUP_BY_OPTIONS = [
-    UsageOption(key=USAGE_GROUP_BY_DATE, label="Date", scope=["breakdown"]),
+    UsageOption(key=USAGE_GROUP_BY_DATE, label="Date"),
     UsageOption(key=USAGE_GROUP_BY_MODEL, label="Model"),
     UsageOption(key=USAGE_GROUP_BY_USER, label="User"),
     UsageOption(key=USAGE_GROUP_BY_API_KEY, label="API Key"),
@@ -303,23 +298,6 @@ def _row_dimension(group_by: str, row: Any) -> UsageBreakdownDimension:
     )
 
 
-def _identity_key(identity: UsageIdentity) -> tuple:
-    return (
-        identity.value.cluster_name,
-        identity.value.model_name,
-        identity.value.provider_name,
-        identity.value.provider_type,
-        identity.value.user_name,
-        identity.value.api_key_name,
-        identity.value.access_key,
-        identity.value.api_key_is_custom,
-        None if identity.current is None else identity.current.model_id,
-        None if identity.current is None else identity.current.provider_id,
-        None if identity.current is None else identity.current.user_id,
-        None if identity.current is None else identity.current.api_key_id,
-    )
-
-
 def _identity_deleted(identity: UsageIdentity) -> bool:
     return identity.current is None
 
@@ -443,14 +421,6 @@ def _exclude_incomplete_api_key_identity(statement: Select) -> Select:
     )
 
 
-def _bucket_date(value: date, granularity: str) -> date:
-    if granularity == USAGE_GRANULARITY_WEEK:
-        return value - timedelta(days=value.weekday())
-    if granularity == USAGE_GRANULARITY_MONTH:
-        return date(value.year, value.month, 1)
-    return value
-
-
 async def _get_rows(session, statement: Select):
     return (await session.exec(statement)).all()
 
@@ -538,107 +508,6 @@ def _check_permission(user: User, request) -> None:
         raise ForbiddenException(message="No permission to group by user")
     if request.filters.users and not user.is_admin:
         raise ForbiddenException(message="No permission to filter by user")
-
-
-@router.post("/timeseries", response_model=UsageTimeSeriesResponse)
-async def get_usage_timeseries(
-    session: SessionDep,
-    user: CurrentUserDep,
-    request: UsageTimeSeriesRequest,
-):
-    _check_permission(user, request)
-
-    metric_columns = _metric_columns()
-    base_statement = _apply_usage_scope_and_filters(
-        _base_statement(),
-        user=user,
-        filters=request.filters,
-    )
-    if request.group_by == USAGE_GROUP_BY_API_KEY:
-        base_statement = _exclude_incomplete_api_key_identity(base_statement)
-    scoped_statement = _date_scoped_statement(
-        base_statement, request.start_date, request.end_date
-    )
-
-    summary_columns = [metric_columns[item].label(item) for item in metric_columns]
-    summary_row = await _get_first_row(
-        session, scoped_statement.with_only_columns(*summary_columns)
-    )
-
-    if request.group_by is None:
-        timeline_rows = await _get_rows(
-            session,
-            scoped_statement.with_only_columns(
-                ModelUsage.date.label("date"),
-                metric_columns[request.metric].label("value"),
-            )
-            .group_by(ModelUsage.date)
-            .order_by(ModelUsage.date),
-        )
-        timeline: Dict[date, int] = defaultdict(int)
-        for row in timeline_rows:
-            point_date = _bucket_date(row.date, request.granularity)
-            timeline[point_date] += int(getattr(row, "value", 0) or 0)
-        return UsageTimeSeriesResponse(
-            summary=_summary_from_row(summary_row),
-            metric=request.metric,
-            group_by=None,
-            granularity=request.granularity,
-            series=[
-                UsageSeries(
-                    identity=None,
-                    label="All",
-                    deleted=False,
-                    timeline=[
-                        UsageTimelinePoint(date=item[0], value=item[1])
-                        for item in sorted(timeline.items())
-                    ],
-                )
-            ],
-        )
-
-    select_columns, group_columns = _group_columns(request.group_by)
-    timeline_rows = await _get_rows(
-        session,
-        scoped_statement.with_only_columns(
-            *select_columns,
-            ModelUsage.date.label("date"),
-            metric_columns[request.metric].label("value"),
-        )
-        .group_by(*group_columns, ModelUsage.date)
-        .order_by(*group_columns, ModelUsage.date),
-    )
-
-    order: List[tuple] = []
-    identities: Dict[tuple, UsageIdentity] = {}
-    timelines: Dict[tuple, Dict[date, int]] = defaultdict(lambda: defaultdict(int))
-    for row in timeline_rows:
-        identity = _row_identity(request.group_by, row)
-        key = _identity_key(identity)
-        if key not in identities:
-            order.append(key)
-            identities[key] = identity
-        point_date = _bucket_date(row.date, request.granularity)
-        timelines[key][point_date] += int(getattr(row, "value", 0) or 0)
-
-    return UsageTimeSeriesResponse(
-        summary=_summary_from_row(summary_row),
-        metric=request.metric,
-        group_by=request.group_by,
-        granularity=request.granularity,
-        series=[
-            UsageSeries(
-                identity=identities[key],
-                label=_identity_label(request.group_by, identities[key]),
-                deleted=_identity_deleted(identities[key]),
-                timeline=[
-                    UsageTimelinePoint(date=item[0], value=item[1])
-                    for item in sorted(timelines[key].items())
-                ],
-            )
-            for key in order
-        ],
-    )
 
 
 def _sort_expression(sort_by: str, metric_columns: Dict[str, Any], date_sort_expr=None):

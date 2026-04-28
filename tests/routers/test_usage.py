@@ -8,7 +8,6 @@ from gpustack.api.exceptions import ForbiddenException
 from gpustack.routes.usage import (
     get_usage_breakdown,
     get_usage_meta,
-    get_usage_timeseries,
 )
 from gpustack.schemas.users import User
 from gpustack.schemas.usage import (
@@ -17,7 +16,7 @@ from gpustack.schemas.usage import (
     UsageFilterRequest,
     UsageIdentity,
     UsageIdentityValue,
-    UsageTimeSeriesRequest,
+    UsageSummary,
 )
 
 
@@ -105,7 +104,6 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
         "total_tokens",
         "api_requests",
     ]
-    assert response.group_bys[0].scope == ["breakdown"]
     assert response.filters.models[0].label == "cluster-a / qwen3.5-9b"
     assert response.filters.models[0].deleted is False
     assert response.filters.models[0].identity.current.model_id == 7
@@ -169,129 +167,22 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
 
 
 @pytest.mark.asyncio
-async def test_get_usage_timeseries_returns_weekly_identity_series():
-    session = MagicMock()
-    session.exec = AsyncMock(
-        side_effect=[
-            _mock_exec_result(
-                [
-                    SimpleNamespace(
-                        input_tokens=500,
-                        output_tokens=200,
-                        input_cached_tokens=180,
-                        total_tokens=700,
-                        api_requests=3,
-                        models_called=2,
-                    ),
-                ]
-            ),
-            _mock_exec_result(
-                [
-                    SimpleNamespace(
-                        group_user_name="alice",
-                        group_user_id=12,
-                        date=date(2026, 4, 1),
-                        value=100,
-                    ),
-                    SimpleNamespace(
-                        group_user_name="alice",
-                        group_user_id=12,
-                        date=date(2026, 4, 2),
-                        value=200,
-                    ),
-                    SimpleNamespace(
-                        group_user_name="bob",
-                        group_user_id=None,
-                        date=date(2026, 4, 2),
-                        value=200,
-                    ),
-                ]
-            ),
-        ]
-    )
-    user = User(id=1, username="admin", hashed_password="x", is_admin=True)
-    request = UsageTimeSeriesRequest(
-        start_date=date(2026, 4, 1),
-        end_date=date(2026, 4, 2),
-        metric="input_tokens",
-        group_by="user",
-        granularity="week",
-    )
-
-    response = await get_usage_timeseries(session=session, user=user, request=request)
-
-    assert response.summary.input_tokens == 500
-    assert response.summary.input_cached_tokens == 180
-    assert response.summary.models_called == 2
-    assert response.metric == "input_tokens"
-    assert response.group_by == "user"
-    assert response.granularity == "week"
-    assert len(response.series) == 2
-
-    alice = next(item for item in response.series if item.label == "alice")
-    assert alice.identity.current.user_id == 12
-    assert [(point.date, point.value) for point in alice.timeline] == [
-        (date(2026, 3, 30), 300),
-    ]
-
-    bob = next(item for item in response.series if item.label == "bob (Deleted)")
-    assert bob.deleted is True
-    assert bob.identity.current is None
-    assert [(point.date, point.value) for point in bob.timeline] == [
-        (date(2026, 3, 30), 200),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_get_usage_timeseries_returns_overall_series_without_group_by():
-    session = MagicMock()
-    session.exec = AsyncMock(
-        side_effect=[
-            _mock_exec_result(
-                [
-                    SimpleNamespace(
-                        input_tokens=500,
-                        output_tokens=200,
-                        total_tokens=700,
-                        api_requests=3,
-                        models_called=2,
-                    ),
-                ]
-            ),
-            _mock_exec_result(
-                [
-                    SimpleNamespace(date=date(2026, 4, 1), value=100),
-                    SimpleNamespace(date=date(2026, 4, 2), value=200),
-                ]
-            ),
-        ]
-    )
-    user = User(id=1, username="admin", hashed_password="x", is_admin=True)
-    request = UsageTimeSeriesRequest(
-        start_date=date(2026, 4, 1),
-        end_date=date(2026, 4, 2),
-        metric="input_tokens",
-        group_by=None,
-        granularity="week",
-    )
-
-    response = await get_usage_timeseries(session=session, user=user, request=request)
-
-    assert response.group_by is None
-    assert len(response.series) == 1
-    assert response.series[0].identity is None
-    assert response.series[0].label == "All"
-    assert response.series[0].deleted is False
-    assert [(point.date, point.value) for point in response.series[0].timeline] == [
-        (date(2026, 3, 30), 300),
-    ]
-
-
-@pytest.mark.asyncio
 async def test_get_usage_breakdown_returns_paginated_model_items():
     session = MagicMock()
     session.exec = AsyncMock(
         side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=400,
+                        output_tokens=140,
+                        input_cached_tokens=100,
+                        total_tokens=540,
+                        api_requests=4,
+                        models_called=2,
+                    ),
+                ]
+            ),
             _mock_exec_result([2]),
             _mock_exec_result(
                 [
@@ -343,6 +234,12 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
 
     response = await get_usage_breakdown(session=session, user=user, request=request)
 
+    assert response.summary.input_tokens == 400
+    assert response.summary.output_tokens == 140
+    assert response.summary.input_cached_tokens == 100
+    assert response.summary.total_tokens == 540
+    assert response.summary.api_requests == 4
+    assert response.summary.models_called == 2
     assert response.group_by == ["model"]
     assert response.pagination.page == 1
     assert response.pagination.perPage == 20
@@ -359,50 +256,6 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
 
 
 @pytest.mark.asyncio
-async def test_get_usage_timeseries_supports_input_cached_tokens_metric():
-    session = MagicMock()
-    session.exec = AsyncMock(
-        side_effect=[
-            _mock_exec_result(
-                [
-                    SimpleNamespace(
-                        input_tokens=500,
-                        output_tokens=200,
-                        input_cached_tokens=180,
-                        total_tokens=700,
-                        api_requests=3,
-                        models_called=2,
-                    ),
-                ]
-            ),
-            _mock_exec_result(
-                [
-                    SimpleNamespace(date=date(2026, 4, 1), value=75),
-                    SimpleNamespace(date=date(2026, 4, 2), value=105),
-                ]
-            ),
-        ]
-    )
-    user = User(id=1, username="admin", hashed_password="x", is_admin=True)
-    request = UsageTimeSeriesRequest(
-        start_date=date(2026, 4, 1),
-        end_date=date(2026, 4, 2),
-        metric="input_cached_tokens",
-        group_by=None,
-        granularity="day",
-    )
-
-    response = await get_usage_timeseries(session=session, user=user, request=request)
-
-    assert response.metric == "input_cached_tokens"
-    assert response.summary.input_cached_tokens == 180
-    assert [(point.date, point.value) for point in response.series[0].timeline] == [
-        (date(2026, 4, 1), 75),
-        (date(2026, 4, 2), 105),
-    ]
-
-
-@pytest.mark.asyncio
 async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_api_key():
     session = MagicMock()
     session.get_bind.return_value = SimpleNamespace(
@@ -410,6 +263,17 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
     )
     session.exec = AsyncMock(
         side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=400,
+                        output_tokens=160,
+                        total_tokens=560,
+                        api_requests=7,
+                        models_called=2,
+                    ),
+                ]
+            ),
             _mock_exec_result([2]),
             _mock_exec_result(
                 [
@@ -485,8 +349,8 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
     assert response.items[1].api_key.identity is None
     assert response.items[1].api_key.label == "-"
 
-    count_sql = str(session.exec.call_args_list[0].args[0])
-    items_sql = str(session.exec.call_args_list[1].args[0])
+    count_sql = str(session.exec.call_args_list[1].args[0])
+    items_sql = str(session.exec.call_args_list[2].args[0])
     assert "date_trunc" in count_sql
     assert "LIMIT" in items_sql
     assert "api_key_name IS NOT NULL" not in count_sql
@@ -498,6 +362,18 @@ async def test_get_usage_breakdown_ignores_incomplete_api_key_identity_groups():
     session = MagicMock()
     session.exec = AsyncMock(
         side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=0,
+                        output_tokens=0,
+                        input_cached_tokens=0,
+                        total_tokens=0,
+                        api_requests=0,
+                        models_called=0,
+                    ),
+                ]
+            ),
             _mock_exec_result([0]),
             _mock_exec_result([]),
         ]
@@ -511,6 +387,7 @@ async def test_get_usage_breakdown_ignores_incomplete_api_key_identity_groups():
 
     response = await get_usage_breakdown(session=session, user=user, request=request)
 
+    assert response.summary == UsageSummary()
     assert response.items == []
     executed_sql = str(session.exec.call_args_list[0].args[0])
     assert "api_key_name IS NOT NULL" in executed_sql
@@ -522,6 +399,18 @@ async def test_get_usage_breakdown_formats_month_date_label_as_year_month():
     session = MagicMock()
     session.exec = AsyncMock(
         side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=100,
+                        output_tokens=40,
+                        input_cached_tokens=10,
+                        total_tokens=150,
+                        api_requests=2,
+                        models_called=1,
+                    ),
+                ]
+            ),
             _mock_exec_result([1]),
             _mock_exec_result(
                 [
@@ -556,20 +445,20 @@ async def test_get_usage_breakdown_formats_month_date_label_as_year_month():
 
 
 @pytest.mark.asyncio
-async def test_get_usage_timeseries_filters_deleted_api_key_by_value_and_current():
+async def test_get_usage_breakdown_filters_deleted_api_key_by_value_and_current():
     session = MagicMock()
     session.exec = AsyncMock(
         side_effect=[
             _mock_exec_result([SimpleNamespace()]),
+            _mock_exec_result([0]),
             _mock_exec_result([]),
         ]
     )
     user = User(id=1, username="admin", hashed_password="x", is_admin=True)
-    request = UsageTimeSeriesRequest(
+    request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        metric="input_tokens",
-        group_by="api_key",
+        group_by=["api_key"],
         filters=UsageFilterRequest(
             api_keys=[
                 UsageFilterItem(
@@ -587,7 +476,7 @@ async def test_get_usage_timeseries_filters_deleted_api_key_by_value_and_current
         ),
     )
 
-    await get_usage_timeseries(session=session, user=user, request=request)
+    await get_usage_breakdown(session=session, user=user, request=request)
 
     executed_sql = str(session.exec.call_args_list[0].args[0])
     assert "api_key_id IS NULL" in executed_sql
@@ -600,23 +489,23 @@ async def test_get_usage_timeseries_filters_deleted_api_key_by_value_and_current
 
 
 @pytest.mark.asyncio
-async def test_get_usage_timeseries_defaults_regular_user_to_self_scope():
+async def test_get_usage_breakdown_defaults_regular_user_to_self_scope():
     session = MagicMock()
     session.exec = AsyncMock(
         side_effect=[
             _mock_exec_result([SimpleNamespace()]),
+            _mock_exec_result([0]),
             _mock_exec_result([]),
         ]
     )
     user = User(id=2, username="alice", hashed_password="x", is_admin=False)
-    request = UsageTimeSeriesRequest(
+    request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        metric="input_tokens",
-        group_by="model",
+        group_by=["model"],
     )
 
-    await get_usage_timeseries(session=session, user=user, request=request)
+    await get_usage_breakdown(session=session, user=user, request=request)
 
     executed_sql = str(session.exec.call_args_list[0].args[0])
     assert "model_usages.user_id =" in executed_sql
