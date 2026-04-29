@@ -123,16 +123,30 @@ class Scheduler:
 
         logger.info("Scheduler started.")
 
-        # scheduler job trigger by event.
-        async for event in ModelInstance.subscribe(source="scheduler"):
+        # Bootstrap pending state once at startup; replaces the bus replay
+        # of every existing instance which would flood the queue (#4794).
+        await self._enqueue_pending_instances()
+
+        # Live trigger. event_types/replay_existing keep this subscription
+        # cheap so UPDATED/HEARTBEAT bursts don't fill the queue.
+        async for event in ModelInstance.subscribe(
+            source="scheduler",
+            event_types={EventType.CREATED},
+            replay_existing=False,
+        ):
+            # The bus filter only blocks events from publishers; the
+            # subscribe() generator still yields HEARTBEAT events on its
+            # own to keep the stream alive (active_record.py). Skip those
+            # and any other non-CREATED events that may surface in future.
             if event.type != EventType.CREATED:
                 continue
-
-            await self._enqueue_pending_instances()
+            # Single-instance path; the IntervalTrigger above is still the
+            # full-scan fallback for anything missed here.
+            await self._enqueue_event_instance(event.data)
 
     async def _enqueue_pending_instances(self):
         """
-        Get the pending model instances.
+        Periodic / bootstrap full scan of pending model instances.
         """
         try:
             async with async_session() as session:
@@ -147,6 +161,17 @@ class Scheduler:
         except Exception as e:
             logger.error(f"Failed to enqueue pending model instances: {e}")
 
+    async def _enqueue_event_instance(self, instance: Optional[ModelInstance]):
+        """Event-driven single-instance path. ``_evaluate`` re-fetches from
+        DB, so the event payload is used only for ``_should_schedule``."""
+        if instance is None or instance.id is None:
+            return
+        try:
+            if self._should_schedule(instance):
+                await self._evaluate(instance)
+        except Exception as e:
+            logger.error(f"Failed to evaluate instance {instance.id} from event: {e}")
+
     async def _evaluate(self, instance: ModelInstance):  # noqa: C901
         """
         Evaluate the model instance's metadata.
@@ -154,6 +179,12 @@ class Scheduler:
         async with async_session() as session:
             try:
                 instance = await ModelInstance.one_by_id(session, instance.id)
+                # Re-check against the freshly-fetched row: the caller's
+                # snapshot may be stale (event payload, last full scan, etc.)
+                # and the user may have deleted or transitioned the instance
+                # between dispatch and now.
+                if instance is None or not self._should_schedule(instance):
+                    return
 
                 model = await Model.one_by_id(session, instance.model_id)
                 if model is None:

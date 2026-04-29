@@ -1,6 +1,9 @@
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+from gpustack.envs import EVENT_BUS_SUBSCRIBER_QUEUE_SIZE
 
 # Re-export from coordinator.base for backward compatibility
 from gpustack.server.coordinator.base import Event, EventType
@@ -9,10 +12,30 @@ from gpustack.server.coordinator.models import get_model_for_topic
 
 logger = logging.getLogger(__name__)
 
+
+class EventCountKind(Enum):
+    """Subscriber-side counter buckets surfaced as Prometheus labels.
+
+    On the normal completion path:
+    ``RECEIVED = FILTERED + COALESCED + ENQUEUED`` and
+    ``BACKPRESSURED ⊆ ENQUEUED``. If a ``put`` is cancelled mid-flight,
+    BACKPRESSURED may have been bumped without a matching ENQUEUED — the
+    ``latest_by_key`` rollback in ``enqueue`` keeps the queue/dict
+    invariant intact, but the counter invariant is best-effort.
+    """
+
+    RECEIVED = "received"
+    FILTERED = "filtered"
+    COALESCED = "coalesced"
+    ENQUEUED = "enqueued"
+    BACKPRESSURED = "backpressured"
+
+
 # Re-export for backward compatibility
 __all__ = [
     'Event',
     'EventType',
+    'EventCountKind',
     'Subscriber',
     'EventBus',
     'event_bus',
@@ -28,33 +51,96 @@ def event_decoder(obj):
 
 
 class Subscriber:
-    def __init__(self):
-        self.queue = asyncio.Queue(maxsize=1024)
-        self.latest_by_key = {}
+    """A bus subscriber owning its own bounded queue.
+
+    UPDATED events for the same id are coalesced via ``latest_by_key``.
+    Invariant: ``id ∈ latest_by_key`` iff there is (or will be) a queue
+    token whose ``receive()`` will pop it. When the queue is full the
+    producer awaits ``put`` rather than dropping. Publish paths spawn
+    enqueue in their own tasks (see ``EventBus._route_event``), so
+    backpressure stalls only the per-event task, not the caller.
+    """
+
+    def __init__(
+        self,
+        topic: Optional[str] = None,
+        source: Optional[str] = None,
+        event_types: Optional[Iterable[EventType]] = None,
+        queue_size: Optional[int] = None,
+    ):
+        self.topic = topic
+        self.source = source
+        self.event_types: Optional[Set[EventType]] = (
+            set(event_types) if event_types else None
+        )
+        self.queue: asyncio.Queue = asyncio.Queue(
+            maxsize=(
+                queue_size
+                if queue_size is not None
+                else EVENT_BUS_SUBSCRIBER_QUEUE_SIZE
+            )
+        )
+        self.latest_by_key: Dict[Any, Event] = {}
         self.lock = asyncio.Lock()
+        # Read by ``BusMetricsCollector`` and reflected as Prometheus counters.
+        self.event_counts: Dict[Tuple[EventCountKind, str], int] = {}
+
+    def _bump(self, kind: EventCountKind, event_type: EventType) -> None:
+        key = (kind, event_type.name)
+        self.event_counts[key] = self.event_counts.get(key, 0) + 1
+
+    def should_enqueue(self, event: Event) -> bool:
+        """Pre-enqueue filter. Drops events the subscriber has opted out of."""
+        if self.event_types is not None and event.type not in self.event_types:
+            return False
+        return True
 
     async def enqueue(self, event: Event):
-        # Squash UPDATED events by keeping only the latest per key
+        self._bump(EventCountKind.RECEIVED, event.type)
+
+        if not self.should_enqueue(event):
+            self._bump(EventCountKind.FILTERED, event.type)
+            return
+
         if event.type == EventType.UPDATED and event.id is not None:
             async with self.lock:
                 if event.id in self.latest_by_key:
                     self.latest_by_key[event.id] = event
+                    self._bump(EventCountKind.COALESCED, event.type)
                     return
                 self.latest_by_key[event.id] = event
-
+            # Release the lock before awaiting put: a full queue would
+            # otherwise serialize unrelated ids behind it.
             try:
-                self.queue.put_nowait(event)
-            except asyncio.QueueFull:
-                # If the queue is full, skip adding the event, relying on latest_by_key, could receive it later
-                logger.warning(
-                    "Subscriber:%s queue full, skipping UPDATED event for id=%s",
-                    id(self),
-                    event.id,
-                )
+                await self._put_with_backpressure(event)
+            except BaseException:
+                # If the put was cancelled or errored before a token reached
+                # the queue, neither this event nor any later UPDATED that
+                # piggybacked on the same dict entry will ever be popped.
+                # Roll back so the next UPDATED for this id can re-enter
+                # the queue — otherwise we'd reproduce the #4794 stranded-id
+                # bug, just triggered by cancellation instead of QueueFull.
+                async with self.lock:
+                    self.latest_by_key.pop(event.id, None)
+                raise
             return
 
-        # For other event types, enqueue directly
+        await self._put_with_backpressure(event)
+
+    async def _put_with_backpressure(self, event: Event):
+        if self.queue.full():
+            logger.warning(
+                "Subscriber queue full, applying backpressure: "
+                "source=%s topic=%s event_type=%s id=%s queue_size=%s",
+                self.source,
+                self.topic,
+                event.type.name,
+                event.id,
+                self.queue.qsize(),
+            )
+            self._bump(EventCountKind.BACKPRESSURED, event.type)
         await self.queue.put(event)
+        self._bump(EventCountKind.ENQUEUED, event.type)
 
     async def receive(self) -> Any:
         event = await self.queue.get()
@@ -77,6 +163,17 @@ class EventBus:
         self._coordinator = None
         self._listen_task: Optional[asyncio.Task] = None
         self._subscribed_channels: set = set()
+        # Holds strong references to fire-and-forget tasks so the GC
+        # doesn't reap them mid-execution (Python's create_task only
+        # holds a weak reference to the task it returns).
+        self._pending_tasks: Set[asyncio.Task] = set()
+
+    def _spawn(self, coro) -> asyncio.Task:
+        """``asyncio.create_task`` plus retain-and-discard bookkeeping."""
+        task = asyncio.create_task(coro)
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+        return task
 
     def set_coordinator(self, coordinator):
         """Set the coordinator for distributed pub/sub."""
@@ -100,14 +197,25 @@ class EventBus:
                 pass
         logger.info("EventBus stopped")
 
-    def subscribe(self, topic: str) -> Subscriber:
-        """Subscribe to a topic."""
-        subscriber = Subscriber()
+    def subscribe(
+        self,
+        topic: str,
+        source: Optional[str] = None,
+        event_types: Optional[Iterable[EventType]] = None,
+    ) -> Subscriber:
+        """Subscribe to a topic.
+
+        ``source`` is a free-form label used in queue-full log lines so
+        operators can identify which consumer is backpressuring. ``event_types``
+        is an optional whitelist applied before enqueue — events not matching
+        are dropped without occupying a queue slot.
+        """
+        subscriber = Subscriber(topic=topic, source=source, event_types=event_types)
         if topic not in self.subscribers:
             self.subscribers[topic] = []
             # Subscribe to coordinator if available
             if self._coordinator:
-                asyncio.create_task(self._subscribe_to_coordinator(topic))
+                self._spawn(self._subscribe_to_coordinator(topic))
 
         self.subscribers[topic].append(subscriber)
         return subscriber
@@ -138,7 +246,7 @@ class EventBus:
         to the main loop itself (e.g. via loop.call_soon_threadsafe).
         """
         try:
-            asyncio.create_task(self._process_coordinator_event(event, topic))
+            self._spawn(self._process_coordinator_event(event, topic))
         except RuntimeError:
             logger.warning(
                 f"No running event loop for coordinator event on topic {topic}, skipping"
@@ -257,10 +365,18 @@ class EventBus:
             return
 
     def _route_event(self, event: Event, topic: str):
-        """Route event to subscribers of the specific topic."""
+        """Route event to subscribers of the specific topic.
+
+        Per-subscriber enqueue runs in its own task so a slow consumer
+        cannot head-of-line block its peers under blocking backpressure.
+        Trade-off: this fan-out is unbounded — for very hot topics with no
+        coalescing protection (CREATED/DELETED), bursts can spawn many
+        pending enqueue tasks on slow consumers. UPDATED is naturally
+        bounded by ``latest_by_key`` coalescing.
+        """
         if topic in self.subscribers:
             for subscriber in self.subscribers[topic]:
-                asyncio.create_task(subscriber.enqueue(event))
+                self._spawn(subscriber.enqueue(event))
 
     def unsubscribe(self, topic: str, subscriber: Subscriber):
         """Unsubscribe from a topic."""
@@ -272,10 +388,11 @@ class EventBus:
     async def publish(self, topic: str, event: Event):
         """Publish an event to a topic.
 
-        When a coordinator is configured, distribution normally happens via the
-        coordinator so all instances (including this one) receive the event on
-        the same path. If the coordinator publish fails, fall back to local
-        delivery so this instance can still process its own events.
+        With a coordinator, distribution flows through it so every instance
+        sees the event on the same path. On failure or in standalone mode,
+        fall back to ``_route_event`` for local fan-out — each subscriber's
+        enqueue runs in its own task, so backpressure on one consumer does
+        not head-of-line block its peers.
         """
         if self._coordinator:
             try:
@@ -287,10 +404,7 @@ class EventBus:
                     f"falling back to local delivery: {e}"
                 )
 
-        # Local delivery (no coordinator configured, or coordinator publish failed).
-        if topic in self.subscribers:
-            for subscriber in self.subscribers[topic]:
-                await subscriber.enqueue(event)
+        self._route_event(event, topic)
 
 
 event_bus = EventBus()

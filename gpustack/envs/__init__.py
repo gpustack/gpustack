@@ -31,6 +31,11 @@ SERVER_CACHE_LOCKS_MAX_SIZE = int(
     os.getenv("GPUSTACK_SERVER_CACHE_LOCKS_MAX_SIZE", 10000)
 )
 
+# Server event bus queue capacity. Configurable via env so large clusters can tune the buffer.
+EVENT_BUS_SUBSCRIBER_QUEUE_SIZE = int(
+    os.getenv("GPUSTACK_EVENT_BUS_SUBSCRIBER_QUEUE_SIZE", 1024)
+)
+
 # Worker configuration
 WORKER_HEARTBEAT_INTERVAL = int(
     os.getenv("GPUSTACK_WORKER_HEARTBEAT_INTERVAL", 30)

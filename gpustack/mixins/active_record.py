@@ -4,7 +4,7 @@ import importlib
 import json
 import logging
 import math
-from typing import Any, AsyncGenerator, Callable, List, Optional, Union, Tuple
+from typing import Any, AsyncGenerator, Callable, Iterable, List, Optional, Union, Tuple
 
 import anyio
 from fastapi.encoders import jsonable_encoder
@@ -74,8 +74,9 @@ def send_post_commit_events(session: AsyncSession):
         logger.trace(f"Sending event {event.name} of type {event.event.type}, id {id}")
         bus_event = event.event
         try:
-            copied_dict = bus_event.data.model_dump(warnings=False)
-            bus_event.data = type(bus_event.data).model_validate(copied_dict)
+            # Detach from the SQLAlchemy session so subscribers don't see
+            # lazy loads or further mutations on the same row.
+            bus_event.data = bus_event.data.model_copy(deep=True)
             asyncio.create_task(event_bus.publish(event.name, bus_event))
         except Exception as e:
             logger.exception(f"Failed to publish events: {e}")
@@ -745,10 +746,21 @@ class ActiveRecordMixin:
 
     @classmethod
     async def subscribe(
-        cls, source: str, options: Optional[List] = None
+        cls,
+        source: str,
+        options: Optional[List] = None,
+        event_types: Optional[Iterable[EventType]] = None,
+        replay_existing: bool = True,
     ) -> AsyncGenerator[Event, None]:
+        """Subscribe to bus events for this model.
+
+        ``source`` labels the consumer in queue-full logs. ``event_types``
+        whitelists pre-enqueue, so filtered events don't take queue slots.
+        ``replay_existing=False`` skips the initial CREATED snapshot for
+        consumers that bootstrap themselves.
+        """
         topic = cls.__name__.lower()
-        subscriber = event_bus.subscribe(cls.__name__.lower())
+        subscriber = event_bus.subscribe(topic, source=source, event_types=event_types)
         logger.info(
             "subscribed, source=%s topic=%s subscriber=%s",
             source,
@@ -756,10 +768,12 @@ class ActiveRecordMixin:
             id(subscriber),
         )
 
-        initial_items = await cls.cached_all(options=options)
-
-        for item in initial_items:
-            yield Event(type=EventType.CREATED, data=item)
+        if replay_existing:
+            include_created = event_types is None or EventType.CREATED in event_types
+            if include_created:
+                initial_items = await cls.cached_all(options=options)
+                for item in initial_items:
+                    yield Event(type=EventType.CREATED, data=item)
 
         heartbeat_interval = timedelta(seconds=15)
         last_event_time = datetime.now(timezone.utc)
