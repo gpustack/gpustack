@@ -888,15 +888,12 @@ exec "$@"
                     )
                     return get_docker_image(backend_versioned_runner), service_version
 
-        # Return the last(oldest) backend version of selected runner
+        # Return the first(latest) backend version of selected runner
         # if failed to detect host backend version or no backend version matched.
-        #
-        # NB(thxCode): Not using the latest backend version is to keep backend version idempotence
-        #              when the gpustack-runner adds new backend version.
         service_version = _get_service_version_from_versioned_runner(
-            backend_versioned_runners[-1]
+            backend_versioned_runners[0]
         )
-        return get_docker_image(backend_versioned_runners[-1]), service_version
+        return get_docker_image(backend_versioned_runners[0]), service_version
 
     def _update_model_backend_service_version(
         self, service_version: Optional[str]
