@@ -196,4 +196,16 @@ These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as 
 | gpustack:model_instance_restart_count       | Gauge | Model instance restart count.                                 |
 | gpustack:model_instance_latest_restart_time | Gauge | Model instance latest restart time as Unix timestamp seconds. |
 
+### Event Bus Metrics
+
+| Metric Name                         | Type    | Description                                                       |
+| ----------------------------------- | ------- | ----------------------------------------------------------------- |
+| gpustack:bus_subscribers            | Gauge   | Active bus subscribers per topic.                                 |
+| gpustack:bus_queue_depth            | Gauge   | Per-subscriber queue depth at scrape time.                        |
+| gpustack:bus_queue_capacity         | Gauge   | Per-subscriber queue maxsize (see env knob below).                |
+| gpustack:bus_queue_full             | Gauge   | 1 if the queue is full at scrape time, 0 otherwise.               |
+| gpustack:bus_queue_saturation_ratio | Gauge   | `qsize / maxsize` in `[0, 1]`. Sustained > 0.8 ⇒ slow consumer.   |
+| gpustack:bus_subscriber_latest_keys | Gauge   | Ids pending coalesced UPDATED delivery (size of `latest_by_key`). |
+| gpustack:bus_events_total           | Counter | Cumulative event counts. Extra labels: `kind`, `event_type`.      |
+
 > **Note**: All metrics are labeled with relevant identifiers (cluster, worker, model, instance, user) for fine-grained monitoring and filtering.
