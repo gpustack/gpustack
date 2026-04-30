@@ -122,9 +122,22 @@ async def delete_cache_by_key(
         await _broadcast_invalidation(key)
 
 
-async def set_cache_by_key(key: str, value: Any):
+async def set_cache_by_key(key: str, value: Any, ttl: Optional[int] = None):
+    """Write ``value`` to the in-memory cache.
+
+    A TTL is required in practice — the underlying aiocache memory backend
+    only schedules expiration when ``ttl`` is truthy, so calling without one
+    leaves the entry in the dict forever. ModelUsageService.update goes
+    through this function on every chat completion with a per-(date,
+    model, user, access_key) cache key, so an unbounded backend turns a
+    high-cardinality key space (rotated API keys) into a permanent leak.
+    Default to ``SERVER_CACHE_TTL_SECONDS`` so inactive entries roll off
+    naturally; active ones get refreshed on every update.
+    """
+    if ttl is None:
+        ttl = envs.SERVER_CACHE_TTL_SECONDS
     logger.trace(f"Set cache for key: {key}")
-    await cache.set(key, value)
+    await cache.set(key, value, ttl=ttl)
 
 
 def class_key(suffix: str):
