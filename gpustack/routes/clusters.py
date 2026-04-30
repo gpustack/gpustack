@@ -1,7 +1,10 @@
 import math
+import random
 import secrets
 from typing import Any, Callable, Optional, Union
 from urllib.parse import urlencode
+
+import aiohttp
 from fastapi import APIRouter, Depends, Request, Response, Query
 from fastapi.responses import RedirectResponse, StreamingResponse
 from enum import Enum
@@ -13,11 +16,15 @@ from gpustack.api.exceptions import (
     NotFoundException,
     InvalidException,
     ConflictException,
+    ServiceUnavailableException,
 )
+from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.config import parse_base_model_to_env_vars
+from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
+from gpustack.server.worker_request import stream_to_worker
 from gpustack.schemas.clusters import (
     ClusterListParams,
     ClusterUpdate,
@@ -498,3 +505,100 @@ async def get_cluster_dashboard(
         dashboard_url = f"{dashboard_url}?{urlencode(query_params)}"
 
     return RedirectResponse(url=dashboard_url, status_code=302)
+
+
+# Hop-by-hop headers and other things we should not forward to the worker; the
+# worker layer will inject its own Authorization, and the worker→k8s leg will
+# inject the in-pod ServiceAccount token.
+_CLUSTER_PROXY_REQUEST_HEADER_SKIP = {
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "upgrade",
+    "authorization",
+    "cookie",
+    "x-api-key",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-forwarded-proto",
+}
+
+
+@router.api_route(
+    "/{id}/proxy/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    include_in_schema=False,
+)
+async def cluster_apiserver_proxy(
+    request: Request,
+    session: SessionDep,
+    id: int,
+    path: str,
+):
+    """
+    Proxy a request to the Kubernetes API server of a Kubernetes-provider
+    cluster, by forwarding it through one of the cluster's worker pods. The
+    worker uses its in-pod ServiceAccount credentials to call the API server.
+    """
+    cluster = await Cluster.one_by_id(session, id)
+    if not cluster or cluster.deleted_at is not None:
+        raise NotFoundException(message=f"cluster {id} not found")
+    if cluster.provider != ClusterProvider.Kubernetes:
+        raise InvalidException(
+            message=(
+                f"cluster {cluster.name}(id: {id}) provider is "
+                f"{cluster.provider.value}; API server proxy is only supported "
+                "for Kubernetes-provider clusters."
+            )
+        )
+
+    workers = await Worker.all_by_fields(
+        session,
+        fields={"cluster_id": id, "state": WorkerStateEnum.READY},
+    )
+    if not workers:
+        raise ServiceUnavailableException(
+            message=f"No ready workers in cluster {cluster.name}(id: {id})"
+        )
+    worker = random.choice(workers)
+
+    headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in _CLUSTER_PROXY_REQUEST_HEADER_SKIP
+    }
+
+    # Stream the request body through to avoid loading large payloads (e.g. apply
+    # of big manifests) into memory.
+    body = (
+        request.stream() if request.method not in ("GET", "HEAD", "OPTIONS") else None
+    )
+
+    # request.query_params preserves order but a flat dict is sufficient for
+    # the Kubernetes API surface we forward (no duplicate keys in practice).
+    params = dict(request.query_params) or None
+
+    # No total timeout — Kubernetes watch and log-follow streams may be open
+    # indefinitely. Connect timeout still bounds the upstream connect step.
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=10)
+
+    return StreamingResponseWithStatusCode(
+        stream_to_worker(
+            worker=worker,
+            method=request.method,
+            path=f"cluster-proxy/{path}",
+            proxy_client=request.app.state.http_client,
+            no_proxy_client=request.app.state.http_client_no_proxy,
+            params=params,
+            data=body,
+            headers=headers,
+            timeout=timeout,
+            raw=True,
+        ),
+    )

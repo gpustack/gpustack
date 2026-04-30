@@ -32,7 +32,7 @@ from gpustack.schemas.config import (
 )
 from gpustack import envs
 from gpustack.routes import config as route_config, debug, probes
-from gpustack.routes.worker import logs, proxy, filesystem
+from gpustack.routes.worker import logs, proxy, filesystem, cluster_proxy
 from gpustack.routes.token import worker_auth
 from gpustack.server import catalog
 from gpustack.utils.network import (
@@ -354,6 +354,9 @@ class Worker:
             yield
             await app.state.http_client.close()
             await app.state.http_client_no_proxy.close()
+            kube_session = getattr(app.state, "kube_api_session", None)
+            if kube_session is not None and not kube_session.closed:
+                await kube_session.close()
 
         app = FastAPI(
             title="GPUStack Worker",
@@ -376,6 +379,7 @@ class Worker:
         app.include_router(logs.router)
         app.include_router(proxy.router)
         app.include_router(filesystem.router)
+        app.include_router(cluster_proxy.router)
         app.add_api_route(
             path="/token-auth",
             endpoint=worker_auth,
