@@ -29,6 +29,7 @@ from gpustack.security import (
     get_secret_hash,
     API_KEY_PREFIX,
 )
+from gpustack.routes.auth import remove_initial_password_file_if_exists
 from gpustack.server.app import create_app
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
@@ -424,33 +425,44 @@ class Server:
             await init_data_func(session)
 
     async def _init_user(self, session: AsyncSession):
-        user = await User.first_by_field(
-            session=session, field="username", value="admin"
+        # Skip bootstrap when any non-system admin already exists, so that
+        # renaming the default "admin" account does not cause a duplicate
+        # admin to be regenerated on master restart.
+        existing_admin = await User.first_by_fields(
+            session=session,
+            fields={"is_admin": True, "is_system": False, "is_active": True},
         )
-        if not user:
-            bootstrap_password = self._config.bootstrap_password
-            require_password_change = False
-            if not bootstrap_password:
-                require_password_change = True
-                bootstrap_password = generate_secure_password()
-                bootstrap_password_file = os.path.join(
-                    self._config.data_dir, "initial_admin_password"
-                )
-                with open(bootstrap_password_file, "w") as file:
-                    file.write(bootstrap_password + "\n")
-                logger.info(
-                    "Generated initial admin password. "
-                    f"You can get it from {bootstrap_password_file}"
-                )
+        if existing_admin:
+            return
 
-            user = User(
-                username="admin",
-                full_name="Default System Admin",
-                hashed_password=get_secret_hash(bootstrap_password),
-                is_admin=True,
-                require_password_change=require_password_change,
+        # Drop any stale initial password file from a prior bootstrap before
+        # generating a new one, so the login page does not show an outdated
+        # "retrieve initial password" hint.
+        remove_initial_password_file_if_exists(self._config)
+
+        bootstrap_password = self._config.bootstrap_password
+        require_password_change = False
+        if not bootstrap_password:
+            require_password_change = True
+            bootstrap_password = generate_secure_password()
+            bootstrap_password_file = os.path.join(
+                self._config.data_dir, "initial_admin_password"
             )
-            await User.create(session, user)
+            with open(bootstrap_password_file, "w") as file:
+                file.write(bootstrap_password + "\n")
+            logger.info(
+                "Generated initial admin password. "
+                f"You can get it from {bootstrap_password_file}"
+            )
+
+        user = User(
+            username="admin",
+            full_name="Default System Admin",
+            hashed_password=get_secret_hash(bootstrap_password),
+            is_admin=True,
+            require_password_change=require_password_change,
+        )
+        await User.create(session, user)
 
     async def _migrate_legacy_token(self, session: AsyncSession):
         if not self._config.token:
