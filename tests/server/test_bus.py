@@ -194,3 +194,94 @@ async def test_non_updated_events_block_under_backpressure_not_drop():
     second = await asyncio.wait_for(subscriber.receive(), timeout=1)
     third = await asyncio.wait_for(subscriber.receive(), timeout=1)
     assert {second.id, third.id} == {2, 3}
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_drains_pending_puts_and_releases_pending_tasks():
+    """An SSE consumer that disconnects while its queue is full leaves
+    enqueue tasks stuck on ``queue.put``. Without the close-on-unsubscribe
+    drain, those tasks (held by the bus's ``_pending_tasks`` retain set)
+    pin the subscriber + 1024 events alive forever — that's the
+    ghost-subscriber half of the issue #5073 leak.
+    """
+    from gpustack.server.bus import EventBus
+
+    bus = EventBus()
+    topic = "_test_unsubscribe_drain"
+    subscriber = bus.subscribe(topic, source="ghost")
+    subscriber.queue = asyncio.Queue(maxsize=1)
+    # Saturate the queue so the next route call will block on put.
+    await subscriber.enqueue(Event(type=EventType.CREATED, data={"id": 0}, id=0))
+
+    # Route a non-UPDATED event — fan-out spawns a task that blocks on put.
+    bus._route_event(Event(type=EventType.CREATED, data={"id": 1}, id=1), topic)
+    await asyncio.sleep(0)
+    blocked = next(iter(bus._pending_tasks))
+    assert not blocked.done()
+
+    # Unsubscribe must close the subscriber, draining its queue so the
+    # blocked enqueue task can finish and the retain-set discards it.
+    qsize_before = subscriber.queue.qsize()
+    bus.unsubscribe(topic, subscriber)
+    await asyncio.wait_for(blocked, timeout=1)
+    # The done callback on _spawn fires before ``await blocked`` returns,
+    # so by here the retain set must have released the task.
+    assert blocked not in bus._pending_tasks
+    assert subscriber._closed is True
+    # The drained event is gone; the previously-blocked put resolved and
+    # placed its event back, so the net queue depth is at most what we
+    # started with — no leak amplification.
+    assert subscriber.queue.qsize() <= qsize_before
+
+    # Post-close enqueues are silently dropped: no new entries reach the
+    # queue, no new entries land in latest_by_key.
+    pre_post_qsize = subscriber.queue.qsize()
+    await subscriber.enqueue(Event(type=EventType.CREATED, data={"id": 2}, id=2))
+    await subscriber.enqueue(Event(type=EventType.UPDATED, data={"id": 3}, id=3))
+    assert subscriber.queue.qsize() == pre_post_qsize
+    assert subscriber.latest_by_key == {}
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_unwinds_putters_beyond_queue_capacity():
+    """Stalled consumer + high event rate parks more putters than the
+    queue can hold. ``close`` must unwind every one of them — the surplus
+    beyond ``maxsize`` cannot be reached by drain alone (each get_nowait
+    wakes only one putter), so we also cancel residual ``_putters``.
+    """
+    from gpustack.server.bus import EventBus
+
+    bus = EventBus()
+    topic = "_test_unsubscribe_deep_backlog"
+    subscriber = bus.subscribe(topic, source="stalled")
+    subscriber.queue = asyncio.Queue(maxsize=2)
+
+    # Fill the queue, then route enough additional events that the parked
+    # putter count exceeds the queue's capacity by a wide margin.
+    await subscriber.enqueue(Event(type=EventType.CREATED, data={"id": 0}, id=0))
+    await subscriber.enqueue(Event(type=EventType.CREATED, data={"id": 1}, id=1))
+    extra = 8
+    for i in range(extra):
+        bus._route_event(
+            Event(type=EventType.CREATED, data={"id": 100 + i}, id=100 + i),
+            topic,
+        )
+    # Yield so each enqueue task reaches its blocking put.
+    for _ in range(extra + 2):
+        await asyncio.sleep(0)
+    blocked_tasks = list(bus._pending_tasks)
+    assert len(blocked_tasks) == extra
+    assert all(not t.done() for t in blocked_tasks)
+
+    bus.unsubscribe(topic, subscriber)
+    # All blocked enqueue tasks must finish — either via the woken
+    # put-and-exit path (up to maxsize) or via the cancellation path.
+    await asyncio.wait_for(
+        asyncio.gather(*blocked_tasks, return_exceptions=True),
+        timeout=1,
+    )
+    for t in blocked_tasks:
+        assert t.done()
+    assert all(t not in bus._pending_tasks for t in blocked_tasks)
+    putters = getattr(subscriber.queue, "_putters", None)
+    assert putters is None or len(putters) == 0

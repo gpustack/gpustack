@@ -84,6 +84,13 @@ class Subscriber:
         self.lock = asyncio.Lock()
         # Read by ``BusMetricsCollector`` and reflected as Prometheus counters.
         self.event_counts: Dict[Tuple[EventCountKind, str], int] = {}
+        # Set by ``EventBus.unsubscribe``. Pending ``enqueue`` tasks still
+        # retain a strong reference to this subscriber via ``_pending_tasks``,
+        # and a task blocked on ``queue.put`` (full queue + slow/dead
+        # consumer) would otherwise pin the subscriber + its 1024 queued
+        # events alive forever. ``close()`` drains the queue so those puts
+        # resolve and the tasks unwind.
+        self._closed: bool = False
 
     def _bump(self, kind: EventCountKind, event_type: EventType) -> None:
         key = (kind, event_type.name)
@@ -96,6 +103,12 @@ class Subscriber:
         return True
 
     async def enqueue(self, event: Event):
+        if self._closed:
+            # The subscriber has been unsubscribed; drop without taking the
+            # lock or touching latest_by_key so we don't strand entries that
+            # nobody will ever pop.
+            return
+
         self._bump(EventCountKind.RECEIVED, event.type)
 
         if not self.should_enqueue(event):
@@ -149,6 +162,40 @@ class Subscriber:
                 return self.latest_by_key.pop(event.id, event)
 
         return event
+
+    def close(self) -> None:
+        """Mark closed and release every event still tied to this subscriber.
+
+        Two distinct holders to clear:
+          1. Events already enqueued — events sitting in ``queue``.
+          2. Events still waiting to enqueue — events held by ``put``
+             callers parked on ``Queue._putters`` because the queue was
+             full when they arrived.
+
+        ``get_nowait`` covers (1) and, as a side effect, wakes one parked
+        putter per call. So it reaches at most ``maxsize`` of (2); under
+        a long stall + high event rate the parked count can exceed that
+        and the surplus stays stuck. The cancel pass cleans those up
+        directly. Both passes are sync and O(N), so ``unsubscribe`` never
+        blocks. Idempotent.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        # (1) Drop everything already in the queue.
+        while True:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        # (2) Cancel parked putters drain didn't reach. ``_putters`` is
+        # private but stable since 3.4; getattr keeps us safe if it moves.
+        putters = getattr(self.queue, "_putters", None)
+        if putters is not None:
+            for putter in list(putters):
+                if not putter.done():
+                    putter.cancel()
+            putters.clear()
 
 
 class EventBus:
@@ -379,11 +426,22 @@ class EventBus:
                 self._spawn(subscriber.enqueue(event))
 
     def unsubscribe(self, topic: str, subscriber: Subscriber):
-        """Unsubscribe from a topic."""
+        """Unsubscribe from a topic.
+
+        Closing the subscriber here (rather than relying on GC) drains its
+        queue so any in-flight enqueue tasks blocked on ``queue.put`` can
+        unwind. Without this, ``_pending_tasks`` would retain those tasks —
+        and through them the subscriber + its 1024 queued events — forever.
+        """
         if topic in self.subscribers:
-            self.subscribers[topic].remove(subscriber)
+            try:
+                self.subscribers[topic].remove(subscriber)
+            except ValueError:
+                # Defensive: tolerate double-unsubscribe.
+                pass
             if not self.subscribers[topic]:
                 del self.subscribers[topic]
+        subscriber.close()
 
     async def publish(self, topic: str, event: Event):
         """Publish an event to a topic.
