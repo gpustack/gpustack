@@ -100,7 +100,7 @@ async def _get_model_routes(
     async with async_session() as session:
         extra_conditions = []
         if categories:
-            conditions = build_category_conditions(session, Model, categories)
+            conditions = build_category_conditions(session, target_class, categories)
             extra_conditions.append(or_(*conditions))
 
         return await target_class.paginated_by_query(
