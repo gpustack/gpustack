@@ -42,7 +42,7 @@ Thank you for your interest in contributing to GPUStack! This document provides 
 
 2. Make your changes and ensure tests pass:
    ```bash
-   python -m pytest tests/
+   uv run pytest
    ```
 
 3. Follow the existing code style and conventions
