@@ -54,7 +54,7 @@ Thank you for your interest in contributing to GPUStack! This document provides 
 - Follow PEP 8 guidelines
 - Use type hints for new code
 - Add docstrings for public functions and classes
-- Run `black` and `isort` for formatting
+- Run hack/lint.sh to check code style and formatting
 
 ### Testing
 
