@@ -6,7 +6,7 @@ Thank you for your interest in contributing to GPUStack! This document provides 
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10 - 3.12
 - Docker (for containerized deployment)
 - NVIDIA GPU with compatible drivers (for GPU worker nodes)
 
