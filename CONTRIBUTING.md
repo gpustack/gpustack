@@ -21,7 +21,7 @@ Thank you for your interest in contributing to GPUStack! This document provides 
 
 3. Set up the development environment:
    ```bash
-   pip install -e .
+   uv pip install -e .
    ```
 
 ## How to Contribute
