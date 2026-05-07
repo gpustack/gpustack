@@ -16,7 +16,7 @@ from gpustack_runtime.deployer import (
 from gpustack.api.exceptions import raise_if_response_error
 from gpustack.config.config import Config
 from gpustack.config import registration
-from gpustack.logging import RedirectStdoutStderr
+from gpustack.log import RedirectStdoutStderr
 from gpustack.schemas.benchmark import (
     Benchmark,
     BenchmarkStateEnum,

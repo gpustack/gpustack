@@ -24,7 +24,7 @@ from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
 from gpustack.config import registration
-from gpustack.logging import (
+from gpustack.log import (
     RedirectStdoutStderr,
 )
 from gpustack.schemas.inference_backend import (

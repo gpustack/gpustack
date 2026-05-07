@@ -2,7 +2,7 @@ import asyncio
 import pytest
 from aiocache import Cache
 
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.server.cache import (
     build_cache_key,
     delete_cache_by_key,

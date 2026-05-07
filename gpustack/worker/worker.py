@@ -40,7 +40,7 @@ from gpustack.utils.network import (
     get_ifname_by_ip_hostname,
 )
 from gpustack.client import ClientSet
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread

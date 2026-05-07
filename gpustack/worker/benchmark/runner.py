@@ -8,7 +8,7 @@ from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.config.registration import read_worker_token
 from gpustack.envs import BENCHMARK_DATASET_SHAREGPT_PATH, BENCHMARK_REQUEST_TIMEOUT
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.schemas.benchmark import (
     DATASET_RANDOM,
     DATASET_SHAREGPT,

@@ -3,7 +3,7 @@ import logging
 import sys
 
 from gpustack.cmd.start import get_gpustack_env
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.worker.tools_manager import ToolsManager
 
 logger = logging.getLogger(__name__)

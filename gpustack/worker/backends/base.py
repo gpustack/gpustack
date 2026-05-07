@@ -29,7 +29,7 @@ from gpustack_runtime.deployer import WorkloadPlan
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.schemas.inference_backend import InferenceBackend, ContainerEnvConfig
 from gpustack.schemas.models import (
     BackendEnum,
