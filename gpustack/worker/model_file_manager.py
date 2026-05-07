@@ -553,6 +553,9 @@ class ModelFileDownloadTask:
         _original_update = (
             tqdm._original_update if hasattr(tqdm, "_original_update") else tqdm.update
         )
+        _original_close = (
+            tqdm._original_close if hasattr(tqdm, "_original_close") else tqdm.close
+        )
 
         def _new_init(self: tqdm, *args, **kwargs):
             task_self._handle_tqdm_init(self, _original_init, *args, **kwargs)
@@ -560,33 +563,45 @@ class ModelFileDownloadTask:
         def _new_update(self: tqdm, n=1):
             task_self._handle_tqdm_update(self, _original_update, n)
 
+        def _new_close(self: tqdm):
+            task_self._handle_tqdm_close(self, _original_close)
+
         tqdm.__init__ = _new_init
         tqdm.update = _new_update
+        tqdm.close = _new_close
         tqdm._original_init = _original_init
         tqdm._original_update = _original_update
+        tqdm._original_close = _original_close
 
     def _handle_tqdm_init(self, tqdm_instance, original_init, *args, **kwargs):
         kwargs["disable"] = False  # enable the progress bar anyway
         original_init(tqdm_instance, *args, **kwargs)
 
-        # Assign unique ID and line number for this tqdm instance
-        tqdm_id = self._tqdm_counter
-        self._tqdm_counter += 1
-        tqdm_instance._gpustack_id = tqdm_id
+        # Assign unique ID and line number for this tqdm instance.
+        # Counter and mapping mutations happen under _speed_lock to avoid
+        # races with parallel downloads (HfDownloader uses thread_map with
+        # max_workers=8, so up to 8 tqdm instances can pass through __init__
+        # concurrently).
+        with self._speed_lock:
+            tqdm_id = self._tqdm_counter
+            self._tqdm_counter += 1
+            tqdm_instance._gpustack_id = tqdm_id
 
-        # Assign a fixed line number for this file (same as tqdm_id)
-        line_number = tqdm_id
-        self._file_line_mapping[tqdm_id] = line_number
+            # Assign a fixed line number for this file (same as tqdm_id)
+            line_number = tqdm_id
+            self._file_line_mapping[tqdm_id] = line_number
 
-        # Initialize progress tracking for this file
-        self._file_progress_tracking[tqdm_id] = {
-            'last_update_time': 0,
-            'last_progress': 0.0,
-        }
+            # Initialize progress tracking for this file
+            self._file_progress_tracking[tqdm_id] = {
+                'last_update_time': 0,
+                'last_progress': 0.0,
+            }
 
-        if hasattr(self, '_model_file_size'):
-            # Resume downloading
-            self._model_downloaded_size += tqdm_instance.n
+            if hasattr(self, '_model_file_size'):
+                # Resume downloading: tqdm may be created with initial=<bytes_already_on_disk>
+                # which means tqdm_instance.n > 0 at init time. Account for those bytes
+                # in the global counter so the percentage reflects actual progress.
+                self._model_downloaded_size += tqdm_instance.n
 
         # Write initial progress line for this file using ANSI cursor positioning
         file_desc = getattr(tqdm_instance, 'desc', None) or f"File {tqdm_id}"
@@ -594,6 +609,24 @@ class ModelFileDownloadTask:
         self._write_progress_with_cursor_positioning(
             line_number, f"{file_desc}: Initializing...", tqdm_id
         )
+
+    def _handle_tqdm_close(self, tqdm_instance, original_close):
+        """
+        Cleanup tracking dictionaries when a tqdm instance closes.
+
+        Without this hook, _file_line_mapping and _file_progress_tracking grow
+        for the lifetime of the worker. On long-lived workers that download many
+        models, the dicts accumulate stale entries; restarting the container is
+        the only way to reset them, which is the workaround users have been
+        reporting (see #3456).
+        """
+        tqdm_id = getattr(tqdm_instance, '_gpustack_id', None)
+        if tqdm_id is not None:
+            with self._speed_lock:
+                self._file_line_mapping.pop(tqdm_id, None)
+                self._file_progress_tracking.pop(tqdm_id, None)
+                self._tqdm_file_basename.pop(tqdm_id, None)
+        original_close(tqdm_instance)
 
     def _handle_tqdm_update(self, tqdm_instance, original_update, n=1):
         # Get the tqdm ID and line number for this instance
