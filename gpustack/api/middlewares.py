@@ -58,6 +58,15 @@ class RequestTimeMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
         except Exception as e:
+            # Log the full traceback so unexpected errors don't disappear
+            # behind the generic 500 response. The exception is otherwise
+            # serialized only via str(e), which often hides the real cause
+            # (validation errors, attribute errors with terse repr, etc.).
+            logger.exception(
+                "Unhandled exception in request %s %s",
+                request.method,
+                request.url.path,
+            )
             response = JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content=ErrorResponse(

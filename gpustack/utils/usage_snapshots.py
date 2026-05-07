@@ -92,6 +92,9 @@ def build_model_usage_snapshot(
         "model_id": model.id,
         "model_name": model.name,
         "cluster_name": cluster_name,
+        # Usage rows inherit the model's tenant scope so dashboard/filtering
+        # by Org doesn't need to re-join models.
+        "owner_principal_id": getattr(model, "owner_principal_id", None),
     }
     if user is not None:
         snapshot.update(
