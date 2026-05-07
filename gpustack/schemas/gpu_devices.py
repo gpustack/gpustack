@@ -1,4 +1,4 @@
-from typing import ClassVar, List
+from typing import ClassVar, List, Optional
 from pydantic import BaseModel
 from sqlmodel import SQLModel
 
@@ -16,6 +16,8 @@ class GPUDeviceBase(GPUDeviceStatus, BaseModel):
     worker_ip: str
     worker_ifname: str
     cluster_id: int
+    # NULL = belongs to a worker on a global cluster.
+    owner_principal_id: Optional[int] = None
 
 
 class GPUDevice(GPUDeviceBase, SQLModel, BaseModelMixin, table=True):

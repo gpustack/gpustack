@@ -30,6 +30,15 @@ USAGE_GRANULARITY_MONTH = "month"
 USAGE_SORT_ASC = "asc"
 USAGE_SORT_DESC = "desc"
 
+# Usage view scope. ``self`` filters to the caller's own rows
+# (``user_id = self``); ``all`` filters to the current Org's rows
+# (``owner_principal_id = current_principal_id``), or — for platform admin in
+# cross-org context — to every Org. ``all`` is reserved for admin /
+# Org owner / manager; others are forced to ``self``.
+USAGE_SCOPE_SELF = "self"
+USAGE_SCOPE_ALL = "all"
+USAGE_SCOPES = {USAGE_SCOPE_SELF, USAGE_SCOPE_ALL}
+
 USAGE_GROUP_BYS = {
     USAGE_GROUP_BY_DATE,
     USAGE_GROUP_BY_MODEL,
@@ -115,6 +124,12 @@ class UsageBaseRequest(BaseModel):
     start_date: Date
     end_date: Date
     filters: UsageFilterRequest = Field(default_factory=UsageFilterRequest)
+    # See USAGE_SCOPE_* constants. Defaults to "all" so that managers /
+    # admins who omit the parameter get the org-wide provider view; the
+    # endpoint downgrades to "self" automatically when the caller has
+    # no managerial role (and rejects the request if they explicitly
+    # asked for "all").
+    scope: str = USAGE_SCOPE_ALL
 
     @field_validator("end_date")
     @classmethod
@@ -122,6 +137,13 @@ class UsageBaseRequest(BaseModel):
         start_date = info.data.get("start_date")
         if start_date and value < start_date:
             raise ValueError("end_date must be on or after start_date")
+        return value
+
+    @field_validator("scope")
+    @classmethod
+    def validate_scope(cls, value: str) -> str:
+        if value not in USAGE_SCOPES:
+            raise ValueError(f"Unsupported scope: {value}")
         return value
 
 

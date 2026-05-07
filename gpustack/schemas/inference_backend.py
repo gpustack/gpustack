@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from pydantic import BaseModel, Field, RootModel
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, Column, ForeignKey, Integer, Text, UniqueConstraint
 from sqlmodel import SQLModel, Field as SQLField
 
 from gpustack.mixins import BaseModelMixin
@@ -67,7 +67,18 @@ class InferenceBackendBase(SQLModel):
 
     """
 
-    backend_name: str = SQLField(index=True, unique=True)
+    # Backend name is unique within an Org scope: one Platform-NULL row
+    # plus optional one row per Org with the same backend_name (Hybrid
+    # model). Composite unique is declared on the table class below.
+    backend_name: str = SQLField(index=True)
+    # Tenant scope. NULL = global (admin-managed). Non-NULL = an Org's
+    # extension/override of a built-in or its own custom backend.
+    owner_principal_id: Optional[int] = SQLField(
+        default=None,
+        sa_column=Column(
+            Integer, ForeignKey("principals.id", ondelete="CASCADE"), nullable=True
+        ),
+    )
     version_configs: VersionConfigDict = SQLField(
         sa_column=Column(pydantic_column_type(VersionConfigDict)()),
         default_factory=lambda: VersionConfigDict(root={}),
@@ -282,6 +293,13 @@ class InferenceBackendBase(SQLModel):
 
 class InferenceBackend(InferenceBackendBase, BaseModelMixin, table=True):
     __tablename__ = 'inference_backends'
+    __table_args__ = (
+        UniqueConstraint(
+            "backend_name",
+            "owner_principal_id",
+            name="uix_inference_backends_name_org",
+        ),
+    )
     id: Optional[int] = SQLField(default=None, primary_key=True)
 
 

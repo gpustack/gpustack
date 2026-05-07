@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any, ClassVar, Dict, List, Optional
 from pydantic import BaseModel
 from sqlalchemy import JSON, Column
-from sqlmodel import Field, SQLModel, Text
+from sqlmodel import Field, ForeignKey, Integer, SQLModel, Text
 
 from gpustack.schemas.common import (
     ListParams,
@@ -257,6 +257,12 @@ class BenchmarkWithSnapshots(BenchmarkBase):
 
 class Benchmark(BenchmarkWithSnapshots, BenchmarkMetrics, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Tenant scope. Server-derived from cluster on creation.
+    owner_principal_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("principals.id"), nullable=True),
+    )
 
     __tablename__ = 'benchmarks'
 

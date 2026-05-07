@@ -325,6 +325,12 @@ class WorkerCreate(WorkerStatusStored, WorkerUpdate):
         sa_column=Column(Integer, ForeignKey("clusters.id"), nullable=False),
         default=None,
     )
+    # Denormalized from cluster.owner_principal_id for per-row tenant
+    # filtering. NULL = belongs to a global cluster (admin-managed).
+    owner_principal_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("principals.id"), nullable=True),
+    )
     external_id: Optional[str] = Field(
         default=None, sa_column=Column(String(255), nullable=True)
     )

@@ -23,6 +23,8 @@ from pydantic import (
 from sqlmodel import (
     Field,
     Column,
+    ForeignKey,
+    Integer,
     JSON,
     SQLModel,
     Relationship,
@@ -549,6 +551,12 @@ class ModelProviderCreate(ModelProviderUpdate):
 class ModelProvider(ModelProviderBase, BaseModelMixin, table=True):
     __tablename__ = "model_providers"
     id: Optional[int] = Field(default=None, primary_key=True)
+    # Tenant scope. NULL = global (admin-managed). Org-owned
+    # providers carry the owning Org id.
+    owner_principal_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("principals.id"), nullable=True),
+    )
     api_tokens: List[str] = Field(
         sa_column=Column(JSON, nullable=False),
         default=[],
