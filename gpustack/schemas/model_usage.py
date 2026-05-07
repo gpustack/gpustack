@@ -47,6 +47,12 @@ class ModelUsage(SQLModel, ActiveRecordMixin, table=True):
     api_key_name: Optional[str] = Field(default=None)
     access_key: Optional[str] = Field(default=None)
     api_key_is_custom: Optional[bool] = Field(default=None)
+    # Tenant scope. Denormalized from the api_key/model used for the request.
+    # NULL = global (admin acting in "All" mode).
+    owner_principal_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("principals.id", ondelete="SET NULL")),
+    )
     date: date
     prompt_token_count: int = Field(
         default=..., sa_column=Column(BigInteger, nullable=False)

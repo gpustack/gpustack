@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import ConfigDict
 from sqlmodel import (
     Column,
@@ -5,7 +7,10 @@ from sqlmodel import (
     ForeignKey,
     Integer,
     SQLModel,
+    UniqueConstraint,
 )
+
+from gpustack.mixins import BaseModelMixin
 
 
 class ModelInstanceModelFileLink(SQLModel, table=True):
@@ -50,20 +55,37 @@ class ModelInstanceDraftModelFileLink(SQLModel, table=True):
     model_config = ConfigDict(protected_namespaces=())
 
 
-class UserModelRouteLink(SQLModel, table=True):
-    route_id: int | None = Field(
-        default=None,
+class ModelRoutePrincipalLinkBase(SQLModel):
+    route_id: int = Field(
         sa_column=Column(
             Integer,
             ForeignKey("model_routes.id", ondelete="CASCADE"),
-            primary_key=True,
+            nullable=False,
+            index=True,
         ),
     )
-    user_id: int | None = Field(
-        default=None,
+    principal_id: int = Field(
         sa_column=Column(
             Integer,
-            ForeignKey("users.id", ondelete="CASCADE"),
-            primary_key=True,
+            ForeignKey("principals.id", ondelete="CASCADE"),
+            nullable=False,
         ),
     )
+
+
+class ModelRoutePrincipalLink(ModelRoutePrincipalLinkBase, BaseModelMixin, table=True):
+    """Per-route principal grants for ``ALLOWED_USERS`` and
+    ``ALLOWED_PRINCIPALS`` access policies.
+
+    Each row references a single ``principals`` row — kind (USER / ORG
+    / GROUP) is read from the joined principals row at evaluation
+    time. This collapses the previous polymorphic three-FK design and
+    matches the unified principal model used everywhere else.
+    """
+
+    __tablename__ = 'model_route_principals'
+    __table_args__ = (
+        UniqueConstraint('route_id', 'principal_id', name='uix_route_principal'),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)

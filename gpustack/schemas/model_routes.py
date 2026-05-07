@@ -20,21 +20,59 @@ from gpustack.schemas.common import (
     PublicFields,
     ItemList,
 )
-from gpustack.schemas.links import UserModelRouteLink
+from gpustack.schemas.organizations import PLATFORM_ORGANIZATION_ID
 
 if TYPE_CHECKING:
-    from gpustack.schemas.users import User
     from gpustack.schemas.models import Model
     from gpustack.schemas.model_provider import ModelProvider
 
 
+# Route names intentionally exclude `/` — the dispatch parser
+# (`UserService.get_model_ids_by_model_route_name`) splits the inbound
+# `model` string on the first `/` to separate Org slug from raw name.
+# Allowing `/` inside route names would create irresolvable ambiguity
+# (e.g. literal route "a/b" in platform Org vs. route "b" in Org with
+# slug "a"). Keep the two char sets disjoint.
 name_pattern = r'^[A-Za-z](?:[A-Za-z0-9_\-\.]*[A-Za-z0-9])?$'
+
+
+def effective_route_name(
+    route_name: str,
+    org_slug: Optional[str],
+    is_platform_org: bool,
+) -> str:
+    """The model name clients see and gateways route on.
+
+    The platform Org keeps unprefixed names (backward compat — existing
+    clients calling `model: "qwen3-0.6b"` keep working). Other Orgs get
+    a slug prefix (`org1/qwen3-0.6b`) so two Orgs can use the same route
+    name without colliding in Higress's AI proxy match rules.
+
+    Format follows the OpenAI / HuggingFace / OpenRouter convention
+    (`namespace/model`); slug is already constrained to
+    `^[a-z](?:[a-z0-9\\-]*[a-z0-9])?$` and route names exclude `/` (see
+    ``name_pattern``) so the joined string parses unambiguously.
+    """
+    if is_platform_org or not org_slug:
+        return route_name
+    return f"{org_slug}/{route_name}"
 
 
 class AccessPolicyEnum(str, Enum):
     PUBLIC = "public"
     AUTHED = "authed"
+    # ORG = scoped to members of the route's owning Organization. The
+    # default for new routes in non-platform Orgs — semantically the
+    # "team-private" scope, no principal table involvement.
+    ORG = "org"
+    # Per-user grants. The OSS UI surfaces only this policy for explicit
+    # access lists since it doesn't expose Org / Group concepts; rows
+    # are stored in ``model_route_principals`` with ``principal_id``
+    # pointing at a USER-kind principal.
     ALLOWED_USERS = "allowed_users"
+    # Per-principal grants (user / org / group) via
+    # ``model_route_principals``. Surfaced by the enterprise UI.
+    ALLOWED_PRINCIPALS = "allowed_principals"
 
 
 class TargetStateEnum(str, Enum):
@@ -237,6 +275,11 @@ class ModelRouteBase(ModelRouteUpdateBase):
     targets: int = Field(default=0, nullable=False, ge=0)
     ready_targets: int = Field(default=0, nullable=False, ge=0)
     access_policy: AccessPolicyEnum = Field(default=AccessPolicyEnum.AUTHED)
+    owner_principal_id: int = Field(
+        default=PLATFORM_ORGANIZATION_ID,
+        foreign_key="principals.id",
+        nullable=False,
+    )
 
 
 class ModelRoute(ModelRouteBase, BaseModelMixin, table=True):
@@ -246,12 +289,6 @@ class ModelRoute(ModelRouteBase, BaseModelMixin, table=True):
     route_targets: List[ModelRouteTarget] = Relationship(
         back_populates="model_route",
         sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
-    )
-
-    users: List["User"] = Relationship(
-        back_populates="routes",
-        link_model=UserModelRouteLink,
-        sa_relationship_kwargs={"lazy": "noload"},
     )
 
     models: List["Model"] = Relationship(
@@ -265,7 +302,14 @@ class ModelRoute(ModelRouteBase, BaseModelMixin, table=True):
 
 
 class ModelRoutePublic(ModelRouteBase, PublicFields):
-    pass
+    # The model name clients should send in their request body. Equals
+    # `name` for the platform Org (backward compat); for other Orgs it
+    # is `<org-slug>/<name>`. Frontends currently derive this themselves
+    # via `effectiveRouteName(name, org)` since they have the owning Org
+    # row in hand from a separate fetch — the field is reserved here so
+    # a future server-side enrichment can populate it without breaking
+    # consumers.
+    effective_name: Optional[str] = None
 
 
 ModelRoutesPublic = PaginatedList[ModelRoutePublic]

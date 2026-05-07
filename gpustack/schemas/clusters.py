@@ -170,6 +170,12 @@ class WorkerPoolBase(WorkerPoolCreate):
     cluster_id: int = Field(
         sa_column=Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE"))
     )
+    # Mirrors the cluster's owner_principal_id (NOT NULL since clusters are
+    # always Org-owned). The route layer copies the parent cluster's
+    # value so the row can be filtered without a join.
+    owner_principal_id: Optional[int] = Field(
+        default=None, foreign_key="principals.id", nullable=False
+    )
 
 
 class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
@@ -253,6 +259,12 @@ class CloudCredentialBase(SQLModel):
     provider: ClusterProvider = Field(default=ClusterProvider.DigitalOcean)
     key: Optional[str] = None
     options: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    # Every cloud credential belongs to one Org (mirrors cluster scope).
+    # The route fills this with ctx.current_principal_id or PLATFORM_ORG when
+    # the caller omits it.
+    owner_principal_id: Optional[int] = Field(
+        default=None, foreign_key="principals.id", nullable=False
+    )
 
 
 class CloudCredentialUpdate(CloudCredentialBase):
@@ -349,6 +361,13 @@ class ClusterCreateBase(ClusterUpdate):
         default=None, foreign_key="cloud_credentials.id"
     )
     region: Optional[str] = None
+    # Every cluster belongs to one Org. The route layer fills this with
+    # ctx.current_principal_id (or PLATFORM_PRINCIPAL_ID for admin in "All"
+    # mode) when callers omit it; sharing across Orgs is expressed via
+    # cluster_access rather than NULL ownership.
+    owner_principal_id: Optional[int] = Field(
+        default=None, foreign_key="principals.id", nullable=False
+    )
 
 
 class ClusterCreate(ClusterCreateBase):
@@ -368,6 +387,17 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
     __tablename__ = "clusters"
     __table_args__ = (
         sa.Index("idx_clusters_deleted_at_created_at", "deleted_at", "created_at"),
+        # At most one default cluster per Org (partial unique on
+        # is_default + soft-delete predicate). Each Org's deploy form
+        # falls back to its own default; admin "All" falls back to the
+        # platform Org's default.
+        sa.Index(
+            "uix_clusters_default_per_org",
+            "owner_principal_id",
+            unique=True,
+            sqlite_where=sa.text("is_default = 1 AND deleted_at IS NULL"),
+            postgresql_where=sa.text("is_default = true AND deleted_at IS NULL"),
+        ),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
     hashed_suffix: str = Field(nullable=False, default=secrets.token_hex(6))

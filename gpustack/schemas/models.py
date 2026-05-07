@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, model_validator
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, ForeignKey, Integer
 from sqlmodel import Field, Relationship, SQLModel, Text
 
 from gpustack.schemas.common import (
@@ -25,6 +25,7 @@ from gpustack.schemas.model_routes import (
     ModelRouteTarget,
     AccessPolicyEnum,
 )
+from gpustack.schemas.principals import PLATFORM_PRINCIPAL_ID
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
@@ -245,6 +246,14 @@ class ModelSpecBase(SQLModel, ModelSource):
 
 class ModelBase(ModelSpecBase):
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+    owner_principal_id: int = Field(
+        default=PLATFORM_PRINCIPAL_ID,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+    )
     # Deprecated field, kept for backward compatibility
     access_policy: AccessPolicyEnum = Field(default=AccessPolicyEnum.AUTHED)
 
@@ -487,6 +496,14 @@ class ModelInstanceBase(SQLModel, ModelSource):
     model_config = ConfigDict(protected_namespaces=())
 
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+    owner_principal_id: int = Field(
+        default=PLATFORM_PRINCIPAL_ID,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+    )
 
     def get_deployment_metadata(
         self,

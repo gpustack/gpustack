@@ -8,6 +8,7 @@ SELECT
     w.ip AS 'worker_ip',
     w.ifname AS 'worker_ifname',
     w.cluster_id,
+    w.owner_principal_id,
     w.created_at,
     w.updated_at,
     w.deleted_at,
@@ -43,6 +44,7 @@ SELECT
     w.ip AS `worker_ip`,
     w.ifname AS `worker_ifname`,
     w.cluster_id,
+    w.owner_principal_id,
     w.created_at,
     w.updated_at,
     w.deleted_at,
@@ -81,6 +83,7 @@ SELECT
     w.ip AS "worker_ip",
     w.ifname AS "worker_ifname",
     w.cluster_id,
+    w.owner_principal_id,
     w.created_at,
     w.updated_at,
     w.deleted_at,
@@ -117,6 +120,7 @@ SELECT
     w.ip AS "worker_ip",
     w.ifname AS "worker_ifname",
     w.cluster_id,
+    w.owner_principal_id,
     w.created_at,
     w.updated_at,
     w.deleted_at,
@@ -143,6 +147,29 @@ WHERE
 """
 
 model_user_after_drop_view_stmt = "DROP VIEW IF EXISTS non_admin_user_models"
+principal_users_after_drop_view_stmt = "DROP VIEW IF EXISTS principal_users"
+
+
+def principal_users_after_create_view_stmt() -> str:
+    """Helper view: (principal_id, user_id) — every user covered by a
+    principal, expanded across direct USER ownership and active
+    ORG/GROUP memberships. Used by ``non_admin_user_models`` so the
+    ALLOWED_PRINCIPALS branch can index-join instead of running a
+    correlated EXISTS over ``principal_memberships`` per row.
+    """
+    return '''
+CREATE VIEW principal_users AS
+SELECT u.principal_id AS principal_id, u.id AS user_id
+FROM users u
+UNION ALL
+SELECT pm.parent_principal_id AS principal_id, u.id AS user_id
+FROM principal_memberships pm
+JOIN users u ON u.principal_id = pm.member_principal_id
+JOIN principals pr ON pr.id = pm.parent_principal_id
+WHERE pm.deleted_at IS NULL
+  AND pr.deleted_at IS NULL
+  AND pr.kind IN ('ORG', 'GROUP')
+'''
 
 
 def model_user_after_create_view_stmt(db_type: str) -> str:
@@ -152,20 +179,53 @@ def model_user_after_create_view_stmt(db_type: str) -> str:
         if db_type == "mysql"
         else "CAST(m.id AS TEXT) || ':' || CAST(u.id AS TEXT)"
     )
+    # 4-branch UNION ALL — each branch is a straight index join, so the
+    # planner doesn't have to materialize every (user, route) pair to
+    # then OR-filter EXISTS subqueries against it. ``mrp.deleted_at IS
+    # NULL`` is required on every ACL branch: leaving it off was the
+    # soft-delete-leak bug from review.
     return f'''
 CREATE VIEW non_admin_user_models AS
-SELECT
-    {pid} AS pid,
-    u.id AS user_id,
-    m.*
-FROM
-    users u
-INNER JOIN model_routes as m
-    ON m.access_policy in ('PUBLIC', 'AUTHED')
-    OR EXISTS (
-        SELECT 1 FROM usermodelroutelink uml
-        WHERE uml.route_id = m.id AND uml.user_id = u.id
-    )
-WHERE
-    u.is_admin = {sql_false} AND u.is_system = {sql_false}
+SELECT {pid} AS pid, u.id AS user_id, m.*
+FROM users u
+CROSS JOIN model_routes m
+WHERE u.is_admin = {sql_false} AND u.is_system = {sql_false}
+  AND m.access_policy IN ('PUBLIC', 'AUTHED')
+
+UNION ALL
+
+SELECT {pid} AS pid, u.id AS user_id, m.*
+FROM users u
+JOIN principal_memberships pm
+  ON pm.member_principal_id = u.principal_id
+  AND pm.deleted_at IS NULL
+JOIN model_routes m
+  ON m.owner_principal_id = pm.parent_principal_id
+  AND m.access_policy = 'ORG'
+WHERE u.is_admin = {sql_false} AND u.is_system = {sql_false}
+
+UNION ALL
+
+SELECT {pid} AS pid, u.id AS user_id, m.*
+FROM users u
+JOIN model_route_principals mrp
+  ON mrp.principal_id = u.principal_id
+  AND mrp.deleted_at IS NULL
+JOIN model_routes m
+  ON m.id = mrp.route_id
+  AND m.access_policy = 'ALLOWED_USERS'
+WHERE u.is_admin = {sql_false} AND u.is_system = {sql_false}
+
+UNION ALL
+
+SELECT {pid} AS pid, u.id AS user_id, m.*
+FROM users u
+JOIN principal_users pu ON pu.user_id = u.id
+JOIN model_route_principals mrp
+  ON mrp.principal_id = pu.principal_id
+  AND mrp.deleted_at IS NULL
+JOIN model_routes m
+  ON m.id = mrp.route_id
+  AND m.access_policy = 'ALLOWED_PRINCIPALS'
+WHERE u.is_admin = {sql_false} AND u.is_system = {sql_false}
 '''

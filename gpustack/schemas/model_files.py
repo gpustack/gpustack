@@ -1,7 +1,17 @@
 from datetime import datetime
 from enum import Enum
 from typing import ClassVar, List, Optional
-from sqlmodel import JSON, BigInteger, Column, Field, Relationship, SQLModel, Text
+from sqlmodel import (
+    JSON,
+    BigInteger,
+    Column,
+    Field,
+    ForeignKey,
+    Integer,
+    Relationship,
+    SQLModel,
+    Text,
+)
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import ListParams, PaginatedList
@@ -38,6 +48,14 @@ class ModelFile(ModelFileBase, BaseModelMixin, table=True):
 
     # Unique index of the model source
     source_index: Optional[str] = Field(index=True, unique=True, default=None)
+
+    # Tenant scope. Server-derived from worker→cluster on creation; not
+    # exposed on the create payload to avoid clients smuggling overrides.
+    cluster_id: Optional[int] = Field(default=None)
+    owner_principal_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("principals.id"), nullable=True),
+    )
 
     instances: list[ModelInstance] = Relationship(
         sa_relationship_kwargs={"lazy": "noload"},

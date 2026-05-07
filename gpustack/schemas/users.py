@@ -21,11 +21,10 @@ from .common import PaginatedList
 from ..mixins import BaseModelMixin
 from .clusters import Cluster
 from .workers import Worker
-from gpustack.schemas.links import UserModelRouteLink
 
 if TYPE_CHECKING:
     from .api_keys import ApiKey
-    from gpustack.schemas.model_routes import ModelRoute
+    from .principals import Principal
 
 
 system_name_prefix = "system/cluster"
@@ -67,6 +66,22 @@ class UserBase(SQLModel):
     worker_id: Optional[int] = Field(
         default=None,
         sa_column=Column(Integer, ForeignKey("workers.id", ondelete="CASCADE")),
+    )
+    # 1:1 link to the user's Principal row. NOT NULL by construction —
+    # every user has a principal, and that principal is the canonical
+    # owner identity for resources the user creates in their personal
+    # scope. RESTRICT prevents the principal from being deleted while
+    # the user row still references it; ``users`` is supposed to be the
+    # source of truth for user existence, so the principal goes away
+    # only as part of user deletion.
+    principal_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="RESTRICT"),
+            nullable=False,
+            unique=True,
+        ),
     )
 
 
@@ -141,14 +156,19 @@ class User(UserBase, BaseModelMixin, table=True):
     )
     worker: Optional[Worker] = Relationship(sa_relationship_kwargs={"lazy": "noload"})
 
+    # 1:1 link to the user's USER-principal. Setting ``user.principal``
+    # (instead of ``user.principal_id``) at construction time lets
+    # SQLAlchemy's unit of work insert the principal first and
+    # auto-populate ``principal_id`` during a combined flush — the
+    # standard idiom for satisfying a NOT NULL FK without a separate
+    # round trip.
+    principal: Optional["Principal"] = Relationship(
+        sa_relationship_kwargs={"lazy": "noload"},
+    )
+
     api_keys: List["ApiKey"] = Relationship(
         back_populates='user',
         sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
-    )
-    routes: List["ModelRoute"] = Relationship(
-        back_populates="users",
-        link_model=UserModelRouteLink,
-        sa_relationship_kwargs={"lazy": "noload"},
     )
 
 

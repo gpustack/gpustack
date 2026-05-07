@@ -36,6 +36,8 @@ from gpustack.schemas.stmt import (
     worker_after_drop_view_stmt_mysql,
     model_user_after_drop_view_stmt,
     model_user_after_create_view_stmt,
+    principal_users_after_drop_view_stmt,
+    principal_users_after_create_view_stmt,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,8 +148,18 @@ def listen_events(engine: AsyncEngine):
             connection.execute(text(worker_after_create_view_stmt_sqlite))
 
     event.listen(Worker.metadata, "after_create", _manage_worker_view)
+    # ``non_admin_user_models`` references ``principal_users``; drop the
+    # dependent view first and create the helper before the dependent.
     event.listen(
         SQLModel.metadata, "after_create", DDL(model_user_after_drop_view_stmt)
+    )
+    event.listen(
+        SQLModel.metadata, "after_create", DDL(principal_users_after_drop_view_stmt)
+    )
+    event.listen(
+        SQLModel.metadata,
+        "after_create",
+        DDL(principal_users_after_create_view_stmt()),
     )
     event.listen(
         SQLModel.metadata,
