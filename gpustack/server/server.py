@@ -18,6 +18,7 @@ from gpustack.schemas.users import (
     get_default_cluster_user,
     default_cluster_user_name,
 )
+from gpustack.schemas.principals import PLATFORM_PRINCIPAL_ID
 from gpustack.schemas.models import ModelInstance
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
@@ -31,6 +32,10 @@ from gpustack.security import (
 )
 from gpustack.routes.auth import remove_initial_password_file_if_exists
 from gpustack.server.app import create_app
+from gpustack.server.services import (
+    create_user_with_principal,
+    provision_bootstrap_admin_orgs,
+)
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.config import registration
@@ -479,7 +484,9 @@ class Server:
             is_admin=True,
             require_password_change=require_password_change,
         )
-        await User.create(session, user)
+        user = await create_user_with_principal(session, user)
+        await provision_bootstrap_admin_orgs(session, user)
+        await session.commit()
 
     async def _migrate_legacy_token(self, session: AsyncSession):
         if not self._config.token:
@@ -576,8 +583,8 @@ class Server:
                         worker=worker,
                         worker_id=worker.id,
                     )
-                    worker_user = await User.create(
-                        session=session, source=to_create_user, auto_commit=False
+                    worker_user = await create_user_with_principal(
+                        session, to_create_user
                     )
                     access_key = secrets.token_hex(8)
                     secret_key = secrets.token_hex(16)
@@ -609,7 +616,15 @@ class Server:
                 "Default cluster user not exist, skipping registration token generation."
             )
             return
-        token = cluster_user.cluster.registration_token
+        # Hold a local reference: ``ApiKey.create`` triggers
+        # ``ActiveRecordMixin._refresh_related_objects`` which calls
+        # ``session.refresh(cluster_user)``, expiring its eagerly-loaded
+        # ``cluster`` attribute. With ``User.cluster`` set to
+        # ``lazy="noload"``, accessing ``cluster_user.cluster``
+        # afterwards returns ``None`` and the subsequent update would
+        # blow up.
+        cluster = cluster_user.cluster
+        token = cluster.registration_token
         if not token:
             try:
                 access_key = secrets.token_hex(8)
@@ -623,7 +638,6 @@ class Server:
                 )
                 await ApiKey.create(session, new_key, auto_commit=False)
                 token = f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
-                cluster = cluster_user.cluster
                 await cluster.update(
                     session=session,
                     source={"registration_token": token},
@@ -752,6 +766,7 @@ class Server:
             hashed_suffix=hashed_suffix,
             registration_token="",
             is_default=set_default,
+            owner_principal_id=PLATFORM_PRINCIPAL_ID,
         )
         default_cluster = await Cluster.create(
             session, default_cluster, auto_commit=False
@@ -766,14 +781,27 @@ class Server:
             hashed_password="",
             cluster=default_cluster,
         )
-        await User.create(session, default_cluster_user, auto_commit=False)
+        await create_user_with_principal(session, default_cluster_user)
+
+        # No cluster_access grant needed: the cluster's `owner_principal_id`
+        # already binds it to the platform Org, whose members are
+        # implicit USER-level consumers. cluster_access rows are only
+        # for cross-Org / group / user borrowing.
 
         await session.commit()
         logger.debug("Default cluster created.")
 
     async def user_defined_default_cluster(self, session: AsyncSession) -> Cluster:
-        cluster = await Cluster.first_by_field(
-            session=session, field="is_default", value=True
+        # Used during initial bootstrap to decide whether to create a
+        # platform-Org default — only need to check the platform Org slot
+        # since per-Org defaults are independent.
+        cluster = await Cluster.one_by_fields(
+            session=session,
+            fields={
+                "is_default": True,
+                "owner_principal_id": PLATFORM_PRINCIPAL_ID,
+                "deleted_at": None,
+            },
         )
         return cluster
 

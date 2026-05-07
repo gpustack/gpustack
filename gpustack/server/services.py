@@ -1,10 +1,14 @@
+import logging
+from datetime import datetime, timezone
 from typing import List, Optional, Union, Set, Tuple
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from gpustack.api.exceptions import InternalServerErrorException
+
 from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.models import (
     Model,
@@ -17,6 +21,14 @@ from gpustack.schemas.model_routes import (
     ModelRouteTarget,
     TargetStateEnum,
     AccessPolicyEnum,
+    effective_route_name,
+)
+from gpustack.schemas.principals import (
+    OrgRole,
+    PLATFORM_PRINCIPAL_ID,
+    Principal,
+    PrincipalMembership,
+    PrincipalType,
 )
 from gpustack.schemas.users import User
 from gpustack.schemas.clusters import Cluster
@@ -25,6 +37,9 @@ from gpustack.server.cache import (
     delete_cache_by_key,
     locked_cached,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class UserService:
@@ -90,25 +105,163 @@ class UserService:
         accessible_model_names: Set[str] = await self.get_user_accessible_model_names(
             user_id
         )
-        return model_name in intersection_nullable_set(
+        allowed = model_name in intersection_nullable_set(
             accessible_model_names, limited_model_names
         )
+        if not allowed:
+            logger.info(
+                "Access denied: model_name=%r user_id=%d " "accessible=%s limited=%s",
+                model_name,
+                user_id,
+                sorted(accessible_model_names),
+                sorted(limited_model_names) if limited_model_names else None,
+            )
+        return allowed
 
     @locked_cached()
     async def get_user_accessible_model_names(self, user_id: int) -> Set[str]:
-        # Get all accessible model names for the user
+        # Get all accessible model names for the user. The set holds two
+        # forms per route:
+        #   1. Org-effective name (`<slug>/<route>` for non-platform
+        #      Orgs, raw for platform) — matches `/v1/models` output and
+        #      the gateway's ingress header matcher.
+        #   2. Raw `route.name` — matches the post-`modelMapping` value
+        #      that Higress's AI proxy hands back via
+        #      `x-higress-llm-model` on the auth callback. Without this
+        #      the callback would deny chat traffic for non-platform
+        #      Orgs even though the gateway already routed it to the
+        #      correct ingress.
+        # Cross-Org collisions on raw names are fine: each user's set is
+        # isolated, and Higress's per-Org ingress already disambiguates
+        # which underlying instance receives the request.
         user: User = await self.get_by_id(user_id)
         if user is None:
             return set()
         if user.is_admin or user.is_system:
-            all_models = await ModelRoute.all_by_field(self.session, "deleted_at", None)
-            model_names = {model.name for model in all_models}
+            routes = await ModelRoute.all_by_field(self.session, "deleted_at", None)
         else:
-            allowed_models = await MyModel.all_by_fields(
+            routes = await MyModel.all_by_fields(
                 self.session, {"user_id": user.id, "deleted_at": None}
             )
-            model_names = {model.name for model in allowed_models}
-        return model_names
+        principal_ids = {
+            r.owner_principal_id for r in routes if r.owner_principal_id is not None
+        }
+        principal_by_id = {}
+        if principal_ids:
+            rows = (
+                await self.session.exec(
+                    select(Principal).where(Principal.id.in_(principal_ids))
+                )
+            ).all()
+            principal_by_id = {p.id: p for p in rows}
+        names: Set[str] = set()
+        for r in routes:
+            owner = (
+                principal_by_id.get(r.owner_principal_id)
+                if r.owner_principal_id
+                else None
+            )
+            names.add(
+                effective_route_name(
+                    r.name,
+                    getattr(owner, "slug", None),
+                    getattr(owner, "id", None) == PLATFORM_PRINCIPAL_ID,
+                )
+            )
+            names.add(r.name)
+        return names
+
+
+async def create_user_with_principal(session: AsyncSession, user: User) -> User:
+    """Persist a User together with its 1:1 USER-principal.
+
+    Replaces the bare ``User.create(...)`` call at every user-creation
+    site (local POST /users, SSO callbacks, bootstrap admin, worker
+    registration).
+
+    Why the dance:
+
+    - ``users.principal_id`` is NOT NULL, so the principal row must
+      exist before the user row is inserted.
+    - Callers naturally construct users with relationship attributes
+      (``cluster=cluster``, ``worker=worker``). Those backref-populate
+      the parent's ``cluster_users`` / ``workers`` collections at
+      construction time, before the user is in any session — which
+      both emits a noisy ``SAWarning`` and, more importantly, leaves
+      a dangling ``InstanceState`` reference that crashes the
+      bus-event payload deepcopy at commit time.
+
+    The fix is to (1) ``session.add(user)`` immediately so the
+    pre-construction backref entries point at a session-tracked
+    object, then (2) use the ``user.principal`` relationship attribute
+    so SQLAlchemy's unit of work inserts the principal first and
+    auto-populates ``user.principal_id`` during a single combined
+    flush. The principal's ``slug`` is patched to ``user-{user.id}``
+    afterward, once the auto-generated user id is known.
+
+    Caller commits.
+    """
+    # Step 1 — make the session aware of the user before any flush
+    # touches related collections.
+    session.add(user)
+
+    # Step 2 — link via the relationship attribute so SQLAlchemy
+    # orders ``principal`` before ``user`` and threads the auto-id
+    # through automatically.
+    principal = Principal(
+        kind=PrincipalType.USER,
+        name=user.username,
+        slug=None,
+    )
+    user.principal = principal
+    session.add(principal)
+    await session.flush([principal, user])
+
+    # Step 3 — slug is globally unique among non-NULL values; assign
+    # the canonical ``user-{id}`` form now that the user id is known.
+    principal.slug = f"user-{user.id}"
+    await session.flush([principal])
+
+    return user
+
+
+async def provision_user_principal(session: AsyncSession, user: User) -> Principal:
+    """Backfill a USER-principal for an existing user that lacks one.
+
+    Used by SSO callbacks for users created before the multi-tenancy
+    migration shipped — they exist in the database without
+    ``principal_id``. Fresh user creation goes through
+    ``create_user_with_principal`` instead.
+    """
+    principal = Principal(
+        kind=PrincipalType.USER,
+        name=user.username,
+        slug=f"user-{user.id}",
+    )
+    session.add(principal)
+    await session.flush([principal])
+    user.principal_id = principal.id
+    session.add(user)
+    await session.flush([user])
+    return principal
+
+
+async def provision_bootstrap_admin_orgs(session: AsyncSession, user: User) -> None:
+    """Add the bootstrap admin as ADMIN of the platform Org.
+
+    Assumes ``user`` already has a ``principal_id`` (created via
+    ``create_user_with_principal``). Caller commits.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    session.add(
+        PrincipalMembership(
+            parent_principal_id=PLATFORM_PRINCIPAL_ID,
+            member_principal_id=user.principal_id,
+            role=OrgRole.ADMIN,
+            created_at=now,
+            updated_at=now,
+        )
+    )
 
 
 class APIKeyService:
@@ -240,7 +393,21 @@ class ModelRouteService:
     async def get_model_auth_info_by_name(
         self, name: str
     ) -> Optional[Tuple[AccessPolicyEnum, str]]:
-        route = await ModelRoute.one_by_field(self.session, "name", name)
+        # Higress's auth callback may hand us either the Org-effective
+        # name (`<slug>/<route>`) or the raw `route.name` depending on
+        # whether `modelMapping` has fired yet. Resolve both forms.
+        route: Optional[ModelRoute] = None
+        if "/" in name:
+            slug, _, rest = name.partition("/")
+            if rest:
+                owner = await Principal.one_by_field(self.session, "slug", slug)
+                if owner is not None:
+                    route = await ModelRoute.one_by_fields(
+                        self.session,
+                        {"name": rest, "owner_principal_id": owner.id},
+                    )
+        if route is None:
+            route = await ModelRoute.one_by_field(self.session, "name", name)
         if route is None:
             return None
         route_targets = await ModelRouteTarget.all_by_fields(
@@ -270,16 +437,50 @@ class ModelRouteService:
 
     @locked_cached()
     async def get_model_ids_by_model_route_name(self, name: str) -> List[Model]:
-        route_targets = await ModelRouteTarget.all_by_fields(
+        # Clients send the principal-prefixed effective name (e.g.
+        # "org1/qwen3-0.6b" or "user-42/qwen3-0.6b"). Targets are stored
+        # keyed by raw ``route_name``, so split off the prefix and
+        # constrain by the route's owning principal. Platform routes
+        # have no prefix — fall back to the legacy lookup.
+        owner_principal_id: Optional[int] = None
+        raw_name = name
+        if "/" in name:
+            slug, _, rest = name.partition("/")
+            if rest:
+                owner = await Principal.one_by_field(self.session, "slug", slug)
+                if owner is not None:
+                    owner_principal_id = owner.id
+                    raw_name = rest
+                # If the slug didn't match a principal, fall through and
+                # try the literal name (handles edge cases like a route
+                # called "literal/with/slashes" before the prefix
+                # convention existed).
+        target_fields = {
+            "route_name": raw_name,
+            "state": TargetStateEnum.ACTIVE,
+            "deleted_at": None,
+        }
+        targets = await ModelRouteTarget.all_by_fields(
             self.session,
-            fields={
-                "route_name": name,
-                "state": TargetStateEnum.ACTIVE,
-                "deleted_at": None,
-            },
+            fields=target_fields,
             options=[selectinload(ModelRouteTarget.model)],
         )
-        models = [target.model for target in route_targets if target.model is not None]
+        # When a principal slug was parsed, narrow to that owner's
+        # route by joining through the parent ModelRoute's
+        # ``owner_principal_id``. Avoids an extra round-trip when the
+        # route name is globally unique (the typical single-Org case).
+        if owner_principal_id is not None and len(targets) > 0:
+            route_ids = {t.route_id for t in targets if t.route_id is not None}
+            owner_routes = await ModelRoute.all_by_fields(
+                self.session,
+                fields={
+                    "owner_principal_id": owner_principal_id,
+                    "deleted_at": None,
+                },
+            )
+            allowed_route_ids = {r.id for r in owner_routes if r.id in route_ids}
+            targets = [t for t in targets if t.route_id in allowed_route_ids]
+        models = [target.model for target in targets if target.model is not None]
         for model in models:
             self.session.expunge(model)
         return models
@@ -483,7 +684,20 @@ async def revoke_model_access_cache(
         result = await session.exec(select(User.id))
         user_ids = set(result.all())
     else:
-        user_ids = {user.id for user in model.users}
+        # Users with a direct grant on this route's ACL — i.e. their
+        # USER-principal appears in ``model_route_principals`` for this
+        # route. Group / Org grants are intentionally not expanded
+        # here: this helper invalidates per-user caches and the broader
+        # invalidation path uses ``model=None`` (cache-bust everyone).
+        stmt = (
+            select(User.id)
+            .join(
+                ModelRoutePrincipalLink,
+                ModelRoutePrincipalLink.principal_id == User.principal_id,
+            )
+            .where(ModelRoutePrincipalLink.route_id == model.id)
+        )
+        user_ids = set((await session.exec(stmt)).all())
     if extra_user_ids:
         user_ids.update(extra_user_ids)
     await delete_accessible_model_cache(*user_ids)
