@@ -140,9 +140,10 @@ async def proxy_request_by_model(
             message="Model not found",
             is_openai_exception=True,
         )
-    models: List[Model] = await ModelRouteService(
-        session
-    ).get_model_ids_by_model_route_name(model_name)
+    model_route_service = ModelRouteService(session)
+    models: List[Model] = await model_route_service.get_model_ids_by_model_route_name(
+        model_name
+    )
     if len(models) == 0:
         raise NotFoundException(
             message="Model not found or no running instances available",
@@ -151,6 +152,12 @@ async def proxy_request_by_model(
     request.state.stream = stream
     model = random.choice(models)
     request.state.model = model
+
+    # Resolve the route id so downstream middleware (usage recording) can
+    # attribute the request to the route it entered through. The lookup
+    # is @locked_cached so repeat hits within the same session are cheap.
+    model_route = await model_route_service.get_by_name(model_name)
+    request.state.model_route_id = model_route.id if model_route else None
 
     mutate_request(request, model_name, body_json, form_data)
 

@@ -11,8 +11,9 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 import gpustack
-from gpustack.migrations.utils import column_exists
+from gpustack.migrations.utils import column_exists, table_exists
 import gpustack.utils.sql_enum as sql_enum
+from gpustack.schemas.common import UTCDateTime
 
 # revision identifiers, used by Alembic.
 revision: str = '8bf38a6bb3b5'
@@ -111,7 +112,7 @@ def upgrade() -> None:
                     server_default="0",
                 )
             )
-        
+
         batch_op.drop_constraint("fk_model_usages_user_id_users", type_="foreignkey")
         batch_op.drop_constraint("fk_model_usages_model_id_models", type_="foreignkey")
         batch_op.drop_constraint(
@@ -225,7 +226,111 @@ def upgrade() -> None:
             )
     ### end
 
-    
+    ### Per-request usage details (hot + cold-storage backup)
+    def _details_columns():
+        return [
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('user_id', sa.Integer(), nullable=True),
+            sa.Column('user_name', sa.String(255), nullable=True),
+            sa.Column('model_id', sa.Integer(), nullable=True),
+            sa.Column('model_name', sa.String(255), nullable=False),
+            sa.Column('model_route_id', sa.Integer(), nullable=True),
+            sa.Column('model_route_name', sa.String(255), nullable=True),
+            sa.Column('provider_id', sa.Integer(), nullable=True),
+            sa.Column('provider_name', sa.String(255), nullable=True),
+            sa.Column('provider_type', sa.String(255), nullable=True),
+            sa.Column('cluster_id', sa.Integer(), nullable=True),
+            sa.Column('cluster_name', sa.String(255), nullable=True),
+            sa.Column('api_key_id', sa.Integer(), nullable=True),
+            sa.Column('api_key_name', sa.String(255), nullable=True),
+            sa.Column('access_key', sa.String(255), nullable=True),
+            sa.Column('api_key_is_custom', sa.Boolean(), nullable=True),
+            sa.Column('date', sa.Date(), nullable=False),
+            sa.Column('prompt_token_count', sa.BigInteger(), nullable=False),
+            sa.Column('completion_token_count', sa.BigInteger(), nullable=False),
+            sa.Column(
+                'prompt_cached_token_count',
+                sa.BigInteger(),
+                nullable=False,
+                server_default='0',
+            ),
+            sa.Column('operation', sa.String(32), nullable=True),
+            # Proxy-reported wall-clock (naive UTC), distinct from created_at
+            # so reconciliation jobs anchor on request semantics, not row
+            # write time.
+            sa.Column('started_at', UTCDateTime(), nullable=True),
+            sa.Column('completed_at', UTCDateTime(), nullable=True),
+            sa.Column('created_at', UTCDateTime(), nullable=False),
+            sa.Column('updated_at', UTCDateTime(), nullable=False),
+            sa.Column('deleted_at', UTCDateTime(), nullable=True),
+        ]
+
+    def _create_details_indexes(table_name: str) -> None:
+        op.create_index(
+            f'ix_{table_name}_date', table_name, ['date'], unique=False
+        )
+        op.create_index(
+            f'ix_{table_name}_model_id', table_name, ['model_id'], unique=False
+        )
+        op.create_index(
+            f'ix_{table_name}_user_id', table_name, ['user_id'], unique=False
+        )
+        op.create_index(
+            f'ix_{table_name}_api_key_id',
+            table_name,
+            ['api_key_id'],
+            unique=False,
+        )
+        op.create_index(
+            f'ix_{table_name}_model_route_id',
+            table_name,
+            ['model_route_id'],
+            unique=False,
+        )
+        # completed_at drives quota-reconciliation range scans.
+        op.create_index(
+            f'ix_{table_name}_completed_at',
+            table_name,
+            ['completed_at'],
+            unique=False,
+        )
+        # created_at backs the archiver's fallback predicate for legacy rows
+        # whose completed_at is NULL — without this index, that branch of
+        # the BitmapOr would degrade to a seq scan as the table grows.
+        op.create_index(
+            f'ix_{table_name}_created_at',
+            table_name,
+            ['created_at'],
+            unique=False,
+        )
+
+    # Hot table — no FKs by design (audit/billing rows must keep the
+    # original entity ids even after the parents are deleted).
+    if not table_exists('model_usage_details'):
+        op.create_table(
+            'model_usage_details',
+            *_details_columns(),
+            sa.PrimaryKeyConstraint('id'),
+        )
+        _create_details_indexes('model_usage_details')
+
+    # Cold archive — same FK-less layout as the hot table, plus no sequence
+    # on id (archival reuses the source id from model_usage_details) to
+    # maximize bulk-insert throughput.
+    if not table_exists('model_usage_details_archive'):
+        archive_columns = _details_columns()
+        archive_columns[0] = sa.Column(
+            'id', sa.Integer(), nullable=False, autoincrement=False
+        )
+        op.create_table(
+            'model_usage_details_archive',
+            *archive_columns,
+            sa.PrimaryKeyConstraint('id'),
+        )
+        _create_details_indexes('model_usage_details_archive')
+    ### end
+
+
 
 def downgrade() -> None:
     with op.batch_alter_table('workers', schema=None) as batch_op:
@@ -252,6 +357,8 @@ def downgrade() -> None:
     
     ### Usage
     with op.batch_alter_table("model_usages", schema=None) as batch_op:
+        # Drop FKs added by the upgrade (api_key_id is net new;
+        # user/model/provider were swapped from CASCADE to SET NULL).
         batch_op.drop_constraint(
             "fk_model_usages_api_key_id_api_keys", type_="foreignkey"
         )
@@ -294,4 +401,18 @@ def downgrade() -> None:
     ### Remove injected_backend_parameters column from model_instances
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.drop_column('injected_backend_parameters')
+    ### end
+
+    ### Drop per-request usage details tables
+    for details_table in ("model_usage_details_archive", "model_usage_details"):
+        if not table_exists(details_table):
+            continue
+        op.drop_index(f'ix_{details_table}_created_at', table_name=details_table)
+        op.drop_index(f'ix_{details_table}_completed_at', table_name=details_table)
+        op.drop_index(f'ix_{details_table}_model_route_id', table_name=details_table)
+        op.drop_index(f'ix_{details_table}_api_key_id', table_name=details_table)
+        op.drop_index(f'ix_{details_table}_user_id', table_name=details_table)
+        op.drop_index(f'ix_{details_table}_model_id', table_name=details_table)
+        op.drop_index(f'ix_{details_table}_date', table_name=details_table)
+        op.drop_table(details_table)
     ### end

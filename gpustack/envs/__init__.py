@@ -135,6 +135,50 @@ GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES = [
     if ct.strip()
 ]
 
+# Heuristics for partial-stream usage estimation.
+# Used by metrics_collector when a gateway report arrives with completed=false
+# (client disconnect, upstream cancel) and token fields are blank or partial.
+# Defaults target English-leaning GPT-style tokenizers; tune for CJK or other
+# tokenizer families as needed.
+# Clamped to >= 1 so an operator typo (e.g. ``=0``) can't make
+# ``_estimate_partial_usage`` divide by zero on every incomplete report.
+USAGE_ESTIMATED_BYTES_PER_INPUT_TOKEN = max(
+    1, int(os.getenv("GPUSTACK_USAGE_ESTIMATED_BYTES_PER_INPUT_TOKEN", 4))
+)
+USAGE_ESTIMATED_TOKENS_PER_OUTPUT_CHUNK = max(
+    1, int(os.getenv("GPUSTACK_USAGE_ESTIMATED_TOKENS_PER_OUTPUT_CHUNK", 1))
+)
+
+# Usage details archival.
+# Rows in ``model_usage_details`` older than the retention threshold (anchored
+# on COALESCE(completed_at, created_at)) are moved to
+# ``model_usage_details_archive`` by a leader-only background controller.
+# The controller runs once on server startup and then on the configured cron
+# schedule (UTC). Default ``0 3 * * *`` = daily at 03:00 UTC — picked to land
+# in a typical off-peak window for most regions.
+USAGE_DETAILS_RETENTION_MONTHS = int(
+    os.getenv("GPUSTACK_USAGE_DETAILS_RETENTION_MONTHS", 13)
+)
+USAGE_DETAILS_ARCHIVE_CRON = os.getenv(
+    "GPUSTACK_USAGE_DETAILS_ARCHIVE_CRON", "0 3 * * *"
+)
+# Per-batch row count for archival moves. Smaller batches keep transactions
+# short on environments with replication lag concerns; larger batches reduce
+# round-trip overhead.
+USAGE_DETAILS_ARCHIVE_BATCH_SIZE = int(
+    os.getenv("GPUSTACK_USAGE_DETAILS_ARCHIVE_BATCH_SIZE", 1000)
+)
+
+# Hard cap on the in-memory ``gateway_details_buffer`` (per-request audit
+# rows held between flushes). Bounds memory growth when flushes fail
+# persistently (DB down, schema drift) and the failure-path re-buffer keeps
+# piling up alongside new ingest. Oldest entries are dropped on overflow
+# with a warning log; the rollup buffer is naturally bounded by key
+# cardinality so it does not need a separate cap.
+USAGE_DETAILS_BUFFER_MAX_SIZE = int(
+    os.getenv("GPUSTACK_USAGE_DETAILS_BUFFER_MAX_SIZE", 100000)
+)
+
 DEFAULT_CLUSTER_KUBERNETES = (
     os.getenv("GPUSTACK_DEFAULT_CLUSTER_KUBERNETES", "false").lower() == "true"
 )

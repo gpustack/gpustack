@@ -81,6 +81,17 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_GATEWAY_EXTERNAL_METRICS_URL`               | The external gateway metrics url. e.g. `http://<gateway-ip>:15020/stats/prometheus`                                                | None                                 | Server     |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Comma-separated list of content-types to be monitored by the ai-statistics plugin. Each value should be a valid HTTP Content-Type. | `application/json,text/event-stream` | Server     |
 
+### Usage Tracking Configuration
+
+| Variable                                           | Description                                                                                                                                                                                                                                | Default     | Applies to |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ---------- |
+| `GPUSTACK_USAGE_ESTIMATED_BYTES_PER_INPUT_TOKEN`   | Bytes-per-token divisor used to estimate prompt tokens when a gateway report arrives with `completed=false` and `input_token` is blank. Defaults target English-leaning GPT-style tokenizers; lower it (e.g. `2`) for CJK-heavy workloads. | `4`         | Server     |
+| `GPUSTACK_USAGE_ESTIMATED_TOKENS_PER_OUTPUT_CHUNK` | Tokens-per-chunk multiplier used to estimate completion tokens for incomplete streams when `output_token` is blank.                                                                                                                        | `1`         | Server     |
+| `GPUSTACK_USAGE_DETAILS_RETENTION_MONTHS`          | Retention window for `model_usage_details` (the per-request audit table). Rows older than this (anchored on `COALESCE(completed_at, created_at)`) are moved to `model_usage_details_archive` by the leader-only archiver.                  | `13`        | Server     |
+| `GPUSTACK_USAGE_DETAILS_ARCHIVE_CRON`              | Cron expression (UTC) for the usage-details archiver's recurring sweep. The archiver also runs once on server startup regardless of this schedule.                                                                                         | `0 3 * * *` | Server     |
+| `GPUSTACK_USAGE_DETAILS_ARCHIVE_BATCH_SIZE`        | Per-batch row count for archival moves. Smaller batches keep transactions short on environments sensitive to replication lag; larger batches reduce round-trip overhead.                                                                   | `1000`      | Server     |
+| `GPUSTACK_USAGE_DETAILS_BUFFER_MAX_SIZE`           | Hard cap on the in-memory per-request details buffer held between flushes. Bounds memory growth when flushes fail persistently (DB down, schema drift). On overflow the oldest entries are dropped with a `WARNING` log.                   | `100000`    | Server     |
+
 ### Cluster Configuration
 
 | Variable                              | Description                                                                                                     | Default | Applies to |
@@ -89,13 +100,13 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Scheduler Configuration
 
-| Variable                                | Description                                                                                 | Default | Applies to |
-| --------------------------------------- | ------------------------------------------------------------------------------------------- | ------- | ---------- |
-| `GPUSTACK_SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE` | Max placement score used by the scheduler placement scorer.                                 | `100`   | Server     |
-| `GPUSTACK_SCHEDULER_SCALE_UP_LOCALITY_MAX_SCORE`  | Max locality score added to placement score when model files already exist.                 | `5`     | Server     |
-| `GPUSTACK_SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE`   | Scale-down max contribution for status scorer (normalized).                                | `100`   | Server     |
-| `GPUSTACK_SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE`  | Scale-down max contribution for offload scorer (normalized).                               | `10`    | Server     |
-| `GPUSTACK_SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE` | Scale-down max contribution for placement scorer (normalized).                             | `1`     | Server     |
+| Variable                                            | Description                                                                 | Default | Applies to |
+| --------------------------------------------------- | --------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE`   | Max placement score used by the scheduler placement scorer.                 | `100`   | Server     |
+| `GPUSTACK_SCHEDULER_SCALE_UP_LOCALITY_MAX_SCORE`    | Max locality score added to placement score when model files already exist. | `5`     | Server     |
+| `GPUSTACK_SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE`    | Scale-down max contribution for status scorer (normalized).                 | `100`   | Server     |
+| `GPUSTACK_SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE`   | Scale-down max contribution for offload scorer (normalized).                | `10`    | Server     |
+| `GPUSTACK_SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE` | Scale-down max contribution for placement scorer (normalized).              | `1`     | Server     |
 
 ### Worker and Model Configuration
 
@@ -128,7 +139,7 @@ The **Applies to** column indicates where the environment variable should be set
     These environment variables are **not** set when starting GPUStack. Instead, they should be configured in the **Advanced Options > Environment Variables** section when deploying a model. They are used to customize the model serving behavior.
 
 | <div style="width:180px">Variable</div>                   | Description                                                                                                                                                                                    | Default | Applies to |
-|-----------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|------------|
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
 | `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED`          | Disable the automatic serving command script execution. When set to `1` or `true`, the script that handles package installation and other setup tasks will not run.                            | `0`     | Model      |
 | `PYPI_PACKAGES_INSTALL`                                   | Additional PyPI packages to install in the model serving environment. Multiple packages should be space-separated. The script will use `uv pip install` if available, otherwise `pip install`. | (empty) | Model      |
 | `GPUSTACK_MODEL_RAM_CLAIM`                                | User-declared RAM requirement (in Byte) for the model, used by the scheduler for capacity planning.                                                                                            | (empty) | Model      |
