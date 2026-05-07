@@ -603,9 +603,18 @@ class ModelFileDownloadTask:
                 # in the global counter so the percentage reflects actual progress.
                 self._model_downloaded_size += tqdm_instance.n
 
-        # Write initial progress line for this file using ANSI cursor positioning
-        file_desc = getattr(tqdm_instance, 'desc', None) or f"File {tqdm_id}"
-        self._assign_file_basename(tqdm_id, file_desc)
+            # _assign_file_basename mutates self._tqdm_file_basename, which is
+            # also a shared dict touched by _handle_tqdm_close. Keep it inside
+            # _speed_lock for the same reason (per gemini-code-assist review on
+            # PR #5274).
+            file_desc = getattr(tqdm_instance, 'desc', None) or f"File {tqdm_id}"
+            self._assign_file_basename(tqdm_id, file_desc)
+
+        # Write initial progress line for this file using ANSI cursor positioning.
+        # _write_progress_with_cursor_positioning writes to the log file (I/O),
+        # which has its own per-file lock and does not touch the shared dicts;
+        # leaving it outside the lock avoids holding _speed_lock across an I/O
+        # call.
         self._write_progress_with_cursor_positioning(
             line_number, f"{file_desc}: Initializing...", tqdm_id
         )
