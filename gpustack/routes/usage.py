@@ -1,14 +1,15 @@
 from datetime import date, datetime
 from math import ceil
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
 from sqlalchemy import Date, Select, String, and_, asc, cast, desc, literal
 from sqlmodel import func, or_, select
 
-from gpustack.api.exceptions import ForbiddenException
+from gpustack.api.exceptions import ForbiddenException, InvalidException
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.users import User
+from gpustack.schemas.principals import OrgRole
 from gpustack.schemas.usage import (
     USAGE_GRANULARITY_MONTH,
     USAGE_GRANULARITY_DAY,
@@ -17,6 +18,8 @@ from gpustack.schemas.usage import (
     USAGE_GROUP_BY_DATE,
     USAGE_GROUP_BY_MODEL,
     USAGE_GROUP_BY_USER,
+    USAGE_SCOPE_ALL,
+    USAGE_SCOPE_SELF,
     USAGE_METRIC_API_KEYS_USED,
     USAGE_METRIC_API_REQUESTS,
     USAGE_METRIC_AVG_TOKENS_PER_REQUEST,
@@ -44,7 +47,7 @@ from gpustack.schemas.usage import (
     UsageSummary,
 )
 from gpustack.schemas.common import Pagination
-from gpustack.server.deps import CurrentUserDep, SessionDep
+from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
 from gpustack.utils.usage_snapshots import (
     format_usage_api_key_label,
     format_usage_date_label,
@@ -376,14 +379,59 @@ def _filter_condition(group_by: str, item: UsageFilterItem):
     return and_(*conditions)
 
 
+def _can_use_all_scope(user: User, ctx) -> bool:
+    """The cross-user (``all``) view is meaningful for platform admin
+    and real Org admin only. Others fall back to ``self``.
+
+    Personal Org admin doesn't qualify even though their ``org_role``
+    is ADMIN: a Personal Org has exactly one member, so ``all`` would
+    just be ``self`` — and worse, the org_id filter applied for ``all``
+    would hide the user's own usage from Platform-shared models, since
+    those rows carry the model owner's owner_principal_id, not the
+    Personal Org's.
+    """
+    if user.is_admin:
+        return True
+    if ctx is None:
+        return False
+    if ctx.org_role != OrgRole.ADMIN:
+        return False
+    return not ctx.current_is_personal_scope
+
+
+def _resolve_effective_scope(user: User, ctx, requested_scope: str) -> str:
+    """Map requested scope onto what the caller actually gets.
+
+    - ``self`` always allowed.
+    - ``all`` allowed for managers / admin; non-managers asking for
+      ``all`` are silently downgraded to ``self`` (the request default
+      is ``all``, so a regular user with no explicit scope shouldn't
+      hit a 403). Privacy-sensitive group_bys (e.g. ``user``) are
+      rejected later in ``_check_permission`` once the effective scope
+      is locked.
+    """
+    if requested_scope == USAGE_SCOPE_SELF:
+        return USAGE_SCOPE_SELF
+    if not _can_use_all_scope(user, ctx):
+        return USAGE_SCOPE_SELF
+    return USAGE_SCOPE_ALL
+
+
 def _apply_usage_scope_and_filters(
     statement: Select,
     *,
     user: User,
     filters,
+    scope: str,
+    org_id: Optional[int] = None,
 ) -> Select:
-    if not user.is_admin:
+    # ``self`` view always restricts to the caller's own rows. ``all``
+    # view restricts by owner_principal_id when one is in context (platform
+    # admin in cross-org "All" mode has org_id=None and sees everything).
+    if scope == USAGE_SCOPE_SELF:
         statement = statement.where(ModelUsage.user_id == user.id)
+    elif org_id is not None:
+        statement = statement.where(ModelUsage.owner_principal_id == org_id)
 
     for group_by, items in [
         (USAGE_GROUP_BY_MODEL, filters.models),
@@ -392,7 +440,7 @@ def _apply_usage_scope_and_filters(
     ]:
         if not items:
             continue
-        if group_by == USAGE_GROUP_BY_USER and not user.is_admin:
+        if group_by == USAGE_GROUP_BY_USER and scope == USAGE_SCOPE_SELF:
             raise ForbiddenException(message="No permission to filter by user")
         statement = statement.where(
             or_(*[_filter_condition(group_by, item) for item in items])
@@ -472,16 +520,32 @@ async def _get_filter_options(
 
 
 @router.get("/meta", response_model=UsageMetaResponse, response_model_exclude_none=True)
-async def get_usage_meta(session: SessionDep, user: CurrentUserDep):
+async def get_usage_meta(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    scope: str = USAGE_SCOPE_ALL,
+):
+    # Default scope is "all"; downgrades to "self" for non-managers so
+    # the page works without an explicit scope param.
+    if scope == USAGE_SCOPE_ALL and not _can_use_all_scope(user, ctx):
+        scope = USAGE_SCOPE_SELF
+    elif scope not in (USAGE_SCOPE_SELF, USAGE_SCOPE_ALL):
+        raise InvalidException(message=f"Unsupported scope: {scope}")
+
     base_statement = _base_statement()
-    if not user.is_admin:
+    if scope == USAGE_SCOPE_SELF:
         base_statement = base_statement.where(ModelUsage.user_id == user.id)
+    elif ctx.current_principal_id is not None:
+        base_statement = base_statement.where(
+            ModelUsage.owner_principal_id == ctx.current_principal_id
+        )
 
     model_options = await _get_filter_options(
         session, base_statement=base_statement, group_by=USAGE_GROUP_BY_MODEL
     )
     user_options: List[UsageFilterOption] = []
-    if user.is_admin:
+    if scope == USAGE_SCOPE_ALL:
         user_options = await _get_filter_options(
             session, base_statement=base_statement, group_by=USAGE_GROUP_BY_USER
         )
@@ -492,7 +556,11 @@ async def get_usage_meta(session: SessionDep, user: CurrentUserDep):
     return UsageMetaResponse(
         metrics=METRIC_OPTIONS,
         granularities=GRANULARITY_OPTIONS,
-        group_bys=ADMIN_GROUP_BY_OPTIONS if user.is_admin else SELF_GROUP_BY_OPTIONS,
+        group_bys=(
+            ADMIN_GROUP_BY_OPTIONS
+            if scope == USAGE_SCOPE_ALL
+            else SELF_GROUP_BY_OPTIONS
+        ),
         filters=UsageFilters(
             models=model_options,
             users=user_options,
@@ -501,13 +569,17 @@ async def get_usage_meta(session: SessionDep, user: CurrentUserDep):
     )
 
 
-def _check_permission(user: User, request) -> None:
+def _check_permission(user: User, ctx, request, effective_scope: str) -> None:
+    """``mine`` view forbids the user-grouping / user-filter dimensions
+    (privacy: a user can only see their own rows). ``org`` view allows
+    them since the caller is admin / owner / manager."""
     group_by = request.group_by
     group_bys = group_by if isinstance(group_by, list) else [group_by]
-    if USAGE_GROUP_BY_USER in group_bys and not user.is_admin:
-        raise ForbiddenException(message="No permission to group by user")
-    if request.filters.users and not user.is_admin:
-        raise ForbiddenException(message="No permission to filter by user")
+    if effective_scope == USAGE_SCOPE_SELF:
+        if USAGE_GROUP_BY_USER in group_bys:
+            raise ForbiddenException(message="No permission to group by user")
+        if request.filters.users:
+            raise ForbiddenException(message="No permission to filter by user")
 
 
 def _sort_expression(sort_by: str, metric_columns: Dict[str, Any], date_sort_expr=None):
@@ -604,15 +676,19 @@ def _build_breakdown_item(
 async def get_usage_breakdown(
     session: SessionDep,
     user: CurrentUserDep,
+    ctx: TenantContextDep,
     request: UsageBreakdownRequest,
 ):
-    _check_permission(user, request)
+    effective_scope = _resolve_effective_scope(user, ctx, request.scope)
+    _check_permission(user, ctx, request, effective_scope)
 
     metric_columns = _metric_columns()
     base_statement = _apply_usage_scope_and_filters(
         _base_statement(),
         user=user,
         filters=request.filters,
+        scope=effective_scope,
+        org_id=ctx.current_principal_id,
     )
     if _single_group_by(request.group_by, USAGE_GROUP_BY_API_KEY):
         base_statement = _exclude_incomplete_api_key_identity(base_statement)

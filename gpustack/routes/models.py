@@ -13,7 +13,6 @@ from enum import Enum
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
-    NotFoundException,
     BadRequestException,
 )
 from gpustack.schemas.common import Pagination
@@ -26,8 +25,13 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
+from gpustack.api.tenant import (
+    bypass_tenant_filter,
+    assert_resource_visible,
+    tenant_list_conditions,
+)
 from gpustack.server.db import async_session
-from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -69,6 +73,7 @@ class ModelStateFilterEnum(str, Enum):
 
 @router.get("", response_model=ModelsPublic)
 async def get_models(
+    ctx: TenantContextDep,
     params: ModelListParams = Depends(),
     state: Optional[ModelStateFilterEnum] = Query(
         default=None,
@@ -90,6 +95,15 @@ async def get_models(
     if backend:
         fields["backend"] = backend
 
+    # Streaming uses field-equality only; scope by current org so non-admin
+    # users never see cross-org rows via the live stream. Admin without an
+    # explicit org context keeps the unfiltered cross-org stream. System
+    # users (workers / cluster accounts) bypass — they need the cross-org
+    # view to handle instances scheduled to them on clusters outside their
+    # default Org.
+    if ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
+        fields["owner_principal_id"] = ctx.current_principal_id
+
     if params.watch:
         return StreamingResponse(
             Model.streaming(
@@ -101,7 +115,7 @@ async def get_models(
         )
 
     async with async_session() as session:
-        extra_conditions = []
+        extra_conditions = list(tenant_list_conditions(ctx, Model))
         if categories:
             conditions = build_category_conditions(session, Model, categories)
             extra_conditions.append(or_(*conditions))
@@ -143,18 +157,20 @@ async def get_models(
 @router.get("/{id}", response_model=ModelPublic)
 async def get_model(
     session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
 ):
-    return await _get_model(session=session, id=id)
+    return await _get_model(session=session, ctx=ctx, id=id)
 
 
 @router.get("/{id}/dashboard")
 async def get_model_dashboard(
     session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
     request: Request,
 ):
-    model = await _get_model(session=session, id=id)
+    model = await _get_model(session=session, ctx=ctx, id=id)
 
     cfg = get_global_config()
     if not cfg.get_grafana_url() or not cfg.grafana_model_dashboard_uid:
@@ -182,17 +198,16 @@ async def get_model_dashboard(
 
 async def _get_model(
     session: SessionDep,
+    ctx,
     id: int,
 ):
     model = await Model.one_by_id(session, id)
-    if not model:
-        raise NotFoundException(message="Model not found")
-
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
     return model
 
 
 @router.get("/{id}/instances", response_model=ModelInstancesPublic)
-async def get_model_instances(id: int, params: ListParamsDep):
+async def get_model_instances(ctx: TenantContextDep, id: int, params: ListParamsDep):
     if params.watch:
         fields = {"model_id": id}
         return StreamingResponse(
@@ -204,8 +219,7 @@ async def get_model_instances(id: int, params: ListParamsDep):
         model = await Model.one_by_id(
             session, id, options=[selectinload(Model.instances)]
         )
-        if not model:
-            raise NotFoundException(message="Model not found")
+        assert_resource_visible(ctx, model, not_found_message="Model not found")
 
         instances = model.instances
         count = len(instances)
@@ -403,8 +417,16 @@ async def validate_distributed_vllm_limit_per_worker(
 
 
 @router.post("", response_model=ModelPublic)
-async def create_model(session: SessionDep, model_in: ModelCreate):
-    existing = await Model.one_by_field(session, "name", model_in.name)
+async def create_model(
+    session: SessionDep, ctx: TenantContextDep, model_in: ModelCreate
+):
+    # Model & ModelRoute names are unique within their Org. Two Orgs
+    # can each have a "llama3" without colliding.
+    org_scope = ctx.current_principal_id
+    existing = await Model.one_by_fields(
+        session,
+        {"name": model_in.name, "owner_principal_id": org_scope},
+    )
     if existing:
         raise AlreadyExistsException(
             message=f"Model '{model_in.name}' already exists. "
@@ -414,7 +436,10 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
         model_in.enable_model_route is not None and model_in.enable_model_route
     )
     if should_create_route:
-        existing_route = await ModelRoute.one_by_field(session, "name", model_in.name)
+        existing_route = await ModelRoute.one_by_fields(
+            session,
+            {"name": model_in.name, "owner_principal_id": org_scope},
+        )
         if existing_route:
             raise AlreadyExistsException(
                 message=f"Model route '{model_in.name}' already exists. "
@@ -422,6 +447,23 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
             )
     await validate_model_in(session, model_in)
     model_in_dict = model_in.model_dump(exclude={"enable_model_route"})
+
+    # Stamp tenant scope. ModelBase has owner_principal_id defaulted to
+    # PLATFORM_PRINCIPAL_ID, so `model_dump()` always emits the key —
+    # `setdefault` would silently leave it at 1 even when the caller is
+    # acting under a different Org. Override directly:
+    #   - Caller has a current Org context → that Org wins
+    #   - Caller is admin in "All" mode → fall back to the chosen
+    #     cluster's owner Org so the model lives where it actually runs
+    #     (otherwise it'd land in Platform/Default and the cluster's Org
+    #     couldn't see / manage it)
+    target_org_id = ctx.current_principal_id
+    if target_org_id is None and model_in.cluster_id is not None:
+        cluster = await Cluster.one_by_id(session, model_in.cluster_id)
+        if cluster is not None:
+            target_org_id = cluster.owner_principal_id
+    if target_org_id is not None:
+        model_in_dict["owner_principal_id"] = target_org_id
 
     try:
         model: Model = await Model.create(
@@ -435,6 +477,7 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
                 generic_proxy=model.generic_proxy,
                 created_by_model=True,
                 access_policy=model.access_policy,
+                owner_principal_id=model.owner_principal_id,
             )
             model_route: ModelRoute = await ModelRoute.create(
                 session, source=model_route, auto_commit=False
@@ -462,10 +505,11 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
 
 
 @router.put("/{id}", response_model=ModelPublic)
-async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
+async def update_model(
+    session: SessionDep, ctx: TenantContextDep, id: int, model_in: ModelUpdate
+):
     model = await Model.one_by_id(session, id)
-    if not model:
-        raise NotFoundException(message="Model not found")
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
 
     await validate_model_in(session, model_in)
 
@@ -486,7 +530,7 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
 
 
 @router.delete("/{id}")
-async def delete_model(session: SessionDep, id: int):
+async def delete_model(session: SessionDep, ctx: TenantContextDep, id: int):
     model = await Model.one_by_id(
         session,
         id,
@@ -495,8 +539,7 @@ async def delete_model(session: SessionDep, id: int):
             selectinload(Model.model_route_targets),
         ],
     )
-    if not model:
-        raise NotFoundException(message="Model not found")
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
 
     try:
         await ModelService(session).delete(model)

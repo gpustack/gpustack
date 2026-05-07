@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from packaging.version import Version
 from packaging.specifiers import SpecifierSet
 from gpustack_runtime.detector import ManufacturerEnum
-from gpustack.routes.models import NotFoundException
+from gpustack.api.exceptions import NotFoundException
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.gpu_devices import GPUDevice
 from gpustack.server.catalog import (

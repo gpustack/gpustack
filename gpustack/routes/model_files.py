@@ -9,10 +9,15 @@ from gpustack.api.exceptions import (
     AlreadyExistsException,
     ConflictException,
     InternalServerErrorException,
-    NotFoundException,
 )
+from gpustack.api.tenant import (
+    bypass_tenant_filter,
+    assert_cluster_resource_visible,
+    cluster_resource_visibility_conditions,
+)
+from gpustack.schemas.workers import Worker
 from gpustack.server.db import async_session
-from gpustack.server.deps import SessionDep
+from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.schemas.model_files import (
     ModelFile,
     ModelFileCreate,
@@ -26,75 +31,85 @@ from gpustack.schemas.model_files import (
 router = APIRouter()
 
 
+def _make_model_file_visibility_filter(ctx):
+    def _visible(m: ModelFile) -> bool:
+        if bypass_tenant_filter(ctx):
+            return True
+        org_id = getattr(m, "owner_principal_id", None)
+        if (
+            ctx.current_principal_id is not None
+            and org_id is not None
+            and org_id == ctx.current_principal_id
+        ):
+            return True
+        if getattr(m, "cluster_id", None) in ctx.accessible_cluster_ids:
+            return True
+        return False
+
+    return _visible
+
+
+def _model_file_search_clause(search: str):
+    lower_search = search.lower()
+    return or_(
+        *[
+            func.lower(cast(ModelFile.resolved_paths, String)).like(
+                f"%{lower_search}%"
+            ),
+            func.lower(ModelFile.huggingface_repo_id).like(f"%{lower_search}%"),
+            func.lower(ModelFile.huggingface_filename).like(f"%{lower_search}%"),
+            func.lower(ModelFile.model_scope_model_id).like(f"%{lower_search}%"),
+            func.lower(ModelFile.model_scope_file_path).like(f"%{lower_search}%"),
+            func.lower(ModelFile.local_path).like(f"%{lower_search}%"),
+        ]
+    )
+
+
+def _normalize_model_file_order_by(order_by):
+    if not order_by:
+        return order_by
+    new_order_by = []
+    for field, direction in order_by:
+        if field == "source":
+            # add additional sorting fields for deterministic ordering
+            new_order_by.append((field, direction))
+            new_order_by.append(("huggingface_repo_id", direction))
+            new_order_by.append(("huggingface_filename", direction))
+            new_order_by.append(("model_scope_model_id", direction))
+            new_order_by.append(("model_scope_file_path", direction))
+            new_order_by.append(("local_path", direction))
+        elif field == "resolved_paths":
+            # resolved_paths is a JSON field; replace ordering with expression
+            new_order_by.append((cast(ModelFile.resolved_paths, String), direction))
+        else:
+            new_order_by.append((field, direction))
+    return new_order_by
+
+
 @router.get("", response_model=ModelFilesPublic)
 async def get_model_files(
+    ctx: TenantContextDep,
     params: ModelFileListParams = Depends(),
     search: str = None,
     worker_id: int = None,
 ):
-    fields = {}
-
-    if worker_id:
-        fields["worker_id"] = worker_id
-
-    def get_filter_func(search):
-        if search:
-            return lambda data: search_model_file_filter(data, search)
-        return None
+    fields = {"worker_id": worker_id} if worker_id else {}
+    visible = _make_model_file_visibility_filter(ctx)
 
     if params.watch:
+        filter_func = (
+            (lambda data: visible(data) and search_model_file_filter(data, search))
+            if search
+            else visible
+        )
         return StreamingResponse(
-            ModelFile.streaming(
-                fields=fields,
-                filter_func=get_filter_func(search),
-            ),
+            ModelFile.streaming(fields=fields, filter_func=filter_func),
             media_type="text/event-stream",
         )
 
-    extra_conditions = []
+    extra_conditions = list(cluster_resource_visibility_conditions(ctx, ModelFile))
     if search:
-        lower_search = search.lower()
-        extra_conditions.append(
-            or_(
-                *[
-                    func.lower(cast(ModelFile.resolved_paths, String)).like(
-                        f"%{lower_search}%"
-                    ),
-                    func.lower(ModelFile.huggingface_repo_id).like(f"%{lower_search}%"),
-                    func.lower(ModelFile.huggingface_filename).like(
-                        f"%{lower_search}%"
-                    ),
-                    func.lower(ModelFile.model_scope_model_id).like(
-                        f"%{lower_search}%"
-                    ),
-                    func.lower(ModelFile.model_scope_file_path).like(
-                        f"%{lower_search}%"
-                    ),
-                    func.lower(ModelFile.local_path).like(f"%{lower_search}%"),
-                ]
-            )
-        )
-
-    order_by = params.order_by
-
-    order_by = params.order_by
-    if order_by:
-        new_order_by = []
-        for field, direction in order_by:
-            if field == "source":
-                # When sorting by "source", add additional sorting fields for deterministic ordering
-                new_order_by.append((field, direction))
-                new_order_by.append(("huggingface_repo_id", direction))
-                new_order_by.append(("huggingface_filename", direction))
-                new_order_by.append(("model_scope_model_id", direction))
-                new_order_by.append(("model_scope_file_path", direction))
-                new_order_by.append(("local_path", direction))
-            elif field == "resolved_paths":
-                # resolved_paths is a JSON field, replace resolved_paths ordering with expression
-                new_order_by.append((cast(ModelFile.resolved_paths, String), direction))
-            else:
-                new_order_by.append((field, direction))
-        order_by = new_order_by
+        extra_conditions.append(_model_file_search_clause(search))
 
     async with async_session() as session:
         return await ModelFile.paginated_by_query(
@@ -103,7 +118,7 @@ async def get_model_files(
             extra_conditions=extra_conditions,
             page=params.page,
             per_page=params.perPage,
-            order_by=order_by,
+            order_by=_normalize_model_file_order_by(params.order_by),
         )
 
 
@@ -134,15 +149,18 @@ def search_model_file_filter(data: ModelFile, search: str) -> bool:
 
 
 @router.get("/{id}", response_model=ModelFilePublic)
-async def get_model_file(session: SessionDep, id: int):
+async def get_model_file(session: SessionDep, ctx: TenantContextDep, id: int):
     model_file = await ModelFile.one_by_id(session, id)
-    if not model_file:
-        raise NotFoundException(message=f"Model file {id} not found")
+    assert_cluster_resource_visible(
+        ctx, model_file, not_found_message=f"Model file {id} not found"
+    )
     return model_file
 
 
 @router.post("", response_model=ModelFilePublic)
-async def create_model_file(session: SessionDep, model_file_in: ModelFileCreate):
+async def create_model_file(
+    session: SessionDep, ctx: TenantContextDep, model_file_in: ModelFileCreate
+):
     fields = {
         "worker_id": model_file_in.worker_id,
         "source_index": model_file_in.model_source_index,
@@ -174,9 +192,21 @@ async def create_model_file(session: SessionDep, model_file_in: ModelFileCreate)
                     raise AlreadyExistsException(
                         message=f"The local directory {model_file_in.local_dir} is already occupied by {file.readable_source} on this worker."
                     )
+    # Derive tenant scope from the targeted worker → cluster.
+    cluster_id: Optional[int] = None
+    owner_principal_id: Optional[int] = None
+    if model_file_in.worker_id is not None:
+        worker = await Worker.one_by_id(session, model_file_in.worker_id)
+        if worker is not None:
+            cluster_id = worker.cluster_id
+            owner_principal_id = getattr(worker, "owner_principal_id", None)
+
     try:
         model_file = ModelFile(
-            **model_file_in.model_dump(), source_index=model_file_in.model_source_index
+            **model_file_in.model_dump(),
+            source_index=model_file_in.model_source_index,
+            cluster_id=cluster_id,
+            owner_principal_id=owner_principal_id,
         )
         model_file = await ModelFile.create(session, model_file)
     except Exception as e:
@@ -187,11 +217,15 @@ async def create_model_file(session: SessionDep, model_file_in: ModelFileCreate)
 
 @router.put("/{id}", response_model=ModelFilePublic)
 async def update_model_file(
-    session: SessionDep, id: int, model_file_in: ModelFileUpdate
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    model_file_in: ModelFileUpdate,
 ):
     model_file = await ModelFile.one_by_id(session, id)
-    if not model_file:
-        raise NotFoundException(message=f"Model file {id} not found")
+    assert_cluster_resource_visible(
+        ctx, model_file, not_found_message=f"Model file {id} not found"
+    )
 
     try:
         await model_file.update(session, model_file_in)
@@ -203,13 +237,17 @@ async def update_model_file(
 
 @router.delete("/{id}")
 async def delete_model_file(
-    session: SessionDep, id: int, cleanup: Optional[bool] = None
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    cleanup: Optional[bool] = None,
 ):
     model_file = await ModelFile.one_by_id(
         session, id, options=[selectinload(ModelFile.instances)]
     )
-    if not model_file:
-        raise NotFoundException(message=f"Model file {id} not found")
+    assert_cluster_resource_visible(
+        ctx, model_file, not_found_message=f"Model file {id} not found"
+    )
 
     if model_file.instances:
         model_instance_names = ", ".join(
@@ -230,10 +268,11 @@ async def delete_model_file(
 
 
 @router.post("/{id}/reset", response_model=ModelFilePublic)
-async def reset_model_file(session: SessionDep, id: int):
+async def reset_model_file(session: SessionDep, ctx: TenantContextDep, id: int):
     model_file = await ModelFile.one_by_id(session, id)
-    if not model_file:
-        raise NotFoundException(message=f"Model file {id} not found")
+    assert_cluster_resource_visible(
+        ctx, model_file, not_found_message=f"Model file {id} not found"
+    )
 
     try:
         model_file.state = ModelFileStateEnum.DOWNLOADING

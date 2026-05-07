@@ -4,16 +4,17 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import selectinload
-from sqlmodel import col
+from sqlmodel import select
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    ForbiddenException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
 )
 from gpustack.security import API_KEY_PREFIX, get_secret_hash, get_key_pair
-from gpustack.server.deps import CurrentUserDep, SessionDep
+from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.schemas.api_keys import (
     ApiKey,
     ApiKeyCreate,
@@ -22,13 +23,23 @@ from gpustack.schemas.api_keys import (
     ApiKeysPublic,
     ApiKeyUpdate,
 )
+from gpustack.schemas.users import User
 from gpustack.server.services import APIKeyService
 from gpustack.utils.api_keys import get_masked_api_key_value
 
 router = APIRouter()
 
-SYSTEM_API_KEY_NAME_PREFIX = "system/"
-LEGACY_CLUSTER_TOKEN_NAME = "Legacy Cluster Token"
+
+def _is_system_owned(api_key: ApiKey) -> bool:
+    """API keys whose user is system-owned (workers, cluster sync, etc.).
+
+    Filters by ``user.is_system`` rather than the api_key name because
+    not every system-managed key follows the ``system/`` naming scheme
+    (``Legacy Cluster Token``, ``Default Cluster Token``, …). Requires
+    ``selectinload(ApiKey.user)`` on the query feeding this so the
+    relationship is hydrated before access.
+    """
+    return bool(api_key.user and api_key.user.is_system)
 
 
 def _api_key_to_public(
@@ -52,22 +63,20 @@ def _api_key_to_public(
 
 
 def _is_hidden_api_key(api_key: ApiKey) -> bool:
-    return (
-        api_key.name.startswith(SYSTEM_API_KEY_NAME_PREFIX)
-        or api_key.name == LEGACY_CLUSTER_TOKEN_NAME
-    )
+    return _is_system_owned(api_key)
 
 
 @router.get("", response_model=ApiKeysPublic)
 async def get_api_keys(
     session: SessionDep,
-    user: CurrentUserDep,
+    ctx: TenantContextDep,
     params: ApiKeyListParams = Depends(),
     user_id: Optional[str] = Query(
         None, description="Filter by user_id. Admin can use '*' to list all users."
     ),
     search: str = None,
 ):
+    user = ctx.user
     fields = {"user_id": user.id}
     if user.is_admin and user_id is not None:
         if user_id == "*":
@@ -77,14 +86,22 @@ async def get_api_keys(
                 fields = {"user_id": int(user_id)}
             except ValueError:
                 raise InvalidException(message="user_id must be an integer or '*'")
+    # Tenant filter: scope keys to the current org context unless the platform
+    # admin is explicitly browsing across orgs (no header / no api key org).
+    if ctx.current_principal_id is not None:
+        fields["owner_principal_id"] = ctx.current_principal_id
 
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search}
 
+    # Hide system-owned keys (workers, cluster sync, legacy/default
+    # cluster tokens). The set isn't covered by a clean name prefix —
+    # entries like "Default Cluster Token" / "Legacy Cluster Token" exist
+    # alongside the "system/..." names — so we filter by the owning
+    # user's ``is_system`` flag, which catches every variant.
     extra_conditions = [
-        col(ApiKey.name).not_like(f"{SYSTEM_API_KEY_NAME_PREFIX}%"),
-        col(ApiKey.name) != LEGACY_CLUSTER_TOKEN_NAME,
+        ApiKey.user_id.notin_(select(User.id).where(User.is_system.is_(True))),
     ]
 
     if params.watch:
@@ -117,9 +134,19 @@ async def get_api_keys(
 
 @router.post("", response_model=ApiKeyPublic)
 async def create_api_key(
-    session: SessionDep, user: CurrentUserDep, key_in: ApiKeyCreate
+    session: SessionDep, ctx: TenantContextDep, key_in: ApiKeyCreate
 ):
-    fields = {"user_id": user.id, "name": key_in.name}
+    user = ctx.user
+    target_org_id = ctx.target_principal_id_for_write()
+    if target_org_id is None:
+        raise ForbiddenException(
+            message="Organization context is required to create an API key"
+        )
+    fields = {
+        "user_id": user.id,
+        "owner_principal_id": target_org_id,
+        "name": key_in.name,
+    }
     existing = await ApiKey.one_by_fields(session, fields)
     if existing:
         raise AlreadyExistsException(message=f"Api key {key_in.name} already exists")
@@ -152,6 +179,7 @@ async def create_api_key(
             name=key_in.name,
             description=key_in.description,
             user_id=user.id,
+            owner_principal_id=target_org_id,
             access_key=access_key,
             hashed_secret_key=get_secret_hash(secret_key),
             expires_at=expires_at,
@@ -171,10 +199,28 @@ async def create_api_key(
     return _api_key_to_public(api_key, value=value, user_name=user.username)
 
 
+def _api_key_in_scope(api_key: ApiKey, ctx) -> bool:
+    """An api_key is in the caller's scope if the caller is its owner, or a
+    platform admin acting either across all orgs or in the key's org.
+    """
+    user = ctx.user
+    if api_key.user_id == user.id and (
+        ctx.current_principal_id is None
+        or api_key.owner_principal_id == ctx.current_principal_id
+    ):
+        return True
+    if user.is_admin and (
+        ctx.current_principal_id is None
+        or api_key.owner_principal_id == ctx.current_principal_id
+    ):
+        return True
+    return False
+
+
 @router.delete("/{id}")
-async def delete_api_key(session: SessionDep, user: CurrentUserDep, id: int):
+async def delete_api_key(session: SessionDep, ctx: TenantContextDep, id: int):
     api_key = await ApiKey.one_by_id(session, id)
-    if not api_key or (api_key.user_id != user.id and not user.is_admin):
+    if not api_key or not _api_key_in_scope(api_key, ctx):
         raise NotFoundException(message="Api key not found")
 
     try:
@@ -185,11 +231,11 @@ async def delete_api_key(session: SessionDep, user: CurrentUserDep, id: int):
 
 @router.put("/{id}", response_model=ApiKeyPublic)
 async def update_api_key(
-    session: SessionDep, user: CurrentUserDep, id: int, key_in: ApiKeyUpdate
+    session: SessionDep, ctx: TenantContextDep, id: int, key_in: ApiKeyUpdate
 ):
     api_key = await ApiKey.one_by_id(session, id, options=[selectinload(ApiKey.user)])
     user_name = api_key.user.username if api_key and api_key.user else None
-    if not api_key or (api_key.user_id != user.id and not user.is_admin):
+    if not api_key or not _api_key_in_scope(api_key, ctx):
         raise NotFoundException(message="Api key not found")
     try:
         await APIKeyService(session).update(

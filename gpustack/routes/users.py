@@ -1,15 +1,29 @@
+from datetime import datetime, timezone
+from typing import List
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from sqlmodel import select
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    ForbiddenException,
     InternalServerErrorException,
     NotFoundException,
     ConflictException,
 )
 from gpustack.security import get_secret_hash
+from gpustack.schemas.organizations import OrganizationPublic
+from gpustack.schemas.principals import (
+    OrgRole,
+    PLATFORM_PRINCIPAL_ID,
+    Principal,
+    PrincipalMembership,
+    PrincipalType,
+)
 from gpustack.server.db import async_session
-from gpustack.server.deps import CurrentUserDep, SessionDep
+from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
 from gpustack.schemas.users import (
     User,
     UserActivationUpdate,
@@ -20,9 +34,16 @@ from gpustack.schemas.users import (
     UsersPublic,
     UserSelfUpdate,
 )
-from gpustack.server.services import UserService
+from gpustack.server.services import UserService, create_user_with_principal
 
 router = APIRouter()
+
+
+class UserMembership(BaseModel):
+    organization: OrganizationPublic
+    role: OrgRole
+
+    model_config = {"from_attributes": True}
 
 
 @router.get("", response_model=UsersPublic)
@@ -62,6 +83,41 @@ async def get_user(session: SessionDep, id: int):
     return user
 
 
+@router.get("/{id}/memberships", response_model=List[UserMembership])
+async def list_user_memberships(session: SessionDep, id: int):
+    """Admin-only: list the Orgs a user belongs to.
+
+    Only ORG-kind principals are returned — the user's own
+    USER-principal is intrinsic to them, not a "membership" anyone
+    grants or revokes.
+    """
+    user = await User.one_by_id(session, id)
+    if not user:
+        raise NotFoundException(message="User not found")
+
+    stmt = (
+        select(PrincipalMembership, Principal)
+        .join(
+            Principal,
+            Principal.id == PrincipalMembership.parent_principal_id,
+        )
+        .where(
+            PrincipalMembership.member_principal_id == user.principal_id,
+            PrincipalMembership.deleted_at.is_(None),
+            Principal.kind == PrincipalType.ORG,
+            Principal.deleted_at.is_(None),
+        )
+    )
+    rows = (await session.exec(stmt)).all()
+    return [
+        UserMembership(
+            organization=OrganizationPublic.from_principal(org),
+            role=membership.role or OrgRole.USER,
+        )
+        for membership, org in rows
+    ]
+
+
 @router.post("", response_model=UserPublic)
 async def create_user(session: SessionDep, user_in: UserCreate):
     existing = await User.one_by_field(session, "username", user_in.username)
@@ -77,7 +133,26 @@ async def create_user(session: SessionDep, user_in: UserCreate):
         )
         if user_in.password:
             to_create.hashed_password = get_secret_hash(user_in.password)
-        user = await User.create(session, to_create)
+        # User row + USER-principal go in one transactional helper —
+        # ``users.principal_id`` is NOT NULL so the principal must
+        # exist first. Admin additionally joins the platform Org as
+        # ADMIN; regular users do NOT auto-join — admin can add them
+        # later if shared workspace access is needed.
+        user = await create_user_with_principal(session, to_create)
+        if user.is_admin:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            session.add(
+                PrincipalMembership(
+                    parent_principal_id=PLATFORM_PRINCIPAL_ID,
+                    member_principal_id=user.principal_id,
+                    role=OrgRole.ADMIN,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        await session.commit()
+        await session.refresh(user)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create user: {e}")
 
@@ -156,8 +231,19 @@ async def delete_user(session: SessionDep, id: int):
     if await is_only_admin_user(session, user):
         raise ConflictException(message="Cannot delete the only admin user")
 
+    # The user's USER-principal is the canonical owner of any
+    # personal-scope resources (models, routes, clusters, api keys).
+    # FK cascades on ``owner_principal_id == user.principal_id`` will
+    # take those rows with the principal when it's deleted; the
+    # principal in turn is RESTRICT-FK'd to ``users.principal_id``, so
+    # the user must be deleted first and the principal cleaned up
+    # afterward.
+    principal = await Principal.one_by_id(session, user.principal_id)
+
     try:
         await user_service.delete(user)
+        if principal is not None:
+            await principal.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete user: {e}")
 
@@ -194,3 +280,34 @@ async def update_user_me(
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 
     return user
+
+
+# User-search endpoint accessible to org admins (any) and platform
+# admins, so the Add Member picker works without the admin-gated full
+# /users endpoint. Returns the standard UsersPublic page.
+directory_router = APIRouter()
+
+
+@directory_router.get("/user-directory", response_model=UsersPublic)
+async def list_user_directory(
+    ctx: TenantContextDep,
+    page: int = 1,
+    perPage: int = 30,
+    search: str = None,
+):
+    if not ctx.is_platform_admin and ctx.org_role != OrgRole.ADMIN:
+        raise ForbiddenException(message="Insufficient permission")
+    fuzzy_fields = {}
+    if search:
+        fuzzy_fields = {"username": search, "full_name": search}
+    async with async_session() as session:
+        return await User.paginated_by_query(
+            session=session,
+            fuzzy_fields=fuzzy_fields,
+            page=page,
+            per_page=perPage,
+            fields={
+                "deleted_at": None,
+                "is_system": False,
+            },
+        )

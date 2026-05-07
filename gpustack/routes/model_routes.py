@@ -1,12 +1,14 @@
 import logging
 import secrets
+from datetime import datetime, timezone
 from sqlalchemy.orm import selectinload
-from sqlmodel import col, or_
+from sqlmodel import col, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from typing import List, Optional, Tuple, Union, Dict
+from typing import List, Optional, Set, Tuple, Union, Dict
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from gpustack.schemas.model_routes import (
+    AccessPolicyEnum,
     ModelRoute,
     ModelRouteCreate,
     ModelRouteUpdate,
@@ -26,10 +28,17 @@ from gpustack.schemas.model_routes import (
     MyModel,
     TargetStateEnum,
 )
+from gpustack.schemas.links import ModelRoutePrincipalLink
+from gpustack.schemas.organizations import PLATFORM_PRINCIPAL_ID
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.models import Model
 from gpustack.server.db import async_session
-from gpustack.server.deps import SessionDep, CurrentUserDep
+from gpustack.server.deps import SessionDep, TenantContextDep
+from gpustack.api.tenant import (
+    TenantContext,
+    assert_resource_visible,
+    tenant_list_conditions,
+)
 from gpustack.schemas.users import User
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -55,12 +64,14 @@ my_models_router = APIRouter()
 
 @router.get("", response_model=ModelRoutesPublic, response_model_exclude_none=True)
 async def get_model_routes(
+    ctx: TenantContextDep,
     params: ModelRouteListParams = Depends(),
     name: str = None,
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
 ):
     return await _get_model_routes(
+        ctx=ctx,
         params=params,
         name=name,
         search=search,
@@ -74,7 +85,9 @@ async def _get_model_routes(
     search: str = None,
     categories: Optional[List[str]] = None,
     user_id: Optional[int] = None,
+    owner_principal_id: Optional[int] = None,
     target_class: Union[ModelRoute, MyModel] = ModelRoute,
+    ctx: Optional[TenantContext] = None,
 ):
     fuzzy_fields = {}
     if search:
@@ -86,6 +99,18 @@ async def _get_model_routes(
 
     if user_id is not None:
         fields["user_id"] = user_id
+    if owner_principal_id is not None:
+        fields["owner_principal_id"] = owner_principal_id
+
+    # Apply tenant scoping to the streaming path too. Skipped for the MyModel
+    # view which handles visibility through its own SQL view definition.
+    if (
+        ctx is not None
+        and target_class is ModelRoute
+        and ctx.current_principal_id is not None
+        and "owner_principal_id" not in fields
+    ):
+        fields["owner_principal_id"] = ctx.current_principal_id
 
     if params.watch:
         return StreamingResponse(
@@ -98,7 +123,11 @@ async def _get_model_routes(
         )
 
     async with async_session() as session:
-        extra_conditions = []
+        extra_conditions: list = []
+        # Apply tenant scoping when caller passed a TenantContext. Per-user
+        # visibility for ModelRoute is via the model_route_principals table.
+        if ctx is not None and target_class is ModelRoute:
+            extra_conditions.extend(tenant_list_conditions(ctx, ModelRoute))
         if categories:
             conditions = build_category_conditions(session, target_class, categories)
             extra_conditions.append(or_(*conditions))
@@ -117,9 +146,10 @@ async def _get_model_routes(
 @router.get("/{id}", response_model=ModelRoutePublic, response_model_exclude_none=True)
 async def get_model_route(
     session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
 ):
-    return await _get_model_route(session=session, id=id)
+    return await _get_model_route(session=session, id=id, ctx=ctx)
 
 
 async def _get_model_route(
@@ -127,24 +157,45 @@ async def _get_model_route(
     id: int,
     target_class: Union[ModelRoute, MyModel] = ModelRoute,
     user_id: Optional[int] = None,
+    owner_principal_id: Optional[int] = None,
+    ctx: Optional[TenantContext] = None,
 ):
     fields = {"id": id}
     if user_id is not None:
         fields["user_id"] = user_id
+    if owner_principal_id is not None:
+        fields["owner_principal_id"] = owner_principal_id
     existing = await target_class.one_by_fields(
         session=session,
         fields=fields,
     )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(f"ModelAccess with id '{id}' not found.")
+    if ctx is not None and target_class is ModelRoute:
+        assert_resource_visible(
+            ctx,
+            existing,
+            not_found_message=f"ModelAccess with id '{id}' not found.",
+        )
     return existing
 
 
 @router.post("", response_model=ModelRoutePublic, response_model_exclude_none=True)
-async def create_model_route(session: SessionDep, input: ModelRouteCreate):
+async def create_model_route(
+    session: SessionDep, ctx: TenantContextDep, input: ModelRouteCreate
+):
+    # Names are unique within their owning Org. The gateway emits an
+    # Org-slug prefix as the effective model name for non-platform Orgs,
+    # so two Orgs can each have a route called "qwen3-0.6b" without
+    # colliding in the AI proxy match rules.
+    target_org_id = ctx.target_principal_id_for_write()
     existing = await ModelRoute.one_by_fields(
         session,
-        {'deleted_at': None, "name": input.name},
+        {
+            'deleted_at': None,
+            "name": input.name,
+            "owner_principal_id": target_org_id,
+        },
     )
     if existing:
         raise AlreadyExistsException(
@@ -154,6 +205,29 @@ async def create_model_route(session: SessionDep, input: ModelRouteCreate):
     targets = input.targets or []
     await validate_targets(session, targets)
     source["targets"] = len(targets)
+    # Stamp the route's owning org from the caller's tenant context.
+    # ModelRouteBase defaults `owner_principal_id` to PLATFORM_PRINCIPAL_ID
+    # so `model_dump()` always emits the key — `setdefault` would silently
+    # keep it at 1 for non-platform admins. Override directly.
+    if target_org_id is not None:
+        source["owner_principal_id"] = target_org_id
+
+    # Multi-tenant default: a non-platform Org's new route is scoped to
+    # that Org (ORG policy — `non_admin_user_models` matches by the
+    # route's `owner_principal_id`). The Default (platform) Org keeps
+    # AUTHED — admin's shared catalog stays visible to every
+    # authenticated user, and existing routes migrated to the platform
+    # Org must keep working. Caller's explicit `access_policy` always
+    # wins.
+    owner_org_id = source.get("owner_principal_id")
+    is_platform_org = owner_org_id == PLATFORM_PRINCIPAL_ID
+    if (
+        not is_platform_org
+        and owner_org_id is not None
+        and "access_policy" not in input.model_fields_set
+    ):
+        source["access_policy"] = AccessPolicyEnum.ORG
+
     try:
         route: ModelRoute = await ModelRoute.create(
             session=session, source=source, auto_commit=False
@@ -180,6 +254,7 @@ async def create_model_route(session: SessionDep, input: ModelRouteCreate):
 async def update_model_route(
     id: int,
     session: SessionDep,
+    ctx: TenantContextDep,
     input: ModelRouteUpdate,
 ):
     existing = await ModelRoute.one_by_id(
@@ -188,9 +263,20 @@ async def update_model_route(
     )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(f"ModelRoute with id '{id}' not found.")
+    assert_resource_visible(
+        ctx,
+        existing,
+        not_found_message=f"ModelRoute with id '{id}' not found.",
+    )
+    # Names are unique within their owning Org (effective name on the
+    # gateway side carries the Org slug prefix for non-platform Orgs).
     duplicated_name = await ModelRoute.one_by_fields(
         session,
-        {'deleted_at': None, "name": input.name},
+        {
+            'deleted_at': None,
+            "name": input.name,
+            "owner_principal_id": existing.owner_principal_id,
+        },
     )
     if duplicated_name and duplicated_name.id != id:
         raise AlreadyExistsException(
@@ -225,17 +311,20 @@ async def update_model_route(
 async def delete_model_route(
     id: int,
     session: SessionDep,
+    ctx: TenantContextDep,
 ):
     existing = await ModelRoute.one_by_id(
         session=session,
         id=id,
-        options=[
-            selectinload(ModelRoute.route_targets),
-            selectinload(ModelRoute.users),
-        ],
+        options=[selectinload(ModelRoute.route_targets)],
     )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(f"ModelRoute with id '{id}' not found.")
+    assert_resource_visible(
+        ctx,
+        existing,
+        not_found_message=f"ModelRoute with id '{id}' not found.",
+    )
     try:
         await revoke_model_access_cache(session=session, model=existing)
         await ModelRouteService(session).delete(existing)
@@ -638,65 +727,124 @@ async def set_fallback_target(
     return await ModelRouteTarget.one_by_id(session=session, id=id)
 
 
-def model_access_list(model: ModelRoute) -> List[ModelUserAccessExtended]:
+async def _list_route_users(session, route_id: int) -> List[ModelUserAccessExtended]:
+    """Build the OSS-facing access list for a route.
+
+    User-only ACL rows live in ``model_route_principals`` with
+    ``user_id`` set; we join them with ``users`` so the response can
+    carry display-only fields (``username`` / ``full_name`` /
+    ``avatar_url``) without an extra round trip from the client.
+    """
+    stmt = (
+        select(User, ModelRoutePrincipalLink)
+        .join(
+            ModelRoutePrincipalLink,
+            ModelRoutePrincipalLink.user_id == User.id,
+        )
+        .where(
+            ModelRoutePrincipalLink.route_id == route_id,
+            ModelRoutePrincipalLink.user_id.is_not(None),
+        )
+    )
+    rows = (await session.exec(stmt)).all()
     return [
         ModelUserAccessExtended(
-            id=access.id,
-            username=access.username,
-            full_name=access.full_name,
-            avatar_url=access.avatar_url,
-            # Add more user fields here if needed
+            id=user.id,
+            username=user.username,
+            full_name=user.full_name,
+            avatar_url=user.avatar_url,
         )
-        for access in model.users
+        for user, _ in rows
     ]
+
+
+async def _replace_route_user_principals(
+    session, route_id: int, user_ids: List[int]
+) -> None:
+    """Replace the user-grant rows on a route with exactly ``user_ids``.
+
+    Touches only rows where ``user_id IS NOT NULL`` — org / group
+    grants set by the enterprise UI's ALLOWED_PRINCIPALS flow are left
+    alone, even if the OSS UI happens to call this endpoint on the
+    same route.
+    """
+    existing_stmt = select(ModelRoutePrincipalLink).where(
+        ModelRoutePrincipalLink.route_id == route_id,
+        ModelRoutePrincipalLink.user_id.is_not(None),
+    )
+    existing = list((await session.exec(existing_stmt)).all())
+    existing_by_user = {row.user_id: row for row in existing}
+    desired = set(user_ids)
+
+    for user_id, row in existing_by_user.items():
+        if user_id not in desired:
+            await session.delete(row)
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for user_id in desired:
+        if user_id in existing_by_user:
+            continue
+        session.add(
+            ModelRoutePrincipalLink(
+                route_id=route_id,
+                user_id=user_id,
+                principal=f"user:{user_id}",
+                created_at=now,
+                updated_at=now,
+            )
+        )
 
 
 @router.get("/{id}/access", response_model=ModelAuthorizationList)
 async def get_model_authorization_list(session: SessionDep, id: int):
-    model: ModelRoute = await ModelRoute.one_by_id(
-        session, id, options=[selectinload(ModelRoute.users)]
-    )
+    model: ModelRoute = await ModelRoute.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
 
-    return ModelAuthorizationList(items=model_access_list(model))
+    return ModelAuthorizationList(items=await _list_route_users(session, id))
 
 
 @router.post("/{id}/access", response_model=ModelAuthorizationList)
 async def add_model_authorization(
     session: SessionDep, id: int, access_request: ModelAuthorizationUpdate
 ):
-    model = await ModelRoute.one_by_id(
-        session, id, options=[selectinload(ModelRoute.users)]
-    )
+    model = await ModelRoute.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
-    extra_conditions = [
-        col(User.id).in_([user.id for user in access_request.users]),
-    ]
 
-    affected_user_ids = {user.id for user in model.users}
+    requested_user_ids = [u.id for u in access_request.users]
+    if requested_user_ids:
+        users = await User.all_by_fields(
+            session=session,
+            fields={},
+            extra_conditions=[col(User.id).in_(requested_user_ids)],
+        )
+        existing_user_ids = {u.id for u in users}
+        for req_id in requested_user_ids:
+            if req_id not in existing_user_ids:
+                raise NotFoundException(message=f"User ID {req_id} not found")
+
+    # Cache invalidation needs the union of "previously granted" and
+    # "newly granted" user ids — anyone in either set may see a
+    # different model list after the change.
+    previous_users = await _list_route_users(session, id)
+    affected_user_ids: Optional[Set[int]] = {item.id for item in previous_users} | set(
+        requested_user_ids
+    )
     cache_model = model
 
-    users = await User.all_by_fields(
-        session=session, fields={}, extra_conditions=extra_conditions
-    )
-    if len(users) != len(access_request.users):
-        existing_user_ids = {user.id for user in users}
-        for req_user in access_request.users:
-            if req_user.id not in existing_user_ids:
-                raise NotFoundException(message=f"User ID {req_user.id} not found")
-
-    model.users = list(users)
     if (
         access_request.access_policy is not None
         and access_request.access_policy != model.access_policy
     ):
         model.access_policy = access_request.access_policy
-        # if changing to public, need to update all users
+        # Switching policy (e.g. to PUBLIC) widens visibility beyond
+        # the explicit user list — broaden cache invalidation.
         affected_user_ids = None
         cache_model = None
+
     try:
+        await _replace_route_user_principals(session, id, requested_user_ids)
         await revoke_model_access_cache(
             session=session,
             model=cache_model,
@@ -704,23 +852,36 @@ async def add_model_authorization(
         )
         await ModelRouteService(session).update(model)
     except Exception as e:
+        await session.rollback()
         raise InternalServerErrorException(message=f"Failed to add model access: {e}")
-    await session.refresh(model)
-    return ModelAuthorizationList(items=model_access_list(model))
+
+    return ModelAuthorizationList(items=await _list_route_users(session, id))
 
 
 @my_models_router.get("", response_model=ModelRoutesPublic)
 async def get_my_models(
-    user: CurrentUserDep,
+    ctx: TenantContextDep,
     params: ModelRouteListParams = Depends(),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
 ):
+    """List the model routes available to the calling user.
+
+    For non-admin users: visibility is governed by `non_admin_user_models`,
+    which already encodes PUBLIC/AUTHED/ORG/ALLOWED_PRINCIPALS semantics. We do NOT additionally filter by current_principal_id — routes
+    published cross-org via ALLOWED_PRINCIPALS would otherwise be hidden.
+    For platform admins: optionally filter by org if a context was provided.
+    """
+    user = ctx.user
     user_id = None
     target_class = ModelRoute
+    owner_principal_id = None
     if not user.is_admin:
         target_class = MyModel
         user_id = user.id
+    else:
+        # Admin can opt into a per-org view by setting the org context.
+        owner_principal_id = ctx.current_principal_id
 
     return await _get_model_routes(
         params=params,
@@ -728,6 +889,7 @@ async def get_my_models(
         categories=categories,
         target_class=target_class,
         user_id=user_id,
+        owner_principal_id=owner_principal_id,
     )
 
 
@@ -735,17 +897,22 @@ async def get_my_models(
 async def get_my_model(
     session: SessionDep,
     id: int,
-    user: CurrentUserDep,
+    ctx: TenantContextDep,
 ):
+    user = ctx.user
     user_id = None
     target_class = ModelRoute
+    owner_principal_id = None
     if not user.is_admin:
         target_class = MyModel
         user_id = user.id
+    else:
+        owner_principal_id = ctx.current_principal_id
 
     return await _get_model_route(
         session=session,
         id=id,
         user_id=user_id,
+        owner_principal_id=owner_principal_id,
         target_class=target_class,
     )

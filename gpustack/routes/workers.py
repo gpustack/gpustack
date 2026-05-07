@@ -20,9 +20,15 @@ from gpustack.api.exceptions import (
     InvalidException,
 )
 from gpustack.config.config import get_global_config
+from gpustack.api.tenant import (
+    bypass_tenant_filter,
+    assert_cluster_resource_visible,
+    cluster_resource_visibility_conditions,
+)
 from gpustack.server.deps import (
     SessionDep,
     CurrentUserDep,
+    TenantContextDep,
 )
 from gpustack.server.db import async_session
 from gpustack.server.worker_status_buffer import (
@@ -50,7 +56,7 @@ from gpustack.schemas.config import (
     PredefinedConfigNoDefaults,
 )
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
-from gpustack.server.services import WorkerService
+from gpustack.server.services import WorkerService, create_user_with_principal
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
 
@@ -72,9 +78,56 @@ def to_worker_public(input: Worker, me: bool) -> WorkerPublic:
     return WorkerPublic.model_validate(data)
 
 
+def _make_worker_visibility_filter(ctx):
+    """Return a row-level visibility predicate matching the SQL filter
+    produced by ``cluster_resource_visibility_conditions``."""
+
+    def _visible(w) -> bool:
+        if bypass_tenant_filter(ctx):
+            return True
+        org_id = getattr(w, "owner_principal_id", None)
+        if (
+            ctx.current_principal_id is not None
+            and org_id is not None
+            and org_id == ctx.current_principal_id
+        ):
+            return True
+        if getattr(w, "cluster_id", None) in ctx.accessible_cluster_ids:
+            return True
+        return False
+
+    return _visible
+
+
+def _build_worker_list_filters(name, uuid, cluster_id, search):
+    fuzzy_fields = {"name": search} if search else {}
+    fields = {}
+    if name:
+        fields["name"] = name
+    if uuid:
+        fields["worker_uuid"] = uuid
+    if cluster_id:
+        fields["cluster_id"] = cluster_id
+    return fields, fuzzy_fields
+
+
+def _normalize_worker_order_by(order_by):
+    if not order_by:
+        return order_by
+    out = []
+    for field, direction in order_by:
+        # maps gpus (gpu count) to internal JSON array length representation
+        if field == "gpus":
+            out.append(("status.gpu_devices[]", direction))
+        else:
+            out.append((field, direction))
+    return out
+
+
 @router.get("", response_model=WorkersPublic)
 async def get_workers(
     user: CurrentUserDep,
+    ctx: TenantContextDep,
     params: WorkerListParams = Depends(),
     name: str = None,
     search: str = None,
@@ -82,21 +135,19 @@ async def get_workers(
     me: Optional[bool] = None,
     cluster_id: Optional[int] = None,
 ):
-    fuzzy_fields = {}
-    if search:
-        fuzzy_fields = {"name": search}
+    fields, fuzzy_fields = _build_worker_list_filters(name, uuid, cluster_id, search)
 
-    fields = {}
-    if name:
-        fields = {"name": name}
-    if uuid:
-        fields["worker_uuid"] = uuid
-    if cluster_id:
-        fields["cluster_id"] = cluster_id
+    # Worker carries denormalized owner_principal_id (synced from cluster) so
+    # tenant filtering can use the same OR-of-{own-Org, cluster_access} rule
+    # as cluster_resource_visibility_conditions.
+    extra_conditions = cluster_resource_visibility_conditions(ctx, Worker)
+    visible = _make_worker_visibility_filter(ctx)
 
     if params.watch:
         return StreamingResponse(
-            Worker.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
+            Worker.streaming(
+                fields=fields, fuzzy_fields=fuzzy_fields, filter_func=visible
+            ),
             media_type="text/event-stream",
         )
     if me and user.worker is not None:
@@ -104,43 +155,34 @@ async def get_workers(
         fields = {"id": user.worker.id}
         fuzzy_fields = {}
 
-    order_by = params.order_by
-    if order_by:
-        new_order_by = []
-        for field, direction in order_by:
-            # maps gpus (gpu count) to the internal representation for JSON array length
-            if field == "gpus":
-                new_order_by.append(("status.gpu_devices[]", direction))
-            else:
-                new_order_by.append((field, direction))
-        order_by = new_order_by
-
     async with async_session() as session:
         worker_list = await Worker.paginated_by_query(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
+            extra_conditions=extra_conditions,
             page=params.page,
             per_page=params.perPage,
-            order_by=order_by,
+            order_by=_normalize_worker_order_by(params.order_by),
         )
         if not user.worker:
             return worker_list
-        public_list = []
-        for worker in worker_list.items:
-            public_list.append(to_worker_public(worker, user.worker.id == worker.id))
+        public_list = [
+            to_worker_public(worker, user.worker.id == worker.id)
+            for worker in worker_list.items
+        ]
         return WorkersPublic(items=public_list, pagination=worker_list.pagination)
 
 
 @router.get("/{id}", response_model=WorkerPublic)
 async def get_worker(
     user: CurrentUserDep,
+    ctx: TenantContextDep,
     session: SessionDep,
     id: int,
 ):
     worker = await Worker.one_by_id(session, id)
-    if not worker:
-        raise NotFoundException(message="worker not found")
+    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
     if user.worker is not None and user.worker.id == worker.id:
         return to_worker_public(worker, True)
     return worker
@@ -149,12 +191,12 @@ async def get_worker(
 @router.get("/{id}/dashboard")
 async def get_worker_dashboard(
     session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
     request: Request,
 ):
     worker = await Worker.one_by_id(session, id)
-    if not worker:
-        raise NotFoundException(message="worker not found")
+    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
 
     cfg = get_global_config()
     if not cfg.get_grafana_url() or not cfg.grafana_worker_dashboard_uid:
@@ -186,6 +228,7 @@ def update_worker_data(
     **kwargs,
 ) -> Worker:
     to_create_worker = None
+    cluster: Optional[Cluster] = kwargs.get("cluster")
     if existing is not None:
         # Preserve maintenance field from existing worker if not explicitly set in worker_in
         incoming_data = worker_in.model_dump()
@@ -204,6 +247,12 @@ def update_worker_data(
                     **worker_in.labels,
                 },
                 "cluster_id": existing.cluster_id,
+                # Re-sync from cluster in case org ownership changed.
+                "owner_principal_id": (
+                    cluster.owner_principal_id
+                    if cluster is not None
+                    else existing.owner_principal_id
+                ),
                 "state": WorkerStateEnum.READY,
             }
         )
@@ -215,13 +264,32 @@ def update_worker_data(
                 "name": worker_in.name or worker_in.hostname,
                 "worker_uuid": "",
                 "state": WorkerStateEnum.READY,
+                "owner_principal_id": (
+                    cluster.owner_principal_id if cluster is not None else None
+                ),
                 **kwargs,
             }
         )
-        if kwargs.get("cluster") is not None:
-            to_create_worker.cluster = kwargs.get("cluster")
+        if cluster is not None:
+            to_create_worker.cluster = cluster
     to_create_worker.compute_state()
     return to_create_worker
+
+
+def _matches_exact_fields(worker: Worker, fields: Optional[Dict[str, Any]]) -> bool:
+    if not fields:
+        return True
+    return all(getattr(worker, k, None) == v for k, v in fields.items())
+
+
+def _matches_fuzzy_fields(worker: Worker, fuzzy_fields: Dict[str, str]) -> bool:
+    if not fuzzy_fields:
+        return True
+    for k, v in fuzzy_fields.items():
+        attr = getattr(worker, k, None)
+        if not isinstance(attr, str) or v.lower() not in attr.lower():
+            return False
+    return True
 
 
 def filter_workers_by_fields(
@@ -234,21 +302,9 @@ def filter_workers_by_fields(
 
     to_return = []
     for worker in workers:
-        match = True
-        if fields:
-            for k, v in fields.items():
-                if getattr(worker, k, None) != v:
-                    match = False
-                    break
-        if not match:
-            continue
-
-        if fuzzy_fields:
-            for k, v in fuzzy_fields.items():
-                attr = getattr(worker, k, None)
-                if not isinstance(attr, str) or v.lower() not in attr.lower():
-                    match = False
-                    break
+        match = _matches_exact_fields(worker, fields) and _matches_fuzzy_fields(
+            worker, fuzzy_fields
+        )
 
         if match:
             to_return.append(worker)
@@ -376,19 +432,101 @@ def retry_create_unique_worker_uuid(workers: List[Worker]) -> str:
     )
 
 
+def _resolve_create_worker_cluster_id(user, worker_in: WorkerCreate) -> int:
+    cluster_id = (
+        worker_in.cluster_id if worker_in.cluster_id is not None else user.cluster_id
+    )
+    if cluster_id is None:
+        raise ForbiddenException(message="Missing cluster_id for worker registration")
+    return cluster_id
+
+
+def _build_worker_config_dict(cluster: Cluster) -> Dict[str, Any]:
+    sensitive_fields = set(SensitivePredefinedConfig.model_fields.keys())
+    worker_config = (
+        {}
+        if cluster.worker_config is None
+        else cluster.worker_config.model_dump(exclude=sensitive_fields)
+    )
+    cfg = get_global_config()
+    if (
+        cfg.system_default_container_registry is not None
+        and len(cfg.system_default_container_registry) > 0
+    ):
+        worker_config.setdefault(
+            "system_default_container_registry",
+            cfg.system_default_container_registry,
+        )
+    return worker_config
+
+
+async def _resolve_existing_worker_user(
+    session, existing_worker: Optional[Worker]
+) -> Optional[User]:
+    if existing_worker is None:
+        return None
+    return await User.one_by_field(
+        session=session,
+        field="worker_id",
+        value=existing_worker.id,
+        options=[selectinload(User.api_keys)],
+    )
+
+
+def _existing_api_key(existing_user: Optional[User]) -> Optional[ApiKey]:
+    if existing_user is None or not existing_user.api_keys:
+        return None
+    return existing_user.api_keys[0]
+
+
+async def _persist_worker_registration(
+    session,
+    *,
+    existing_worker: Optional[Worker],
+    new_worker: Worker,
+    new_token: str,
+    to_create_user: Optional[User],
+    existing_user: Optional[User],
+    to_create_apikey: Optional[ApiKey],
+    all_workers: List[Worker],
+    cluster: Cluster,
+) -> Worker:
+    if existing_worker is not None:
+        if to_create_apikey is not None:
+            new_worker.token = new_token
+        await WorkerService(session).update(
+            existing_worker, new_worker, auto_commit=False
+        )
+        worker = existing_worker
+    else:
+        worker = await retry_create_worker(session, new_worker, all_workers)
+    created_user = None
+    if to_create_user is not None:
+        to_create_user.worker = worker
+        created_user = await create_user_with_principal(session, to_create_user)
+    if to_create_apikey is not None:
+        to_create_apikey.user = existing_user or created_user
+        to_create_apikey.user_id = (existing_user or created_user).id
+        await ApiKey.create(session=session, source=to_create_apikey, auto_commit=False)
+    if cluster.state != ClusterStateEnum.READY:
+        cluster.state = ClusterStateEnum.READY
+        await cluster.update(session=session, auto_commit=False)
+    await session.commit()
+    return worker
+
+
 @router.post("", response_model=WorkerRegistrationPublic)
 async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
+    # Worker registration runs through two paths: (1) v1_base_router with
+    # a human session — admin-only, since spinning up workers is a
+    # platform-level action; (2) cluster_client_router with the cluster
+    # service-account token (user.is_system=True). Allow both, deny the
+    # rest.
+    if not (user.is_admin or getattr(user, "is_system", False)):
+        raise ForbiddenException(message="Only platform admin can register workers")
     async with create_worker_semaphore:
         async with async_session() as session:
-            cluster_id = (
-                worker_in.cluster_id
-                if worker_in.cluster_id is not None
-                else user.cluster_id
-            )
-            if cluster_id is None:
-                raise ForbiddenException(
-                    message="Missing cluster_id for worker registration"
-                )
+            cluster_id = _resolve_create_worker_cluster_id(user, worker_in)
             all_workers = await Worker.all_by_fields(session, {"deleted_at": None})
             existing_worker = get_existing_worker(cluster_id, worker_in, all_workers)
             check_worker_name_conflict(
@@ -396,38 +534,21 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                 all_workers,
                 existing_id=existing_worker.id if existing_worker else None,
             )
-            if existing_worker is None:
-                if worker_in.external_id is not None:
-                    # avoid creating a worker with a non-existent external_id
-                    raise NotFoundException(
-                        message=f"worker with external_id {worker_in.external_id} not found"
-                    )
-            else:
+            if existing_worker is None and worker_in.external_id is not None:
+                # avoid creating a worker with a non-existent external_id
+                raise NotFoundException(
+                    message=f"worker with external_id {worker_in.external_id} not found"
+                )
+            if existing_worker is not None:
                 existing_worker = await Worker.one_by_id(
                     session=session, id=existing_worker.id, for_update=True
                 )
 
-            # needed a session bond cluster object here
             cluster = await Cluster.one_by_id(session, cluster_id)
             if cluster is None or cluster.deleted_at is not None:
                 raise NotFoundException(message="Cluster not found")
 
-            sensitive_fields = set(SensitivePredefinedConfig.model_fields.keys())
-
-            worker_config = (
-                {}
-                if cluster.worker_config is None
-                else cluster.worker_config.model_dump(exclude=sensitive_fields)
-            )
-            cfg = get_global_config()
-            if (
-                cfg.system_default_container_registry is not None
-                and len(cfg.system_default_container_registry) > 0
-            ):
-                worker_config.setdefault(
-                    "system_default_container_registry",
-                    cfg.system_default_container_registry,
-                )
+            worker_config = _build_worker_config_dict(cluster)
 
             hashed_suffix = secrets.token_hex(6)
             access_key = secrets.token_hex(8)
@@ -445,18 +566,9 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
             if new_worker.worker_uuid == "":
                 new_worker.worker_uuid = retry_create_unique_worker_uuid(all_workers)
 
-            # determine if existing worker already has an user and api key
-            existing_user = (
-                await User.one_by_field(
-                    session=session,
-                    field="worker_id",
-                    value=existing_worker.id,
-                    options=[selectinload(User.api_keys)],
-                )
-                if existing_worker
-                else None
+            existing_user = await _resolve_existing_worker_user(
+                session, existing_worker
             )
-
             to_create_user = (
                 User(
                     username=f'{system_name_prefix}-{hashed_suffix}',
@@ -465,61 +577,37 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                     hashed_password="",
                     cluster=cluster,
                 )
-                if not existing_user
+                if existing_user is None
                 else None
             )
-
-            existing_api_key = (
-                existing_user.api_keys[0]
-                if existing_user
-                and existing_user.api_keys
-                and len(existing_user.api_keys) > 0
-                else None
-            )
-
+            existing_api_key = _existing_api_key(existing_user)
             to_create_apikey = (
                 ApiKey(
                     name=f'{system_name_prefix}-{hashed_suffix}',
                     access_key=access_key,
                     hashed_secret_key=get_secret_hash(secret_key),
                 )
-                if not existing_api_key
+                if existing_api_key is None
                 else None
             )
 
             try:
-                worker = None
-                if existing_worker is not None:
-                    if to_create_apikey is not None:
-                        new_worker.token = new_token
-                    await WorkerService(session).update(
-                        existing_worker, new_worker, auto_commit=False
-                    )
-                    worker = existing_worker
-                else:
-                    worker = await retry_create_worker(session, new_worker, all_workers)
-                created_user = None
-                if to_create_user is not None:
-                    to_create_user.worker = worker
-                    created_user = await User.create(
-                        session=session, source=to_create_user, auto_commit=False
-                    )
-                if to_create_apikey is not None:
-                    to_create_apikey.user = existing_user or created_user
-                    to_create_apikey.user_id = (existing_user or created_user).id
-                    await ApiKey.create(
-                        session=session, source=to_create_apikey, auto_commit=False
-                    )
-                if cluster.state != ClusterStateEnum.READY:
-                    cluster.state = ClusterStateEnum.READY
-                    await cluster.update(session=session, auto_commit=False)
-                await session.commit()
+                worker = await _persist_worker_registration(
+                    session,
+                    existing_worker=existing_worker,
+                    new_worker=new_worker,
+                    new_token=new_token,
+                    to_create_user=to_create_user,
+                    existing_user=existing_user,
+                    to_create_apikey=to_create_apikey,
+                    all_workers=all_workers,
+                    cluster=cluster,
+                )
                 worker_dump = worker.model_dump()
                 worker_dump["token"] = worker.token
                 worker_dump["worker_config"] = (
                     PredefinedConfigNoDefaults.model_validate(worker_config)
                 )
-
                 return WorkerRegistrationPublic.model_validate(worker_dump)
             except Exception as e:
                 await session.rollback()
@@ -529,7 +617,14 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
 
 
 @router.put("/{id}", response_model=WorkerPublic)
-async def update_worker(session: SessionDep, id: int, worker_in: WorkerUpdate):
+async def update_worker(
+    user: CurrentUserDep,
+    session: SessionDep,
+    id: int,
+    worker_in: WorkerUpdate,
+):
+    if not user.is_admin:
+        raise ForbiddenException(message="Only platform admin can update workers")
     worker = await Worker.one_by_id(session, id)
     if not worker:
         raise NotFoundException(message="worker not found")
@@ -548,7 +643,9 @@ async def update_worker(session: SessionDep, id: int, worker_in: WorkerUpdate):
 
 
 @router.delete("/{id}")
-async def delete_worker(session: SessionDep, id: int):
+async def delete_worker(user: CurrentUserDep, session: SessionDep, id: int):
+    if not user.is_admin:
+        raise ForbiddenException(message="Only platform admin can delete workers")
     worker = await Worker.one_by_id(session, id)
     if not worker or worker.deleted_at is not None:
         raise NotFoundException(message="worker not found")
@@ -589,9 +686,12 @@ async def heartbeat(user: CurrentUserDep):
 
 @router.get("/{id}/privatekey")
 async def get_worker_privatekey(
+    user: CurrentUserDep,
     session: SessionDep,
     id: int,
 ):
+    if not user.is_admin:
+        raise ForbiddenException(message="Only platform admin can fetch worker keys")
     worker = await Worker.one_by_id(session, id)
     if not worker:
         raise NotFoundException(message="worker not found")

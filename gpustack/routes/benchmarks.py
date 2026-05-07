@@ -13,6 +13,12 @@ from gpustack.api.exceptions import (
     BadRequestException,
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
+from gpustack.api.tenant import (
+    bypass_tenant_filter,
+    assert_cluster_resource_visible,
+    cluster_resource_visibility_conditions,
+)
+from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.models import (
     Model,
     ModelInstance,
@@ -24,7 +30,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import async_session
-from gpustack.server.deps import SessionDep
+from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.schemas.benchmark import (
     DATASET_RANDOM,
     DATASET_SHAREGPT,
@@ -85,6 +91,7 @@ def order_benchmark_export_fields(benchmark: dict) -> dict:
 
 @router.get("", response_model=BenchmarksPublic)
 async def get_benchmarks(
+    ctx: TenantContextDep,
     params: BenchmarkListParams = Depends(),
     search: str = None,
     state: Optional[BenchmarkStateEnum] = Query(
@@ -97,6 +104,7 @@ async def get_benchmarks(
     profile: Optional[str] = Query(None, description="Filter by profile."),
 ):
     return await _get_benchmarks(
+        ctx=ctx,
         params=params,
         state=state,
         search=search,
@@ -118,6 +126,7 @@ def gpu_summary_filter(data: Benchmark, gpu_summary: Optional[str]) -> bool:
 
 
 async def _get_benchmarks(
+    ctx,
     params: BenchmarkListParams,
     search: str = None,
     state: Optional[BenchmarkStateEnum] = None,
@@ -143,18 +152,33 @@ async def _get_benchmarks(
     if dataset_name:
         fields["dataset_name"] = dataset_name
 
-    extra_conditions = []
+    extra_conditions = list(cluster_resource_visibility_conditions(ctx, Benchmark))
     if gpu_summary:
         extra_conditions.append(
             func.lower(Benchmark.gpu_summary).like(f"%{gpu_summary}%")
         )
+
+    def _benchmark_visible(b: Benchmark) -> bool:
+        if bypass_tenant_filter(ctx):
+            return True
+        org_id = getattr(b, "owner_principal_id", None)
+        if (
+            ctx.current_principal_id is not None
+            and org_id is not None
+            and org_id == ctx.current_principal_id
+        ):
+            return True
+        if getattr(b, "cluster_id", None) in ctx.accessible_cluster_ids:
+            return True
+        return False
 
     if params.watch:
         return StreamingResponse(
             Benchmark.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=lambda data: gpu_summary_filter(data, gpu_summary),
+                filter_func=lambda data: _benchmark_visible(data)
+                and gpu_summary_filter(data, gpu_summary),
             ),
             media_type="text/event-stream",
         )
@@ -191,11 +215,13 @@ async def _get_benchmarks(
 @router.get("/{id}", response_model=BenchmarkFullPublic)
 async def get_benchmark(
     session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
 ):
     benchmark = await Benchmark.one_by_id(session, id)
-    if not benchmark:
-        raise NotFoundException(message=f"Benchmark {id} not found")
+    assert_cluster_resource_visible(
+        ctx, benchmark, not_found_message=f"Benchmark {id} not found"
+    )
     return benchmark
 
 
@@ -267,11 +293,18 @@ async def validate_and_mutate_benchmark_in(
         snapshot.gpus
     )
     mutated.worker_id = instance.worker_id
+    # Derive tenant scope from the benchmark's cluster.
+    if mutated.cluster_id is not None:
+        cluster = await Cluster.one_by_id(session, mutated.cluster_id)
+        if cluster is not None:
+            mutated.owner_principal_id = cluster.owner_principal_id
     return mutated
 
 
 @router.post("", response_model=BenchmarkPublic)
-async def create_benchmark(session: SessionDep, benchmark_in: BenchmarkCreate):
+async def create_benchmark(
+    session: SessionDep, ctx: TenantContextDep, benchmark_in: BenchmarkCreate
+):
     existing = await Benchmark.one_by_field(session, "name", benchmark_in.name)
     if existing:
         raise AlreadyExistsException(
@@ -289,10 +322,16 @@ async def create_benchmark(session: SessionDep, benchmark_in: BenchmarkCreate):
 
 
 @router.put("/{id}", response_model=BenchmarkPublic)
-async def update_benchmark(session: SessionDep, id: int, benchmark_in: BenchmarkUpdate):
+async def update_benchmark(
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    benchmark_in: BenchmarkUpdate,
+):
     benchmark = await Benchmark.one_by_id(session, id)
-    if not benchmark:
-        raise NotFoundException(message="Benchmark not found")
+    assert_cluster_resource_visible(
+        ctx, benchmark, not_found_message="Benchmark not found"
+    )
     try:
         await benchmark.update(session, benchmark_in)
     except Exception as e:
@@ -303,11 +342,15 @@ async def update_benchmark(session: SessionDep, id: int, benchmark_in: Benchmark
 
 @router.patch("/{id}/state", response_model=BenchmarkPublic)
 async def update_benchmark_state(
-    session: SessionDep, id: int, state_update: BenchmarkStateUpdate
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    state_update: BenchmarkStateUpdate,
 ):
     benchmark = await Benchmark.one_by_id(session, id)
-    if not benchmark:
-        raise NotFoundException(message="Benchmark not found")
+    assert_cluster_resource_visible(
+        ctx, benchmark, not_found_message="Benchmark not found"
+    )
 
     if (
         state_update.state is not None
@@ -371,11 +414,12 @@ async def get_benchmark_snapshot(
 
 @router.post("/{id}/metrics", response_model=BenchmarkPublic)
 async def update_benchmark_metrics(
-    session: SessionDep, id: int, metrics: BenchmarkMetrics
+    session: SessionDep, ctx: TenantContextDep, id: int, metrics: BenchmarkMetrics
 ):
     benchmark = await Benchmark.one_by_id(session, id)
-    if not benchmark:
-        raise NotFoundException(message="Benchmark not found")
+    assert_cluster_resource_visible(
+        ctx, benchmark, not_found_message="Benchmark not found"
+    )
     try:
         await benchmark.update(session, metrics)
     except Exception as e:
@@ -387,10 +431,11 @@ async def update_benchmark_metrics(
 
 
 @router.delete("/{id}")
-async def delete_benchmark(session: SessionDep, id: int):
+async def delete_benchmark(session: SessionDep, ctx: TenantContextDep, id: int):
     benchmark = await Benchmark.one_by_id(session, id)
-    if not benchmark:
-        raise NotFoundException(message="Benchmark not found")
+    assert_cluster_resource_visible(
+        ctx, benchmark, not_found_message="Benchmark not found"
+    )
 
     try:
         await benchmark.delete(session)
@@ -400,11 +445,16 @@ async def delete_benchmark(session: SessionDep, id: int):
 
 @router.get("/{id}/logs")
 async def get_benchmark_logs(  # noqa: C901
-    request: Request, session: SessionDep, id: int, log_options: LogOptionsDep
+    request: Request,
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    log_options: LogOptionsDep,
 ):
     benchmark = await Benchmark.one_by_id(session, id)
-    if not benchmark:
-        raise NotFoundException(message="Benchmark not found")
+    assert_cluster_resource_visible(
+        ctx, benchmark, not_found_message="Benchmark not found"
+    )
 
     worker = await Worker.one_by_id(session, benchmark.worker_id)
     if not worker:
@@ -469,6 +519,7 @@ async def get_benchmark_logs(  # noqa: C901
 @router.post("/export")
 async def export_benchmarks(
     session: SessionDep,
+    ctx: TenantContextDep,
     ids: list[int],
 ):
     if not ids:
@@ -482,6 +533,7 @@ async def export_benchmarks(
     exclude_fields = [
         "id",
         "cluster_id",
+        "owner_principal_id",
         "model_id",
         "worker_id",
         "created_at",
@@ -494,6 +546,7 @@ async def export_benchmarks(
     ]
     extra_conditions = [
         col(Benchmark.id).in_(ids),
+        *cluster_resource_visibility_conditions(ctx, Benchmark),
     ]
     benchmarks: Sequence[Benchmark] = await Benchmark.all_by_fields(
         session, fields={}, extra_conditions=extra_conditions

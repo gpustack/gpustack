@@ -28,6 +28,10 @@ from gpustack.api.auth import (
     authenticate_user,
 )
 from gpustack.server.deps import CurrentUserDep, SessionDep
+from gpustack.server.services import (
+    create_user_with_principal,
+    provision_user_principal,
+)
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
 from lxml import etree
@@ -272,7 +276,17 @@ async def saml_callback(request: Request, session: SessionDep):
                 source=AuthProviderEnum.SAML,
                 require_password_change=False,
             )
-            await User.create(session, user_info)
+            user = await create_user_with_principal(session, user_info)
+            await session.commit()
+        elif (
+            getattr(user, "id", None) is not None
+            and getattr(user, "principal_id", None) is None
+        ):
+            # Backfill for SSO users created before Personal Org
+            # provisioning was wired in. Idempotent: only fires when the
+            # user has no Personal Org pointer.
+            await provision_user_principal(session, user)
+            await session.commit()
         jwt_manager: JWTManager = request.app.state.jwt_manager
         access_token = jwt_manager.create_jwt_token(
             username=username,
@@ -431,7 +445,17 @@ async def oidc_callback(request: Request, session: SessionDep):
             source=AuthProviderEnum.OIDC,
             require_password_change=False,
         )
-        await User.create(session, user_info)
+        user = await create_user_with_principal(session, user_info)
+        await session.commit()
+    elif (
+        getattr(user, "id", None) is not None
+        and getattr(user, "principal_id", None) is None
+    ):
+        # Backfill for SSO users created before Personal Org
+        # provisioning was wired in. Idempotent: only fires when the
+        # user has no Personal Org pointer.
+        await provision_user_principal(session, user)
+        await session.commit()
     jwt_manager: JWTManager = request.app.state.jwt_manager
     access_token = jwt_manager.create_jwt_token(
         username=username,

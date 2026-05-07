@@ -21,9 +21,17 @@ from gpustack.api.exceptions import (
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.config import parse_base_model_to_env_vars
+from gpustack.api.tenant import (
+    TenantContext,
+    bypass_tenant_filter,
+    cluster_visibility_conditions,
+    assert_cluster_visible,
+    assert_cluster_writable,
+    validate_owner_principal,
+)
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import async_session
-from gpustack.server.deps import SessionDep
+from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.server.worker_request import stream_to_worker
 from gpustack.schemas.clusters import (
     ClusterListParams,
@@ -41,6 +49,7 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudOptions,
 )
+from gpustack.schemas.organizations import PLATFORM_PRINCIPAL_ID
 from gpustack.schemas.users import User, UserRole, system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
@@ -69,9 +78,24 @@ def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
     return url
 
 
+def _is_cluster_visible(cluster: Cluster, ctx: TenantContext) -> bool:
+    """Python-side mirror of cluster_visibility_conditions for in-memory lists."""
+    if bypass_tenant_filter(ctx):
+        return True
+    if (
+        ctx.current_principal_id is not None
+        and cluster.owner_principal_id == ctx.current_principal_id
+    ):
+        return True
+    if cluster.id in ctx.accessible_cluster_ids:
+        return True
+    return False
+
+
 @router.get("", response_model=ClustersPublic, response_model_exclude_none=True)
 async def get_clusters(
     session: SessionDep,
+    ctx: TenantContextDep,
     params: ClusterListParams = Depends(),
     name: str = None,
     search: str = None,
@@ -90,16 +114,21 @@ async def get_clusters(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 options=CLUSTER_LOAD_OPTIONS,
+                filter_func=lambda c: _is_cluster_visible(c, ctx),
             ),
             media_type="text/event-stream",
         )
 
     async with async_session() as session:
+        # Push visibility filtering into the query — own-Org cluster OR
+        # cluster_access grant — instead of fetching the whole table and
+        # filtering in Python.
         items = await Cluster.all_by_fields(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
             options=CLUSTER_LOAD_OPTIONS,
+            extra_conditions=cluster_visibility_conditions(ctx, Cluster),
         )
 
         if not items:
@@ -177,14 +206,13 @@ def _make_sort_key(field: str) -> Callable[[Any], tuple]:
 
 
 @router.get("/{id}", response_model=ClusterPublic, response_model_exclude_none=True)
-async def get_cluster(session: SessionDep, id: int):
+async def get_cluster(session: SessionDep, ctx: TenantContextDep, id: int):
     cluster = await Cluster.one_by_id(
         session,
         id,
         options=CLUSTER_LOAD_OPTIONS,
     )
-    if not cluster:
-        raise NotFoundException(message=f"cluster {id} not found")
+    assert_cluster_visible(ctx, cluster, not_found_message=f"cluster {id} not found")
     return cluster
 
 
@@ -240,10 +268,25 @@ def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
 
 
 @router.post("", response_model=ClusterPublic, response_model_exclude_none=True)
-async def create_cluster(session: SessionDep, input: ClusterCreate):
+async def create_cluster(
+    session: SessionDep, ctx: TenantContextDep, input: ClusterCreate
+):
+    # Every cluster has an owner Org. Fill in a sensible default when the
+    # caller omitted it: their current Org context, or the platform Org
+    # for admin in "All" mode (admin's home is Default).
+    if input.owner_principal_id is None:
+        input.owner_principal_id = ctx.current_principal_id or PLATFORM_PRINCIPAL_ID
+    validate_owner_principal(input.owner_principal_id, ctx, resource_label="cluster")
+
+    # Cluster names are unique within their owning Org, not globally —
+    # two Orgs can each have a "c1".
     existing = await Cluster.one_by_fields(
         session,
-        {'deleted_at': None, "name": input.name},
+        {
+            'deleted_at': None,
+            "name": input.name,
+            "owner_principal_id": input.owner_principal_id,
+        },
     )
     if existing:
         raise AlreadyExistsException(message=f"cluster {input.name} already exists")
@@ -251,6 +294,13 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
     create_update_check(input.provider, input)
     if input.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
+
+    # Auto-promote the first cluster in an Org to that Org's default so
+    # users don't have to flip a separate switch after onboarding.
+    has_existing_in_org = await Cluster.first_by_field(
+        session=session, field="owner_principal_id", value=input.owner_principal_id
+    )
+    auto_default = has_existing_in_org is None
 
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
@@ -267,6 +317,7 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
             "state_message": state_message,
             "hashed_suffix": secrets.token_hex(6),
             "registration_token": f"{API_KEY_PREFIX}_{access_key}_{secret_key}",
+            "is_default": auto_default,
         }
     )
     to_create_user = User(
@@ -289,6 +340,9 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
                 {
                     **pool.model_dump(),
                     "cluster_id": cluster.id,
+                    # Pool inherits its cluster's owner so list filters
+                    # can scope without joining.
+                    "owner_principal_id": cluster.owner_principal_id,
                     "cloud_options": (
                         pool.cloud_options if pool.cloud_options else CloudOptions()
                     ),
@@ -313,10 +367,13 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
 
 
 @router.put("/{id}", response_model=ClusterPublic, response_model_exclude_none=True)
-async def update_cluster(session: SessionDep, id: int, input: ClusterUpdate):
+async def update_cluster(
+    session: SessionDep, ctx: TenantContextDep, id: int, input: ClusterUpdate
+):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster:
         raise NotFoundException(message=f"cluster {id} not found")
+    assert_cluster_writable(ctx, cluster)
 
     create_update_check(cluster.provider, input)
     if cluster.provider == ClusterProvider.Kubernetes:
@@ -335,7 +392,7 @@ async def update_cluster(session: SessionDep, id: int, input: ClusterUpdate):
 
 
 @router.delete("/{id}")
-async def delete_cluster(session: SessionDep, id: int):
+async def delete_cluster(session: SessionDep, ctx: TenantContextDep, id: int):
     existing = await Cluster.one_by_id(
         session,
         id,
@@ -347,6 +404,7 @@ async def delete_cluster(session: SessionDep, id: int):
     )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
+    assert_cluster_writable(ctx, existing)
     # check for workers, if any are present, prevent deletion
     if len(existing.cluster_workers) > 0:
         raise ConflictException(
@@ -369,25 +427,35 @@ async def delete_cluster(session: SessionDep, id: int):
 
 
 @router.post("/{id}/set-default")
-async def set_default_cluster(session: SessionDep, id: int):
+async def set_default_cluster(session: SessionDep, ctx: TenantContextDep, id: int):
+    # "Default cluster" is a per-Org concept now: each Org has at most
+    # one default, and that's what its members' deploy form falls back
+    # to. Writing it follows the standard cluster-write rule (admin
+    # always; Org admin only on their own Org's clusters).
     cluster = await Cluster.one_by_id(session, id)
     if not cluster:
         raise NotFoundException(message=f"cluster {id} not found")
+    assert_cluster_writable(ctx, cluster)
 
     try:
-        # unset other default clusters
-        default_clusters = await Cluster.all_by_fields(
+        # Unset any existing default in this cluster's Org. The partial
+        # unique index guarantees there's at most one to begin with.
+        existing_defaults = await Cluster.all_by_fields(
             session,
-            {'is_default': True, 'deleted_at': None},
+            {
+                'is_default': True,
+                'deleted_at': None,
+                'owner_principal_id': cluster.owner_principal_id,
+            },
         )
-        for dc in default_clusters:
+        for dc in existing_defaults:
             if dc.id != cluster.id:
                 await dc.update(
                     session=session,
                     source={"is_default": False},
                     auto_commit=False,
                 )
-        # set this cluster as default
+        # Set this cluster as the Org's default.
         await cluster.update(
             session=session,
             source={"is_default": True},
@@ -401,10 +469,13 @@ async def set_default_cluster(session: SessionDep, id: int):
 
 
 @router.post("/{id}/worker-pools", response_model=WorkerPoolPublic)
-async def create_worker_pool(session: SessionDep, id: int, input: WorkerPoolCreate):
+async def create_worker_pool(
+    session: SessionDep, ctx: TenantContextDep, id: int, input: WorkerPoolCreate
+):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
+    assert_cluster_writable(ctx, cluster)
     if cluster.provider in [ClusterProvider.Docker, ClusterProvider.Kubernetes]:
         raise InvalidException(
             message=f"Cannot create worker pool for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
@@ -415,6 +486,7 @@ async def create_worker_pool(session: SessionDep, id: int, input: WorkerPoolCrea
             {
                 **input.model_dump(),
                 "cluster_id": id,
+                "owner_principal_id": cluster.owner_principal_id,
                 "cloud_options": cloud_options,
             }
         )
@@ -443,10 +515,15 @@ def get_registration_from_cluster(
 
 
 @router.get("/{id}/registration-token", response_model=ClusterRegistrationTokenPublic)
-async def get_registration_token(request: Request, session: SessionDep, id: int):
+async def get_registration_token(
+    request: Request, session: SessionDep, ctx: TenantContextDep, id: int
+):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
+    # Registration token is a write-class secret (anyone holding it can
+    # register a worker into this cluster) — gate with the writable check.
+    assert_cluster_writable(ctx, cluster)
     return get_registration_from_cluster(request, cluster)
 
 
@@ -484,12 +561,12 @@ async def get_cluster_manifests(
 @router.get("/{id}/dashboard")
 async def get_cluster_dashboard(
     session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
     request: Request,
 ):
     cluster = await Cluster.one_by_id(session, id)
-    if not cluster:
-        raise NotFoundException(message="cluster not found")
+    assert_cluster_visible(ctx, cluster, not_found_message="cluster not found")
 
     cfg = get_global_config()
     if not cfg.get_grafana_url() or not cfg.grafana_worker_dashboard_uid:
