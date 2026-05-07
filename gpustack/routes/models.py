@@ -308,6 +308,11 @@ async def validate_gpu_ids(  # noqa: C901
                 message="The number of selected GPUs must be greater than or equal to gpus_per_replica."
             )
 
+    # Nothing to validate per-GPU when gpu_ids is empty
+    # (e.g. only gpus_per_replica is set — auto-scheduling).
+    if not model_in.gpu_selector or not model_in.gpu_selector.gpu_ids:
+        return
+
     model_backend = model_in.backend
 
     if model_backend == BackendEnum.VOX_BOX and (
