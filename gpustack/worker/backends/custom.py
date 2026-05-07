@@ -1,9 +1,10 @@
 import logging
 import os
 import shlex
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from gpustack.schemas.models import ModelInstanceDeploymentMetadata
+from gpustack.utils.command import format_backend_parameters
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
 
@@ -59,7 +60,17 @@ class CustomServer(InferenceServer):
                 self._model.backend_version
             )
 
-        command_args = self._build_command_args()
+        command_args, injected = self._build_command_args(entrypoint=command)
+
+        try:
+            self._update_model_instance(
+                self._model_instance.id,
+                injected_backend_parameters=format_backend_parameters(injected) or None,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to persist injected backend parameters for {self._model_instance.name}: {e}"
+            )
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
@@ -138,7 +149,9 @@ class CustomServer(InferenceServer):
             f"Created custom backend container workload: {deployment_metadata.name}"
         )
 
-    def _build_command_args(self) -> List[str]:
+    def _build_command_args(
+        self, entrypoint: Optional[List[str]] = None
+    ) -> Tuple[List[str], List[str]]:
         command_args = []
 
         command_args_inline = self.inference_backend.replace_command_param(
@@ -154,6 +167,11 @@ class CustomServer(InferenceServer):
             command_args = shlex.split(command_args_inline)
 
         # Add user-defined backend parameters
-        command_args.extend(self._flatten_backend_param())
+        user_backend_parameters = self._flatten_backend_param()
+        command_args.extend(user_backend_parameters)
 
-        return command_args
+        injected = self._get_injected_backend_parameters(
+            command_args, user_backend_parameters, entrypoint
+        )
+
+        return command_args, injected

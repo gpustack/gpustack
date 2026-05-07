@@ -85,6 +85,7 @@ class VLLMServer(InferenceServer):
         command_args, injected = self._build_command_args(
             port=self._get_serving_port(),
             is_distributed=deployment_metadata.distributed,
+            entrypoint=command,
         )
 
         try:
@@ -451,6 +452,7 @@ class VLLMServer(InferenceServer):
         self,
         port: int,
         is_distributed: bool,
+        entrypoint: Optional[List[str]] = None,
     ) -> Tuple[List[str], List[str]]:
         """
         Build vLLM command arguments for container execution.
@@ -458,7 +460,8 @@ class VLLMServer(InferenceServer):
         Returns:
             A tuple of (full_arguments, injected_backend_parameters) where
             injected_backend_parameters contains only the arguments automatically
-            added by GPUStack, excluding user-specified and infrastructure args.
+            added by GPUStack, excluding the entrypoint/model path and
+            user-specified backend parameters.
         """
         arguments = [
             "vllm",
@@ -468,10 +471,6 @@ class VLLMServer(InferenceServer):
 
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
-
-        # Mark the boundary after the command prefix; everything added up to
-        # this point before user params is GPUStack-injected.
-        prefix_len = len(arguments)
 
         # Omni modalities
         omni_enabled = find_bool_parameter(
@@ -568,19 +567,21 @@ class VLLMServer(InferenceServer):
                 ]
             )
 
-        # All GPUStack-injected args have been added; slice before appending user params.
-        injected = arguments[prefix_len:]
-
         # Inject user-defined backend parameters
-        arguments.extend(self._flatten_backend_param())
+        user_backend_parameters = self._flatten_backend_param()
+        arguments.extend(user_backend_parameters)
 
-        # Append immutable arguments to ensure proper operation for accessing
-        # Only add if not already present in arguments
+        # Append immutable arguments to ensure proper operation for accessing.
+        # Only add if not already present in arguments.
         extend_args_no_exist(
             arguments,
             ("--host", self._worker.ip),
             ("--port", str(port)),
             ("--served-model-name", self._model_instance.model_name),
+        )
+
+        injected = self._get_injected_backend_parameters(
+            arguments, user_backend_parameters, entrypoint
         )
 
         return arguments, injected
