@@ -66,6 +66,10 @@ from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, Use
 from gpustack.schemas.api_keys import ApiKey, ApiKeyCreate, ApiKeyPublic, ApiKeysPublic
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.model_usage import ModelUsage
+from gpustack.schemas.model_usage_details import (
+    ModelUsageDetails,
+    ModelUsageDetailsArchive,
+)
 from gpustack.schemas.common import PaginatedList
 from gpustack.schemas.benchmark import (
     ModelInstanceRuntimeInfo,
@@ -204,4 +208,6 @@ __all__ = [
     "ModelRouteTargetUpdate",
     "ModelRouteTargetPublic",
     "ModelRouteTargetsPublic",
+    "ModelUsageDetails",
+    "ModelUsageDetailsArchive",
 ]

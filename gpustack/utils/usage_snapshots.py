@@ -75,6 +75,14 @@ def build_model_usage_snapshot(
 
     ``cluster_name`` is resolved from ``model.cluster`` when not passed
     explicitly.
+
+    Shared-snapshot contract: the returned dict is splatted (``**snapshot``)
+    into BOTH ``ModelUsage`` and ``ModelUsageDetails`` constructors. Every
+    key emitted here MUST therefore be a valid column on both tables,
+    otherwise the rollup write or the details write will fail at runtime.
+    Fields specific to one table only (e.g. ``cluster_id`` /
+    ``model_route_id`` / ``started_at`` / ``completed_at`` on details)
+    must be passed via dedicated kwargs at the call site, NOT added here.
     """
     if cluster_name is None:
         cluster = getattr(model, "cluster", None)

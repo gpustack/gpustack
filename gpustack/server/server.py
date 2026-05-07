@@ -51,9 +51,9 @@ from gpustack.server.init_db import init_db, get_query_count
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
-from gpustack.server.usage_buffer import flush_usage_to_db
 from gpustack.server.worker_status_buffer import flush_worker_status_to_db
 from gpustack.server.metrics_collector import flush_gateway_metrics_to_db
+from gpustack.server.usage_details_archiver import UsageDetailsArchiver
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.utils.process import add_signal_handlers_in_loop
@@ -151,7 +151,6 @@ class Server:
         await self._start_leader_only_tasks()
 
         # These tasks can run on all instances
-        self._start_model_usage_flusher()
         self._start_worker_status_flusher()
         self._start_gateway_metrics_flusher()
         self._start_metrics_exporter()
@@ -293,19 +292,15 @@ class Server:
 
         logger.debug("Worker syncer started.")
 
-    def _start_model_usage_flusher(self):
-        self._create_async_task(flush_usage_to_db())
-
-        logger.debug("Model usage flusher started.")
-
     def _start_worker_status_flusher(self):
         self._create_async_task(flush_worker_status_to_db())
 
         logger.debug("Worker status flusher started.")
 
     def _start_gateway_metrics_flusher(self):
-        if self._config.gateway_mode == GatewayModeEnum.disabled:
-            return
+        # Always start — both the gateway report endpoint and the in-process
+        # ModelUsageMiddleware feed the same buffer, so the flusher must run
+        # even when the external gateway is disabled.
         self._create_async_task(flush_gateway_metrics_to_db())
 
         logger.debug("Gateway metrics flusher started.")
@@ -315,6 +310,28 @@ class Server:
         self._create_async_task(worker_instance_cleaner.start())
 
         logger.debug("Worker instance cleaner started.")
+
+    def _start_usage_details_archiver(self):
+        # Construction can fail on schema drift between hot/archive tables or
+        # an invalid cron expression. Surface that loudly and skip launching
+        # the loop so the rest of the leader tasks (and the leader-election
+        # retry) aren't taken down with it. Without the archiver the
+        # model_usage_details hot table will grow unbounded — operators must
+        # see this in logs rather than have it buried as "Leader election
+        # error" by the outer election handler.
+        try:
+            archiver = UsageDetailsArchiver()
+        except Exception:
+            logger.critical(
+                "Usage details archiver failed to initialize — archival is "
+                "DISABLED. The model_usage_details hot table will grow "
+                "unbounded until this is resolved.",
+                exc_info=True,
+            )
+            return
+        self._create_async_task(archiver.start())
+
+        logger.debug("Usage details archiver started.")
 
     def _start_update_checker(self):
         """Start update checker."""
@@ -925,6 +942,9 @@ class Server:
 
         # Worker Instance Cleaner
         self._start_worker_instance_cleaner()
+
+        # Usage Details Archiver (move aged rows to archive table)
+        self._start_usage_details_archiver()
 
         # Worker Syncer (checks worker reachability and updates states)
         self._start_worker_syncer(self._app)

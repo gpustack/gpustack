@@ -1,4 +1,5 @@
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
+import functools
 import json
 import logging
 import time
@@ -18,21 +19,37 @@ from openai.types.create_embedding_response import (
 from gpustack.api.exceptions import ErrorResponse
 from gpustack.routes.rerank import RerankResponse, RerankUsage
 from gpustack.schemas.images import ImageGenerationChunk, ImagesResponse
-from gpustack.schemas.model_usage import ModelUsage, OperationEnum
+from gpustack.schemas.model_usage import OperationEnum
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
 from gpustack.security import JWTManager
 from gpustack import envs
 from gpustack.api.auth import SESSION_COOKIE_NAME
-from gpustack.server.db import async_session
 
-from gpustack.server.services import ClusterService, ModelUsageService
-from gpustack.utils.usage_snapshots import build_model_usage_snapshot
+from gpustack.server.metrics_collector import (
+    ModelUsageMetrics,
+    accumulate_gateway_metrics,
+)
 from gpustack.api.types.openai_ext import CreateEmbeddingResponseExt, CompletionExt
 
 
 logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_about_missing_start_time() -> None:
+    """Per-process warn-once for the RequestTimeMiddleware misconfiguration.
+
+    ``lru_cache`` keeps the latch encapsulated inside the function — there's
+    no module-level mutable state to track or reset in tests.
+    """
+    logger.warning(
+        "request.state.start_time missing in record_model_usage; "
+        "RequestTimeMiddleware may not be registered or runs after "
+        "ModelUsageMiddleware. Falling back to now() — started_at and "
+        "completed_at on the audit row will be equal until this is fixed."
+    )
 
 
 class RequestTimeMiddleware(BaseHTTPMiddleware):
@@ -154,7 +171,11 @@ async def process_request(
             await record_model_usage(request, usage, operation)
         except Exception as e:
             logger.error(f"Error processing model usage: {e}")
-        response = Response(content=response_body, headers=dict(response.headers))
+        response = Response(
+            content=response_body,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+        )
 
     return response
 
@@ -183,45 +204,41 @@ async def record_model_usage(
     user: User = request.state.user
     model: Model = request.state.model
     api_key: ApiKey | None = getattr(request.state, "api_key", None)
-    cluster_name = None
-    fields = {
-        "date": date.today(),
-        "operation": operation,
-    }
-    async with async_session() as session:
-        if model.cluster_id is not None:
-            cluster = await ClusterService(session).get_by_id(model.cluster_id)
-            cluster_name = None if cluster is None else cluster.name
-        snapshot = build_model_usage_snapshot(
-            model,
-            cluster_name=cluster_name,
-            user=user,
-            api_key=api_key,
-        )
-        fields.update(snapshot)
-        fields.setdefault("api_key_id", None)
-        fields.setdefault("api_key_name", None)
-        fields.setdefault("access_key", None)
-        fields.setdefault("api_key_is_custom", None)
-        model_usage = ModelUsage(
-            **fields,
-            completion_token_count=completion_tokens,
-            prompt_token_count=prompt_tokens,
-            prompt_cached_token_count=input_cached_tokens,
-            request_count=1,
-        )
-        model_usage_service = ModelUsageService(session)
-        current_model_usage = await model_usage_service.get_by_fields(fields)
-        if current_model_usage:
-            await model_usage_service.update(
-                current_model_usage,
-                completion_tokens,
-                prompt_tokens,
-                input_cached_tokens,
-                fields,
-            )
-        else:
-            await model_usage_service.create(model_usage)
+
+    # Reaching this function means the canonical usage chunk was observed,
+    # so the report is ``completed=True``. Wall-clock anchors come from
+    # RequestTimeMiddleware (start) and now (completion); the unified
+    # flusher uses ``completed_at`` to choose the billing period.
+    now = datetime.now(timezone.utc)
+    started_at = getattr(request.state, "start_time", None)
+    if started_at is None:
+        # Falling back to ``now`` means request duration collapses to ~0,
+        # which silently breaks SLO/latency analytics built off of
+        # (completed_at - started_at). Surface the misconfiguration once
+        # without flooding the log on every request.
+        _warn_about_missing_start_time()
+        started_at = now
+    metric = ModelUsageMetrics(
+        model=model.name,
+        input_token=prompt_tokens,
+        output_token=completion_tokens,
+        total_token=total_tokens,
+        input_cached_token=input_cached_tokens,
+        request_count=1,
+        completed=True,
+        started_at=int(started_at.timestamp() * 1000),
+        completed_at=int(now.timestamp() * 1000),
+        user_id=user.id if user is not None else None,
+        model_id=model.id,
+        model_route_id=getattr(request.state, "model_route_id", None),
+        # Capture cluster_id at request time so it survives a later model
+        # delete; the unified flusher prefers this over re-reading the
+        # live model row.
+        cluster_id=getattr(model, "cluster_id", None),
+        access_key=api_key.access_key if api_key is not None else None,
+        operation=operation,
+    )
+    await accumulate_gateway_metrics([metric])
 
 
 async def handle_streaming_response(

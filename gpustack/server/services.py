@@ -6,7 +6,6 @@ from sqlalchemy.orm import selectinload
 from gpustack.api.exceptions import InternalServerErrorException
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_files import ModelFile
-from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import (
     Model,
     ModelInstance,
@@ -22,11 +21,8 @@ from gpustack.schemas.model_routes import (
 from gpustack.schemas.users import User
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import Worker
-from gpustack.server.usage_buffer import usage_flush_buffer
 from gpustack.server.cache import (
-    build_cache_key,
     delete_cache_by_key,
-    set_cache_by_key,
     locked_cached,
 )
 
@@ -431,43 +427,6 @@ class ModelInstanceService:
             raise InternalServerErrorException(
                 message=f"Failed to update model instances {names}: {e}"
             )
-
-
-class ModelUsageService:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    @locked_cached()
-    async def get_by_fields(self, fields: dict) -> ModelUsage:
-        result = await ModelUsage.one_by_fields(
-            self.session,
-            fields=fields,
-        )
-        if result is None:
-            return None
-        self.session.expunge(result)
-        return result
-
-    async def create(self, model_usage: ModelUsage):
-        return await ModelUsage.create(self.session, model_usage)
-
-    async def update(
-        self,
-        model_usage: ModelUsage,
-        completion_token_count: int,
-        prompt_token_count: int,
-        prompt_cached_token_count: int,
-        fields: dict,
-    ):
-        model_usage.completion_token_count += completion_token_count
-        model_usage.prompt_token_count += prompt_token_count
-        model_usage.prompt_cached_token_count += prompt_cached_token_count
-        model_usage.request_count += 1
-
-        key = build_cache_key(self.get_by_fields, fields)
-        await set_cache_by_key(key, model_usage)
-        usage_flush_buffer[key] = model_usage
-        return model_usage
 
 
 class ModelFileService:
