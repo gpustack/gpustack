@@ -1,22 +1,30 @@
+import os
+
 from fastapi import APIRouter, Depends
 
 from gpustack.routes import (
     api_keys,
     auth,
+    cluster_access,
     config,
     dashboard,
     debug,
     draft_models,
     gpu_devices,
     inference_backend,
+    me_orgs,
     metrics,
     model_evaluations,
     model_files,
     model_instances,
+    model_route_principals,
     model_sets,
+    organization_members,
+    organizations,
     probes,
     proxy,
     update,
+    user_groups,
     users,
     models,
     openai,
@@ -51,6 +59,17 @@ from gpustack_higress_plugins.server import router as higress_plugins_router
 
 versioned_prefix = "/v2"
 
+
+# Toggle for surfacing extended API endpoints in the OpenAPI schema
+# and ``/docs``. Endpoints stay mounted regardless — only the public
+# docs surface is gated. Off by default; set the env var to a truthy
+# value to expose the full surface.
+_EXTENDED_API_IN_SCHEMA = os.getenv("GPUSTACK_EXTENDED_API_DOCS", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 api_router = APIRouter(responses=error_responses)
 management_router = APIRouter(dependencies=[Depends(management_scope)])
 management_router.include_router(
@@ -71,8 +90,25 @@ management_router.include_router(
 
 v1_base_router = APIRouter(dependencies=[Depends(get_current_user)])
 v1_base_router.include_router(users.me_router, prefix="/users", tags=["Users"])
+v1_base_router.include_router(users.directory_router, tags=["Users"])
 v1_base_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 v1_base_router.include_router(usage.router, prefix="/usage", tags=["Usage"])
+v1_base_router.include_router(
+    me_orgs.router,
+    prefix="/users/me",
+    tags=["My Organizations"],
+    include_in_schema=_EXTENDED_API_IN_SCHEMA,
+)
+v1_base_router.include_router(
+    organization_members.router,
+    tags=["Organization Members"],
+    include_in_schema=_EXTENDED_API_IN_SCHEMA,
+)
+v1_base_router.include_router(
+    user_groups.router,
+    tags=["User Groups"],
+    include_in_schema=_EXTENDED_API_IN_SCHEMA,
+)
 v1_base_router.include_router(
     metrics.router, prefix="/metrics", include_in_schema=False
 )
@@ -82,6 +118,23 @@ v1_base_router.include_router(
     prefix="/my-models",
     tags=["My Models"],
 )
+# BYO cluster: clusters / cloud-credentials / worker-pools live on the
+# user-level router so Org owner / admin can CRUD their own infra. The
+# routes themselves enforce per-row ownership via assert_cluster_writable
+# and friends, so platform-only operations (e.g. set-default) still
+# require is_admin inside the handler.
+v1_base_router.include_router(clusters.router, prefix="/clusters", tags=["Clusters"])
+v1_base_router.include_router(
+    cloud_credentials.router,
+    prefix="/cloud-credentials",
+    tags=["Cloud Credentials"],
+)
+v1_base_router.include_router(
+    worker_pools.router, prefix="/worker-pools", tags=["Worker Pools"]
+)
+# Workers are visible to anyone who can see their cluster; mutations gated
+# by an explicit is_admin check inside each handler.
+v1_base_router.include_router(workers.router, prefix="/workers", tags=["Workers"])
 
 cluster_client_router = APIRouter()
 cluster_client_router.add_api_route(
@@ -148,34 +201,10 @@ worker_client_router.include_router(
     inference_backend.router, prefix="/inference-backends", tags=["Inference Backend"]
 )
 
-admin_routers = model_routers + [
-    {"router": dashboard.router, "prefix": "/dashboard", "tags": ["Dashboard"]},
-    {"router": workers.router, "prefix": "/workers", "tags": ["Workers"]},
-    {"router": users.router, "prefix": "/users", "tags": ["Users"]},
-    {"router": model_sets.router, "prefix": "/model-sets", "tags": ["Model Sets"]},
-    {
-        "router": draft_models.router,
-        "prefix": "/draft-models",
-        "tags": ["Draft Models"],
-    },
-    {
-        "router": model_evaluations.router,
-        "prefix": "/model-evaluations",
-        "tags": ["Model Evaluations"],
-    },
+# Tenant-aware routers: any logged-in user can hit them; the handlers
+# filter by TenantContext (owner_principal_id / cluster visibility).
+tenant_routers = model_routers + [
     {"router": gpu_devices.router, "prefix": "/gpu-devices", "tags": ["GPU Devices"]},
-    # following routers are introduced by gpustack v2.0
-    {
-        "router": cloud_credentials.router,
-        "prefix": "/cloud-credentials",
-        "tags": ["Cloud Credentials"],
-    },
-    {
-        "router": worker_pools.router,
-        "prefix": "/worker-pools",
-        "tags": ["Worker Pools"],
-    },
-    {"router": clusters.router, "prefix": "/clusters", "tags": ["Clusters"]},
     {
         "router": model_provider.router,
         "prefix": "/model-providers",
@@ -186,12 +215,69 @@ admin_routers = model_routers + [
         "prefix": "/model-routes",
         "tags": ["Model Routes"],
     },
+    {
+        "router": model_route_principals.router,
+        "prefix": "/model-routes",
+        "tags": ["Model Route Principals"],
+        "include_in_schema": _EXTENDED_API_IN_SCHEMA,
+    },
+    {
+        "router": model_evaluations.router,
+        "prefix": "/model-evaluations",
+        "tags": ["Model Evaluations"],
+    },
+    # Read-only platform catalogs (no tenant data) — every logged-in user
+    # needs them to deploy models, including Org owners/managers.
+    {"router": model_sets.router, "prefix": "/model-sets", "tags": ["Model Sets"]},
+    {
+        "router": draft_models.router,
+        "prefix": "/draft-models",
+        "tags": ["Draft Models"],
+    },
+    # Inference backends are platform-wide (admin curates) but every Org
+    # owner/manager needs to read them to pick a backend at deploy time.
+    # Worker / cluster system users also reach this through v1_base_router
+    # since `get_current_user` accepts ``is_system=True`` callers.
+    {
+        "router": inference_backend.router,
+        "prefix": "/inference-backends",
+        "tags": ["Inference Backend"],
+    },
 ]
+
+# Platform-only routers — admin can manage globally; non-admin gets 403.
+admin_routers = [
+    {"router": dashboard.router, "prefix": "/dashboard", "tags": ["Dashboard"]},
+    {"router": users.router, "prefix": "/users", "tags": ["Users"]},
+    {
+        "router": organizations.router,
+        "prefix": "/organizations",
+        "tags": ["Organizations"],
+        "include_in_schema": _EXTENDED_API_IN_SCHEMA,
+    },
+    {
+        "router": cluster_access.router,
+        "tags": ["Cluster Access"],
+        "include_in_schema": _EXTENDED_API_IN_SCHEMA,
+    },
+]
+
+for tr in tenant_routers:
+    v1_base_router.include_router(**tr)
 
 v1_admin_router = APIRouter()
 for admin_router in admin_routers:
     v1_admin_router.include_router(**admin_router)
 
+# Order matters: FastAPI dispatches the FIRST router whose path matches.
+# v1_base_router and worker_client_router register overlapping endpoints
+# (e.g. /v2/models, /v2/workers) — putting v1_base_router first means
+# regular user requests resolve through ``get_current_user`` (which also
+# accepts worker / cluster system users), and only routes that are unique
+# to the worker / cluster client paths fall through to those routers.
+management_router.include_router(
+    v1_base_router, dependencies=[Depends(get_current_user)], prefix=versioned_prefix
+)
 management_router.include_router(
     worker_client_router,
     dependencies=[Depends(get_worker_user)],
@@ -201,9 +287,6 @@ management_router.include_router(
     cluster_client_router,
     dependencies=[Depends(get_cluster_user)],
     prefix=versioned_prefix,
-)
-management_router.include_router(
-    v1_base_router, dependencies=[Depends(get_current_user)], prefix=versioned_prefix
 )
 management_router.include_router(
     v1_admin_router, dependencies=[Depends(get_admin_user)], prefix=versioned_prefix

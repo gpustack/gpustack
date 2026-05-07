@@ -30,7 +30,9 @@ from gpustack.schemas.models import Model
 from gpustack.schemas.model_routes import (
     ModelRoute,
     MyModel,
+    effective_route_name,
 )
+from gpustack.schemas.principals import Principal, PLATFORM_PRINCIPAL_ID
 from gpustack.schemas.workers import Worker
 from gpustack.server.deps import SessionDep, CurrentUserDep
 from gpustack.server.services import (
@@ -106,11 +108,36 @@ async def list_models(
         statement = statement.where(or_(*conditions))
 
     models = (await session.exec(statement)).all()
+    # Bulk-load owner principals to resolve each route's effective
+    # name (slug-prefixed for non-platform owners). Without the prefix,
+    # two owners holding routes named "qwen3-0.6b" would publish the
+    # same ``id`` here and Higress's AI proxy would dispatch
+    # ambiguously.
+    principal_ids = {
+        m.owner_principal_id for m in models if m.owner_principal_id is not None
+    }
+    principal_by_id: Dict[int, Principal] = {}
+    if principal_ids:
+        rows = (
+            await session.exec(select(Principal).where(Principal.id.in_(principal_ids)))
+        ).all()
+        principal_by_id = {p.id: p for p in rows}
+
     result = SyncPage[OAIModel](data=[], object="list")
     for model in models:
+        owner = (
+            principal_by_id.get(model.owner_principal_id)
+            if model.owner_principal_id
+            else None
+        )
+        eff_name = effective_route_name(
+            model.name,
+            getattr(owner, "slug", None),
+            getattr(owner, "id", None) == PLATFORM_PRINCIPAL_ID,
+        )
         result.data.append(
             OAIModel(
-                id=model.name,
+                id=eff_name,
                 object="model",
                 created=int(model.created_at.timestamp()),
                 owned_by="gpustack",
