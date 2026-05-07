@@ -24,6 +24,7 @@ def test_build_model_usage_snapshot_includes_cluster_fields():
         "model_id": 1,
         "model_name": "qwen3.5-9b",
         "cluster_name": "cluster-a",
+        "owner_principal_id": 1,
     }
 
 

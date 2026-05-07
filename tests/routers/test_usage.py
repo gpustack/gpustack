@@ -26,6 +26,21 @@ def _mock_exec_result(rows):
     return result
 
 
+def _ctx_for(user):
+    """Minimal TenantContext stub matching the route's read paths.
+
+    Admins resolve with no current_principal_id (cross-Org "All" mode); regular
+    users carry their default Org so they read their own usage rows. The
+    route only touches ``is_platform_admin`` / ``current_principal_id`` /
+    ``user``, so a MagicMock with those fields is enough."""
+    ctx = MagicMock()
+    ctx.user = user
+    ctx.is_platform_admin = bool(getattr(user, "is_admin", False))
+    ctx.current_principal_id = None if ctx.is_platform_admin else 1
+    ctx.org_role = None
+    return ctx
+
+
 @pytest.mark.asyncio
 async def test_get_usage_meta_returns_identity_filters_for_admin():
     session = MagicMock()
@@ -89,7 +104,7 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
     )
     user = User(id=1, username="admin", hashed_password="x", is_admin=True)
 
-    response = await get_usage_meta(session=session, user=user)
+    response = await get_usage_meta(session=session, user=user, ctx=_ctx_for(user))
 
     assert [item.key for item in response.group_bys] == [
         "date",
@@ -159,7 +174,7 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
     )
     user = User(id=2, username="alice", hashed_password="x", is_admin=False)
 
-    response = await get_usage_meta(session=session, user=user)
+    response = await get_usage_meta(session=session, user=user, ctx=_ctx_for(user))
 
     assert [item.key for item in response.group_bys] == ["date", "model", "api_key"]
     assert response.filters.users == []
@@ -232,7 +247,9 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
         perPage=20,
     )
 
-    response = await get_usage_breakdown(session=session, user=user, request=request)
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
 
     assert response.summary.input_tokens == 400
     assert response.summary.output_tokens == 140
@@ -336,7 +353,9 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
         perPage=20,
     )
 
-    response = await get_usage_breakdown(session=session, user=user, request=request)
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
 
     assert response.group_by == ["date", "user", "api_key", "model"]
     assert response.granularity == "week"
@@ -385,7 +404,9 @@ async def test_get_usage_breakdown_ignores_incomplete_api_key_identity_groups():
         group_by=["api_key"],
     )
 
-    response = await get_usage_breakdown(session=session, user=user, request=request)
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
 
     assert response.summary == UsageSummary()
     assert response.items == []
@@ -437,7 +458,9 @@ async def test_get_usage_breakdown_formats_month_date_label_as_year_month():
         granularity="month",
     )
 
-    response = await get_usage_breakdown(session=session, user=user, request=request)
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
 
     assert response.granularity == "month"
     assert response.items[0].date.value == date(2026, 4, 1)
@@ -476,7 +499,9 @@ async def test_get_usage_breakdown_filters_deleted_api_key_by_value_and_current(
         ),
     )
 
-    await get_usage_breakdown(session=session, user=user, request=request)
+    await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
 
     executed_sql = str(session.exec.call_args_list[0].args[0])
     assert "api_key_id IS NULL" in executed_sql
@@ -505,7 +530,9 @@ async def test_get_usage_breakdown_defaults_regular_user_to_self_scope():
         group_by=["model"],
     )
 
-    await get_usage_breakdown(session=session, user=user, request=request)
+    await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
 
     executed_sql = str(session.exec.call_args_list[0].args[0])
     assert "model_usages.user_id =" in executed_sql
@@ -522,4 +549,6 @@ async def test_get_usage_breakdown_rejects_regular_user_user_group():
     )
 
     with pytest.raises(ForbiddenException):
-        await get_usage_breakdown(session=session, user=user, request=request)
+        await get_usage_breakdown(
+            session=session, user=user, ctx=_ctx_for(user), request=request
+        )
