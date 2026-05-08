@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
     "/proxy/{path:path}",
     methods=["GET", "POST", "OPTIONS", "HEAD"],
 )
-async def proxy(path: str, request: Request):
+async def proxy(path: str, request: Request):  # noqa: C901
     worker_ip_getter: Callable[[], str] = request.app.state.worker_ip_getter
     if worker_ip_getter is None:
         worker_ip_getter = localhost_fallback
@@ -42,6 +42,8 @@ async def proxy(path: str, request: Request):
             f"Proxying request to worker at port {target_service_port} for path: {path}"
         )
         url = f"http://{worker_ip_getter()}:{target_service_port}/{path}"
+        if request.url.query:
+            url = f"{url}?{request.url.query}"
         headers = dict(request.headers)
         headers.pop("host", None)
         headers.pop("transfer-encoding", None)
