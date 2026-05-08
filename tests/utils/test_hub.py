@@ -4,6 +4,8 @@ from gpustack.utils.hub import (
     get_hugging_face_model_min_gguf_path,
     get_model_scope_model_min_gguf_path,
     get_model_weight_size,
+    match_hugging_face_files,
+    match_model_scope_file_paths,
     read_repo_file_content,
 )
 from gpustack.schemas.models import (
@@ -208,3 +210,60 @@ def test_get_ms_min_gguf_file():
 def test_read_repo_file_content(m, file, token, predicate):
     config_dict = read_repo_file_content(m, file, token)
     assert predicate(config_dict)
+
+
+def test_match_files_with_mmproj_at_root():
+    repo_id = "unsloth/Qwen3.5-4B-GGUF"
+
+    hf_matched = match_hugging_face_files(
+        repo_id=repo_id,
+        filename="Qwen3.5-4B-Q4_K_S.gguf",
+        extra_filename="*mmproj*.gguf",
+    )
+
+    assert hf_matched == [
+        "Qwen3.5-4B-Q4_K_S.gguf",
+        "mmproj-F32.gguf",
+    ]
+
+    ms_matched = match_model_scope_file_paths(
+        model_id=repo_id,
+        file_path="Qwen3.5-4B-Q4_K_S.gguf",
+        extra_file_path="*mmproj*.gguf",
+    )
+
+    assert ms_matched == [
+        "Qwen3.5-4B-Q4_K_S.gguf",
+        "mmproj-F32.gguf",
+    ]
+
+
+def test_match_file_paths_in_subdir_and_mmproj_at_root():
+    repo_id = "unsloth/Qwen3.5-397B-A17B-GGUF"
+
+    expected = [
+        "UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00001-of-00009.gguf",
+        "UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00002-of-00009.gguf",
+        "UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00003-of-00009.gguf",
+        "UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00004-of-00009.gguf",
+        "UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00005-of-00009.gguf",
+        "UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00006-of-00009.gguf",
+        "UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00007-of-00009.gguf",
+        "UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00008-of-00009.gguf",
+        "UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00009-of-00009.gguf",
+        "mmproj-F32.gguf",
+    ]
+
+    hf_matched = match_hugging_face_files(
+        repo_id=repo_id,
+        filename="UD-Q6_K_XL/*.gguf",
+        extra_filename="*mmproj*.gguf",
+    )
+    assert hf_matched == expected
+
+    ms_matched = match_model_scope_file_paths(
+        model_id=repo_id,
+        file_path="UD-Q6_K_XL/*.gguf",
+        extra_file_path="*mmproj*.gguf",
+    )
+    assert ms_matched == expected
