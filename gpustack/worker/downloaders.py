@@ -1,7 +1,6 @@
 import logging
 import os
 from typing import List, Optional, Union
-from pathlib import Path
 from tqdm.contrib.concurrent import thread_map
 
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
@@ -171,29 +170,20 @@ class HfDownloader:
 
         logger.info(f"Downloading model {repo_id}/{filename}")
 
-        subfolder = (
-            None
-            if (subfolder := str(Path(matching_files[0]).parent)) == "."
-            else subfolder
-        )
-
-        unfolder_matching_files = [Path(file).name for file in matching_files]
-        downloaded_files = []
-
-        def _inner_hf_hub_download(repo_file: str):
-            downloaded_file = hf_hub_download(
+        # Pass full repo-relative paths so files from mixed directories
+        # (e.g. weights in a subfolder + mmproj at repo root) all download.
+        def _inner_hf_hub_download(repo_file: str) -> str:
+            return hf_hub_download(
                 repo_id=repo_id,
                 filename=repo_file,
                 token=token,
-                subfolder=subfolder,
                 local_dir=local_dir,
             )
-            downloaded_files.append(downloaded_file)
 
-        thread_map(
+        downloaded_files = thread_map(
             _inner_hf_hub_download,
-            unfolder_matching_files,
-            desc=f"Fetching {len(unfolder_matching_files)} files",
+            matching_files,
+            desc=f"Fetching {len(matching_files)} files",
             max_workers=max_workers,
         )
 

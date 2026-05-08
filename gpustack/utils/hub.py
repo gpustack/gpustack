@@ -244,29 +244,30 @@ def filter_filename(file_path: str, file_paths: List[str]):
 def match_model_scope_file_paths(
     model_id: str, file_path: str, extra_file_path: Optional[str] = None
 ) -> List[str]:
-    if '/' in file_path:
-        root, _ = file_path.rsplit('/', 1)
-    else:
-        root = None
-
     api = HubApi()
-    files = api.get_model_files(model_id, root=root, recursive=True)
-
-    file_paths = [file["Path"] for file in files]
-    matching_paths = [p for p in file_paths if fnmatch.fnmatch(p, file_path)]
-    matching_paths = sorted(matching_paths)
 
     if extra_file_path is None:
-        return matching_paths
+        # Fast path: scope listing to the main file's directory.
+        if '/' in file_path:
+            root, _ = file_path.rsplit('/', 1)
+        else:
+            root = None
+        files = api.get_model_files(model_id, root=root, recursive=True)
+        file_paths = [f["Path"] for f in files]
+        return sorted(p for p in file_paths if fnmatch.fnmatch(p, file_path))
+
+    # List the whole repo so a root-level mmproj is reachable when the
+    # main weights live in a subfolder.
+    files = api.get_model_files(model_id, recursive=True)
+    file_paths = [f["Path"] for f in files]
+    matching_paths = sorted(p for p in file_paths if fnmatch.fnmatch(p, file_path))
 
     extra_matching_paths = [
         p for p in file_paths if fnmatch.fnmatch(p, extra_file_path)
     ]
-    extra_matching_paths = sorted(extra_matching_paths, reverse=True)
-    if extra_matching_paths:
-        # Add the first element of the extra matching paths to the matching paths
-        # For example, when matches f16 and f32 mmproj files, prefer f32 over f16
-        matching_paths.append(extra_matching_paths[0])
+    extra_file = select_most_suitable_extra_file(extra_matching_paths)
+    if extra_file:
+        matching_paths.append(extra_file)
 
     return matching_paths
 
