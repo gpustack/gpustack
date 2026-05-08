@@ -1,7 +1,7 @@
 from enum import Enum
 from datetime import datetime
 from typing import ClassVar, Optional, List, TYPE_CHECKING
-from sqlalchemy import Column, UniqueConstraint
+from sqlalchemy import Column, UniqueConstraint, BigInteger
 from sqlmodel import Field, SQLModel, Text, JSON, Relationship
 
 from gpustack.mixins import BaseModelMixin
@@ -59,6 +59,15 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"lazy": "noload"},
     )
     is_custom: bool = Field(default=False, nullable=False)
+    total_requests: int = Field(
+        default=0, sa_column=Column(BigInteger, nullable=False, server_default="0")
+    )
+    total_tokens: int = Field(
+        default=0, sa_column=Column(BigInteger, nullable=False, server_default="0")
+    )
+    total_cached_tokens: int = Field(
+        default=0, sa_column=Column(BigInteger, nullable=False, server_default="0")
+    )
 
     @property
     def user_name(self) -> Optional[str]:
@@ -69,6 +78,9 @@ class ApiKeyListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
         "name",
         "expires_at",
+        "total_requests",
+        "total_tokens",
+        "total_cached_tokens",
         "created_at",
         "updated_at",
     ]
@@ -88,6 +100,9 @@ class ApiKeyPublic(ApiKeyBase):
     created_at: datetime
     updated_at: datetime
     expires_at: Optional[datetime] = None
+    total_requests: int = 0
+    total_tokens: int = 0
+    total_cached_tokens: int = 0
 
 
 ApiKeysPublic = PaginatedList[ApiKeyPublic]

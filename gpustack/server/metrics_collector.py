@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel
+from sqlalchemy import update
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack import envs
@@ -166,6 +167,43 @@ def _resolve_usage_tokens(
     return prompt_tokens, completion_tokens
 
 
+def _accumulate_api_key_usage_delta(
+    usage_by_api_key_id: Dict[int, Dict[str, int]],
+    api_key: Optional[ApiKey],
+    metric: ModelUsageMetrics,
+) -> None:
+    if api_key is None or api_key.id is None:
+        return
+
+    usage = usage_by_api_key_id.setdefault(
+        api_key.id,
+        {
+            "requests": 0,
+            "tokens": 0,
+            "cached_tokens": 0,
+        },
+    )
+    usage["requests"] += metric.request_count
+    usage["tokens"] += metric.total_token
+    usage["cached_tokens"] += metric.input_cached_token
+
+
+async def _update_api_key_usage_stats(
+    session: AsyncSession,
+    usage_by_api_key_id: Dict[int, Dict[str, int]],
+) -> None:
+    for api_key_id, usage in usage_by_api_key_id.items():
+        await session.execute(
+            update(ApiKey)
+            .where(ApiKey.id == api_key_id)
+            .values(
+                total_requests=ApiKey.total_requests + usage["requests"],
+                total_tokens=ApiKey.total_tokens + usage["tokens"],
+                total_cached_tokens=ApiKey.total_cached_tokens + usage["cached_tokens"],
+            )
+        )
+
+
 async def accumulate_gateway_metrics(metrics: List[ModelUsageMetrics]):
     async with gateway_buffers_lock:
         for incoming in metrics:
@@ -288,7 +326,8 @@ def _validate_usage_metric(
             return False
         if model.name != metric.model:
             logger.debug(
-                f"Model name {metric.model} does not match database record {model.name} for model ID {metric.model_id}."
+                f"Model name {metric.model} does not match database record "
+                f"{model.name} for model ID {metric.model_id}."
             )
             return False
     if metric.provider_id is not None:
@@ -298,7 +337,8 @@ def _validate_usage_metric(
             return False
         if metric.model not in {m.name for m in provider.models}:
             logger.debug(
-                f"Model name {metric.model} not found for provider ID {metric.provider_id} in database."
+                f"Model name {metric.model} not found for provider ID "
+                f"{metric.provider_id} in database."
             )
             return False
     if metric.user_id is not None and metric.user_id not in user_ids:
@@ -437,6 +477,7 @@ async def store_usage_metrics(
             )
             cluster_names_by_id = {c.id: c.name for c in clusters}
             provider_by_id = {p.id: p for p in providers}
+            api_key_usage_by_id: Dict[int, Dict[str, int]] = {}
 
             for metric in metrics:
                 if not _validate_usage_metric(
@@ -466,6 +507,11 @@ async def store_usage_metrics(
                 )
                 await create_or_update_model_usage(
                     session, model_usage, auto_commit=False
+                )
+                _accumulate_api_key_usage_delta(
+                    api_key_usage_by_id,
+                    api_key_by_access_key.get(metric.access_key),
+                    metric,
                 )
 
             for metric in detail_metrics:
@@ -530,6 +576,7 @@ async def store_usage_metrics(
                     )
                 )
 
+            await _update_api_key_usage_stats(session, api_key_usage_by_id)
             await session.commit()
         except Exception as e:
             logger.exception(f"Error storing gateway metrics: {e}")

@@ -1,12 +1,16 @@
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
+from gpustack.schemas.api_keys import ApiKey
 from gpustack.server.metrics_collector import (
     ModelUsageMetrics,
+    _accumulate_api_key_usage_delta,
     _estimate_partial_usage,
     _make_buffer_key,
     _resolve_usage_tokens,
+    _update_api_key_usage_stats,
     accumulate_gateway_metrics,
     gateway_details_buffer,
     gateway_metrics_buffer,
@@ -119,6 +123,72 @@ def test_accumulate_total_token_summed():
     asyncio.run(accumulate_gateway_metrics([m2]))
     entry = list(gateway_metrics_buffer.values())[0]
     assert entry.total_token == 400
+
+
+def test_accumulate_api_key_usage_delta_sums_rollups_by_key():
+    usage_by_api_key_id = {}
+    api_key = ApiKey(
+        id=7,
+        name="test-key",
+        access_key="access",
+        hashed_secret_key="secret",
+        user_id=1,
+    )
+
+    _accumulate_api_key_usage_delta(
+        usage_by_api_key_id,
+        api_key,
+        ModelUsageMetrics(
+            model="m",
+            request_count=2,
+            total_token=300,
+            input_cached_token=40,
+        ),
+    )
+    _accumulate_api_key_usage_delta(
+        usage_by_api_key_id,
+        api_key,
+        ModelUsageMetrics(
+            model="m",
+            request_count=1,
+            total_token=100,
+            input_cached_token=5,
+        ),
+    )
+
+    assert usage_by_api_key_id == {
+        7: {
+            "requests": 3,
+            "tokens": 400,
+            "cached_tokens": 45,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_api_key_usage_stats_uses_atomic_increments():
+    session = AsyncMock()
+
+    await _update_api_key_usage_stats(
+        session,
+        {
+            7: {
+                "requests": 3,
+                "tokens": 400,
+                "cached_tokens": 45,
+            }
+        },
+    )
+
+    session.execute.assert_awaited_once()
+    stmt = session.execute.await_args.args[0]
+    sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+
+    assert "UPDATE api_keys SET" in sql
+    assert "total_requests=(api_keys.total_requests + 3)" in sql
+    assert "total_tokens=(api_keys.total_tokens + 400)" in sql
+    assert "total_cached_tokens=(api_keys.total_cached_tokens + 45)" in sql
+    assert "WHERE api_keys.id = 7" in sql
 
 
 def test_resolve_usage_tokens_falls_back_total_for_reranker_model():

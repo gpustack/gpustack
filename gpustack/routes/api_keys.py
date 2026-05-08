@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import secrets
-from typing import Optional
+from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import selectinload
@@ -48,6 +48,9 @@ def _api_key_to_public(
         allowed_model_names=api_key.allowed_model_names,
         is_custom=api_key.is_custom,
         scope=api_key.scope,
+        total_requests=api_key.total_requests,
+        total_tokens=api_key.total_tokens,
+        total_cached_tokens=api_key.total_cached_tokens,
     )
 
 
@@ -62,10 +65,11 @@ def _is_hidden_api_key(api_key: ApiKey) -> bool:
 async def get_api_keys(
     session: SessionDep,
     user: CurrentUserDep,
-    params: ApiKeyListParams = Depends(),
-    user_id: Optional[str] = Query(
-        None, description="Filter by user_id. Admin can use '*' to list all users."
-    ),
+    params: Annotated[ApiKeyListParams, Depends()],
+    user_id: Annotated[
+        Optional[str],
+        Query(description="Filter by user_id. Admin can use '*' to list all users."),
+    ] = None,
     search: str = None,
 ):
     fields = {"user_id": user.id}
