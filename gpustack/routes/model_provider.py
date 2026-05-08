@@ -37,6 +37,7 @@ from openai.pagination import SyncPage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+ANTHROPIC_API_VERSION = "2023-06-01"
 
 
 @router.get("", response_model=ModelProvidersPublic, response_model_exclude_none=True)
@@ -301,6 +302,9 @@ async def get_models_from_provider(
         headers = {}
         if input.config.type == ModelProviderTypeEnum.CLAUDE:
             headers["X-API-Key"] = input.api_token
+            headers["anthropic-version"] = (
+                getattr(input.config, "claudeVersion", None) or ANTHROPIC_API_VERSION
+            )
         else:
             headers["Authorization"] = f"Bearer {input.api_token}"
         try:
@@ -406,6 +410,9 @@ async def try_model_with_provider(
         headers = {}
         if input.config.type == ModelProviderTypeEnum.CLAUDE:
             headers["X-API-Key"] = input.api_token
+            headers["anthropic-version"] = (
+                getattr(input.config, "claudeVersion", None) or ANTHROPIC_API_VERSION
+            )
         else:
             headers["Authorization"] = f"Bearer {input.api_token}"
         try:
