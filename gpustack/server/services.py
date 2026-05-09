@@ -71,7 +71,7 @@ class UserService:
         return result
 
     async def create(self, user: User):
-        return await User.create(self.session, user)
+        return await create_user_with_principal(self.session, user)
 
     async def update(self, user: User, source: Union[dict, SQLModel, None] = None):
         result = await user.update(self.session, source)
