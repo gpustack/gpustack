@@ -23,6 +23,7 @@ from gpustack.config.config import get_global_config
 from gpustack.api.tenant import (
     bypass_tenant_filter,
     assert_cluster_resource_visible,
+    assert_org_owned_writable,
     cluster_resource_visibility_conditions,
 )
 from gpustack.server.deps import (
@@ -618,16 +619,16 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
 
 @router.put("/{id}", response_model=WorkerPublic)
 async def update_worker(
-    user: CurrentUserDep,
+    ctx: TenantContextDep,
     session: SessionDep,
     id: int,
     worker_in: WorkerUpdate,
 ):
-    if not user.is_admin:
-        raise ForbiddenException(message="Only platform admin can update workers")
     worker = await Worker.one_by_id(session, id)
-    if not worker:
-        raise NotFoundException(message="worker not found")
+    if worker is not None and worker.deleted_at is not None:
+        worker = None
+    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
+    assert_org_owned_writable(ctx, worker, resource_label="worker")
 
     patch = worker_in.model_dump()
     if worker_in.maintenance is not None:
@@ -643,12 +644,12 @@ async def update_worker(
 
 
 @router.delete("/{id}")
-async def delete_worker(user: CurrentUserDep, session: SessionDep, id: int):
-    if not user.is_admin:
-        raise ForbiddenException(message="Only platform admin can delete workers")
+async def delete_worker(ctx: TenantContextDep, session: SessionDep, id: int):
     worker = await Worker.one_by_id(session, id)
-    if not worker or worker.deleted_at is not None:
-        raise NotFoundException(message="worker not found")
+    if worker is not None and worker.deleted_at is not None:
+        worker = None
+    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
+    assert_org_owned_writable(ctx, worker, resource_label="worker")
     try:
         soft = worker.external_id is not None
         if soft:
@@ -686,15 +687,18 @@ async def heartbeat(user: CurrentUserDep):
 
 @router.get("/{id}/privatekey")
 async def get_worker_privatekey(
-    user: CurrentUserDep,
+    ctx: TenantContextDep,
     session: SessionDep,
     id: int,
 ):
-    if not user.is_admin:
-        raise ForbiddenException(message="Only platform admin can fetch worker keys")
     worker = await Worker.one_by_id(session, id)
-    if not worker:
-        raise NotFoundException(message="worker not found")
+    if worker is not None and worker.deleted_at is not None:
+        worker = None
+    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
+    # Private key is a write-class secret (anyone holding it can SSH into the
+    # host) — gate with the writable check, same as the cluster registration
+    # token endpoint in routes/clusters.py.
+    assert_org_owned_writable(ctx, worker, resource_label="worker")
     if worker.ssh_key_id is None:
         raise NotFoundException(message="worker ssh key not found")
     ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
