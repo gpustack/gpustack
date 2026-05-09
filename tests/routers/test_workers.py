@@ -1,9 +1,22 @@
-from gpustack.routes.workers import update_worker_data
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from gpustack.api.exceptions import ForbiddenException, NotFoundException
+from gpustack.routes.workers import (
+    delete_worker,
+    get_worker_privatekey,
+    update_worker,
+    update_worker_data,
+)
+from gpustack.schemas.principals import OrgRole
 from gpustack.schemas.workers import (
     Worker,
     WorkerCreate,
     WorkerStateEnum,
     WorkerStatus,
+    WorkerUpdate,
     Maintenance,
     SystemReserved,
 )
@@ -183,3 +196,220 @@ def test_update_worker_data_preserves_labels_merge():
     assert updated_worker.labels["env"] == "prod"  # Updated
     assert updated_worker.labels["region"] == "us-west"  # Preserved
     assert updated_worker.labels["zone"] == "a"  # New
+
+
+def _ctx(*, is_platform_admin=False, current_principal_id=None, org_role=None):
+    """Minimal TenantContext stub for the worker write paths.
+
+    The handlers only consult ``is_platform_admin`` / ``current_principal_id`` /
+    ``org_role`` (via ``assert_org_owned_writable`` and
+    ``assert_cluster_resource_visible``), so a SimpleNamespace is enough.
+    """
+    return SimpleNamespace(
+        user=SimpleNamespace(is_system=False),
+        is_platform_admin=is_platform_admin,
+        current_principal_id=current_principal_id,
+        org_role=org_role,
+        accessible_cluster_ids=set(),
+    )
+
+
+def _worker(owner_principal_id=None, deleted_at=None):
+    return SimpleNamespace(
+        id=42,
+        cluster_id=1,
+        owner_principal_id=owner_principal_id,
+        deleted_at=deleted_at,
+        ssh_key_id=None,
+        external_id=None,
+        state=WorkerStateEnum.READY,
+    )
+
+
+def _patch_worker_one_by_id(worker):
+    """Stub Worker.one_by_id to return the given worker."""
+    return patch(
+        "gpustack.routes.workers.Worker.one_by_id",
+        AsyncMock(return_value=worker),
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_worker_allowed_for_org_admin_in_owning_org():
+    worker = _worker(owner_principal_id=10)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.ADMIN)
+    session = MagicMock()
+
+    with (
+        _patch_worker_one_by_id(worker),
+        patch("gpustack.routes.workers.WorkerService") as service_cls,
+    ):
+        service = service_cls.return_value
+        service.delete = AsyncMock()
+        await delete_worker(ctx=ctx, session=session, id=worker.id)
+        service.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_worker_forbidden_for_plain_org_user():
+    worker = _worker(owner_principal_id=10)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.USER)
+    session = MagicMock()
+
+    with _patch_worker_one_by_id(worker):
+        with pytest.raises(ForbiddenException):
+            await delete_worker(ctx=ctx, session=session, id=worker.id)
+
+
+@pytest.mark.asyncio
+async def test_delete_worker_returns_not_found_for_other_org():
+    """Cross-org access must 404, not 403, to avoid leaking row existence."""
+    worker = _worker(owner_principal_id=10)
+    ctx = _ctx(current_principal_id=99, org_role=OrgRole.ADMIN)
+    session = MagicMock()
+
+    with _patch_worker_one_by_id(worker):
+        with pytest.raises(NotFoundException):
+            await delete_worker(ctx=ctx, session=session, id=worker.id)
+
+
+@pytest.mark.asyncio
+async def test_delete_worker_on_globally_shared_cluster_requires_platform_admin():
+    """Workers on a global cluster (owner is None) shared via cluster_access
+    are visible to the recipient Org admin but not writable — only platform
+    admin may mutate global rows."""
+    worker = _worker(owner_principal_id=None)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.ADMIN)
+    ctx.accessible_cluster_ids = {worker.cluster_id}
+    session = MagicMock()
+
+    with _patch_worker_one_by_id(worker):
+        with pytest.raises(ForbiddenException):
+            await delete_worker(ctx=ctx, session=session, id=worker.id)
+
+
+@pytest.mark.asyncio
+async def test_delete_worker_allowed_for_platform_admin():
+    worker = _worker(owner_principal_id=10)
+    ctx = _ctx(is_platform_admin=True, current_principal_id=None)
+    session = MagicMock()
+
+    with (
+        _patch_worker_one_by_id(worker),
+        patch("gpustack.routes.workers.WorkerService") as service_cls,
+    ):
+        service = service_cls.return_value
+        service.delete = AsyncMock()
+        await delete_worker(ctx=ctx, session=session, id=worker.id)
+        service.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_already_soft_deleted_worker_returns_not_found():
+    """A soft-deleted worker must look like it doesn't exist for any caller."""
+    import datetime
+
+    worker = _worker(
+        owner_principal_id=10,
+        deleted_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+    ctx = _ctx(is_platform_admin=True, current_principal_id=None)
+    session = MagicMock()
+
+    with _patch_worker_one_by_id(worker):
+        with pytest.raises(NotFoundException):
+            await delete_worker(ctx=ctx, session=session, id=worker.id)
+
+
+@pytest.mark.asyncio
+async def test_update_worker_allowed_for_org_admin_in_owning_org():
+    worker = _worker(owner_principal_id=10)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.ADMIN)
+    session = MagicMock()
+    worker_in = WorkerUpdate(name="test-worker", maintenance=None)
+
+    with (
+        _patch_worker_one_by_id(worker),
+        patch("gpustack.routes.workers.WorkerService") as service_cls,
+    ):
+        service = service_cls.return_value
+        service.update = AsyncMock()
+        result = await update_worker(
+            ctx=ctx, session=session, id=worker.id, worker_in=worker_in
+        )
+        service.update.assert_awaited_once()
+        assert result is worker
+
+
+@pytest.mark.asyncio
+async def test_update_worker_forbidden_for_plain_org_user():
+    worker = _worker(owner_principal_id=10)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.USER)
+    session = MagicMock()
+    worker_in = WorkerUpdate(name="test-worker", maintenance=None)
+
+    with _patch_worker_one_by_id(worker):
+        with pytest.raises(ForbiddenException):
+            await update_worker(
+                ctx=ctx, session=session, id=worker.id, worker_in=worker_in
+            )
+
+
+@pytest.mark.asyncio
+async def test_get_worker_privatekey_forbidden_for_plain_org_user():
+    """Private key is a write-class secret — same gate as delete/update."""
+    worker = _worker(owner_principal_id=10)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.USER)
+    session = MagicMock()
+
+    with _patch_worker_one_by_id(worker):
+        with pytest.raises(ForbiddenException):
+            await get_worker_privatekey(ctx=ctx, session=session, id=worker.id)
+
+
+@pytest.mark.asyncio
+async def test_get_worker_privatekey_returns_not_found_for_other_org():
+    worker = _worker(owner_principal_id=10)
+    ctx = _ctx(current_principal_id=99, org_role=OrgRole.ADMIN)
+    session = MagicMock()
+
+    with _patch_worker_one_by_id(worker):
+        with pytest.raises(NotFoundException):
+            await get_worker_privatekey(ctx=ctx, session=session, id=worker.id)
+
+
+@pytest.mark.asyncio
+async def test_update_already_soft_deleted_worker_returns_not_found():
+    """Mirrors delete: update must treat a soft-deleted worker as absent."""
+    import datetime
+
+    worker = _worker(
+        owner_principal_id=10,
+        deleted_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+    ctx = _ctx(is_platform_admin=True, current_principal_id=None)
+    session = MagicMock()
+    worker_in = WorkerUpdate(name="test-worker", maintenance=None)
+
+    with _patch_worker_one_by_id(worker):
+        with pytest.raises(NotFoundException):
+            await update_worker(
+                ctx=ctx, session=session, id=worker.id, worker_in=worker_in
+            )
+
+
+@pytest.mark.asyncio
+async def test_get_worker_privatekey_for_soft_deleted_worker_returns_not_found():
+    """Soft-deleted workers must not leak private keys."""
+    import datetime
+
+    worker = _worker(
+        owner_principal_id=10,
+        deleted_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+    ctx = _ctx(is_platform_admin=True, current_principal_id=None)
+    session = MagicMock()
+
+    with _patch_worker_one_by_id(worker):
+        with pytest.raises(NotFoundException):
+            await get_worker_privatekey(ctx=ctx, session=session, id=worker.id)
