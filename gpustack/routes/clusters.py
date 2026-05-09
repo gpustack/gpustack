@@ -32,6 +32,7 @@ from gpustack.api.tenant import (
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
+from gpustack.server.services import create_user_with_principal
 from gpustack.server.worker_request import stream_to_worker
 from gpustack.schemas.clusters import (
     ClusterListParams,
@@ -353,11 +354,8 @@ async def create_cluster(
                 session=session, source=to_create_pool, auto_commit=False
             )
         to_create_user.cluster = cluster
-        user = await User.create(
-            session=session, source=to_create_user, auto_commit=False
-        )
+        user = await create_user_with_principal(session, to_create_user)
         to_create_apikey.user_id = user.id
-        to_create_apikey.user = user
         await ApiKey.create(session=session, source=to_create_apikey, auto_commit=False)
         await session.commit()
         await session.refresh(cluster)
