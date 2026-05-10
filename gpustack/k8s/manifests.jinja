@@ -16,62 +16,6 @@ data:
   {{ k }}: {{ v | b64encode }}
   {%- endfor %}
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: ingressclass-viewer
-rules:
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["ingressclasses"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: ingressclass-viewer-binding
-subjects:
-  - kind: ServiceAccount
-    name: gpustack-worker
-    namespace: {{ config.namespace }}
-roleRef:
-  kind: ClusterRole
-  name: ingressclass-viewer
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: pod-cm-creator
-rules:
-  - apiGroups:
-      - ""
-    resources:
-      - "pods"
-      - "configmaps"
-      - "secrets"
-      - "services"
-      - "pods/log"
-      - "pods/exec"
-    verbs:
-      - "*"
-  - apiGroups:
-      - ""
-    resources:
-      - persistentvolumeclaims
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
-      - ""
-    resources: 
-      - "events"
-    verbs: 
-      - "create"
----
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -79,17 +23,16 @@ metadata:
   name: gpustack-worker
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
-  namespace: {{ config.namespace }}
-  name: pod-cm-creator
-subjects:
-- kind: ServiceAccount
   name: gpustack-worker
-  namespace: {{ config.namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: gpustack-worker
+    namespace: {{ config.namespace }}
 roleRef:
   kind: ClusterRole
-  name: pod-cm-creator
+  name: cluster-admin
   apiGroup: rbac.authorization.k8s.io
 ---
 # Service

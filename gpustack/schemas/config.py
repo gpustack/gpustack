@@ -2,7 +2,7 @@ from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
 
-from gpustack import __benchmark_runner_version__
+from gpustack import __benchmark_runner_version__, __operator_version__
 
 
 class GatewayModeEnum(str, Enum):
@@ -59,6 +59,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
     benchmark_image_repo: str = (
         f"gpustack/benchmark-runner:{__benchmark_runner_version__}"
     )
+    operator_image: str = f"gpustack/gpustack-operator:{__operator_version__}"
     gateway_mode: GatewayModeEnum = GatewayModeEnum.auto
     gateway_kubeconfig: Optional[str] = None
     gateway_namespace: str = "higress-system"
@@ -92,6 +93,7 @@ class PredefinedConfigNoDefaults(PredefinedConfig):
     benchmark_max_duration_seconds: Optional[int] = None
     image_repo: Optional[str] = None
     benchmark_image_repo: Optional[str] = None
+    operator_image: Optional[str] = None
     gateway_mode: Optional[str] = None
     gateway_namespace: Optional[str] = None
     namespace: Optional[str] = None
