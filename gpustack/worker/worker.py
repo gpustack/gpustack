@@ -15,10 +15,6 @@ import tenacity
 import uvicorn
 from urllib.parse import urlparse
 from starlette.middleware.base import BaseHTTPMiddleware
-from gpustack_runtime.deployer.k8s.deviceplugin import (
-    serve_async as kdp_serve_async,
-    get_resource_injection_policy,
-)
 
 from gpustack.api import exceptions
 from gpustack.config.config import (
@@ -310,10 +306,6 @@ class Worker:
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
         )
         self._create_async_task(model_file_manager.watch_model_files())
-
-        # Start Kubernetes Device Plugin server if allowed.
-        if get_resource_injection_policy() == "kdp":
-            self._create_async_task(kdp_serve_async(stop_event=asyncio.Event()))
 
         if self._config.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL:
             docker_sock = Path("/var/run/docker.sock")
