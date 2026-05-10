@@ -487,6 +487,8 @@ EOF
 
 ## Install GPUStack
 
+ARG UI_DOWNLOAD=true
+
 RUN --mount=type=cache,target=/root/.cache \
     --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # Install GPUStack
@@ -495,6 +497,7 @@ RUN --mount=type=cache,target=/root/.cache \
     export UV_NO_CACHE=0
     export UV_SYSTEM_PYTHON=1
     export UV_LINK_MODE=copy
+    export UI_DOWNLOAD=${UI_DOWNLOAD}
 
     # Build GPUStack
     cd /workspace/gpustack \

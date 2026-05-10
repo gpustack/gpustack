@@ -24,6 +24,11 @@ function download_deps() {
 }
 
 function download_ui() {
+  if [[ "${UI_DOWNLOAD:-true}" != "true" ]]; then
+    gpustack::log::info "skipping UI assets download"
+    return
+  fi
+
   local default_tag="latest"
   local ui_path="${ROOT_DIR}/gpustack/ui"
   local tmp_ui_path="${ui_path}/tmp"

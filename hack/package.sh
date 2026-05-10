@@ -13,6 +13,7 @@ PACKAGE_ARCH=${PACKAGE_ARCH:-$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64
 PACKAGE_TAG=${PACKAGE_TAG:-dev}
 PACKAGE_WITH_CACHE=${PACKAGE_WITH_CACHE:-true}
 PACKAGE_PUSH=${PACKAGE_PUSH:-false}
+PACKAGE_UI_DOWNLOAD=${PACKAGE_UI_DOWNLOAD:-true}
 
 function pack() {
     if ! command -v docker &>/dev/null; then
@@ -58,6 +59,7 @@ function pack() {
         --shm-size 16G \
         --progress plain \
         --build-arg "GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS=$(printf "%s;" "${LABELS[@]}")" \
+        --build-arg "UI_DOWNLOAD=${PACKAGE_UI_DOWNLOAD}" \
         "${EXTRA_ARGS[@]}" \
         "${ROOT_DIR}"
     set +x
