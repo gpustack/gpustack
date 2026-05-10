@@ -195,3 +195,11 @@ def pydantic_column_type(
             return "JSON()"
 
     return PydanticJSONType
+
+
+def pydantic_camel_case_generator(s: str) -> str:
+    """
+    Converts snake_case string to camelCase.
+    E.g., "image_pull_policy" -> "imagePullPolicy"
+    """
+    return ''.join(w.capitalize() if i else w for i, w in enumerate(s.split('_')))
