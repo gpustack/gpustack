@@ -537,6 +537,9 @@ class ClusterRegistrationTokenPublic(BaseModel):
     env: Dict[str, str]
     args: List[str]
 
+    # Below fields are used for configure GPUStack Operator.
+    operator_image: str
+
 
 class CredentialType(str, Enum):
     SSH = "ssh"

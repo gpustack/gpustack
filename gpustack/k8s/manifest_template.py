@@ -2,6 +2,8 @@ import jinja2
 import base64
 import yaml
 from typing import List, Optional
+
+from gpustack.gpu_instances import get_namespace_name
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.schemas.clusters import ClusterRegistrationTokenPublic
 from gpustack.schemas.clusters import K8sVolumeMount
@@ -9,8 +11,18 @@ from gpustack_runtime.detector import ManufacturerEnum
 
 
 class TemplateConfig(ClusterRegistrationTokenPublic):
+    # system namespace for cluster registration, defaults to "gpustack-system",
+    # used for placing the components for the whole Kubernetes cluster.
+    system_namespace: Optional[str] = None
+    # cluster owner namespace, defaults to "gpustack-{cluster_owner_principal_slug}",
+    # used to placing the Kubernetes resources for the cluster owner.
+    cluster_owner_namespace: Optional[str] = None
+    # cluster-specific namespace, defaults to "gpustack-system" or "gpustack-system-{cluster_suffix}",
+    # used for placing the components for a specific Kubernetes cluster,
+    # legacy, will be removed in the future, installed new components should be placed in the system namespace.
     namespace: Optional[str] = None
     cluster_suffix: Optional[str] = None
+    cluster_owner_principal_slug: Optional[str] = None
     runtime_enum: Optional[ManufacturerEnum] = None
     runtime: Optional[str] = None
     k8s_volume_mounts: Optional[List[K8sVolumeMount]] = None
@@ -44,6 +56,9 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
         with pkg_resources.path("gpustack.k8s", "daemonset.jinja") as daemon_set_path:
             with daemon_set_path.open(encoding="utf-8") as f:
                 daemon_set_data = f.read()
+        with pkg_resources.path("gpustack.k8s", "operator.jinja") as operator_path:
+            with operator_path.open(encoding="utf-8") as f:
+                operator_data = f.read()
         env = jinja2.Environment()
         env.filters["b64encode"] = b64encode
         env.filters["to_yaml"] = to_yaml
@@ -51,7 +66,9 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
         rendered = template.render(config=self)
         template_daemonset = env.from_string(daemon_set_data)
         daemon_set = template_daemonset.render(config=self)
-        return "\n".join([rendered, daemon_set])
+        template_operator = env.from_string(operator_data)
+        operator = template_operator.render(config=self)
+        return "\n".join([rendered, daemon_set, operator])
 
     def __init__(
         self, registration: Optional[ClusterRegistrationTokenPublic] = None, **data
@@ -62,6 +79,12 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
             super().__init__(**base_data)
         else:
             super().__init__(**data)
+        if self.system_namespace is None:
+            self.system_namespace = "gpustack-system"
+        if self.cluster_owner_namespace is None:
+            self.cluster_owner_namespace = get_namespace_name(
+                self.cluster_owner_principal_slug
+            )
         if self.namespace is None and self.cluster_suffix is not None:
             self.namespace = f"gpustack-system-{self.cluster_suffix}"
         elif self.namespace is None:

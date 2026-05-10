@@ -1,0 +1,273 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ config.system_namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpustack-operator-worker
+  namespace: {{ config.system_namespace }}
+  labels:
+    app.kubernetes.io/part-of: gpustack-operator-worker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpustack-operator-worker
+  labels:
+    app.kubernetes.io/part-of: gpustack-operator-worker
+subjects:
+  - kind: ServiceAccount
+    name: gpustack-operator-worker
+    namespace: {{ config.system_namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpustack-operator-worker-deployment
+  namespace: {{ config.system_namespace }}
+data:
+  values.yaml: |
+
+    #@data/values
+    ---
+    certmanagerEnabled: false
+    namespaceName: "{{ config.system_namespace }}"
+
+  template.yaml: |
+
+    #@ load("@ytt:data", "data")
+
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: gpustack-operator-worker
+      namespace: #@ data.values.namespaceName
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "443"
+        prometheus.io/path: "/metrics"
+        prometheus.io/scheme: "https"
+      labels:
+        app.kubernetes.io/part-of: gpustack-operator-worker
+    spec:
+      selector:
+        app.kubernetes.io/part-of: gpustack-operator
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/name: gpustack-operator-worker
+      sessionAffinity: ClientIP
+      ports:
+        - name: https
+          port: 443
+          targetPort: https
+    #@ if data.values.certmanagerEnabled:
+    ---
+    apiVersion: cert-manager.io/v1
+    kind: Issuer
+    metadata:
+      name: gpustack-operator-worker-selfsigned-issuer
+      namespace: #@ data.values.namespaceName
+      labels:
+        app.kubernetes.io/part-of: gpustack-operator-worker
+    spec:
+      selfSigned: {}
+    ---
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: gpustack-operator-worker-cert
+      namespace: #@ data.values.namespaceName
+      labels:
+        app.kubernetes.io/part-of: gpustack-operator-worker
+    spec:
+      secretName: gpustack-operator-worker-cert
+      issuerRef:
+        name: gpustack-operator-worker-selfsigned-issuer
+        kind: Issuer
+      commonName: gpustack-operator-worker
+      dnsNames:
+        - #@ "gpustack-operator-worker." + data.values.namespaceName + ".svc.cluster.local"
+        - #@ "gpustack-operator-worker." + data.values.namespaceName + ".svc"
+        - #@ "gpustack-operator-worker." + data.values.namespaceName
+        - gpustack-operator-worker
+    #@ end
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: gpustack-operator-worker
+      namespace: #@ data.values.namespaceName
+      labels:
+        app.kubernetes.io/part-of: gpustack-operator
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/name: gpustack-operator-worker
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app.kubernetes.io/part-of: gpustack-operator
+          app.kubernetes.io/component: worker
+          app.kubernetes.io/name: gpustack-operator-worker
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: gpustack-operator
+            app.kubernetes.io/component: worker
+            app.kubernetes.io/name: gpustack-operator-worker
+        spec:
+          serviceAccountName: gpustack-operator-worker
+          restartPolicy: Always
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchExpressions:
+                        - key: app.kubernetes.io/part-of
+                          operator: In
+                          values:
+                            - gpustack-operator
+                        - key: app.kubernetes.io/component
+                          operator: In
+                          values:
+                            - worker
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values:
+                            - gpustack-operator-worker
+          containers:
+            - name: main
+              image: {{ config.operator_image }}
+              imagePullPolicy: IfNotPresent
+              args:
+                - gpustack
+                - worker
+                - -v=2
+                - --disable-peer
+                #@ if/end data.values.certmanagerEnabled:
+                - --cert-dir=/var/run/gpustack/certs
+              resources:
+                limits:
+                  cpu: "4"
+                  memory: 8Gi
+                requests:
+                  cpu: 500m
+                  memory: 512Mi
+              env:
+                - name: KUBERNETES_POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: KUBERNETES_POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: KUBERNETES_POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: KUBERNETES_NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
+                - name: KUBERNETES_SERVICE_NAME
+                  value: gpustack-operator-worker
+              ports:
+                - name: https
+                  containerPort: 31443
+              startupProbe:
+                failureThreshold: 10
+                periodSeconds: 5
+                httpGet:
+                  scheme: HTTPS
+                  port: https
+                  path: /readyz
+              readinessProbe:
+                failureThreshold: 3
+                timeoutSeconds: 5
+                periodSeconds: 5
+                httpGet:
+                  scheme: HTTPS
+                  port: https
+                  path: /readyz
+              livenessProbe:
+                failureThreshold: 10
+                timeoutSeconds: 5
+                periodSeconds: 10
+                httpGet:
+                  scheme: HTTPS
+                  port: https
+                  path: /livez
+              volumeMounts:
+                - name: gpustack-data-dir
+                  mountPath: /var/lib/gpustack
+                #@ if/end data.values.certmanagerEnabled:
+                - name: gpustack-cert-dir
+                  mountPath: /var/run/gpustack/certs
+          volumes:
+            - name: gpustack-data-dir
+              hostPath:
+                path: /var/lib/gpustack
+                type: DirectoryOrCreate
+            #@ if/end data.values.certmanagerEnabled:
+            - name: gpustack-cert-dir
+              secret:
+                secretName: gpustack-operator-worker-cert
+
+  apply.sh: |
+
+    #!/bin/sh
+    set -e
+
+    CERTMANAGER_ENABLED="false"
+    if kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+      CERTMANAGER_ENABLED="true"
+    fi
+    echo "Detected cert-manager: ${CERTMANAGER_ENABLED}"
+
+    TMP_DIR=$(mktemp -d)
+    cp -f *.yaml ${TMP_DIR}/
+    cd ${TMP_DIR}/
+    ytt --file . --data-value-yaml certmanagerEnabled=${CERTMANAGER_ENABLED} | kubectl apply -f -
+    echo "Applied rendered manifests"
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gpustack-operator-worker-deployment
+  namespace: {{ config.system_namespace }}
+spec:
+  template:
+    spec:
+      serviceAccountName: gpustack-operator-worker
+      containers:
+      - name: main
+        image: {{ config.operator_image }}
+        command:
+          - "/bin/bash"
+          - "apply.sh"
+        workingDir: /app
+        volumeMounts:
+          - name: app-dir
+            mountPath: /app
+      restartPolicy: Never
+      volumes:
+        - name: app-dir
+          configMap:
+            name: gpustack-operator-worker-deployment
+            defaultMode: 0755
+  backoffLimit: 5
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ config.cluster_owner_namespace }}

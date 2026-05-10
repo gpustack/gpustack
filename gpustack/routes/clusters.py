@@ -19,6 +19,7 @@ from gpustack.api.exceptions import (
     ServiceUnavailableException,
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
+from gpustack.schemas import Principal
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.config import parse_base_model_to_env_vars
 from gpustack.api.tenant import (
@@ -55,7 +56,11 @@ from gpustack.schemas.users import User, UserRole, system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
-from gpustack.config.config import get_global_config, get_cluster_image_name
+from gpustack.config.config import (
+    get_global_config,
+    get_cluster_image_name,
+    get_cluster_operator_image_name,
+)
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack_runtime.detector import ManufacturerEnum
 
@@ -509,6 +514,8 @@ def get_registration_from_cluster(
         ),  # Default image, can be customized
         env=parse_base_model_to_env_vars(sensitive_registration),
         args=[],
+        # Below fields are used for configure GPUStack Operator.
+        operator_image=get_cluster_operator_image_name(cluster.worker_config),
     )
 
 
@@ -541,9 +548,20 @@ async def get_cluster_manifests(
         raise InvalidException(
             message=f"Cannot get manifests for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
         )
+    # TODO: Redundant principal slugs at the cluster level to reduce multiple queries.
+    principal = await Principal.one_by_id(session, cluster.owner_principal_id)
+    if not principal:
+        raise NotFoundException(
+            message=(
+                f"Owner principal (id: {cluster.owner_principal_id}) of cluster "
+                f"{cluster.name}(id: {id}) not found"
+            )
+        )
+
     config = TemplateConfig(
         registration=get_registration_from_cluster(request, cluster),
         cluster_suffix=cluster.hashed_suffix,
+        cluster_owner_principal_slug=principal.slug,
         namespace=getattr(cluster.worker_config, "namespace", None),
         runtime_enum=runtime,
         k8s_volume_mounts=cluster.k8s_volume_mounts,
