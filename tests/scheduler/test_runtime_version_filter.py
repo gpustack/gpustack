@@ -69,26 +69,25 @@ async def test_cuda_12_4_should_be_incompatible():
     assert compatible is False, "CUDA 12.4 should be incompatible"
     assert len(messages) == 1, "Should have one error message"
     assert "12.4" in messages[0], "Message should contain current version 12.4"
-    assert "12.6" in messages[0], "Message should contain minimum version 12.6"
     assert "12.8" in messages[0], "Message should contain recommended version 12.8"
 
 
 @pytest.mark.asyncio
-async def test_cuda_12_6_should_pass():
+async def test_cuda_12_8_should_pass():
     """
-    Test scenario 2: CUDA 12.6 should pass.
+    Test scenario 2: CUDA 12.8 should pass.
 
     Expected:
     - compatible should be True
     - messages should be empty
     """
     model = create_vllm_model()
-    workers = [create_cuda_worker("12.6", "worker-cuda-12.6")]
+    workers = [create_cuda_worker("12.8", "worker-cuda-12.8")]
 
     compatible, messages = await evaluate_runtime_version(model, workers)
 
     # Assertions
-    assert compatible is True, "CUDA 12.6 should be compatible"
+    assert compatible is True, "CUDA 12.8 should be compatible"
     assert len(messages) == 0, "Should have no error messages"
 
 
@@ -98,14 +97,14 @@ async def test_mixed_workers():
     Test scenario 3: Mixed version workers.
 
     Expected:
-    - Highest version is 12.6, which meets the requirement
+    - Highest version is 12.8, which meets the requirement
     - Should be compatible
     """
     model = create_vllm_model()
     workers = [
         create_cuda_worker("12.2", "worker-cuda-12.2"),
         create_cuda_worker("12.4", "worker-cuda-12.4"),
-        create_cuda_worker("12.6", "worker-cuda-12.6"),
+        create_cuda_worker("12.8", "worker-cuda-12.8"),
     ]
 
     compatible, messages = await evaluate_runtime_version(model, workers)
@@ -113,7 +112,7 @@ async def test_mixed_workers():
     # Assertions
     assert (
         compatible is True
-    ), "Should be compatible (highest version 12.6 meets requirement)"
+    ), "Should be compatible (highest version 12.8 meets requirement)"
     assert len(messages) == 0, "Should have no error messages"
 
 
@@ -138,7 +137,7 @@ async def test_all_workers_below_requirement():
     assert compatible is False, "Should be incompatible"
     assert len(messages) == 1, "Should have one error message"
     assert "12.4" in messages[0], "Message should contain highest version 12.4"
-    assert "12.6" in messages[0], "Message should contain minimum version 12.6"
+    assert "12.8" in messages[0], "Message should contain lowest version 12.8"
 
 
 @pytest.mark.asyncio
