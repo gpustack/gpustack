@@ -657,7 +657,7 @@ async def cluster_apiserver_proxy(
     )
     if not workers:
         raise ServiceUnavailableException(
-            message=f"No ready workers in cluster {cluster.name}(id: {id})"
+            message=f"No reachable workers in cluster {cluster.name}(id: {id})"
         )
     worker = random.choice(workers)
 
@@ -667,11 +667,9 @@ async def cluster_apiserver_proxy(
         if k.lower() not in _CLUSTER_PROXY_REQUEST_HEADER_SKIP
     }
 
-    # Stream the request body through to avoid loading large payloads (e.g. apply
-    # of big manifests) into memory.
-    body = (
-        request.stream() if request.method not in ("GET", "HEAD", "OPTIONS") else None
-    )
+    body = None
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        body = await request.body()
 
     # request.query_params preserves order but a flat dict is sufficient for
     # the Kubernetes API surface we forward (no duplicate keys in practice).
