@@ -16,6 +16,11 @@ from gpustack.config.config import (
     Config,
     get_cluster_image_name,
 )
+from gpustack.gpu_instances import (
+    sync_ssh_public_key_to_clusters,
+    get_ssh_public_key,
+    sync_ssh_public_key_to_cluster,
+)
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.scorers.score_chain import (
@@ -23,6 +28,7 @@ from gpustack.policies.scorers.score_chain import (
 )
 from gpustack.policies.base import ModelInstanceScore
 from gpustack.policies.scorers.status_scorer import StatusScorer
+from gpustack.schemas import GPUInstanceSSHPublicKey
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
     get_built_in_backend,
@@ -117,7 +123,6 @@ from gpustack.gateway import get_async_k8s_config
 from gpustack.schemas.model_provider import (
     ModelProvider,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -2156,6 +2161,7 @@ class ClusterController:
         Reconcile the cluster state.
         """
         await self._sync_cluster_state(event)
+        await self._ensure_gpu_instance_ssh_public_key(event)
         if self._disable_gateway:
             return
         await self._ensure_worker_mcp_bridge(event)
@@ -2205,6 +2211,28 @@ class ClusterController:
         except Exception as e:
             logger.error(f"Failed to ensure MCPBridge for cluster {cluster.name}: {e}")
             raise
+
+    async def _ensure_gpu_instance_ssh_public_key(self, event: Event):
+        """
+        Ensure the corresponding GPUStack Operator InstanceSSHPublicKey resource is synced.
+        """
+        cluster: Cluster = event.data
+        if cluster.provider != ClusterProvider.Kubernetes:
+            return
+        owner_principal_id = cluster.owner_principal_id
+
+        async with async_session() as session:
+            ssh_public_key = await get_ssh_public_key(
+                session=session,
+                owner_principal_id=owner_principal_id,
+            )
+
+        await sync_ssh_public_key_to_cluster(
+            ssh_public_key=ssh_public_key,
+            server_api_port=self._cfg.api_port,
+            cluster_id=cluster.id,
+            owner_principal_id=owner_principal_id,
+        )
 
 
 async def notify_model_route_target(session: AsyncSession, model: Model, event: Event):
@@ -2653,3 +2681,50 @@ class ModelRouteController:
                     istio_networking_api=self._networking_istio_api,
                 )
             await distribute_models_to_user(session, model_route, event)
+
+
+class GPUInstanceSSHPublicKeyController:
+    def __init__(self, cfg: Config):
+        self._cfg = cfg
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
+
+    async def start(self):
+        async for event in GPUInstanceSSHPublicKey.subscribe(
+            source="gpu_instance_ssh_public_key_controller"
+        ):
+            try:
+                await self._reconcile(event)
+            except Exception:
+                logger.exception("Failed to reconcile gpu instance ssh public key")
+
+    async def _reconcile(self, event: Event):
+        """
+        Reconcile the gpu instance ssh public key.
+        """
+        if event.type == EventType.DELETED:
+            return
+
+        ret: GPUInstanceSSHPublicKey = event.data
+        if ret is None or ret.spec is None or ret.spec.data is None:
+            return
+        owner_principal_id = ret.owner_principal_id
+
+        async with async_session() as session:
+            clusters = await Cluster.all_by_fields(
+                session=session,
+                fields={
+                    "provider": ClusterProvider.Kubernetes,
+                    "state": ClusterStateEnum.READY,
+                    "owner_principal_id": owner_principal_id,
+                    "deleted_at": None,
+                },
+            )
+
+            ssh_public_key = ret.spec.data
+            cluster_ids = [cluster.id for cluster in clusters]
+
+        await sync_ssh_public_key_to_clusters(
+            ssh_public_key=ssh_public_key,
+            server_api_port=self._cfg.api_port,
+            cluster_ids=cluster_ids,
+        )

@@ -51,6 +51,7 @@ from gpustack.server.controllers import (
     ModelRouteController,
     ModelRouteTargetController,
     ModelProviderController,
+    GPUInstanceSSHPublicKeyController,
 )
 from gpustack.server.db import async_session
 from gpustack.server.init_db import init_db, get_query_count
@@ -279,6 +280,9 @@ class Server:
 
         inference_backend_controller = InferenceBackendController()
         tasks.append(asyncio.create_task(inference_backend_controller.start()))
+
+        g_inst_sshpublickey_controller = GPUInstanceSSHPublicKeyController(self.config)
+        tasks.append(asyncio.create_task(g_inst_sshpublickey_controller.start()))
 
         logger.debug("Controllers started.")
         return tasks

@@ -140,7 +140,19 @@ from gpustack.schemas.tenant_quotas import (
     TenantQuotasPublic,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink  # noqa: F401
-
+from gpustack.schemas.gpu_instance_ssh_public_keys import (
+    GPUInstanceSSHPublicKey,
+    GPUInstanceSSHPublicKeyUpdate,
+    GPUInstanceSSHPublicKeyPublic,
+)
+from gpustack.schemas.gpu_instance_templates import (
+    GPUInstanceTemplate,
+    GPUInstanceTemplateListParams,
+    GPUInstanceTemplateCreate,
+    GPUInstanceTemplateUpdate,
+    GPUInstanceTemplatePublic,
+    GPUInstanceTemplatesPublic,
+)
 
 __all__ = [
     "ApiKey",
@@ -261,4 +273,13 @@ __all__ = [
     "TenantQuotaUpdate",
     "TenantQuotaPublic",
     "TenantQuotasPublic",
+    "GPUInstanceSSHPublicKey",
+    "GPUInstanceSSHPublicKeyUpdate",
+    "GPUInstanceSSHPublicKeyPublic",
+    "GPUInstanceTemplate",
+    "GPUInstanceTemplateListParams",
+    "GPUInstanceTemplateCreate",
+    "GPUInstanceTemplateUpdate",
+    "GPUInstanceTemplatePublic",
+    "GPUInstanceTemplatesPublic",
 ]

@@ -12,6 +12,8 @@ from gpustack.routes import (
     debug,
     draft_models,
     gpu_devices,
+    gpu_instance_ssh_public_keys,
+    gpu_instance_templates,
     inference_backend,
     me_orgs,
     metrics,
@@ -167,6 +169,16 @@ model_routers = [
         "router": model_routes.target_router,
         "prefix": "/model-route-targets",
         "tags": ["Model Route Targets"],
+    },
+    {
+        "router": gpu_instance_ssh_public_keys.router,
+        "prefix": "/gpu-instance-ssh-public-keys",
+        "tags": ["GPU Instance SSH Public Keys"],
+    },
+    {
+        "router": gpu_instance_templates.router,
+        "prefix": "/gpu-instance-templates",
+        "tags": ["GPU Instance Templates"],
     },
 ]
 # worker client have full access to model and model instances

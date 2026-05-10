@@ -31,8 +31,8 @@ slug_pattern = r'^[a-z](?:[a-z0-9\-]*[a-z0-9])?$'
 # (e.g. inference backends with owner_principal_id IS NULL). Letting users
 # create regular Orgs with these names would collide with built-in UX
 # slots. Match case-insensitively after trimming whitespace.
-RESERVED_ORG_NAMES = {"personal", "global"}
-RESERVED_ORG_SLUGS = {"personal", "global"}
+RESERVED_ORG_NAMES = {"personal", "global", "system", "system-toolkit"}
+RESERVED_ORG_SLUGS = {"personal", "global", "system", "system-toolkit"}
 # User-principal slug pattern — keep humans from grabbing the slot of a
 # user's auto-generated Personal namespace.
 personal_slug_pattern = re.compile(r'^user-\d+$')
