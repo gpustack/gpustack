@@ -2,9 +2,8 @@
 Coordinator Abstract Base Class.
 
 This module defines the interface for coordinating multiple server instances.
-The open-source edition provides a local (single-node) implementation, while
-the enterprise edition provides distributed implementations using Redis or
-PostgreSQL.
+Ships with a local (single-node) implementation; plugins can contribute
+distributed implementations (e.g. Redis- or PostgreSQL-backed coordinators).
 """
 
 from abc import ABC, abstractmethod

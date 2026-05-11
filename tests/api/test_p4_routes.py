@@ -25,10 +25,12 @@ def _route(id: int = 1):
 def _principal(
     id: int = 5,
     kind: PrincipalType = PrincipalType.ORG,
+    name: str = "principal",
 ):
     p = MagicMock(spec=Principal)
     p.id = id
     p.kind = kind
+    p.name = name
     p.deleted_at = None
     p.parent_principal_id = None
     return p

@@ -11,7 +11,7 @@ shape, where ``principal_id`` here is the principals.id of the target
 (USER / ORG / GROUP principal).
 """
 
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -41,6 +41,9 @@ class PrincipalView(BaseModel):
     route_id: int
     principal_type: PrincipalType
     principal_id: int
+    # Resolved at read time from the joined principals row so the
+    # client can render a label without an extra lookup.
+    principal_name: Optional[str] = None
 
 
 async def _load_route(session, route_id: int) -> ModelRoute:
@@ -70,11 +73,16 @@ async def _validate_principal(
     return target
 
 
-def _row_to_view(row: ModelRoutePrincipalLink, kind: PrincipalType) -> PrincipalView:
+def _row_to_view(
+    row: ModelRoutePrincipalLink,
+    kind: PrincipalType,
+    name: Optional[str] = None,
+) -> PrincipalView:
     return PrincipalView(
         route_id=row.route_id,
         principal_type=kind,
         principal_id=row.principal_id,
+        principal_name=name,
     )
 
 
@@ -82,14 +90,23 @@ async def _resolve_views(
     session, rows: List[ModelRoutePrincipalLink]
 ) -> List[PrincipalView]:
     principal_ids = {r.principal_id for r in rows}
-    kinds: dict[int, PrincipalType] = {}
+    by_id: dict[int, Principal] = {}
     if principal_ids:
         result = await session.exec(
             select(Principal).where(Principal.id.in_(principal_ids))
         )
-        kinds = {p.id: p.kind for p in result.all()}
+        by_id = {p.id: p for p in result.all()}
     return [
-        _row_to_view(r, kinds.get(r.principal_id, PrincipalType.USER)) for r in rows
+        _row_to_view(
+            r,
+            (
+                by_id[r.principal_id].kind
+                if r.principal_id in by_id
+                else PrincipalType.USER
+            ),
+            by_id[r.principal_id].name if r.principal_id in by_id else None,
+        )
+        for r in rows
     ]
 
 

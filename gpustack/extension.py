@@ -1,7 +1,7 @@
 """
 Extension plugin interface for GPUStack.
 
-Third-party or enterprise plugins can implement this interface
+Third-party plugins can implement this interface
 and register via the ``gpustack.plugins`` entry-point group.
 
 A plugin is fully wired at construction time: the subclass's

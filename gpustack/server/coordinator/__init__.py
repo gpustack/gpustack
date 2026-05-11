@@ -2,9 +2,9 @@
 Coordination module for GPUStack.
 
 This module provides coordination capabilities for server instances.
-The open-source edition provides a local implementation for single-node
-deployments, while the enterprise edition provides distributed
-implementations for multi-instance deployments.
+Ships with a local implementation for single-node deployments; plugins
+can register alternative implementations (e.g. distributed coordinators
+for multi-instance deployments).
 
 Usage:
     from gpustack.server.coordinator import Coordinator, LocalCoordinator, Event
@@ -13,8 +13,8 @@ Usage:
     coordinator = LocalCoordinator(config)
     await coordinator.start()
 
-    # Enterprise edition can provide distributed implementations
-    # via the plugin system.
+    # Plugins may contribute distributed implementations via
+    # the plugin system.
 """
 
 from gpustack.server.coordinator.base import Coordinator, Event, EventType
