@@ -853,8 +853,18 @@ async def add_model_authorization(
         affected_user_ids = None
         cache_model = None
 
+    # `users` is the source-of-truth for grants only under the
+    # ALLOWED_USERS policy. ALLOWED_PRINCIPALS manages grants via
+    # `/principals` (which can also create USER-kind rows), and the
+    # other policies don't care about the explicit list. Wiping
+    # USER-kind rows when the policy isn't ALLOWED_USERS would
+    # silently delete USER grants that ALLOWED_PRINCIPALS just
+    # attached.
+    should_replace_users = model.access_policy == AccessPolicyEnum.ALLOWED_USERS
+
     try:
-        await _replace_route_user_principals(session, id, requested_user_ids)
+        if should_replace_users:
+            await _replace_route_user_principals(session, id, requested_user_ids)
         await revoke_model_access_cache(
             session=session,
             model=cache_model,
