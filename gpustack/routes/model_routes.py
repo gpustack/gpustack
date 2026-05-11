@@ -808,7 +808,10 @@ async def get_model_authorization_list(session: SessionDep, id: int):
     if not model:
         raise NotFoundException(message="Model not found")
 
-    return ModelAuthorizationList(items=await _list_route_users(session, id))
+    return ModelAuthorizationList(
+        items=await _list_route_users(session, id),
+        access_policy=model.access_policy,
+    )
 
 
 @router.post("/{id}/access", response_model=ModelAuthorizationList)
@@ -862,7 +865,10 @@ async def add_model_authorization(
         await session.rollback()
         raise InternalServerErrorException(message=f"Failed to add model access: {e}")
 
-    return ModelAuthorizationList(items=await _list_route_users(session, id))
+    return ModelAuthorizationList(
+        items=await _list_route_users(session, id),
+        access_policy=model.access_policy,
+    )
 
 
 @my_models_router.get("", response_model=ModelRoutesPublic)
