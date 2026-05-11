@@ -115,17 +115,17 @@ def test_can_manage_platform_admin_always():
 
 
 def test_can_manage_admin_in_org_can_manage():
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.ADMIN)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.OWNER)
     assert organization_members._can_manage(ctx, 10) is True
 
 
 def test_can_manage_admin_cannot_manage_other_org():
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.ADMIN)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.OWNER)
     assert organization_members._can_manage(ctx, 99) is False
 
 
 def test_can_manage_member_cannot_manage():
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.USER)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.MEMBER)
     assert organization_members._can_manage(ctx, 10) is False
 
 
@@ -138,17 +138,17 @@ def test_can_manage_groups_admin_passthrough():
 
 
 def test_can_manage_groups_member_blocked():
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.USER)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.MEMBER)
     assert user_groups_route._can_manage_groups(ctx, org_id=10) is False
 
 
 def test_can_manage_groups_admin_role_in_org_passes():
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.ADMIN)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.OWNER)
     assert user_groups_route._can_manage_groups(ctx, org_id=10) is True
 
 
 def test_can_manage_groups_wrong_org_blocked():
-    ctx = _ctx(current_principal_id=99, org_role=OrgRole.ADMIN)
+    ctx = _ctx(current_principal_id=99, org_role=OrgRole.OWNER)
     assert user_groups_route._can_manage_groups(ctx, org_id=10) is False
 
 
@@ -204,13 +204,13 @@ async def test_delete_org_blocked_when_resources_exist(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_remove_only_admin_blocked(monkeypatch):
+async def test_remove_only_owner_blocked(monkeypatch):
     org = _principal(id=10, name="Acme", slug="acme")
     user = _user_row(id=2, principal_id=200)
     membership = MagicMock(spec=PrincipalMembership)
     membership.parent_principal_id = 10
     membership.member_principal_id = 200
-    membership.role = OrgRole.ADMIN
+    membership.role = OrgRole.OWNER
     membership.deleted_at = None
     monkeypatch.setattr(
         organization_members.Principal,
@@ -229,7 +229,7 @@ async def test_remove_only_admin_blocked(monkeypatch):
     )
     monkeypatch.setattr(
         organization_members,
-        "_has_other_admin",
+        "_has_other_owner",
         AsyncMock(return_value=False),
     )
     ctx = _ctx(is_admin=True)
@@ -240,13 +240,13 @@ async def test_remove_only_admin_blocked(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_demote_only_admin_blocked(monkeypatch):
+async def test_demote_only_owner_blocked(monkeypatch):
     org = _principal(id=10, name="Acme", slug="acme")
     user = _user_row(id=2, principal_id=200)
     membership = MagicMock(spec=PrincipalMembership)
     membership.parent_principal_id = 10
     membership.member_principal_id = 200
-    membership.role = OrgRole.ADMIN
+    membership.role = OrgRole.OWNER
     membership.deleted_at = None
     monkeypatch.setattr(
         organization_members.Principal,
@@ -265,7 +265,7 @@ async def test_demote_only_admin_blocked(monkeypatch):
     )
     monkeypatch.setattr(
         organization_members,
-        "_has_other_admin",
+        "_has_other_owner",
         AsyncMock(return_value=False),
     )
     ctx = _ctx(is_admin=True)
@@ -275,7 +275,7 @@ async def test_demote_only_admin_blocked(monkeypatch):
             ctx=ctx,
             org_id=10,
             user_id=2,
-            body=organization_members.MembershipUpdate(role=OrgRole.USER),
+            body=organization_members.MembershipUpdate(role=OrgRole.MEMBER),
         )
 
 
@@ -370,7 +370,7 @@ async def test_create_group_blocked_for_member(monkeypatch):
         "one_by_id",
         AsyncMock(return_value=org),
     )
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.USER)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.MEMBER)
     with pytest.raises(ForbiddenException):
         await user_groups_route.create_group(
             session=MagicMock(),

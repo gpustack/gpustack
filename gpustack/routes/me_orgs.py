@@ -46,7 +46,7 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
         items.append(
             MyOrganization(
                 organization=OrganizationPublic.from_principal(user_principal),
-                role=OrgRole.ADMIN,
+                role=OrgRole.OWNER,
             )
         )
 
@@ -67,7 +67,7 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
     items.extend(
         MyOrganization(
             organization=OrganizationPublic.from_principal(org),
-            role=membership.role or OrgRole.USER,
+            role=membership.role or OrgRole.MEMBER,
         )
         for membership, org in rows
     )

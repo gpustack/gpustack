@@ -1,7 +1,7 @@
 """Organization membership management.
 
 These routes are nested under /organizations/{org_id}/members. Both the
-platform admin and any Org admin can manage memberships. The last admin
+platform admin and any Org owner can manage memberships. The last owner
 of an Org cannot be demoted or removed — that would leave the Org
 without anyone able to manage members or infra.
 
@@ -41,7 +41,7 @@ router = APIRouter()
 
 class MembershipCreate(BaseModel):
     user_id: int
-    role: OrgRole = OrgRole.USER
+    role: OrgRole = OrgRole.MEMBER
 
 
 class MembershipUpdate(BaseModel):
@@ -49,7 +49,7 @@ class MembershipUpdate(BaseModel):
 
 
 def _can_manage(ctx, org_id: int) -> bool:
-    """Platform admin can manage any Org's memberships; an Org admin
+    """Platform admin can manage any Org's memberships; an Org owner
     can only manage their own Org. The role check is bound to the
     target Org from the URL path — ``ctx.org_role`` reflects the
     caller's *current* Org context, which may not match the path when
@@ -60,7 +60,7 @@ def _can_manage(ctx, org_id: int) -> bool:
         return True
     if ctx.current_principal_id != org_id:
         return False
-    return ctx.org_role == OrgRole.ADMIN
+    return ctx.org_role == OrgRole.OWNER
 
 
 async def _load_org(session, org_id: int) -> Principal:
@@ -109,12 +109,12 @@ async def _find_membership(
     return (await session.exec(stmt)).first()
 
 
-async def _has_other_admin(
+async def _has_other_owner(
     session, org_principal_id: int, exclude_member_principal_id: int
 ) -> bool:
     stmt = select(PrincipalMembership.id).where(
         PrincipalMembership.parent_principal_id == org_principal_id,
-        PrincipalMembership.role == OrgRole.ADMIN,
+        PrincipalMembership.role == OrgRole.OWNER,
         PrincipalMembership.member_principal_id != exclude_member_principal_id,
         PrincipalMembership.deleted_at.is_(None),
     )
@@ -257,12 +257,12 @@ async def update_org_member(
     if not _can_manage(ctx, org_id):
         raise ForbiddenException(message="Insufficient permission to change role")
 
-    if membership.role == OrgRole.ADMIN and body.role != OrgRole.ADMIN:
-        if not await _has_other_admin(
+    if membership.role == OrgRole.OWNER and body.role != OrgRole.OWNER:
+        if not await _has_other_owner(
             session, org_id, exclude_member_principal_id=user.principal_id
         ):
             raise ConflictException(
-                message="Cannot demote the only admin of this organization"
+                message="Cannot demote the only owner of this organization"
             )
 
     try:
@@ -303,12 +303,12 @@ async def remove_org_member(
     if not _can_manage(ctx, org_id):
         raise ForbiddenException(message="Insufficient permission to remove member")
 
-    if membership.role == OrgRole.ADMIN:
-        if not await _has_other_admin(
+    if membership.role == OrgRole.OWNER:
+        if not await _has_other_owner(
             session, org_id, exclude_member_principal_id=user.principal_id
         ):
             raise ConflictException(
-                message="Cannot remove the only admin of this organization"
+                message="Cannot remove the only owner of this organization"
             )
 
     try:

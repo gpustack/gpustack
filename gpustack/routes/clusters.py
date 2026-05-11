@@ -429,7 +429,7 @@ async def set_default_cluster(session: SessionDep, ctx: TenantContextDep, id: in
     # "Default cluster" is a per-Org concept now: each Org has at most
     # one default, and that's what its members' deploy form falls back
     # to. Writing it follows the standard cluster-write rule (admin
-    # always; Org admin only on their own Org's clusters).
+    # always; Org owner only on their own Org's clusters).
     cluster = await Cluster.one_by_id(session, id)
     if not cluster:
         raise NotFoundException(message=f"cluster {id} not found")

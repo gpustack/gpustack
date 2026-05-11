@@ -112,7 +112,7 @@ async def list_user_memberships(session: SessionDep, id: int):
     return [
         UserMembership(
             organization=OrganizationPublic.from_principal(org),
-            role=membership.role or OrgRole.USER,
+            role=membership.role or OrgRole.MEMBER,
         )
         for membership, org in rows
     ]
@@ -136,7 +136,7 @@ async def create_user(session: SessionDep, user_in: UserCreate):
         # User row + USER-principal go in one transactional helper —
         # ``users.principal_id`` is NOT NULL so the principal must
         # exist first. Admin additionally joins the platform Org as
-        # ADMIN; regular users do NOT auto-join — admin can add them
+        # OWNER; regular users do NOT auto-join — admin can add them
         # later if shared workspace access is needed.
         user = await create_user_with_principal(session, to_create)
         if user.is_admin:
@@ -145,7 +145,7 @@ async def create_user(session: SessionDep, user_in: UserCreate):
                 PrincipalMembership(
                     parent_principal_id=PLATFORM_PRINCIPAL_ID,
                     member_principal_id=user.principal_id,
-                    role=OrgRole.ADMIN,
+                    role=OrgRole.OWNER,
                     created_at=now,
                     updated_at=now,
                 )
@@ -282,7 +282,7 @@ async def update_user_me(
     return user
 
 
-# User-search endpoint accessible to org admins (any) and platform
+# User-search endpoint accessible to org owners (any) and platform
 # admins, so the Add Member picker works without the admin-gated full
 # /users endpoint. Returns the standard UsersPublic page.
 directory_router = APIRouter()
@@ -295,7 +295,7 @@ async def list_user_directory(
     perPage: int = 30,
     search: str = None,
 ):
-    if not ctx.is_platform_admin and ctx.org_role != OrgRole.ADMIN:
+    if not ctx.is_platform_admin and ctx.org_role != OrgRole.OWNER:
         raise ForbiddenException(message="Insufficient permission")
     fuzzy_fields = {}
     if search:

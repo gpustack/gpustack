@@ -247,7 +247,7 @@ async def provision_user_principal(session: AsyncSession, user: User) -> Princip
 
 
 async def provision_bootstrap_admin_orgs(session: AsyncSession, user: User) -> None:
-    """Add the bootstrap admin as ADMIN of the platform Org.
+    """Add the bootstrap admin as OWNER of the platform Org.
 
     Assumes ``user`` already has a ``principal_id`` (created via
     ``create_user_with_principal``). Caller commits.
@@ -257,7 +257,7 @@ async def provision_bootstrap_admin_orgs(session: AsyncSession, user: User) -> N
         PrincipalMembership(
             parent_principal_id=PLATFORM_PRINCIPAL_ID,
             member_principal_id=user.principal_id,
-            role=OrgRole.ADMIN,
+            role=OrgRole.OWNER,
             created_at=now,
             updated_at=now,
         )

@@ -237,7 +237,7 @@ def _patch_worker_one_by_id(worker):
 @pytest.mark.asyncio
 async def test_delete_worker_allowed_for_org_admin_in_owning_org():
     worker = _worker(owner_principal_id=10)
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.ADMIN)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.OWNER)
     session = MagicMock()
 
     with (
@@ -253,7 +253,7 @@ async def test_delete_worker_allowed_for_org_admin_in_owning_org():
 @pytest.mark.asyncio
 async def test_delete_worker_forbidden_for_plain_org_user():
     worker = _worker(owner_principal_id=10)
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.USER)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.MEMBER)
     session = MagicMock()
 
     with _patch_worker_one_by_id(worker):
@@ -265,7 +265,7 @@ async def test_delete_worker_forbidden_for_plain_org_user():
 async def test_delete_worker_returns_not_found_for_other_org():
     """Cross-org access must 404, not 403, to avoid leaking row existence."""
     worker = _worker(owner_principal_id=10)
-    ctx = _ctx(current_principal_id=99, org_role=OrgRole.ADMIN)
+    ctx = _ctx(current_principal_id=99, org_role=OrgRole.OWNER)
     session = MagicMock()
 
     with _patch_worker_one_by_id(worker):
@@ -276,10 +276,10 @@ async def test_delete_worker_returns_not_found_for_other_org():
 @pytest.mark.asyncio
 async def test_delete_worker_on_globally_shared_cluster_requires_platform_admin():
     """Workers on a global cluster (owner is None) shared via cluster_access
-    are visible to the recipient Org admin but not writable — only platform
+    are visible to the recipient Org owner but not writable — only platform
     admin may mutate global rows."""
     worker = _worker(owner_principal_id=None)
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.ADMIN)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.OWNER)
     ctx.accessible_cluster_ids = {worker.cluster_id}
     session = MagicMock()
 
@@ -324,7 +324,7 @@ async def test_delete_already_soft_deleted_worker_returns_not_found():
 @pytest.mark.asyncio
 async def test_update_worker_allowed_for_org_admin_in_owning_org():
     worker = _worker(owner_principal_id=10)
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.ADMIN)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.OWNER)
     session = MagicMock()
     worker_in = WorkerUpdate(name="test-worker", maintenance=None)
 
@@ -344,7 +344,7 @@ async def test_update_worker_allowed_for_org_admin_in_owning_org():
 @pytest.mark.asyncio
 async def test_update_worker_forbidden_for_plain_org_user():
     worker = _worker(owner_principal_id=10)
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.USER)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.MEMBER)
     session = MagicMock()
     worker_in = WorkerUpdate(name="test-worker", maintenance=None)
 
@@ -359,7 +359,7 @@ async def test_update_worker_forbidden_for_plain_org_user():
 async def test_get_worker_privatekey_forbidden_for_plain_org_user():
     """Private key is a write-class secret — same gate as delete/update."""
     worker = _worker(owner_principal_id=10)
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.USER)
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.MEMBER)
     session = MagicMock()
 
     with _patch_worker_one_by_id(worker):
@@ -370,7 +370,7 @@ async def test_get_worker_privatekey_forbidden_for_plain_org_user():
 @pytest.mark.asyncio
 async def test_get_worker_privatekey_returns_not_found_for_other_org():
     worker = _worker(owner_principal_id=10)
-    ctx = _ctx(current_principal_id=99, org_role=OrgRole.ADMIN)
+    ctx = _ctx(current_principal_id=99, org_role=OrgRole.OWNER)
     session = MagicMock()
 
     with _patch_worker_one_by_id(worker):

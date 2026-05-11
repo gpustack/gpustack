@@ -16,7 +16,7 @@ Logical groups, run in order:
    name=username).
 4. Add `users.principal_id` (NOT NULL UNIQUE FK → principals.id),
    backfill from step 3.
-5. Backfill memberships in the platform Org for admin users (role=ADMIN).
+5. Backfill memberships in the platform Org for admin users (role=OWNER).
    Regular users get no auto-membership — admins must add them
    explicitly when team-workspace access is wanted.
 6. Add `owner_principal_id` to existing tenant-scoped tables: api_keys
@@ -73,7 +73,7 @@ PLATFORM_PRINCIPAL_NAME = 'Default'
 
 
 def _enums():
-    org_role = sa.Enum('ADMIN', 'USER', name='orgrole')
+    org_role = sa.Enum('OWNER', 'MEMBER', name='orgrole')
     principal_type = sa.Enum('ORG', 'GROUP', 'USER', name='principaltype')
     return org_role, principal_type
 
@@ -127,7 +127,7 @@ def upgrade() -> None:
             sa.Column('id', sa.Integer(), nullable=False),
             sa.Column('parent_principal_id', sa.Integer(), nullable=False),
             sa.Column('member_principal_id', sa.Integer(), nullable=False),
-            # NULL for GROUP memberships (no role tiers); ADMIN / USER
+            # NULL for GROUP memberships (no role tiers); OWNER / MEMBER
             # for ORG memberships.
             sa.Column('role', org_role, nullable=True),
             sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
@@ -404,7 +404,7 @@ def upgrade() -> None:
                 INSERT INTO principal_memberships
                     (parent_principal_id, member_principal_id, role,
                      created_at, updated_at, deleted_at)
-                SELECT :platform_id, u.principal_id, 'ADMIN'::orgrole,
+                SELECT :platform_id, u.principal_id, 'OWNER'::orgrole,
                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
                 FROM users u
                 WHERE u.is_admin = true
@@ -425,7 +425,7 @@ def upgrade() -> None:
                 INSERT INTO principal_memberships
                     (parent_principal_id, member_principal_id, role,
                      created_at, updated_at, deleted_at)
-                SELECT :platform_id, u.principal_id, 'ADMIN',
+                SELECT :platform_id, u.principal_id, 'OWNER',
                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
                 FROM users u
                 WHERE u.is_admin = 1

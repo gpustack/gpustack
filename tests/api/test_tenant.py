@@ -140,7 +140,7 @@ async def test_member_uses_team_org_via_header():
     membership = PrincipalMembership(
         member_principal_id=100,
         parent_principal_id=5,
-        role=OrgRole.USER,
+        role=OrgRole.MEMBER,
     )
     session = _session_returning(
         membership,  # _resolve_membership
@@ -158,7 +158,7 @@ async def test_member_uses_team_org_via_header():
 
     assert ctx.is_platform_admin is False
     assert ctx.current_principal_id == 5
-    assert ctx.org_role == OrgRole.USER
+    assert ctx.org_role == OrgRole.MEMBER
     assert ctx.accessible_cluster_ids == {101, 102}
     assert ctx.current_is_personal_scope is False
 
@@ -230,7 +230,7 @@ async def test_api_key_overrides_header():
     membership = PrincipalMembership(
         member_principal_id=100,
         parent_principal_id=42,
-        role=OrgRole.USER,
+        role=OrgRole.MEMBER,
     )
     session = _session_returning(
         membership,
@@ -269,7 +269,7 @@ async def test_require_platform_admin_allows_admin():
 
 @pytest.mark.asyncio
 async def test_require_org_role_admin_passthrough():
-    dep = require_org_role(OrgRole.ADMIN)
+    dep = require_org_role(OrgRole.OWNER)
     ctx = MagicMock()
     ctx.is_platform_admin = True
     assert await dep(ctx) is ctx
@@ -277,7 +277,7 @@ async def test_require_org_role_admin_passthrough():
 
 @pytest.mark.asyncio
 async def test_require_org_role_blocks_when_no_org_context():
-    dep = require_org_role(OrgRole.ADMIN)
+    dep = require_org_role(OrgRole.OWNER)
     ctx = MagicMock()
     ctx.is_platform_admin = False
     ctx.current_principal_id = None
@@ -287,16 +287,16 @@ async def test_require_org_role_blocks_when_no_org_context():
 
 @pytest.mark.asyncio
 async def test_require_org_role_blocks_insufficient_role():
-    dep = require_org_role(OrgRole.ADMIN)
+    dep = require_org_role(OrgRole.OWNER)
 
     def _assert_role(*allowed):
-        if OrgRole.USER not in allowed:
+        if OrgRole.MEMBER not in allowed:
             raise ForbiddenException(message="nope")
 
     ctx = MagicMock()
     ctx.is_platform_admin = False
     ctx.current_principal_id = 1
-    ctx.org_role = OrgRole.USER
+    ctx.org_role = OrgRole.MEMBER
     ctx.assert_org_role = _assert_role
     with pytest.raises(ForbiddenException):
         await dep(ctx)
@@ -304,15 +304,15 @@ async def test_require_org_role_blocks_insufficient_role():
 
 @pytest.mark.asyncio
 async def test_require_org_role_passes_for_matching_role():
-    dep = require_org_role(OrgRole.ADMIN, OrgRole.ADMIN)
+    dep = require_org_role(OrgRole.OWNER, OrgRole.OWNER)
 
     def _assert_role(*allowed):
-        if OrgRole.ADMIN not in allowed:
+        if OrgRole.OWNER not in allowed:
             raise AssertionError("did not pass owner role through")
 
     ctx = MagicMock()
     ctx.is_platform_admin = False
     ctx.current_principal_id = 1
-    ctx.org_role = OrgRole.ADMIN
+    ctx.org_role = OrgRole.OWNER
     ctx.assert_org_role = _assert_role
     assert await dep(ctx) is ctx
