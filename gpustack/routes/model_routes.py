@@ -766,9 +766,8 @@ async def _replace_route_user_principals(
     """Replace the user-grant rows on a route with exactly ``user_ids``.
 
     Touches only rows whose principal is USER-kind — org / group
-    grants set by the enterprise UI's ALLOWED_PRINCIPALS flow are left
-    alone, even if the OSS UI happens to call this endpoint on the
-    same route.
+    grants attached via the ``ALLOWED_PRINCIPALS`` flow are left
+    alone, even if this endpoint is called on the same route.
     """
     desired_principal_ids: Set[int] = set()
     if user_ids:

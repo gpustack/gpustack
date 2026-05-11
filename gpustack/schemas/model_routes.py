@@ -65,13 +65,13 @@ class AccessPolicyEnum(str, Enum):
     # default for new routes in non-platform Orgs — semantically the
     # "team-private" scope, no principal table involvement.
     ORG = "org"
-    # Per-user grants. The OSS UI surfaces only this policy for explicit
-    # access lists since it doesn't expose Org / Group concepts; rows
-    # are stored in ``model_route_principals`` with ``principal_id``
-    # pointing at a USER-kind principal.
+    # Per-user grants. Rows are stored in ``model_route_principals``
+    # with ``principal_id`` pointing at a USER-kind principal.
     ALLOWED_USERS = "allowed_users"
     # Per-principal grants (user / org / group) via
-    # ``model_route_principals``. Surfaced by the enterprise UI.
+    # ``model_route_principals``. Mutually exclusive with
+    # ``ALLOWED_USERS`` — pick the policy whose granularity matches
+    # the deployment's identity model.
     ALLOWED_PRINCIPALS = "allowed_principals"
 
 
