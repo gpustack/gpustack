@@ -1,6 +1,5 @@
 import logging
 import secrets
-from datetime import datetime, timezone
 from sqlalchemy.orm import selectinload
 from sqlmodel import col, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -30,6 +29,7 @@ from gpustack.schemas.model_routes import (
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.organizations import PLATFORM_PRINCIPAL_ID
+from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.models import Model
 from gpustack.server.db import async_session
@@ -730,20 +730,22 @@ async def set_fallback_target(
 async def _list_route_users(session, route_id: int) -> List[ModelUserAccessExtended]:
     """Build the OSS-facing access list for a route.
 
-    User-only ACL rows live in ``model_route_principals`` with
-    ``user_id`` set; we join them with ``users`` so the response can
-    carry display-only fields (``username`` / ``full_name`` /
-    ``avatar_url``) without an extra round trip from the client.
+    User-only ACL rows live in ``model_route_principals`` with a
+    ``principal_id`` referencing a USER-kind principal; we hop through
+    ``principals`` to ``users`` so the response can carry display-only
+    fields (``username`` / ``full_name`` / ``avatar_url``) without an
+    extra round trip from the client.
     """
     stmt = (
         select(User, ModelRoutePrincipalLink)
+        .join(Principal, Principal.id == User.principal_id)
         .join(
             ModelRoutePrincipalLink,
-            ModelRoutePrincipalLink.user_id == User.id,
+            ModelRoutePrincipalLink.principal_id == Principal.id,
         )
         .where(
             ModelRoutePrincipalLink.route_id == route_id,
-            ModelRoutePrincipalLink.user_id.is_not(None),
+            Principal.kind == PrincipalType.USER,
         )
     )
     rows = (await session.exec(stmt)).all()
@@ -763,34 +765,41 @@ async def _replace_route_user_principals(
 ) -> None:
     """Replace the user-grant rows on a route with exactly ``user_ids``.
 
-    Touches only rows where ``user_id IS NOT NULL`` — org / group
+    Touches only rows whose principal is USER-kind — org / group
     grants set by the enterprise UI's ALLOWED_PRINCIPALS flow are left
     alone, even if the OSS UI happens to call this endpoint on the
     same route.
     """
-    existing_stmt = select(ModelRoutePrincipalLink).where(
-        ModelRoutePrincipalLink.route_id == route_id,
-        ModelRoutePrincipalLink.user_id.is_not(None),
+    user_to_principal: Dict[int, int] = {}
+    if user_ids:
+        users = (
+            await session.exec(select(User).where(col(User.id).in_(user_ids)))
+        ).all()
+        user_to_principal = {u.id: u.principal_id for u in users}
+    desired_principal_ids = set(user_to_principal.values())
+
+    existing_stmt = (
+        select(ModelRoutePrincipalLink)
+        .join(Principal, Principal.id == ModelRoutePrincipalLink.principal_id)
+        .where(
+            ModelRoutePrincipalLink.route_id == route_id,
+            Principal.kind == PrincipalType.USER,
+        )
     )
     existing = list((await session.exec(existing_stmt)).all())
-    existing_by_user = {row.user_id: row for row in existing}
-    desired = set(user_ids)
+    existing_by_principal = {row.principal_id: row for row in existing}
 
-    for user_id, row in existing_by_user.items():
-        if user_id not in desired:
+    for principal_id, row in existing_by_principal.items():
+        if principal_id not in desired_principal_ids:
             await session.delete(row)
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    for user_id in desired:
-        if user_id in existing_by_user:
+    for principal_id in desired_principal_ids:
+        if principal_id in existing_by_principal:
             continue
         session.add(
             ModelRoutePrincipalLink(
                 route_id=route_id,
-                user_id=user_id,
-                principal=f"user:{user_id}",
-                created_at=now,
-                updated_at=now,
+                principal_id=principal_id,
             )
         )
 
