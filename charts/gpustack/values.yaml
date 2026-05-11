@@ -71,7 +71,7 @@ higressPlugins:
   image:
     repository: gpustack/higress-plugins
     pullPolicy: IfNotPresent
-    tag: "0.2.0"
+    tag: "0.2.1.post4"
 worker:
   enabled: true
   # GPU vendor for the worker nodes. Controls driver volume mounts and runtimeClassName.
