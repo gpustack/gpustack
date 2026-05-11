@@ -770,13 +770,12 @@ async def _replace_route_user_principals(
     alone, even if the OSS UI happens to call this endpoint on the
     same route.
     """
-    user_to_principal: Dict[int, int] = {}
+    desired_principal_ids: Set[int] = set()
     if user_ids:
-        users = (
-            await session.exec(select(User).where(col(User.id).in_(user_ids)))
-        ).all()
-        user_to_principal = {u.id: u.principal_id for u in users}
-    desired_principal_ids = set(user_to_principal.values())
+        stmt = select(User.principal_id).where(col(User.id).in_(user_ids))
+        desired_principal_ids = {
+            pid for pid in (await session.exec(stmt)).all() if pid is not None
+        }
 
     existing_stmt = (
         select(ModelRoutePrincipalLink)
