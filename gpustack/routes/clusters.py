@@ -325,7 +325,6 @@ async def create_cluster(
         username=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
         is_system=True,
         role=UserRole.Cluster,
-        hashed_password="",
     )
     to_create_apikey = ApiKey(
         name=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',

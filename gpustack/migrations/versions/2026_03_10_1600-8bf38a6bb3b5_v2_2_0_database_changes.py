@@ -29,6 +29,14 @@ model_instance_proxy_mode = sa.Enum(
 )
 proxy_mode_to_add = ['TUNNEL']
 
+# The ``credentials`` table starts out as an SSH/CA/X509 keypair store;
+# v2.2.0 generalizes it to also hold per-user PASSWORD credentials. The
+# column-shape changes happen here (rename + nullable). The
+# ``owner_principal_id`` FK and the PASSWORD-row backfill happen in the
+# multi-tenancy foundation migration, since they depend on
+# ``principals`` existing and ``users.principal_id`` being populated.
+credential_type_enum = sa.Enum('SSH', 'CA', 'X509', name='credentialtype')
+
 
 def upgrade() -> None:
     conn = op.get_bind()
@@ -330,6 +338,43 @@ def upgrade() -> None:
         _create_details_indexes('model_usage_details_archive')
     ### end
 
+    ### Generalize the credentials table for PASSWORD-typed rows
+    #
+    # SSH/CA/X509 rows carry an asymmetric keypair; PASSWORD rows carry a
+    # bcrypt hash in ``encoded_secret`` with ``public_key`` NULL and
+    # ``options = {"require_password_change": bool}``. The column shape
+    # changes are dialect-portable rename + nullable; the new enum value
+    # needs the per-dialect helper.
+    if column_exists('credentials', 'encoded_private_key'):
+        with op.batch_alter_table('credentials', schema=None) as batch_op:
+            batch_op.alter_column(
+                'encoded_private_key',
+                new_column_name='encoded_secret',
+                existing_type=sa.Text(),
+                existing_nullable=False,
+            )
+    if column_exists('credentials', 'ssh_key_options'):
+        with op.batch_alter_table('credentials', schema=None) as batch_op:
+            batch_op.alter_column(
+                'ssh_key_options',
+                new_column_name='options',
+                existing_type=sa.JSON(),
+                existing_nullable=True,
+            )
+    with op.batch_alter_table('credentials', schema=None) as batch_op:
+        batch_op.alter_column(
+            'public_key',
+            existing_type=sa.Text(),
+            nullable=True,
+        )
+
+    sql_enum.add_enum_values(
+        {'credentials': 'credential_type'},
+        credential_type_enum,
+        'PASSWORD',
+    )
+    ### end
+
 
 
 def downgrade() -> None:
@@ -415,4 +460,34 @@ def downgrade() -> None:
         op.drop_index(f'ix_{details_table}_model_id', table_name=details_table)
         op.drop_index(f'ix_{details_table}_date', table_name=details_table)
         op.drop_table(details_table)
+    ### end
+
+    ### Revert credentials generalization
+    # Note: leaving the 'PASSWORD' value in the credentialtype enum on
+    # PG/MySQL — there is no clean cross-dialect way to drop a single
+    # enum value, and the constraint only matters when something
+    # actually inserts that value (the multi-tenancy downgrade clears
+    # PASSWORD rows before we get here).
+    with op.batch_alter_table('credentials', schema=None) as batch_op:
+        batch_op.alter_column(
+            'public_key',
+            existing_type=sa.Text(),
+            nullable=False,
+        )
+    if column_exists('credentials', 'options'):
+        with op.batch_alter_table('credentials', schema=None) as batch_op:
+            batch_op.alter_column(
+                'options',
+                new_column_name='ssh_key_options',
+                existing_type=sa.JSON(),
+                existing_nullable=True,
+            )
+    if column_exists('credentials', 'encoded_secret'):
+        with op.batch_alter_table('credentials', schema=None) as batch_op:
+            batch_op.alter_column(
+                'encoded_secret',
+                new_column_name='encoded_private_key',
+                existing_type=sa.Text(),
+                existing_nullable=False,
+            )
     ### end

@@ -34,6 +34,7 @@ from gpustack.security import (
     get_key_pair,
 )
 from gpustack.server.services import APIKeyService, UserService, WorkerService
+from gpustack.schemas.credentials import verify_password
 from gpustack.websocket_proxy.authenticator import (
     Authenticator as WebsocketAuthenticator,
 )
@@ -273,11 +274,11 @@ async def get_user_from_api_token(
 async def authenticate_user(
     session: AsyncSession, username: str, password: str
 ) -> User:
-    user = await UserService(session).get_by_username(username)
-    if not user:
+    user: User = await UserService(session).get_by_username(username)
+    if not user or user.principal_id is None:
         raise UnauthorizedException(message="Incorrect username or password")
 
-    if not verify_hashed_secret(user.hashed_password, password):
+    if not await verify_password(session, user.principal_id, password):
         raise UnauthorizedException(message="Incorrect username or password")
 
     if not user.is_active:

@@ -49,7 +49,8 @@ from gpustack.schemas.workers import (
     WorkerStatusStored,
     WorkerStateEnum,
 )
-from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
+from gpustack.schemas.clusters import Cluster, ClusterStateEnum
+from gpustack.schemas.credentials import Credential
 from gpustack.schemas.users import User, UserRole
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.config import (
@@ -575,7 +576,6 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                     username=f'{system_name_prefix}-{hashed_suffix}',
                     is_system=True,
                     role=UserRole.Worker,
-                    hashed_password="",
                     cluster=cluster,
                 )
                 if existing_user is None
@@ -704,10 +704,10 @@ async def get_worker_privatekey(
     ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
     if not ssh_key:
         raise NotFoundException(message="worker ssh key not found")
-    private_key_bytes = base64.b64decode(ssh_key.encoded_private_key)
-    private_key_pem = key_bytes_to_openssh_pem(
-        private_key_bytes, ssh_key.ssh_key_options.algorithm
-    )
+    private_key_bytes = base64.b64decode(ssh_key.encoded_secret)
+    ssh_options = ssh_key.ssh_key_options
+    algorithm = ssh_options.algorithm if ssh_options else "ED25519"
+    private_key_pem = key_bytes_to_openssh_pem(private_key_bytes, algorithm)
 
     return Response(
         content=private_key_pem,

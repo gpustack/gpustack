@@ -62,14 +62,16 @@ from gpustack.schemas.workers import (
     WorkerStateEnum,
     WorkerStatus,
 )
+from gpustack.schemas.credentials import (
+    Credential,
+    CredentialType,
+    SSHKeyOptions,
+)
 from gpustack.schemas.clusters import (
     Cluster,
     WorkerPool,
     CloudCredential,
-    Credential,
-    CredentialType,
     ClusterStateEnum,
-    SSHKeyOptions,
     ClusterProvider,
 )
 
@@ -1864,12 +1866,10 @@ class WorkerProvisioningController:
         private_key, public_key = generate_ssh_key_pair()
         ssh_key = Credential(
             credential_type=CredentialType.SSH,
+            owner_principal_id=worker.owner_principal_id,
             public_key=public_key,
-            encoded_private_key=private_key,
-            ssh_key_options=SSHKeyOptions(
-                algorithm="ED25519",
-                length=0,
-            ),
+            encoded_secret=private_key,
+            options=SSHKeyOptions(algorithm="ED25519", length=0).model_dump(),
         )
         ssh_key_id = await client.create_ssh_key(worker.name, public_key)
         ssh_key.external_id = str(ssh_key_id)

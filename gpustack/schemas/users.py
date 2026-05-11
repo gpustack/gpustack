@@ -53,7 +53,6 @@ class UserBase(SQLModel):
     source: Optional[str] = Field(
         default=AuthProviderEnum.Local, sa_type=SQLEnum(AuthProviderEnum)
     )
-    require_password_change: bool = Field(default=False)
 
     is_system: bool = False
     role: Optional[UserRole] = Field(
@@ -86,10 +85,12 @@ class UserBase(SQLModel):
 
 
 class UserCreate(UserBase):
-    password: str
+    password: Optional[str] = None
 
     @field_validator('password')
     def validate_password(cls, value):
+        if value is None or value == "":
+            return value
         if not re.search(r'[A-Z]', value):
             raise ValueError('Password must contain at least one uppercase letter')
         if not re.search(r'[a-z]', value):
@@ -149,7 +150,6 @@ class UpdatePassword(SQLModel):
 class User(UserBase, BaseModelMixin, table=True):
     __tablename__ = 'users'
     id: Optional[int] = Field(default=None, primary_key=True)
-    hashed_password: Optional[str] = None
 
     cluster: Optional[Cluster] = Relationship(
         back_populates="cluster_users", sa_relationship_kwargs={"lazy": "noload"}
@@ -192,6 +192,18 @@ class UserPublic(UserBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class UserMePublic(UserPublic):
+    """``GET /users/me`` response shape.
+
+    Same as ``UserPublic`` plus ``require_password_change`` — that flag
+    lives on the user's PASSWORD ``credentials`` row, not on the user
+    row itself, so it's only surfaced on the endpoint that actually
+    needs it (the frontend uses it to drive the first-login prompt).
+    """
+
+    require_password_change: bool = False
 
 
 UsersPublic = PaginatedList[UserPublic]

@@ -63,7 +63,6 @@ def run(args):
         user_update = UserUpdate(**user_me.model_dump())
         reset_password = generate_secure_password()
         user_update.password = reset_password
-        user_update.require_password_change = True
         client.users.update("me", user_update)
 
         print(f"Reset admin password: {reset_password}")
