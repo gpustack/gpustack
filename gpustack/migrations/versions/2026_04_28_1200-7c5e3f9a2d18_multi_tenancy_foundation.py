@@ -164,6 +164,8 @@ def upgrade() -> None:
             sa.Column('principal_id', sa.Integer(), nullable=False),
             sa.Column('granted_by', sa.Integer(), nullable=True),
             sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
+            sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
+            sa.Column('deleted_at', sa.TIMESTAMP(), nullable=True),
             sa.ForeignKeyConstraint(
                 ['cluster_id'], ['clusters.id'], ondelete='CASCADE',
             ),

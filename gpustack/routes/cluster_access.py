@@ -1,12 +1,17 @@
-"""Cluster access authorization — platform admin only.
+"""Cluster access authorization.
 
-Lets the platform admin grant or revoke a cluster's accessibility to a
-specific principal (USER / ORG / GROUP). The grant row stores a single
-``principal_id`` FK; kind comes from the joined principals row at read
-time.
+Lets the cluster's owner Org delegate accessibility to other
+principals (USER / ORG / GROUP); platform admin can manage any
+cluster. The grant row stores a single ``principal_id`` FK; kind
+comes from the joined principals row at read time.
+
+Permission gates:
+- GET — anyone who can see the cluster (cluster-detail audience).
+- POST / DELETE — platform admin, or the owner-role member of the
+  cluster's owner Org (``assert_cluster_writable``). Non-owner
+  orgs that merely hold an access grant can't re-grant.
 """
 
-from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter
@@ -18,6 +23,7 @@ from gpustack.api.exceptions import (
     InvalidException,
     NotFoundException,
 )
+from gpustack.api.tenant import assert_cluster_visible, assert_cluster_writable
 from gpustack.schemas.cluster_access import ClusterAccess, ClusterAccessPublic
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.principals import Principal, PrincipalType
@@ -35,10 +41,9 @@ class ClusterAccessGrant(BaseModel):
     principal_id: int
 
 
-async def _load_cluster(session, cluster_id: int) -> Cluster:
+async def _load_cluster(session, ctx, cluster_id: int) -> Cluster:
     cluster = await Cluster.one_by_id(session, cluster_id)
-    if not cluster or cluster.deleted_at is not None:
-        raise NotFoundException(message="Cluster not found")
+    assert_cluster_visible(ctx, cluster, not_found_message="Cluster not found")
     return cluster
 
 
@@ -108,7 +113,7 @@ async def _resolve_principal_views(
 async def list_cluster_access(
     session: SessionDep, ctx: TenantContextDep, cluster_id: int
 ):
-    await _load_cluster(session, cluster_id)
+    await _load_cluster(session, ctx, cluster_id)
     stmt = select(ClusterAccess).where(ClusterAccess.cluster_id == cluster_id)
     rows = list((await session.exec(stmt)).all())
     return await _resolve_principal_views(session, rows)
@@ -121,7 +126,11 @@ async def grant_cluster_access(
     cluster_id: int,
     body: ClusterAccessGrant,
 ):
-    await _load_cluster(session, cluster_id)
+    cluster = await _load_cluster(session, ctx, cluster_id)
+    # Cluster owner Org's owner (and platform admin) can delegate
+    # access to other tenants; non-owner orgs that merely have a
+    # grant can't re-grant.
+    assert_cluster_writable(ctx, cluster)
     await _validate_principal(session, body.principal_type, body.principal_id)
 
     existing_stmt = select(ClusterAccess).where(
@@ -132,15 +141,14 @@ async def grant_cluster_access(
         raise AlreadyExistsException(message="Access already granted")
 
     try:
-        access = ClusterAccess(
-            cluster_id=cluster_id,
-            principal_id=body.principal_id,
-            granted_by=ctx.user.id,
-            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        access = await ClusterAccess.create(
+            session,
+            ClusterAccess(
+                cluster_id=cluster_id,
+                principal_id=body.principal_id,
+                granted_by=ctx.user.id,
+            ),
         )
-        session.add(access)
-        await session.commit()
-        await session.refresh(access)
     except Exception as e:
         await session.rollback()
         raise InvalidException(message=f"Failed to grant cluster access: {e}")
@@ -156,7 +164,8 @@ async def revoke_cluster_access(
     cluster_id: int,
     principal_id: int,
 ):
-    await _load_cluster(session, cluster_id)
+    cluster = await _load_cluster(session, ctx, cluster_id)
+    assert_cluster_writable(ctx, cluster)
     stmt = select(ClusterAccess).where(
         ClusterAccess.cluster_id == cluster_id,
         ClusterAccess.principal_id == principal_id,
@@ -166,8 +175,7 @@ async def revoke_cluster_access(
         raise NotFoundException(message="Access grant not found")
 
     try:
-        await session.delete(access)
-        await session.commit()
+        await access.delete(session)
     except Exception as e:
         await session.rollback()
         raise InvalidException(message=f"Failed to revoke cluster access: {e}")

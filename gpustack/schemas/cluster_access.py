@@ -10,11 +10,11 @@ from sqlmodel import (
     UniqueConstraint,
 )
 
-from gpustack.schemas.common import UTCDateTime
+from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.principals import PrincipalType
 
 
-class ClusterAccess(SQLModel, table=True):
+class ClusterAccess(BaseModelMixin, SQLModel, table=True):
     """Grant a single principal access to a cluster.
 
     Polymorphic ``(principal_type, principal_id)`` was collapsed into a
@@ -53,10 +53,9 @@ class ClusterAccess(SQLModel, table=True):
             nullable=True,
         ),
     )
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_column=Column(UTCDateTime, nullable=False),
-    )
+    # `created_at`, `updated_at`, `deleted_at` come from BaseModelMixin
+    # so revoke is a soft delete (audit trail) and inserts auto-fill
+    # timestamps via the mixin's SA defaults.
 
 
 class ClusterAccessPublic(SQLModel):

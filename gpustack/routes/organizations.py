@@ -14,6 +14,7 @@ from sqlmodel import select
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     ConflictException,
+    ForbiddenException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
@@ -28,12 +29,14 @@ from gpustack.schemas.organizations import (
 )
 from gpustack.schemas.principals import (
     PLATFORM_PRINCIPAL_ID,
+    OrgRole,
     Principal,
     PrincipalType,
 )
-from gpustack.server.deps import SessionDep
+from gpustack.server.deps import SessionDep, TenantContextDep
 
 router = APIRouter()
+directory_router = APIRouter()
 
 
 def _to_public(p: Principal) -> OrganizationPublic:
@@ -216,3 +219,38 @@ async def _has_resources(session, owner_principal_id: int) -> list[str]:
         blockers.append("user_groups")
 
     return blockers
+
+
+# ---- Org directory (slim, non-admin-readable) -------------------------------
+#
+# The full ``/organizations`` CRUD surface is admin-only. But picker UIs
+# need to enumerate Orgs even when the caller is an Org owner — e.g.
+# the cluster-detail "Grant access" form, where the cluster's owner Org
+# owner picks a target Org to delegate cluster access to.
+#
+# Mirror the ``/user-directory`` pattern: a slim, paginated, search-
+# friendly endpoint that returns the same ``OrganizationsPublic`` shape
+# but is gated to platform admin OR the caller-in-owner-role-of-an-Org.
+@directory_router.get("/organization-directory", response_model=OrganizationsPublic)
+async def list_organization_directory(
+    session: SessionDep,
+    ctx: TenantContextDep,
+    page: int = 1,
+    perPage: int = 30,
+    search: Optional[str] = None,
+):
+    if not ctx.is_platform_admin and ctx.org_role != OrgRole.OWNER:
+        raise ForbiddenException(message="Insufficient permission")
+    fuzzy_fields = {}
+    if search:
+        fuzzy_fields = {"name": search, "slug": search}
+    fields = {"deleted_at": None, "kind": PrincipalType.ORG}
+    page_data = await Principal.paginated_by_query(
+        session=session,
+        fields=fields,
+        fuzzy_fields=fuzzy_fields,
+        page=page,
+        per_page=perPage,
+    )
+    page_data.items = [_to_public(p) for p in page_data.items]
+    return page_data
