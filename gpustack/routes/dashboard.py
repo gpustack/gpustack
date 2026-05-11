@@ -18,11 +18,13 @@ from gpustack.schemas.dashboard import (
     SystemSummary,
     TimeSeriesData,
 )
+from gpustack.api.exceptions import ForbiddenException
+from gpustack.api.tenant import assert_cluster_visible
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
-from gpustack.server.deps import SessionDep
+from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.schemas import Worker, Cluster
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.server.system_load import compute_system_load
@@ -33,8 +35,24 @@ router = APIRouter()
 @router.get("")
 async def dashboard(
     session: SessionDep,
+    ctx: TenantContextDep,
     cluster_id: Optional[int] = None,
 ):
+    # Permission split: the cluster-detail header (Cluster Basic +
+    # System Load tiles) calls this with ``cluster_id`` and is open to
+    # any caller who can see the cluster — that's the same audience
+    # cluster-detail itself uses. The aggregate dashboard (no
+    # ``cluster_id``) reads across every cluster's data so platform
+    # admin only.
+    if cluster_id is None:
+        if not ctx.is_platform_admin:
+            raise ForbiddenException(
+                message="Only platform admin can read the aggregate dashboard"
+            )
+    else:
+        cluster = await Cluster.one_by_id(session, cluster_id)
+        assert_cluster_visible(ctx, cluster, not_found_message="Cluster not found")
+
     resoruce_counts = await get_resource_counts(session, cluster_id)
     system_load = await get_system_load(session, cluster_id)
     model_usage = await get_model_usage_summary(session, cluster_id)
@@ -521,6 +539,7 @@ def get_models_by_provider_id(
 @router.get("/usage")
 async def usage(
     session: SessionDep,
+    ctx: TenantContextDep,
     start_date: Optional[date] = Query(
         None,
         description="Start date for the usage data (YYYY-MM-DD). Defaults to 31 days ago.",
@@ -544,6 +563,10 @@ async def usage(
     Get model usage records.
     This endpoint returns detailed model usage records within a specified date range.
     """
+    if not ctx.is_platform_admin:
+        raise ForbiddenException(
+            message="Only platform admin can read aggregate model usage"
+        )
     items = await get_model_usages(
         session,
         start_date=start_date,
@@ -558,6 +581,7 @@ async def usage(
 @router.get("/usage/stats")
 async def usage_stats(
     session: SessionDep,
+    ctx: TenantContextDep,
     start_date: Optional[date] = Query(
         None,
         description="Start date for the usage data (YYYY-MM-DD). Defaults to 31 days ago.",
@@ -582,6 +606,10 @@ async def usage_stats(
     This endpoint returns aggregated statistics for model usage, including token counts and request counts.
     It can filter by date range, model IDs, user IDs, model names with provider ID prefix.
     """
+    if not ctx.is_platform_admin:
+        raise ForbiddenException(
+            message="Only platform admin can read aggregate model usage stats"
+        )
     return await get_model_usage_stats(
         session,
         start_date=start_date,

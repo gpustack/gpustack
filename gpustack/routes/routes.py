@@ -6,6 +6,7 @@ from gpustack.routes import (
     api_keys,
     auth,
     cluster_access,
+    cluster_quotas,
     config,
     dashboard,
     debug,
@@ -243,21 +244,50 @@ tenant_routers = model_routers + [
         "prefix": "/inference-backends",
         "tags": ["Inference Backend"],
     },
+    # Per-cluster quota rows for the cluster-detail Quotas tab. GET
+    # visible to anyone who can see the cluster (platform admin OR a
+    # member of one of its accessible Orgs); PUT gates inside the
+    # handler to platform admin OR cluster owner Org owner
+    # (`assert_cluster_writable`).
+    {
+        "router": cluster_quotas.router,
+        "tags": ["Cluster Quotas"],
+        "include_in_schema": _EXTENDED_API_IN_SCHEMA,
+    },
+    # Dashboard sub-routes gate themselves inside the handler. The
+    # per-cluster ``GET /dashboard?cluster_id=X`` accepts anyone who
+    # can see the cluster (cluster-detail audience); the aggregate
+    # ``GET /dashboard`` and the ``/usage`` endpoints stay platform
+    # admin only.
+    {"router": dashboard.router, "prefix": "/dashboard", "tags": ["Dashboard"]},
+    # cluster_access GET is open to anyone who can see the cluster
+    # (cluster-detail audience); POST / DELETE gate inside the
+    # handler to platform admin OR cluster owner Org owner
+    # (`assert_cluster_writable`) — share-out is part of running
+    # the cluster, non-owner grantees can't re-grant.
+    {
+        "router": cluster_access.router,
+        "tags": ["Cluster Access"],
+        "include_in_schema": _EXTENDED_API_IN_SCHEMA,
+    },
+    # Slim org-list endpoint for picker UIs (cluster-access "Grant
+    # access" form, etc.). Gated inside the handler to platform admin
+    # OR owner-role in any Org context; the full /organizations CRUD
+    # stays admin-only under admin_routers below.
+    {
+        "router": organizations.directory_router,
+        "tags": ["Organizations"],
+        "include_in_schema": _EXTENDED_API_IN_SCHEMA,
+    },
 ]
 
 # Platform-only routers — admin can manage globally; non-admin gets 403.
 admin_routers = [
-    {"router": dashboard.router, "prefix": "/dashboard", "tags": ["Dashboard"]},
     {"router": users.router, "prefix": "/users", "tags": ["Users"]},
     {
         "router": organizations.router,
         "prefix": "/organizations",
         "tags": ["Organizations"],
-        "include_in_schema": _EXTENDED_API_IN_SCHEMA,
-    },
-    {
-        "router": cluster_access.router,
-        "tags": ["Cluster Access"],
         "include_in_schema": _EXTENDED_API_IN_SCHEMA,
     },
 ]
