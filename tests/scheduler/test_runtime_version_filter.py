@@ -2,15 +2,63 @@
 Test for evaluate_runtime_version functionality
 
 Test scenarios:
-- vLLM backend requires CUDA 12.4+ (exclusive)
+- vLLM backend requires CUDA 12.6+ (inclusive)
 - Worker has CUDA version 12.4
 - Expected: Should return incompatible with a message suggesting upgrade to at least 12.6
+
 """
+
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from gpustack.scheduler.evaluator import evaluate_runtime_version
 from gpustack.schemas.model_evaluations import ModelSpec
 from gpustack.schemas.workers import Worker, WorkerStatus, GPUDeviceStatus
+
+
+_PINNED_VLLM_CUDA_VERSIONS = ["12.6", "12.8", "12.9", "13.0"]
+
+
+def _fake_list_backend_runners(**kwargs):
+    """Stand-in for ``gpustack_runner.list_backend_runners``.
+
+    Covers both call shapes used by ``_check_runtime_version``:
+
+    - With ``backend_version`` set: exact-match supportability check;
+      returns a non-empty list iff the version is in the pinned matrix.
+    - Without ``backend_version`` (after the caller pops it): enumeration
+      of all supported versions; always returns one fake runner whose
+      ``versions`` mirrors the pinned matrix.
+
+    Requests for unrelated backend/service combos return empty so the
+    fake stays scoped to vLLM+CUDA.
+    """
+    if kwargs.get("backend") != "cuda" or kwargs.get("service") != "vllm":
+        return []
+    fake_runner = SimpleNamespace(
+        backend="cuda",
+        versions=[SimpleNamespace(version=v) for v in _PINNED_VLLM_CUDA_VERSIONS],
+    )
+    backend_version = kwargs.get("backend_version")
+    if backend_version is not None:
+        return [fake_runner] if backend_version in _PINNED_VLLM_CUDA_VERSIONS else []
+    return [fake_runner]
+
+
+@pytest.fixture(autouse=True)
+def pin_runner_matrix():
+    """Freeze the vLLM/CUDA runner matrix for the whole module.
+
+    Without this, an upstream ``gpustack_runner`` bump (e.g., adding CUDA
+    13.0 or marking 12.6 deprecated) would shift min/recommended versions
+    and break the literal-version assertions below.
+    """
+    with patch(
+        "gpustack.scheduler.evaluator.list_backend_runners",
+        side_effect=_fake_list_backend_runners,
+    ):
+        yield
 
 
 def create_cuda_worker(cuda_version: str, worker_name: str = "test-worker") -> Worker:
@@ -69,7 +117,9 @@ async def test_cuda_12_4_should_be_incompatible():
     assert compatible is False, "CUDA 12.4 should be incompatible"
     assert len(messages) == 1, "Should have one error message"
     assert "12.4" in messages[0], "Message should contain current version 12.4"
-    assert "12.8" in messages[0], "Message should contain recommended version 12.8"
+    assert (
+        _PINNED_VLLM_CUDA_VERSIONS[-1] in messages[0]
+    ), f"Message should contain recommended version {_PINNED_VLLM_CUDA_VERSIONS[-1]}"
 
 
 @pytest.mark.asyncio
@@ -137,7 +187,12 @@ async def test_all_workers_below_requirement():
     assert compatible is False, "Should be incompatible"
     assert len(messages) == 1, "Should have one error message"
     assert "12.4" in messages[0], "Message should contain highest version 12.4"
-    assert "12.8" in messages[0], "Message should contain lowest version 12.8"
+    assert (
+        _PINNED_VLLM_CUDA_VERSIONS[0] in messages[0]
+    ), f"Message should contain lowest supported version {_PINNED_VLLM_CUDA_VERSIONS[0]}"
+    assert (
+        _PINNED_VLLM_CUDA_VERSIONS[-1] in messages[0]
+    ), f"Message should contain recommended version {_PINNED_VLLM_CUDA_VERSIONS[-1]}"
 
 
 @pytest.mark.asyncio
