@@ -31,15 +31,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-model_name_missing_exception = BadRequestException(
-    message="Missing 'model' field",
-    is_openai_exception=True,
-)
 
-model_not_found_exception = NotFoundException(
-    message="Model not found",
-    is_openai_exception=True,
-)
+# DO NOT make these module-level singletons — see issue #5121. Raising the
+# same instance repeatedly keeps every prior call-stack alive on the
+# instance's ``__traceback__`` (the instance lives forever as a module
+# attribute), retaining every ``frame.f_locals`` (Request, AsyncSession,
+# user, api_key, ...) and burning ~30 KB per request. Always raise a freshly
+# constructed instance instead.
+def model_name_missing_exception() -> BadRequestException:
+    return BadRequestException(
+        message="Missing 'model' field",
+        is_openai_exception=True,
+    )
+
+
+def model_not_found_exception() -> NotFoundException:
+    return NotFoundException(
+        message="Model not found",
+        is_openai_exception=True,
+    )
 
 
 @router.get("")
@@ -102,12 +112,14 @@ async def server_auth(
         logger.debug(
             "Missing x-higress-llm-model header for token authentication",
         )
-        raise credentials_exception if user is None else model_name_missing_exception
+        raise (
+            credentials_exception() if user is None else model_name_missing_exception()
+        )
     pair = await ModelRouteService(session=session).get_model_auth_info_by_name(
         model_name
     )
     if pair is None:
-        raise credentials_exception if user is None else model_not_found_exception
+        raise credentials_exception() if user is None else model_not_found_exception()
     policy = pair[0]
     registration_token = pair[1]
 
@@ -115,7 +127,7 @@ async def server_auth(
         logger.debug(
             f"Unauthenticated request to access model {model_name} with policy {policy}",
         )
-        raise credentials_exception
+        raise credentials_exception()
 
     if policy != AccessPolicyEnum.PUBLIC:
         # llm_scope will raise exception if the api key is not allowed to access llm.
@@ -155,12 +167,12 @@ async def worker_auth(
     model_name = request.headers.get("X-Higress-Llm-Model")
     if model_name is None:
         logger.warning("Missing X-Higress-Llm-Model header for token authentication")
-        raise credentials_exception
+        raise credentials_exception()
     token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
     if token_value is None:
-        raise credentials_exception
+        raise credentials_exception()
     if token_value != token and token_value != registration_token:
-        raise credentials_exception
+        raise credentials_exception()
     return Response(
         status_code=200,
         headers={
