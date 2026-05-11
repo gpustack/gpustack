@@ -64,13 +64,15 @@ class PrincipalType(str, Enum):
 
 
 class OrgRole(str, Enum):
-    # Two-tier Org membership model: ADMIN can manage the Org's infra
-    # (resources, members, settings); USER is a plain consumer. The
+    # Two-tier Org membership model: OWNER can manage the Org's infra
+    # (resources, members, settings); MEMBER is a plain consumer. The
     # platform-wide superuser lives on `users.is_admin` and is distinct
-    # from `OrgRole.ADMIN` — always disambiguate with `is_platform_admin`
-    # vs `org_role == OrgRole.ADMIN` in code.
-    ADMIN = "admin"
-    USER = "user"
+    # from `OrgRole.OWNER` — always disambiguate with `is_platform_admin`
+    # vs `org_role == OrgRole.OWNER` in code. The names intentionally
+    # diverge from the platform admin/user role so the two never get
+    # conflated.
+    OWNER = "owner"
+    MEMBER = "member"
 
 
 class PrincipalBase(SQLModel):

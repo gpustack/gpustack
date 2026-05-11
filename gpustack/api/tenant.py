@@ -66,7 +66,7 @@ class TenantContext:
     # True when ``current_principal_id`` is the user's own
     # USER-principal (personal scope) rather than an ORG-principal.
     # Lets endpoints treat the "owner of a one-member namespace" case
-    # differently from a real multi-user Org admin — e.g.
+    # differently from a real multi-user Org owner — e.g.
     # ``scope='all'`` on the Usage page should behave like ``self``
     # here (no other tenants share this scope).
     current_is_personal_scope: bool = False
@@ -466,11 +466,11 @@ def assert_org_owned_writable(
     - Platform admin / system user → allowed (bypass via
       ``bypass_tenant_filter`` for "All" mode admin and system users;
       admin in act-as falls through to row-owner check, where they're
-      treated like an Org admin).
-    - **Owned by current principal**: an Org admin can write; platform
+      treated like an Org owner).
+    - **Owned by current principal**: an Org owner can write; platform
       admin in act-as bypasses the role check (admin is admin
       everywhere, even when scoped to one Org).
-    - **Global** (owner IS NULL): only "All"-mode admin — Org admins
+    - **Global** (owner IS NULL): only "All"-mode admin — Org owners
       and admin-in-act-as cannot mutate Global rows directly. Resource
       handlers redirect such writes to the caller's own row instead.
     - **Other principal's row**: never writable for non-admin.
@@ -490,8 +490,8 @@ def assert_org_owned_writable(
             )
         )
     # Platform admin acting-as the Org passes the role check unconditionally;
-    # for non-admin we require Org admin.
-    if not ctx.is_platform_admin and ctx.org_role != OrgRole.ADMIN:
+    # for non-admin we require Org owner.
+    if not ctx.is_platform_admin and ctx.org_role != OrgRole.OWNER:
         raise OrgRoleError(
             message=(
                 f"Insufficient organization role to modify this " f"{resource_label}"
@@ -516,7 +516,7 @@ def validate_owner_principal(
     ``input_owner_principal_id``.
 
     - Platform admin: any value (including NULL = global)
-    - Org admin: must equal ``current_principal_id``; can't create global
+    - Org owner: must equal ``current_principal_id``; can't create global
     """
     if ctx.is_platform_admin:
         return
@@ -531,7 +531,7 @@ def validate_owner_principal(
         raise InvalidException(
             message="owner_principal_id must match the current organization"
         )
-    if ctx.org_role != OrgRole.ADMIN:
+    if ctx.org_role != OrgRole.OWNER:
         raise InvalidException(
             message=(f"Insufficient organization role to create a " f"{resource_label}")
         )

@@ -381,10 +381,10 @@ def _filter_condition(group_by: str, item: UsageFilterItem):
 
 def _can_use_all_scope(user: User, ctx) -> bool:
     """The cross-user (``all``) view is meaningful for platform admin
-    and real Org admin only. Others fall back to ``self``.
+    and real Org owner only. Others fall back to ``self``.
 
-    Personal Org admin doesn't qualify even though their ``org_role``
-    is ADMIN: a Personal Org has exactly one member, so ``all`` would
+    Personal Org owner doesn't qualify even though their ``org_role``
+    is OWNER: a Personal Org has exactly one member, so ``all`` would
     just be ``self`` — and worse, the org_id filter applied for ``all``
     would hide the user's own usage from Platform-shared models, since
     those rows carry the model owner's owner_principal_id, not the
@@ -394,7 +394,7 @@ def _can_use_all_scope(user: User, ctx) -> bool:
         return True
     if ctx is None:
         return False
-    if ctx.org_role != OrgRole.ADMIN:
+    if ctx.org_role != OrgRole.OWNER:
         return False
     return not ctx.current_is_personal_scope
 

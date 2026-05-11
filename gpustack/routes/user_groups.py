@@ -1,4 +1,4 @@
-"""UserGroup management — Org admin+ or platform admin.
+"""UserGroup management — Org owner+ or platform admin.
 
 Groups are GROUP-kind ``Principal`` rows whose ``parent_principal_id``
 points at their owning ORG-principal. Group memberships live in the
@@ -48,7 +48,7 @@ def _can_manage_groups(ctx, org_id: int) -> bool:
         return True
     if ctx.current_principal_id != org_id:
         return False
-    return ctx.org_role == OrgRole.ADMIN
+    return ctx.org_role == OrgRole.OWNER
 
 
 async def _load_org(session, org_id: int) -> Principal:
