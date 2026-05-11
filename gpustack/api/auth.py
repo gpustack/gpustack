@@ -52,9 +52,16 @@ api_key_header_auth = APIKeyHeader(name="X-API-Key", auto_error=False)
 cookie_auth = APIKeyCookie(name=SESSION_COOKIE_NAME, auto_error=False)
 _gateway_auth_header = APIKeyHeader(name=GATEWAY_AUTH_TOKEN_HEADER, auto_error=False)
 
-credentials_exception = UnauthorizedException(
-    message="Invalid authentication credentials"
-)
+
+# DO NOT make this a module-level singleton — see issue #5121.
+# ``raise existing_instance`` writes the current call-stack traceback onto
+# the instance's ``__traceback__``. Because the instance is a module-level
+# attribute it is never garbage-collected, and its ``__traceback__`` keeps
+# every frame in that call stack alive (along with every frame.f_locals,
+# i.e. the entire per-request object stack). Always raise a freshly
+# constructed instance instead.
+def credentials_exception() -> UnauthorizedException:
+    return UnauthorizedException(message="Invalid authentication credentials")
 
 
 def gateway_token_auth(
@@ -122,7 +129,7 @@ async def get_current_user(
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to authenticate user: {e}")
 
-    raise credentials_exception
+    raise credentials_exception()
 
 
 async def get_admin_user(
@@ -196,7 +203,7 @@ def get_access_token(
     elif cookie_token:
         return cookie_token
     else:
-        raise credentials_exception
+        raise credentials_exception()
 
 
 async def get_user_from_jwt_token(
