@@ -366,7 +366,13 @@ class ModelUserAccessExtended(ModelUserAccess):
     # More user fields can be added here. e.g. quota, rate_limit, etc.
 
 
-ModelAuthorizationList = ItemList[ModelUserAccessExtended]
+class ModelAuthorizationList(ItemList[ModelUserAccessExtended]):
+    # The route's current access_policy is returned alongside the
+    # grants list so a single GET refreshes both halves of the
+    # Access Settings dialog (some clients open it from a stale list
+    # snapshot where the row's policy may not reflect the latest
+    # save).
+    access_policy: Optional[AccessPolicyEnum] = None
 
 
 class MyModel(ModelRouteBase, BaseModelMixin, table=True):
