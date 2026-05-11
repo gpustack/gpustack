@@ -245,11 +245,45 @@ class ServeManager:
         #
         # FIXME(thxCode): This may cause performance issues when there are many model instances in the system.
         #                 A mechanism is needed to improve efficiency here.
+        # Snapshot local state BEFORE the list call. Reversing this order
+        # races with CREATED events and reaps freshly-assigned instances.
+        local_assigned_ids = {
+            mid
+            for mid, mi in self._model_instance_by_instance_id.items()
+            if mi.get_deployment_metadata(self._worker_id) is not None
+        }
+
         model_instances_page = self._clientset.model_instances.list(use_cache=False)
-        if not model_instances_page.items:
+        page_items = model_instances_page.items or []
+
+        # An empty response is more likely a transient list failure than a
+        # genuine "server has no instances" — skip the reap pass to avoid
+        # tearing down live workloads on a single bad page.
+        if not page_items:
             return
+
+        # Reap entries the server no longer reports — watch streams can drop
+        # DELETED events on disconnect.
+        authoritative_ids: Set[int] = {
+            mi.id
+            for mi in page_items
+            if mi.get_deployment_metadata(self._worker_id) is not None
+        }
+        for stale_id in local_assigned_ids - authoritative_ids:
+            stale = self._model_instance_by_instance_id.get(stale_id)
+            if stale is None:
+                continue
+            logger.info(
+                f"Reaping stale model instance {stale.name} (id={stale_id}); "
+                f"server no longer reports it assigned to this worker."
+            )
+            try:
+                self._stop_model_instance(stale)
+            except Exception as e:
+                logger.warning(f"Failed to reap stale model instance {stale.name}: {e}")
+
         model_instances: List[ModelInstance] = []
-        for model_instance in model_instances_page.items:
+        for model_instance in page_items:
             # if the model instance is assigned to this worker, it must be scheduled.
             # But we don't need to sync the scheduled model when it is not initialized yet.
             if (

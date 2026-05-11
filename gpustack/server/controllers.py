@@ -84,6 +84,7 @@ from gpustack.schemas.users import (
     is_default_cluster_user,
 )
 from gpustack.server.bus import Event, EventType, event_bus
+from gpustack.server.cache import delete_cache_by_key
 from gpustack.utils.model_source import get_draft_model_source
 from gpustack import envs
 from gpustack.server.db import async_session
@@ -93,6 +94,7 @@ from gpustack.server.services import (
     ModelService,
     WorkerService,
     ModelRouteService,
+    collect_route_cache_names,
 )
 from gpustack.utils.model_instance_workers import get_model_instance_worker_match
 from gpustack.cloud_providers.common import (
@@ -223,6 +225,19 @@ class ModelInstanceController:
         model_instance: ModelInstance = event.data
         try:
             async with async_session() as session:
+                if event.type == EventType.DELETED and model_instance is not None:
+                    # Cover cascade deletes that bypass ModelInstanceService.
+                    instance_service = ModelInstanceService(session)
+                    if model_instance.model_id is not None:
+                        await delete_cache_by_key(
+                            instance_service.get_running_instances,
+                            model_instance.model_id,
+                        )
+                    if model_instance.id is not None:
+                        await delete_cache_by_key(
+                            instance_service.get_by_id, model_instance.id
+                        )
+
                 model = await Model.one_by_id(session, model_instance.model_id)
                 if not model:
                     return
@@ -2587,6 +2602,23 @@ class ModelRouteTargetController:
         if not target:
             return
         async with async_session() as session:
+            # Cover cascade create/delete that bypass ModelRouteService.
+            # UPDATED is skipped — it cannot change the resolved target set.
+            if event.type in (EventType.CREATED, EventType.DELETED):
+                route_name = target.route_name
+                if route_name:
+                    route_service = ModelRouteService(session=session)
+                    names = await collect_route_cache_names(
+                        session, target.route_id, route_name
+                    )
+                    for name in names:
+                        await delete_cache_by_key(
+                            route_service.get_model_ids_by_model_route_name, name
+                        )
+                        await delete_cache_by_key(
+                            route_service.get_model_auth_info_by_name, name
+                        )
+
             should_notify_parents = await self._update_orphan_route(
                 session, target, event
             )

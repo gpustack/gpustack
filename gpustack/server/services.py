@@ -377,6 +377,29 @@ class WorkerService:
         return result
 
 
+async def collect_route_cache_names(
+    session: AsyncSession, route_id: int, route_name: str
+) -> Set[str]:
+    """Names to invalidate when a route's resolution may change.
+
+    Callers in routes/openai.py and gateway/auth callbacks key the
+    @locked_cached entries by whatever string they receive — that is the
+    raw route_name for the platform Org and the slug-prefixed effective
+    name for any other Org. Both must be cleared.
+    """
+    names = {route_name}
+    route = await ModelRoute.one_by_id(session, route_id)
+    if route:
+        owner = await Principal.one_by_id(session, route.owner_principal_id)
+        if owner:
+            names.add(
+                effective_route_name(
+                    route_name, owner.slug, owner.id == PLATFORM_PRINCIPAL_ID
+                )
+            )
+    return names
+
+
 class ModelRouteService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -492,18 +515,23 @@ class ModelRouteService:
         auto_commit: bool = True,
     ):
         result = await model_route.update(self.session, source, auto_commit=auto_commit)
-        await delete_cache_by_key(self.get_model_auth_info_by_name, model_route.name)
-        await delete_cache_by_key(
-            self.get_model_ids_by_model_route_name, model_route.name
+        names = await collect_route_cache_names(
+            self.session, model_route.id, model_route.name
         )
+        for name in names:
+            await delete_cache_by_key(self.get_model_auth_info_by_name, name)
+            await delete_cache_by_key(self.get_model_ids_by_model_route_name, name)
         return result
 
     async def delete(self, model_route: ModelRoute, auto_commit: bool = True):
-        result = await model_route.delete(self.session, auto_commit=auto_commit)
-        await delete_cache_by_key(self.get_model_auth_info_by_name, model_route.name)
-        await delete_cache_by_key(
-            self.get_model_ids_by_model_route_name, model_route.name
+        # Owner principal must be resolved before the cascade removes the route.
+        names = await collect_route_cache_names(
+            self.session, model_route.id, model_route.name
         )
+        result = await model_route.delete(self.session, auto_commit=auto_commit)
+        for name in names:
+            await delete_cache_by_key(self.get_model_auth_info_by_name, name)
+            await delete_cache_by_key(self.get_model_ids_by_model_route_name, name)
         return result
 
 
@@ -534,9 +562,49 @@ class ModelService:
         return result
 
     async def delete(self, model: Model):
+        # ORM cascade bypasses child service caches; collect ids and route
+        # names (raw + slug-prefixed effective) BEFORE deleting so we can
+        # invalidate them explicitly below.
+        instance_ids = list(
+            (
+                await self.session.exec(
+                    select(ModelInstance.id).where(ModelInstance.model_id == model.id)
+                )
+            ).all()
+        )
+        route_names: Set[str] = set()
+        stmt = (
+            select(ModelRouteTarget.route_name, Principal.slug, Principal.id)
+            .join(ModelRoute, ModelRoute.id == ModelRouteTarget.route_id)
+            .join(Principal, Principal.id == ModelRoute.owner_principal_id)
+            .where(ModelRouteTarget.model_id == model.id)
+        )
+        for r_name, slug, p_id in (await self.session.exec(stmt)).all():
+            if not r_name:
+                continue
+            route_names.add(r_name)
+            route_names.add(
+                effective_route_name(r_name, slug, p_id == PLATFORM_PRINCIPAL_ID)
+            )
+
         result = await model.delete(self.session)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
+
+        instance_service = ModelInstanceService(self.session)
+        await delete_cache_by_key(instance_service.get_running_instances, model.id)
+        for instance_id in instance_ids:
+            await delete_cache_by_key(instance_service.get_by_id, instance_id)
+
+        route_service = ModelRouteService(self.session)
+        for route_name in route_names:
+            await delete_cache_by_key(
+                route_service.get_model_ids_by_model_route_name, route_name
+            )
+            await delete_cache_by_key(
+                route_service.get_model_auth_info_by_name, route_name
+            )
+
         return result
 
 
