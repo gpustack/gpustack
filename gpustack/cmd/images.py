@@ -14,6 +14,7 @@ from gpustack_runtime.cmds import (
 # The higress version should be sync with HIGRESS_VERSION in pack/Dockerfile.
 higress_version = "2.1.9"
 
+ssh_server_version = "v1.0.0"
 kueue_version = "v0.17.2"
 node_feature_discovery_version = "v0.18.3"
 
@@ -26,6 +27,7 @@ append_images(
     f"gpustack/mirrored-higress-pilot:{higress_version}",
     f"gpustack/mirrored-higress-gateway:{higress_version}",
     f"gpustack/gpustack-operator:{__operator_version__}",
+    f"gpustack/ssh-server:{ssh_server_version}",
     f"gpustack/mirrored-kueue:{kueue_version}",
     f"gpustack/mirrored-node-feature-discovery:{node_feature_discovery_version}",
 )
