@@ -381,7 +381,7 @@ async def test_create_group_blocked_for_member(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_add_group_member_requires_org_membership(monkeypatch):
+async def test_add_group_members_requires_org_membership(monkeypatch):
     group = _principal(
         id=5,
         kind=PrincipalType.GROUP,
@@ -395,18 +395,15 @@ async def test_add_group_member_requires_org_membership(monkeypatch):
         AsyncMock(return_value=group),
     )
     user = _user_row(id=99, principal_id=999)
-    monkeypatch.setattr(
-        user_groups_route,
-        "_resolve_user",
-        AsyncMock(return_value=user),
-    )
-    session = _session_returning(None)  # no org membership
+    # Two exec calls: bulk user resolve returns [user]; org-membership
+    # probe returns [] → user is not in the org → InvalidException.
+    session = _session_returning([user], [])
     ctx = _ctx(is_admin=True)
     with pytest.raises(InvalidException):
-        await user_groups_route.add_group_member(
+        await user_groups_route.add_group_members(
             session=session,
             ctx=ctx,
             org_id=10,
             group_id=5,
-            body=user_groups_route.GroupMembershipCreate(user_id=99),
+            body=user_groups_route.GroupMembershipCreate(user_ids=[99]),
         )
