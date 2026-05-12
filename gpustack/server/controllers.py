@@ -2241,12 +2241,20 @@ class ClusterController:
                 session=session,
                 owner_principal_id=owner_principal_id,
             )
+            principal = await Principal.one_by_id(session, owner_principal_id)
+
+        if principal is None:
+            logger.error(
+                f"Owner principal (id: {owner_principal_id}) of cluster "
+                f"{cluster.name}(id: {cluster.id}) not found"
+            )
+            return
 
         await sync_ssh_public_key_to_cluster(
             ssh_public_key=ssh_public_key,
             server_api_port=self._cfg.api_port,
             cluster_id=cluster.id,
-            owner_principal_id=owner_principal_id,
+            cluster_owner_principal_slug=principal.slug,
         )
 
 
@@ -2751,12 +2759,21 @@ class GPUInstanceSSHPublicKeyController:
                     "deleted_at": None,
                 },
             )
+            principal = await Principal.one_by_id(session, owner_principal_id)
 
             ssh_public_key = ret.spec.data
             cluster_ids = [cluster.id for cluster in clusters]
+
+        if principal is None:
+            logger.error(
+                f"Owner principal (id: {owner_principal_id}) of gpu instance ssh "
+                f"public key not found"
+            )
+            return
 
         await sync_ssh_public_key_to_clusters(
             ssh_public_key=ssh_public_key,
             server_api_port=self._cfg.api_port,
             cluster_ids=cluster_ids,
+            cluster_owner_principal_slug=principal.slug,
         )
