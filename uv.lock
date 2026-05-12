@@ -1509,7 +1509,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.2.1.post4" },
-    { name = "gpustack-runner", specifier = "==0.1.26" },
+    { name = "gpustack-runner", specifier = "==0.1.26.post1" },
     { name = "gpustack-runtime", specifier = "==0.2.0" },
     { name = "hf-xet", specifier = ">=1.3.1,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -1601,16 +1601,16 @@ wheels = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.26"
+version = "0.1.26.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/28/5f0fd3df112419584f8f889efbb31c3ba2cdcdd2f5559adcd07730b06915/gpustack_runner-0.1.26.tar.gz", hash = "sha256:5607d269305d290bc3d87bf1e126541bedea2bdfb1b3e9d308c5b3b2f9587ac6", size = 13445152, upload-time = "2026-05-08T13:16:54Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/ad/4a61afd6ba04ae78d03481f1b156b6aa412a94b99c884c565e799439e3d4/gpustack_runner-0.1.26.post1.tar.gz", hash = "sha256:32471e283c625fb31ae3257b9c9361e30c27cbf28c887a30f0886370546226ac", size = 13445617, upload-time = "2026-05-12T11:15:29.254Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/af/36534c01316b658a1ab9c28ef68c9ccaed98c2b31a7dc3841197c4da54a8/gpustack_runner-0.1.26-py3-none-any.whl", hash = "sha256:e8876c4030532c2c27eea1dc88e8473b56a459e2dfe331a25797fcd14b8abb5a", size = 28916, upload-time = "2026-05-08T13:16:52.649Z" },
+    { url = "https://files.pythonhosted.org/packages/58/7e/d4ecf3535e4c56d5907b11243330aad5c04b1ec8b9b079ae4fafe2f1ca2a/gpustack_runner-0.1.26.post1-py3-none-any.whl", hash = "sha256:80828afb7efae4f62278f621995c50f5e60b541c97dfb382a498f9407218721d", size = 29198, upload-time = "2026-05-12T11:15:27.619Z" },
 ]
 
 [[package]]
