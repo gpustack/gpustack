@@ -69,6 +69,8 @@ def gateway_token_auth(
     token: Annotated[Optional[str], Depends(_gateway_auth_header)] = None,
 ):
     if not token:
+        token = request.headers.get(GATEWAY_AUTH_TOKEN_HEADER)
+    if not token:
         raise UnauthorizedException(message="Missing authentication token")
     cfg: Config = request.app.state.server_config
     if token != cfg.get_derived_gateway_token():
@@ -76,10 +78,15 @@ def gateway_token_auth(
 
 
 def client_ip_getter(request: Request) -> str:
-    if request.app.state.server_config.gateway_mode == GatewayModeEnum.embedded:
-        return request.headers.get("X-GPUStack-Real-IP", "")
-    else:
-        return request.client.host
+    if request.app.state.server_config.gateway_mode != GatewayModeEnum.disabled:
+        try:
+            gateway_token_auth(request)
+            real_ip = request.headers.get("X-GPUStack-Real-IP")
+            if real_ip:
+                return real_ip
+        except UnauthorizedException:
+            pass
+    return request.client.host if request.client else ""
 
 
 async def get_current_user(

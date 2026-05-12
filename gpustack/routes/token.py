@@ -15,7 +15,6 @@ from gpustack.schemas.users import User
 from gpustack.schemas.models import AccessPolicyEnum
 from gpustack.server.deps import SessionDep
 from gpustack.api.auth import (
-    GATEWAY_AUTH_TOKEN_HEADER,
     api_key_header_auth,
     basic_auth,
     cookie_auth,
@@ -102,10 +101,7 @@ async def server_auth(
         raise e
 
     if user is None:
-        gateway_token_auth(
-            request,
-            token=request.headers.get(GATEWAY_AUTH_TOKEN_HEADER),
-        )
+        gateway_token_auth(request)
 
     model_name = request.headers.get("x-higress-llm-model")
     if model_name is None or model_name == "":
