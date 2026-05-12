@@ -75,7 +75,7 @@ from gpustack.gateway.utils import (
     cleanup_model_mapper,
     cleanup_fallback_filters,
     cleanup_ai_proxy_config,
-    cleanup_generic_route_transformer,
+    cleanup_generic_proxy_router,
     cleanup_mcpbridge_registry,
     resolve_instance_address_from_model_header,
 )
@@ -728,7 +728,7 @@ class Server:
             routes=model_routes,
             k8s_config=k8s_config,
         )
-        await cleanup_generic_route_transformer(
+        await cleanup_generic_proxy_router(
             routes=model_routes,
             k8s_config=k8s_config,
             namespace=self.config.gateway_namespace,

@@ -681,7 +681,7 @@ async def sync_model_route_mapper(
     )
 
 
-async def ensure_route_generic_transformer_config(
+async def ensure_route_generic_proxy_router_config(
     cfg: Config,
     model_route: ModelRoute,
     effective_name: str,
@@ -689,30 +689,24 @@ async def ensure_route_generic_transformer_config(
     generic_proxy_enabled: bool,
 ):
     """
-    Reconcile the single HeaderRule that maps /model/proxy/<route_id>/... to this
-    route's x-higress-llm-model. When generic_proxy_enabled is False (generic proxy
-    disabled or route deleted), the rule is removed and other routes are untouched.
+    Reconcile the single aliasNameMapping entry that maps /model/proxy/<route_id>/...
+    to this route's effective model name. When ``generic_proxy_enabled`` is False
+    (generic proxy disabled or route deleted), the entry is removed and other
+    routes are untouched.
 
     ``effective_name`` is the fully-qualified model name including the
     Org slug prefix (e.g. ``org1/qwen3-0.6b``) for non-platform Orgs;
     platform Org keeps the unprefixed ``model_route.name``.
     """
-    operating_path_pattern = mcp_handler.build_generic_route_path_pattern(
-        model_route.id
-    )
-    expected_header_rules: List[Dict[str, Any]] = []
-    if generic_proxy_enabled:
-        expected_header_rules.append(
-            mcp_handler.build_generic_route_header_rule(model_route.id, effective_name)
-        )
+    route_name = effective_name if generic_proxy_enabled else None
     await mcp_handler.ensure_wasm_plugin(
         api=extensions_api,
-        name=mcp_handler.gpustack_generic_route_transformer_name,
+        name=mcp_handler.gpustack_generic_proxy_router_name,
         namespace=cfg.gateway_namespace,
         spec_diff=partial(
-            mcp_handler.generic_route_transformer_diff_spec,
-            expected_header_rules=expected_header_rules,
-            operating_path_pattern=operating_path_pattern,
+            mcp_handler.generic_proxy_router_diff_spec,
+            route_id=model_route.id,
+            route_name=route_name,
         ),
     )
 
@@ -876,9 +870,9 @@ async def sync_gateway(
         namespace=cfg.get_namespace(),
         networking_istio_api=istio_networking_api,
     )
-    # Generic-route transformer: inject x-higress-llm-model when /model/proxy/<id>/
+    # Generic-proxy router: inject x-higress-llm-model when /model/proxy/<id>/
     # is hit, so the existing main ingress header matcher + fallback chain apply.
-    await ensure_route_generic_transformer_config(
+    await ensure_route_generic_proxy_router_config(
         cfg=cfg,
         model_route=model_route,
         effective_name=effective_name,

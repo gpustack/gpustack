@@ -1,12 +1,8 @@
-import re
-
 from gpustack.gateway.utils import (
     RoutePrefix,
-    build_generic_route_header_rule,
-    build_generic_route_path_pattern,
-    cleanup_generic_route_transformer_spec_diff,
+    cleanup_generic_proxy_router_spec_diff,
     generate_model_ingress,
-    generic_route_transformer_diff_spec,
+    generic_proxy_router_diff_spec,
     provider_registry,
 )
 from gpustack.gateway.client.extensions_higress_io_v1_api import WasmPluginSpec
@@ -142,264 +138,126 @@ def test_ollama_registry():
     assert reg.protocol == "http"
 
 
-# --- Generic route transformer --------------------------------------------
+# --- Generic proxy router -------------------------------------------------
 
 
-def test_generic_route_path_pattern_boundary():
-    """
-    The path pattern must anchor after the id's last digit so that id=1 does
-    not spuriously match /model/proxy/10 or /model/proxy/100/foo.
-    """
-    pat_1 = build_generic_route_path_pattern(1)
-    pat_10 = build_generic_route_path_pattern(10)
-    assert pat_1 == r"^/model/proxy/1(/.*)?$"
-    assert pat_10 == r"^/model/proxy/10(/.*)?$"
-
-    matches_for_1 = [
-        "/model/proxy/1",
-        "/model/proxy/1/",
-        "/model/proxy/1/pooling",
-        "/model/proxy/1/v1/models",
-        "/model/proxy/1/v1/chat/completions",
-    ]
-    non_matches_for_1 = [
-        "/model/proxy/10",
-        "/model/proxy/10/foo",
-        "/model/proxy/100/foo",
-        "/model/proxy/2/foo",
-        "/model/proxy/1bar",
-        "/v1/chat/completions",
-    ]
-    for path in matches_for_1:
-        assert re.match(pat_1, path), f"expected {path!r} to match id=1"
-    for path in non_matches_for_1:
-        assert not re.match(pat_1, path), f"expected {path!r} to NOT match id=1"
-
-
-def test_generic_route_header_value_after_substitution():
-    """
-    Higress transformer's `add` with path_pattern substitutes the match with
-    `value` inside the full :path. We must ensure the resulting header value is
-    the route name alone — not contaminated with the untouched path tail.
-    """
-    rule = build_generic_route_header_rule(1, "qwen3-0.6b")
-    assert rule == {
-        "key": "x-higress-llm-model",
-        "value": "qwen3-0.6b",
-        "path_pattern": r"^/model/proxy/1(/.*)?$",
-    }
-    for path in [
-        "/model/proxy/1",
-        "/model/proxy/1/",
-        "/model/proxy/1/pooling",
-        "/model/proxy/1/v1/models",
-    ]:
-        header_value = re.sub(rule["path_pattern"], rule["value"], path)
-        assert (
-            header_value == "qwen3-0.6b"
-        ), f"path {path!r} must reduce to route name; got {header_value!r}"
-
-
-def _empty_transformer_spec() -> WasmPluginSpec:
-    """Match the shape produced by generic_route_transformer_plugin(cfg)."""
+def _empty_router_spec() -> WasmPluginSpec:
+    """Match the shape produced by generic_proxy_router_plugin(cfg)."""
     return WasmPluginSpec(
-        defaultConfig={"reqRules": []},
+        defaultConfig={
+            "prefix": "/model/proxy/",
+            "targetHeader": "x-higress-llm-model",
+            "aliasNameMapping": {},
+        },
         defaultConfigDisable=False,
     )
 
 
-def _first_add_headers(spec: WasmPluginSpec):
-    rules = spec.defaultConfig.get("reqRules", [])
-    add_block = next((r for r in rules if r.get("operate") == "add"), None)
-    return add_block.get("headers", []) if add_block else []
+def _alias_mapping(spec: WasmPluginSpec):
+    return spec.defaultConfig.get("aliasNameMapping") or {}
 
 
 def test_diff_spec_add_first_route():
-    spec = _empty_transformer_spec()
-    rule = build_generic_route_header_rule(1, "route-one")
+    spec = _empty_router_spec()
 
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        expected_header_rules=[rule],
-        operating_path_pattern=build_generic_route_path_pattern(1),
-    )
+    spec = generic_proxy_router_diff_spec(spec, route_id=1, route_name="route-one")
 
     assert spec.defaultConfigDisable is False
-    assert _first_add_headers(spec) == [rule]
+    assert _alias_mapping(spec) == {"1": "route-one"}
 
 
 def test_diff_spec_preserves_other_routes():
-    spec = _empty_transformer_spec()
-    rule_1 = build_generic_route_header_rule(1, "route-one")
-    rule_2 = build_generic_route_header_rule(2, "route-two")
+    spec = _empty_router_spec()
 
-    spec = generic_route_transformer_diff_spec(
-        spec, [rule_1], build_generic_route_path_pattern(1)
-    )
-    spec = generic_route_transformer_diff_spec(
-        spec, [rule_2], build_generic_route_path_pattern(2)
-    )
+    spec = generic_proxy_router_diff_spec(spec, 1, "route-one")
+    spec = generic_proxy_router_diff_spec(spec, 2, "route-two")
 
-    headers = _first_add_headers(spec)
-    assert rule_1 in headers
-    assert rule_2 in headers
-    # Sort is deterministic by path_pattern so diff-equal checks are stable.
-    assert headers == sorted(headers, key=lambda h: h["path_pattern"])
+    assert _alias_mapping(spec) == {"1": "route-one", "2": "route-two"}
 
 
 def test_diff_spec_update_in_place():
-    """Changing a route's name replaces its rule, not appends a duplicate."""
-    spec = _empty_transformer_spec()
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        [build_generic_route_header_rule(1, "route-one")],
-        build_generic_route_path_pattern(1),
-    )
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        [build_generic_route_header_rule(1, "route-one-renamed")],
-        build_generic_route_path_pattern(1),
-    )
+    """Changing a route's name replaces its entry, not appends a duplicate."""
+    spec = _empty_router_spec()
+    spec = generic_proxy_router_diff_spec(spec, 1, "route-one")
+    spec = generic_proxy_router_diff_spec(spec, 1, "route-one-renamed")
 
-    headers = _first_add_headers(spec)
-    assert len(headers) == 1
-    assert headers[0]["value"] == "route-one-renamed"
+    assert _alias_mapping(spec) == {"1": "route-one-renamed"}
 
 
 def test_diff_spec_remove_route_keeps_siblings():
-    spec = _empty_transformer_spec()
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        [build_generic_route_header_rule(1, "route-one")],
-        build_generic_route_path_pattern(1),
-    )
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        [build_generic_route_header_rule(2, "route-two")],
-        build_generic_route_path_pattern(2),
-    )
-    # route 1's generic_proxy turned off → expected_header_rules is empty
-    spec = generic_route_transformer_diff_spec(
-        spec, [], build_generic_route_path_pattern(1)
-    )
+    spec = _empty_router_spec()
+    spec = generic_proxy_router_diff_spec(spec, 1, "route-one")
+    spec = generic_proxy_router_diff_spec(spec, 2, "route-two")
+    # route 1's generic_proxy turned off → route_name=None
+    spec = generic_proxy_router_diff_spec(spec, 1, None)
 
-    headers = _first_add_headers(spec)
-    assert len(headers) == 1
-    assert headers[0]["value"] == "route-two"
+    assert _alias_mapping(spec) == {"2": "route-two"}
+
+
+def test_diff_spec_remove_missing_route_is_noop():
+    """Removing a route that isn't in the mapping must not raise or affect others."""
+    spec = _empty_router_spec()
+    spec = generic_proxy_router_diff_spec(spec, 1, "route-one")
+    spec = generic_proxy_router_diff_spec(spec, 99, None)
+
+    assert _alias_mapping(spec) == {"1": "route-one"}
 
 
 def test_diff_spec_does_not_flip_default_config_disable():
     """
     Toggling defaultConfigDisable rewrites Envoy's filter chain and tears down
     in-flight connections, so the diff must leave the flag alone regardless of
-    whether any rules remain.
+    whether any entries remain.
     """
-    spec = _empty_transformer_spec()
-    # Add then remove everything — flag must stay False the whole way.
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        [build_generic_route_header_rule(1, "route-one")],
-        build_generic_route_path_pattern(1),
-    )
+    spec = _empty_router_spec()
+    spec = generic_proxy_router_diff_spec(spec, 1, "route-one")
     assert spec.defaultConfigDisable is False
-    spec = generic_route_transformer_diff_spec(
-        spec, [], build_generic_route_path_pattern(1)
-    )
+    spec = generic_proxy_router_diff_spec(spec, 1, None)
     assert spec.defaultConfigDisable is False
-    assert spec.defaultConfig == {"reqRules": []}
+    assert _alias_mapping(spec) == {}
 
 
 def test_diff_spec_passes_through_none():
     """Plugin doesn't exist yet → diff returns None so ensure_wasm_plugin can skip."""
-    assert (
-        generic_route_transformer_diff_spec(
-            None, [], build_generic_route_path_pattern(1)
-        )
-        is None
-    )
+    assert generic_proxy_router_diff_spec(None, 1, "route-one") is None
+    assert generic_proxy_router_diff_spec(None, 1, None) is None
 
 
-def test_diff_spec_preserves_unrelated_req_rules():
+def test_diff_spec_preserves_unrelated_default_config_keys():
     """
-    Diff must coexist with foreign reqRules — a future contributor may add
-    another `operate: rename` block or a separate `add` block with non-generic
-    headers to the same plugin. Our logic identifies generic-route rules by
-    path_pattern shape and leaves everything else alone.
+    Diff must coexist with other defaultConfig keys (prefix, targetHeader, and
+    any future config a contributor adds). Only aliasNameMapping is mutated.
     """
-    spec = _empty_transformer_spec()
-    foreign_rename_block = {
-        "operate": "rename",
-        "headers": [{"oldKey": "a", "newKey": "b"}],
-    }
-    foreign_add_header = {
-        "key": "x-other",
-        "value": "v",
-        "path_pattern": "^/other/path",
-    }
-    spec.defaultConfig = {
-        "reqRules": [
-            foreign_rename_block,
-            {"operate": "add", "headers": [foreign_add_header]},
-        ],
-    }
+    spec = _empty_router_spec()
+    spec.defaultConfig["customKey"] = "preserve-me"
 
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        [build_generic_route_header_rule(1, "route-one")],
-        build_generic_route_path_pattern(1),
-    )
+    spec = generic_proxy_router_diff_spec(spec, 1, "route-one")
 
-    rules = spec.defaultConfig["reqRules"]
-    # Foreign rename block untouched.
-    assert foreign_rename_block in rules
-    # Foreign add header preserved (may be in its own block).
-    assert any(
-        r.get("operate") == "add" and foreign_add_header in r.get("headers", [])
-        for r in rules
-    )
-    # Generic-route rule landed in an add block of its own.
-    assert any(
-        r.get("operate") == "add"
-        and any(h.get("value") == "route-one" for h in r.get("headers", []))
-        for r in rules
-    )
+    assert spec.defaultConfig["prefix"] == "/model/proxy/"
+    assert spec.defaultConfig["targetHeader"] == "x-higress-llm-model"
+    assert spec.defaultConfig["customKey"] == "preserve-me"
+    assert _alias_mapping(spec) == {"1": "route-one"}
 
 
 def test_cleanup_spec_diff_prunes_orphans():
-    spec = _empty_transformer_spec()
-    # Seed with two routes, then run cleanup expecting only route 2 to survive.
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        [build_generic_route_header_rule(1, "route-one")],
-        build_generic_route_path_pattern(1),
-    )
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        [build_generic_route_header_rule(2, "route-two")],
-        build_generic_route_path_pattern(2),
-    )
+    spec = _empty_router_spec()
+    spec = generic_proxy_router_diff_spec(spec, 1, "route-one")
+    spec = generic_proxy_router_diff_spec(spec, 2, "route-two")
 
-    spec = cleanup_generic_route_transformer_spec_diff(
-        spec, expected_path_patterns={build_generic_route_path_pattern(2)}
-    )
+    spec = cleanup_generic_proxy_router_spec_diff(spec, expected_route_ids={2})
 
-    headers = _first_add_headers(spec)
-    assert len(headers) == 1
-    assert headers[0]["value"] == "route-two"
+    assert _alias_mapping(spec) == {"2": "route-two"}
     assert spec.defaultConfigDisable is False
 
 
 def test_cleanup_spec_diff_empties_when_no_routes_remain():
-    spec = _empty_transformer_spec()
-    spec = generic_route_transformer_diff_spec(
-        spec,
-        [build_generic_route_header_rule(1, "route-one")],
-        build_generic_route_path_pattern(1),
-    )
-    spec = cleanup_generic_route_transformer_spec_diff(
-        spec, expected_path_patterns=set()
-    )
-    assert spec.defaultConfig == {"reqRules": []}
+    spec = _empty_router_spec()
+    spec = generic_proxy_router_diff_spec(spec, 1, "route-one")
+
+    spec = cleanup_generic_proxy_router_spec_diff(spec, expected_route_ids=set())
+
+    assert _alias_mapping(spec) == {}
+    assert spec.defaultConfig["prefix"] == "/model/proxy/"
     assert spec.defaultConfigDisable is False
 
 
