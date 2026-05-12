@@ -40,7 +40,7 @@ router = APIRouter()
 
 
 class MembershipCreate(BaseModel):
-    user_id: int
+    user_ids: List[int]
     role: OrgRole = OrgRole.MEMBER
 
 
@@ -171,67 +171,107 @@ async def list_org_members(session: SessionDep, ctx: TenantContextDep, org_id: i
 
 @router.post(
     "/organizations/{org_id}/members",
-    response_model=OrganizationMembershipPublic,
+    response_model=List[OrganizationMembershipPublic],
 )
-async def add_org_member(
+async def add_org_members(
     session: SessionDep,
     ctx: TenantContextDep,
     org_id: int,
     body: MembershipCreate,
 ):
+    """Add one or more members in a single request.
+
+    All-or-nothing: validate every user up front; if any are missing or
+    already members, raise and write nothing. On success, every row is
+    inserted in a single transaction.
+    """
     org = await _load_org(session, org_id)
 
     if not _can_manage(ctx, org_id):
         raise ForbiddenException(message="Insufficient permission to add member")
 
-    user = await _resolve_user(session, body.user_id)
-    if not user:
-        raise NotFoundException(message="User not found")
+    if not body.user_ids:
+        raise InvalidException(message="user_ids must not be empty")
 
-    existing = await _find_membership(
-        session, org.id, user.principal_id, include_deleted=True
-    )
-    if existing is not None and existing.deleted_at is None:
-        raise AlreadyExistsException(
-            message=(
-                f"User {body.user_id} is already a member of " f"organization {org_id}"
+    # Preserve order, drop duplicates the client sent.
+    user_ids = list(dict.fromkeys(body.user_ids))
+
+    # Bulk-resolve users in one query. Filter out system / soft-deleted
+    # rows the same way _resolve_user does.
+    rows = (await session.exec(select(User).where(User.id.in_(user_ids)))).all()
+    users_by_id: dict[int, User] = {
+        u.id: u for u in rows if not u.is_system and u.deleted_at is None
+    }
+    missing = [uid for uid in user_ids if uid not in users_by_id]
+    if missing:
+        raise NotFoundException(message=f"User(s) not found: {missing}")
+
+    # Bulk-load existing memberships (including soft-deleted, so we can
+    # resurrect them instead of producing duplicate rows).
+    principal_ids = [users_by_id[uid].principal_id for uid in user_ids]
+    existing_rows = (
+        await session.exec(
+            select(PrincipalMembership).where(
+                PrincipalMembership.parent_principal_id == org.id,
+                PrincipalMembership.member_principal_id.in_(principal_ids),
             )
         )
+    ).all()
+    existing_by_principal: dict[int, PrincipalMembership] = {
+        m.member_principal_id: m for m in existing_rows
+    }
 
+    duplicates = [
+        uid
+        for uid in user_ids
+        if (m := existing_by_principal.get(users_by_id[uid].principal_id)) is not None
+        and m.deleted_at is None
+    ]
+    if duplicates:
+        raise AlreadyExistsException(
+            message=f"User(s) already members of organization {org.id}: {duplicates}"
+        )
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    stored_pairs: List[tuple[User, PrincipalMembership]] = []
     try:
-        if existing is not None:
-            # Resurrect a soft-deleted row so the membership timeline
-            # stays on a single row.
-            existing.deleted_at = None
-            existing.role = body.role
-            session.add(existing)
-            await session.commit()
-            await session.refresh(existing)
-            stored = existing
-        else:
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
-            stored = PrincipalMembership(
-                parent_principal_id=org.id,
-                member_principal_id=user.principal_id,
-                role=body.role,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(stored)
-            await session.commit()
-            await session.refresh(stored)
+        for uid in user_ids:
+            user = users_by_id[uid]
+            existing = existing_by_principal.get(user.principal_id)
+            if existing is not None:
+                # Resurrect a soft-deleted row so the membership timeline
+                # stays on a single row.
+                existing.deleted_at = None
+                existing.role = body.role
+                existing.updated_at = now
+                session.add(existing)
+                stored_pairs.append((user, existing))
+            else:
+                row = PrincipalMembership(
+                    parent_principal_id=org.id,
+                    member_principal_id=user.principal_id,
+                    role=body.role,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+                stored_pairs.append((user, row))
+        await session.commit()
     except Exception as e:
         await session.rollback()
-        raise InvalidException(message=f"Failed to add member: {e}")
+        raise InvalidException(message=f"Failed to add members: {e}")
 
-    return OrganizationMembershipPublic(
-        user_id=user.id,
-        organization_id=org.id,
-        role=stored.role,
-        created_at=stored.created_at,
-        username=user.username,
-        full_name=user.full_name,
-    )
+    return [
+        OrganizationMembershipPublic(
+            user_id=user.id,
+            organization_id=org.id,
+            role=row.role,
+            created_at=row.created_at,
+            username=user.username,
+            full_name=user.full_name,
+        )
+        for user, row in stored_pairs
+    ]
 
 
 @router.put(

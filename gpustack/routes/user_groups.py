@@ -40,7 +40,7 @@ router = APIRouter()
 
 
 class GroupMembershipCreate(BaseModel):
-    user_id: int
+    user_ids: List[int]
 
 
 def _can_manage_groups(ctx, org_id: int) -> bool:
@@ -230,68 +230,126 @@ async def list_group_members(
 
 @router.post(
     "/organizations/{org_id}/groups/{group_id}/members",
-    response_model=UserGroupMembershipPublic,
+    response_model=List[UserGroupMembershipPublic],
 )
-async def add_group_member(
+async def add_group_members(
     session: SessionDep,
     ctx: TenantContextDep,
     org_id: int,
     group_id: int,
     body: GroupMembershipCreate,
 ):
+    """Add one or more users to a group in a single request.
+
+    All-or-nothing: validate every user up front (exists, is an Org
+    member, not already in the group); if any check fails, raise and
+    write nothing. Otherwise all rows insert in a single transaction.
+    """
     await _load_group(session, org_id, group_id)
     if not _can_manage_groups(ctx, org_id):
         raise ForbiddenException(message="Insufficient permission to manage groups")
 
-    user = await _resolve_user(session, body.user_id)
-    if not user:
-        raise NotFoundException(message="User not found")
+    if not body.user_ids:
+        raise InvalidException(message="user_ids must not be empty")
 
-    # User must be an active member of the group's org first.
-    org_membership_stmt = select(PrincipalMembership.id).where(
-        PrincipalMembership.parent_principal_id == org_id,
-        PrincipalMembership.member_principal_id == user.principal_id,
-        PrincipalMembership.deleted_at.is_(None),
+    user_ids = list(dict.fromkeys(body.user_ids))
+
+    rows = (await session.exec(select(User).where(User.id.in_(user_ids)))).all()
+    users_by_id: dict[int, User] = {
+        u.id: u for u in rows if not u.is_system and u.deleted_at is None
+    }
+    missing = [uid for uid in user_ids if uid not in users_by_id]
+    if missing:
+        raise NotFoundException(message=f"User(s) not found: {missing}")
+
+    principal_ids = [users_by_id[uid].principal_id for uid in user_ids]
+
+    # Every user must already be an active org member.
+    org_member_principals = set(
+        (
+            await session.exec(
+                select(PrincipalMembership.member_principal_id).where(
+                    PrincipalMembership.parent_principal_id == org_id,
+                    PrincipalMembership.member_principal_id.in_(principal_ids),
+                    PrincipalMembership.deleted_at.is_(None),
+                )
+            )
+        ).all()
     )
-    if (await session.exec(org_membership_stmt)).first() is None:
+    non_members = [
+        uid
+        for uid in user_ids
+        if users_by_id[uid].principal_id not in org_member_principals
+    ]
+    if non_members:
         raise InvalidException(
-            message=(
-                f"User {body.user_id} is not a member of " f"organization {org_id}"
+            message=f"User(s) not in organization {org_id}: {non_members}"
+        )
+
+    # Bulk-load existing memberships (including soft-deleted, so we can
+    # resurrect them instead of producing duplicate rows). Matches the
+    # add_org_members soft-delete handling so a user removed from a
+    # group and re-added keeps a single timeline row.
+    existing_rows = (
+        await session.exec(
+            select(PrincipalMembership).where(
+                PrincipalMembership.parent_principal_id == group_id,
+                PrincipalMembership.member_principal_id.in_(principal_ids),
             )
         )
-
-    existing_stmt = select(PrincipalMembership).where(
-        PrincipalMembership.parent_principal_id == group_id,
-        PrincipalMembership.member_principal_id == user.principal_id,
-        PrincipalMembership.deleted_at.is_(None),
-    )
-    if (await session.exec(existing_stmt)).first() is not None:
+    ).all()
+    existing_by_principal: dict[int, PrincipalMembership] = {
+        m.member_principal_id: m for m in existing_rows
+    }
+    duplicates = [
+        uid
+        for uid in user_ids
+        if (m := existing_by_principal.get(users_by_id[uid].principal_id)) is not None
+        and m.deleted_at is None
+    ]
+    if duplicates:
         raise AlreadyExistsException(
-            message=f"User {body.user_id} is already in group {group_id}"
+            message=f"User(s) already in group {group_id}: {duplicates}"
         )
 
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    stored_pairs: List[tuple[User, PrincipalMembership]] = []
     try:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        link = PrincipalMembership(
-            parent_principal_id=group_id,
-            member_principal_id=user.principal_id,
-            role=None,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(link)
+        for uid in user_ids:
+            user = users_by_id[uid]
+            existing = existing_by_principal.get(user.principal_id)
+            if existing is not None:
+                # Soft-deleted row → resurrect so the membership timeline
+                # stays on a single row.
+                existing.deleted_at = None
+                existing.updated_at = now
+                session.add(existing)
+                stored_pairs.append((user, existing))
+            else:
+                link = PrincipalMembership(
+                    parent_principal_id=group_id,
+                    member_principal_id=user.principal_id,
+                    role=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(link)
+                stored_pairs.append((user, link))
         await session.commit()
-        await session.refresh(link)
     except Exception as e:
         await session.rollback()
-        raise InvalidException(message=f"Failed to add group member: {e}")
-    return UserGroupMembershipPublic(
-        user_id=user.id,
-        group_id=group_id,
-        created_at=link.created_at,
-        username=user.username,
-        full_name=user.full_name,
-    )
+        raise InvalidException(message=f"Failed to add group members: {e}")
+
+    return [
+        UserGroupMembershipPublic(
+            user_id=user.id,
+            group_id=group_id,
+            created_at=link.created_at,
+            username=user.username,
+            full_name=user.full_name,
+        )
+        for user, link in stored_pairs
+    ]
 
 
 @router.delete("/organizations/{org_id}/groups/{group_id}/members/{user_id}")
