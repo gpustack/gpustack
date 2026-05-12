@@ -1,5 +1,7 @@
+from .__util__ import get_k8s_client, get_k8s_client_config
 from .namespace import (
     NAMESPACE_PREFIX,
+    ensure_namespace_in_cluster,
     get_namespace_name,
     sync_namespace_to_cluster,
 )
@@ -16,6 +18,7 @@ from .templates import (
 
 __all__ = [
     "NAMESPACE_PREFIX",
+    "ensure_namespace_in_cluster",
     "get_namespace_name",
     "sync_namespace_to_cluster",
     "SSH_PUBLIC_KEY_NAME",
@@ -24,4 +27,6 @@ __all__ = [
     "sync_ssh_public_key_to_clusters",
     "get_builtin_templates",
     "sync_builtin_templates_to_db",
+    "get_k8s_client",
+    "get_k8s_client_config",
 ]
