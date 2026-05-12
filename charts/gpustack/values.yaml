@@ -61,6 +61,13 @@ higress-core:
   gateway:
     hub: null
     image: mirrored-higress-gateway
+  service:
+    # Preserve real client IP at the gateway (required for IP-based
+    # rate limiting, audit logging, and X-Forwarded-For correctness).
+    # Note: when Service type is LoadBalancer/NodePort, ensure the
+    # external LB performs health checks against healthCheckNodePort,
+    # otherwise nodes without a gateway pod will drop traffic.
+    externalTrafficPolicy: Local
   controller:
     hub: null
     image: mirrored-higress-higress
