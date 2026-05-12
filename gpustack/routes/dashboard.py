@@ -22,6 +22,7 @@ from gpustack.api.exceptions import ForbiddenException
 from gpustack.api.tenant import assert_cluster_visible
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model, ModelInstance
+from gpustack.schemas.principals import OrgRole
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
 from gpustack.server.deps import SessionDep, TenantContextDep
@@ -30,6 +31,29 @@ from gpustack.schemas.model_provider import ModelProvider
 from gpustack.server.system_load import compute_system_load
 
 router = APIRouter()
+
+
+def _resolve_dashboard_scope(ctx) -> Optional[int]:
+    """Owner-principal id to scope dashboard queries by, or None for
+    unscoped (platform-wide).
+
+    - Platform admin in "All" mode (no current_principal_id) → None,
+      every helper aggregates across the platform like before.
+    - Platform admin acting inside an Org context → that org id, so
+      admins see the same per-org view their Org owners see.
+    - Org owner of the current Org → that org id.
+    - Anyone else → ForbiddenException.
+
+    The org-owner branch intentionally excludes Personal scope: org_role
+    is only set for real ORG memberships, never for a user's own
+    USER-principal, so `ctx.org_role == OrgRole.OWNER` already rules
+    Personal out.
+    """
+    if ctx.is_platform_admin:
+        return ctx.current_principal_id
+    if ctx.current_principal_id is not None and ctx.org_role == OrgRole.OWNER:
+        return ctx.current_principal_id
+    raise ForbiddenException(message="Insufficient permission to view the dashboard")
 
 
 @router.get("")
@@ -42,24 +66,23 @@ async def dashboard(
     # System Load tiles) calls this with ``cluster_id`` and is open to
     # any caller who can see the cluster — that's the same audience
     # cluster-detail itself uses. The aggregate dashboard (no
-    # ``cluster_id``) reads across every cluster's data so platform
-    # admin only.
-    if cluster_id is None:
-        if not ctx.is_platform_admin:
-            raise ForbiddenException(
-                message="Only platform admin can read the aggregate dashboard"
-            )
-    else:
+    # ``cluster_id``) is open to platform admin and to Org owners; the
+    # latter sees the same panels scoped to their org via
+    # owner_principal_id filters in each helper.
+    if cluster_id is not None:
         cluster = await Cluster.one_by_id(session, cluster_id)
         assert_cluster_visible(ctx, cluster, not_found_message="Cluster not found")
+        owner_principal_id: Optional[int] = None
+    else:
+        owner_principal_id = _resolve_dashboard_scope(ctx)
 
-    resoruce_counts = await get_resource_counts(session, cluster_id)
-    system_load = await get_system_load(session, cluster_id)
-    model_usage = await get_model_usage_summary(session, cluster_id)
-    active_models = await get_active_models(session, cluster_id)
+    resource_counts = await get_resource_counts(session, cluster_id, owner_principal_id)
+    system_load = await get_system_load(session, cluster_id, owner_principal_id)
+    model_usage = await get_model_usage_summary(session, cluster_id, owner_principal_id)
+    active_models = await get_active_models(session, cluster_id, owner_principal_id)
     summary = SystemSummary(
         cluster_id=cluster_id,
-        resource_counts=resoruce_counts,
+        resource_counts=resource_counts,
         system_load=system_load,
         model_usage=model_usage,
         active_models=active_models,
@@ -69,15 +92,25 @@ async def dashboard(
 
 
 async def get_resource_counts(
-    session: AsyncSession, cluster_id: Optional[int] = None
+    session: AsyncSession,
+    cluster_id: Optional[int] = None,
+    owner_principal_id: Optional[int] = None,
 ) -> ResourceCounts:
     fields = {}
     cluster_count = None
     if cluster_id is not None:
         fields['cluster_id'] = cluster_id
     else:
-        clusters = await Cluster.all_by_field(session, field="deleted_at", value=None)
+        cluster_fields = {"deleted_at": None}
+        if owner_principal_id is not None:
+            cluster_fields["owner_principal_id"] = owner_principal_id
+        clusters = await Cluster.all_by_fields(session, fields=cluster_fields)
         cluster_count = len(clusters)
+    if owner_principal_id is not None:
+        # `owner_principal_id` is denormalized onto Worker, Model, and
+        # ModelInstance, so the per-org filter is a column equality on
+        # each — no joins.
+        fields["owner_principal_id"] = owner_principal_id
     workers = await Worker.all_by_fields(
         session,
         fields=fields,
@@ -100,11 +133,15 @@ async def get_resource_counts(
 
 
 async def get_system_load(
-    session: AsyncSession, cluster_id: Optional[int] = None
+    session: AsyncSession,
+    cluster_id: Optional[int] = None,
+    owner_principal_id: Optional[int] = None,
 ) -> SystemLoadSummary:
     fields = {}
     if cluster_id is not None:
         fields['cluster_id'] = cluster_id
+    if owner_principal_id is not None:
+        fields["owner_principal_id"] = owner_principal_id
     workers = await Worker.all_by_fields(session, fields=fields)
     current_system_loads = compute_system_load(workers)
     current_system_load = next(
@@ -122,9 +159,51 @@ async def get_system_load(
 
     one_hour_ago = int((now - timedelta(hours=1)).timestamp())
 
-    statement = select(SystemLoad)
-    statement = statement.where(SystemLoad.cluster_id == cluster_id)
-    statement = statement.where(SystemLoad.timestamp >= one_hour_ago)
+    if cluster_id is not None:
+        statement = select(SystemLoad).where(
+            SystemLoad.timestamp >= one_hour_ago,
+            SystemLoad.cluster_id == cluster_id,
+        )
+    elif owner_principal_id is not None:
+        # SystemLoad rows aren't denormalized with owner_principal_id, so
+        # narrow via the owning Cluster ids. There's one row per cluster
+        # per timestamp, so for org dashboards we average the per-cluster
+        # rates by timestamp — otherwise the UI would plot N overlapping
+        # series for an org with N clusters.
+        #
+        # AVG (not SUM) because cpu/ram/gpu/vram are utilization rates
+        # (avg per worker / per GPU); summing percentages crosses 100%
+        # nonsense. AVG of per-cluster averages loses the worker-count
+        # weighting the platform-wide pre-aggregate (cluster_id IS NULL)
+        # has, but the historical worker-count isn't on SystemLoad, so
+        # a true weighted average isn't available without a separate
+        # per-org pre-aggregate. Good-enough first pass.
+        cluster_subq = select(Cluster.id).where(
+            Cluster.owner_principal_id == owner_principal_id,
+            Cluster.deleted_at.is_(None),
+        )
+        statement = (
+            select(
+                SystemLoad.timestamp.label("timestamp"),
+                func.avg(SystemLoad.cpu).label("cpu"),
+                func.avg(SystemLoad.ram).label("ram"),
+                func.avg(SystemLoad.gpu).label("gpu"),
+                func.avg(SystemLoad.vram).label("vram"),
+            )
+            .where(
+                SystemLoad.timestamp >= one_hour_ago,
+                SystemLoad.cluster_id.in_(cluster_subq),
+            )
+            .group_by(SystemLoad.timestamp)
+        )
+    else:
+        # Platform-wide aggregate dashboard preserves the historical
+        # behavior: aggregate-cluster_id rows (cluster_id IS NULL) are
+        # the platform-level summary, computed by the collector.
+        statement = select(SystemLoad).where(
+            SystemLoad.timestamp >= one_hour_ago,
+            SystemLoad.cluster_id.is_(None),
+        )
 
     system_loads = (await session.exec(statement)).all()
 
@@ -185,6 +264,7 @@ async def get_model_usage_stats(
     user_ids: Optional[List[int]] = None,
     cluster_id: Optional[int] = None,
     provider_model_names: Optional[Dict[int, Optional[List[str]]]] = None,
+    owner_principal_id: Optional[int] = None,
 ) -> ModelUsageStats:
     if start_date is None or end_date is None:
         end_date = date.today()
@@ -221,6 +301,9 @@ async def get_model_usage_stats(
 
     if user_ids is not None:
         statement = statement.where(col(ModelUsage.user_id).in_(user_ids))
+
+    if owner_principal_id is not None:
+        statement = statement.where(ModelUsage.owner_principal_id == owner_principal_id)
 
     results = (await session.exec(statement)).all()
 
@@ -261,9 +344,15 @@ async def get_model_usage_stats(
 
 
 async def get_model_usage_summary(
-    session: AsyncSession, cluster_id: Optional[int] = None
+    session: AsyncSession,
+    cluster_id: Optional[int] = None,
+    owner_principal_id: Optional[int] = None,
 ) -> ModelUsageSummary:
-    model_usage_stats = await get_model_usage_stats(session, cluster_id=cluster_id)
+    model_usage_stats = await get_model_usage_stats(
+        session,
+        cluster_id=cluster_id,
+        owner_principal_id=owner_principal_id,
+    )
     # get top users
     today = date.today()
     one_month_ago = today - timedelta(days=31)
@@ -288,6 +377,9 @@ async def get_model_usage_summary(
         .limit(10)
     )
 
+    if owner_principal_id is not None:
+        statement = statement.where(ModelUsage.owner_principal_id == owner_principal_id)
+
     results = (await session.exec(statement)).all()
     top_users = []
     for result in results:
@@ -308,10 +400,28 @@ async def get_model_usage_summary(
     )
 
 
-async def _get_maas_active_models(session: AsyncSession) -> List[ModelSummary]:
-    all_providers = await ModelProvider.all_by_field(
-        session, field="deleted_at", value=None
-    )
+async def _get_maas_active_models(
+    session: AsyncSession,
+    owner_principal_id: Optional[int] = None,
+) -> List[ModelSummary]:
+    if owner_principal_id is None:
+        all_providers = await ModelProvider.all_by_fields(
+            session, fields={"deleted_at": None}
+        )
+    else:
+        # ``ModelProvider.owner_principal_id IS NULL`` means a global,
+        # admin-managed provider that every Org can call. An Org owner
+        # viewing their dashboard should see usage of those alongside
+        # their own org-scoped providers — otherwise active_models
+        # would silently drop traffic the org actually generated.
+        stmt = select(ModelProvider).where(
+            ModelProvider.deleted_at.is_(None),
+            or_(
+                ModelProvider.owner_principal_id == owner_principal_id,
+                ModelProvider.owner_principal_id.is_(None),
+            ),
+        )
+        all_providers = (await session.exec(stmt)).all()
     if not all_providers:
         return []
 
@@ -360,9 +470,13 @@ async def _get_maas_active_models(session: AsyncSession) -> List[ModelSummary]:
 
 
 async def _get_gpustack_active_models(
-    session: AsyncSession, cluster_id: Optional[int] = None
+    session: AsyncSession,
+    cluster_id: Optional[int] = None,
+    owner_principal_id: Optional[int] = None,
 ) -> List[ModelSummary]:
-    statement = active_model_statement(cluster_id=cluster_id)
+    statement = active_model_statement(
+        cluster_id=cluster_id, owner_principal_id=owner_principal_id
+    )
 
     results = (await session.exec(statement)).all()
 
@@ -410,11 +524,13 @@ async def _get_gpustack_active_models(
 
 
 async def get_active_models(
-    session: AsyncSession, cluster_id: Optional[int] = None
+    session: AsyncSession,
+    cluster_id: Optional[int] = None,
+    owner_principal_id: Optional[int] = None,
 ) -> List[ModelSummary]:
-    summary = await _get_gpustack_active_models(session, cluster_id)
+    summary = await _get_gpustack_active_models(session, cluster_id, owner_principal_id)
     if cluster_id is None:
-        maas_active_models = await _get_maas_active_models(session)
+        maas_active_models = await _get_maas_active_models(session, owner_principal_id)
         summary.extend(maas_active_models)
     summary.sort(key=lambda x: x.token_count, reverse=True)
     summary = summary[:10]
@@ -441,7 +557,10 @@ def aggregate_resource_claim(
                     resource_claim.vram += vram
 
 
-def active_model_statement(cluster_id: Optional[int]) -> select:
+def active_model_statement(
+    cluster_id: Optional[int],
+    owner_principal_id: Optional[int] = None,
+) -> select:
     usage_sum_query = (
         select(
             Model.id.label('model_id'),
@@ -462,6 +581,8 @@ def active_model_statement(cluster_id: Optional[int]) -> select:
     )
     if cluster_id is not None:
         statement = statement.where(Model.cluster_id == cluster_id)
+    if owner_principal_id is not None:
+        statement = statement.where(Model.owner_principal_id == owner_principal_id)
 
     statement = (
         statement.join(ModelInstance, Model.id == ModelInstance.model_id)
@@ -484,6 +605,7 @@ async def get_model_usages(
     model_ids: Optional[List[int]] = None,
     user_ids: Optional[List[int]] = None,
     provider_model_names: Optional[Dict[int, Optional[List[str]]]] = None,
+    owner_principal_id: Optional[int] = None,
 ) -> List[ModelUsage]:
     if start_date is None or end_date is None:
         end_date = date.today()
@@ -509,6 +631,9 @@ async def get_model_usages(
 
     if user_ids is not None:
         statement = statement.where(col(ModelUsage.user_id).in_(user_ids))
+
+    if owner_principal_id is not None:
+        statement = statement.where(ModelUsage.owner_principal_id == owner_principal_id)
 
     statement = statement.order_by(
         desc(ModelUsage.date),
@@ -563,10 +688,7 @@ async def usage(
     Get model usage records.
     This endpoint returns detailed model usage records within a specified date range.
     """
-    if not ctx.is_platform_admin:
-        raise ForbiddenException(
-            message="Only platform admin can read aggregate model usage"
-        )
+    owner_principal_id = _resolve_dashboard_scope(ctx)
     items = await get_model_usages(
         session,
         start_date=start_date,
@@ -574,6 +696,7 @@ async def usage(
         model_ids=model_ids,
         user_ids=user_ids,
         provider_model_names=get_models_by_provider_id(provider_model_names or []),
+        owner_principal_id=owner_principal_id,
     )
     return ItemList[ModelUsage](items=items)
 
@@ -606,10 +729,7 @@ async def usage_stats(
     This endpoint returns aggregated statistics for model usage, including token counts and request counts.
     It can filter by date range, model IDs, user IDs, model names with provider ID prefix.
     """
-    if not ctx.is_platform_admin:
-        raise ForbiddenException(
-            message="Only platform admin can read aggregate model usage stats"
-        )
+    owner_principal_id = _resolve_dashboard_scope(ctx)
     return await get_model_usage_stats(
         session,
         start_date=start_date,
@@ -617,4 +737,5 @@ async def usage_stats(
         model_ids=model_ids,
         user_ids=user_ids,
         provider_model_names=get_models_by_provider_id(provider_model_names or []),
+        owner_principal_id=owner_principal_id,
     )
