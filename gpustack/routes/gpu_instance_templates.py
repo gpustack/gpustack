@@ -176,14 +176,14 @@ async def delete_gpu_instance_template(
 def ensure_visible(obj, ctx, message: str = "GPU instance template not found"):
     if obj is None:
         raise NotFoundException(message=message)
-    assert_cluster_visible(obj, ctx, not_found_message=message)
+    assert_cluster_visible(ctx, obj, not_found_message=message)
     return obj
 
 
 def ensure_writable(obj, ctx, message: str = "GPU instance template not found"):
     if obj is None:
         raise NotFoundException(message=message)
-    assert_org_owned_writable(obj, ctx, resource_label=message)
+    assert_org_owned_writable(ctx, obj, resource_label=message)
     return obj
 
 
