@@ -19,6 +19,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.routes import (
     cluster_access as cluster_access_route,
+    dashboard as dashboard_route,
     organization_members,
     organizations as organizations_route,
     user_groups as user_groups_route,
@@ -407,3 +408,38 @@ async def test_add_group_members_requires_org_membership(monkeypatch):
             group_id=5,
             body=user_groups_route.GroupMembershipCreate(user_ids=[99]),
         )
+
+
+# ---- _resolve_dashboard_scope ----------------------------------------------
+
+
+def test_dashboard_scope_admin_all_mode_is_unscoped():
+    # Platform admin without a pinned Org: aggregate everything, same as
+    # before the multi-tenant refactor.
+    ctx = _ctx(is_admin=True, current_principal_id=None)
+    assert dashboard_route._resolve_dashboard_scope(ctx) is None
+
+
+def test_dashboard_scope_admin_acting_as_org():
+    # Platform admin acting inside an Org context: scope to that org.
+    ctx = _ctx(is_admin=True, current_principal_id=10)
+    assert dashboard_route._resolve_dashboard_scope(ctx) == 10
+
+
+def test_dashboard_scope_org_owner_sees_their_org():
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.OWNER)
+    assert dashboard_route._resolve_dashboard_scope(ctx) == 10
+
+
+def test_dashboard_scope_org_member_blocked():
+    ctx = _ctx(current_principal_id=10, org_role=OrgRole.MEMBER)
+    with pytest.raises(ForbiddenException):
+        dashboard_route._resolve_dashboard_scope(ctx)
+
+
+def test_dashboard_scope_non_admin_without_org_blocked():
+    # Logged-in but no Org context and no admin flag — e.g. Personal
+    # scope (org_role is never OWNER for the user's own USER-principal).
+    ctx = _ctx(current_principal_id=None, org_role=None)
+    with pytest.raises(ForbiddenException):
+        dashboard_route._resolve_dashboard_scope(ctx)
