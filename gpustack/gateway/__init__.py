@@ -313,6 +313,7 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                 {"exact": "x-api-key"},
                 {"exact": "cookie"},
                 {"exact": AUTH_CACHE_HEADER},
+                {"exact": GATEWAY_AUTH_TOKEN_HEADER},
             ],
             "headers_to_add": {
                 GATEWAY_AUTH_TOKEN_HEADER: cfg.get_derived_gateway_token(),
@@ -622,9 +623,9 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         imagePullPolicy="UNSPECIFIED_POLICY",
         matchRules=[],
         phase="UNSPECIFIED_PHASE",
-        priority=910,
+        priority=400,
         url=get_plugin_url_with_name_and_version(
-            name="gpustack-token-usage", version="1.0.0", cfg=cfg
+            name="gpustack-token-usage", version="1.1.0", cfg=cfg
         ),
     )
     return resource_name, expected_spec
@@ -762,6 +763,8 @@ def spec_replace(
     if create_only:
         if current_spec.url != expected_spec.url:
             current_spec.url = expected_spec.url
+        if current_spec.sha256 != expected_spec.sha256:
+            current_spec.sha256 = expected_spec.sha256
         return current_spec
     return expected_spec
 
