@@ -6,7 +6,6 @@ from gpustack.routes import (
     api_keys,
     auth,
     cluster_access,
-    cluster_quotas,
     config,
     dashboard,
     debug,
@@ -255,16 +254,6 @@ tenant_routers = model_routers + [
         "router": inference_backend.router,
         "prefix": "/inference-backends",
         "tags": ["Inference Backend"],
-    },
-    # Per-cluster quota rows for the cluster-detail Quotas tab. GET
-    # visible to anyone who can see the cluster (platform admin OR a
-    # member of one of its accessible Orgs); PUT gates inside the
-    # handler to platform admin OR cluster owner Org owner
-    # (`assert_cluster_writable`).
-    {
-        "router": cluster_quotas.router,
-        "tags": ["Cluster Quotas"],
-        "include_in_schema": _EXTENDED_API_IN_SCHEMA,
     },
     # Dashboard sub-routes gate themselves inside the handler. The
     # per-cluster ``GET /dashboard?cluster_id=X`` accepts anyone who

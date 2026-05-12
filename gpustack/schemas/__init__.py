@@ -133,12 +133,6 @@ from gpustack.schemas.cluster_access import (
     ClusterAccess,
     ClusterAccessPublic,
 )
-from gpustack.schemas.tenant_quotas import (
-    TenantQuota,
-    TenantQuotaUpdate,
-    TenantQuotaPublic,
-    TenantQuotasPublic,
-)
 from gpustack.schemas.links import ModelRoutePrincipalLink  # noqa: F401
 from gpustack.schemas.gpu_instance_ssh_public_keys import (
     GPUInstanceSSHPublicKey,
@@ -269,10 +263,6 @@ __all__ = [
     "UserGroupMembershipPublic",
     "ClusterAccess",
     "ClusterAccessPublic",
-    "TenantQuota",
-    "TenantQuotaUpdate",
-    "TenantQuotaPublic",
-    "TenantQuotasPublic",
     "GPUInstanceSSHPublicKey",
     "GPUInstanceSSHPublicKeyUpdate",
     "GPUInstanceSSHPublicKeyPublic",

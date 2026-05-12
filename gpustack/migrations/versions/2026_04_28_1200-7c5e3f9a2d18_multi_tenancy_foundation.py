@@ -9,7 +9,7 @@ memberships all reference principals directly — no polymorphic
 Logical groups, run in order:
 
 1. New tables — principals / principal_memberships / cluster_access /
-   tenant_quotas / model_route_principals.
+   model_route_principals.
 2. Seed the platform Org-principal (id=1, kind=ORG, slug=`default`,
    name=`Default`).
 3. Insert one USER-principal per existing user (slug=`user-{id}`,
@@ -249,32 +249,6 @@ def upgrade() -> None:
             sa.UniqueConstraint(
                 'cluster_id', 'principal_id',
                 name='uix_cluster_access_cluster_principal',
-            ),
-        )
-
-    if not table_exists('tenant_quotas'):
-        op.create_table(
-            'tenant_quotas',
-            sa.Column('id', sa.Integer(), nullable=False),
-            sa.Column('cluster_id', sa.Integer(), nullable=False),
-            sa.Column('owner_principal_id', sa.Integer(), nullable=False),
-            sa.Column('gpu', sa.Integer(), nullable=True),
-            sa.Column('cpu_milli', sa.Integer(), nullable=True),
-            sa.Column('memory_bytes', sa.BigInteger(), nullable=True),
-            sa.Column('gpu_instance', sa.Integer(), nullable=True),
-            sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
-            sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
-            sa.Column('deleted_at', sa.TIMESTAMP(), nullable=True),
-            sa.ForeignKeyConstraint(
-                ['cluster_id'], ['clusters.id'], ondelete='CASCADE',
-            ),
-            sa.ForeignKeyConstraint(
-                ['owner_principal_id'], ['principals.id'], ondelete='CASCADE',
-            ),
-            sa.PrimaryKeyConstraint('id'),
-            sa.UniqueConstraint(
-                'cluster_id', 'owner_principal_id',
-                name='uix_tenant_quota_cluster_owner',
             ),
         )
 
@@ -1081,8 +1055,6 @@ def downgrade() -> None:
 
     if table_exists('model_route_principals'):
         op.drop_table('model_route_principals')
-    if table_exists('tenant_quotas'):
-        op.drop_table('tenant_quotas')
     if table_exists('cluster_access'):
         op.drop_table('cluster_access')
     if table_exists('principal_memberships'):
