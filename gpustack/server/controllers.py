@@ -2237,6 +2237,14 @@ class ClusterController:
         owner_principal_id = cluster.owner_principal_id
 
         async with async_session() as session:
+            cluster = await Cluster.one_by_id(
+                session,
+                cluster.id,
+                options=[selectinload(Cluster.cluster_workers)],
+            )
+            if cluster is None or cluster.ready_workers == 0:
+                return
+
             ssh_public_key = await get_ssh_public_key(
                 session=session,
                 owner_principal_id=owner_principal_id,
@@ -2758,11 +2766,14 @@ class GPUInstanceSSHPublicKeyController:
                     "owner_principal_id": owner_principal_id,
                     "deleted_at": None,
                 },
+                options=[selectinload(Cluster.cluster_workers)],
             )
             principal = await Principal.one_by_id(session, owner_principal_id)
 
             ssh_public_key = ret.spec.data
-            cluster_ids = [cluster.id for cluster in clusters]
+            cluster_ids = [
+                cluster.id for cluster in clusters if cluster.ready_workers > 0
+            ]
 
         if principal is None:
             logger.error(
