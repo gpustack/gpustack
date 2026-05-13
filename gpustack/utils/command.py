@@ -3,8 +3,10 @@ import sys
 import sysconfig
 from os.path import dirname, abspath, join
 import shutil
-from typing import List, Optional, Tuple, Union
+from typing import List, Literal, Optional, Tuple, Union
 import shlex
+
+from gpustack_runtime.deployer.__utils__ import compare_versions
 
 
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on", "t", "y"})
@@ -397,3 +399,54 @@ def flatten_to_argv(parameters: Optional[List[str]]) -> List[str]:
         else:
             tokens.append(stripped)
     return tokens
+
+
+ExecutorBackend = Literal["ray", "mp"]
+
+# vLLM v0.18.0 removed Ray from its default dependencies. Only relevant for
+# user-supplied custom images (see should_default_to_ray for the rationale).
+_VLLM_RAY_DROPPED_FROM_DEFAULTS = "0.18.0"
+
+
+def should_default_to_ray(backend_version: Optional[str]) -> bool:
+    """
+    Whether GPUStack should default to the Ray executor backend when the user
+    does not explicitly choose one.
+
+    gpustack-runner images bundle Ray themselves regardless of vLLM version,
+    so Ray is always available there. The only case where Ray may be absent
+    is user-supplied custom images — identified by a ``-custom`` suffix in
+    ``backend_version`` — running vLLM >= 0.18.0, where upstream dropped Ray
+    from default dependencies. In that case we default to ``mp`` to avoid a
+    startup failure.
+    """
+    if not backend_version or "-custom" not in backend_version:
+        return True
+    try:
+        return compare_versions(backend_version, _VLLM_RAY_DROPPED_FROM_DEFAULTS) < 0
+    except Exception:
+        return True
+
+
+def resolve_executor_backend(
+    backend_parameters: Optional[List[str]],
+    backend_version: Optional[str],
+) -> ExecutorBackend:
+    """
+    Resolve the dispatch branch for vLLM distributed execution.
+
+    Returns ``"ray"`` if GPUStack should take the Ray sidecar path (legacy),
+    ``"mp"`` for the native multi-node headless path (current).
+
+    Precedence:
+    1. User-supplied ``--distributed-executor-backend`` wins. Any explicit value
+       other than ``"mp"`` is routed to the ray branch — GPUStack does not inject
+       its own native topology arguments and leaves the choice to vLLM.
+    2. Otherwise the default depends on ``backend_version`` via
+       :func:`should_default_to_ray`.
+    """
+    user_value = find_parameter(backend_parameters, ["distributed-executor-backend"])
+    if user_value is not None:
+        return "mp" if user_value == "mp" else "ray"
+
+    return "ray" if should_default_to_ray(backend_version) else "mp"
