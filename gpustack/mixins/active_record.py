@@ -9,7 +9,7 @@ from typing import Any, AsyncGenerator, Callable, Iterable, List, Optional, Unio
 import anyio
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, event as sa_event, inspect
-from sqlmodel import SQLModel, and_, asc, col, desc, or_, select, text
+from sqlmodel import SQLModel, and_, asc, col, desc, or_, select, text, exists
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -136,6 +136,18 @@ class ActiveRecordMixin:
         return await cls.one_by_fields(session, {field: value}, options=options)
 
     @classmethod
+    async def exist_by_field(
+        cls,
+        session: AsyncSession,
+        field: str,
+        value: Any,
+        options: Optional[List] = None,
+    ) -> bool:
+        """Return True if the object with the given field and value exists."""
+
+        return await cls.exist_by_fields(session, {field: value}, options=options)
+
+    @classmethod
     async def first_by_fields(cls, session: AsyncSession, fields: dict):
         """
         Return the first object with the given fields and values.
@@ -164,6 +176,23 @@ class ActiveRecordMixin:
 
         result = await session.exec(statement)
         return result.first()
+
+    @classmethod
+    async def exist_by_fields(
+        cls, session: AsyncSession, fields: dict, options: Optional[List] = None
+    ) -> bool:
+        """Return True if the object with the given fields and values exists."""
+
+        statement = select(cls)
+        for key, value in fields.items():
+            statement = statement.where(getattr(cls, key) == value)
+
+        if options:
+            statement = statement.options(*options)
+
+        exists_statement = select(exists(statement))
+        result = await session.exec(exists_statement)
+        return result.one_or_none() or False
 
     @classmethod
     async def all_by_field(

@@ -1,0 +1,330 @@
+# Builtin GPU instance templates for use.
+
+items:
+
+  #
+  # CPU instance templates
+  #
+
+  ## Ubuntu
+  - name: "ubuntu-24.04"
+    displayName: "Ubuntu 24.04 LTS"
+    manufacturer: "cpu"
+    spec:
+      image: "ubuntu:24.04"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "1"
+        memory: "2Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "ubuntu-22.04"
+    displayName: "Ubuntu 22.04 LTS"
+    manufacturer: "cpu"
+    spec:
+      image: "ubuntu:22.04"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "1"
+        memory: "2Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+
+  #
+  # NVIDIA GPU instance templates
+  #
+
+  ## PyTorch
+  - name: "pytorch-2.12-cuda-13.2"
+    displayName: "PyTorch 2.12 + CUDA 13.2"
+    manufacturer: "nvidia"
+    spec:
+      image: "nvcr.io/nvidia/pytorch:26.04-py3"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.11-cuda-13.1"
+    displayName: "PyTorch 2.11 + CUDA 13.2"
+    manufacturer: "nvidia"
+    spec:
+      image: "nvcr.io/nvidia/pytorch:26.03-py3"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.10-cuda-13.0"
+    displayName: "PyTorch 2.10 + CUDA 13.0"
+    manufacturer: "nvidia"
+    spec:
+      image: "nvcr.io/nvidia/pytorch:25.11-py3"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.9-cuda-13.0"
+    displayName: "PyTorch 2.9 + CUDA 13.0"
+    manufacturer: "nvidia"
+    spec:
+      image: "nvcr.io/nvidia/pytorch:25.10-py3"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.8-cuda-12.9"
+    displayName: "PyTorch 2.8 + CUDA 12.9"
+    manufacturer: "nvidia"
+    spec:
+      image: "nvcr.io/nvidia/pytorch:25.06-py3"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.7-cuda-12.8"
+    displayName: "PyTorch 2.7 + CUDA 12.8"
+    manufacturer: "nvidia"
+    spec:
+      image: "nvcr.io/nvidia/pytorch:25.03-py3"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.6-cuda-12.6"
+    displayName: "PyTorch 2.6 + CUDA 12.6"
+    manufacturer: "nvidia"
+    spec:
+      image: "nvcr.io/nvidia/pytorch:24.12-py3"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  ## Jupyter Lab
+  - name: "jupyter-lab-4.5-cuda-12.8"
+    displayName: "Jupyter Lab 4.5 + CUDA 12.8"
+    manufacturer: "nvidia"
+    spec:
+      image: "quay.io/jupyter/pytorch-notebook:cuda12-lab-4.5.7"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "jupyter"
+        - "lab"
+        - "--ServerApp.token=''"
+        - "--ServerApp.password=''"
+        - "-notebook-dir=/workspace"
+      ports:
+        - name: "JUPYTER"
+          port: 8888
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "jupyter-lab-4.4-cuda-12.4"
+    displayName: "Jupyter Lab 4.4 + CUDA 12.4"
+    manufacturer: "nvidia"
+    spec:
+      image: "quay.io/jupyter/pytorch-notebook:cuda12-lab-4.4.0"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "jupyter"
+        - "lab"
+        - "--ServerApp.token=''"
+        - "--ServerApp.password=''"
+        - "-notebook-dir=/workspace"
+      ports:
+        - name: "JUPYTER"
+          port: 8888
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+
+  #
+  # AMD GPU instance templates
+  #
+
+  ## PyTorch
+  - name: "pytorch-2.10-rocm-7.2"
+    displayName: "PyTorch 2.10 + ROCm 7.2"
+    manufacturer: "amd"
+    spec:
+      image: "rocm/pytorch:rocm7.2_ubuntu24.04_py3.12_pytorch_release_2.10.0"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.9-rocm-7.1"
+    displayName: "PyTorch 2.9 + ROCm 7.1"
+    manufacturer: "amd"
+    spec:
+      image: "rocm/pytorch:rocm7.1_ubuntu24.04_py3.13_pytorch_release_2.9.1"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.8-rocm-7.1"
+    displayName: "PyTorch 2.8 + ROCm 7.1"
+    manufacturer: "amd"
+    spec:
+      image: "rocm/pytorch:rocm7.1_ubuntu24.04_py3.12_pytorch_release_2.8.0"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.7-rocm-7.0"
+    displayName: "PyTorch 2.7 + ROCm 7.0"
+    manufacturer: "amd"
+    spec:
+      image: "rocm/pytorch:rocm7.0_ubuntu24.04_py3.12_pytorch_release_2.7.1"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "pytorch-2.6-rocm-6.4"
+    displayName: "PyTorch 2.6 + ROCm 6.4"
+    manufacturer: "amd"
+    spec:
+      image: "rocm/pytorch:rocm6.4_ubuntu24.04_py3.12_pytorch_release_2.6.0"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+        localStorage: "15Gi"
+      volumeMount: "/workspace"

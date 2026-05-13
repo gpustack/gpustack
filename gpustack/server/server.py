@@ -11,6 +11,8 @@ import logging
 import secrets
 import tenacity
 from sqlmodel.ext.asyncio.session import AsyncSession
+
+from gpustack.gpu_instances import sync_builtin_templates_to_db
 from gpustack.logging import setup_logging
 from gpustack.schemas.users import (
     User,
@@ -446,6 +448,7 @@ class Server:
             self._migrate_legacy_workers,
             self._ensure_registration_token,
             self._cleanup_orphaned_gateway_data,
+            sync_builtin_templates_to_db,
         ]
         for init_data_func in init_data_funcs:
             await init_data_func(session)

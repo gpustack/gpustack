@@ -9,6 +9,10 @@ from .ssh_public_key import (
     sync_ssh_public_key_to_cluster,
     sync_ssh_public_key_to_clusters,
 )
+from .templates import (
+    get_builtin_templates,
+    sync_builtin_templates_to_db,
+)
 
 __all__ = [
     "NAMESPACE_PREFIX",
@@ -18,4 +22,6 @@ __all__ = [
     "get_ssh_public_key",
     "sync_ssh_public_key_to_cluster",
     "sync_ssh_public_key_to_clusters",
+    "get_builtin_templates",
+    "sync_builtin_templates_to_db",
 ]

@@ -1,7 +1,7 @@
 from typing import Optional
 
 from pydantic import ConfigDict, BaseModel
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
 from sqlmodel import SQLModel, Field
 
 from gpustack.mixins import BaseModelMixin
@@ -34,21 +34,38 @@ class GPUInstanceSSHPublicKeyBase(SQLModel):
     Base model for GPU instance SSH public keys, containing common fields.
     """
 
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    # For tenant scope.
     # Every SSH Public Key belongs to one Org. The route layer fills this with
-    # ctx.current_principal_id (or PLATFORM_PRINCIPAL_ID for admin in "All"
-    # mode) when callers omit it.
+    # ctx.current_principal_id (or PLATFORM_PRINCIPAL_ID for admin).
     owner_principal_id: Optional[int] = Field(
         default=None,
-        foreign_key="principals.id",
-        nullable=False,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
     )
 
     name: str = Field(
-        max_length=255,
+        max_length=253,
     )
     """
     Name of the GPU instance SSH public key.
     Must be unique in the scope of the owning principal.
+    """
+
+    display_name: Optional[str] = Field(
+        nullable=True,
+        default=None,
+        max_length=64,
+    )
+    """
+    Display name of the GPU instance SSH public key, for easier identification by users.
     """
 
     description: Optional[str] = Field(
@@ -94,6 +111,11 @@ class GPUInstanceSSHPublicKeyUpdate(GPUInstanceSSHPublicKeyBase):
     name: Optional[str] = None
     """
     Updated name of the GPU instance SSH public key. Must be unique if provided.
+    """
+
+    display_name: Optional[str] = None
+    """
+    Updated display name of the GPU instance SSH public key.
     """
 
     description: Optional[str] = None
