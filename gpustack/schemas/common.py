@@ -197,9 +197,19 @@ def pydantic_column_type(
     return PydanticJSONType
 
 
+_IGNORE_CAMEL_CASE_FIELDS = {
+    "owner_principal_id",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+}
+
+
 def pydantic_camel_case_generator(s: str) -> str:
     """
     Converts snake_case string to camelCase.
     E.g., "image_pull_policy" -> "imagePullPolicy"
     """
+    if s in _IGNORE_CAMEL_CASE_FIELDS:
+        return s
     return ''.join(w.capitalize() if i else w for i, w in enumerate(s.split('_')))

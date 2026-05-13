@@ -1,7 +1,7 @@
 from typing import Optional, List, Literal, ClassVar
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
 from sqlmodel import Field, SQLModel
 
 from gpustack.mixins import BaseModelMixin
@@ -33,6 +33,11 @@ class GPUInstancePort(BaseModel):
     """
     The protocol for the port.
     Defaults to "TCP".
+    """
+
+    name: Optional[str] = None
+    """
+    Name of the port mapping.
     """
 
 
@@ -174,19 +179,39 @@ class GPUInstanceTemplateBase(SQLModel):
     Base model for GPU instance templates, containing common fields.
     """
 
-    # Every SSH Public Key belongs to one Org. The route layer fills this with
-    # ctx.current_principal_id (or PLATFORM_PRINCIPAL_ID for admin in "All"
-    # mode) when callers omit it.
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    # For tenant scope.
+    # - NULL = global (admin-managed).
+    # - Non-NULL = belongs to the principal (tenant) that owns it.
+    #   The route layer fills this with ctx.current_principal_id.
     owner_principal_id: Optional[int] = Field(
-        default=None, foreign_key="principals.id", nullable=False
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
     )
 
     name: str = Field(
-        max_length=255,
+        max_length=253,
     )
     """
     Name of the GPU instance template.
     Must be unique in the scope of the owning principal.
+    """
+
+    display_name: Optional[str] = Field(
+        nullable=True,
+        default=None,
+        max_length=64,
+    )
+    """
+    Display name of the GPU instance template, for easier identification by users.
     """
 
     description: Optional[str] = Field(
@@ -264,6 +289,11 @@ class GPUInstanceTemplateUpdate(GPUInstanceTemplateBase):
     name: Optional[str] = None
     """
     Updated name of the GPU instance template. Must be unique if provided.
+    """
+
+    display_name: Optional[str] = None
+    """
+    Updated display name of the GPU instance template.
     """
 
     description: Optional[str] = None
