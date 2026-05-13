@@ -20,7 +20,7 @@ from huggingface_hub.utils import build_hf_headers
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.schemas.model_files import ModelFile, ModelFileUpdate, ModelFileStateEnum
 from gpustack.client import ClientSet
 from gpustack.schemas.models import SourceEnum

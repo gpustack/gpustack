@@ -12,7 +12,7 @@ import yaml
 from gpustack import __version__, __git_commit__
 from gpustack.config.config import set_global_config
 from gpustack.extension import Plugin, iter_plugin_classes
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.utils.envs import get_gpustack_env, get_gpustack_env_bool
 from gpustack.worker.worker import Worker
 from gpustack.config import Config

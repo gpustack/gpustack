@@ -7,6 +7,7 @@ from gpustack.cmd.download_tools import setup_download_tools_cmd
 from gpustack.cmd.images import setup_images_cmd
 from gpustack.cmd.reset_admin_password import setup_reset_admin_password_cmd
 from gpustack.cmd.version import setup_version_cmd
+from gpustack.cmd.info import setup_info_cmd
 from gpustack.cmd.reload_config import setup_reload_config_cmd
 from gpustack.cmd.prerun import setup_prerun_cmd
 
@@ -22,7 +23,7 @@ def main():
     )
     subparsers = parser.add_subparsers(
         help="sub-command help",
-        metavar='{start,reload-config,list-images,save-images,copy-images,load-images,reset-admin-password,version}',
+        metavar='{start,reload-config,list-images,save-images,copy-images,load-images,reset-admin-password,version,info}',
     )
 
     setup_start_cmd(subparsers)
@@ -33,6 +34,7 @@ def main():
     setup_prerun_cmd(subparsers)
     setup_reset_admin_password_cmd(subparsers)
     setup_version_cmd(subparsers)
+    setup_info_cmd(subparsers)
 
     args = parser.parse_args()
     if hasattr(args, "func"):

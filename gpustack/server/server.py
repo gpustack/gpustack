@@ -11,7 +11,7 @@ import logging
 import secrets
 import tenacity
 from sqlmodel.ext.asyncio.session import AsyncSession
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.schemas.users import (
     User,
     UserRole,

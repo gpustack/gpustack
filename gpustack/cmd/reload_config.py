@@ -13,7 +13,7 @@ from gpustack.utils.config import (
     coerce_value_by_field,
     filter_whitelisted_yaml_config,
 )
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.client.generated_http_client import default_versioned_prefix
 
 

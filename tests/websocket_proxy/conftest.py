@@ -5,7 +5,7 @@ Initialize logging for websocket_proxy tests.
 import sys
 import os
 import logging
-from gpustack.logging import TRACE_LEVEL
+from gpustack.log import TRACE_LEVEL
 
 # Ensure local gpustack package is used
 repo_root = os.path.abspath(

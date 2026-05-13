@@ -8,7 +8,7 @@ import pytest
 from gpustack_runtime.detector import manufacturer_to_backend, ManufacturerEnum
 
 from gpustack.config.config import Config, set_global_config
-from gpustack.logging import setup_logging
+from gpustack.log import setup_logging
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.policies.candidate_selectors import GGUFResourceFitSelector
 
