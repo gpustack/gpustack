@@ -39,8 +39,13 @@ from gpustack.utils.command import (
     find_bool_parameter,
     find_parameter,
     find_int_parameter,
+    resolve_executor_backend,
 )
 from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.vllm_topology import (
+    parse_user_parallelism,
+    validate_multinode_topology,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +118,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         )
         dp = find_int_parameter(model.backend_parameters, ["data-parallel-size", "dp"])
         dpl = find_int_parameter(
-            model.backend_parameters, ["--data-parallel-size-local", "dpl"]
+            model.backend_parameters, ["data-parallel-size-local", "dpl"]
         )
 
         if tp or pp or dp:
@@ -128,9 +133,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if dp:
                 strategies.append("dp")
                 world_size *= dp
-                if dpl:
-                    # NB(thxCode): Indicate how many DP groups(each group owns `-dp` number devices) are there in one worker.
-                    world_size *= dpl
+
+            if dpl:
+                strategies.append("dpl")
 
             return world_size, strategies
 
@@ -632,6 +637,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         worker_count = 0
         device_count_per_worker = 0
 
+        event_message = ListMessageBuilder([])
+        seen_skip_reasons: set[str] = set()
+
         # Loop through worker groups with the same number of GPUs.
         for gpu_count, worker_group in workers_by_gpu_count_dict.items():
             if len(worker_group) < 2:
@@ -677,13 +685,17 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                         break
 
                 if vram_sum >= self._vram_claim:
-                    return [
-                        _create_candidate(
-                            self._model,
-                            selected_workers,
-                            self._gpu_memory_utilization,
-                        )
-                    ]
+                    candidate, skip_reason = _create_candidate(
+                        self._model,
+                        selected_workers,
+                        self._gpu_memory_utilization,
+                    )
+                    if candidate is None:
+                        if skip_reason and skip_reason not in seen_skip_reasons:
+                            seen_skip_reasons.add(skip_reason)
+                            event_message.append(skip_reason)
+                        continue
+                    return [candidate]
             if vram_sum > largest_vram:
                 workers_combination = selected_workers
                 largest_vram = vram_sum
@@ -691,7 +703,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 device_count_per_worker = gpu_count
 
         # Nothing can be return, construct scheduling message
-        event_message = ListMessageBuilder([])
         if self._gpu_memory_utilization == 0:
             event_message.append(
                 f"The largest available worker has {byte_to_gib(largest_vram)} GiB of VRAM."
@@ -730,15 +741,75 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 msg + " Consider adjusting your tensor-parallel-size value."
             )
 
+        if (
+            resolve_executor_backend(
+                self._model.backend_parameters, self._model.backend_version
+            )
+            == "mp"
+        ):
+            self._validate_native_multinode_arguments()
+
+    def _validate_native_multinode_arguments(self):
+        """
+        Sanity-check user-provided native multi-node parallelism arguments
+        before worker selection. Cross-node-topology invariants (TP divides
+        every node's GPU count, ``workers_per_dp`` fits the cluster, etc.)
+        are enforced later in :func:`cal_multinode_topology` once the
+        deployment metadata is known; here we only catch contradictions
+        detectable from backend_parameters alone.
+        """
+        dp = find_int_parameter(
+            self._model.backend_parameters, ["data-parallel-size", "dp"]
+        )
+        dpl = find_int_parameter(
+            self._model.backend_parameters, ["data-parallel-size-local", "dpl"]
+        )
+
+        if dp is not None and dp <= 0:
+            raise ValueError(
+                f"vLLM multi-node: --data-parallel-size {dp} must be positive."
+            )
+        if dpl is not None and dpl <= 0:
+            raise ValueError(
+                f"vLLM multi-node: --data-parallel-size-local {dpl} must be positive."
+            )
+        if dp is not None and dpl is not None and dp % dpl != 0:
+            raise ValueError(
+                f"vLLM multi-node: --data-parallel-size {dp} must be a multiple "
+                f"of --data-parallel-size-local {dpl}."
+            )
+
 
 def _create_candidate(
     model: Model,
     selected_workers: List[Worker],
     gpu_memory_utilization: float = 0.9,
-) -> ModelInstanceScheduleCandidate:
+) -> Tuple[Optional[ModelInstanceScheduleCandidate], Optional[str]]:
     """
     Create a candidate with all GPUs from the selected workers.
+
+    Returns ``(None, reason)`` when the worker combination fails vLLM's native
+    multi-node topology constraints (e.g. heterogeneous nodes requested for
+    cross-node TP/PP). The outer worker-combination loop skips this group and
+    tries the next one — without raising, because a different combination
+    may still satisfy the requirements.
     """
+    if len(selected_workers) > 1 and (
+        resolve_executor_backend(model.backend_parameters, model.backend_version)
+        == "mp"
+    ):
+        gpu_per_node = [len(w.status.gpu_devices or []) for w in selected_workers]
+        try:
+            validate_multinode_topology(
+                gpu_per_node, parse_user_parallelism(model.backend_parameters)
+            )
+        except ValueError as e:
+            logger.info(
+                f"Skipping worker combination {[w.name for w in selected_workers]} "
+                f"for {model.name}: {e}"
+            )
+            return None, str(e)
+
     main_worker = selected_workers[0]
     vram_claim_main = {
         gpu.index: int(gpu.memory.total * gpu_memory_utilization)
@@ -776,4 +847,4 @@ def _create_candidate(
             )
         )
 
-    return candidate
+    return candidate, None

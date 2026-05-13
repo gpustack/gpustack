@@ -626,13 +626,14 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
         instance_id: int,
         populate_existing: bool = True,
     ) -> Optional["ModelInstance"]:
-        """Load a model instance with primary/LoRA and draft model_files eagerly loaded."""
+        """Load a model instance with primary/LoRA + draft model_files and model spec eagerly loaded."""
         stmt = (
             select(cls)
             .where(cls.id == instance_id)
             .options(
                 selectinload(cls.model_files),
                 selectinload(cls.draft_model_files),
+                selectinload(cls.model),
             )
         )
         if populate_existing:

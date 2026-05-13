@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Request, status, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
@@ -10,6 +10,7 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.server.services import ModelInstanceService
 from gpustack.server.worker_request import request_to_worker, stream_to_worker
+from gpustack.utils.command import resolve_executor_backend
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -44,36 +45,47 @@ from gpustack.utils.grafana import resolve_grafana_base_url
 router = APIRouter()
 
 
-# Subordinate-worker display names, keyed by BackendEnum values.
-_SUBORDINATE_DISPLAY_NAMES: Dict[str, str] = {
-    BackendEnum.VLLM: "ray-worker",
-}
+def _is_vllm_ray_subordinate(model_instance: ModelInstance) -> bool:
+    """Whether a vLLM subordinate node is part of the Ray sidecar path.
+
+    Native multi-node (mp) subordinates — regardless of dp_only/mp_only/nested
+    shape — fall through to ``sub-vllm`` because the log viewer doesn't need
+    that level of granularity.
+    """
+    if model_instance.backend != BackendEnum.VLLM:
+        return False
+    model = model_instance.model
+    backend_parameters = model.backend_parameters if model else None
+    backend_version = model.backend_version if model else None
+    return resolve_executor_backend(backend_parameters, backend_version) == "ray"
 
 
-def _default_display_name(backend: Optional[str], is_main_worker: bool) -> str:
+def _default_display_name(model_instance: ModelInstance, is_main_worker: bool) -> str:
     """Resolve the UI display name for the internal 'default' container."""
+    backend = model_instance.backend
+    backend_name = backend.value if hasattr(backend, "value") else backend
     if is_main_worker:
-        return backend or "default"
-    if backend and backend in _SUBORDINATE_DISPLAY_NAMES:
-        return _SUBORDINATE_DISPLAY_NAMES[backend]
+        return backend_name or "default"
+    if _is_vllm_ray_subordinate(model_instance):
+        return "ray-worker"
     # Generic subordinate: "sub-<backend>" or just "subordinate".
-    return f"sub-{backend}" if backend else "subordinate"
+    return f"sub-{backend_name}" if backend_name else "subordinate"
 
 
 def _map_container_display_name(
-    internal_name: str, backend: Optional[str], is_main_worker: bool
+    internal_name: str, model_instance: ModelInstance, is_main_worker: bool
 ) -> str:
     """Forward-map an internal container name to its UI display name."""
     if internal_name != "default":
         return internal_name
-    return _default_display_name(backend, is_main_worker)
+    return _default_display_name(model_instance, is_main_worker)
 
 
 def _unmap_container_display_name(
-    display_name: str, backend: Optional[str], is_main_worker: bool
+    display_name: str, model_instance: ModelInstance, is_main_worker: bool
 ) -> str:
     """Reverse-map a UI display name back to the internal container name."""
-    if display_name == _default_display_name(backend, is_main_worker):
+    if display_name == _default_display_name(model_instance, is_main_worker):
         return "default"
     return display_name
 
@@ -206,7 +218,7 @@ async def get_serving_logs(  # noqa: C901
     if container_name:
         is_main = (worker_id or model_instance.worker_id) == model_instance.worker_id
         container_name = _unmap_container_display_name(
-            container_name, model_instance.backend, is_main
+            container_name, model_instance, is_main
         )
 
     # Build valid worker IDs (main worker + subordinate workers for distributed instances)
@@ -400,7 +412,7 @@ async def get_model_instance_log_options(
         is_main = wo.worker_id == model_instance.worker_id
         for entry in wo.restarts:
             entry.containers = [
-                _map_container_display_name(c, model_instance.backend, is_main)
+                _map_container_display_name(c, model_instance, is_main)
                 for c in entry.containers
             ]
 

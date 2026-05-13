@@ -39,6 +39,7 @@ from gpustack.utils.command import find_int_parameter
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
 from gpustack.worker.backends.sglang import SGLangServer
+from gpustack.utils.command import resolve_executor_backend
 from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.custom import CustomServer
@@ -1273,22 +1274,40 @@ class ServeManager:
             mi.ports = [mi.port]
             unavailable_ports.add(mi.port)
 
-            # Additional ports for distributed servers
+            # Additional ports for distributed servers.
+            #
+            # ports[0]: HTTP API (always).
+            # Native (mp) path — both reserved unconditionally, dp_only uses
+            # ports[1], mp_only uses ports[2], nested uses both:
+            #   ports[1]: --data-parallel-rpc-port (DP coordinator ZMQ)
+            #   ports[2]: --master-port (PyTorch torch.distributed TCP store)
+            # Ray path: ports[1] = DP RPC when user-specified dp > 1.
+            # ports[-1]: subordinate workers' connecting port.
             if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
-                # RPC port for DP communication in vLLM backend
                 if backend == BackendEnum.VLLM:
-                    dps = find_int_parameter(
-                        model.backend_parameters,
-                        ["data-parallel-size", "dp"],
+                    executor_backend = resolve_executor_backend(
+                        model.backend_parameters, model.backend_version
                     )
-                    if dps and dps > 1:
-                        dp_connecting_port = network.get_free_port(
+                    if executor_backend == "mp":
+                        # Pre-allocate both DP RPC and PyTorch master ports;
+                        # the two channels use different protocols (ZMQ vs
+                        # TCPStore) and can't share one port in the nested
+                        # shape, so reserving both keeps the layout stable.
+                        cross_port_count = 2
+                    else:
+                        dps = find_int_parameter(
+                            model.backend_parameters,
+                            ["data-parallel-size", "dp"],
+                        )
+                        cross_port_count = 1 if dps and dps > 1 else 0
+                    for _ in range(cross_port_count):
+                        cross_port = network.get_free_port(
                             port_range=self._config.service_port_range,
                             unavailable_ports=unavailable_ports,
                             host=mi.worker_ip,
                         )
-                        mi.ports.append(dp_connecting_port)
-                        unavailable_ports.add(dp_connecting_port)
+                        mi.ports.append(cross_port)
+                        unavailable_ports.add(cross_port)
 
                 # Connecting port for subordinate workers communication
                 connecting_port = network.get_free_port(
