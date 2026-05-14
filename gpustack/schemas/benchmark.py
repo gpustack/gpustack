@@ -81,7 +81,6 @@ class ModelInstanceSnapshot(ModelInstanceRuntimeInfo):
     backend_version: Optional[str] = None
     api_detected_backend_version: Optional[str] = None
     backend_parameters: Optional[List[str]] = Field(sa_type=JSON, default=None)
-    injected_backend_parameters: Optional[List[str]] = Field(sa_type=JSON, default=None)
     image_name: Optional[str] = None
     run_command: Optional[str] = Field(sa_type=Text, default=None)
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
