@@ -81,8 +81,10 @@ async def _accessible_org_ids(session, cluster: Cluster) -> Set[int]:
                 continue
             if p.kind == PrincipalType.ORG:
                 org_ids.add(p.id)
-            elif p.kind == PrincipalType.GROUP and p.parent_principal_id is not None:
-                org_ids.add(p.parent_principal_id)
+            # GROUP principals are peer-level now and may belong to
+            # zero or more Orgs; quota collection happens via the Org
+            # itself, so we don't try to derive an Org from a Group
+            # grant here.
     return org_ids
 
 

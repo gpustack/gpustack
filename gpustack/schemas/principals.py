@@ -8,22 +8,29 @@ its own table:
 - (no extension for ORG / GROUP — every column they need is on
   ``principals`` itself)
 
+All three kinds are peer-level: there is no structural parent. A
+Group's relationship to an Org (if any) is expressed by a row in
+``principal_memberships`` with ``parent=Org, member=Group`` — the same
+mechanism used for a User joining an Org. The semantics: every active
+user in that Group inherits the membership's role inside the Org.
+
 Resources (``models``, ``model_routes``, ``clusters``, ...) record their
 owner via ``owner_principal_id``. Memberships connect principals to
-principals (a user-principal joining an org-principal, or a user-
-principal joining a group-principal). ACLs reference principals
-directly.
+principals (a user-principal joining an org-principal, a user-
+principal joining a group-principal, or a group-principal joining an
+org-principal). ACLs reference principals directly.
 """
 
 from datetime import datetime
 from enum import Enum
 from typing import ClassVar, List, Optional
 
-from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import Enum as SQLEnum, text
 from sqlmodel import (
     Column,
     Field,
     ForeignKey,
+    Index,
     Integer,
     SQLModel,
     UniqueConstraint,
@@ -71,6 +78,10 @@ class OrgRole(str, Enum):
     # vs `org_role == OrgRole.OWNER` in code. The names intentionally
     # diverge from the platform admin/user role so the two never get
     # conflated.
+    #
+    # Both roles apply to User-members and to Group-members of an Org;
+    # a Group-membership confers the role on every active user inside
+    # the Group.
     OWNER = "owner"
     MEMBER = "member"
 
@@ -88,27 +99,26 @@ class PrincipalBase(SQLModel):
     description: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
-    # Structural parent. NULL for USER and ORG; for GROUP, points at the
-    # owning ORG-principal so the group lives inside it.
-    parent_principal_id: Optional[int] = Field(
-        default=None,
-        sa_column=Column(
-            Integer,
-            ForeignKey("principals.id", ondelete="CASCADE"),
-            nullable=True,
-        ),
-    )
 
 
 class Principal(PrincipalBase, BaseModelMixin, table=True):
     __tablename__ = 'principals'
     __table_args__ = (
         UniqueConstraint('slug', name='uix_principals_slug'),
-        # Group names must be unique within their parent org. NULL parent
-        # (USER / ORG) doesn't participate — UNIQUE treats NULL as
-        # distinct, so users and orgs can share names freely.
-        UniqueConstraint(
-            'parent_principal_id', 'name', name='uix_principals_parent_name'
+        # Group names are globally unique among active groups. USER /
+        # ORG names are not constrained here (Users key off
+        # ``users.username``, Orgs off ``slug``).
+        #
+        # Postgres supports partial unique indexes — declared here for
+        # autogenerate parity with the migration. MySQL has no partial
+        # index, so the migration creates a plain non-unique index and
+        # the route handlers / sync service enforce uniqueness at the
+        # application layer.
+        Index(
+            'uix_principals_group_name',
+            'name',
+            unique=True,
+            postgresql_where=text("kind = 'GROUP' AND deleted_at IS NULL"),
         ),
     )
 
@@ -117,7 +127,6 @@ class Principal(PrincipalBase, BaseModelMixin, table=True):
 
 class PrincipalListParams(ListParams):
     kind: Optional[PrincipalType] = None
-    parent_principal_id: Optional[int] = None
     sortable_fields: ClassVar[List[str]] = [
         "name",
         "slug",
@@ -133,7 +142,6 @@ class PrincipalPublic(SQLModel):
     slug: Optional[str] = None
     name: str
     description: Optional[str] = None
-    parent_principal_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -156,8 +164,11 @@ class PrincipalMembershipBase(SQLModel):
             nullable=False,
         ),
     )
-    # Only meaningful when parent is an ORG; NULL for GROUP memberships
-    # (groups don't have role tiers — you're either in or out).
+    # Carries an ``OrgRole`` whenever the parent is an ORG (regardless of
+    # whether the member is a User or a Group — for a Group-member, the
+    # role propagates to every active user in the Group). NULL only for
+    # User-in-Group memberships (groups don't have role tiers — you're
+    # either in or out).
     role: Optional[OrgRole] = Field(
         default=None,
         sa_column=Column(SQLEnum(OrgRole), nullable=True),

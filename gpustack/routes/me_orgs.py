@@ -1,9 +1,10 @@
 """Self-service tenant endpoints — what orgs am I in, what clusters can I use."""
 
-from typing import List
+from typing import Dict, List
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+from sqlalchemy.orm import aliased
 from sqlmodel import select
 
 from gpustack.api.exceptions import ForbiddenException, NotFoundException
@@ -31,7 +32,8 @@ class MyOrganization(BaseModel):
 @router.get("/organizations", response_model=List[MyOrganization])
 async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
     """Return the org switcher list — user's Personal scope first,
-    then any ORG-principals they're a member of.
+    then any ORG-principals they're a member of (directly or via a
+    Group-membership).
 
     "Personal" is no longer a stored Org row. After the principals
     refactor it's the user's own USER-principal (pre-refactor flag
@@ -50,8 +52,9 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
             )
         )
 
-    stmt = (
-        select(PrincipalMembership, Principal)
+    # Direct memberships: user joined the Org directly.
+    direct_stmt = (
+        select(PrincipalMembership.role, Principal)
         .join(
             Principal,
             Principal.id == PrincipalMembership.parent_principal_id,
@@ -63,13 +66,39 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
             Principal.kind == PrincipalType.ORG,
         )
     )
-    rows = (await session.exec(stmt)).all()
+
+    # Transitive memberships: user is in a Group that is a Member of the Org.
+    group_pm = aliased(PrincipalMembership)
+    org_pm = aliased(PrincipalMembership)
+    via_group_stmt = (
+        select(org_pm.role, Principal)
+        .join(group_pm, group_pm.parent_principal_id == org_pm.member_principal_id)
+        .join(Principal, Principal.id == org_pm.parent_principal_id)
+        .where(
+            group_pm.member_principal_id == user.principal_id,
+            group_pm.deleted_at.is_(None),
+            org_pm.deleted_at.is_(None),
+            Principal.deleted_at.is_(None),
+            Principal.kind == PrincipalType.ORG,
+        )
+    )
+
+    best_by_org: Dict[int, tuple[OrgRole, Principal]] = {}
+    for stmt in (direct_stmt, via_group_stmt):
+        for role, org in (await session.exec(stmt)).all():
+            effective = role or OrgRole.MEMBER
+            existing = best_by_org.get(org.id)
+            if existing is None or (
+                existing[0] != OrgRole.OWNER and effective == OrgRole.OWNER
+            ):
+                best_by_org[org.id] = (effective, org)
+
     items.extend(
         MyOrganization(
             organization=OrganizationPublic.from_principal(org),
-            role=membership.role or OrgRole.MEMBER,
+            role=role,
         )
-        for membership, org in rows
+        for role, org in best_by_org.values()
     )
     return items
 
@@ -88,7 +117,9 @@ async def list_my_clusters_in_org(
             message="Cannot inspect clusters of an organization you are not in"
         )
 
-    # Group-principals that the user is a member of, scoped to this Org.
+    # All Group-principals the user is in. Groups are no longer
+    # org-scoped — a Group is a peer-level principal that may carry
+    # cluster_access grants applicable wherever the user acts.
     user_principal_id = ctx.user.principal_id
     group_stmt = (
         select(PrincipalMembership.parent_principal_id)
@@ -100,7 +131,6 @@ async def list_my_clusters_in_org(
             PrincipalMembership.member_principal_id == user_principal_id,
             PrincipalMembership.deleted_at.is_(None),
             Principal.kind == PrincipalType.GROUP,
-            Principal.parent_principal_id == org_id,
             Principal.deleted_at.is_(None),
         )
     )

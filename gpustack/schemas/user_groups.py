@@ -1,10 +1,14 @@
 """Pydantic surface for the User Group API.
 
-Backed by ``principals`` rows where ``kind == GROUP`` and
-``parent_principal_id`` points at the owning ORG-principal. There is
-no dedicated ``user_groups`` table — UserGroup is a Pydantic-only DTO
-over ``Principal``. Group membership lives in
-``principal_memberships``.
+Backed by ``principals`` rows where ``kind == GROUP``. Groups are
+peer-level principals (no structural parent). A Group's relationship
+to an Org, when one exists, is one or more rows in
+``principal_memberships`` with ``parent=Org, member=Group``; those
+confer the membership's role on every active user in the Group.
+There is no dedicated ``user_groups`` table — UserGroup is a
+Pydantic-only DTO over ``Principal``. User membership in a Group
+lives in ``principal_memberships`` too (``parent=Group, member=User``,
+``role=NULL``).
 """
 
 from datetime import datetime
@@ -26,7 +30,6 @@ class UserGroupCreate(UserGroupUpdate):
 
 
 class UserGroupListParams(ListParams):
-    organization_id: Optional[int] = None
     sortable_fields: ClassVar[List[str]] = [
         "name",
         "created_at",
@@ -36,19 +39,25 @@ class UserGroupListParams(ListParams):
 
 class UserGroupPublic(SQLModel):
     id: int
-    organization_id: int
     name: str
     description: Optional[str] = None
+    # Count of active users in this group — denormalized on the
+    # response so admin listings can render "Members" at a glance
+    # without an N+1 fan-out to ``/groups/{id}/members``. Always
+    # populated by the list/get routes (zero for empty groups).
+    member_count: int = 0
     created_at: datetime
     updated_at: datetime
 
     @classmethod
-    def from_principal(cls, p: Principal) -> "UserGroupPublic":
+    def from_principal(
+        cls, p: Principal, *, member_count: int = 0
+    ) -> "UserGroupPublic":
         return cls(
             id=p.id,
-            organization_id=p.parent_principal_id,
             name=p.name,
             description=p.description,
+            member_count=member_count,
             created_at=p.created_at,
             updated_at=p.updated_at,
         )

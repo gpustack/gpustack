@@ -13,7 +13,6 @@ from gpustack.api.tenant import (
 )
 from gpustack.schemas.principals import (
     OrgRole,
-    PrincipalMembership,
     PrincipalType,
 )
 
@@ -137,14 +136,10 @@ async def test_member_uses_team_org_via_header():
     """Non-admin sends X-Organization-Id pointing at an Org they belong to."""
     user = _user(id=10, is_admin=False, principal_id=100)
     request = _request()
-    membership = PrincipalMembership(
-        member_principal_id=100,
-        parent_principal_id=5,
-        role=OrgRole.MEMBER,
-    )
     session = _session_returning(
-        membership,  # _resolve_membership
-        [11, 12],  # _user_group_principal_ids
+        [OrgRole.MEMBER],  # _resolve_effective_org_role direct
+        [],  # _resolve_effective_org_role via-group
+        [11, 12],  # _user_group_principal_ids (all groups, no org filter)
         [101, 102],  # _accessible_clusters
         _principal(id=5, kind=PrincipalType.ORG),  # org existence check
     )
@@ -164,12 +159,40 @@ async def test_member_uses_team_org_via_header():
 
 
 @pytest.mark.asyncio
-async def test_personal_scope_short_circuits():
-    """When current_principal_id == user.principal_id we treat it as
-    personal scope — no org membership lookup, no group expansion."""
+async def test_member_inherits_role_via_group_membership():
+    """User joins Org transitively through a Group that is a Member of
+    the Org — the resolver hands back the Group-membership's role.
+    """
     user = _user(id=10, is_admin=False, principal_id=100)
     request = _request()
     session = _session_returning(
+        [],  # _resolve_effective_org_role direct (no direct row)
+        [OrgRole.OWNER],  # via-group (group is OWNER of org → user is OWNER)
+        [42],  # _user_group_principal_ids
+        [101],  # _accessible_clusters
+        _principal(id=5, kind=PrincipalType.ORG),
+    )
+
+    ctx = await get_tenant_context(
+        request=request,
+        session=session,
+        user=user,
+        x_organization_id="5",
+    )
+
+    assert ctx.org_role == OrgRole.OWNER
+
+
+@pytest.mark.asyncio
+async def test_personal_scope_short_circuits():
+    """When current_principal_id == user.principal_id we treat it as
+    personal scope — no org membership lookup. Groups still resolve
+    so cluster_access grants against them apply.
+    """
+    user = _user(id=10, is_admin=False, principal_id=100)
+    request = _request()
+    session = _session_returning(
+        [],  # _user_group_principal_ids
         [],  # _accessible_clusters
     )
 
@@ -189,7 +212,7 @@ async def test_personal_scope_short_circuits():
 async def test_non_member_request_to_other_org_is_rejected():
     user = _user(id=11, is_admin=False, principal_id=100)
     request = _request()
-    session = _session_returning(None)  # no membership row
+    session = _session_returning([], [])  # no direct membership, no group path
 
     with pytest.raises(ForbiddenException):
         await get_tenant_context(
@@ -205,9 +228,10 @@ async def test_platform_admin_can_act_in_org_without_membership():
     user = _user(id=1, is_admin=True, principal_id=None)
     request = _request()
     session = _session_returning(
-        None,  # no membership; admin should still pass
-        [],
-        [],
+        [],  # no direct membership; admin still passes
+        [],  # no via-group either
+        [],  # _user_group_principal_ids
+        [],  # _accessible_clusters
         _principal(id=7, kind=PrincipalType.ORG),
     )
 
@@ -227,13 +251,9 @@ async def test_platform_admin_can_act_in_org_without_membership():
 async def test_api_key_overrides_header():
     user = _user(id=10, is_admin=False, principal_id=100)
     request = _request(api_key=_api_key(owner_principal_id=42))
-    membership = PrincipalMembership(
-        member_principal_id=100,
-        parent_principal_id=42,
-        role=OrgRole.MEMBER,
-    )
     session = _session_returning(
-        membership,
+        [OrgRole.MEMBER],  # direct membership in org 42
+        [],  # no via-group
         [],
         [],
         _principal(id=42, kind=PrincipalType.ORG),

@@ -125,11 +125,27 @@ OrganizationsPublic = PaginatedList[OrganizationPublic]
 
 
 class OrganizationMembershipPublic(SQLModel):
-    user_id: int
+    """A member of an Org — either a User or a Group.
+
+    USER and GROUP principals are peer-level in the new identity
+    model, so the membership API treats them uniformly: identity
+    fields (``principal_id``, ``principal_kind``, ``principal_name``,
+    ``principal_description``) come off the ``principals`` row.
+
+    ``full_name`` is the one exception — it lives on the ``users``
+    table today (not on ``principals``), and ``principal.name`` for a
+    USER currently holds only the username. We surface ``full_name``
+    here so the Org-members UI can render a proper display name in
+    one round trip. Once identity consolidation moves the display
+    name onto the principal row, this field collapses into
+    ``principal_name`` and the dedicated ``full_name`` can go away.
+    """
+
+    principal_id: int
+    principal_kind: str
+    principal_name: Optional[str] = None
+    principal_description: Optional[str] = None
+    full_name: Optional[str] = None
     organization_id: int
     role: Optional[str] = None
     created_at: datetime
-    # Server-resolved labels so the UI list doesn't need a separate
-    # `queryUsersList(page=-1)` round trip just to render names.
-    username: Optional[str] = None
-    full_name: Optional[str] = None

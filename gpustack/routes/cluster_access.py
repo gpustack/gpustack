@@ -89,12 +89,12 @@ async def _resolve_principal_views(
     for r in rows:
         p: Optional[Principal] = principal_by_id.get(r.principal_id)
         kind = p.kind if p else PrincipalType.USER
-        # GROUP principals expose their owning ORG via parent_principal_id
-        # so the UI can render quota slots; USER and ORG return None.
-        parent = p.parent_principal_id if p and p.kind == PrincipalType.GROUP else None
-        # ORG principals' "parent" for display purposes is themselves.
-        if p and p.kind == PrincipalType.ORG:
-            parent = p.id
+        # ORG principals' "parent" for display purposes is themselves;
+        # GROUPs are now peer-level (may join zero or more Orgs via
+        # membership rows) so they have no single parent to surface
+        # here — UI quota slots for a Group should be resolved
+        # separately from the Group's Org-memberships if needed.
+        parent = p.id if p and p.kind == PrincipalType.ORG else None
         out.append(
             ClusterAccessPublic(
                 cluster_id=r.cluster_id,

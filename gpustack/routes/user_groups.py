@@ -1,26 +1,30 @@
-"""UserGroup management — Org owner+ or platform admin.
+"""UserGroup management — platform admin only.
 
-Groups are GROUP-kind ``Principal`` rows whose ``parent_principal_id``
-points at their owning ORG-principal. Group memberships live in the
-unified ``principal_memberships`` table with ``role=NULL`` (groups
-don't have role tiers).
+Groups are GROUP-kind ``Principal`` rows. They are peer-level
+principals: no structural parent, no Org affiliation baked into the
+row. A Group may be a member of zero or more Orgs via rows in
+``principal_memberships`` with ``parent=Org, member=Group`` — managed
+through the ``organization_members`` routes, not here.
+
+User membership in a Group lives in ``principal_memberships`` too
+(``parent=Group, member=User``, ``role=NULL``).
 """
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlmodel import select
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
-    ForbiddenException,
     InvalidException,
     NotFoundException,
 )
+from gpustack.api.tenant import require_platform_admin
 from gpustack.schemas.principals import (
-    OrgRole,
     Principal,
     PrincipalMembership,
     PrincipalType,
@@ -43,58 +47,55 @@ class GroupMembershipCreate(BaseModel):
     user_ids: List[int]
 
 
-def _can_manage_groups(ctx, org_id: int) -> bool:
-    if ctx.is_platform_admin:
-        return True
-    if ctx.current_principal_id != org_id:
-        return False
-    return ctx.org_role == OrgRole.OWNER
-
-
-async def _load_org(session, org_id: int) -> Principal:
-    org = await Principal.one_by_id(session, org_id)
-    if not org or org.deleted_at is not None or org.kind != PrincipalType.ORG:
-        raise NotFoundException(message="Organization not found")
-    return org
-
-
-async def _load_group(session, org_id: int, group_id: int) -> Principal:
+async def _load_group(session, group_id: int) -> Principal:
     group = await Principal.one_by_id(session, group_id)
-    if (
-        not group
-        or group.deleted_at is not None
-        or group.kind != PrincipalType.GROUP
-        or group.parent_principal_id != org_id
-    ):
+    if not group or group.deleted_at is not None or group.kind != PrincipalType.GROUP:
         raise NotFoundException(message="Group not found")
     return group
 
 
-def _group_to_public(group: Principal) -> UserGroupPublic:
-    return UserGroupPublic.from_principal(group)
+async def _bulk_member_counts(session, group_ids: List[int]) -> Dict[int, int]:
+    """Active user-count per group, in one COUNT GROUP BY query.
+
+    Single query regardless of page size — avoids an N+1 over
+    ``/groups/{id}/members`` from the UI. Groups absent from the
+    result map have zero active members; callers default to 0.
+    """
+    if not group_ids:
+        return {}
+    stmt = (
+        select(
+            PrincipalMembership.parent_principal_id,
+            func.count(PrincipalMembership.id),
+        )
+        .where(
+            PrincipalMembership.parent_principal_id.in_(group_ids),
+            PrincipalMembership.deleted_at.is_(None),
+        )
+        .group_by(PrincipalMembership.parent_principal_id)
+    )
+    return {row[0]: row[1] for row in (await session.exec(stmt)).all()}
 
 
-# ---- groups ----------------------------------------------------------------
+# ---- groups (platform-admin CRUD) ------------------------------------------
 
 
-@router.get("/organizations/{org_id}/groups", response_model=UserGroupsPublic)
+@router.get("/groups", response_model=UserGroupsPublic)
 async def list_groups(
     session: SessionDep,
     ctx: TenantContextDep,
-    org_id: int,
     params: UserGroupListParams = Depends(),
     search: Optional[str] = None,
 ):
-    await _load_org(session, org_id)
-    if not ctx.is_platform_admin and ctx.current_principal_id != org_id:
-        raise ForbiddenException(message="Not a member of this organization")
-
+    """List all groups. Visible to any authenticated user — Group names
+    are global identifiers in the system; rendering an Org's
+    group-memberships needs to be able to enumerate candidate groups.
+    """
     fuzzy_fields = {"name": search} if search else {}
     page = await Principal.paginated_by_query(
         session=session,
         fields={
             "kind": PrincipalType.GROUP,
-            "parent_principal_id": org_id,
             "deleted_at": None,
         },
         fuzzy_fields=fuzzy_fields,
@@ -102,75 +103,85 @@ async def list_groups(
         per_page=params.perPage,
         order_by=params.order_by,
     )
-    page.items = [_group_to_public(g) for g in page.items]
+    counts = await _bulk_member_counts(session, [g.id for g in page.items])
+    page.items = [
+        UserGroupPublic.from_principal(g, member_count=counts.get(g.id, 0))
+        for g in page.items
+    ]
     return page
 
 
-@router.post("/organizations/{org_id}/groups", response_model=UserGroupPublic)
-async def create_group(
-    session: SessionDep,
-    ctx: TenantContextDep,
-    org_id: int,
-    body: UserGroupCreate,
-):
-    await _load_org(session, org_id)
-    if not _can_manage_groups(ctx, org_id):
-        raise ForbiddenException(message="Insufficient permission to manage groups")
+@router.get("/groups/{group_id}", response_model=UserGroupPublic)
+async def get_group(session: SessionDep, ctx: TenantContextDep, group_id: int):
+    group = await _load_group(session, group_id)
+    counts = await _bulk_member_counts(session, [group.id])
+    return UserGroupPublic.from_principal(group, member_count=counts.get(group.id, 0))
 
+
+@router.post(
+    "/groups",
+    response_model=UserGroupPublic,
+    dependencies=[Depends(require_platform_admin)],
+)
+async def create_group(session: SessionDep, body: UserGroupCreate):
     existing = await Principal.one_by_fields(
         session,
         {
             "kind": PrincipalType.GROUP,
-            "parent_principal_id": org_id,
             "name": body.name,
             "deleted_at": None,
         },
     )
     if existing:
-        raise AlreadyExistsException(
-            message=f"Group '{body.name}' already exists in this organization"
-        )
+        raise AlreadyExistsException(message=f"Group '{body.name}' already exists")
 
     try:
         group = Principal(
             kind=PrincipalType.GROUP,
-            parent_principal_id=org_id,
             name=body.name,
             description=body.description,
         )
         created = await Principal.create(session, group)
     except Exception as e:
         raise InvalidException(message=f"Failed to create group: {e}")
-    return _group_to_public(created)
+    # New group has no members yet; skip the COUNT round trip.
+    return UserGroupPublic.from_principal(created, member_count=0)
 
 
-@router.put("/organizations/{org_id}/groups/{group_id}", response_model=UserGroupPublic)
-async def update_group(
-    session: SessionDep,
-    ctx: TenantContextDep,
-    org_id: int,
-    group_id: int,
-    body: UserGroupUpdate,
-):
-    group = await _load_group(session, org_id, group_id)
-    if not _can_manage_groups(ctx, org_id):
-        raise ForbiddenException(message="Insufficient permission to manage groups")
+@router.put(
+    "/groups/{group_id}",
+    response_model=UserGroupPublic,
+    dependencies=[Depends(require_platform_admin)],
+)
+async def update_group(session: SessionDep, group_id: int, body: UserGroupUpdate):
+    group = await _load_group(session, group_id)
+
+    if body.name != group.name:
+        clash = await Principal.one_by_fields(
+            session,
+            {
+                "kind": PrincipalType.GROUP,
+                "name": body.name,
+                "deleted_at": None,
+            },
+        )
+        if clash and clash.id != group.id:
+            raise AlreadyExistsException(message=f"Group '{body.name}' already exists")
 
     try:
         await group.update(session, body.model_dump(exclude_unset=True))
     except Exception as e:
         raise InvalidException(message=f"Failed to update group: {e}")
-    return _group_to_public(group)
+    counts = await _bulk_member_counts(session, [group.id])
+    return UserGroupPublic.from_principal(group, member_count=counts.get(group.id, 0))
 
 
-@router.delete("/organizations/{org_id}/groups/{group_id}")
-async def delete_group(
-    session: SessionDep, ctx: TenantContextDep, org_id: int, group_id: int
-):
-    group = await _load_group(session, org_id, group_id)
-    if not _can_manage_groups(ctx, org_id):
-        raise ForbiddenException(message="Insufficient permission to manage groups")
-
+@router.delete(
+    "/groups/{group_id}",
+    dependencies=[Depends(require_platform_admin)],
+)
+async def delete_group(session: SessionDep, group_id: int):
+    group = await _load_group(session, group_id)
     try:
         await group.delete(session)
     except Exception as e:
@@ -188,18 +199,11 @@ async def _resolve_user(session, user_id: int) -> Optional[User]:
 
 
 @router.get(
-    "/organizations/{org_id}/groups/{group_id}/members",
+    "/groups/{group_id}/members",
     response_model=List[UserGroupMembershipPublic],
 )
-async def list_group_members(
-    session: SessionDep,
-    ctx: TenantContextDep,
-    org_id: int,
-    group_id: int,
-):
-    await _load_group(session, org_id, group_id)
-    if not ctx.is_platform_admin and ctx.current_principal_id != org_id:
-        raise ForbiddenException(message="Not a member of this organization")
+async def list_group_members(session: SessionDep, ctx: TenantContextDep, group_id: int):
+    await _load_group(session, group_id)
 
     stmt = select(PrincipalMembership).where(
         PrincipalMembership.parent_principal_id == group_id,
@@ -229,25 +233,22 @@ async def list_group_members(
 
 
 @router.post(
-    "/organizations/{org_id}/groups/{group_id}/members",
+    "/groups/{group_id}/members",
     response_model=List[UserGroupMembershipPublic],
+    dependencies=[Depends(require_platform_admin)],
 )
 async def add_group_members(
     session: SessionDep,
-    ctx: TenantContextDep,
-    org_id: int,
     group_id: int,
     body: GroupMembershipCreate,
 ):
     """Add one or more users to a group in a single request.
 
-    All-or-nothing: validate every user up front (exists, is an Org
-    member, not already in the group); if any check fails, raise and
-    write nothing. Otherwise all rows insert in a single transaction.
+    All-or-nothing: validate every user up front; if any check fails,
+    raise and write nothing. Otherwise all rows insert in a single
+    transaction.
     """
-    await _load_group(session, org_id, group_id)
-    if not _can_manage_groups(ctx, org_id):
-        raise ForbiddenException(message="Insufficient permission to manage groups")
+    await _load_group(session, group_id)
 
     if not body.user_ids:
         raise InvalidException(message="user_ids must not be empty")
@@ -263,28 +264,6 @@ async def add_group_members(
         raise NotFoundException(message=f"User(s) not found: {missing}")
 
     principal_ids = [users_by_id[uid].principal_id for uid in user_ids]
-
-    # Every user must already be an active org member.
-    org_member_principals = set(
-        (
-            await session.exec(
-                select(PrincipalMembership.member_principal_id).where(
-                    PrincipalMembership.parent_principal_id == org_id,
-                    PrincipalMembership.member_principal_id.in_(principal_ids),
-                    PrincipalMembership.deleted_at.is_(None),
-                )
-            )
-        ).all()
-    )
-    non_members = [
-        uid
-        for uid in user_ids
-        if users_by_id[uid].principal_id not in org_member_principals
-    ]
-    if non_members:
-        raise InvalidException(
-            message=f"User(s) not in organization {org_id}: {non_members}"
-        )
 
     # Bulk-load existing memberships (including soft-deleted, so we can
     # resurrect them instead of producing duplicate rows). Matches the
@@ -319,8 +298,6 @@ async def add_group_members(
             user = users_by_id[uid]
             existing = existing_by_principal.get(user.principal_id)
             if existing is not None:
-                # Soft-deleted row → resurrect so the membership timeline
-                # stays on a single row.
                 existing.deleted_at = None
                 existing.updated_at = now
                 session.add(existing)
@@ -352,17 +329,16 @@ async def add_group_members(
     ]
 
 
-@router.delete("/organizations/{org_id}/groups/{group_id}/members/{user_id}")
+@router.delete(
+    "/groups/{group_id}/members/{user_id}",
+    dependencies=[Depends(require_platform_admin)],
+)
 async def remove_group_member(
     session: SessionDep,
-    ctx: TenantContextDep,
-    org_id: int,
     group_id: int,
     user_id: int,
 ):
-    await _load_group(session, org_id, group_id)
-    if not _can_manage_groups(ctx, org_id):
-        raise ForbiddenException(message="Insufficient permission to manage groups")
+    await _load_group(session, group_id)
 
     user = await _resolve_user(session, user_id)
     if not user:
