@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import aiohttp
-from typing import Callable, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
@@ -20,6 +20,39 @@ from gpustack.gateway.utils import get_instance_id_from_header, router_header_ke
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
 logger = logging.getLogger(__name__)
+
+# Strip hop-by-hop and server-regenerated headers before forwarding the upstream
+# response; otherwise the ASGI server appends its own Server/Date/Content-Length
+# and clients (e.g. aiohttp) reject the response with "Duplicate 'Server' header".
+# Content-Encoding is dropped because the aiohttp ClientSession auto-decompresses
+# the body, so the bytes we stream out are already decoded.
+_EXCLUDED_RESPONSE_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "server",
+        "date",
+        "content-length",
+        "content-encoding",
+    }
+)
+
+
+def _filter_response_headers(resp_headers) -> List[Tuple[str, str]]:
+    # Return a list of tuples (not a dict) so multi-value headers such as
+    # Set-Cookie are preserved; aiohttp's CIMultiDictProxy emits one item per
+    # occurrence.
+    return [
+        (k, v)
+        for k, v in resp_headers.items()
+        if k.lower() not in _EXCLUDED_RESPONSE_HEADERS
+    ]
 
 
 @router.api_route(
@@ -87,12 +120,17 @@ async def proxy(path: str, request: Request):  # noqa: C901
             if record_fn:
                 record_fn(int(target_instance_id))
 
-        return StreamingResponse(
+        response = StreamingResponse(
             stream_response(resp),
             status_code=resp.status,
-            headers=dict(resp.headers),
             background=BackgroundTask(resp.close),
         )
+        # Use append (not the headers= constructor kwarg) so duplicate header
+        # names like Set-Cookie survive instead of being overwritten by
+        # Starlette's MutableHeaders.update.
+        for k, v in _filter_response_headers(resp.headers):
+            response.headers.append(k, v)
+        return response
 
     except asyncio.TimeoutError as e:
         error_message = f"Request to {url} timed out"
