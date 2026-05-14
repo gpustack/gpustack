@@ -1,9 +1,9 @@
 import logging
 import os
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict
 
 from gpustack.schemas.models import ModelInstanceDeploymentMetadata
-from gpustack.utils.command import extend_args_no_exist, format_backend_parameters
+from gpustack.utils.command import extend_args_no_exist
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
 
@@ -42,20 +42,9 @@ class VoxBoxServer(InferenceServer):
 
         command_script = self._get_serving_command_script(env)
 
-        command_args, injected = self._build_command_args(
+        command_args = self._build_command_args(
             port=self._get_serving_port(),
-            entrypoint=command,
         )
-
-        try:
-            self._update_model_instance(
-                self._model_instance.id,
-                injected_backend_parameters=format_backend_parameters(injected) or None,
-            )
-        except Exception as e:
-            logger.warning(
-                f"Failed to persist injected backend parameters for {self._model_instance.name}: {e}"
-            )
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
@@ -142,9 +131,7 @@ class VoxBoxServer(InferenceServer):
 
         logger.info(f"Created VoxBox container workload: {deployment_metadata.name}")
 
-    def _build_command_args(
-        self, port: int, entrypoint: Optional[List[str]] = None
-    ) -> Tuple[List[str], List[str]]:
+    def _build_command_args(self, port: int) -> List[str]:
         arguments = [
             "vox-box",
             "start",
@@ -159,22 +146,15 @@ class VoxBoxServer(InferenceServer):
             model_path=self._model_path,
             port=port,
         )
-
-        user_backend_parameters = self._flatten_backend_param()
-        arguments.extend(user_backend_parameters)
-        # Append immutable arguments to ensure proper operation for accessing.
-        # Only add if not already present in arguments.
+        arguments.extend(self._flatten_backend_param())
+        # Append immutable arguments to ensure proper operation for accessing
+        # Only add if not already present in arguments
         extend_args_no_exist(
             arguments, ("--host", self._worker.ip), ("--port", str(port))
         )
         if self._model_instance.gpu_indexes is not None:
             extend_args_no_exist(
-                arguments,
-                ("--device", f"cuda:{self._model_instance.gpu_indexes[0]}"),
+                arguments, ("--device", f"cuda:{self._model_instance.gpu_indexes[0]}")
             )
 
-        injected = self._get_injected_backend_parameters(
-            arguments, user_backend_parameters, entrypoint
-        )
-
-        return arguments, injected
+        return arguments

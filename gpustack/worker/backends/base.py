@@ -721,66 +721,6 @@ exec "$@"
         # Return original default_args by default
         return default_args
 
-    @staticmethod
-    def _get_backend_parameter_start_index(
-        arguments: List[str],
-        entrypoint: Optional[List[str]] = None,
-    ) -> int:
-        """
-        Return where backend parameters start in container args.
-
-        When a container entrypoint is configured separately, `arguments`
-        contains only entrypoint arguments, so backend parameters start at 0.
-        Otherwise, skip the command prefix embedded in `arguments`.
-        """
-        if entrypoint:
-            return 0
-
-        if not arguments:
-            return 0
-
-        command = os.path.basename(arguments[0])
-        if (
-            len(arguments) >= 3
-            and command.startswith("python")
-            and arguments[1] == "-m"
-        ):
-            return 3
-
-        for index, argument in enumerate(arguments):
-            if argument.startswith("-"):
-                return index
-
-        return len(arguments)
-
-    def _get_injected_backend_parameters(
-        self,
-        arguments: List[str],
-        user_backend_parameters: List[str],
-        entrypoint: Optional[List[str]] = None,
-    ) -> List[str]:
-        """
-        Derive injected backend parameters from the final command line.
-
-        The final command is the source of truth: remove the command prefix (or
-        separate container entrypoint) and the user-specified backend
-        parameters, and the remaining backend parameters are injected by
-        GPUStack.
-        """
-        start_index = self._get_backend_parameter_start_index(arguments, entrypoint)
-        candidates = arguments[start_index:]
-
-        if not user_backend_parameters:
-            return candidates
-
-        user_param_len = len(user_backend_parameters)
-        for start in range(len(candidates) - user_param_len, -1, -1):
-            end = start + user_param_len
-            if candidates[start:end] == user_backend_parameters:
-                return candidates[:start] + candidates[end:]
-
-        return candidates
-
     def _get_configured_image(
         self,
         backend: Optional[str] = None,

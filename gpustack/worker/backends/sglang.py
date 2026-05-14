@@ -90,7 +90,6 @@ class SGLangServer(InferenceServer):
             port=self._get_serving_port(),
             is_distributed=deployment_metadata.distributed,
             is_distributed_leader=deployment_metadata.distributed_leader,
-            entrypoint=command,
         )
 
         try:
@@ -140,7 +139,6 @@ class SGLangServer(InferenceServer):
 
         command_args, injected = self._build_command_args_for_diffusion(
             port=self._get_serving_port(),
-            entrypoint=command,
         )
 
         try:
@@ -319,7 +317,6 @@ class SGLangServer(InferenceServer):
         port: int,
         is_distributed: bool,
         is_distributed_leader: bool,
-        entrypoint: Optional[List[str]] = None,
     ) -> Tuple[List[str], List[str]]:
         """
         Build SGLang command arguments for container execution.
@@ -327,8 +324,7 @@ class SGLangServer(InferenceServer):
         Returns:
             A tuple of (full_arguments, injected_backend_parameters) where
             injected_backend_parameters contains only the arguments automatically
-            added by GPUStack, excluding the entrypoint and user-specified
-            backend parameters.
+            added by GPUStack, excluding user-specified and infrastructure args.
         """
         arguments = [
             "python",
@@ -340,6 +336,10 @@ class SGLangServer(InferenceServer):
 
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
+
+        # Mark the boundary after the command prefix; everything added up to
+        # this point before user params is GPUStack-injected.
+        prefix_len = len(arguments)
 
         specified_max_model_len = find_parameter(
             self._model.backend_parameters,
@@ -427,23 +427,21 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
-        # Add user-defined backend parameters
-        user_backend_parameters = self._flatten_backend_param()
-        arguments.extend(user_backend_parameters)
+        # All GPUStack-injected args have been added; slice before appending user params.
+        injected = arguments[prefix_len:]
 
-        # Set host and port.
+        # Add user-defined backend parameters
+        arguments.extend(self._flatten_backend_param())
+
+        # Set host and port
         extend_args_no_exist(
             arguments, ("--host", self._worker.ip), ("--port", str(port))
-        )
-
-        injected = self._get_injected_backend_parameters(
-            arguments, user_backend_parameters, entrypoint
         )
 
         return arguments, injected
 
     def _build_command_args_for_diffusion(
-        self, port: int, entrypoint: Optional[List[str]] = None
+        self, port: int
     ) -> Tuple[List[str], List[str]]:
         arguments = [
             "sglang",
@@ -455,6 +453,8 @@ class SGLangServer(InferenceServer):
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
 
+        prefix_len = len(arguments)
+
         # Add auto parallelism arguments if needed
         auto_parallelism_arguments = get_auto_parallelism_arguments(
             self._model.backend_parameters, self._model_instance, False
@@ -464,17 +464,14 @@ class SGLangServer(InferenceServer):
         attention_arguments = self._get_attention_backend_for_diffusion()
         arguments.extend(attention_arguments)
 
-        # Add user-defined backend parameters
-        user_backend_parameters = self._flatten_backend_param()
-        arguments.extend(user_backend_parameters)
+        injected = arguments[prefix_len:]
 
-        # Set host and port.
+        # Add user-defined backend parameters
+        arguments.extend(self._flatten_backend_param())
+
+        # Set host and port
         extend_args_no_exist(
             arguments, ("--host", self._worker.ip), ("--port", str(port))
-        )
-
-        injected = self._get_injected_backend_parameters(
-            arguments, user_backend_parameters, entrypoint
         )
 
         return arguments, injected
