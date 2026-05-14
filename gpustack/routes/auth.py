@@ -6,7 +6,7 @@ import logging
 import jwt
 from jwt.algorithms import RSAAlgorithm
 from gpustack.config.config import Config
-from typing import Annotated, Dict, Optional
+from typing import Annotated, Dict, List, Optional
 from fastapi import APIRouter, Form, Request, Response
 from gpustack.api.exceptions import (
     InvalidException,
@@ -31,6 +31,7 @@ from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.server.services import (
     create_user_with_principal,
     provision_user_principal,
+    sync_user_group_memberships,
 )
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
@@ -287,6 +288,9 @@ async def saml_callback(request: Request, session: SessionDep):
             # user has no Personal Org pointer.
             await provision_user_principal(session, user)
             await session.commit()
+
+        await _sync_saml_groups_if_enabled(session, user, attributes, config)
+
         jwt_manager: JWTManager = request.app.state.jwt_manager
         access_token = jwt_manager.create_jwt_token(
             username=username,
@@ -345,6 +349,100 @@ def get_saml_attributes(
         if key in attributes:
             return attributes[key]
     return None
+
+
+def _group_sync_enabled(config: Config) -> bool:
+    """Sync runs only when both ``external_auth_group_sync`` is true
+    *and* ``external_auth_groups`` is set. The second check prevents
+    the silent footgun where the toggle is flipped but the claim
+    name was forgotten — every lookup returns ``None`` → empty list
+    → sync authoritatively clears the user's provider-sourced
+    memberships. Better to skip-with-log than to delete.
+    """
+    if not config.external_auth_group_sync:
+        return False
+    if not config.external_auth_groups:
+        logger.warning(
+            "external_auth_group_sync is on but external_auth_groups "
+            "is unset; skipping group sync."
+        )
+        return False
+    return True
+
+
+async def _sync_oidc_groups_if_enabled(
+    session, user, user_data, config: Config
+) -> None:
+    """OIDC group-sync wrapper. Extracted out of the callback so the
+    callback's cyclomatic complexity doesn't push past flake8's
+    ceiling — the sync logic itself is one straight-line block but
+    the surrounding callback already has 15+ branches handling
+    token exchange, error mapping, claim fallbacks, and user
+    provisioning.
+    """
+    if not _group_sync_enabled(config):
+        return
+    group_names = _coerce_group_claim(user_data.get(config.external_auth_groups))
+    await sync_user_group_memberships(
+        session, user.principal_id, AuthProviderEnum.OIDC, group_names
+    )
+    await session.commit()
+
+
+async def _sync_saml_groups_if_enabled(
+    session, user, attributes: Dict[str, str], config: Config
+) -> None:
+    """SAML counterpart of ``_sync_oidc_groups_if_enabled``. Same
+    rationale: keep the callback's complexity below flake8's
+    threshold by lifting the sync wrap into its own function."""
+    if not _group_sync_enabled(config):
+        return
+    raw = get_saml_attributes(config, attributes, config.external_auth_groups)
+    group_names = _coerce_group_claim(raw)
+    await sync_user_group_memberships(
+        session, user.principal_id, AuthProviderEnum.SAML, group_names
+    )
+    await session.commit()
+
+
+def _coerce_group_claim(raw) -> List[str]:
+    """Normalise an OIDC claim / SAML attribute into a list[str].
+
+    IdPs return groups in three shapes:
+    - missing key → ``None`` here; we return ``[]`` (user has no groups
+      in this provider). In sync mode this clears any existing
+      provider-sourced memberships, which is correct for an
+      authoritative IdP.
+    - single string → wrap to ``[value]``; if the string contains
+      commas it's split (some IdPs concatenate this way).
+    - list of strings → trimmed copy.
+
+    Non-string entries are dropped, both at the top level and inside
+    a list — Group identifiers are strings, numeric group ids
+    shouldn't be silently coerced. Empty / whitespace-only entries
+    are also dropped; values are trimmed so accidental surrounding
+    whitespace from XML / CSV marshalling can't produce two
+    "different" Groups for what the admin sees as the same name.
+    We do not lower-case or normalise further — case is significant.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        candidates = raw.split(",") if "," in raw else [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        candidates = list(raw)
+    else:
+        # Non-string scalar (int, bool, ...) — reject; same rule we
+        # apply to list members below.
+        return []
+    out: List[str] = []
+    for v in candidates:
+        if not isinstance(v, str):
+            continue
+        s = v.strip()
+        if s:
+            out.append(s)
+    return out
 
 
 # OIDC login and callback endpoints
@@ -456,6 +554,9 @@ async def oidc_callback(request: Request, session: SessionDep):
         # user has no Personal Org pointer.
         await provision_user_principal(session, user)
         await session.commit()
+
+    await _sync_oidc_groups_if_enabled(session, user, user_data, config)
+
     jwt_manager: JWTManager = request.app.state.jwt_manager
     access_token = jwt_manager.create_jwt_token(
         username=username,

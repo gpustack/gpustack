@@ -142,9 +142,12 @@ async def _resolve_effective_org_role(
         )
     )
 
-    roles: List[OrgRole] = []
-    roles.extend(r for r in (await session.exec(direct_stmt)).all() if r is not None)
-    roles.extend(r for r in (await session.exec(via_group_stmt)).all() if r is not None)
+    # One round trip: direct + transitive memberships in a single
+    # UNION ALL. Auth context is resolved on every request that
+    # carries an Org context, so collapsing two SELECTs to one is
+    # measurable at scale.
+    stmt = direct_stmt.union_all(via_group_stmt)
+    roles = [r for r in (await session.exec(stmt)).all() if r is not None]
     if not roles:
         return None
     return OrgRole.OWNER if OrgRole.OWNER in roles else OrgRole.MEMBER

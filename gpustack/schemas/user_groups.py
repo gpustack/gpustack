@@ -18,6 +18,7 @@ from sqlmodel import Field, SQLModel
 
 from gpustack.schemas.common import ListParams, PaginatedList
 from gpustack.schemas.principals import Principal
+from gpustack.schemas.users import AuthProviderEnum
 
 
 class UserGroupUpdate(SQLModel):
@@ -46,6 +47,10 @@ class UserGroupPublic(SQLModel):
     # without an N+1 fan-out to ``/groups/{id}/members``. Always
     # populated by the list/get routes (zero for empty groups).
     member_count: int = 0
+    # Where the Group originated. ``Local`` = admin created via UI;
+    # ``OIDC`` / ``SAML`` = auto-created by IdP sync. UI badges
+    # IdP-managed rows distinctly.
+    source: AuthProviderEnum = AuthProviderEnum.Local
     created_at: datetime
     updated_at: datetime
 
@@ -58,6 +63,7 @@ class UserGroupPublic(SQLModel):
             name=p.name,
             description=p.description,
             member_count=member_count,
+            source=p.source,
             created_at=p.created_at,
             updated_at=p.updated_at,
         )
