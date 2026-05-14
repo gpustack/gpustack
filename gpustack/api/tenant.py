@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, List, Optional, Set
 
 from fastapi import Depends, Header, Request
+from sqlalchemy.orm import aliased
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -100,41 +101,78 @@ class TenantContext:
         return getattr(self.user, "principal_id", None)
 
 
-async def _resolve_membership(
-    session: AsyncSession, member_principal_id: int, parent_principal_id: int
-) -> Optional[PrincipalMembership]:
-    """Active membership lookup. Soft-deleted rows are ignored — once
-    a user is removed from an Org their permissions go with them, even
-    though the audit row stays around.
+async def _resolve_effective_org_role(
+    session: AsyncSession,
+    user_principal_id: int,
+    org_principal_id: int,
+) -> Optional[OrgRole]:
+    """Effective OrgRole of a user inside an org.
+
+    Two membership paths confer a role:
+
+    - Direct: ``(parent=org, member=user)`` row.
+    - Via group: ``(parent=org, member=group)`` AND ``(parent=group,
+      member=user)`` — a Group joined to the Org propagates its role
+      to every active user in the Group.
+
+    Returns the max role across all paths (OWNER beats MEMBER). None
+    if the user has no path into the org. Soft-deleted membership and
+    group rows are ignored — removal cuts the role immediately while
+    leaving an audit trail.
     """
-    stmt = select(PrincipalMembership).where(
-        PrincipalMembership.member_principal_id == member_principal_id,
-        PrincipalMembership.parent_principal_id == parent_principal_id,
+    direct_stmt = select(PrincipalMembership.role).where(
+        PrincipalMembership.parent_principal_id == org_principal_id,
+        PrincipalMembership.member_principal_id == user_principal_id,
         PrincipalMembership.deleted_at.is_(None),
     )
-    return (await session.exec(stmt)).first()
+
+    group_pm = aliased(PrincipalMembership)
+    org_pm = aliased(PrincipalMembership)
+    via_group_stmt = (
+        select(org_pm.role)
+        .join(group_pm, group_pm.parent_principal_id == org_pm.member_principal_id)
+        .join(Principal, Principal.id == group_pm.parent_principal_id)
+        .where(
+            org_pm.parent_principal_id == org_principal_id,
+            org_pm.deleted_at.is_(None),
+            group_pm.member_principal_id == user_principal_id,
+            group_pm.deleted_at.is_(None),
+            Principal.kind == PrincipalType.GROUP,
+            Principal.deleted_at.is_(None),
+        )
+    )
+
+    roles: List[OrgRole] = []
+    roles.extend(r for r in (await session.exec(direct_stmt)).all() if r is not None)
+    roles.extend(r for r in (await session.exec(via_group_stmt)).all() if r is not None)
+    if not roles:
+        return None
+    return OrgRole.OWNER if OrgRole.OWNER in roles else OrgRole.MEMBER
 
 
 async def _user_group_principal_ids(
     session: AsyncSession,
     user_principal_id: int,
-    org_principal_id: int,
 ) -> List[int]:
-    """GROUP-principal ids inside ``org_principal_id`` that the user
-    is a member of.
+    """All GROUP-principal ids the user is an active member of.
 
-    Two-hop join: first find groups whose parent is the org, then find
-    memberships where the user joins those groups.
+    Groups are no longer org-scoped — a Group is a peer-level principal
+    that may be a member of zero or more Orgs. Cluster_access grants
+    against a Group apply wherever the user acts, mirroring how AD/IAM
+    groups behave.
     """
-    parents = select(Principal.id).where(
-        Principal.parent_principal_id == org_principal_id,
-        Principal.kind == PrincipalType.GROUP,
-        Principal.deleted_at.is_(None),
-    )
-    stmt = select(PrincipalMembership.parent_principal_id).where(
-        PrincipalMembership.member_principal_id == user_principal_id,
-        PrincipalMembership.parent_principal_id.in_(parents),
-        PrincipalMembership.deleted_at.is_(None),
+    stmt = (
+        select(PrincipalMembership.parent_principal_id)
+        .join(
+            Principal,
+            Principal.id == PrincipalMembership.parent_principal_id,
+        )
+        .where(
+            PrincipalMembership.member_principal_id == user_principal_id,
+            PrincipalMembership.deleted_at.is_(None),
+            Principal.kind == PrincipalType.GROUP,
+            Principal.deleted_at.is_(None),
+        )
     )
     return list((await session.exec(stmt)).all())
 
@@ -213,32 +251,30 @@ async def get_tenant_context(
     if current_principal_id is not None and not user.is_system:
         # Personal scope short-circuit: when the request points at the
         # caller's own USER-principal there's no org membership to
-        # resolve and no cluster_access grants other than the caller's
-        # own. Skip the joins.
+        # resolve. Group grants still apply (the user's groups are
+        # principals in their own right), so include them in the
+        # cluster_access lookup.
         if current_principal_id == user.principal_id:
             current_is_personal_scope = True
+            group_ids = await _user_group_principal_ids(session, user.principal_id)
             accessible_cluster_ids = await _accessible_clusters(
                 session,
                 user.principal_id,
                 None,
-                [],
+                group_ids,
             )
         else:
-            membership = await _resolve_membership(
+            org_role = await _resolve_effective_org_role(
                 session, user.principal_id, current_principal_id
             )
-            if membership is not None:
-                org_role = membership.role
-            elif not is_platform_admin:
+            if org_role is None and not is_platform_admin:
                 # Non-admin users cannot operate as a principal they are
-                # not a member of.
+                # not a member of (directly or via a Group).
                 raise ForbiddenException(
                     message=(f"Not a member of organization " f"{current_principal_id}")
                 )
 
-            group_ids = await _user_group_principal_ids(
-                session, user.principal_id, current_principal_id
-            )
+            group_ids = await _user_group_principal_ids(session, user.principal_id)
             accessible_cluster_ids = await _accessible_clusters(
                 session,
                 user.principal_id,

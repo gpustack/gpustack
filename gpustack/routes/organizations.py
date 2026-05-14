@@ -205,17 +205,26 @@ async def _has_resources(session, owner_principal_id: int) -> list[str]:
         if (await session.exec(stmt)).first() is not None:
             blockers.append(label)
 
-    # Child principals (groups belonging to this org).
-    group_stmt = (
-        select(Principal.id)
+    # Group memberships into this Org — Group-principals are peer-level
+    # now, but if any are still joined to this Org via an active
+    # ``principal_memberships`` row, surface that to the operator before
+    # the Org is deleted. The grant rows themselves CASCADE on Org
+    # delete, but the Groups don't, so block to make the operator
+    # explicit.
+    from gpustack.schemas.principals import PrincipalMembership
+
+    group_member_stmt = (
+        select(PrincipalMembership.id)
+        .join(Principal, Principal.id == PrincipalMembership.member_principal_id)
         .where(
+            PrincipalMembership.parent_principal_id == owner_principal_id,
+            PrincipalMembership.deleted_at.is_(None),
             Principal.kind == PrincipalType.GROUP,
-            Principal.parent_principal_id == owner_principal_id,
             Principal.deleted_at.is_(None),
         )
         .limit(1)
     )
-    if (await session.exec(group_stmt)).first() is not None:
+    if (await session.exec(group_member_stmt)).first() is not None:
         blockers.append("user_groups")
 
     return blockers

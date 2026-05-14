@@ -32,7 +32,6 @@ def _principal(
     p.kind = kind
     p.name = name
     p.deleted_at = None
-    p.parent_principal_id = None
     return p
 
 

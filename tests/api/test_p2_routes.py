@@ -53,14 +53,12 @@ def _ctx(
 def _principal(
     id: int = 10,
     kind: PrincipalType = PrincipalType.ORG,
-    parent_principal_id: int | None = None,
     name: str = "Acme",
     slug: str | None = "acme",
 ):
     p = MagicMock(spec=Principal)
     p.id = id
     p.kind = kind
-    p.parent_principal_id = parent_principal_id
     p.name = name
     p.slug = slug
     p.description = None
@@ -130,29 +128,6 @@ def test_can_manage_member_cannot_manage():
     assert organization_members._can_manage(ctx, 10) is False
 
 
-# ---- _can_manage_groups ----------------------------------------------------
-
-
-def test_can_manage_groups_admin_passthrough():
-    ctx = _ctx(is_admin=True, current_principal_id=None)
-    assert user_groups_route._can_manage_groups(ctx, org_id=42) is True
-
-
-def test_can_manage_groups_member_blocked():
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.MEMBER)
-    assert user_groups_route._can_manage_groups(ctx, org_id=10) is False
-
-
-def test_can_manage_groups_admin_role_in_org_passes():
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.OWNER)
-    assert user_groups_route._can_manage_groups(ctx, org_id=10) is True
-
-
-def test_can_manage_groups_wrong_org_blocked():
-    ctx = _ctx(current_principal_id=99, org_role=OrgRole.OWNER)
-    assert user_groups_route._can_manage_groups(ctx, org_id=10) is False
-
-
 # ---- organizations route ---------------------------------------------------
 
 
@@ -204,25 +179,27 @@ async def test_delete_org_blocked_when_resources_exist(monkeypatch):
 # ---- organization_members route -------------------------------------------
 
 
+def _patch_org_and_member(monkeypatch, org, member_principal):
+    """Both ``_load_org`` and ``_resolve_member_principal`` use
+    ``Principal.one_by_id`` — order matches the route handler's calls.
+    """
+    monkeypatch.setattr(
+        organization_members.Principal,
+        "one_by_id",
+        AsyncMock(side_effect=[org, member_principal]),
+    )
+
+
 @pytest.mark.asyncio
 async def test_remove_only_owner_blocked(monkeypatch):
     org = _principal(id=10, name="Acme", slug="acme")
-    user = _user_row(id=2, principal_id=200)
+    member = _principal(id=200, kind=PrincipalType.USER, name="user-2", slug="user-2")
     membership = MagicMock(spec=PrincipalMembership)
     membership.parent_principal_id = 10
     membership.member_principal_id = 200
     membership.role = OrgRole.OWNER
     membership.deleted_at = None
-    monkeypatch.setattr(
-        organization_members.Principal,
-        "one_by_id",
-        AsyncMock(return_value=org),
-    )
-    monkeypatch.setattr(
-        organization_members,
-        "_resolve_user",
-        AsyncMock(return_value=user),
-    )
+    _patch_org_and_member(monkeypatch, org, member)
     monkeypatch.setattr(
         organization_members,
         "_find_membership",
@@ -236,29 +213,20 @@ async def test_remove_only_owner_blocked(monkeypatch):
     ctx = _ctx(is_admin=True)
     with pytest.raises(ConflictException):
         await organization_members.remove_org_member(
-            session=MagicMock(), ctx=ctx, org_id=10, user_id=2
+            session=MagicMock(), ctx=ctx, org_id=10, principal_id=200
         )
 
 
 @pytest.mark.asyncio
 async def test_demote_only_owner_blocked(monkeypatch):
     org = _principal(id=10, name="Acme", slug="acme")
-    user = _user_row(id=2, principal_id=200)
+    member = _principal(id=200, kind=PrincipalType.USER, name="user-2", slug="user-2")
     membership = MagicMock(spec=PrincipalMembership)
     membership.parent_principal_id = 10
     membership.member_principal_id = 200
     membership.role = OrgRole.OWNER
     membership.deleted_at = None
-    monkeypatch.setattr(
-        organization_members.Principal,
-        "one_by_id",
-        AsyncMock(return_value=org),
-    )
-    monkeypatch.setattr(
-        organization_members,
-        "_resolve_user",
-        AsyncMock(return_value=user),
-    )
+    _patch_org_and_member(monkeypatch, org, member)
     monkeypatch.setattr(
         organization_members,
         "_find_membership",
@@ -275,9 +243,68 @@ async def test_demote_only_owner_blocked(monkeypatch):
             session=MagicMock(),
             ctx=ctx,
             org_id=10,
-            user_id=2,
+            principal_id=200,
             body=organization_members.MembershipUpdate(role=OrgRole.MEMBER),
         )
+
+
+@pytest.mark.asyncio
+async def test_remove_only_owner_blocked_for_group_owner(monkeypatch):
+    """Removing a GROUP-OWNER should be blocked just like a USER-OWNER
+    when it's the last owner — the unified API treats both kinds
+    symmetrically.
+    """
+    org = _principal(id=10, name="Acme", slug="acme")
+    group = _principal(id=300, kind=PrincipalType.GROUP, name="gpu-admins", slug=None)
+    membership = MagicMock(spec=PrincipalMembership)
+    membership.parent_principal_id = 10
+    membership.member_principal_id = 300
+    membership.role = OrgRole.OWNER
+    membership.deleted_at = None
+    _patch_org_and_member(monkeypatch, org, group)
+    monkeypatch.setattr(
+        organization_members,
+        "_find_membership",
+        AsyncMock(return_value=membership),
+    )
+    monkeypatch.setattr(
+        organization_members,
+        "_has_other_owner",
+        AsyncMock(return_value=False),
+    )
+    ctx = _ctx(is_admin=True)
+    with pytest.raises(ConflictException):
+        await organization_members.remove_org_member(
+            session=MagicMock(), ctx=ctx, org_id=10, principal_id=300
+        )
+
+
+@pytest.mark.asyncio
+async def test_has_other_owner_recognises_user_owner():
+    """A live USER-OWNER counts as another owner — the simple case."""
+    session = _session_returning([1])  # the single-row "found" sentinel
+    assert (
+        await organization_members._has_other_owner(
+            session, org_principal_id=10, exclude_member_principal_id=99
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_has_other_owner_rejects_empty_group_owner():
+    """A GROUP-OWNER whose group has no active user-members confers
+    OWNER on nobody, so the guard must treat it as "no other owner".
+    The query filters such groups out via the EXISTS subquery; an
+    empty result set proves that filter fires.
+    """
+    session = _session_returning([])  # no rows survive the EXISTS filter
+    assert (
+        await organization_members._has_other_owner(
+            session, org_principal_id=10, exclude_member_principal_id=99
+        )
+        is False
+    )
 
 
 # ---- cluster_access route --------------------------------------------------
@@ -364,29 +391,30 @@ async def test_revoke_cluster_access_404_when_missing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_group_blocked_for_member(monkeypatch):
-    org = _principal(id=10, kind=PrincipalType.ORG, name="Acme", slug="acme")
+async def test_create_group_rejects_duplicate_name(monkeypatch):
+    existing = _principal(
+        id=5,
+        kind=PrincipalType.GROUP,
+        name="team-a",
+        slug=None,
+    )
     monkeypatch.setattr(
         user_groups_route.Principal,
-        "one_by_id",
-        AsyncMock(return_value=org),
+        "one_by_fields",
+        AsyncMock(return_value=existing),
     )
-    ctx = _ctx(current_principal_id=10, org_role=OrgRole.MEMBER)
-    with pytest.raises(ForbiddenException):
+    with pytest.raises(AlreadyExistsException):
         await user_groups_route.create_group(
             session=MagicMock(),
-            ctx=ctx,
-            org_id=10,
             body=user_groups_route.UserGroupCreate(name="team-a"),
         )
 
 
 @pytest.mark.asyncio
-async def test_add_group_members_requires_org_membership(monkeypatch):
+async def test_add_group_members_rejects_missing_user(monkeypatch):
     group = _principal(
         id=5,
         kind=PrincipalType.GROUP,
-        parent_principal_id=10,
         name="team-a",
         slug=None,
     )
@@ -395,16 +423,11 @@ async def test_add_group_members_requires_org_membership(monkeypatch):
         "one_by_id",
         AsyncMock(return_value=group),
     )
-    user = _user_row(id=99, principal_id=999)
-    # Two exec calls: bulk user resolve returns [user]; org-membership
-    # probe returns [] → user is not in the org → InvalidException.
-    session = _session_returning([user], [])
-    ctx = _ctx(is_admin=True)
-    with pytest.raises(InvalidException):
+    # Bulk user resolve returns []  → user 99 missing → NotFoundException.
+    session = _session_returning([])
+    with pytest.raises(NotFoundException):
         await user_groups_route.add_group_members(
             session=session,
-            ctx=ctx,
-            org_id=10,
             group_id=5,
             body=user_groups_route.GroupMembershipCreate(user_ids=[99]),
         )

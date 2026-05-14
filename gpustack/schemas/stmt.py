@@ -152,10 +152,20 @@ principal_users_after_drop_view_stmt = "DROP VIEW IF EXISTS principal_users"
 
 def principal_users_after_create_view_stmt() -> str:
     """Helper view: (principal_id, user_id) — every user covered by a
-    principal, expanded across direct USER ownership and active
-    ORG/GROUP memberships. Used by ``non_admin_user_models`` so the
-    ALLOWED_PRINCIPALS branch can index-join instead of running a
-    correlated EXISTS over ``principal_memberships`` per row.
+    principal, expanded across direct USER ownership, direct ORG/GROUP
+    membership, and transitive ORG membership via a joined Group.
+    Used by ``non_admin_user_models`` so the ALLOWED_PRINCIPALS branch
+    can index-join instead of running a correlated EXISTS over
+    ``principal_memberships`` per row.
+
+    Three branches:
+
+    1. The user themselves (always covered by their USER-principal).
+    2. Direct: ``(parent=Org/Group, member=User)`` — user joined the
+       Org/Group directly.
+    3. Transitive: user is in a Group that is itself a member of an
+       Org — propagates membership of the Org to every active user
+       inside the Group.
     """
     return '''
 CREATE VIEW principal_users AS
@@ -169,6 +179,20 @@ JOIN principals pr ON pr.id = pm.parent_principal_id
 WHERE pm.deleted_at IS NULL
   AND pr.deleted_at IS NULL
   AND pr.kind IN ('ORG', 'GROUP')
+UNION ALL
+SELECT org_pm.parent_principal_id AS principal_id, u.id AS user_id
+FROM principal_memberships group_pm
+JOIN principal_memberships org_pm
+  ON org_pm.member_principal_id = group_pm.parent_principal_id
+ AND org_pm.deleted_at IS NULL
+JOIN users u ON u.principal_id = group_pm.member_principal_id
+JOIN principals grp ON grp.id = group_pm.parent_principal_id
+JOIN principals org ON org.id = org_pm.parent_principal_id
+WHERE group_pm.deleted_at IS NULL
+  AND grp.deleted_at IS NULL
+  AND grp.kind = 'GROUP'
+  AND org.deleted_at IS NULL
+  AND org.kind = 'ORG'
 '''
 
 
@@ -196,11 +220,10 @@ UNION ALL
 
 SELECT {pid} AS pid, u.id AS user_id, m.*
 FROM users u
-JOIN principal_memberships pm
-  ON pm.member_principal_id = u.principal_id
-  AND pm.deleted_at IS NULL
+JOIN principal_users pu
+  ON pu.user_id = u.id
 JOIN model_routes m
-  ON m.owner_principal_id = pm.parent_principal_id
+  ON m.owner_principal_id = pu.principal_id
   AND m.access_policy = 'ORG'
 WHERE u.is_admin = {sql_false} AND u.is_system = {sql_false}
 

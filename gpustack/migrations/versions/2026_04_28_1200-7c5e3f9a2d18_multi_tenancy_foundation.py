@@ -100,23 +100,46 @@ def upgrade() -> None:
             sa.Column('slug', sa.String(length=255), nullable=True),
             sa.Column('name', sa.String(length=255), nullable=False),
             sa.Column('description', sa.Text(), nullable=True),
-            # Structural parent. NULL for USER and ORG; for GROUP,
-            # points at the owning ORG-principal. CASCADE drops the
-            # group when its parent org is hard-deleted.
-            sa.Column('parent_principal_id', sa.Integer(), nullable=True),
             sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
             sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
             sa.Column('deleted_at', sa.TIMESTAMP(), nullable=True),
-            sa.ForeignKeyConstraint(
-                ['parent_principal_id'], ['principals.id'], ondelete='CASCADE',
-            ),
             sa.PrimaryKeyConstraint('id'),
             sa.UniqueConstraint('slug', name='uix_principals_slug'),
-            sa.UniqueConstraint(
-                'parent_principal_id', 'name',
-                name='uix_principals_parent_name',
-            ),
         )
+        # Group names are globally unique among active groups. USER /
+        # ORG names are not constrained here (Users key off
+        # ``users.username``, Orgs off ``slug``). Groups are
+        # peer-level principals in this schema — Org affiliation, if
+        # any, is expressed via a row in ``principal_memberships``
+        # with ``parent=Org, member=Group``.
+        #
+        # Postgres supports partial unique indexes natively, so the
+        # constraint is enforced at the DB. MySQL has no equivalent —
+        # a plain (non-unique) index supports the by-name lookups,
+        # and uniqueness is enforced at the application layer (the
+        # ``/groups`` admin POST and ``sync_user_group_memberships``
+        # both pre-check + handle ``IntegrityError`` retries).
+        #
+        # PG-/MySQL-compatible dialects (openGauss, OceanBase, TiDB,
+        # MariaDB, ...) may report their own ``dialect.name``; we
+        # only take the partial-index path when the dialect reports
+        # the canonical ``postgresql`` name, otherwise we fall back
+        # to the MySQL-compatible plain-index path. That keeps the
+        # foundation portable across the wire-protocol-compatible
+        # databases the deployment supports without an explicit
+        # allowlist that we'd have to keep extending.
+        if bind.dialect.name == 'postgresql':
+            op.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uix_principals_group_name "
+                "ON principals (name) "
+                "WHERE kind = 'GROUP' AND deleted_at IS NULL"
+            )
+        else:
+            op.create_index(
+                'ix_principals_group_name',
+                'principals',
+                ['name'],
+            )
 
     if not table_exists('principal_memberships'):
         # Surrogate ``id`` PK so soft-deleted rows can coexist with
@@ -247,9 +270,9 @@ def upgrade() -> None:
         sa.text(
             """
             INSERT INTO principals
-                (id, kind, slug, name, description, parent_principal_id,
+                (id, kind, slug, name, description,
                  created_at, updated_at, deleted_at)
-            SELECT :id, :kind, :slug, :name, :desc, NULL,
+            SELECT :id, :kind, :slug, :name, :desc,
                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
             WHERE NOT EXISTS (
                 SELECT 1 FROM principals WHERE slug = :slug
@@ -297,9 +320,9 @@ def upgrade() -> None:
             sa.text(
                 """
                 INSERT INTO principals
-                    (kind, slug, name, parent_principal_id,
+                    (kind, slug, name,
                      created_at, updated_at, deleted_at)
-                SELECT 'USER'::principaltype, 'user-' || u.id, u.username, NULL,
+                SELECT 'USER'::principaltype, 'user-' || u.id, u.username,
                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
                 FROM users u
                 WHERE NOT EXISTS (
@@ -315,9 +338,9 @@ def upgrade() -> None:
             sa.text(
                 """
                 INSERT INTO principals
-                    (kind, slug, name, parent_principal_id,
+                    (kind, slug, name,
                      created_at, updated_at, deleted_at)
-                SELECT 'USER', 'user-' || u.id, u.username, NULL,
+                SELECT 'USER', 'user-' || u.id, u.username,
                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
                 FROM users u
                 WHERE NOT EXISTS (
