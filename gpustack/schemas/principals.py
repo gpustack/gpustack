@@ -39,6 +39,7 @@ from sqlalchemy import Text
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import ListParams, PaginatedList
+from gpustack.schemas.users import AuthProviderEnum
 
 
 # Canonical slug of the built-in platform Org-principal. Created by the
@@ -99,6 +100,22 @@ class PrincipalBase(SQLModel):
     description: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
+    # Where this principal originated. ``Local`` for admin-created
+    # rows (the default for USER / ORG, and Group rows created via the
+    # ``/groups`` admin surface); ``OIDC`` / ``SAML`` for Group rows
+    # auto-created by IdP sync the first time a new claim name was
+    # seen. Surfaced on the Groups list so admins can tell which
+    # entries are IdP-managed; not meaningful for USER (use
+    # ``users.source`` for users) and ORG (always Local in v1) but
+    # cheaper to keep one column for all kinds than to special-case.
+    source: AuthProviderEnum = Field(
+        default=AuthProviderEnum.Local,
+        sa_column=Column(
+            SQLEnum(AuthProviderEnum),
+            nullable=False,
+            server_default=AuthProviderEnum.Local.value,
+        ),
+    )
 
 
 class Principal(PrincipalBase, BaseModelMixin, table=True):
@@ -142,6 +159,7 @@ class PrincipalPublic(SQLModel):
     slug: Optional[str] = None
     name: str
     description: Optional[str] = None
+    source: AuthProviderEnum = AuthProviderEnum.Local
     created_at: datetime
     updated_at: datetime
 
@@ -172,6 +190,20 @@ class PrincipalMembershipBase(SQLModel):
     role: Optional[OrgRole] = Field(
         default=None,
         sa_column=Column(SQLEnum(OrgRole), nullable=True),
+    )
+    # Where this membership row originated. ``Local`` for rows the
+    # admin (or a route handler on behalf of the admin) created;
+    # ``OIDC`` / ``SAML`` for rows written by IdP group-sync. Sync
+    # logic only ever rewrites rows where ``source`` matches the
+    # current provider — admin-added memberships (source=Local) are
+    # untouched by sync runs.
+    source: AuthProviderEnum = Field(
+        default=AuthProviderEnum.Local,
+        sa_column=Column(
+            SQLEnum(AuthProviderEnum),
+            nullable=False,
+            server_default=AuthProviderEnum.Local.value,
+        ),
     )
 
 

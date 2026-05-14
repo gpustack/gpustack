@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Union, Set, Tuple
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -30,7 +31,7 @@ from gpustack.schemas.principals import (
     PrincipalMembership,
     PrincipalType,
 )
-from gpustack.schemas.users import User
+from gpustack.schemas.users import AuthProviderEnum, User
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import Worker
 from gpustack.server.cache import (
@@ -262,6 +263,188 @@ async def provision_bootstrap_admin_orgs(session: AsyncSession, user: User) -> N
             updated_at=now,
         )
     )
+
+
+async def _insert_group_or_refetch(
+    session: AsyncSession,
+    name: str,
+    provider: AuthProviderEnum,
+    now: datetime,
+) -> Principal:
+    """Insert a new GROUP-principal, or re-fetch if a concurrent
+    transaction beat us to it.
+
+    Wraps the insert in a SAVEPOINT (``session.begin_nested``) so the
+    surrounding sync transaction survives an ``IntegrityError`` from
+    a unique-constraint collision. The collision can come from the
+    partial unique index on Postgres, or from an application-layer
+    pre-check race on MySQL — either way we just re-read the row the
+    winner inserted.
+    """
+    grp = Principal(
+        kind=PrincipalType.GROUP,
+        name=name,
+        # Tag the Group with the provider that brought it into
+        # existence. UI uses this to badge IdP-managed rows; sync
+        # doesn't condition on it (matching is by name regardless of
+        # source).
+        source=provider,
+        created_at=now,
+        updated_at=now,
+    )
+    try:
+        async with session.begin_nested():
+            session.add(grp)
+            await session.flush([grp])
+        return grp
+    except IntegrityError:
+        existing = (
+            await session.exec(
+                select(Principal).where(
+                    Principal.kind == PrincipalType.GROUP,
+                    Principal.deleted_at.is_(None),
+                    Principal.name == name,
+                )
+            )
+        ).first()
+        if existing is None:
+            # IntegrityError but no row visible — surface it; the
+            # caller's transaction will roll back.
+            raise
+        return existing
+
+
+async def sync_user_group_memberships(
+    session: AsyncSession,
+    user_principal_id: int,
+    provider: AuthProviderEnum,
+    group_names: List[str],
+) -> None:
+    """Authoritatively reconcile a user's Group memberships from an IdP.
+
+    Called from OIDC / SAML callbacks with the user's group set as the
+    IdP currently sees it. Resolves each name to a Group-principal
+    (creating one with ``kind=GROUP`` for names we've never seen),
+    then diffs against the user's current Group memberships **scoped
+    to** ``source == provider``:
+
+    - Names present in the IdP but not on the user → insert (or revive
+      a soft-deleted row) with ``source=provider``.
+    - Memberships present locally with matching source but absent from
+      the IdP → soft-delete.
+    - Admin-curated memberships (``source=Local``) and memberships
+      sourced by a *different* IdP are never touched. The same group
+      can have one Local membership and one OIDC-sourced membership
+      side by side for the same user; that's how the bookkeeping
+      survives mixed setups.
+
+    Group entities themselves are never deleted by this function — a
+    Group may have outstanding (Org → Group) bindings the admin
+    relies on; lifecycle for Group rows lives on the ``/groups`` admin
+    surface. Provider must be ``OIDC`` or ``SAML``; ``Local`` would
+    be a logic error and is rejected.
+
+    Caller commits.
+    """
+    if provider == AuthProviderEnum.Local:
+        raise InternalServerErrorException(
+            message="sync_user_group_memberships is not for Local provider"
+        )
+
+    # De-dupe + drop blanks. Caller (auth ``_coerce_group_claim``)
+    # already trims and drops empty entries; we defensively re-check
+    # so direct callers of this service (tests, future SCIM endpoint,
+    # ...) can't slip an empty / duplicate name through.
+    wanted_names: List[str] = []
+    seen = set()
+    for name in group_names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        wanted_names.append(name)
+
+    # Resolve to Group-principal ids, auto-creating any we haven't
+    # seen before. Existing rows match by name regardless of their
+    # ``source`` — an admin-created "engineering" Group is reused
+    # when the IdP later pushes "engineering" too.
+    desired_group_ids: Set[int] = set()
+    if wanted_names:
+        existing = (
+            await session.exec(
+                select(Principal).where(
+                    Principal.kind == PrincipalType.GROUP,
+                    Principal.deleted_at.is_(None),
+                    Principal.name.in_(wanted_names),
+                )
+            )
+        ).all()
+        existing_by_name = {p.name: p for p in existing}
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        for name in wanted_names:
+            grp = existing_by_name.get(name)
+            if grp is None:
+                # Race-tolerant create: a concurrent first-time login of
+                # another user can be inserting the same group name. On
+                # Postgres the partial unique index aborts the loser
+                # with IntegrityError; on MySQL the window is wider
+                # (no DB-level unique index — see migration notes) but
+                # the SAVEPOINT lets us recover in both cases. The
+                # SAVEPOINT scopes the failure to the insert so the
+                # surrounding sync transaction stays alive.
+                grp = await _insert_group_or_refetch(session, name, provider, now)
+            desired_group_ids.add(grp.id)
+
+    # Existing memberships for this user with source matching the
+    # provider — these are the rows the sync owns. We pull both
+    # active and soft-deleted so a re-add can revive the same row
+    # (keeps the audit timeline on a single id).
+    user_pm_stmt = (
+        select(PrincipalMembership)
+        .join(Principal, Principal.id == PrincipalMembership.parent_principal_id)
+        .where(
+            PrincipalMembership.member_principal_id == user_principal_id,
+            PrincipalMembership.source == provider,
+            Principal.kind == PrincipalType.GROUP,
+        )
+    )
+    owned_rows: List[PrincipalMembership] = list(
+        (await session.exec(user_pm_stmt)).all()
+    )
+    owned_by_group: dict[int, PrincipalMembership] = {
+        m.parent_principal_id: m for m in owned_rows
+    }
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # Adds + revives.
+    for gid in desired_group_ids:
+        existing = owned_by_group.get(gid)
+        if existing is None:
+            session.add(
+                PrincipalMembership(
+                    parent_principal_id=gid,
+                    member_principal_id=user_principal_id,
+                    role=None,
+                    source=provider,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        elif existing.deleted_at is not None:
+            existing.deleted_at = None
+            existing.updated_at = now
+            session.add(existing)
+
+    # Removals: anything we own but the IdP no longer claims.
+    for gid, row in owned_by_group.items():
+        if gid in desired_group_ids:
+            continue
+        if row.deleted_at is not None:
+            continue
+        row.deleted_at = now
+        row.updated_at = now
+        session.add(row)
 
 
 class APIKeyService:

@@ -174,6 +174,21 @@ class Config(WorkerConfig, BaseSettings):
     external_auth_full_name: Optional[str] = None  # external auth full name
     external_auth_avatar_url: Optional[str] = None  # external auth avatar url
     external_auth_default_inactive: bool = False  # external auth default inactive
+    # Group sync. ``external_auth_groups`` is the OIDC claim name or
+    # SAML AttributeStatement key that carries the user's group list.
+    # Sane defaults are provider-specific (OIDC usually emits
+    # ``groups``; SAML varies widely — ``memberOf``,
+    # ``http://schemas.xmlsoap.org/claims/Group``, custom names),
+    # so this stays ``None`` until the admin sets it explicitly,
+    # matching the style of ``external_auth_name`` and friends.
+    # ``external_auth_group_sync`` reconciles the user's Group
+    # memberships on every login when enabled (provider-sourced rows
+    # only; admin-curated ``source=Local`` memberships are never
+    # touched). Disabled by default so a misconfigured claim can't
+    # silently wipe hand-managed memberships the first time SSO hits
+    # an upgraded server.
+    external_auth_groups: Optional[str] = None
+    external_auth_group_sync: bool = False
     oidc_client_id: Optional[str] = None  # oidc client id
     oidc_client_secret: Optional[str] = None  # oidc client secret
     oidc_redirect_uri: Optional[str] = None  # oidc redirect uri

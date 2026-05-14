@@ -83,15 +83,16 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
         )
     )
 
+    # One round trip: direct + transitive Org memberships unioned.
+    # OWNER beats MEMBER when both paths report on the same Org.
     best_by_org: Dict[int, tuple[OrgRole, Principal]] = {}
-    for stmt in (direct_stmt, via_group_stmt):
-        for role, org in (await session.exec(stmt)).all():
-            effective = role or OrgRole.MEMBER
-            existing = best_by_org.get(org.id)
-            if existing is None or (
-                existing[0] != OrgRole.OWNER and effective == OrgRole.OWNER
-            ):
-                best_by_org[org.id] = (effective, org)
+    for role, org in (await session.exec(direct_stmt.union_all(via_group_stmt))).all():
+        effective = role or OrgRole.MEMBER
+        existing = best_by_org.get(org.id)
+        if existing is None or (
+            existing[0] != OrgRole.OWNER and effective == OrgRole.OWNER
+        ):
+            best_by_org[org.id] = (effective, org)
 
     items.extend(
         MyOrganization(

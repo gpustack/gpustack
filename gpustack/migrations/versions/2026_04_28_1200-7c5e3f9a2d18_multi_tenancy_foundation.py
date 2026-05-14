@@ -60,6 +60,7 @@ from gpustack.schemas.stmt import (
     model_user_after_drop_view_stmt,
     principal_users_after_drop_view_stmt,
 )
+from gpustack.schemas.users import AuthProviderEnum
 
 
 # revision identifiers, used by Alembic.
@@ -73,9 +74,34 @@ PLATFORM_PRINCIPAL_NAME = 'Default'
 
 
 def _enums():
+    """Enums *owned* by this migration — created by it, dropped on
+    downgrade. ``authproviderenum`` is *not* in this set; it predates
+    this migration (created by the initial-tables migration for
+    ``users.source``) and is referenced inline at its single use
+    site via ``_existing_auth_provider_enum``.
+    """
     org_role = sa.Enum('OWNER', 'MEMBER', name='orgrole')
     principal_type = sa.Enum('ORG', 'GROUP', 'USER', name='principaltype')
     return org_role, principal_type
+
+
+def _existing_auth_provider_enum(bind):
+    """Reference (not declare) the ``authproviderenum`` type that
+    the initial-tables migration already created for ``users.source``.
+    On Postgres the dialect-specific ``postgresql.ENUM`` with
+    ``create_type=False`` suppresses the duplicate ``CREATE TYPE``
+    (the generic ``sa.Enum`` silently swallows ``create_type`` via
+    ``**kw``, which is why we branch). On MySQL ``sa.Enum`` renders
+    as the native ``ENUM(...)`` column type, which doesn't need
+    pre-declaration.
+    """
+    if bind.dialect.name == 'postgresql':
+        from sqlalchemy.dialects.postgresql import ENUM as PGEnum
+
+        return PGEnum(
+            AuthProviderEnum, name='authproviderenum', create_type=False
+        )
+    return sa.Enum(AuthProviderEnum, name='authproviderenum')
 
 
 def upgrade() -> None:
@@ -100,6 +126,16 @@ def upgrade() -> None:
             sa.Column('slug', sa.String(length=255), nullable=True),
             sa.Column('name', sa.String(length=255), nullable=False),
             sa.Column('description', sa.Text(), nullable=True),
+            # Origin of this principal — ``Local`` for admin-managed
+            # rows, ``OIDC`` / ``SAML`` for Groups auto-created by
+            # IdP sync. Lets the UI badge IdP-managed Groups
+            # distinctly.
+            sa.Column(
+                'source',
+                _existing_auth_provider_enum(bind),
+                nullable=False,
+                server_default='Local',
+            ),
             sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
             sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
             sa.Column('deleted_at', sa.TIMESTAMP(), nullable=True),
@@ -153,6 +189,17 @@ def upgrade() -> None:
             # NULL for GROUP memberships (no role tiers); OWNER / MEMBER
             # for ORG memberships.
             sa.Column('role', org_role, nullable=True),
+            # Where this membership row originated. ``Local`` for rows
+            # the admin (or a route handler) created; ``OIDC`` /
+            # ``SAML`` for rows written by IdP group-sync. Sync logic
+            # only ever rewrites rows where source matches the current
+            # provider — admin-added memberships are untouched.
+            sa.Column(
+                'source',
+                _existing_auth_provider_enum(bind),
+                nullable=False,
+                server_default='Local',
+            ),
             sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
             sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
             sa.Column('deleted_at', sa.TIMESTAMP(), nullable=True),
@@ -1046,6 +1093,9 @@ def downgrade() -> None:
     # ---- Drop enum types on postgres ------------------------------------
 
     if bind.dialect.name == 'postgresql':
+        # Only drop the enums this migration owns. ``authproviderenum``
+        # predates this migration and is still in use by
+        # ``users.source`` after downgrade.
         for enum in reversed(_enums()):
             try:
                 enum.drop(bind, checkfirst=True)
