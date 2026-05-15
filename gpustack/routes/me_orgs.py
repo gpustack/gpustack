@@ -83,16 +83,26 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
         )
     )
 
-    # One round trip: direct + transitive Org memberships unioned.
-    # OWNER beats MEMBER when both paths report on the same Org.
+    # Two SELECTs here (not a single ``union_all``): each SELECT
+    # returns a Principal ORM entity, and SA flattens entity columns
+    # across a UNION, breaking the ``(role, Principal)`` row shape
+    # we destructure below — it surfaces as
+    # ``ValueError: too many values to unpack (expected 2)`` on the
+    # ``/v2/users/me/organizations`` endpoint, fired for any user who
+    # belongs to one or more Orgs. Two round trips on a UI-page-load
+    # path is acceptable; the same optimization belongs only on hot
+    # paths that select scalar columns (see ``api/tenant.py``'s
+    # ``_resolve_effective_org_role``, which unions cleanly because
+    # its SELECTs return only ``role``).
     best_by_org: Dict[int, tuple[OrgRole, Principal]] = {}
-    for role, org in (await session.exec(direct_stmt.union_all(via_group_stmt))).all():
-        effective = role or OrgRole.MEMBER
-        existing = best_by_org.get(org.id)
-        if existing is None or (
-            existing[0] != OrgRole.OWNER and effective == OrgRole.OWNER
-        ):
-            best_by_org[org.id] = (effective, org)
+    for stmt in (direct_stmt, via_group_stmt):
+        for role, org in (await session.exec(stmt)).all():
+            effective = role or OrgRole.MEMBER
+            existing = best_by_org.get(org.id)
+            if existing is None or (
+                existing[0] != OrgRole.OWNER and effective == OrgRole.OWNER
+            ):
+                best_by_org[org.id] = (effective, org)
 
     items.extend(
         MyOrganization(
