@@ -146,8 +146,17 @@ async def _resolve_effective_org_role(
     # UNION ALL. Auth context is resolved on every request that
     # carries an Org context, so collapsing two SELECTs to one is
     # measurable at scale.
+    #
+    # ``select(Col).union_all(...)`` returns ``Row`` tuples (one cell
+    # each) rather than scalars — a SQLAlchemy quirk where the union
+    # output is treated as a multi-column shape regardless of input
+    # arity. ``OrgRole.OWNER in [Row(OWNER)]`` is False, so we have
+    # to unpack the cell explicitly. Calling ``.scalars()`` on the
+    # union result is the canonical fix; ``r[0] for r in ...`` would
+    # work too but is less obvious about what's going on.
     stmt = direct_stmt.union_all(via_group_stmt)
-    roles = [r for r in (await session.exec(stmt)).all() if r is not None]
+    result = await session.exec(stmt)
+    roles = [r for r in result.scalars().all() if r is not None]
     if not roles:
         return None
     return OrgRole.OWNER if OrgRole.OWNER in roles else OrgRole.MEMBER
