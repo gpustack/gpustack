@@ -26,10 +26,11 @@ from gpustack.schemas.model_routes import (
 )
 from gpustack.schemas.principals import (
     OrgRole,
-    PLATFORM_PRINCIPAL_ID,
     Principal,
     PrincipalMembership,
     PrincipalType,
+    get_platform_principal_id,
+    platform_principal_id,
 )
 from gpustack.schemas.users import AuthProviderEnum, User
 from gpustack.schemas.clusters import Cluster
@@ -48,6 +49,35 @@ class RouteTargetResolution(NamedTuple):
 
     model_id: int
     overridden_model_name: Optional[str]
+
+
+def _sync_principal_name(
+    user: User,
+    source: Union[dict, SQLModel, None],
+) -> Union[dict, SQLModel, None]:
+    """Mirror ``full_name`` (falling back to ``username``) into the
+    Principal-level ``name`` column whenever an update payload touches
+    either field. Idempotent; leaves ``source`` alone if neither
+    appears.
+
+    Accepts both dict payloads and ``SQLModel`` instances (Pydantic
+    DTOs) — the latter is converted to a dict so we can attach the
+    derived ``name``. Partial payloads fall back to the existing
+    ``user`` row for whichever of ``full_name`` / ``username`` is not
+    in the update, otherwise renaming only one of the two fields would
+    leave ``name`` stale relative to the merged result.
+    """
+    if source is None:
+        return None
+    update_dict = (
+        source if isinstance(source, dict) else source.model_dump(exclude_unset=True)
+    )
+    if 'full_name' not in update_dict and 'username' not in update_dict:
+        return source
+    full_name = update_dict.get('full_name', user.full_name)
+    username = update_dict.get('username', user.username)
+    update_dict = {**update_dict, 'name': full_name or username}
+    return update_dict
 
 
 class UserService:
@@ -82,6 +112,12 @@ class UserService:
         return await create_user_with_principal(self.session, user)
 
     async def update(self, user: User, source: Union[dict, SQLModel, None] = None):
+        # Keep ``principals.name`` in lockstep with the user-facing
+        # display fields (``full_name`` / ``username``) whenever either
+        # changes. ``name`` is what cluster-access grants, ACL pickers,
+        # and the org members list render — letting it drift produces
+        # the ``#{id}`` fallback in the UI.
+        source = _sync_principal_name(user, source)
         result = await user.update(self.session, source)
         await delete_cache_by_key(self.get_by_id, user.id)
         await delete_cache_by_key(self.get_user_accessible_model_names, user.id)
@@ -173,7 +209,7 @@ class UserService:
                 effective_route_name(
                     r.name,
                     getattr(owner, "slug", None),
-                    getattr(owner, "id", None) == PLATFORM_PRINCIPAL_ID,
+                    getattr(owner, "id", None) == platform_principal_id(),
                 )
             )
             names.add(r.name)
@@ -181,90 +217,46 @@ class UserService:
 
 
 async def create_user_with_principal(session: AsyncSession, user: User) -> User:
-    """Persist a User together with its 1:1 USER-principal.
+    """Persist a User row (which is just a Principal of kind USER) and
+    backfill its canonical ``slug`` and ``name``.
 
-    Replaces the bare ``User.create(...)`` call at every user-creation
-    site (local POST /users, SSO callbacks, bootstrap admin, worker
-    registration).
+    Historically this function persisted two linked rows — a ``users``
+    row plus a 1:1 ``principals`` row — and the comment here was a
+    long explanation of the flush ordering required to satisfy a
+    NOT NULL FK between them. After identity consolidation that's all
+    gone: the user IS a principal, so we just insert, then stamp the
+    ``user-{id}`` slug once the auto-generated id is known.
 
-    Why the dance:
-
-    - ``users.principal_id`` is NOT NULL, so the principal row must
-      exist before the user row is inserted.
-    - Callers naturally construct users with relationship attributes
-      (``cluster=cluster``, ``worker=worker``). Those backref-populate
-      the parent's ``cluster_users`` / ``workers`` collections at
-      construction time, before the user is in any session — which
-      both emits a noisy ``SAWarning`` and, more importantly, leaves
-      a dangling ``InstanceState`` reference that crashes the
-      bus-event payload deepcopy at commit time.
-
-    The fix is to (1) ``session.add(user)`` immediately so the
-    pre-construction backref entries point at a session-tracked
-    object, then (2) use the ``user.principal`` relationship attribute
-    so SQLAlchemy's unit of work inserts the principal first and
-    auto-populates ``user.principal_id`` during a single combined
-    flush. The principal's ``slug`` is patched to ``user-{user.id}``
-    afterward, once the auto-generated user id is known.
+    ``name`` mirrors the migration's backfill — ``full_name`` if
+    present, otherwise ``username`` — so per-principal display labels
+    (cluster-access grants, model-route ACLs, the org members list)
+    show a meaningful string instead of ``#{id}``.
 
     Caller commits.
     """
-    # Step 1 — make the session aware of the user before any flush
-    # touches related collections.
-    session.add(user)
-
-    # Step 2 — link via the relationship attribute so SQLAlchemy
-    # orders ``principal`` before ``user`` and threads the auto-id
-    # through automatically.
-    principal = Principal(
-        kind=PrincipalType.USER,
-        name=user.username,
-        slug=None,
-    )
-    user.principal = principal
-    session.add(principal)
-    await session.flush([principal, user])
-
-    # Step 3 — slug is globally unique among non-NULL values; assign
-    # the canonical ``user-{id}`` form now that the user id is known.
-    principal.slug = f"user-{user.id}"
-    await session.flush([principal])
-
-    return user
-
-
-async def provision_user_principal(session: AsyncSession, user: User) -> Principal:
-    """Backfill a USER-principal for an existing user that lacks one.
-
-    Used by SSO callbacks for users created before the multi-tenancy
-    migration shipped — they exist in the database without
-    ``principal_id``. Fresh user creation goes through
-    ``create_user_with_principal`` instead.
-    """
-    principal = Principal(
-        kind=PrincipalType.USER,
-        name=user.username,
-        slug=f"user-{user.id}",
-    )
-    session.add(principal)
-    await session.flush([principal])
-    user.principal_id = principal.id
+    if user.kind is None:
+        user.kind = PrincipalType.USER
+    if user.name is None:
+        user.name = user.full_name or user.username
     session.add(user)
     await session.flush([user])
-    return principal
+    if user.slug is None:
+        user.slug = f"user-{user.id}"
+        await session.flush([user])
+    return user
 
 
 async def provision_bootstrap_admin_orgs(session: AsyncSession, user: User) -> None:
     """Add the bootstrap admin as OWNER of the platform Org.
 
-    Assumes ``user`` already has a ``principal_id`` (created via
-    ``create_user_with_principal``). Caller commits.
+    Caller commits.
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    platform_id = await get_platform_principal_id(session)
     session.add(
         PrincipalMembership(
-            parent_principal_id=PLATFORM_PRINCIPAL_ID,
-            member_principal_id=user.principal_id,
+            parent_principal_id=platform_id,
+            member_principal_id=user.id,
             role=OrgRole.OWNER,
             created_at=now,
             updated_at=now,
@@ -584,7 +576,7 @@ async def collect_route_cache_names(
         if owner:
             names.add(
                 effective_route_name(
-                    route_name, owner.slug, owner.id == PLATFORM_PRINCIPAL_ID
+                    route_name, owner.slug, owner.id == platform_principal_id()
                 )
             )
     return names
@@ -773,7 +765,7 @@ class ModelService:
                 continue
             route_names.add(r_name)
             route_names.add(
-                effective_route_name(r_name, slug, p_id == PLATFORM_PRINCIPAL_ID)
+                effective_route_name(r_name, slug, p_id == platform_principal_id())
             )
 
         result = await model.delete(self.session)
@@ -936,7 +928,11 @@ async def revoke_model_access_cache(
 ):
     user_ids = set()
     if model is None:
-        result = await session.exec(select(User.id))
+        # Cache-bust everyone — restrict to actual users so we don't
+        # waste time invalidating ORG / GROUP keys that never existed.
+        result = await session.exec(
+            select(User.id).where(User.kind == PrincipalType.USER)
+        )
         user_ids = set(result.all())
     else:
         # Users with a direct grant on this route's ACL — i.e. their
@@ -948,7 +944,7 @@ async def revoke_model_access_cache(
             select(User.id)
             .join(
                 ModelRoutePrincipalLink,
-                ModelRoutePrincipalLink.principal_id == User.principal_id,
+                ModelRoutePrincipalLink.principal_id == User.id,
             )
             .where(ModelRoutePrincipalLink.route_id == model.id)
         )

@@ -20,7 +20,7 @@ from gpustack.schemas.users import (
     get_default_cluster_user,
     default_cluster_user_name,
 )
-from gpustack.schemas.principals import PLATFORM_PRINCIPAL_ID
+from gpustack.schemas.principals import platform_principal_id
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
@@ -446,6 +446,12 @@ class Server:
             os.makedirs(data_dir)
 
     async def _init_data(self, session: AsyncSession):
+        # Resolve PLATFORM_PRINCIPAL_ID first: the identity-consolidation
+        # migration renumbers the platform principal above
+        # MAX(users.id), so every downstream init step that defaults to
+        # ``platform_principal_id()`` needs the live value bound.
+        await self._init_platform_principal_id(session)
+
         init_data_funcs = [
             self._init_user,
             self._init_default_cluster,
@@ -480,6 +486,11 @@ class Server:
         logger.info(
             f"LoRA model route reconcile: {len(models_with_lora)} models with lora_list scanned"
         )
+
+    async def _init_platform_principal_id(self, session: AsyncSession):
+        from gpustack.schemas.principals import init_platform_principal_id
+
+        await init_platform_principal_id(session)
 
     async def _init_user(self, session: AsyncSession):
         # Skip bootstrap when any non-system admin already exists, so that
@@ -801,7 +812,7 @@ class Server:
             hashed_suffix=hashed_suffix,
             registration_token="",
             is_default=set_default,
-            owner_principal_id=PLATFORM_PRINCIPAL_ID,
+            owner_principal_id=platform_principal_id(),
         )
         default_cluster = await Cluster.create(
             session, default_cluster, auto_commit=False
@@ -834,7 +845,7 @@ class Server:
             session=session,
             fields={
                 "is_default": True,
-                "owner_principal_id": PLATFORM_PRINCIPAL_ID,
+                "owner_principal_id": platform_principal_id(),
                 "deleted_at": None,
             },
         )

@@ -23,7 +23,7 @@ class ModelUsage(SQLModel, ActiveRecordMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: Optional[int] = Field(
         default=None,
-        sa_column=Column(Integer, ForeignKey("users.id", ondelete="SET NULL")),
+        sa_column=Column(Integer, ForeignKey("principals.id", ondelete="SET NULL")),
     )
     user_name: Optional[str] = Field(default=None)
     model_id: Optional[int] = Field(

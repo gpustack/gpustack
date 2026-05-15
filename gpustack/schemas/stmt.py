@@ -158,34 +158,42 @@ def principal_users_after_create_view_stmt() -> str:
     can index-join instead of running a correlated EXISTS over
     ``principal_memberships`` per row.
 
+    After identity consolidation, USER rows live in the same
+    ``principals`` table as ORG / GROUP — a USER-principal's id IS the
+    user's id, so the first branch is a self-trivial select instead of
+    the old ``users JOIN principals`` shape.
+
     Three branches:
 
     1. The user themselves (always covered by their USER-principal).
     2. Direct: ``(parent=Org/Group, member=User)`` — user joined the
        Org/Group directly.
     3. Transitive: user is in a Group that is itself a member of an
-       Org — propagates membership of the Org to every active user
-       inside the Group.
+       Org — propagates Org membership to every active user in the
+       Group.
     """
     return '''
 CREATE VIEW principal_users AS
-SELECT u.principal_id AS principal_id, u.id AS user_id
-FROM users u
+SELECT u.id AS principal_id, u.id AS user_id
+FROM principals u
+WHERE u.kind = 'USER' AND u.deleted_at IS NULL
 UNION ALL
-SELECT pm.parent_principal_id AS principal_id, u.id AS user_id
+SELECT pm.parent_principal_id AS principal_id, pm.member_principal_id AS user_id
 FROM principal_memberships pm
-JOIN users u ON u.principal_id = pm.member_principal_id
+JOIN principals u ON u.id = pm.member_principal_id
 JOIN principals pr ON pr.id = pm.parent_principal_id
 WHERE pm.deleted_at IS NULL
   AND pr.deleted_at IS NULL
+  AND u.deleted_at IS NULL
+  AND u.kind = 'USER'
   AND pr.kind IN ('ORG', 'GROUP')
 UNION ALL
-SELECT org_pm.parent_principal_id AS principal_id, u.id AS user_id
+SELECT org_pm.parent_principal_id AS principal_id, group_pm.member_principal_id AS user_id
 FROM principal_memberships group_pm
 JOIN principal_memberships org_pm
   ON org_pm.member_principal_id = group_pm.parent_principal_id
  AND org_pm.deleted_at IS NULL
-JOIN users u ON u.principal_id = group_pm.member_principal_id
+JOIN principals u ON u.id = group_pm.member_principal_id
 JOIN principals grp ON grp.id = group_pm.parent_principal_id
 JOIN principals org ON org.id = org_pm.parent_principal_id
 WHERE group_pm.deleted_at IS NULL
@@ -193,6 +201,8 @@ WHERE group_pm.deleted_at IS NULL
   AND grp.kind = 'GROUP'
   AND org.deleted_at IS NULL
   AND org.kind = 'ORG'
+  AND u.kind = 'USER'
+  AND u.deleted_at IS NULL
 '''
 
 
@@ -208,41 +218,50 @@ def model_user_after_create_view_stmt(db_type: str) -> str:
     # then OR-filter EXISTS subqueries against it. ``mrp.deleted_at IS
     # NULL`` is required on every ACL branch: leaving it off was the
     # soft-delete-leak bug from review.
+    # After identity consolidation, USER rows live in ``principals``
+    # (kind = 'USER'). Every reference to the old ``users`` table is
+    # rewritten to ``principals`` with a kind filter. The
+    # ALLOWED_USERS branch becomes ``mrp.principal_id = u.id`` (the
+    # user's USER-principal id IS the user's id) instead of joining
+    # through the now-removed ``users.principal_id`` column.
     return f'''
 CREATE VIEW non_admin_user_models AS
 SELECT {pid} AS pid, u.id AS user_id, m.*
-FROM users u
+FROM principals u
 CROSS JOIN model_routes m
-WHERE u.is_admin = {sql_false} AND u.is_system = {sql_false}
+WHERE u.kind = 'USER' AND u.deleted_at IS NULL
+  AND u.is_admin = {sql_false} AND u.is_system = {sql_false}
   AND m.access_policy IN ('PUBLIC', 'AUTHED')
 
 UNION ALL
 
 SELECT {pid} AS pid, u.id AS user_id, m.*
-FROM users u
+FROM principals u
 JOIN principal_users pu
   ON pu.user_id = u.id
 JOIN model_routes m
   ON m.owner_principal_id = pu.principal_id
   AND m.access_policy = 'ORG'
-WHERE u.is_admin = {sql_false} AND u.is_system = {sql_false}
+WHERE u.kind = 'USER' AND u.deleted_at IS NULL
+  AND u.is_admin = {sql_false} AND u.is_system = {sql_false}
 
 UNION ALL
 
 SELECT {pid} AS pid, u.id AS user_id, m.*
-FROM users u
+FROM principals u
 JOIN model_route_principals mrp
-  ON mrp.principal_id = u.principal_id
+  ON mrp.principal_id = u.id
   AND mrp.deleted_at IS NULL
 JOIN model_routes m
   ON m.id = mrp.route_id
   AND m.access_policy = 'ALLOWED_USERS'
-WHERE u.is_admin = {sql_false} AND u.is_system = {sql_false}
+WHERE u.kind = 'USER' AND u.deleted_at IS NULL
+  AND u.is_admin = {sql_false} AND u.is_system = {sql_false}
 
 UNION ALL
 
 SELECT {pid} AS pid, u.id AS user_id, m.*
-FROM users u
+FROM principals u
 JOIN principal_users pu ON pu.user_id = u.id
 JOIN model_route_principals mrp
   ON mrp.principal_id = pu.principal_id
@@ -250,5 +269,6 @@ JOIN model_route_principals mrp
 JOIN model_routes m
   ON m.id = mrp.route_id
   AND m.access_policy = 'ALLOWED_PRINCIPALS'
-WHERE u.is_admin = {sql_false} AND u.is_system = {sql_false}
+WHERE u.kind = 'USER' AND u.deleted_at IS NULL
+  AND u.is_admin = {sql_false} AND u.is_system = {sql_false}
 '''

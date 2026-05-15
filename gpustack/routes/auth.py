@@ -30,7 +30,6 @@ from gpustack.api.auth import (
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.server.services import (
     create_user_with_principal,
-    provision_user_principal,
     sync_user_group_memberships,
 )
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
@@ -279,15 +278,6 @@ async def saml_callback(request: Request, session: SessionDep):
             )
             user = await create_user_with_principal(session, user_info)
             await session.commit()
-        elif (
-            getattr(user, "id", None) is not None
-            and getattr(user, "principal_id", None) is None
-        ):
-            # Backfill for SSO users created before Personal Org
-            # provisioning was wired in. Idempotent: only fires when the
-            # user has no Personal Org pointer.
-            await provision_user_principal(session, user)
-            await session.commit()
 
         await _sync_saml_groups_if_enabled(session, user, attributes, config)
 
@@ -384,7 +374,7 @@ async def _sync_oidc_groups_if_enabled(
         return
     group_names = _coerce_group_claim(user_data.get(config.external_auth_groups))
     await sync_user_group_memberships(
-        session, user.principal_id, AuthProviderEnum.OIDC, group_names
+        session, user.id, AuthProviderEnum.OIDC, group_names
     )
     await session.commit()
 
@@ -400,7 +390,7 @@ async def _sync_saml_groups_if_enabled(
     raw = get_saml_attributes(config, attributes, config.external_auth_groups)
     group_names = _coerce_group_claim(raw)
     await sync_user_group_memberships(
-        session, user.principal_id, AuthProviderEnum.SAML, group_names
+        session, user.id, AuthProviderEnum.SAML, group_names
     )
     await session.commit()
 
@@ -544,15 +534,6 @@ async def oidc_callback(request: Request, session: SessionDep):
             require_password_change=False,
         )
         user = await create_user_with_principal(session, user_info)
-        await session.commit()
-    elif (
-        getattr(user, "id", None) is not None
-        and getattr(user, "principal_id", None) is None
-    ):
-        # Backfill for SSO users created before Personal Org
-        # provisioning was wired in. Idempotent: only fires when the
-        # user has no Personal Org pointer.
-        await provision_user_principal(session, user)
         await session.commit()
 
     await _sync_oidc_groups_if_enabled(session, user, user_data, config)

@@ -213,10 +213,8 @@ async def list_group_members(session: SessionDep, ctx: TenantContextDep, group_i
     member_ids = {r.member_principal_id for r in rows}
     user_by_principal: dict[int, User] = {}
     if member_ids:
-        result = await session.exec(
-            select(User).where(User.principal_id.in_(member_ids))
-        )
-        user_by_principal = {u.principal_id: u for u in result.all()}
+        result = await session.exec(select(User).where(User.id.in_(member_ids)))
+        user_by_principal = {u.id: u for u in result.all()}
     out: List[UserGroupMembershipPublic] = []
     for r in rows:
         u = user_by_principal.get(r.member_principal_id)
@@ -263,7 +261,8 @@ async def add_group_members(
     if missing:
         raise NotFoundException(message=f"User(s) not found: {missing}")
 
-    principal_ids = [users_by_id[uid].principal_id for uid in user_ids]
+    # After identity consolidation, a user's principal id IS user.id.
+    principal_ids = list(users_by_id.keys())
 
     # Bulk-load existing memberships (including soft-deleted, so we can
     # resurrect them instead of producing duplicate rows). Matches the
@@ -283,8 +282,7 @@ async def add_group_members(
     duplicates = [
         uid
         for uid in user_ids
-        if (m := existing_by_principal.get(users_by_id[uid].principal_id)) is not None
-        and m.deleted_at is None
+        if (m := existing_by_principal.get(uid)) is not None and m.deleted_at is None
     ]
     if duplicates:
         raise AlreadyExistsException(
@@ -296,7 +294,7 @@ async def add_group_members(
     try:
         for uid in user_ids:
             user = users_by_id[uid]
-            existing = existing_by_principal.get(user.principal_id)
+            existing = existing_by_principal.get(user.id)
             if existing is not None:
                 existing.deleted_at = None
                 existing.updated_at = now
@@ -305,7 +303,7 @@ async def add_group_members(
             else:
                 link = PrincipalMembership(
                     parent_principal_id=group_id,
-                    member_principal_id=user.principal_id,
+                    member_principal_id=user.id,
                     role=None,
                     created_at=now,
                     updated_at=now,
@@ -346,7 +344,7 @@ async def remove_group_member(
 
     stmt = select(PrincipalMembership).where(
         PrincipalMembership.parent_principal_id == group_id,
-        PrincipalMembership.member_principal_id == user.principal_id,
+        PrincipalMembership.member_principal_id == user.id,
         PrincipalMembership.deleted_at.is_(None),
     )
     link = (await session.exec(stmt)).first()

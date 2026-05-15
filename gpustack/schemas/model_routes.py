@@ -20,7 +20,7 @@ from gpustack.schemas.common import (
     PublicFields,
     ItemList,
 )
-from gpustack.schemas.organizations import PLATFORM_ORGANIZATION_ID
+from gpustack.schemas.principals import _platform_principal_id
 
 if TYPE_CHECKING:
     from gpustack.schemas.models import Model
@@ -301,7 +301,7 @@ class ModelRouteBase(ModelRouteUpdateBase):
     ready_targets: int = Field(default=0, nullable=False, ge=0)
     access_policy: AccessPolicyEnum = Field(default=AccessPolicyEnum.AUTHED)
     owner_principal_id: int = Field(
-        default=PLATFORM_ORGANIZATION_ID,
+        default_factory=_platform_principal_id,
         foreign_key="principals.id",
         nullable=False,
     )

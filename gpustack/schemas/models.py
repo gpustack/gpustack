@@ -26,7 +26,7 @@ from gpustack.schemas.model_routes import (
     ModelRouteTarget,
     AccessPolicyEnum,
 )
-from gpustack.schemas.principals import PLATFORM_PRINCIPAL_ID
+from gpustack.schemas.principals import _platform_principal_id
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
@@ -277,7 +277,7 @@ class ModelSpecBase(SQLModel, ModelSource):
 class ModelBase(ModelSpecBase):
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
     owner_principal_id: int = Field(
-        default=PLATFORM_PRINCIPAL_ID,
+        default_factory=_platform_principal_id,
         sa_column=Column(
             Integer,
             ForeignKey("principals.id", ondelete="CASCADE"),
@@ -529,7 +529,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
 
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
     owner_principal_id: int = Field(
-        default=PLATFORM_PRINCIPAL_ID,
+        default_factory=_platform_principal_id,
         sa_column=Column(
             Integer,
             ForeignKey("principals.id", ondelete="CASCADE"),

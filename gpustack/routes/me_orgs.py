@@ -43,11 +43,11 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
     """
     items: List[MyOrganization] = []
 
-    user_principal = await Principal.one_by_id(session, user.principal_id)
-    if user_principal is not None and user_principal.deleted_at is None:
+    # ``user`` IS the user-principal row (USER kind); no extra fetch.
+    if user.deleted_at is None:
         items.append(
             MyOrganization(
-                organization=OrganizationPublic.from_principal(user_principal),
+                organization=OrganizationPublic.from_principal(user),
                 role=OrgRole.OWNER,
             )
         )
@@ -60,7 +60,7 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
             Principal.id == PrincipalMembership.parent_principal_id,
         )
         .where(
-            PrincipalMembership.member_principal_id == user.principal_id,
+            PrincipalMembership.member_principal_id == user.id,
             PrincipalMembership.deleted_at.is_(None),
             Principal.deleted_at.is_(None),
             Principal.kind == PrincipalType.ORG,
@@ -75,7 +75,7 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
         .join(group_pm, group_pm.parent_principal_id == org_pm.member_principal_id)
         .join(Principal, Principal.id == org_pm.parent_principal_id)
         .where(
-            group_pm.member_principal_id == user.principal_id,
+            group_pm.member_principal_id == user.id,
             group_pm.deleted_at.is_(None),
             org_pm.deleted_at.is_(None),
             Principal.deleted_at.is_(None),
@@ -131,7 +131,7 @@ async def list_my_clusters_in_org(
     # All Group-principals the user is in. Groups are no longer
     # org-scoped — a Group is a peer-level principal that may carry
     # cluster_access grants applicable wherever the user acts.
-    user_principal_id = ctx.user.principal_id
+    user_principal_id = ctx.user.id
     group_stmt = (
         select(PrincipalMembership.parent_principal_id)
         .join(

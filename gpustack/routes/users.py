@@ -17,10 +17,10 @@ from gpustack.security import get_secret_hash
 from gpustack.schemas.organizations import OrganizationPublic
 from gpustack.schemas.principals import (
     OrgRole,
-    PLATFORM_PRINCIPAL_ID,
     Principal,
     PrincipalMembership,
     PrincipalType,
+    get_platform_principal_id,
 )
 from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
@@ -68,6 +68,7 @@ async def get_users(
             page=params.page,
             per_page=params.perPage,
             fields={
+                "kind": PrincipalType.USER,
                 "deleted_at": None,
                 "is_system": False,
             },
@@ -102,7 +103,7 @@ async def list_user_memberships(session: SessionDep, id: int):
             Principal.id == PrincipalMembership.parent_principal_id,
         )
         .where(
-            PrincipalMembership.member_principal_id == user.principal_id,
+            PrincipalMembership.member_principal_id == user.id,
             PrincipalMembership.deleted_at.is_(None),
             Principal.kind == PrincipalType.ORG,
             Principal.deleted_at.is_(None),
@@ -133,18 +134,17 @@ async def create_user(session: SessionDep, user_in: UserCreate):
         )
         if user_in.password:
             to_create.hashed_password = get_secret_hash(user_in.password)
-        # User row + USER-principal go in one transactional helper —
-        # ``users.principal_id`` is NOT NULL so the principal must
-        # exist first. Admin additionally joins the platform Org as
-        # OWNER; regular users do NOT auto-join — admin can add them
-        # later if shared workspace access is needed.
+        # Admin additionally joins the platform Org as OWNER; regular
+        # users do NOT auto-join — admin can add them later if shared
+        # workspace access is needed.
         user = await create_user_with_principal(session, to_create)
         if user.is_admin:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
+            platform_id = await get_platform_principal_id(session)
             session.add(
                 PrincipalMembership(
-                    parent_principal_id=PLATFORM_PRINCIPAL_ID,
-                    member_principal_id=user.principal_id,
+                    parent_principal_id=platform_id,
+                    member_principal_id=user.id,
                     role=OrgRole.OWNER,
                     created_at=now,
                     updated_at=now,
@@ -231,19 +231,12 @@ async def delete_user(session: SessionDep, id: int):
     if await is_only_admin_user(session, user):
         raise ConflictException(message="Cannot delete the only admin user")
 
-    # The user's USER-principal is the canonical owner of any
-    # personal-scope resources (models, routes, clusters, api keys).
-    # FK cascades on ``owner_principal_id == user.principal_id`` will
-    # take those rows with the principal when it's deleted; the
-    # principal in turn is RESTRICT-FK'd to ``users.principal_id``, so
-    # the user must be deleted first and the principal cleaned up
-    # afterward.
-    principal = await Principal.one_by_id(session, user.principal_id)
-
+    # After identity consolidation the user IS its own principal, so
+    # deleting the user row also tears down every resource owned by
+    # ``owner_principal_id == user.id`` via FK CASCADE. No separate
+    # principal row to clean up.
     try:
         await user_service.delete(user)
-        if principal is not None:
-            await principal.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete user: {e}")
 
@@ -307,6 +300,7 @@ async def list_user_directory(
             page=page,
             per_page=perPage,
             fields={
+                "kind": PrincipalType.USER,
                 "deleted_at": None,
                 "is_system": False,
             },

@@ -32,7 +32,7 @@ from gpustack.schemas.model_routes import (
     MyModel,
     effective_route_name,
 )
-from gpustack.schemas.principals import Principal, PLATFORM_PRINCIPAL_ID
+from gpustack.schemas.principals import Principal, platform_principal_id
 from gpustack.schemas.workers import Worker
 from gpustack.server.deps import SessionDep, CurrentUserDep
 from gpustack.server.services import (
@@ -134,7 +134,7 @@ def _route_to_oai_model(
         id=effective_route_name(
             route.name,
             getattr(owner, "slug", None),
-            getattr(owner, "id", None) == PLATFORM_PRINCIPAL_ID,
+            getattr(owner, "id", None) == platform_principal_id(),
         ),
         object="model",
         created=int(route.created_at.timestamp()),

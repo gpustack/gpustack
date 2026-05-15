@@ -25,7 +25,6 @@ from gpustack.api.exceptions import (
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.model_routes import ModelRoute
 from gpustack.schemas.principals import Principal, PrincipalType
-from gpustack.schemas.users import User
 from gpustack.server.deps import SessionDep
 from gpustack.server.services import revoke_model_access_cache
 
@@ -66,10 +65,10 @@ async def _validate_principal(
                 f"not a {principal_type.value}"
             )
         )
-    if target.kind == PrincipalType.USER:
-        user = await User.one_by_field(session, "principal_id", principal_id)
-        if user is None or user.is_system or user.deleted_at is not None:
-            raise InvalidException(message=f"User principal {principal_id} not found")
+    # System users (workers / cluster service accounts) are USER-kind
+    # but shouldn't appear in ACL grants — they bypass via is_system.
+    if target.kind == PrincipalType.USER and target.is_system:
+        raise InvalidException(message=f"User principal {principal_id} not found")
     return target
 
 

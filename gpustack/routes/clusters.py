@@ -51,7 +51,7 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudOptions,
 )
-from gpustack.schemas.organizations import PLATFORM_PRINCIPAL_ID
+from gpustack.schemas.principals import platform_principal_id
 from gpustack.schemas.users import User, UserRole, system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
@@ -281,7 +281,7 @@ async def create_cluster(
     # caller omitted it: their current Org context, or the platform Org
     # for admin in "All" mode (admin's home is Default).
     if input.owner_principal_id is None:
-        input.owner_principal_id = ctx.current_principal_id or PLATFORM_PRINCIPAL_ID
+        input.owner_principal_id = ctx.current_principal_id or platform_principal_id()
     validate_owner_principal(input.owner_principal_id, ctx, resource_label="cluster")
 
     # Cluster names are unique within their owning Org, not globally —

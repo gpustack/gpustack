@@ -10,9 +10,9 @@ Storage is the unified ``principal_memberships`` table. Each row
 links two principals: the parent (an ORG-principal here) and the
 member (a USER or GROUP principal). Group-members confer ``role`` on
 every active user inside the Group. The URL path's ``principal_id``
-is the principal id of the member — for USER members it equals
-``users.principal_id``; for GROUP members it's the group's
-principal id.
+is the principal id of the member — for USER members that IS the
+user's id (post identity consolidation); for GROUP members it's the
+group's principal id.
 """
 
 from datetime import datetime, timezone
@@ -191,11 +191,9 @@ async def _enrich_with_labels(
     full_name_by_principal: dict[int, Optional[str]] = {}
     if user_principal_ids:
         full_name_by_principal = {
-            u.principal_id: u.full_name
+            u.id: u.full_name
             for u in (
-                await session.exec(
-                    select(User).where(User.principal_id.in_(user_principal_ids))
-                )
+                await session.exec(select(User).where(User.id.in_(user_principal_ids)))
             ).all()
         }
 
@@ -310,11 +308,9 @@ async def add_org_members(
     users_by_principal: dict[int, User] = {}
     if user_principal_ids:
         users_by_principal = {
-            u.principal_id: u
+            u.id: u
             for u in (
-                await session.exec(
-                    select(User).where(User.principal_id.in_(user_principal_ids))
-                )
+                await session.exec(select(User).where(User.id.in_(user_principal_ids)))
             ).all()
         }
         bad = [
@@ -427,10 +423,9 @@ async def update_org_member(
         await session.rollback()
         raise InvalidException(message=f"Failed to update member: {e}")
 
-    full_name: Optional[str] = None
-    if p.kind == PrincipalType.USER:
-        u = await User.one_by_field(session, "principal_id", p.id)
-        full_name = getattr(u, "full_name", None)
+    # After identity consolidation, the user IS the principal — read
+    # ``full_name`` straight off ``p`` instead of a second lookup.
+    full_name = p.full_name if p.kind == PrincipalType.USER else None
     return _to_public(
         p, membership.role, membership.created_at, org_id, full_name=full_name
     )
