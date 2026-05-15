@@ -28,7 +28,7 @@ from gpustack.schemas.model_routes import (
     TargetStateEnum,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink
-from gpustack.schemas.organizations import PLATFORM_PRINCIPAL_ID
+from gpustack.schemas.principals import platform_principal_id
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.models import Model
@@ -206,7 +206,7 @@ async def create_model_route(
     await validate_targets(session, targets, route_owner_principal_id=target_org_id)
     source["targets"] = len(targets)
     # Stamp the route's owning org from the caller's tenant context.
-    # ModelRouteBase defaults `owner_principal_id` to PLATFORM_PRINCIPAL_ID
+    # ModelRouteBase defaults `owner_principal_id` to platform_principal_id()
     # so `model_dump()` always emits the key — `setdefault` would silently
     # keep it at 1 for non-platform admins. Override directly.
     if target_org_id is not None:
@@ -220,7 +220,7 @@ async def create_model_route(
     # Org must keep working. Caller's explicit `access_policy` always
     # wins.
     owner_org_id = source.get("owner_principal_id")
-    is_platform_org = owner_org_id == PLATFORM_PRINCIPAL_ID
+    is_platform_org = owner_org_id == platform_principal_id()
     if (
         not is_platform_org
         and owner_org_id is not None
@@ -801,16 +801,17 @@ async def _list_route_users(session, route_id: int) -> List[ModelUserAccessExten
     fields (``username`` / ``full_name`` / ``avatar_url``) without an
     extra round trip from the client.
     """
+    # USER and Principal are the same table post-consolidation, so the
+    # link join can go directly through ``User.id``.
     stmt = (
         select(User, ModelRoutePrincipalLink)
-        .join(Principal, Principal.id == User.principal_id)
         .join(
             ModelRoutePrincipalLink,
-            ModelRoutePrincipalLink.principal_id == Principal.id,
+            ModelRoutePrincipalLink.principal_id == User.id,
         )
         .where(
             ModelRoutePrincipalLink.route_id == route_id,
-            Principal.kind == PrincipalType.USER,
+            User.kind == PrincipalType.USER,
         )
     )
     rows = (await session.exec(stmt)).all()
@@ -834,12 +835,9 @@ async def _replace_route_user_principals(
     grants attached via the ``ALLOWED_PRINCIPALS`` flow are left
     alone, even if this endpoint is called on the same route.
     """
-    desired_principal_ids: Set[int] = set()
-    if user_ids:
-        stmt = select(User.principal_id).where(col(User.id).in_(user_ids))
-        desired_principal_ids = {
-            pid for pid in (await session.exec(stmt)).all() if pid is not None
-        }
+    # After identity consolidation a USER's principal id IS the user's
+    # id — no lookup needed.
+    desired_principal_ids: Set[int] = set(user_ids) if user_ids else set()
 
     existing_stmt = (
         select(ModelRoutePrincipalLink)

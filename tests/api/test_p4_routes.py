@@ -12,7 +12,6 @@ from gpustack.api.exceptions import (
 from gpustack.routes import model_route_principals as principals_route
 from gpustack.schemas.model_routes import ModelRoute
 from gpustack.schemas.principals import Principal, PrincipalType
-from gpustack.schemas.users import User
 
 
 def _route(id: int = 1):
@@ -32,6 +31,7 @@ def _principal(
     p.kind = kind
     p.name = name
     p.deleted_at = None
+    p.is_system = False
     return p
 
 
@@ -161,18 +161,15 @@ async def test_add_principal_rejects_system_user(monkeypatch):
         "one_by_id",
         AsyncMock(return_value=_route()),
     )
+    # Post-consolidation, system-user detection reads ``is_system``
+    # straight off the loaded Principal row — there's no separate
+    # ``User.one_by_field`` lookup.
+    sys_user_principal = _principal(id=2, kind=PrincipalType.USER)
+    sys_user_principal.is_system = True
     monkeypatch.setattr(
         principals_route.Principal,
         "one_by_id",
-        AsyncMock(return_value=_principal(id=2, kind=PrincipalType.USER)),
-    )
-    sys_user = MagicMock(spec=User)
-    sys_user.is_system = True
-    sys_user.deleted_at = None
-    monkeypatch.setattr(
-        principals_route.User,
-        "one_by_field",
-        AsyncMock(return_value=sys_user),
+        AsyncMock(return_value=sys_user_principal),
     )
     with pytest.raises(InvalidException):
         await principals_route.add_route_principal(

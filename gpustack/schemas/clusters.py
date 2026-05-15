@@ -39,7 +39,7 @@ from gpustack.schemas.common import (
 if TYPE_CHECKING:
     from gpustack.schemas.models import Model, ModelInstance
     from gpustack.schemas.workers import Worker
-    from gpustack.schemas.users import User
+    from gpustack.schemas.principals import Principal
 
 
 class WorkerPoolUpdate(SQLModel):
@@ -414,8 +414,14 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
     cluster_model_instances: List["ModelInstance"] = Relationship(
         sa_relationship_kwargs={"lazy": "noload"}, back_populates="cluster"
     )
-    cluster_users: list["User"] = Relationship(
-        sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
+    cluster_users: list["Principal"] = Relationship(
+        sa_relationship_kwargs={
+            "cascade": "delete",
+            "lazy": "noload",
+            # Disambiguate from clusters.owner_principal_id (inverse
+            # direction); cluster_users links via principals.cluster_id.
+            "foreign_keys": "[Principal.cluster_id]",
+        },
         back_populates="cluster",
     )
     cluster_workers: List["Worker"] = Relationship(

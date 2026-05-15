@@ -11,7 +11,7 @@ from gpustack.schemas import (
     GPUInstanceSSHPublicKeyUpdate,
     GPUInstanceSSHPublicKeyPublic,
 )
-from gpustack.schemas.principals import PLATFORM_PRINCIPAL_ID
+from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.deps import SessionDep, TenantContextDep
 
 router = APIRouter()
@@ -27,7 +27,7 @@ async def get_gpu_instance_ssh_public_key_data(
             message="Organization context is required to get GPU instance SSH public key",
         )
 
-    owner_principal_id = ctx.current_principal_id or PLATFORM_PRINCIPAL_ID
+    owner_principal_id = ctx.current_principal_id or platform_principal_id()
     name = gpu_instances.SSH_PUBLIC_KEY_NAME
 
     ret = await GPUInstanceSSHPublicKey.one_by_fields(
@@ -57,7 +57,7 @@ async def update_gpu_instance_ssh_public_key_data(
             message="Organization context is required to update GPU instance SSH public key",
         )
 
-    owner_principal_id = ctx.current_principal_id or PLATFORM_PRINCIPAL_ID
+    owner_principal_id = ctx.current_principal_id or platform_principal_id()
     name = gpu_instances.SSH_PUBLIC_KEY_NAME
 
     if update_obj.name != name:

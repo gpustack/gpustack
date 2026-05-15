@@ -25,17 +25,12 @@ def _request(api_key=None):
     return request
 
 
-def _user(
-    id: int = 7,
-    is_admin: bool = False,
-    is_system: bool = False,
-    principal_id=None,
-):
+def _user(id: int = 7, is_admin: bool = False):
+    """``user.id`` IS the principal id after identity consolidation."""
     user = MagicMock()
     user.id = id
     user.is_admin = is_admin
-    user.is_system = is_system
-    user.principal_id = principal_id
+    user.kind = PrincipalType.USER
     user.is_active = True
     return user
 
@@ -85,25 +80,25 @@ def _session_returning(*scalar_lists):
 
 
 def test_resolve_principal_id_prefers_api_key():
-    user = _user(principal_id=1)
+    user = _user(id=1)
     request = _request(api_key=_api_key(owner_principal_id=42))
     assert _resolve_requested_principal_id(request, user, "999") == 42
 
 
 def test_resolve_principal_id_uses_header_when_no_api_key():
-    user = _user(principal_id=1)
+    user = _user(id=1)
     request = _request()
     assert _resolve_requested_principal_id(request, user, "999") == 999
 
 
 def test_resolve_principal_id_falls_back_to_user_principal():
-    user = _user(principal_id=1)
+    user = _user(id=1)
     request = _request()
     assert _resolve_requested_principal_id(request, user, None) == 1
 
 
 def test_resolve_principal_id_invalid_header_raises():
-    user = _user(principal_id=1)
+    user = _user(id=1)
     request = _request()
     with pytest.raises(InvalidException):
         _resolve_requested_principal_id(request, user, "not-an-int")
@@ -114,7 +109,7 @@ def test_resolve_principal_id_invalid_header_raises():
 
 @pytest.mark.asyncio
 async def test_platform_admin_without_header_has_no_org_filter():
-    user = _user(id=1, is_admin=True, principal_id=None)
+    user = _user(id=1, is_admin=True)
     request = _request()
     session = _session_returning()  # no DB calls expected
 
@@ -134,7 +129,7 @@ async def test_platform_admin_without_header_has_no_org_filter():
 @pytest.mark.asyncio
 async def test_member_uses_team_org_via_header():
     """Non-admin sends X-Organization-Id pointing at an Org they belong to."""
-    user = _user(id=10, is_admin=False, principal_id=100)
+    user = _user(id=100, is_admin=False)
     request = _request()
     session = _session_returning(
         [OrgRole.MEMBER],  # _resolve_effective_org_role (direct ∪ via-group)
@@ -162,7 +157,7 @@ async def test_member_inherits_role_via_group_membership():
     """User joins Org transitively through a Group that is a Member of
     the Org — the resolver hands back the Group-membership's role.
     """
-    user = _user(id=10, is_admin=False, principal_id=100)
+    user = _user(id=100, is_admin=False)
     request = _request()
     session = _session_returning(
         # direct ∪ via-group — only via-group has a row.
@@ -188,7 +183,7 @@ async def test_personal_scope_short_circuits():
     personal scope — no org membership lookup. Groups still resolve
     so cluster_access grants against them apply.
     """
-    user = _user(id=10, is_admin=False, principal_id=100)
+    user = _user(id=100, is_admin=False)
     request = _request()
     session = _session_returning(
         [],  # _user_group_principal_ids
@@ -209,7 +204,7 @@ async def test_personal_scope_short_circuits():
 
 @pytest.mark.asyncio
 async def test_non_member_request_to_other_org_is_rejected():
-    user = _user(id=11, is_admin=False, principal_id=100)
+    user = _user(id=100, is_admin=False)
     request = _request()
     session = _session_returning([])  # union: no membership at all
 
@@ -224,7 +219,7 @@ async def test_non_member_request_to_other_org_is_rejected():
 
 @pytest.mark.asyncio
 async def test_platform_admin_can_act_in_org_without_membership():
-    user = _user(id=1, is_admin=True, principal_id=None)
+    user = _user(id=1, is_admin=True)
     request = _request()
     session = _session_returning(
         [],  # union: no membership; admin still passes
@@ -247,7 +242,7 @@ async def test_platform_admin_can_act_in_org_without_membership():
 
 @pytest.mark.asyncio
 async def test_api_key_overrides_header():
-    user = _user(id=10, is_admin=False, principal_id=100)
+    user = _user(id=100, is_admin=False)
     request = _request(api_key=_api_key(owner_principal_id=42))
     session = _session_returning(
         [OrgRole.MEMBER],  # union: direct membership in org 42

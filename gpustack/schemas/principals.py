@@ -1,61 +1,104 @@
-"""Principal — the unified owner-identity model.
+"""Principal — the unified identity model.
 
 Every namespaced actor in the system (a User, an Organization, a User
-Group) is a row in ``principals``. The kind-specific extension lives in
-its own table:
+Group) is a row in the ``principals`` table. There is no separate
+``users`` extension table any more: User-specific columns (credentials,
+admin / system flags, cluster / worker FKs, …) live directly on
+``principals`` and are simply NULL / default-valued on ORG and GROUP
+rows.
 
-- ``users`` — credentials, role, system flags, cluster/worker FKs
-- (no extension for ORG / GROUP — every column they need is on
-  ``principals`` itself)
+All three kinds are peer-level. A Group's relationship to an Org (if
+any) is expressed as a row in ``principal_memberships`` with
+``parent=Org, member=Group`` — the same mechanism used for a User
+joining an Org. Every active member of the Group inherits the
+membership's role inside the Org.
 
-All three kinds are peer-level: there is no structural parent. A
-Group's relationship to an Org (if any) is expressed by a row in
-``principal_memberships`` with ``parent=Org, member=Group`` — the same
-mechanism used for a User joining an Org. The semantics: every active
-user in that Group inherits the membership's role inside the Org.
-
-Resources (``models``, ``model_routes``, ``clusters``, ...) record their
+Resources (``models``, ``model_routes``, ``clusters``, …) record their
 owner via ``owner_principal_id``. Memberships connect principals to
-principals (a user-principal joining an org-principal, a user-
-principal joining a group-principal, or a group-principal joining an
-org-principal). ACLs reference principals directly.
+principals. ACLs reference principals directly.
 """
 
 from datetime import datetime
 from enum import Enum
-from typing import ClassVar, List, Optional
+from typing import ClassVar, List, Optional, TYPE_CHECKING
 
-from sqlalchemy import Enum as SQLEnum, text
+from sqlalchemy import Enum as SQLEnum, Text, text
 from sqlmodel import (
     Column,
     Field,
     ForeignKey,
     Index,
     Integer,
+    Relationship,
     SQLModel,
     UniqueConstraint,
 )
-from sqlalchemy import Text
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.mixins import BaseModelMixin
+from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.common import ListParams, PaginatedList
-from gpustack.schemas.users import AuthProviderEnum
+from gpustack.schemas.workers import Worker
+
+if TYPE_CHECKING:
+    from gpustack.schemas.api_keys import ApiKey
+
+
+# --------------------------------------------------------------------
+# Auth / identity enums — historically defined in schemas/users.py and
+# re-exported there for back-compat. Living here now lets the unified
+# Principal table reference them without a circular import.
+# --------------------------------------------------------------------
+
+
+class AuthProviderEnum(str, Enum):
+    Local = "Local"
+    OIDC = "OIDC"
+    SAML = "SAML"
+
+
+class UserRole(Enum):
+    """System-actor role on USER rows (cluster / worker service
+    accounts). Orthogonal to organization membership roles.
+    """
+
+    Worker = "Worker"
+    Cluster = "Cluster"
 
 
 # Canonical slug of the built-in platform Org-principal. Created by the
 # multi-tenancy foundation migration; system / infrastructure resources
 # default to it.
-#
-# ``PLATFORM_PRINCIPAL_ID`` is the id we *seed* it with in a fresh DB.
-# It happens to be ``1`` today, but anywhere we don't have to bake the
-# integer into the SQL — primarily migrations and any future bootstrap
-# code that runs against a populated DB — we look it up by slug instead.
-# That's the form that survives any future renumbering (e.g. when
-# ``users`` and ``principals`` get unified and USER-kind principals
-# inherit ``users.id``, the platform Org will get a new id above
-# ``max(users.id)``).
 PLATFORM_PRINCIPAL_SLUG = 'default'
-PLATFORM_PRINCIPAL_ID = 1
+
+# Module-private mutable resolved at server startup by
+# :func:`init_platform_principal_id`. Used to be exported as
+# ``PLATFORM_PRINCIPAL_ID`` (a hardcoded ``1`` baked into schema
+# defaults), but the identity-consolidation migration renumbered the
+# platform principal above ``MAX(users.id)`` so the id is no longer a
+# stable compile-time constant — and a direct
+# ``from gpustack.schemas.principals import PLATFORM_PRINCIPAL_ID``
+# would capture the placeholder ``1`` at import time and silently miss
+# the runtime update. Underscore prefix discourages that import path;
+# every reader goes through :func:`platform_principal_id`.
+_PLATFORM_PRINCIPAL_ID: int = 1
+
+
+def platform_principal_id() -> int:
+    """Sync getter for the platform principal id.
+
+    Every call site that needs the *current* id (schema field defaults
+    via ``default_factory``; runtime comparisons; fallback values) must
+    use this function rather than reading the module-private
+    ``_PLATFORM_PRINCIPAL_ID`` directly.
+    """
+    return _PLATFORM_PRINCIPAL_ID
+
+
+# Public alias for ``default_factory=`` on SQLModel fields. Identical
+# to :func:`platform_principal_id`; kept distinct to make field-default
+# usage greppable.
+_platform_principal_id = platform_principal_id
 
 
 class PrincipalType(str, Enum):
@@ -74,11 +117,9 @@ class PrincipalType(str, Enum):
 class OrgRole(str, Enum):
     # Two-tier Org membership model: OWNER can manage the Org's infra
     # (resources, members, settings); MEMBER is a plain consumer. The
-    # platform-wide superuser lives on `users.is_admin` and is distinct
-    # from `OrgRole.OWNER` — always disambiguate with `is_platform_admin`
-    # vs `org_role == OrgRole.OWNER` in code. The names intentionally
-    # diverge from the platform admin/user role so the two never get
-    # conflated.
+    # platform-wide superuser lives on `principals.is_admin` and is
+    # distinct from `OrgRole.OWNER` — always disambiguate with
+    # `is_platform_admin` vs `org_role == OrgRole.OWNER` in code.
     #
     # Both roles apply to User-members and to Group-members of an Org;
     # a Group-membership confers the role on every active user inside
@@ -87,27 +128,46 @@ class OrgRole(str, Enum):
     MEMBER = "member"
 
 
+# --------------------------------------------------------------------
+# Principal — unified identity table
+# --------------------------------------------------------------------
+
+
 class PrincipalBase(SQLModel):
+    """Columns common to every Principal kind, plus USER-only columns
+    that are NULL / default-valued on ORG and GROUP rows.
+
+    Reads as "everything that used to live on ``users`` or
+    ``principals`` before consolidation", on one schema.
+    """
+
+    # Discriminator. Defaults to USER so legacy ``User(...)`` calls
+    # (now aliased to ``Principal(...)``) continue to work without
+    # being updated; ORG / GROUP creation paths already pass
+    # ``kind=`` explicitly.
     kind: PrincipalType = Field(
+        default=PrincipalType.USER,
         sa_column=Column(SQLEnum(PrincipalType), nullable=False),
     )
+
     # User-facing identifier used in URLs and ``effective_route_name``.
-    # Globally unique among non-NULL values. Auto-set to ``user-{user.id}``
-    # for USER principals; user-supplied for ORG; NULL for GROUP (groups
-    # never appear in URL prefixes).
+    # Globally unique among non-NULL values. ``user-{id}`` for USER
+    # kind; user-supplied for ORG; NULL for GROUP (groups never appear
+    # in URL prefixes).
     slug: Optional[str] = Field(default=None, nullable=True)
-    name: str = Field(nullable=False)
+
+    # Display name. For USER this is typically the same as ``username``
+    # at creation time but can be edited freely. For ORG / GROUP it's
+    # the human-readable label.
+    name: Optional[str] = Field(default=None, nullable=True)
+
     description: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
-    # Where this principal originated. ``Local`` for admin-created
-    # rows (the default for USER / ORG, and Group rows created via the
-    # ``/groups`` admin surface); ``OIDC`` / ``SAML`` for Group rows
-    # auto-created by IdP sync the first time a new claim name was
-    # seen. Surfaced on the Groups list so admins can tell which
-    # entries are IdP-managed; not meaningful for USER (use
-    # ``users.source`` for users) and ORG (always Local in v1) but
-    # cheaper to keep one column for all kinds than to special-case.
+
+    # Where this principal originated. Local for admin/UI-created
+    # rows; OIDC / SAML for IdP-synced rows. Meaningful for USER (auth
+    # source) and GROUP (IdP-sync provenance); typically Local for ORG.
     source: AuthProviderEnum = Field(
         default=AuthProviderEnum.Local,
         sa_column=Column(
@@ -117,20 +177,83 @@ class PrincipalBase(SQLModel):
         ),
     )
 
+    # Optional hierarchy edge. Currently unused for ORG / GROUP rows
+    # (Group→Org affiliation is expressed via ``principal_memberships``
+    # to preserve the soft-delete + role semantics there) but
+    # available for future kinds that need a structural parent.
+    parent_principal_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+    )
+
+    # ---- USER-only columns (NULL / default-valued on ORG / GROUP) ----
+
+    # Login identifier. Nullable because ORG / GROUP rows have no
+    # login. Application layer enforces uniqueness among non-NULL
+    # values (USER kind).
+    username: Optional[str] = Field(default=None, nullable=True)
+
+    is_admin: bool = Field(default=False, nullable=False)
+    is_active: bool = Field(default=True, nullable=False)
+    full_name: Optional[str] = Field(default=None, nullable=True)
+    avatar_url: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    require_password_change: bool = Field(default=False, nullable=False)
+
+    # ``is_system`` and ``role`` describe internal system actors
+    # (cluster / worker service accounts) — still USER-kind, not the
+    # SYSTEM kind that the Phase 3 cleanup will introduce.
+    is_system: bool = Field(default=False, nullable=False)
+    role: Optional[UserRole] = Field(
+        default=None,
+        description="Role of the system user (Worker / Cluster)",
+    )
+    cluster_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE")),
+    )
+    worker_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("workers.id", ondelete="CASCADE")),
+    )
+
+    def model_post_init(self, __context) -> None:
+        # Defense-in-depth: ``is_admin`` is the platform-wide superuser
+        # flag and the 20+ ``user.is_admin`` checks across the codebase
+        # treat the bit uniformly. An ORG / GROUP / SYSTEM row with
+        # ``is_admin=True`` would silently slip through them. Reject at
+        # construction so a misuse fails loudly instead of escalating
+        # privilege. ``model_post_init`` fires on both ``__init__`` and
+        # ``model_validate`` paths; ``@model_validator`` would not, since
+        # SQLModel skips Pydantic validation for ``table=True`` ``__init__``.
+        if self.is_admin and self.kind != PrincipalType.USER:
+            raise ValueError(
+                f"is_admin=True is only valid for USER principals, "
+                f"got kind={self.kind!r}"
+            )
+
 
 class Principal(PrincipalBase, BaseModelMixin, table=True):
+    """Unified identity row.
+
+    USER rows carry credentials and the system-actor fields
+    (``cluster_id`` / ``worker_id`` / ``role``). ORG and GROUP rows
+    leave those NULL. The discriminator is :attr:`kind`.
+    """
+
     __tablename__ = 'principals'
     __table_args__ = (
         UniqueConstraint('slug', name='uix_principals_slug'),
-        # Group names are globally unique among active groups. USER /
-        # ORG names are not constrained here (Users key off
-        # ``users.username``, Orgs off ``slug``).
-        #
+        # Group names are globally unique among active groups.
         # Postgres supports partial unique indexes — declared here for
-        # autogenerate parity with the migration. MySQL has no partial
-        # index, so the migration creates a plain non-unique index and
-        # the route handlers / sync service enforce uniqueness at the
-        # application layer.
+        # autogenerate parity with the migration. MySQL / SQLite have
+        # no partial index, so the migration creates a plain non-unique
+        # index and the route handlers enforce uniqueness in code.
         Index(
             'uix_principals_group_name',
             'name',
@@ -140,6 +263,39 @@ class Principal(PrincipalBase, BaseModelMixin, table=True):
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
+
+    # USER-only: password hash. NULL for ORG / GROUP, and for SSO-only
+    # USER rows that never set a local password.
+    hashed_password: Optional[str] = None
+
+    # ``foreign_keys`` disambiguates these from ``clusters.owner_principal_id``
+    # / ``workers.owner_principal_id``, which are the inverse direction
+    # (Cluster→Principal, Worker→Principal) and would otherwise produce
+    # an AmbiguousForeignKeysError on mapper configuration.
+    cluster: Optional[Cluster] = Relationship(
+        back_populates="cluster_users",
+        sa_relationship_kwargs={
+            "lazy": "noload",
+            "foreign_keys": "[Principal.cluster_id]",
+        },
+    )
+    worker: Optional[Worker] = Relationship(
+        sa_relationship_kwargs={
+            "lazy": "noload",
+            "foreign_keys": "[Principal.worker_id]",
+        },
+    )
+    # ApiKey carries two FKs to principals (user_id + owner_principal_id);
+    # ``foreign_keys`` pins this back-population to the user-owner
+    # column.
+    api_keys: List["ApiKey"] = Relationship(
+        back_populates='user',
+        sa_relationship_kwargs={
+            "cascade": "delete",
+            "lazy": "noload",
+            "foreign_keys": "[ApiKey.user_id]",
+        },
+    )
 
 
 class PrincipalListParams(ListParams):
@@ -157,7 +313,7 @@ class PrincipalPublic(SQLModel):
     id: int
     kind: PrincipalType
     slug: Optional[str] = None
-    name: str
+    name: Optional[str] = None
     description: Optional[str] = None
     source: AuthProviderEnum = AuthProviderEnum.Local
     created_at: datetime
@@ -165,6 +321,11 @@ class PrincipalPublic(SQLModel):
 
 
 PrincipalsPublic = PaginatedList[PrincipalPublic]
+
+
+# --------------------------------------------------------------------
+# PrincipalMembership
+# --------------------------------------------------------------------
 
 
 class PrincipalMembershipBase(SQLModel):
@@ -182,21 +343,14 @@ class PrincipalMembershipBase(SQLModel):
             nullable=False,
         ),
     )
-    # Carries an ``OrgRole`` whenever the parent is an ORG (regardless of
-    # whether the member is a User or a Group — for a Group-member, the
-    # role propagates to every active user in the Group). NULL only for
-    # User-in-Group memberships (groups don't have role tiers — you're
-    # either in or out).
+    # ``OrgRole`` whenever the parent is an ORG (regardless of whether
+    # the member is a User or a Group — for a Group-member the role
+    # propagates to every active user in the Group). NULL for
+    # User-in-Group memberships (groups don't have role tiers).
     role: Optional[OrgRole] = Field(
         default=None,
         sa_column=Column(SQLEnum(OrgRole), nullable=True),
     )
-    # Where this membership row originated. ``Local`` for rows the
-    # admin (or a route handler on behalf of the admin) created;
-    # ``OIDC`` / ``SAML`` for rows written by IdP group-sync. Sync
-    # logic only ever rewrites rows where ``source`` matches the
-    # current provider — admin-added memberships (source=Local) are
-    # untouched by sync runs.
     source: AuthProviderEnum = Field(
         default=AuthProviderEnum.Local,
         sa_column=Column(
@@ -213,12 +367,52 @@ class PrincipalMembership(PrincipalMembershipBase, BaseModelMixin, table=True):
     Surrogate ``id`` PK so soft-delete + re-add doesn't collide on a
     composite key. At any point in time at most one row per
     ``(parent_principal_id, member_principal_id)`` may have
-    ``deleted_at IS NULL``; that invariant is enforced in the route
-    handlers (the add path looks up an active row first and re-uses
-    any soft-deleted row by clearing ``deleted_at`` and updating
-    ``role``).
+    ``deleted_at IS NULL``; the route handlers enforce that invariant.
     """
 
     __tablename__ = 'principal_memberships'
-
     id: Optional[int] = Field(default=None, primary_key=True)
+
+
+# --------------------------------------------------------------------
+# Platform principal resolver
+# --------------------------------------------------------------------
+
+_PLATFORM_PRINCIPAL_ID_INITIALIZED: bool = False
+
+
+async def init_platform_principal_id(session: AsyncSession) -> int:
+    """Resolve and bind the platform principal id at server startup.
+    Must run after the platform principal row exists (the
+    multi-tenancy foundation migration seeds it; the
+    identity-consolidation migration may renumber it).
+
+    Idempotent. Callable from tests.
+    """
+    global _PLATFORM_PRINCIPAL_ID, _PLATFORM_PRINCIPAL_ID_INITIALIZED
+    p = await Principal.one_by_field(
+        session=session, field='slug', value=PLATFORM_PRINCIPAL_SLUG
+    )
+    if p is None:
+        raise RuntimeError(
+            "platform principal not found; database may be uninitialized"
+        )
+    _PLATFORM_PRINCIPAL_ID = p.id
+    _PLATFORM_PRINCIPAL_ID_INITIALIZED = True
+    return p.id
+
+
+async def get_platform_principal_id(session: AsyncSession) -> int:
+    """Read the platform principal's id, resolving by slug if startup
+    init has not been performed yet (tests, scripts).
+    """
+    if _PLATFORM_PRINCIPAL_ID_INITIALIZED:
+        return _PLATFORM_PRINCIPAL_ID
+    return await init_platform_principal_id(session)
+
+
+def _reset_platform_principal_for_tests() -> None:
+    """Test hook — clears the initialised flag and resets the value."""
+    global _PLATFORM_PRINCIPAL_ID, _PLATFORM_PRINCIPAL_ID_INITIALIZED
+    _PLATFORM_PRINCIPAL_ID = 1
+    _PLATFORM_PRINCIPAL_ID_INITIALIZED = False

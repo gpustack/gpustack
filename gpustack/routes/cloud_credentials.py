@@ -27,7 +27,7 @@ from gpustack.schemas.clusters import (
 )
 from gpustack.cloud_providers.common import factory
 from gpustack.routes.proxy import proxy_to
-from gpustack.schemas.organizations import PLATFORM_PRINCIPAL_ID
+from gpustack.schemas.principals import platform_principal_id
 
 router = APIRouter()
 
@@ -86,7 +86,7 @@ async def create(
     # Mirror cluster-create: every credential has an owner Org. Fill in
     # ctx.current_principal_id, or PLATFORM_ORG for admin in "All" mode.
     if input.owner_principal_id is None:
-        input.owner_principal_id = ctx.current_principal_id or PLATFORM_PRINCIPAL_ID
+        input.owner_principal_id = ctx.current_principal_id or platform_principal_id()
     validate_owner_principal(
         input.owner_principal_id, ctx, resource_label="cloud credential"
     )

@@ -28,10 +28,10 @@ from gpustack.schemas.organizations import (
     validate_org_input,
 )
 from gpustack.schemas.principals import (
-    PLATFORM_PRINCIPAL_ID,
     OrgRole,
     Principal,
     PrincipalType,
+    platform_principal_id,
 )
 from gpustack.server.deps import SessionDep, TenantContextDep
 
@@ -140,7 +140,7 @@ async def delete_organization(session: SessionDep, id: int):
     org = await Principal.one_by_id(session, id)
     if not org or org.deleted_at is not None or org.kind != PrincipalType.ORG:
         raise NotFoundException(message="Organization not found")
-    if org.id == PLATFORM_PRINCIPAL_ID:
+    if org.id == platform_principal_id():
         raise ConflictException(
             message="The built-in platform organization cannot be deleted"
         )

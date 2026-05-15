@@ -49,7 +49,7 @@ class ClusterAccess(BaseModelMixin, SQLModel, table=True):
         default=None,
         sa_column=Column(
             Integer,
-            ForeignKey("users.id", ondelete="SET NULL"),
+            ForeignKey("principals.id", ondelete="SET NULL"),
             nullable=True,
         ),
     )

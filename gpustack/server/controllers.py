@@ -46,7 +46,8 @@ from gpustack.schemas.model_routes import (
 )
 from gpustack.schemas.principals import (
     Principal,
-    PLATFORM_PRINCIPAL_ID,
+    PrincipalType,
+    platform_principal_id,
 )
 from gpustack.schemas.models import (
     BackendEnum,
@@ -327,7 +328,7 @@ async def sync_replicas(session: AsyncSession, model: Model):
                 state=ModelInstanceStateEnum.PENDING,
                 cluster_id=model.cluster_id,
                 # Inherit the parent Model's tenant binding — the schema
-                # default of PLATFORM_PRINCIPAL_ID would otherwise
+                # default of platform_principal_id() would otherwise
                 # land instances of a non-Default-Org Model in Default.
                 owner_principal_id=model.owner_principal_id,
                 draft_model_source=get_draft_model_source(model),
@@ -370,7 +371,12 @@ async def distribute_models_to_user(
     to_create_model_user_ids: Set[int] = set()
     if event.type == EventType.DELETED:
         users = await User.all_by_fields(
-            session, fields={"deleted_at": None, "is_admin": False}
+            session,
+            fields={
+                "kind": PrincipalType.USER,
+                "deleted_at": None,
+                "is_admin": False,
+            },
         )
         for user in users:
             to_delete_model_user_ids.add(user.id)
@@ -386,9 +392,13 @@ async def distribute_models_to_user(
         if len(changed_fields) > 0:
             users = await User.all_by_fields(
                 session,
-                fields={"deleted_at": None, "is_admin": False},
+                fields={
+                    "kind": PrincipalType.USER,
+                    "deleted_at": None,
+                    "is_admin": False,
+                },
                 extra_conditions=[
-                    User.principal_id.in_(
+                    User.id.in_(
                         select(ModelRoutePrincipalLink.principal_id).where(
                             ModelRoutePrincipalLink.route_id == model.id
                         )
@@ -400,9 +410,13 @@ async def distribute_models_to_user(
     if event.type == EventType.CREATED:
         users = await User.all_by_fields(
             session,
-            fields={"deleted_at": None, "is_admin": False},
+            fields={
+                "kind": PrincipalType.USER,
+                "deleted_at": None,
+                "is_admin": False,
+            },
             extra_conditions=[
-                User.principal_id.in_(
+                User.id.in_(
                     select(ModelRoutePrincipalLink.principal_id).where(
                         ModelRoutePrincipalLink.route_id == model.id
                     )
@@ -1019,7 +1033,7 @@ async def sync_gateway(
     effective_name = effective_route_name(
         model_route.name,
         getattr(route_owner, "slug", None),
-        getattr(route_owner, "id", None) == PLATFORM_PRINCIPAL_ID,
+        getattr(route_owner, "id", None) == platform_principal_id(),
     )
     ingress_name = mcp_handler.model_route_ingress_name(model_route.id)
     await sync_model_route_mapper(

@@ -13,15 +13,17 @@ from sqlmodel import Field, SQLModel
 
 from gpustack.schemas.common import ListParams, PaginatedList
 from gpustack.schemas.principals import (
-    PLATFORM_PRINCIPAL_ID,
     Principal,
     PrincipalType,
 )
 
 
-# Backwards-compatible alias used across the schema/api_keys/models for
-# "the platform Org's id". Now resolves to the platform principal id.
-PLATFORM_ORGANIZATION_ID = PLATFORM_PRINCIPAL_ID
+# ``PLATFORM_ORGANIZATION_ID`` used to be a module-level alias here.
+# Removed because the platform principal id is no longer a stable
+# compile-time constant after identity consolidation (the migration
+# renumbers it above ``MAX(users.id)``). New callers should call
+# ``platform_principal_id()`` directly (live runtime value, refreshed
+# by :func:`init_platform_principal_id`).
 
 
 slug_pattern = r'^[a-z](?:[a-z0-9\-]*[a-z0-9])?$'

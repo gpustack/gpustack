@@ -14,10 +14,10 @@ Read resolution order for current_principal_id:
 1. If authenticated via API key, use api_key.owner_principal_id (header
    is ignored)
 2. Else, X-Organization-Id request header if provided
-3. Else, for non-admin: user.principal_id (NOT NULL by schema —
-   provisioned at signup, so non-admin requests are structurally never
-   context-less and can't bypass tenant filters with a NULL
-   current_principal_id)
+3. Else, for non-admin: user.id (the user's USER-principal id — NOT
+   NULL by schema, since every user IS a principal, so non-admin
+   requests are structurally never context-less and can't bypass
+   tenant filters with a NULL current_principal_id)
 4. Else, for platform admin: None — "act across all principals", read
    paths skip tenant filters via bypass_tenant_filter
 """
@@ -98,7 +98,7 @@ class TenantContext:
         """
         if self.current_principal_id is not None:
             return self.current_principal_id
-        return getattr(self.user, "principal_id", None)
+        return getattr(self.user, "id", None)
 
 
 async def _resolve_effective_org_role(
@@ -234,7 +234,7 @@ def _resolve_requested_principal_id(
     # against tenant-scoped lists.
     if user.is_admin:
         return None
-    return user.principal_id
+    return user.id
 
 
 async def get_tenant_context(
@@ -266,18 +266,18 @@ async def get_tenant_context(
         # resolve. Group grants still apply (the user's groups are
         # principals in their own right), so include them in the
         # cluster_access lookup.
-        if current_principal_id == user.principal_id:
+        if current_principal_id == user.id:
             current_is_personal_scope = True
-            group_ids = await _user_group_principal_ids(session, user.principal_id)
+            group_ids = await _user_group_principal_ids(session, user.id)
             accessible_cluster_ids = await _accessible_clusters(
                 session,
-                user.principal_id,
+                user.id,
                 None,
                 group_ids,
             )
         else:
             org_role = await _resolve_effective_org_role(
-                session, user.principal_id, current_principal_id
+                session, user.id, current_principal_id
             )
             if org_role is None and not is_platform_admin:
                 # Non-admin users cannot operate as a principal they are
@@ -286,10 +286,10 @@ async def get_tenant_context(
                     message=(f"Not a member of organization " f"{current_principal_id}")
                 )
 
-            group_ids = await _user_group_principal_ids(session, user.principal_id)
+            group_ids = await _user_group_principal_ids(session, user.id)
             accessible_cluster_ids = await _accessible_clusters(
                 session,
-                user.principal_id,
+                user.id,
                 current_principal_id,
                 group_ids,
             )

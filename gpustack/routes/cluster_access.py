@@ -27,7 +27,6 @@ from gpustack.api.tenant import assert_cluster_visible, assert_cluster_writable
 from gpustack.schemas.cluster_access import ClusterAccess, ClusterAccessPublic
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.principals import Principal, PrincipalType
-from gpustack.schemas.users import User
 from gpustack.server.deps import SessionDep, TenantContextDep
 
 router = APIRouter()
@@ -62,12 +61,10 @@ async def _validate_principal(
                 f"not a {principal_type.value}"
             )
         )
-    if target.kind == PrincipalType.USER:
-        # Disallow granting access to system users (workers etc.). They
-        # already bypass cluster_access via ``is_system``.
-        user = await User.one_by_field(session, "principal_id", principal_id)
-        if user is None or user.is_system or user.deleted_at is not None:
-            raise InvalidException(message=f"User principal {principal_id} not found")
+    # Disallow granting access to system users (workers etc.). They
+    # already bypass cluster_access via ``is_system``.
+    if target.kind == PrincipalType.USER and target.is_system:
+        raise InvalidException(message=f"User principal {principal_id} not found")
     return target
 
 
