@@ -43,9 +43,100 @@ env:
   INPUT_REPOSITORY: gpustack
 
 jobs:
-  pack:
+  metadata:
     runs-on: ubuntu-22.04
+    outputs:
+      tags: ${{ steps.metadata.outputs.tags }}
+      labels: ${{ steps.metadata.outputs.labels }}
+      json: ${{ steps.metadata.outputs.json }}
+      filter_labels: ${{ steps.filter-labels.outputs.value }}
+      cache_from_amd64: ${{ steps.cache.outputs.cache_from_amd64 }}
+      cache_to_amd64: ${{ steps.cache.outputs.cache_to_amd64 }}
+      cache_from_arm64: ${{ steps.cache.outputs.cache_from_arm64 }}
+      cache_to_arm64: ${{ steps.cache.outputs.cache_to_arm64 }}
+    steps:
+      - name: Get Metadata
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: "${{ env.INPUT_NAMESPACE }}/${{ env.INPUT_REPOSITORY }}"
+          tags: |
+            type=ref,event=pr
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=dev-,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=branch,enable=${{ contains(github.ref, 'refs/heads/v') && endsWith(github.ref, '-dev') }}
+            type=sha,prefix={{branch}}-,enable=${{ contains(github.ref, 'refs/heads/v') && endsWith(github.ref, '-dev') }}
+            type=pep440,pattern={{raw}}
+            type=pep440,pattern=v{{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, 'rc') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, 'rc') }}
+          flavor: |
+            latest=false
+      - name: Get Image Filter Labels
+        id: filter-labels
+        run: |
+          #!/usr/bin/env bash
+
+          set -eo pipefail
+
+          LABELS=(
+            "org.opencontainers.image.source=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.source'] }}"
+            "org.opencontainers.image.version=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.version'] }}"
+            "org.opencontainers.image.revision=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.revision'] }}"
+            "org.opencontainers.image.created=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.created'] }}"
+          )
+          VAL=$(printf "%s;" "${LABELS[@]}")
+          echo "value=${VAL}" >> $GITHUB_OUTPUT
+      - name: Get Cache Refs
+        id: cache
+        run: |
+          #
+          # Per-arch cache refs. Each platform job writes/reads its own ref to
+          # avoid concurrent writes overwriting each other, and so that the
+          # buildkit cache mount (now single-platform per job) is captured
+          # correctly by registry caching.
+          #
+          # CACHE_FROM_REF / CACHE_TO_REF format:
+          #   - Release tag vX.Y.Z          -> gpustack/build-cache:gpustack-${VERSION}-${ARCH}
+          #   - PR/Push to branch / default -> gpustack/build-cache:gpustack-${BRANCH}-${ARCH}
+          #   - Fallback when missing       -> gpustack/build-cache:gpustack-main-${ARCH}
+          #
+          DEFAULT_BRANCH="main"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            REF="${GITHUB_REF#refs/tags/}"
+            IFS="." read -r VERSION_MAJOR VERSION_MINOR VERSION_PATCH <<< "${REF}"
+            VERSION="${VERSION_MAJOR}.${VERSION_MINOR}"
+            BASE_REF="gpustack/build-cache:gpustack-${VERSION}"
+          else
+            REF="${GITHUB_BASE_REF:-${GITHUB_REF}}"
+            BRANCH="${REF#refs/heads/}"
+            BRANCH="${BRANCH%-dev}"
+            BASE_REF="gpustack/build-cache:gpustack-${BRANCH}"
+          fi
+          for ARCH in amd64 arm64; do
+            CACHE_FROM_REF="${BASE_REF}-${ARCH}"
+            CACHE_TO_REF="${CACHE_FROM_REF}"
+            if ! docker manifest inspect "${CACHE_FROM_REF}" >/dev/null 2>&1; then
+              CACHE_FROM_REF="gpustack/build-cache:gpustack-${DEFAULT_BRANCH}-${ARCH}"
+            fi
+            echo "cache_from_${ARCH}=${CACHE_FROM_REF}" >> $GITHUB_OUTPUT
+            echo "cache_to_${ARCH}=${CACHE_TO_REF}" >> $GITHUB_OUTPUT
+            echo "DEBUG: ARCH=${ARCH} CACHE_FROM=${CACHE_FROM_REF} CACHE_TO=${CACHE_TO_REF}"
+          done
+
+  build:
+    needs: metadata
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-22.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-22.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,20 +154,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.cache
-          key: cache-mount-${{ hashFiles('uv.lock') }}
+          key: cache-mount-${{ matrix.arch }}-${{ hashFiles('uv.lock') }}
       - name: Restore BuildX Cache
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:
-          builder: ${{ steps.setup-buildx.outputs.name }}
           cache-dir: ${{ github.workspace }}/.cache
           dockerfile: ${{ github.workspace }}/pack/Dockerfile
           skip-extraction: ${{ steps.setup-buildx-cache.outputs.cache-hit }}
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          image: tonistiigi/binfmt:qemu-v9.2.2
-          platforms: "arm64"
       - name: Setup BuildX
+        id: setup-buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver-opts: |
@@ -89,89 +175,8 @@ jobs:
         with:
           username: ${{ env.INPUT_USERNAME }}
           password: ${{ env.INPUT_PASSWORD }}
-      - name: Get Metadata
-        id: metadata
-        uses: docker/metadata-action@v5
-        with:
-          images: "${{ env.INPUT_NAMESPACE }}/${{ env.INPUT_REPOSITORY }}"
-          tags: |
-            type=ref,event=pr
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,prefix=dev-,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=branch,enable=${{ contains(github.ref, 'refs/heads/v') && endsWith(github.ref, '-dev') }}
-            type=sha,prefix={{branch}}-,enable=${{ contains(github.ref, 'refs/heads/v') && endsWith(github.ref, '-dev') }}
-            type=pep440,pattern={{raw}}
-            type=pep440,pattern=v{{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, 'rc') }}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, 'rc') }}
-          flavor: |
-            latest=false
-      - name: Get Cache Ref
-        run: |
-          #
-          # Use different cache ref for different branches.
-          #
-          # Examples:
-          # CACHE_FROM_REF
-          #   - vX.Y.Z                 -> "gpustack/build-cache:gpustack-${VERSION|DEFAULT_BRANCH}"
-          #   - PR/PUSH to branch      -> "gpustack/build-cache:gpustack-${BRANCH|DEFUALT_BRANCH}"
-          # CACHE_TO_REF
-          #   - vX.Y.Z                 -> "gpustack/build-cache:gpustack-${VERSION}"
-          #   - PUSH to branch         -> "gpustack/build-cache:gpustack-${BRANCH}"
-          #
-          # Stories:
-          # CACHE_FROM_REF
-          #   - Release tag v0.7.0rc1      -> gpustack/build-cache:gpustack-v0.7, if not found, fallback to gpustack/build-cache:gpustack-main
-          #   - Release tag v0.7.0         -> gpustack/build-cache:gpustack-v0.7
-          #   - PR to "main" branch        -> gpustack/build-cache:gpustack-main
-          #   - PR to "v0.7-dev" branch    -> gpustack/build-cache:gpustack-v0.7, if not found, fallback to gpustack/build-cache:gpustack-main
-          #   - Push to "main" branch      -> gpustack/build-cache:gpustack-main
-          #   - Push to "v0.7-dev" branch  -> gpustack/build-cache:gpustack-v0.7, if not found, fallback to gpustack/build-cache:gpustack-main
-          # CACHE_TO_REF
-          #   - Release tag v0.7.0rc1      -> gpustack/build-cache:gpustack-v0.7
-          #   - Release tag v0.7.0         -> gpustack/build-cache:gpustack-v0.7
-          #   - PR to "main" branch        -> gpustack/build-cache:gpustack-main
-          #   - PR to "v0.7-dev" branch    -> gpustack/build-cache:gpustack-v0.7
-          #   - Push to "main" branch      -> gpustack/build-cache:gpustack-main
-          #   - Push to "v0.7-dev" branch  -> gpustack/build-cache:gpustack-v0.7
-          #
-          DEFAULT_BRANCH="main"
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            REF="${GITHUB_REF#refs/tags/}"
-            IFS="." read -r VERSION_MAJOR VERSION_MINOR VERSION_PATCH <<< "${REF}"
-            VERSION="${VERSION_MAJOR}.${VERSION_MINOR}"
-            CACHE_FROM_REF="gpustack/build-cache:gpustack-${VERSION}"
-            CACHE_TO_REF="${CACHE_FROM_REF}"
-          else
-            REF="${GITHUB_BASE_REF:-${GITHUB_REF}}"
-            BRANCH="${REF#refs/heads/}"
-            BRANCH="${BRANCH%-dev}"
-            CACHE_FROM_REF="gpustack/build-cache:gpustack-${BRANCH}"
-            CACHE_TO_REF="${CACHE_FROM_REF}"
-          fi
-          if ! docker manifest inspect "${CACHE_FROM_REF}" >/dev/null 2>&1; then
-            CACHE_FROM_REF="gpustack/build-cache:gpustack-${DEFAULT_BRANCH}"
-          fi
-          echo "CACHE_FROM_REF=${CACHE_FROM_REF}" >> $GITHUB_ENV
-          echo "CACHE_TO_REF=${CACHE_TO_REF}" >> $GITHUB_ENV
-          echo "DEBUG: GITHUB_BASE_REF=${GITHUB_BASE_REF}"
-          echo "DEBUG: GITHUB_REF=${GITHUB_REF}"
-          echo "DEBUG: CACHE_FROM_REF=${CACHE_FROM_REF}"
-          echo "DEBUG: CACHE_TO_REF=${CACHE_TO_REF}"
-      - name: Get Image Labels
-        run: |
-          #!/usr/bin/env bash
-
-          set -eo pipefail
-
-          LABELS=(
-            "org.opencontainers.image.source=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.source'] }}"
-            "org.opencontainers.image.version=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.version'] }}"
-            "org.opencontainers.image.revision=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.revision'] }}"
-            "org.opencontainers.image.created=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.created'] }}"
-          )
-          INPUT_DOCKER_MIRRORED_NAME_FILTER_LABELS=$(printf "%s;" "${LABELS[@]}")
-          echo "INPUT_DOCKER_MIRRORED_NAME_FILTER_LABELS=${INPUT_DOCKER_MIRRORED_NAME_FILTER_LABELS}" >> $GITHUB_ENV
-      - name: Package
+      - name: Build
+        id: build
         uses: docker/build-push-action@v6
         with:
           allow: |
@@ -182,18 +187,66 @@ jobs:
           shm-size: 16G
           provenance: true
           sbom: true
-          push: ${{ github.event_name != 'pull_request' }}
           file: ${{ github.workspace }}/pack/Dockerfile
           context: ${{ github.workspace }}
-          platforms: "linux/amd64,linux/arm64"
+          platforms: ${{ matrix.platform }}
           build-args: |
             PYTHON_VERSION=${{ env.INPUT_PYTHON_VERSION }}
-            GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS=${{ env.INPUT_DOCKER_MIRRORED_NAME_FILTER_LABELS }}
-          tags: |
-            ${{ steps.metadata.outputs.tags }}
+            GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS=${{ needs.metadata.outputs.filter_labels }}
           labels: |
-            ${{ steps.metadata.outputs.labels }}
+            ${{ needs.metadata.outputs.labels }}
+          outputs: |
+            ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.INPUT_NAMESPACE, env.INPUT_REPOSITORY) || '' }}
           cache-from: |
-            type=registry,ref=${{ env.CACHE_FROM_REF }}
+            type=registry,ref=${{ matrix.arch == 'amd64' && needs.metadata.outputs.cache_from_amd64 || needs.metadata.outputs.cache_from_arm64 }}
           cache-to: |
-            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,compression=gzip,ref={0},ignore-error=true', env.CACHE_TO_REF) || '' }}
+            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,compression=gzip,ref={0},ignore-error=true', matrix.arch == 'amd64' && needs.metadata.outputs.cache_to_amd64 || needs.metadata.outputs.cache_to_arm64) || '' }}
+      - name: Export Digest
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          mkdir -p /tmp/digests
+          DIGEST="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${DIGEST#sha256:}"
+      - name: Upload Digest
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    if: ${{ github.event_name != 'pull_request' }}
+    needs:
+      - metadata
+      - build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download Digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+      - name: Setup BuildX
+        uses: docker/setup-buildx-action@v3
+      - name: Login DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.INPUT_USERNAME }}
+          password: ${{ env.INPUT_PASSWORD }}
+      - name: Create Manifest
+        working-directory: /tmp/digests
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ needs.metadata.outputs.json }}
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"${DOCKER_METADATA_OUTPUT_JSON}") \
+            $(printf '${{ env.INPUT_NAMESPACE }}/${{ env.INPUT_REPOSITORY }}@sha256:%s ' *)
+      - name: Inspect
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ needs.metadata.outputs.json }}
+        run: |
+          TAG=$(jq -r '.tags[0]' <<<"${DOCKER_METADATA_OUTPUT_JSON}")
+          docker buildx imagetools inspect "${TAG}"

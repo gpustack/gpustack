@@ -287,10 +287,10 @@ ENV S6_KEEP_ENV=1 \
 #   docker build --tag=gpustack/gpustack:main --file=pack/Dockerfile --progress=plain .
 #
 
-# Vendor ROCm libraries from ROCm base image,
-# now only linux/amd64 is supported.
-# Must build on linux/amd64 platform.
-FROM --platform=${BUILDPLATFORM} rocm/dev-ubuntu-22.04:${GPUSTACK_RUNTIME_ROCM_VERSION} AS rocm-base
+# Vendor ROCm libraries from ROCm base image.
+# Only the linux/amd64 ROCm source image is available, so pin the source
+# platform explicitly; the build host itself can be any platform.
+FROM --platform=linux/amd64 rocm/dev-ubuntu-22.04:${GPUSTACK_RUNTIME_ROCM_VERSION} AS rocm-base
 
 FROM ${GPUSTACK_BASE_IMAGE} AS gpustack
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
