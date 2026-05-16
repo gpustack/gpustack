@@ -17,6 +17,13 @@ higress_version = "2.1.9"
 ssh_server_version = "v1.0.0"
 kueue_version = "v0.17.2"
 node_feature_discovery_version = "v0.18.3"
+csi_nfs_driver_version = "v4.13.0"
+csi_s3_driver_version = "v0.43.7"
+csi_provisioner_version = "v6.1.0"
+csi_resizer_version = "v2.0.0"
+csi_snapshotter_version = "v8.4.0"
+csi_livenessprobe_version = "v2.17.0"
+csi_node_driver_registrar_version = "v2.15.0"
 
 # Append images used by GPUStack here.
 append_images(
@@ -30,6 +37,13 @@ append_images(
     f"gpustack/ssh-server:{ssh_server_version}",
     f"gpustack/mirrored-kueue:{kueue_version}",
     f"gpustack/mirrored-node-feature-discovery:{node_feature_discovery_version}",
+    f"gpustack/mirrored-csi-nfs-driver:{csi_nfs_driver_version}",
+    f"gpustack/mirrored-csi-s3-driver:{csi_s3_driver_version}",
+    f"gpustack/mirrored-csi-provisioner:{csi_provisioner_version}",
+    f"gpustack/mirrored-csi-resizer:{csi_resizer_version}",
+    f"gpustack/mirrored-csi-snapshotter:{csi_snapshotter_version}",
+    f"gpustack/mirrored-csi-livenessprobe:{csi_livenessprobe_version}",
+    f"gpustack/mirrored-csi-node-driver-registrar:{csi_node_driver_registrar_version}",
 )
 
 
