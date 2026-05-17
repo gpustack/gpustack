@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import pytest
 from sqlalchemy import true
 
+from gpustack.api.exceptions import InvalidException
 from gpustack.routes import model_routes
 from gpustack.schemas.common import Pagination
 from gpustack.schemas.model_routes import (
@@ -50,3 +51,43 @@ async def test_get_model_routes_filters_categories_on_target_class(monkeypatch):
     assert captured["categories"] == ["image"]
     assert captured["fields"]["user_id"] == 123
     assert captured["extra_conditions"]
+
+
+def test_assert_target_tenant_aligned_same_org():
+    # Same Org is always allowed.
+    model_routes._assert_target_tenant_aligned(
+        route_owner_principal_id=2,
+        target_owner_principal_id=2,
+        target_kind="Model",
+        target_id=10,
+    )
+
+
+def test_assert_target_tenant_aligned_cross_org_rejected():
+    """Routes are the only cross-tenant sharing surface; targeting a
+    resource that lives in a different Org must fail at validation time
+    rather than silently drift usage attribution to the wrong tenant."""
+    with pytest.raises(InvalidException):
+        model_routes._assert_target_tenant_aligned(
+            route_owner_principal_id=2,
+            target_owner_principal_id=3,
+            target_kind="Model",
+            target_id=10,
+        )
+
+
+def test_assert_target_tenant_aligned_skips_when_either_owner_null():
+    # NULL on either side is treated as "global / legacy" — strict
+    # equality only kicks in when both sides explicitly carry an owner.
+    model_routes._assert_target_tenant_aligned(
+        route_owner_principal_id=None,
+        target_owner_principal_id=3,
+        target_kind="Model",
+        target_id=10,
+    )
+    model_routes._assert_target_tenant_aligned(
+        route_owner_principal_id=2,
+        target_owner_principal_id=None,
+        target_kind="ModelProvider",
+        target_id=11,
+    )

@@ -203,7 +203,7 @@ async def create_model_route(
         )
     source = input.model_dump(exclude={"targets"})
     targets = input.targets or []
-    await validate_targets(session, targets)
+    await validate_targets(session, targets, route_owner_principal_id=target_org_id)
     source["targets"] = len(targets)
     # Stamp the route's owning org from the caller's tenant context.
     # ModelRouteBase defaults `owner_principal_id` to PLATFORM_PRINCIPAL_ID
@@ -294,6 +294,7 @@ async def update_model_route(
                 targets=input.targets,
                 auto_commit=False,
                 new_route_name=input.name if input.name != existing.name else None,
+                route_owner_principal_id=existing.owner_principal_id,
             )
             input_data["targets"] = target_count
         await ModelRouteService(session).update(
@@ -367,6 +368,7 @@ async def add_model_route_targets(
         route_id=route.id,
         route_name=route.name,
         new_route_name=None,
+        route_owner_principal_id=route.owner_principal_id,
         targets=targets,
         auto_commit=False,
     )
@@ -390,6 +392,7 @@ async def batch_handle_targets(
     targets: List[ModelRouteTargetUpdateItem],
     auto_commit: bool = True,
     new_route_name: Optional[str] = None,
+    route_owner_principal_id: Optional[int] = None,
 ) -> Tuple[int, List[ModelRouteTarget]]:
     existing_targets = await ModelRouteTarget.all_by_field(
         session=session,
@@ -417,7 +420,11 @@ async def batch_handle_targets(
     ]
     target_count -= len(to_delete_target_ids)
 
-    fallback_index = await validate_targets(session=session, targets=targets)
+    fallback_index = await validate_targets(
+        session=session,
+        targets=targets,
+        route_owner_principal_id=route_owner_principal_id,
+    )
     if fallback_index is not None:
         fallback_target = targets[fallback_index]
         if fallback_target.id is None:
@@ -542,9 +549,46 @@ async def create_model_route_targets(
     return created_targets
 
 
+def _assert_target_tenant_aligned(
+    route_owner_principal_id: Optional[int],
+    target_owner_principal_id: Optional[int],
+    target_kind: str,
+    target_id: int,
+) -> None:
+    """Routes are GPUStack's only cross-tenant sharing surface — a
+    deployment (Model / ModelProvider) has no permission primitive of
+    its own, so it lives within one Org's boundary and must only be
+    referenced from routes in the same Org. Cross-Org targeting that
+    bypasses this is a misconfiguration: usage attribution
+    (``ModelUsage.owner_principal_id``) is sourced from the model's
+    owner, so a cross-Org target silently drifts the row's tenant scope
+    away from the route's caller.
+
+    A NULL target owner (e.g. legacy provider rows that predate
+    multi-tenancy) is treated as global and allowed everywhere — the
+    strict rule kicks in only when the target explicitly carries an
+    owner. A route with no owner (also legacy / platform fallback) is
+    similarly skipped.
+    """
+    if route_owner_principal_id is None:
+        return
+    if target_owner_principal_id is None:
+        return
+    if target_owner_principal_id == route_owner_principal_id:
+        return
+    raise InvalidException(
+        f"{target_kind} {target_id} belongs to principal "
+        f"{target_owner_principal_id}; a route owned by principal "
+        f"{route_owner_principal_id} may only target resources in the "
+        f"same Org. Cross-Org sharing must be done by exposing this Org's "
+        f"own route (via access policy), not by retargeting across Orgs."
+    )
+
+
 async def validate_targets(
     session: SessionDep,
     targets: List[ModelRouteTargetUpdateItem],
+    route_owner_principal_id: Optional[int] = None,
 ) -> Optional[int]:
     fallback_index: Optional[int] = None
     for index, target in enumerate(targets):
@@ -566,10 +610,22 @@ async def validate_targets(
                     f"ModelProvider with id '{target.provider_id}' not found."
                 )
             validate_provider_model_name(provider, target.provider_model_name)
+            _assert_target_tenant_aligned(
+                route_owner_principal_id,
+                getattr(provider, "owner_principal_id", None),
+                "ModelProvider",
+                target.provider_id,
+            )
         elif target.model_id is not None:
             model = await Model.one_by_id(session=session, id=target.model_id)
             if model is None or model.deleted_at is not None:
                 raise NotFoundException(f"Model with id '{target.model_id}' not found.")
+            _assert_target_tenant_aligned(
+                route_owner_principal_id,
+                getattr(model, "owner_principal_id", None),
+                "Model",
+                target.model_id,
+            )
     return fallback_index
 
 
@@ -645,6 +701,13 @@ async def update_model_route_target(
     )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(f"ModelRouteTarget with id '{id}' not found.")
+    # Resolve the owning route's tenant so validate_targets can enforce
+    # tenant alignment — a target swap (e.g. pointing at a different
+    # model) must still satisfy "route and target share an Org".
+    parent_route = await ModelRoute.one_by_id(session=session, id=existing.route_id)
+    if parent_route is None:
+        raise NotFoundException(f"ModelRoute with id '{existing.route_id}' not found.")
+    route_owner_principal_id = parent_route.owner_principal_id
     # don't need to update fallback_status_codes here, handled in set-fallback target
     targets = [
         ModelRouteTargetUpdateItem.model_validate(
@@ -655,7 +718,9 @@ async def update_model_route_target(
             }
         )
     ]
-    await validate_targets(session, targets)
+    await validate_targets(
+        session, targets, route_owner_principal_id=route_owner_principal_id
+    )
     try:
         await update_model_route_targets(
             session=session,
