@@ -587,17 +587,20 @@ def get_max_model_len(pretrained_config) -> int:  # noqa: C901
         derived_max_model_len = default_max_len
 
     rope_scaling = getattr(pretrained_config, "rope_scaling", None)
-    if rope_scaling is not None:
+    if rope_scaling is not None and isinstance(rope_scaling, dict):
         if "type" in rope_scaling:
             rope_type = rope_scaling["type"]
         elif "rope_type" in rope_scaling:
             rope_type = rope_scaling["rope_type"]
         else:
-            raise ValueError("rope_scaling must have a 'type' or 'rope_type' key.")
+            # Per-attention-type rope_parameters (e.g., Gemma-4) surface as a
+            # nested dict keyed by attention type with no top-level rope_type.
+            # No single scaling factor applies; fall through to derived length.
+            rope_type = None
 
         # The correct one should be "longrope", kept "su" here
         # to be backward compatible
-        if rope_type not in ("su", "longrope", "llama3"):
+        if rope_type is not None and rope_type not in ("su", "longrope", "llama3"):
             scaling_factor = 1
             if "factor" in rope_scaling:
                 scaling_factor = rope_scaling["factor"]
