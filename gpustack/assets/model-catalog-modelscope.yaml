@@ -1,6 +1,6 @@
 # YAML Variables
 .vllm_omni_ascend_stable_version: &vllm_omni_ascend_stable_version "0.14.1"
-.vllm_omni_stable_version: &vllm_omni_stable_version "0.16.0"
+.vllm_omni_stable_version: &vllm_omni_stable_version "0.20.1"
 
 draft_models:
 - name: Qwen3-8B-EAGLE3
@@ -428,6 +428,73 @@ model_sets:
       backend_parameters:
         - --tool-call-parser=hermes
         - --enable-auto-tool-choice
+        - --max-model-len=65536
+- name: Qwen3.6-35B-A3B
+  description: Qwen3.6-35B-A3B is a 35B mixture-of-experts (3B activated) image-text-to-text model in Alibaba's Qwen3.6 series, with the qwen3_5_moe architecture.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 35
+  activated_size: 3
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-04-15"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.6-35B-A3B
+      backend: vLLM
+      backend_parameters:
+        - --mm-encoder-tp-mode=data
+        - --max-model-len=65536
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=8.9"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.6-35B-A3B-FP8
+      backend: vLLM
+      backend_parameters:
+        - --mm-encoder-tp-mode=data
+        - --max-model-len=65536
+- name: Qwen3.6-27B
+  description: Qwen3.6-27B is a dense 27B image-text-to-text model in Alibaba's Qwen3.6 series, with the qwen3_5 architecture.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 27
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-04-21"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.6-27B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=8.9"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3.6-27B-FP8
+      backend: vLLM
+      backend_parameters:
         - --max-model-len=65536
 - name: Qwen3-235B-A22B-Thinking-2507
   description: The updated version of the Qwen3-235B-A22B thinking mode.
@@ -934,6 +1001,65 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=glm45
         - --max-model-len=65536
+- name: GLM-5.1
+  description: GLM-5.1 is the next iteration of Zhipu AI's GLM series, featuring an even larger MoE with the glm_moe_dsa architecture, advanced agentic, reasoning, and coding capabilities.
+  home: https://z.ai
+  icon: /static/catalog_icons/zai.png
+  size: 754
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - reasoning
+    - tools
+  licenses:
+    - mit
+  release_date: "2026-04-04"
+  specs:
+    # Ascend NPUs (vllm-ascend, BF16)
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-5.1
+      backend: vLLM
+      env:
+        HCCL_OP_EXPANSION_MODE: AIV
+        OMP_NUM_THREADS: "1"
+        PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
+        VLLM_ASCEND_BALANCE_SCHEDULING: "1"
+      backend_parameters:
+        - --max-model-len=8192
+        - --gpu-memory-utilization=0.95
+        - --trust-remote-code
+    # NVIDIA Hopper+ (vLLM, FP8 + MTP speculative)
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-5.1-FP8
+      backend: vLLM
+      backend_parameters:
+        - --speculative-config.method=mtp
+        - --speculative-config.num_speculative_tokens=3
+        - --tool-call-parser=glm47
+        - --reasoning-parser=glm45
+        - --enable-auto-tool-choice
+        - --chat-template-content-format=string
+    # Standard fallback (BF16, vLLM)
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-5.1
+      backend: vLLM
+      backend_parameters:
+        - --reasoning-parser=glm45
+        - --tool-call-parser=glm47
+        - --enable-auto-tool-choice
+        - --max-model-len=65536
 - name: GLM-4.6
   description: GLM-4.6 is a large language model developed by Zhipu AI, featuring advanced agentic, reasoning, and coding capabilities.
   home: https://z.ai
@@ -1223,6 +1349,93 @@ model_sets:
         - --reasoning-parser=deepseek_v3
         - --tool-call-parser=deepseek_v32
         - --enable-auto-tool-choice
+- name: DeepSeek-V4-Pro
+  description: DeepSeek-V4-Pro is the flagship of the DeepSeek-V4 family, featuring the deepseek_v4 architecture with continued advances in sparse attention, reasoning, and agentic capabilities.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - reasoning
+    - tools
+  licenses:
+    - mit
+  release_date: "2026-04-23"
+  specs:
+    # SGLang balanced recipe (FP4 MoE + FP8 attention) with EAGLE MTP
+    - mode: throughput
+      quantization: FP4
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V4-Pro
+      backend: SGLang
+      env:
+        SGLANG_ENABLE_SPEC_V2: "1"
+      backend_parameters:
+        - --speculative-num-steps=1
+        - --speculative-num-draft-tokens=2
+        - --enable-dp-attention
+        - --reasoning-parser=deepseek-v4
+        - --tool-call-parser=deepseekv4
+        - --trust-remote-code
+        - --context-length=65536
+    # vLLM standard fallback (FP8 checkpoint)
+    - mode: standard
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V4-Pro
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=deepseek-v4
+        - --tool-call-parser=deepseekv4
+        - --enable-auto-tool-choice
+- name: DeepSeek-V4-Flash
+  description: DeepSeek-V4-Flash is a smaller, faster variant in the DeepSeek-V4 family with the deepseek_v4 architecture, suitable for low-latency inference scenarios.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - reasoning
+  licenses:
+    - mit
+  release_date: "2026-04-23"
+  specs:
+    # SGLang throughput (FP4 MoE + FP8 attention) with EAGLE MTP
+    - mode: throughput
+      quantization: FP4
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V4-Flash
+      backend: SGLang
+      env:
+        SGLANG_ENABLE_SPEC_V2: "1"
+      backend_parameters:
+        - --speculative-num-steps=1
+        - --speculative-num-draft-tokens=2
+        - --enable-dp-attention
+        - --reasoning-parser=deepseek-v4
+        - --tool-call-parser=deepseekv4
+        - --trust-remote-code
+        - --context-length=65536
+    # vLLM standard fallback
+    - mode: standard
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V4-Flash
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=deepseek-v4
+        - --tool-call-parser=deepseekv4
+        - --enable-auto-tool-choice
 - name: Deepseek-V3.2-Speciale
   description: This model is the high-compute variant of DeepSeek-V3.2, surpasses GPT-5 and matches Gemini-3.0-Pro in reasoning, achieving gold-medal level performance in the 2025 IMO and IOI competitions. 
   home: https://www.deepseek.com
@@ -1285,6 +1498,45 @@ model_sets:
         - --tool-call-parser=minimax_m2
         - --enable-auto-tool-choice
         - --trust-remote-code
+- name: MiniMax-M2.7
+  description: MiniMax-M2.7 is the next iteration of the MiniMax-M2 series, a high-performance agentic mixture-of-experts model optimized for coding, tool use, instruction following, and long-horizon planning.
+  home: https://www.minimax.io
+  icon: /static/catalog_icons/minimax.png
+  size: 230
+  activated_size: 10
+  categories:
+    - llm
+  capabilities:
+    - context/192K
+    - tools
+  licenses:
+    - modified-mit
+  release_date: "2026-04-09"
+  specs:
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-M2.7
+      backend: SGLang
+      backend_parameters:
+        - --reasoning-parser=minimax_m2_append_think
+        - --tool-call-parser=minimax_m2
+        - --context-length=65536
+        - --trust-remote-code
+    - mode: standard
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-M2.7
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=minimax_m2_append_think
+        - --tool-call-parser=minimax_m2
+        - --enable-auto-tool-choice
+        - --trust-remote-code
 - name: MiniMax-M2.5
   description: MiniMax-M2.5 is a powerful MoE (Mixture-of-Experts) model that delivers exceptional performance in logical reasoning, coding, and complex agent tasks through highly efficient inference.
   home: https://www.minimax.io/
@@ -1334,6 +1586,63 @@ model_sets:
       quantization: INT4
       source: model_scope
       model_scope_model_id: MoonshotAI/Kimi-K2.5
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --mm-encoder-tp-mode=data
+        - --tool-call-parser=kimi_k2
+        - --reasoning-parser=kimi_k2
+        - --trust-remote-code
+- name: Kimi-K2.6
+  description: Kimi-K2.6 is the next iteration of Moonshot AI's Kimi-K2 multimodal MoE family, featuring 1.06T total parameters with vision support and the kimi_k25 architecture.
+  home: https://www.moonshot.ai
+  icon: /static/catalog_icons/kimi.png
+  size: 1
+  size_unit: T
+  activated_size: 32
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - vision
+    - tools
+  licenses:
+    - modified-mit
+  release_date: "2026-04-14"
+  specs:
+    # NVIDIA Hopper+ throughput, INT4 (native QAT)
+    - mode: throughput
+      quantization: INT4
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: MoonshotAI/Kimi-K2.6
+      backend: vLLM
+      backend_parameters:
+        - --mm-encoder-tp-mode=data
+        - --tool-call-parser=kimi_k2
+        - --reasoning-parser=kimi_k2
+        - --trust-remote-code
+        - --max-model-len=65536
+    # SGLang INT4 alternative (better for long agentic sessions via RadixAttention)
+    - mode: latency
+      quantization: INT4
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: MoonshotAI/Kimi-K2.6
+      backend: SGLang
+      backend_parameters:
+        - --tool-call-parser=kimi_k2
+        - --reasoning-parser=kimi_k2
+        - --trust-remote-code
+    # Standard fallback (full-precision checkpoint)
+    - mode: standard
+      quantization: INT4
+      source: model_scope
+      model_scope_model_id: MoonshotAI/Kimi-K2.6
       backend: vLLM
       backend_parameters:
         - --max-model-len=65536
@@ -1403,6 +1712,53 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - --max-model-len=32768
+- name: MiMo-V2.5-Pro
+  description: MiMo-V2.5-Pro is the text-only flagship variant of Xiaomi's MiMo-V2.5 series, optimized for agentic coding tasks with long-context support.
+  home: https://github.com/XiaomiMiMo
+  icon: /static/catalog_icons/XiaomiMiMo.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - tools
+  licenses:
+    - mit
+  release_date: "2026-04-27"
+  specs:
+    - mode: standard
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: XiaomiMiMo/MiMo-V2.5-Pro
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --trust-remote-code
+- name: Mistral-Medium-3.5-128B
+  description: Mistral-Medium-3.5-128B is a multilingual mid-tier model from Mistral AI with the mistral3 architecture, supporting 26 languages and FP8 weights.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  size: 128
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - tools
+  licenses:
+    - mistral-research-license
+  release_date: "2026-04-29"
+  specs:
+    - mode: standard
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: mistralai/Mistral-Medium-3.5-128B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --tokenizer-mode=mistral
+        - --config-format=mistral
+        - --load-format=mistral
+        - --tool-call-parser=mistral
+        - --enable-auto-tool-choice
 # Embedding models
 - name: Qwen3-Embedding-0.6B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
@@ -1802,6 +2158,27 @@ model_sets:
       backend_version: 0.5.6.post2
       env:
         GPUSTACK_MODEL_VRAM_CLAIM: "37580963840" # 35 GiB, observed empirically
+- name: FLUX.2-dev
+  description: FLUX.2 [dev] is the next-generation image-to-image and text-to-image model from Black Forest Labs, using the Flux2Pipeline.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  categories:
+    - image
+  licenses:
+    - flux-2-dev-non-commercial-license
+  release_date: "2025-11-25"
+  specs:
+    - mode: standard
+      gpu_filters:
+        vendor: nvidia
+      quantization: BF16
+      backend: vLLM
+      backend_version: *vllm_omni_stable_version
+      backend_parameters:
+        - --omni
+        - --trust-remote-code
+      source: model_scope
+      model_scope_model_id: black-forest-labs/FLUX.2-dev
 - name: FLUX.2-klein-4B
   description: FLUX.2-klein-4B is a 4 billion parameter image generation model from Black Forest Labs.
   home: https://blackforestlabs.ai
@@ -1973,6 +2350,65 @@ model_sets:
       backend_version: *vllm_omni_ascend_stable_version
     - <<: *z_image_turbo_base_spec
       backend_version: *vllm_omni_stable_version
+- name: GLM-Image
+  description: GLM-Image is Zhipu AI's text-to-image diffusion model built on the GlmImagePipeline architecture.
+  home: https://z.ai
+  icon: /static/catalog_icons/zai.png
+  categories:
+    - image
+  licenses:
+    - mit
+  release_date: "2026-01-12"
+  specs:
+    - mode: standard
+      gpu_filters:
+        vendor: nvidia
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-Image
+      backend: vLLM
+      backend_version: *vllm_omni_stable_version
+      backend_parameters:
+        - --omni
+        - --trust-remote-code
+- name: NextStep-1.1
+  description: NextStep-1.1 is StepFun's 14.9B autoregressive text-to-image model with the nextstep architecture.
+  home: https://github.com/stepfun-ai
+  icon: /static/catalog_icons/stepfun.png
+  size: 14.9
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2025-12-23"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: stepfun-ai/NextStep-1.1
+      backend: vLLM
+      backend_parameters:
+        - --omni
+        - --trust-remote-code
+- name: ERNIE-Image
+  description: ERNIE-Image is Baidu's 8B text-to-image diffusion model built on the ErnieImagePipeline architecture.
+  home: https://yiyan.baidu.com
+  icon: /static/catalog_icons/ERNIE.png
+  size: 8
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2026-04-07"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: PaddlePaddle/ERNIE-Image
+      backend: vLLM
+      backend_parameters:
+        - --omni
+        - --trust-remote-code
 - name: Qwen3-VL-8B-Instruct
   description: Qwen3-VL-8B-Instruct is a vision-language model that delivers comprehensive upgrades across text understanding, visual perception, and reasoning capabilities, supporting image/video/text unified understanding.
   home: https://qwen.ai
@@ -2145,6 +2581,150 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - --max-model-len=65536
+- name: Gemma-4-E2B-it
+  description: Gemma-4 E2B-it is a 2B-parameter end-device tier instruction-tuned multimodal model from Google's Gemma-4 family.
+  home: https://deepmind.google/technologies/gemma
+  icon: /static/catalog_icons/google.png
+  size: 2
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-04-02"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: google/gemma-4-E2B-it
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --trust-remote-code
+- name: Gemma-4-E4B-it
+  description: Gemma-4 E4B-it is a 4B-parameter end-device tier instruction-tuned multimodal model from Google's Gemma-4 family.
+  home: https://deepmind.google/technologies/gemma
+  icon: /static/catalog_icons/google.png
+  size: 4
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-04-02"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: google/gemma-4-E4B-it
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --trust-remote-code
+- name: Gemma-4-26B-A4B-it
+  description: Gemma-4 26B-A4B-it is a 26B MoE (4B activated) instruction-tuned multimodal model from Google's Gemma-4 family.
+  home: https://deepmind.google/technologies/gemma
+  icon: /static/catalog_icons/google.png
+  size: 26
+  activated_size: 4
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-04-02"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: google/gemma-4-26B-A4B-it
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --trust-remote-code
+- name: Gemma-4-31B-it
+  description: Gemma-4 31B-it is the flagship dense 31B instruction-tuned multimodal model from Google's Gemma-4 family.
+  home: https://deepmind.google/technologies/gemma
+  icon: /static/catalog_icons/google.png
+  size: 31
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-04-02"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: google/gemma-4-31B-it
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --trust-remote-code
+- name: MiMo-V2.5
+  description: MiMo-V2.5 is Xiaomi's flagship multimodal model with the mimo_v2 architecture, supporting vision/audio/video understanding, long-context, and agentic workflows.
+  home: https://github.com/XiaomiMiMo
+  icon: /static/catalog_icons/XiaomiMiMo.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+    - tools
+  licenses:
+    - mit
+  release_date: "2026-04-27"
+  specs:
+    - mode: standard
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: XiaomiMiMo/MiMo-V2.5
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --trust-remote-code
+- name: MiniCPM-V-4.6
+  description: MiniCPM-V-4.6 is an on-device multimodal model from OpenBMB, supporting image-text-to-text with efficient parameters (1.3B).
+  home: https://github.com/OpenBMB/MiniCPM
+  icon: /static/catalog_icons/OpenBMB.png
+  size: 1.3
+  categories:
+    - llm
+  capabilities:
+    - context/64K
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-05-11"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: OpenBMB/MiniCPM-V-4.6
+      backend: SGLang
+      backend_parameters:
+        - --context-length=32768
+        - --dtype=bfloat16
+        - --sampling-defaults=openai
+        - --trust-remote-code
+    - mode: standard
+      gpu_filters:
+        vendor: ascend
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: OpenBMB/MiniCPM-V-4.6
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
 # Audio models
 - name: CosyVoice2-0.5B
   description: CosyVoice2-0.5B is a speech generation model. It supports multilingual speech synthesis with high naturalness and expressiveness.
@@ -2164,6 +2744,27 @@ model_sets:
       backend: VoxBox
       env:
         GPUSTACK_MODEL_VRAM_CLAIM: "3221225472" # 3 GiB, CosyVoice family empirical estimate.
+- name: Fun-CosyVoice3-0.5B-2512
+  description: Fun-CosyVoice3-0.5B is the third-generation speech generation model from FunAudioLLM, supporting multilingual TTS across 9 languages with high naturalness.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  size: 0.5
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2025-12-12"
+  specs:
+    - mode: standard
+      gpu_filters:
+        vendor: nvidia
+      quantization: FP16
+      source: model_scope
+      model_scope_model_id: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+      backend: vLLM
+      backend_parameters:
+        - --omni
+        - --trust-remote-code
 - name: CosyVoice-300M
   description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
   home: https://github.com/FunAudioLLM
@@ -2328,6 +2929,29 @@ model_sets:
       source: model_scope
       model_scope_model_id: mistralai/Voxtral-Mini-3B-2507
       backend: vLLM
+- name: Voxtral-4B-TTS-2603
+  description: Voxtral-4B-TTS-2603 is Mistral AI's text-to-speech variant in the Voxtral family, derived from Ministral-3-3B-Base-2512 with multilingual coverage (9 languages).
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  size: 4
+  categories:
+    - text_to_speech
+  licenses:
+    - cc-by-nc-4.0
+  release_date: "2026-03-31"
+  specs:
+    - mode: standard
+      gpu_filters:
+        vendor: nvidia
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: mistralai/Voxtral-4B-TTS-2603
+      backend: vLLM
+      backend_parameters:
+        - --omni
+        - --tokenizer-mode=mistral
+        - --config-format=mistral
+        - --load-format=mistral
 - name: Granite-Speech-3.3-2B
   description: Granite-Speech-3.3-2B is a speech-to-text model from IBM, part of the Granite series, designed for automatic speech recognition with strong multilingual capabilities.
   home: https://www.ibm.com
