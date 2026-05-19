@@ -489,7 +489,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-0.8B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -529,7 +528,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-2B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -570,7 +568,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-4B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -611,7 +608,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-9B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -622,7 +618,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-9B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -637,7 +632,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-9B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -678,7 +672,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-27B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -690,7 +683,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-27B-FP8
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -734,7 +726,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-35B-A3B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -746,7 +737,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-35B-A3B-FP8
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -760,7 +750,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-35B-A3B-FP8
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -807,7 +796,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-122B-A10B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -819,7 +807,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-122B-A10B-FP8
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -863,7 +850,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-397B-A17B
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
@@ -875,7 +861,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.5-397B-A17B-FP8
       backend: vLLM
-      backend_version: 0.17.1
       backend_parameters:
         - --reasoning-parser=qwen3
         - --max-model-len=32768
