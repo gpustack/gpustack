@@ -112,6 +112,14 @@ def upgrade() -> None:
                     server_default="0",
                 )
             )
+        if not column_exists("model_usages", "model_route_id"):
+            batch_op.add_column(
+                sa.Column("model_route_id", sa.Integer(), nullable=True)
+            )
+        if not column_exists("model_usages", "model_route_name"):
+            batch_op.add_column(
+                sa.Column("model_route_name", sa.String(255), nullable=True)
+            )
 
         batch_op.drop_constraint("fk_model_usages_user_id_users", type_="foreignkey")
         batch_op.drop_constraint("fk_model_usages_model_id_models", type_="foreignkey")
@@ -145,6 +153,18 @@ def upgrade() -> None:
             ["api_key_id"],
             ["id"],
             ondelete="SET NULL",
+        )
+        batch_op.create_foreign_key(
+            "fk_model_usages_model_route_id_model_routes",
+            "model_routes",
+            ["model_route_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
+        batch_op.create_index(
+            "ix_model_usages_model_route_id",
+            ["model_route_id"],
+            unique=False,
         )
 
     conn.execute(
@@ -212,6 +232,109 @@ def upgrade() -> None:
             ),
             provider_snapshots,
         )
+
+    # Backfill model_route_id / model_route_name on historical model_usages.
+    # Pre-upgrade rows have no route attribution; for routes that the
+    # platform created automatically alongside a local model
+    # (``created_by_model = true``), we can reconstruct the link by taking
+    # the route's first target and matching it back to the usage rows it
+    # would have served — by ``model_id`` for model-backed targets, or by
+    # ``(provider_id, provider_model_name)`` against
+    # ``model_usages.(provider_id, model_name)`` for provider-backed ones.
+    # Anything we can't attribute deterministically is left NULL so it
+    # surfaces in the "Untracked" bucket rather than being misattributed.
+    #
+    # Set-based UPDATEs (two passes, one per target kind) instead of
+    # per-route Python iteration, so the migration scales with the size of
+    # model_usages, not the route count. PG / MySQL diverge on multi-table
+    # UPDATE syntax, so we branch on dialect; the inner SELECT that picks
+    # each route's first surviving target is identical.
+    first_targets_select = """
+        SELECT
+            mr.id AS route_id,
+            mr.name AS route_name,
+            mrt.model_id AS target_model_id,
+            mrt.provider_id AS target_provider_id,
+            mrt.provider_model_name AS target_provider_model_name
+        FROM model_routes mr
+        JOIN model_route_targets mrt ON mrt.route_id = mr.id
+        WHERE mr.created_by_model = TRUE
+          AND mr.deleted_at IS NULL
+          AND mrt.deleted_at IS NULL
+          AND mrt.id = (
+              SELECT MIN(inner_mrt.id)
+              FROM model_route_targets inner_mrt
+              WHERE inner_mrt.route_id = mr.id
+                AND inner_mrt.deleted_at IS NULL
+          )
+    """
+
+    dialect_name = conn.dialect.name
+    if dialect_name == "postgresql":
+        conn.execute(
+            sa.text(
+                f"""
+                WITH first_targets AS ({first_targets_select})
+                UPDATE model_usages mu
+                SET model_route_id = ft.route_id,
+                    model_route_name = ft.route_name
+                FROM first_targets ft
+                WHERE mu.model_route_id IS NULL
+                  AND ft.target_model_id IS NOT NULL
+                  AND mu.model_id = ft.target_model_id
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                f"""
+                WITH first_targets AS ({first_targets_select})
+                UPDATE model_usages mu
+                SET model_route_id = ft.route_id,
+                    model_route_name = ft.route_name
+                FROM first_targets ft
+                WHERE mu.model_route_id IS NULL
+                  AND ft.target_provider_id IS NOT NULL
+                  AND ft.target_provider_model_name IS NOT NULL
+                  AND mu.provider_id = ft.target_provider_id
+                  AND mu.model_name = ft.target_provider_model_name
+                """
+            )
+        )
+    elif dialect_name == "mysql":
+        conn.execute(
+            sa.text(
+                f"""
+                UPDATE model_usages mu
+                JOIN ({first_targets_select}) ft
+                  ON ft.target_model_id IS NOT NULL
+                 AND mu.model_id = ft.target_model_id
+                SET mu.model_route_id = ft.route_id,
+                    mu.model_route_name = ft.route_name
+                WHERE mu.model_route_id IS NULL
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                f"""
+                UPDATE model_usages mu
+                JOIN ({first_targets_select}) ft
+                  ON ft.target_provider_id IS NOT NULL
+                 AND ft.target_provider_model_name IS NOT NULL
+                 AND mu.provider_id = ft.target_provider_id
+                 AND mu.model_name = ft.target_provider_model_name
+                SET mu.model_route_id = ft.route_id,
+                    mu.model_route_name = ft.route_name
+                WHERE mu.model_route_id IS NULL
+                """
+            )
+        )
+    else:
+        raise Exception(
+            f"Unsupported database dialect: {dialect_name}. "
+            "Only PostgreSQL and MySQL are supported."
+        )
     ### end
     
     ### Ensure model_instances has injected_backend_parameters column
@@ -236,6 +359,12 @@ def upgrade() -> None:
             sa.Column('model_name', sa.String(255), nullable=False),
             sa.Column('model_route_id', sa.Integer(), nullable=True),
             sa.Column('model_route_name', sa.String(255), nullable=True),
+            # Tenant scope snapshot. Plain integer (no FK) for the same
+            # audit-survival reasons as the other id columns on this table:
+            # ``ON DELETE SET NULL`` on the live Principal would erase the
+            # historical owner attribution that breakdown / billing relies
+            # on. Sourced at flush time from the model / api_key owner.
+            sa.Column('owner_principal_id', sa.Integer(), nullable=True),
             sa.Column('provider_id', sa.Integer(), nullable=True),
             sa.Column('provider_name', sa.String(255), nullable=True),
             sa.Column('provider_type', sa.String(255), nullable=True),
@@ -357,8 +486,12 @@ def downgrade() -> None:
     
     ### Usage
     with op.batch_alter_table("model_usages", schema=None) as batch_op:
-        # Drop FKs added by the upgrade (api_key_id is net new;
-        # user/model/provider were swapped from CASCADE to SET NULL).
+        batch_op.drop_index("ix_model_usages_model_route_id")
+        # Drop FKs added by the upgrade (api_key_id / model_route_id are net
+        # new; user/model/provider were swapped from CASCADE to SET NULL).
+        batch_op.drop_constraint(
+            "fk_model_usages_model_route_id_model_routes", type_="foreignkey"
+        )
         batch_op.drop_constraint(
             "fk_model_usages_api_key_id_api_keys", type_="foreignkey"
         )
@@ -388,6 +521,8 @@ def downgrade() -> None:
             ["id"],
             ondelete="CASCADE",
         )
+        batch_op.drop_column("model_route_name")
+        batch_op.drop_column("model_route_id")
         batch_op.drop_column("api_key_is_custom")
         batch_op.drop_column("provider_type")
         batch_op.drop_column("provider_name")

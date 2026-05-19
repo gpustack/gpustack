@@ -8,42 +8,12 @@ from gpustack.schemas.usage import USAGE_GRANULARITY_MONTH
 from gpustack.schemas.users import User
 
 
-def format_model_snapshot_label(
-    model_name: str,
-    cluster_name: Optional[str] = None,
-) -> str:
-    """Return a human-readable display label for a model usage snapshot.
-
-    Format: ``"<cluster_name> / <model_name>"`` when a cluster is given,
-    otherwise just ``"<model_name>"``.
-    """
-    if cluster_name:
-        return f"{cluster_name} / {model_name}"
-    return model_name
-
-
-def format_usage_model_label(
-    model_name: Optional[str],
-    cluster_name: Optional[str] = None,
-    provider_name: Optional[str] = None,
-) -> str:
-    """Return the display label for usage records grouped by model.
-
-    Provider-routed usage is identified by provider + model name. Directly
-    deployed usage is identified by cluster + model name.
-    """
-    if provider_name and model_name:
-        parts = [provider_name, model_name]
-        if cluster_name:
-            parts.insert(0, cluster_name)
-        return " / ".join(parts)
-    if model_name:
-        return format_model_snapshot_label(model_name, cluster_name)
-    return "Unknown Model"
-
-
 def format_usage_user_label(user_name: Optional[str]) -> str:
     return user_name or "Unknown User"
+
+
+def format_usage_route_label(route_name: Optional[str]) -> str:
+    return route_name or "Untracked"
 
 
 def format_usage_api_key_label(
@@ -66,6 +36,8 @@ def build_model_usage_snapshot(
     user: Optional[User] = None,
     api_key: Optional[ApiKey] = None,
     provider: Optional[ModelProvider] = None,
+    model_route_id: Optional[int] = None,
+    model_route_name: Optional[str] = None,
 ) -> dict:
     """Build a usage snapshot dict capturing the model identity at request time.
 
@@ -80,9 +52,16 @@ def build_model_usage_snapshot(
     into BOTH ``ModelUsage`` and ``ModelUsageDetails`` constructors. Every
     key emitted here MUST therefore be a valid column on both tables,
     otherwise the rollup write or the details write will fail at runtime.
-    Fields specific to one table only (e.g. ``cluster_id`` /
-    ``model_route_id`` / ``started_at`` / ``completed_at`` on details)
-    must be passed via dedicated kwargs at the call site, NOT added here.
+    Fields specific to one table only (e.g. ``cluster_id`` / ``started_at``
+    / ``completed_at`` on details) must be passed via dedicated kwargs at
+    the call site, NOT added here.
+
+    ``model_route_id`` / ``model_route_name`` are kept as separate scalar
+    kwargs (instead of a ``ModelRoute`` object) because the live route row
+    may already be gone by flush time — the caller resolves the name from
+    a pre-fetched ``route_name_by_id`` map and passes ``None`` when the
+    route was deleted, preserving the id for audit while signalling the
+    name is unrecoverable.
     """
     if cluster_name is None:
         cluster = getattr(model, "cluster", None)
@@ -123,4 +102,7 @@ def build_model_usage_snapshot(
                 "api_key_is_custom": api_key.is_custom,
             }
         )
+    if model_route_id is not None:
+        snapshot["model_route_id"] = model_route_id
+        snapshot["model_route_name"] = model_route_name
     return snapshot

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -39,6 +40,14 @@ gateway_details_buffer: List["ModelUsageMetrics"] = []
 # Single lock guarding both rollup and details buffers; ingest writes
 # them together, so they must be drained together too.
 gateway_buffers_lock = asyncio.Lock()
+
+# Throttle state for the "missing model_route_id" warning. A regressed
+# gateway can emit many such rows per second; collapse to one warning per
+# interval with the suppressed count so logs stay readable without losing
+# the signal.
+_MISSING_ROUTE_ID_WARN_INTERVAL_SECONDS = 60.0
+_missing_route_id_last_warned_at: float = 0.0
+_missing_route_id_suppressed: int = 0
 
 
 class ModelUsageMetrics(BaseModel):
@@ -122,6 +131,7 @@ def _make_buffer_key(metric: ModelUsageMetrics) -> str:
             metric.model,
             metric.user_id,
             metric.access_key,
+            metric.model_route_id,
             operation,
             metric_date.isoformat(),
         ]
@@ -168,7 +178,19 @@ def _resolve_usage_tokens(
 
 async def accumulate_gateway_metrics(metrics: List[ModelUsageMetrics]):
     async with gateway_buffers_lock:
+        # Product invariant: every inference request resolves to a route
+        # (the gateway can't dispatch otherwise). A NULL model_route_id
+        # means an ingest source regressed — the row will pollute the
+        # "Untracked" bucket reserved for pre-upgrade legacy data. Tally
+        # per-batch and surface via a throttled summary so a regressed
+        # gateway doesn't flood logs.
+        missing_route_id_count = 0
+        missing_route_id_sample: Optional[ModelUsageMetrics] = None
         for incoming in metrics:
+            if incoming.model_route_id is None:
+                missing_route_id_count += 1
+                if missing_route_id_sample is None:
+                    missing_route_id_sample = incoming
             # Take ownership before any in-place work:
             #   * ``_estimate_partial_usage`` mutates token fields directly.
             #   * The rollup buffer's ``+=`` mutates the stored entry, which
@@ -193,6 +215,7 @@ async def accumulate_gateway_metrics(metrics: List[ModelUsageMetrics]):
                 existing.input_cached_token += metric.input_cached_token
                 existing.request_count += metric.request_count
         _trim_details_buffer_locked()
+        _maybe_warn_missing_route_id(missing_route_id_count, missing_route_id_sample)
 
 
 def _trim_details_buffer_locked() -> None:
@@ -217,6 +240,46 @@ def _trim_details_buffer_locked() -> None:
         cap,
         overflow,
     )
+
+
+def _maybe_warn_missing_route_id(
+    batch_missing: int, sample: Optional[ModelUsageMetrics]
+) -> None:
+    """Emit at most one 'missing model_route_id' warning per interval.
+
+    Accumulates the suppressed count across batches and flushes it the next
+    time the interval has elapsed, so a regressed gateway shows up as one
+    log line per minute with the running total rather than thousands of
+    near-identical lines. Caller must hold ``gateway_buffers_lock``.
+    """
+    global _missing_route_id_last_warned_at, _missing_route_id_suppressed
+    if batch_missing <= 0:
+        return
+    _missing_route_id_suppressed += batch_missing
+    now = time.monotonic()
+    if now - _missing_route_id_last_warned_at < _MISSING_ROUTE_ID_WARN_INTERVAL_SECONDS:
+        return
+    total = _missing_route_id_suppressed
+    _missing_route_id_last_warned_at = now
+    _missing_route_id_suppressed = 0
+    if sample is not None:
+        logger.warning(
+            "Gateway metrics missing model_route_id (%d in the last ~%ds); "
+            "rows land in the Untracked bucket. Sample: model=%s user_id=%s "
+            "access_key=%s",
+            total,
+            int(_MISSING_ROUTE_ID_WARN_INTERVAL_SECONDS),
+            sample.model,
+            sample.user_id,
+            sample.access_key,
+        )
+    else:
+        logger.warning(
+            "Gateway metrics missing model_route_id (%d in the last ~%ds); "
+            "rows land in the Untracked bucket.",
+            total,
+            int(_MISSING_ROUTE_ID_WARN_INTERVAL_SECONDS),
+        )
 
 
 async def flush_gateway_metrics():
@@ -255,6 +318,7 @@ async def create_or_update_model_usage(
             "provider_name": metric.provider_name,
             "provider_type": metric.provider_type,
             "model_name": metric.model_name,
+            "model_route_id": metric.model_route_id,
             "access_key": metric.access_key,
             "operation": metric.operation,
             "date": metric.date,
@@ -267,6 +331,13 @@ async def create_or_update_model_usage(
         current_usage.completion_token_count += metric.completion_token_count
         current_usage.prompt_cached_token_count += metric.prompt_cached_token_count
         current_usage.request_count += metric.request_count
+        # Refresh route name snapshot to the latest non-NULL value so that
+        # a mid-day rename converges to one consistent label per (route_id,
+        # date) cell. A NULL incoming name means the route was deleted
+        # between dispatch and flush — keep the existing snapshot rather
+        # than wiping a still-meaningful audit label.
+        if metric.model_route_name is not None:
+            current_usage.model_route_name = metric.model_route_name
         await current_usage.save(session=session, auto_commit=auto_commit)
 
 
@@ -314,11 +385,19 @@ def _build_metric_snapshot(
     user_by_id: Dict[int, User],
     api_key_by_access_key: Dict[str, ApiKey],
     cluster_names_by_id: Dict[int, str],
+    route_name_by_id: Dict[int, str],
 ) -> dict:
     user = user_by_id.get(metric.user_id)
     api_key = api_key_by_access_key.get(metric.access_key)
     model = model_by_id.get(metric.model_id)
     provider = provider_by_id.get(metric.provider_id)
+    # Route name is resolved from the live table; falls back to None when
+    # the route was deleted between dispatch and flush. The id is always
+    # preserved verbatim so audit/breakdown can still attribute the row.
+    model_route_id = metric.model_route_id
+    model_route_name = (
+        route_name_by_id.get(model_route_id) if model_route_id is not None else None
+    )
     if model is None:
         snapshot = {
             "model_id": metric.model_id,
@@ -352,6 +431,19 @@ def _build_metric_snapshot(
                     "api_key_is_custom": api_key.is_custom,
                 }
             )
+        if model_route_id is not None:
+            snapshot["model_route_id"] = model_route_id
+            snapshot["model_route_name"] = model_route_name
+        # The "model deleted before flush" branch can no longer source
+        # tenant scope from ``model.owner_principal_id``. Fall back to the
+        # api_key's owner so cross-tenant attribution still works in this
+        # edge case — under the route/target same-Org rule, api_key owner
+        # is necessarily aligned with the route's (and the deleted model's)
+        # Org for any non-platform deployment.
+        if api_key is not None:
+            snapshot["owner_principal_id"] = getattr(
+                api_key, "owner_principal_id", None
+            )
     else:
         snapshot = build_model_usage_snapshot(
             model,
@@ -359,6 +451,8 @@ def _build_metric_snapshot(
             user=user,
             api_key=api_key,
             provider=provider,
+            model_route_id=model_route_id,
+            model_route_name=model_route_name,
         )
     snapshot.setdefault("user_id", metric.user_id)
     snapshot.setdefault("provider_id", metric.provider_id)
@@ -450,6 +544,7 @@ async def store_usage_metrics(
                     user_by_id,
                     api_key_by_access_key,
                     cluster_names_by_id,
+                    route_name_by_id,
                 )
                 prompt_tokens, completion_tokens = _resolve_usage_tokens(
                     metric, model_by_id.get(metric.model_id)
@@ -480,18 +575,11 @@ async def store_usage_metrics(
                     user_by_id,
                     api_key_by_access_key,
                     cluster_names_by_id,
+                    route_name_by_id,
                 )
                 prompt_tokens, completion_tokens = _resolve_usage_tokens(
                     metric, model_by_id.get(metric.model_id)
                 )
-                # Preserve the reported model_route_id verbatim — details
-                # is FK-less by design (ModelUsageDetails docstring) so the
-                # historical id stays audit-valuable even when the route
-                # was deleted between request dispatch and this flush.
-                # Name is best-effort from the live table; null when the
-                # route is gone.
-                model_route_id = metric.model_route_id
-                model_route_name = route_name_by_id.get(metric.model_route_id)
                 # cluster_id only lives on the audit/details rows, not on
                 # the dashboard rollup (ModelUsage). Prefer the metric's
                 # own cluster_id (captured at request time, survives model
@@ -508,8 +596,6 @@ async def store_usage_metrics(
                 session.add(
                     ModelUsageDetails(
                         date=metric_date,
-                        model_route_id=model_route_id,
-                        model_route_name=model_route_name,
                         cluster_id=cluster_id,
                         prompt_token_count=prompt_tokens,
                         completion_token_count=completion_tokens,

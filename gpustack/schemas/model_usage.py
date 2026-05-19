@@ -31,6 +31,11 @@ class ModelUsage(SQLModel, ActiveRecordMixin, table=True):
         sa_column=Column(Integer, ForeignKey("models.id", ondelete="SET NULL")),
     )
     model_name: str = Field(default=...)
+    model_route_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("model_routes.id", ondelete="SET NULL")),
+    )
+    model_route_name: Optional[str] = Field(default=None)
     provider_id: Optional[int] = Field(
         default=None,
         sa_column=Column(

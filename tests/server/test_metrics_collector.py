@@ -1,13 +1,17 @@
 import asyncio
+from datetime import date
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gpustack.schemas.model_usage import ModelUsage
 from gpustack.server.metrics_collector import (
     ModelUsageMetrics,
     _estimate_partial_usage,
     _make_buffer_key,
     _resolve_usage_tokens,
     accumulate_gateway_metrics,
+    create_or_update_model_usage,
     gateway_details_buffer,
     gateway_metrics_buffer,
 )
@@ -47,14 +51,31 @@ def test_make_buffer_key():
         model_id=1,
         user_id=2,
         access_key="abc",
+        model_route_id=9,
         completed_at=_FIXED_COMPLETED_AT_MS,
     )
-    assert _make_buffer_key(m) == f"1..qwen3-0.6b.2.abc..{_FIXED_DATE_ISO}"
+    assert _make_buffer_key(m) == f"1..qwen3-0.6b.2.abc.9..{_FIXED_DATE_ISO}"
 
 
 def test_make_buffer_key_none_fields():
     m = ModelUsageMetrics(model="qwen3-0.6b", completed_at=_FIXED_COMPLETED_AT_MS)
-    assert _make_buffer_key(m) == f"..qwen3-0.6b....{_FIXED_DATE_ISO}"
+    assert _make_buffer_key(m) == f"..qwen3-0.6b.....{_FIXED_DATE_ISO}"
+
+
+def test_make_buffer_key_route_separates_otherwise_identical_metrics():
+    """Different routes must split into different rollup keys even when
+    user / model / api_key / date all match — otherwise route-grouped
+    breakdowns would merge unrelated traffic."""
+    base = dict(
+        model="qwen3-0.6b",
+        model_id=1,
+        user_id=2,
+        access_key="abc",
+        completed_at=_FIXED_COMPLETED_AT_MS,
+    )
+    assert _make_buffer_key(
+        ModelUsageMetrics(**base, model_route_id=1)
+    ) != _make_buffer_key(ModelUsageMetrics(**base, model_route_id=2))
 
 
 def test_accumulate_new_entry():
@@ -278,3 +299,103 @@ def test_accumulate_splits_rollup_across_midnight():
         )
     )
     assert len(gateway_metrics_buffer) == 2
+
+
+@pytest.mark.asyncio
+async def test_create_or_update_refreshes_route_name_on_rename(monkeypatch):
+    """A mid-day route rename must converge the (route_id, date) cell to
+    one row with the latest non-NULL name — not split into two rows or
+    keep the morning's stale snapshot."""
+    existing = ModelUsage(
+        model_id=1,
+        model_name="qwen3-0.6b",
+        user_id=2,
+        access_key="abc",
+        model_route_id=21,
+        model_route_name="old-name",
+        date=date(2023, 11, 14),
+        prompt_token_count=100,
+        completion_token_count=50,
+        prompt_cached_token_count=0,
+        request_count=1,
+    )
+
+    async def fake_one_by_fields(session, fields):
+        return existing
+
+    monkeypatch.setattr(ModelUsage, "one_by_fields", fake_one_by_fields)
+
+    incoming = ModelUsage(
+        model_id=1,
+        model_name="qwen3-0.6b",
+        user_id=2,
+        access_key="abc",
+        model_route_id=21,
+        model_route_name="new-name",
+        date=date(2023, 11, 14),
+        prompt_token_count=30,
+        completion_token_count=20,
+        prompt_cached_token_count=0,
+        request_count=1,
+    )
+
+    save_mock = AsyncMock()
+    monkeypatch.setattr(ModelUsage, "save", save_mock)
+
+    await create_or_update_model_usage(MagicMock(), incoming, auto_commit=False)
+
+    assert existing.model_route_name == "new-name"
+    assert existing.prompt_token_count == 130
+    assert existing.completion_token_count == 70
+    assert existing.request_count == 2
+    save_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_or_update_preserves_route_name_when_incoming_is_null(
+    monkeypatch,
+):
+    """If the live route was deleted between dispatch and flush, the name
+    lookup returns NULL — but the rollup row's existing snapshot must
+    survive so that audit/breakdown can still label the bucket."""
+    existing = ModelUsage(
+        model_id=1,
+        model_name="qwen3-0.6b",
+        user_id=2,
+        access_key="abc",
+        model_route_id=21,
+        model_route_name="old-name",
+        date=date(2023, 11, 14),
+        prompt_token_count=100,
+        completion_token_count=50,
+        prompt_cached_token_count=0,
+        request_count=1,
+    )
+
+    async def fake_one_by_fields(session, fields):
+        return existing
+
+    monkeypatch.setattr(ModelUsage, "one_by_fields", fake_one_by_fields)
+
+    incoming = ModelUsage(
+        model_id=1,
+        model_name="qwen3-0.6b",
+        user_id=2,
+        access_key="abc",
+        model_route_id=21,
+        model_route_name=None,
+        date=date(2023, 11, 14),
+        prompt_token_count=30,
+        completion_token_count=20,
+        prompt_cached_token_count=0,
+        request_count=1,
+    )
+
+    save_mock = AsyncMock()
+    monkeypatch.setattr(ModelUsage, "save", save_mock)
+
+    await create_or_update_model_usage(MagicMock(), incoming, auto_commit=False)
+
+    assert existing.model_route_name == "old-name"
+    assert existing.prompt_token_count == 130
+    save_mock.assert_awaited_once()
