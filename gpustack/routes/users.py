@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -13,7 +13,6 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ConflictException,
 )
-from gpustack.security import get_secret_hash
 from gpustack.schemas.organizations import OrganizationPublic
 from gpustack.schemas.principals import (
     OrgRole,
@@ -21,6 +20,11 @@ from gpustack.schemas.principals import (
     Principal,
     PrincipalMembership,
     PrincipalType,
+)
+from gpustack.schemas.credentials import (
+    get_password_credential,
+    require_password_change as credential_requires_password_change,
+    set_password,
 )
 from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
@@ -30,6 +34,7 @@ from gpustack.schemas.users import (
     UserCreate,
     UserListParams,
     UserUpdate,
+    UserMePublic,
     UserPublic,
     UsersPublic,
     UserSelfUpdate,
@@ -130,15 +135,22 @@ async def create_user(session: SessionDep, user_in: UserCreate):
             full_name=user_in.full_name,
             is_admin=user_in.is_admin,
             is_active=user_in.is_active,
+            avatar_url=user_in.avatar_url,
+            source=user_in.source,
         )
-        if user_in.password:
-            to_create.hashed_password = get_secret_hash(user_in.password)
         # User row + USER-principal go in one transactional helper —
         # ``users.principal_id`` is NOT NULL so the principal must
         # exist first. Admin additionally joins the platform Org as
         # OWNER; regular users do NOT auto-join — admin can add them
         # later if shared workspace access is needed.
         user = await create_user_with_principal(session, to_create)
+        if user_in.password:
+            await set_password(
+                session,
+                user.principal_id,
+                user_in.password,
+                auto_commit=False,
+            )
         if user.is_admin:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             session.add(
@@ -174,12 +186,21 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
 
     try:
         update_data = user_in.model_dump()
-        if user_in.password:
-            hashed_password = get_secret_hash(user_in.password)
-            update_data["hashed_password"] = hashed_password
-        del update_data["password"]
-        del update_data["source"]
+        # ``password`` lives on a PASSWORD ``credentials`` row keyed
+        # by principal — ``users.update`` no longer knows about it.
+        password: Optional[str] = update_data.pop("password", None)
+        # Original code already excluded ``source`` from user updates.
+        update_data.pop("source", None)
         await UserService(session).update(user, update_data)
+        if password:
+            await set_password(
+                session,
+                user.principal_id,
+                password,
+                auto_commit=False,
+            )
+        await session.commit()
+        await session.refresh(user)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 
@@ -260,26 +281,44 @@ async def is_only_admin_user(session: SessionDep, user: User) -> bool:
 me_router = APIRouter()
 
 
-@me_router.get("/me", response_model=UserPublic)
-async def get_user_me(user: CurrentUserDep):
-    return user
+async def _build_user_me(session: SessionDep, user: User) -> UserMePublic:
+    credential = (
+        await get_password_credential(session, user.principal_id)
+        if user.principal_id is not None
+        else None
+    )
+    me = UserMePublic.model_validate(user, from_attributes=True)
+    me.require_password_change = credential_requires_password_change(credential)
+    return me
 
 
-@me_router.put("/me", response_model=UserPublic)
+@me_router.get("/me", response_model=UserMePublic)
+async def get_user_me(session: SessionDep, user: CurrentUserDep):
+    return await _build_user_me(session, user)
+
+
+@me_router.put("/me", response_model=UserMePublic)
 async def update_user_me(
     session: SessionDep, user: CurrentUserDep, user_in: UserSelfUpdate
 ):
     try:
         update_data = user_in.model_dump(exclude_none=True)
-        if "password" in update_data:
-            hashed_password = get_secret_hash(update_data["password"])
-            update_data["hashed_password"] = hashed_password
-            del update_data["password"]
-        await UserService(session).update(user, update_data)
+        password: Optional[str] = update_data.pop("password", None)
+        if update_data:
+            await UserService(session).update(user, update_data)
+        if password:
+            await set_password(
+                session,
+                user.principal_id,
+                password,
+                auto_commit=False,
+            )
+        await session.commit()
+        await session.refresh(user)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 
-    return user
+    return await _build_user_me(session, user)
 
 
 # User-search endpoint accessible to org owners (any) and platform

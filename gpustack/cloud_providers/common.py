@@ -2,7 +2,8 @@ import base64
 from typing import Dict, Tuple, Type, Callable
 from .abstract import ProviderClientBase, CloudInstanceCreate
 from .digital_ocean import DigitalOceanClient
-from gpustack.schemas.clusters import ClusterProvider, CloudCredential, Credential
+from gpustack.schemas.clusters import ClusterProvider, CloudCredential
+from gpustack.schemas.credentials import Credential
 from gpustack.schemas.workers import Worker
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519

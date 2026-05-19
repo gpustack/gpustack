@@ -859,7 +859,79 @@ def upgrade() -> None:
         'ORG',
     )
 
-    # ---- 15. Drop legacy usermodelroutelink -----------------------------
+    # ---- 15. credentials.owner_principal_id + PASSWORD backfill ---------
+    #
+    # v2.2.0 already reshaped the ``credentials`` columns (rename +
+    # nullable + PASSWORD enum value). Here we ground the rows: add the
+    # FK back to ``principals`` and turn each user's bcrypt hash into a
+    # PASSWORD-typed credential row owned by that user's principal.
+    #
+    # System users (cluster / worker) carry an empty hash — skip those:
+    # a credential with no secret is meaningless and would only pollute
+    # the password-lookup hot path.
+
+    if not column_exists('credentials', 'owner_principal_id'):
+        with op.batch_alter_table('credentials', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column('owner_principal_id', sa.Integer(), nullable=True),
+            )
+            batch_op.create_foreign_key(
+                'fk_credentials_owner_principal_id_principals',
+                'principals',
+                ['owner_principal_id'],
+                ['id'],
+                ondelete='CASCADE',
+            )
+        op.create_index(
+            'ix_credentials_owner_principal_id',
+            'credentials',
+            ['owner_principal_id'],
+        )
+
+    if column_exists('users', 'hashed_password'):
+        if bind.dialect.name == 'sqlite':
+            require_change_options = (
+                "json_object('require_password_change', "
+                "CASE WHEN u.require_password_change THEN json('true') "
+                "ELSE json('false') END)"
+            )
+        elif bind.dialect.name == 'mysql':
+            require_change_options = (
+                "JSON_OBJECT('require_password_change', "
+                "CAST(u.require_password_change AS JSON))"
+            )
+        else:
+            require_change_options = (
+                "jsonb_build_object('require_password_change', "
+                "u.require_password_change)"
+            )
+
+        op.execute(
+            sa.text(
+                f"""
+                INSERT INTO credentials (
+                    credential_type, owner_principal_id,
+                    public_key, encoded_secret, options,
+                    created_at, updated_at
+                )
+                SELECT
+                    'PASSWORD', u.principal_id,
+                    NULL, u.hashed_password, {require_change_options},
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM users u
+                WHERE u.hashed_password IS NOT NULL
+                  AND u.hashed_password <> ''
+                  AND u.principal_id IS NOT NULL
+                """
+            )
+        )
+
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.drop_column('hashed_password')
+            if column_exists('users', 'require_password_change'):
+                batch_op.drop_column('require_password_change')
+
+    # ---- 16. Drop legacy usermodelroutelink -----------------------------
 
     # The user-grant rows it carried have been moved into
     # ``model_route_principals`` in step 13. Keep the table around any
@@ -1030,6 +1102,91 @@ def downgrade() -> None:
             batch_op.drop_column('owner_principal_id')
         except Exception:
             pass
+
+    # ---- credentials: restore password columns on users -----------------
+    #
+    # Move PASSWORD-row state back to ``users`` (hashed_password +
+    # require_password_change), then drop the rows and the
+    # owner_principal_id FK so the credentials table looks like its
+    # v2.2.0 shape again. The column-shape revert (rename back,
+    # public_key NOT NULL, etc.) happens in the v2.2.0 downgrade — keep
+    # the layering symmetrical to upgrade.
+
+    if not column_exists('users', 'hashed_password'):
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column('hashed_password', sa.String(length=255), nullable=True),
+            )
+    if not column_exists('users', 'require_password_change'):
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    'require_password_change',
+                    sa.Boolean(),
+                    nullable=False,
+                    server_default=sa.false(),
+                ),
+            )
+
+    if bind.dialect.name == 'sqlite':
+        require_change_extract = (
+            "CAST(json_extract(c.options, '$.require_password_change') AS INTEGER)"
+        )
+    elif bind.dialect.name == 'mysql':
+        require_change_extract = (
+            "CAST(JSON_EXTRACT(c.options, '$.require_password_change') AS UNSIGNED)"
+        )
+    else:
+        require_change_extract = (
+            "COALESCE((c.options->>'require_password_change')::boolean, FALSE)"
+        )
+
+    op.execute(
+        sa.text(
+            f"""
+            UPDATE users
+            SET
+                hashed_password = (
+                    SELECT c.encoded_secret FROM credentials c
+                    WHERE c.owner_principal_id = users.principal_id
+                      AND c.credential_type = 'PASSWORD'
+                      AND c.deleted_at IS NULL
+                    LIMIT 1
+                ),
+                require_password_change = COALESCE(
+                    (
+                        SELECT {require_change_extract} FROM credentials c
+                        WHERE c.owner_principal_id = users.principal_id
+                          AND c.credential_type = 'PASSWORD'
+                          AND c.deleted_at IS NULL
+                        LIMIT 1
+                    ),
+                    FALSE
+                )
+            """
+        )
+    )
+
+    op.execute(
+        sa.text("DELETE FROM credentials WHERE credential_type = 'PASSWORD'")
+    )
+
+    if column_exists('credentials', 'owner_principal_id'):
+        try:
+            op.drop_index(
+                'ix_credentials_owner_principal_id', table_name='credentials'
+            )
+        except Exception:
+            pass
+        with op.batch_alter_table('credentials', schema=None) as batch_op:
+            try:
+                batch_op.drop_constraint(
+                    'fk_credentials_owner_principal_id_principals',
+                    type_='foreignkey',
+                )
+            except Exception:
+                pass
+            batch_op.drop_column('owner_principal_id')
 
     # ---- users ----------------------------------------------------------
 

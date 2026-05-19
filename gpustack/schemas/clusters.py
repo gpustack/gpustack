@@ -19,7 +19,6 @@ from sqlmodel import (
     Integer,
     ForeignKey,
     JSON,
-    String,
 )
 import sqlalchemy as sa
 from typing import TYPE_CHECKING
@@ -541,34 +540,5 @@ class ClusterRegistrationTokenPublic(BaseModel):
     operator_image: str
 
 
-class CredentialType(str, Enum):
-    SSH = "ssh"
-    CA = "ca"
-    X509 = "x509"
-
-
-class SSHKeyOptions(BaseModel):
-    algorithm: str = Field(default="RSA")
-    length: int = Field(default=2048)
-
-
-class CredentialBase(SQLModel):
-    external_id: Optional[str] = Field(
-        default=None, sa_column=Column(String(255), nullable=True)
-    )
-    credential_type: CredentialType = Field(default=CredentialType.SSH)
-    # pem format public key
-    public_key: str = Field(sa_column=Column(Text, nullable=False))
-    # base64 encoded private key
-    encoded_private_key: str = Field(default="", sa_column=Column(Text, nullable=False))
-    # e.g. RSA, ED25519
-    ssh_key_options: Optional[SSHKeyOptions] = Field(
-        default=None,
-        sa_column=Column(pydantic_column_type(SSHKeyOptions), nullable=True),
-    )
-
-
-class Credential(CredentialBase, BaseModelMixin, table=True):
-    __tablename__ = "credentials"
-    __table_args__ = (sa.Index("idx_credentials_external_id", "external_id"),)
-    id: Optional[int] = Field(default=None, primary_key=True)
+# ``Credential`` / ``CredentialType`` / ``SSHKeyOptions`` and the
+# password-credential helpers live in ``gpustack.schemas.credentials``.

@@ -24,8 +24,8 @@ from gpustack.schemas.clusters import (
     Cluster,
     CloudCredential,
     WorkerPool,
-    Credential,
 )
+from gpustack.schemas.credentials import Credential
 from gpustack.schemas.stmt import (
     worker_after_create_view_stmt_sqlite,
     worker_after_drop_view_stmt_sqlite,

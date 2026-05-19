@@ -49,7 +49,7 @@ async def test_provisioning_flow(monkeypatch):
     mock_sshkey = MagicMock()
     mock_sshkey.id = "ssh-key-id"
     monkeypatch.setattr(
-        "gpustack.schemas.clusters.Credential.create",
+        "gpustack.schemas.credentials.Credential.create",
         AsyncMock(return_value=mock_sshkey),
     )
     monkeypatch.setattr(
@@ -57,7 +57,7 @@ async def test_provisioning_flow(monkeypatch):
         lambda provider, credential: client,
     )
     monkeypatch.setattr(
-        "gpustack.schemas.clusters.Credential.one_by_id",
+        "gpustack.schemas.credentials.Credential.one_by_id",
         AsyncMock(return_value=MagicMock(id=1, external_id="ssh-key-id")),
     )
     monkeypatch.setattr(
