@@ -24,9 +24,7 @@ async def test_get_current_user_accepts_x_api_key(monkeypatch):
     request.client = type("Client", (), {"host": "10.0.0.1"})()
     request.app = type("App", (), {})()
     request.app.state = type("State", (), {})()
-    request.app.state.server_config = type(
-        "Config", (), {"gateway_mode": None, "force_auth_localhost": True}
-    )()
+    request.app.state.server_config = type("Config", (), {"gateway_mode": None})()
 
     expected_user = type("User", (), {"is_active": True})()
     expected_key = object()
@@ -84,9 +82,7 @@ async def test_get_current_user_falls_back_to_x_api_key_when_bearer_empty(
     request.client = type("Client", (), {"host": "10.0.0.1"})()
     request.app = type("App", (), {})()
     request.app.state = type("State", (), {})()
-    request.app.state.server_config = type(
-        "Config", (), {"gateway_mode": None, "force_auth_localhost": True}
-    )()
+    request.app.state.server_config = type("Config", (), {"gateway_mode": None})()
 
     expected_user = type("User", (), {"is_active": True})()
     expected_key = object()
@@ -123,6 +119,55 @@ async def test_worker_auth_falls_back_to_x_api_key_when_bearer_empty():
         )
         is None
     )
+
+
+def _make_request(headers=None, client_host="127.0.0.1"):
+    request = type("Request", (), {})()
+    request.state = type("State", (), {})()
+    request.headers = headers or {}
+    request.client = type("Client", (), {"host": client_host})()
+    request.app = type("App", (), {})()
+    request.app.state = type("State", (), {})()
+    request.app.state.server_config = type("Config", (), {"gateway_mode": None})()
+    return request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "client_host,headers",
+    [
+        # Genuine local request — no longer auto-trusted.
+        ("127.0.0.1", {"host": "127.0.0.1:30080"}),
+        # Reverse-proxy-fronted remote attacker arriving with TCP peer 127.0.0.1.
+        (
+            "127.0.0.1",
+            {"host": "gpustack.example.com", "x-forwarded-for": "8.8.8.8"},
+        ),
+        # IPv6 loopback.
+        ("::1", {"host": "[::1]:30080"}),
+        # External IP.
+        ("10.0.0.1", {"host": "gpustack.example.com"}),
+    ],
+)
+async def test_get_current_user_requires_credentials(monkeypatch, client_host, headers):
+    # The auto-admin localhost shortcut has been removed entirely.
+    # Every unauthenticated request — local, proxied, or remote — must be
+    # rejected.
+    session = object()
+    request = _make_request(headers=headers, client_host=client_host)
+
+    first_by_field = AsyncMock()
+    get_by_username = AsyncMock()
+    monkeypatch.setattr("gpustack.api.auth.User.first_by_field", first_by_field)
+    monkeypatch.setattr(
+        "gpustack.api.auth.UserService.get_by_username", get_by_username
+    )
+
+    with pytest.raises(UnauthorizedException):
+        await get_current_user(request=request, session=session)
+    # No DB lookup path may fire when there are no credentials.
+    first_by_field.assert_not_awaited()
+    get_by_username.assert_not_awaited()
 
 
 @pytest.mark.asyncio
