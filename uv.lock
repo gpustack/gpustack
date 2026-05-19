@@ -1510,7 +1510,7 @@ requires-dist = [
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.2.2.post1" },
     { name = "gpustack-runner", specifier = "==0.1.26.post1" },
-    { name = "gpustack-runtime", specifier = "==0.2.0" },
+    { name = "gpustack-runtime", specifier = "==0.2.0.post1" },
     { name = "hf-xet", specifier = ">=1.3.1,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=1.0.0" },
@@ -1615,7 +1615,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.2.0"
+version = "0.2.0.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -1629,9 +1629,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/79/c0/6b11462b0c5d41529bf76141dc9ffee3e1c6e92bbea61b9384a6959f0548/gpustack_runtime-0.2.0.tar.gz", hash = "sha256:7ed852b3d4c30c0ba960dc4cd17830d82064ac62403b97038f92575aeed427f1", size = 1473375, upload-time = "2026-05-09T13:41:12.973Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/98/9cfe0b8bce637d98d3060b166095fa0d52009a1acf8a321ec4e4e5eb4779/gpustack_runtime-0.2.0.post1.tar.gz", hash = "sha256:2136c8c4811c319622c3fd9309366eda33e6acf0c1ef01cbab4dbf23c2a08ba4", size = 1473499, upload-time = "2026-05-19T12:21:38.38Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/66/74c5d83a6db65830d57f4e33644c5925ffcc3a9a5f5eba2f0587a5b475c2/gpustack_runtime-0.2.0-py3-none-any.whl", hash = "sha256:54a53d159a17e89d161002964e282459efe31b5285885624eb3f6901810a63bd", size = 1457148, upload-time = "2026-05-09T13:41:11.199Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/39/02ae6f425057f2a08d042a876da1df207e8aef768aa82161ac5bc2462bd7/gpustack_runtime-0.2.0.post1-py3-none-any.whl", hash = "sha256:3bdb397c0c3d4a6d2d3e1854d74efe1abb7e377dcfc9bfe82d959a5874f9812a", size = 1457104, upload-time = "2026-05-19T12:21:36.692Z" },
 ]
 
 [[package]]
