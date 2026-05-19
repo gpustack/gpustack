@@ -48,34 +48,6 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
         side_effect=[
             _mock_exec_result(
                 [
-                    SimpleNamespace(
-                        group_cluster_name="cluster-a",
-                        group_model_name="qwen3.5-9b",
-                        group_model_id=7,
-                        group_provider_id=None,
-                        group_provider_name=None,
-                        group_provider_type=None,
-                    ),
-                    SimpleNamespace(
-                        group_cluster_name=None,
-                        group_model_name="gpt-4o",
-                        group_model_id=None,
-                        group_provider_id=9,
-                        group_provider_name="openai-prod",
-                        group_provider_type="openai",
-                    ),
-                    SimpleNamespace(
-                        group_cluster_name="cluster-a",
-                        group_model_name="qwen3.5-9b",
-                        group_model_id=None,
-                        group_provider_id=None,
-                        group_provider_name=None,
-                        group_provider_type=None,
-                    ),
-                ]
-            ),
-            _mock_exec_result(
-                [
                     SimpleNamespace(group_user_name="alice", group_user_id=12),
                     SimpleNamespace(group_user_name="alice", group_user_id=None),
                 ]
@@ -100,6 +72,22 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
                     ),
                 ]
             ),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        group_model_route_name="qwen-route",
+                        group_model_route_id=21,
+                    ),
+                    SimpleNamespace(
+                        group_model_route_name="legacy-route",
+                        group_model_route_id=None,
+                    ),
+                    SimpleNamespace(
+                        group_model_route_name=None,
+                        group_model_route_id=None,
+                    ),
+                ]
+            ),
         ]
     )
     user = User(id=1, username="admin", hashed_password="x", is_admin=True)
@@ -108,9 +96,9 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
 
     assert [item.key for item in response.group_bys] == [
         "date",
-        "model",
         "user",
         "api_key",
+        "route",
     ]
     assert [item.key for item in response.metrics] == [
         "input_tokens",
@@ -119,16 +107,6 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
         "total_tokens",
         "api_requests",
     ]
-    assert response.filters.models[0].label == "cluster-a / qwen3.5-9b"
-    assert response.filters.models[0].deleted is False
-    assert response.filters.models[0].identity.current.model_id == 7
-    assert response.filters.models[1].label == "openai-prod / gpt-4o"
-    assert response.filters.models[1].deleted is False
-    assert response.filters.models[1].identity.current.provider_id == 9
-    assert response.filters.models[1].identity.value.provider_name == "openai-prod"
-    assert response.filters.models[1].identity.value.provider_type == "openai"
-    assert response.filters.models[2].label == "cluster-a / qwen3.5-9b (Deleted)"
-    assert response.filters.models[2].identity.current is None
     assert response.filters.users[1].label == "alice (Deleted)"
     assert response.filters.api_keys[0].label == "alice / test"
     assert response.filters.api_keys[0].identity.value.access_key == "abcd1234"
@@ -137,9 +115,17 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
     assert response.filters.api_keys[1].label == "alice / custom"
     assert response.filters.api_keys[1].identity.value.access_key == "hash1234"
     assert response.filters.api_keys[1].identity.value.api_key_is_custom is True
+    assert response.filters.routes[0].label == "qwen-route"
+    assert response.filters.routes[0].deleted is False
+    assert response.filters.routes[0].identity.current.route_id == 21
+    assert response.filters.routes[1].label == "legacy-route (Deleted)"
+    assert response.filters.routes[1].deleted is True
+    assert response.filters.routes[1].identity.current is None
+    assert response.filters.routes[2].label == "Untracked"
+    assert response.filters.routes[2].deleted is False
     assert [item.key for item in response.granularities] == ["day", "week", "month"]
 
-    api_key_statement = str(session.exec.call_args_list[2].args[0])
+    api_key_statement = str(session.exec.call_args_list[1].args[0])
     assert "api_key_name IS NOT NULL" in api_key_statement
     assert "access_key IS NOT NULL" in api_key_statement
 
@@ -152,15 +138,6 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
             _mock_exec_result(
                 [
                     SimpleNamespace(
-                        group_cluster_name="cluster-a",
-                        group_model_name="qwen3.5-9b",
-                        group_model_id=7,
-                    )
-                ]
-            ),
-            _mock_exec_result(
-                [
-                    SimpleNamespace(
                         group_user_name="alice",
                         group_api_key_name="test",
                         group_access_key="abcd1234",
@@ -170,19 +147,25 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
                     )
                 ]
             ),
+            _mock_exec_result([]),
         ]
     )
     user = User(id=2, username="alice", hashed_password="x", is_admin=False)
 
     response = await get_usage_meta(session=session, user=user, ctx=_ctx_for(user))
 
-    assert [item.key for item in response.group_bys] == ["date", "model", "api_key"]
+    assert [item.key for item in response.group_bys] == [
+        "date",
+        "api_key",
+        "route",
+    ]
     assert response.filters.users == []
-    assert response.filters.models[0].label == "cluster-a / qwen3.5-9b"
+    assert response.filters.routes == []
+    assert response.filters.api_keys[0].label == "alice / test"
 
 
 @pytest.mark.asyncio
-async def test_get_usage_breakdown_returns_paginated_model_items():
+async def test_get_usage_breakdown_returns_paginated_route_items():
     session = MagicMock()
     session.exec = AsyncMock(
         side_effect=[
@@ -202,12 +185,8 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
             _mock_exec_result(
                 [
                     SimpleNamespace(
-                        group_cluster_name="cluster-a",
-                        group_model_name="qwen3.5-9b",
-                        group_model_id=7,
-                        group_provider_id=None,
-                        group_provider_name=None,
-                        group_provider_type=None,
+                        group_model_route_name="qwen-route",
+                        group_model_route_id=21,
                         input_tokens=300,
                         output_tokens=120,
                         input_cached_tokens=90,
@@ -218,12 +197,8 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
                         last_active=date(2026, 4, 2),
                     ),
                     SimpleNamespace(
-                        group_cluster_name="cluster-b",
-                        group_model_name="deepseek-v3",
-                        group_model_id=8,
-                        group_provider_id=None,
-                        group_provider_name=None,
-                        group_provider_type=None,
+                        group_model_route_name="deepseek-route",
+                        group_model_route_id=22,
                         input_tokens=100,
                         output_tokens=20,
                         input_cached_tokens=10,
@@ -241,7 +216,7 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        group_by=["model"],
+        group_by=["route"],
         sort_by="-total_tokens",
         page=1,
         perPage=20,
@@ -257,16 +232,16 @@ async def test_get_usage_breakdown_returns_paginated_model_items():
     assert response.summary.total_tokens == 540
     assert response.summary.api_requests == 4
     assert response.summary.models_called == 2
-    assert response.group_by == ["model"]
+    assert response.group_by == ["route"]
     assert response.pagination.page == 1
     assert response.pagination.perPage == 20
     assert response.pagination.total == 2
     assert response.pagination.totalPage == 1
     assert len(response.items) == 2
     item = response.items[0]
-    assert item.model.identity.value.model_name == "qwen3.5-9b"
-    assert item.model.identity.current.model_id == 7
-    assert item.model.label == "cluster-a / qwen3.5-9b"
+    assert item.route.identity.value.route_name == "qwen-route"
+    assert item.route.identity.current.route_id == 21
+    assert item.route.label == "qwen-route"
     assert item.input_cached_tokens == 90
     assert item.avg_tokens_per_request == 140
     assert item.last_active == date(2026, 4, 2)
@@ -302,12 +277,8 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
                         group_access_key="abcd1234",
                         group_api_key_is_custom=False,
                         group_api_key_id=34,
-                        group_cluster_name="cluster-a",
-                        group_model_name="gpt-4o",
-                        group_model_id=7,
-                        group_provider_id=3,
-                        group_provider_name="openai-prod",
-                        group_provider_type="openai",
+                        group_model_route_name="gpt-route",
+                        group_model_route_id=11,
                         input_tokens=300,
                         output_tokens=120,
                         total_tokens=420,
@@ -324,12 +295,8 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
                         group_access_key=None,
                         group_api_key_is_custom=None,
                         group_api_key_id=None,
-                        group_cluster_name="cluster-a",
-                        group_model_name="qwen3.5-9b",
-                        group_model_id=8,
-                        group_provider_id=None,
-                        group_provider_name=None,
-                        group_provider_type=None,
+                        group_model_route_name="qwen-route",
+                        group_model_route_id=12,
                         input_tokens=100,
                         output_tokens=40,
                         total_tokens=140,
@@ -346,7 +313,7 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        group_by=["date", "user", "api_key", "model"],
+        group_by=["date", "user", "api_key", "route"],
         granularity="week",
         sort_by="date",
         page=1,
@@ -357,16 +324,17 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
         session=session, user=user, ctx=_ctx_for(user), request=request
     )
 
-    assert response.group_by == ["date", "user", "api_key", "model"]
+    assert response.group_by == ["date", "user", "api_key", "route"]
     assert response.granularity == "week"
     assert response.pagination.total == 2
     assert response.items[0].date.value == date(2026, 3, 30)
     assert response.items[0].user.label == "alice"
     assert response.items[0].api_key.label == "alice / test"
-    assert response.items[0].model.label == "cluster-a / openai-prod / gpt-4o"
+    assert response.items[0].route.label == "gpt-route"
     assert response.items[1].date.value == date(2026, 3, 30)
     assert response.items[1].api_key.identity is None
     assert response.items[1].api_key.label == "-"
+    assert response.items[1].route.label == "qwen-route"
 
     count_sql = str(session.exec.call_args_list[1].args[0])
     items_sql = str(session.exec.call_args_list[2].args[0])
@@ -527,7 +495,7 @@ async def test_get_usage_breakdown_defaults_regular_user_to_self_scope():
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
-        group_by=["model"],
+        group_by=["api_key"],
     )
 
     await get_usage_breakdown(

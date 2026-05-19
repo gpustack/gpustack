@@ -43,6 +43,9 @@ class ModelUsageDetails(SQLModel, BaseModelMixin, table=True):
     model_name: str = Field(default=...)
     model_route_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
     model_route_name: Optional[str] = Field(default=None)
+    # Tenant scope snapshot. FK-less for the same audit-survival reason
+    # as the other id columns — see class docstring.
+    owner_principal_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
     provider_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
     provider_name: Optional[str] = Field(default=None)
     provider_type: Optional[str] = Field(default=None)
@@ -97,6 +100,9 @@ class ModelUsageDetailsArchive(SQLModel, BaseModelMixin, table=True):
     model_name: str = Field(default=...)
     model_route_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
     model_route_name: Optional[str] = Field(default=None)
+    # Tenant scope snapshot. FK-less for the same audit-survival reason
+    # as the other id columns — see class docstring.
+    owner_principal_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
     provider_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
     provider_name: Optional[str] = Field(default=None)
     provider_type: Optional[str] = Field(default=None)

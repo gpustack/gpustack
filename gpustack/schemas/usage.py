@@ -19,9 +19,9 @@ USAGE_METRIC_LAST_ACTIVE = "last_active"
 USAGE_METRIC_DATE = "date"
 
 USAGE_GROUP_BY_DATE = "date"
-USAGE_GROUP_BY_MODEL = "model"
 USAGE_GROUP_BY_USER = "user"
 USAGE_GROUP_BY_API_KEY = "api_key"
+USAGE_GROUP_BY_ROUTE = "route"
 
 USAGE_GRANULARITY_DAY = "day"
 USAGE_GRANULARITY_WEEK = "week"
@@ -41,9 +41,9 @@ USAGE_SCOPES = {USAGE_SCOPE_SELF, USAGE_SCOPE_ALL}
 
 USAGE_GROUP_BYS = {
     USAGE_GROUP_BY_DATE,
-    USAGE_GROUP_BY_MODEL,
     USAGE_GROUP_BY_USER,
     USAGE_GROUP_BY_API_KEY,
+    USAGE_GROUP_BY_ROUTE,
 }
 USAGE_GRANULARITIES = {
     USAGE_GRANULARITY_DAY,
@@ -70,21 +70,17 @@ class UsageOption(BaseModel):
 
 
 class UsageIdentityValue(BaseModel):
-    cluster_name: Optional[str] = None
-    model_name: Optional[str] = None
-    provider_name: Optional[str] = None
-    provider_type: Optional[str] = None
     user_name: Optional[str] = None
     api_key_name: Optional[str] = None
     access_key: Optional[str] = None
     api_key_is_custom: Optional[bool] = None
+    route_name: Optional[str] = None
 
 
 class UsageIdentityCurrent(BaseModel):
-    model_id: Optional[int] = None
-    provider_id: Optional[int] = None
     user_id: Optional[int] = None
     api_key_id: Optional[int] = None
+    route_id: Optional[int] = None
 
 
 class UsageIdentity(BaseModel):
@@ -102,9 +98,9 @@ class UsageFilterOption(UsageFilterItem):
 
 
 class UsageFilters(BaseModel):
-    models: List[UsageFilterOption] = Field(default_factory=list)
     users: List[UsageFilterOption] = Field(default_factory=list)
     api_keys: List[UsageFilterOption] = Field(default_factory=list)
+    routes: List[UsageFilterOption] = Field(default_factory=list)
 
 
 class UsageMetaResponse(BaseModel):
@@ -115,9 +111,9 @@ class UsageMetaResponse(BaseModel):
 
 
 class UsageFilterRequest(BaseModel):
-    models: List[UsageFilterItem] = Field(default_factory=list)
     users: List[UsageFilterItem] = Field(default_factory=list)
     api_keys: List[UsageFilterItem] = Field(default_factory=list)
+    routes: List[UsageFilterItem] = Field(default_factory=list)
 
 
 class UsageBaseRequest(BaseModel):
@@ -237,9 +233,9 @@ class UsageBreakdownDateDimension(BaseModel):
 
 class UsageBreakdownItem(BaseModel):
     date: Optional[UsageBreakdownDateDimension] = None
-    model: Optional[UsageBreakdownDimension] = None
     user: Optional[UsageBreakdownDimension] = None
     api_key: Optional[UsageBreakdownDimension] = None
+    route: Optional[UsageBreakdownDimension] = None
     input_tokens: int = 0
     output_tokens: int = 0
     input_cached_tokens: int = 0

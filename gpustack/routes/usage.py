@@ -3,7 +3,7 @@ from math import ceil
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
-from sqlalchemy import Date, Select, String, and_, asc, cast, desc, literal
+from sqlalchemy import Date, Select, and_, asc, cast, desc
 from sqlmodel import func, or_, select
 
 from gpustack.api.exceptions import ForbiddenException, InvalidException
@@ -16,7 +16,7 @@ from gpustack.schemas.usage import (
     USAGE_GRANULARITY_WEEK,
     USAGE_GROUP_BY_API_KEY,
     USAGE_GROUP_BY_DATE,
-    USAGE_GROUP_BY_MODEL,
+    USAGE_GROUP_BY_ROUTE,
     USAGE_GROUP_BY_USER,
     USAGE_SCOPE_ALL,
     USAGE_SCOPE_SELF,
@@ -51,7 +51,7 @@ from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
 from gpustack.utils.usage_snapshots import (
     format_usage_api_key_label,
     format_usage_date_label,
-    format_usage_model_label,
+    format_usage_route_label,
     format_usage_user_label,
 )
 
@@ -71,14 +71,14 @@ GRANULARITY_OPTIONS = [
 ]
 SELF_GROUP_BY_OPTIONS = [
     UsageOption(key=USAGE_GROUP_BY_DATE, label="Date"),
-    UsageOption(key=USAGE_GROUP_BY_MODEL, label="Model"),
     UsageOption(key=USAGE_GROUP_BY_API_KEY, label="API Key"),
+    UsageOption(key=USAGE_GROUP_BY_ROUTE, label="Route"),
 ]
 ADMIN_GROUP_BY_OPTIONS = [
     UsageOption(key=USAGE_GROUP_BY_DATE, label="Date"),
-    UsageOption(key=USAGE_GROUP_BY_MODEL, label="Model"),
     UsageOption(key=USAGE_GROUP_BY_USER, label="User"),
     UsageOption(key=USAGE_GROUP_BY_API_KEY, label="API Key"),
+    UsageOption(key=USAGE_GROUP_BY_ROUTE, label="Route"),
 ]
 
 
@@ -88,35 +88,7 @@ def _null_safe_column_filter(column, value: Any):
     return column == value
 
 
-def _model_key_expression():
-    return (
-        func.coalesce(ModelUsage.cluster_name + literal("/"), literal(""))
-        + ModelUsage.model_name
-    )
-
-
-def _model_identity_expression():
-    """Distinct identity for counting models called.
-
-    Include current IDs and snapshot fields so direct deployments, provider
-    models, and deleted historical records with the same model name remain
-    separate identities.
-    """
-    return (
-        func.coalesce(cast(ModelUsage.model_id, String), literal("deleted"))
-        + literal("|")
-        + func.coalesce(cast(ModelUsage.provider_id, String), literal("no-provider"))
-        + literal("|")
-        + func.coalesce(ModelUsage.provider_name, literal(""))
-        + literal("|")
-        + func.coalesce(ModelUsage.provider_type, literal(""))
-        + literal("|")
-        + _model_key_expression()
-    )
-
-
 def _metric_columns() -> Dict[str, Any]:
-    model_identity = _model_identity_expression()
     return {
         USAGE_METRIC_INPUT_TOKENS: func.coalesce(
             func.sum(ModelUsage.prompt_token_count), 0
@@ -132,7 +104,13 @@ def _metric_columns() -> Dict[str, Any]:
             0,
         ),
         USAGE_METRIC_API_REQUESTS: func.coalesce(func.sum(ModelUsage.request_count), 0),
-        USAGE_METRIC_MODELS_CALLED: func.count(func.distinct(model_identity)),
+        # "Models called" counts distinct logical model endpoints — i.e.
+        # distinct routes the caller hit. Untracked usage (NULL
+        # ``model_route_id``) is dropped by COUNT(DISTINCT ...) and shows
+        # up only as its own row in the route breakdown.
+        USAGE_METRIC_MODELS_CALLED: func.count(
+            func.distinct(ModelUsage.model_route_id)
+        ),
     }
 
 
@@ -162,27 +140,16 @@ def _group_columns(group_by: str, *, date_bucket_expr=None):
         if date_bucket_expr is None:
             date_bucket_expr = ModelUsage.date
         return [date_bucket_expr.label("group_date")], [date_bucket_expr]
-    if group_by == USAGE_GROUP_BY_MODEL:
-        return [
-            ModelUsage.cluster_name.label("group_cluster_name"),
-            ModelUsage.model_name.label("group_model_name"),
-            ModelUsage.model_id.label("group_model_id"),
-            ModelUsage.provider_name.label("group_provider_name"),
-            ModelUsage.provider_type.label("group_provider_type"),
-            ModelUsage.provider_id.label("group_provider_id"),
-        ], [
-            ModelUsage.cluster_name,
-            ModelUsage.model_name,
-            ModelUsage.model_id,
-            ModelUsage.provider_name,
-            ModelUsage.provider_type,
-            ModelUsage.provider_id,
-        ]
     if group_by == USAGE_GROUP_BY_USER:
         return [
             ModelUsage.user_name.label("group_user_name"),
             ModelUsage.user_id.label("group_user_id"),
         ], [ModelUsage.user_name, ModelUsage.user_id]
+    if group_by == USAGE_GROUP_BY_ROUTE:
+        return [
+            ModelUsage.model_route_name.label("group_model_route_name"),
+            ModelUsage.model_route_id.label("group_model_route_id"),
+        ], [ModelUsage.model_route_name, ModelUsage.model_route_id]
     return [
         ModelUsage.user_name.label("group_user_name"),
         ModelUsage.api_key_name.label("group_api_key_name"),
@@ -225,29 +192,21 @@ def _combined_group_columns(group_bys: List[str], *, date_bucket_expr=None):
 
 
 def _row_identity(group_by: str, row: Any) -> UsageIdentity:
-    if group_by == USAGE_GROUP_BY_MODEL:
-        model_id = getattr(row, "group_model_id", None)
-        provider_id = getattr(row, "group_provider_id", None)
-        current = None
-        if model_id is not None or provider_id is not None:
-            current = UsageIdentityCurrent(
-                model_id=model_id,
-                provider_id=provider_id,
-            )
-        return UsageIdentity(
-            value=UsageIdentityValue(
-                cluster_name=getattr(row, "group_cluster_name", None),
-                model_name=getattr(row, "group_model_name", None),
-                provider_name=getattr(row, "group_provider_name", None),
-                provider_type=getattr(row, "group_provider_type", None),
-            ),
-            current=current,
-        )
     if group_by == USAGE_GROUP_BY_USER:
         user_id = getattr(row, "group_user_id", None)
         return UsageIdentity(
             value=UsageIdentityValue(user_name=getattr(row, "group_user_name", None)),
             current=None if user_id is None else UsageIdentityCurrent(user_id=user_id),
+        )
+    if group_by == USAGE_GROUP_BY_ROUTE:
+        route_id = getattr(row, "group_model_route_id", None)
+        return UsageIdentity(
+            value=UsageIdentityValue(
+                route_name=getattr(row, "group_model_route_name", None)
+            ),
+            current=(
+                None if route_id is None else UsageIdentityCurrent(route_id=route_id)
+            ),
         )
     api_key_id = getattr(row, "group_api_key_id", None)
     current = None
@@ -293,6 +252,21 @@ def _row_dimension(group_by: str, row: Any) -> UsageBreakdownDimension:
             label="-",
             deleted=False,
         )
+    # NULL route_id collapses to "Untracked" — exclusively pre-upgrade
+    # historical rollup rows once the ingest invariant (every request
+    # carries model_route_id) is enforced. Marked deleted=False so the
+    # bucket isn't tagged "(Deleted)" — its NULL has a structural cause,
+    # not a reference loss.
+    if (
+        group_by == USAGE_GROUP_BY_ROUTE
+        and getattr(row, "group_model_route_id", None) is None
+        and not getattr(row, "group_model_route_name", None)
+    ):
+        return UsageBreakdownDimension(
+            identity=None,
+            label="Untracked",
+            deleted=False,
+        )
     identity = _row_identity(group_by, row)
     return UsageBreakdownDimension(
         identity=identity,
@@ -307,14 +281,10 @@ def _identity_deleted(identity: UsageIdentity) -> bool:
 
 def _identity_label(group_by: str, identity: UsageIdentity) -> str:
     value = identity.value
-    if group_by == USAGE_GROUP_BY_MODEL:
-        label = format_usage_model_label(
-            model_name=value.model_name,
-            cluster_name=value.cluster_name,
-            provider_name=value.provider_name,
-        )
-    elif group_by == USAGE_GROUP_BY_USER:
+    if group_by == USAGE_GROUP_BY_USER:
         label = format_usage_user_label(value.user_name)
+    elif group_by == USAGE_GROUP_BY_ROUTE:
+        label = format_usage_route_label(value.route_name)
     else:
         label = format_usage_api_key_label(
             user_name=value.user_name,
@@ -330,24 +300,7 @@ def _filter_condition(group_by: str, item: UsageFilterItem):
     value = item.identity.value
     current = item.identity.current
     conditions = []
-    if group_by == USAGE_GROUP_BY_MODEL:
-        conditions.extend(
-            [
-                _null_safe_column_filter(ModelUsage.cluster_name, value.cluster_name),
-                _null_safe_column_filter(ModelUsage.model_name, value.model_name),
-                _null_safe_column_filter(ModelUsage.provider_name, value.provider_name),
-                _null_safe_column_filter(ModelUsage.provider_type, value.provider_type),
-            ]
-        )
-        if current is None or current.model_id is None:
-            conditions.append(ModelUsage.model_id.is_(None))
-        else:
-            conditions.append(ModelUsage.model_id == current.model_id)
-        if current is None or current.provider_id is None:
-            conditions.append(ModelUsage.provider_id.is_(None))
-        else:
-            conditions.append(ModelUsage.provider_id == current.provider_id)
-    elif group_by == USAGE_GROUP_BY_USER:
+    if group_by == USAGE_GROUP_BY_USER:
         conditions.append(
             _null_safe_column_filter(ModelUsage.user_name, value.user_name)
         )
@@ -355,6 +308,14 @@ def _filter_condition(group_by: str, item: UsageFilterItem):
             conditions.append(ModelUsage.user_id.is_(None))
         else:
             conditions.append(ModelUsage.user_id == current.user_id)
+    elif group_by == USAGE_GROUP_BY_ROUTE:
+        conditions.append(
+            _null_safe_column_filter(ModelUsage.model_route_name, value.route_name)
+        )
+        if current is None or current.route_id is None:
+            conditions.append(ModelUsage.model_route_id.is_(None))
+        else:
+            conditions.append(ModelUsage.model_route_id == current.route_id)
     else:
         conditions.extend(
             [
@@ -434,9 +395,9 @@ def _apply_usage_scope_and_filters(
         statement = statement.where(ModelUsage.owner_principal_id == org_id)
 
     for group_by, items in [
-        (USAGE_GROUP_BY_MODEL, filters.models),
         (USAGE_GROUP_BY_USER, filters.users),
         (USAGE_GROUP_BY_API_KEY, filters.api_keys),
+        (USAGE_GROUP_BY_ROUTE, filters.routes),
     ]:
         if not items:
             continue
@@ -492,6 +453,19 @@ def _summary_from_row(row: Any) -> UsageSummary:
 
 
 def _option_from_identity(group_by: str, identity: UsageIdentity) -> UsageFilterOption:
+    # Match the breakdown row's "Untracked" treatment so the filter option
+    # list and the row labels stay consistent. NULL route_id + NULL
+    # route_name is structural (pre-upgrade data), not a deletion.
+    if (
+        group_by == USAGE_GROUP_BY_ROUTE
+        and identity.value.route_name is None
+        and identity.current is None
+    ):
+        return UsageFilterOption(
+            identity=identity,
+            label="Untracked",
+            deleted=False,
+        )
     return UsageFilterOption(
         identity=identity,
         label=_identity_label(group_by, identity),
@@ -541,9 +515,6 @@ async def get_usage_meta(
             ModelUsage.owner_principal_id == ctx.current_principal_id
         )
 
-    model_options = await _get_filter_options(
-        session, base_statement=base_statement, group_by=USAGE_GROUP_BY_MODEL
-    )
     user_options: List[UsageFilterOption] = []
     if scope == USAGE_SCOPE_ALL:
         user_options = await _get_filter_options(
@@ -551,6 +522,9 @@ async def get_usage_meta(
         )
     api_key_options = await _get_filter_options(
         session, base_statement=base_statement, group_by=USAGE_GROUP_BY_API_KEY
+    )
+    route_options = await _get_filter_options(
+        session, base_statement=base_statement, group_by=USAGE_GROUP_BY_ROUTE
     )
 
     return UsageMetaResponse(
@@ -562,9 +536,9 @@ async def get_usage_meta(
             else SELF_GROUP_BY_OPTIONS
         ),
         filters=UsageFilters(
-            models=model_options,
             users=user_options,
             api_keys=api_key_options,
+            routes=route_options,
         ),
     )
 
@@ -647,12 +621,12 @@ def _build_breakdown_item(
     )
     if USAGE_GROUP_BY_DATE in group_bys:
         breakdown_item.date = _row_date_dimension(row, granularity)
-    if USAGE_GROUP_BY_MODEL in group_bys:
-        breakdown_item.model = _row_dimension(USAGE_GROUP_BY_MODEL, row)
     if USAGE_GROUP_BY_USER in group_bys:
         breakdown_item.user = _row_dimension(USAGE_GROUP_BY_USER, row)
     if USAGE_GROUP_BY_API_KEY in group_bys:
         breakdown_item.api_key = _row_dimension(USAGE_GROUP_BY_API_KEY, row)
+    if USAGE_GROUP_BY_ROUTE in group_bys:
+        breakdown_item.route = _row_dimension(USAGE_GROUP_BY_ROUTE, row)
 
     if _single_group_by(group_bys, USAGE_GROUP_BY_USER):
         breakdown_item.models_called = int(
@@ -664,6 +638,13 @@ def _build_breakdown_item(
     elif _single_group_by(group_bys, USAGE_GROUP_BY_API_KEY):
         breakdown_item.models_called = int(
             getattr(row, USAGE_METRIC_MODELS_CALLED, 0) or 0
+        )
+    elif _single_group_by(group_bys, USAGE_GROUP_BY_ROUTE):
+        breakdown_item.models_called = int(
+            getattr(row, USAGE_METRIC_MODELS_CALLED, 0) or 0
+        )
+        breakdown_item.api_keys_used = int(
+            getattr(row, USAGE_METRIC_API_KEYS_USED, 0) or 0
         )
     return breakdown_item
 
