@@ -1,7 +1,6 @@
 import logging
 from typing import Any, Dict, get_type_hints, get_args, get_origin
 
-from fastapi import Request
 from transformers.hf_argparser import string_to_bool
 
 from gpustack.config.config import Config
@@ -70,13 +69,6 @@ def filter_whitelisted_yaml_config(config_data: Dict[str, Any]) -> Dict[str, Any
         if config_key in WHITELIST_CONFIG_FIELDS:
             filtered_data[config_key] = value
     return filtered_data
-
-
-def is_local_request(request: Request) -> bool:
-    host = request.client.host
-    if host in ("127.0.0.1", "::1"):
-        return True
-    return False
 
 
 def apply_registry_override_to_image(
