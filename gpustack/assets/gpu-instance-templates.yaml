@@ -196,7 +196,8 @@ items:
         - "lab"
         - "--ServerApp.token=''"
         - "--ServerApp.password=''"
-        - "-notebook-dir=/workspace"
+        - "--notebook-dir=/workspace"
+        - "--allow-root"
       ports:
         - name: "JUPYTER"
           port: 8888
@@ -217,7 +218,8 @@ items:
         - "lab"
         - "--ServerApp.token=''"
         - "--ServerApp.password=''"
-        - "-notebook-dir=/workspace"
+        - "--notebook-dir=/workspace"
+        - "--allow-root"
       ports:
         - name: "JUPYTER"
           port: 8888
