@@ -230,6 +230,7 @@ class Config(WorkerConfig, BaseSettings):
     _set_worker_fields = {}
     _derive_gateway_token = None
     _jwt_secret_key_user_provided = False
+    _data_dir_was_fresh = False
 
     model_config = SettingsConfigDict(
         env_prefix="GPUSTACK_", protected_namespaces=('settings_',), extra="allow"
@@ -250,6 +251,12 @@ class Config(WorkerConfig, BaseSettings):
 
         # common options
         self.data_dir = prepare_dir(self.data_dir, self.get_data_dir())
+        # Snapshot data_dir emptiness before any init step writes into it
+        # (e.g., prepare_jwt_secret_key, make_dirs). _is_both_role() reads
+        # this to decide if this is a fresh v2.0.1+ install.
+        self._data_dir_was_fresh = not os.path.isdir(self.data_dir) or not os.listdir(
+            self.data_dir
+        )
         self.cache_dir = prepare_dir(
             self.cache_dir, os.path.join(self.data_dir, "cache")
         )
@@ -759,9 +766,14 @@ class Config(WorkerConfig, BaseSettings):
         Determine if the server is running in both server and worker mode. If the
         `enable_worker` flag is set to True, the server is running in both modes. If the
         `disable_worker` flag is set to True, the server is running in server-only mode.
-        If neither flag is set, the presence of a `bootstrap_version` file in the data
-        directory is checked. If the file does not exist, it indicates that the server was
-        installed using a version that defaults to running in both modes.
+
+        If neither flag is set, decide by data_dir state:
+        - An empty/missing data_dir indicates a fresh install, which defaults to
+          server-only mode (the v2.0.1+ default).
+        - Otherwise fall back to checking the `bootstrap_version` file: its
+          presence marks a data_dir that was first initialized by v2.0.1+
+          (server-only default); its absence on a non-empty data_dir means a
+          legacy v2.0.0 install that defaults to both modes.
 
         Returns:
             bool: True if running in both server and worker mode, False otherwise.
@@ -773,9 +785,9 @@ class Config(WorkerConfig, BaseSettings):
         elif self.disable_worker:
             return False
 
-        # As of v2.0.1, a `bootstrap_version` file is created in data_dir.
-        # If the file exists, it indicates that the server was installed
-        # using a version that defaults to running server-only mode.
+        if self._data_dir_was_fresh:
+            return False
+
         bootstrap_version_path = os.path.join(self.data_dir, "bootstrap_version")
         if os.path.exists(bootstrap_version_path):
             return False
