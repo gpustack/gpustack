@@ -2,21 +2,28 @@ import logging
 from fastapi import APIRouter, Request
 from typing import Any, Dict
 
-from gpustack.api.exceptions import (
-    InvalidException,
-    ForbiddenException,
-)
+from gpustack.api.exceptions import InvalidException
 from gpustack.config.config import Config, set_global_config
 from gpustack.utils.config import (
     WHITELIST_CONFIG_FIELDS,
     READ_ONLY_CONFIG_FIELDS,
     coerce_value_by_field,
-    is_local_request,
 )
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+
+# Security model for /config:
+#   - Server mount (routes/routes.py) wraps this router with
+#     Depends(get_admin_user) — only admin users may read or mutate.
+#   - Worker mount (worker/worker.py) wraps it with Depends(worker_auth) —
+#     only callers holding the worker / registration token may read or
+#     mutate that worker's runtime config.
+# Authentication is intentionally enforced at the mount sites, not on the
+# handlers, because the two deployments use different auth mechanisms
+# (user DB vs. shared token) and the worker has no access to the user DB.
+# Any new mount of this router MUST declare an appropriate auth dependency.
 
 
 @router.get("/config")
@@ -36,8 +43,6 @@ async def get_config(request: Request):
 
 @router.put("/config")
 async def set_config(request: Request):
-    if not is_local_request(request):
-        raise ForbiddenException(message="Only localhost is allowed")
     app_state = request.app.state
     cfg: Config = getattr(app_state, "server_config", None) or getattr(
         app_state, "config", None

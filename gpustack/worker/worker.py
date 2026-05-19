@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 import aiohttp
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 import setproctitle
 import tenacity
 import uvicorn
@@ -30,6 +30,7 @@ from gpustack import envs
 from gpustack.routes import config as route_config, debug, probes
 from gpustack.routes.worker import logs, proxy, filesystem, cluster_proxy
 from gpustack.routes.token import worker_auth
+from gpustack.api.auth import worker_auth as worker_request_auth
 from gpustack.server import catalog
 from gpustack.utils.network import (
     get_first_non_loopback_ip,
@@ -365,7 +366,11 @@ class Worker:
             self._serve_manager.record_successful_inference
         )
         app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
-        app.include_router(route_config.router, prefix=default_versioned_prefix)
+        app.include_router(
+            route_config.router,
+            prefix=default_versioned_prefix,
+            dependencies=[Depends(worker_request_auth)],
+        )
         app.include_router(debug.router, prefix="/debug")
         app.include_router(probes.router)
         app.include_router(logs.router)
