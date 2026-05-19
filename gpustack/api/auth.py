@@ -120,9 +120,6 @@ async def get_current_user(
             if token is not None:
                 user, api_key = await get_user_from_api_token(session, token)
 
-        if user is None and client_ip_getter(request=request) == "127.0.0.1":
-            if not server_config.force_auth_localhost:
-                user = await User.first_by_field(session, "is_admin", True)
         if user:
             if not user.is_active:
                 raise UnauthorizedException(message="User account is deactivated")

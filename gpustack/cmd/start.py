@@ -241,8 +241,9 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     server_group.add_argument(
         "--force-auth-localhost",
         action=OptionalBoolAction,
-        help="Force authentication for requests originating from localhost (127.0.0.1)."
-        "When set to True, all requests from localhost will require authentication.",
+        help="(DEPRECATED) No-op. Localhost callers are always authenticated; "
+        "this flag is retained for backwards compatibility with existing configurations "
+        "and will be removed in a future release.",
         default=get_gpustack_env_bool("FORCE_AUTH_LOCALHOST"),
     )
     server_group.add_argument(
@@ -867,4 +868,10 @@ def set_third_party_env(cfg: Config):
         logger.warning(
             "enable_hf_transfer is deprecated and ignored: hf_transfer support was "
             "removed in huggingface_hub v1.0. hf_xet is now the default downloader."
+        )
+    if cfg.force_auth_localhost is not None:
+        logger.warning(
+            "force_auth_localhost is deprecated and ignored: localhost callers "
+            "are always authenticated. This flag will be removed in a future "
+            "release."
         )
