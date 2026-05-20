@@ -50,13 +50,13 @@ Navigate to the `charts` directory and install GPUStack:
 
 ```bash
 cd gpustack/charts
-helm install -n gpustack-system gpustack ./gpustack --create-namespace
+helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace
 ```
 
 By default, the `higress-core` sub-chart is enabled and deployed alongside GPUStack. If you already have Higress installed in your cluster, disable the bundled Higress and point GPUStack to your existing instance:
 
 ```bash
-helm install -n gpustack-system gpustack ./gpustack --create-namespace \
+helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace \
   --set higress-core.enabled=false \
   --set gateway.ingressClassname=<your-higress-ingressclass>
 ```

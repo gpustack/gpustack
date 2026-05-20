@@ -250,3 +250,126 @@ jobs:
         run: |
           TAG=$(jq -r '.tags[0]' <<<"${DOCKER_METADATA_OUTPUT_JSON}")
           docker buildx imagetools inspect "${TAG}"
+
+  chart:
+    # Publish the Helm chart to Docker Hub at
+    # docker.io/<INPUT_NAMESPACE>/<chart-name>, i.e. docker.io/gpustack/gpustack-chart.
+    # The chart's internal name in Chart.yaml is `gpustack-chart`, so `helm push`
+    # naturally lands the artifact under that path — Helm couples three
+    # identities (dep name == internal chart name == OCI path last segment),
+    # so we keep them aligned end-to-end.
+    #
+    # Release-tag runs additionally attach the chart tgz to the GitHub release
+    # alongside the wheel, so customers without OCI access can still grab it.
+    # Skipped on PRs (lint-only) so we never push a chart that points at an
+    # image which wasn't merged.
+    if: ${{ github.event_name != 'pull_request' }}
+    needs:
+      - merge
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Compute chart version metadata
+        id: chart_meta
+        run: |
+          #
+          # Version mapping (kept in lockstep with image tags in metadata job):
+          #
+          #   refs/tags/vX.Y.Z       -> chart=X.Y.Z         appVersion=X.Y.Z         image.tag=vX.Y.Z
+          #   refs/heads/main        -> chart=0.0.0-dev.<sha>     appVersion=dev          image.tag=dev-<sha>
+          #   refs/heads/vN.M-dev    -> chart=N.M.0-dev.<sha>     appVersion=vN.M-dev     image.tag=vN.M-dev-<sha>
+          #   workflow_dispatch      -> chart=0.0.0-manual.<sha>  appVersion=dev          image.tag=dev-<sha>
+          #
+          set -euo pipefail
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          REF="${GITHUB_REF}"
+
+          if [[ "${REF}" == refs/tags/v*.*.* ]]; then
+            VERSION="${REF#refs/tags/v}"
+            APP_VERSION="${VERSION}"
+            IMAGE_TAG="v${VERSION}"
+          elif [[ "${REF}" == refs/heads/main ]]; then
+            VERSION="0.0.0-dev.${SHORT_SHA}"
+            APP_VERSION="dev"
+            IMAGE_TAG="dev-${SHORT_SHA}"
+          elif [[ "${REF}" =~ ^refs/heads/v([0-9]+)\.([0-9]+)-dev$ ]]; then
+            MAJ="${BASH_REMATCH[1]}"
+            MIN="${BASH_REMATCH[2]}"
+            VERSION="${MAJ}.${MIN}.0-dev.${SHORT_SHA}"
+            APP_VERSION="v${MAJ}.${MIN}-dev"
+            IMAGE_TAG="v${MAJ}.${MIN}-dev-${SHORT_SHA}"
+          else
+            # workflow_dispatch from an unexpected ref — publish as a dev build
+            # tied to the sha so the artifact is still uniquely addressable.
+            VERSION="0.0.0-manual.${SHORT_SHA}"
+            APP_VERSION="dev"
+            IMAGE_TAG="dev-${SHORT_SHA}"
+          fi
+
+          echo "version=${VERSION}"           >> "$GITHUB_OUTPUT"
+          echo "app_version=${APP_VERSION}"   >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}"       >> "$GITHUB_OUTPUT"
+
+      - name: Patch Chart.yaml & values.yaml
+        env:
+          VERSION:     ${{ steps.chart_meta.outputs.version }}
+          APP_VERSION: ${{ steps.chart_meta.outputs.app_version }}
+          IMAGE_TAG:   ${{ steps.chart_meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          yq -i '.version    = strenv(VERSION)'     charts/gpustack-chart/Chart.yaml
+          yq -i '.appVersion = strenv(APP_VERSION)' charts/gpustack-chart/Chart.yaml
+          yq -i '.image.tag  = strenv(IMAGE_TAG)'   charts/gpustack-chart/values.yaml
+          echo "--- Chart.yaml ---"
+          cat charts/gpustack-chart/Chart.yaml
+          echo "--- values.yaml image stanza ---"
+          yq '.image' charts/gpustack-chart/values.yaml
+
+      - name: Helm lint
+        run: helm lint charts/gpustack-chart
+
+      - name: Helm dependency update
+        run: helm dependency update charts/gpustack-chart
+
+      - name: Helm package
+        run: |
+          mkdir -p dist
+          helm package charts/gpustack-chart -d dist/
+
+      - name: Login DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.INPUT_USERNAME }}
+          password: ${{ env.INPUT_PASSWORD }}
+
+      - name: Push chart to DockerHub
+        env:
+          OCI_REPO: oci://registry-1.docker.io/${{ env.INPUT_NAMESPACE }}
+        run: |
+          set -euo pipefail
+          for f in dist/*.tgz; do
+            echo "Pushing $f -> ${OCI_REPO}"
+            helm push "$f" "${OCI_REPO}"
+          done
+
+      - name: Attach chart to GitHub release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          # Keep alignment with the wheel release step in ci.yml: official
+          # releases land as drafts for review; rc tags publish as prerelease.
+          draft: ${{ !contains(github.ref, 'rc') }}
+          prerelease: ${{ contains(github.ref, 'rc') }}
+          fail_on_unmatched_files: true
+          files: dist/*.tgz
