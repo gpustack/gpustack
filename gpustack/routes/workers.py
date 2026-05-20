@@ -57,7 +57,7 @@ from gpustack.schemas.config import (
     PredefinedConfigNoDefaults,
 )
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
-from gpustack.server.services import WorkerService, create_user_with_principal
+from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
 
@@ -505,8 +505,8 @@ async def _persist_worker_registration(
         worker = await retry_create_worker(session, new_worker, all_workers)
     created_principal = None
     if to_create_principal is not None:
-        created_principal = await create_user_with_principal(
-            session, to_create_principal
+        created_principal = await Principal.create(
+            session, to_create_principal, auto_commit=False
         )
         # Inverse FK direction: the worker row records which SYSTEM
         # principal it claims, not the other way around.

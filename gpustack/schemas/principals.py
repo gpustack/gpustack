@@ -1,13 +1,24 @@
 """Principal — the unified identity model.
 
-Every namespaced actor in the system (a User, an Organization, a User
-Group) is a row in the ``principals`` table. There is no separate
-``users`` extension table any more: User-specific columns (credentials,
-admin / system flags, cluster / worker FKs, …) live directly on
-``principals`` and are simply NULL / default-valued on ORG and GROUP
-rows.
+Every namespaced actor in the system — a User, an Organization, a
+User Group, or a SYSTEM service account (cluster / worker bootstrap)
+— is a row in the ``principals`` table. The discriminator is
+:attr:`Principal.kind`. There is no separate ``users`` extension
+table; the row is the principal.
 
-All three kinds are peer-level. A Group's relationship to an Org (if
+Kind-specific data lives off the identity row:
+
+- **Login credentials** (hashed password + force-change flag) →
+  :class:`gpustack.schemas.user_passwords.UserPassword`,
+  keyed by ``owner_principal_id``.
+- **System actor → infra link**: which Cluster / Worker a SYSTEM
+  principal serves is recorded on the infra row
+  (``clusters.system_principal_id`` / ``workers.system_principal_id``,
+  back-populated to :attr:`Principal.cluster` /
+  :attr:`Principal.worker`). The legacy ``role`` / ``is_system`` flags
+  were dropped.
+
+All four kinds are peer-level. A Group's relationship to an Org (if
 any) is expressed as a row in ``principal_memberships`` with
 ``parent=Org, member=Group`` — the same mechanism used for a User
 joining an Org. Every active member of the Group inherits the
@@ -133,11 +144,13 @@ class OrgRole(str, Enum):
 
 
 class PrincipalBase(SQLModel):
-    """Columns common to every Principal kind, plus USER-only columns
-    that are NULL / default-valued on ORG and GROUP rows.
+    """Columns common to every Principal kind.
 
-    Reads as "everything that used to live on ``users`` or
-    ``principals`` before consolidation", on one schema.
+    The only USER-context column left is ``is_admin`` (platform admin
+    flag — meaningless on ORG / GROUP / SYSTEM and just stays False
+    there). Everything else is shared identity surface: kind, slug,
+    name, description, source, parent_principal_id, is_active,
+    avatar_url.
     """
 
     # Discriminator. Defaults to USER so legacy ``User(...)`` calls
@@ -196,18 +209,10 @@ class PrincipalBase(SQLModel):
         ),
     )
 
-    # ---- USER-only columns (NULL / default-valued on ORG / GROUP) ----
-    # Login (``username``) and display name (``full_name``) collapsed
-    # into ``slug`` and ``name`` above — same columns are used for all
-    # principal kinds. The ``is_system`` flag and per-system-actor
-    # affinity columns (``role`` / ``cluster_id`` / ``worker_id``)
-    # were removed when the SYSTEM kind was introduced and the FK
-    # direction was inverted: ``clusters.system_principal_id`` /
-    # ``workers.system_principal_id`` now record which principal an
-    # infra row's service account is. The :attr:`Principal.cluster`
-    # / :attr:`Principal.worker` relationships below are SQLModel
-    # back-populations of those inverse FKs.
-
+    # ``is_admin`` is the platform-wide superuser flag — meaningful
+    # only on USER rows. ORG-membership ``OrgRole.OWNER`` is the
+    # per-Org admin tier; always disambiguate ``is_platform_admin``
+    # from ``org_role == OrgRole.OWNER`` in code.
     is_admin: bool = Field(default=False, nullable=False)
     is_active: bool = Field(default=True, nullable=False)
     avatar_url: Optional[str] = Field(

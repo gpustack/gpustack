@@ -26,10 +26,7 @@ from gpustack.api.auth import (
 )
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.server.passwords import change_password
-from gpustack.server.services import (
-    create_user_with_principal,
-    sync_user_group_memberships,
-)
+from gpustack.server.services import sync_user_group_memberships
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
 from lxml import etree
@@ -271,8 +268,7 @@ async def saml_callback(request: Request, session: SessionDep):
                 is_active=not config.external_auth_default_inactive,
                 source=AuthProviderEnum.SAML,
             )
-            user = await create_user_with_principal(session, user_info)
-            await session.commit()
+            user = await User.create(session, user_info)
 
         await _sync_saml_groups_if_enabled(session, user, attributes, config)
 
@@ -527,8 +523,7 @@ async def oidc_callback(request: Request, session: SessionDep):
             is_active=not config.external_auth_default_inactive,
             source=AuthProviderEnum.OIDC,
         )
-        user = await create_user_with_principal(session, user_info)
-        await session.commit()
+        user = await User.create(session, user_info)
 
     await _sync_oidc_groups_if_enabled(session, user, user_data, config)
 

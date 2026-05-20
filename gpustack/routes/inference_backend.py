@@ -358,7 +358,7 @@ async def list_backend_configs(  # noqa: C901
         #   Platform rows (NULL) + their own Org's rows. The merge below
         #   collapses these into one entry per backend_name with Org keys
         #   winning on collisions.
-        # - Bypass mode (admin "All", system users): there's no single Org
+        # - Bypass mode (admin "All", system principals): there's no single Org
         #   to merge with, so we fall back to Platform-only. Merging across
         #   multiple Org rows for the same backend_name would be
         #   ill-defined (last-Org-wins), and the response model
@@ -510,7 +510,7 @@ def _hybrid_backend_conditions(ctx) -> List:
     Org rows are visible to:
     - their own Org's members (current_principal_id matches)
     - platform admin in "All" mode (no current_principal_id) — full bypass
-    - system users (worker / cluster service accounts) — full bypass,
+    - system principals (worker / cluster service accounts) — full bypass,
       since they need every Org's overrides to actually run a deploy
       whose backend version was customised at the Org level
     Platform admin in act-as mode (current_principal_id is set) follows the

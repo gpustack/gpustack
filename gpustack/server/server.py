@@ -34,10 +34,7 @@ from gpustack.security import (
 from gpustack.routes.auth import remove_initial_password_file_if_exists
 from gpustack.server.app import create_app
 from gpustack.server.passwords import set_password
-from gpustack.server.services import (
-    create_user_with_principal,
-    provision_bootstrap_admin_orgs,
-)
+from gpustack.server.services import provision_bootstrap_admin_orgs
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.config import registration
@@ -532,7 +529,7 @@ class Server:
             name="Default System Admin",
             is_admin=True,
         )
-        user = await create_user_with_principal(session, user)
+        user = await User.create(session, user, auto_commit=False)
         await set_password(
             session,
             user.id,
@@ -624,8 +621,8 @@ class Server:
                         slug=f'{system_name_prefix}-{worker.id}',
                         kind=PrincipalType.SYSTEM,
                     )
-                    worker_principal = await create_user_with_principal(
-                        session, to_create_principal
+                    worker_principal = await Principal.create(
+                        session, to_create_principal, auto_commit=False
                     )
                     worker.system_principal_id = worker_principal.id
                     await worker.save(session=session, auto_commit=False)
@@ -819,8 +816,8 @@ class Server:
             slug=default_cluster_principal_slug,
             kind=PrincipalType.SYSTEM,
         )
-        default_cluster_principal = await create_user_with_principal(
-            session, default_cluster_principal
+        default_cluster_principal = await Principal.create(
+            session, default_cluster_principal, auto_commit=False
         )
         default_cluster.system_principal_id = default_cluster_principal.id
         await default_cluster.save(session=session, auto_commit=False)
