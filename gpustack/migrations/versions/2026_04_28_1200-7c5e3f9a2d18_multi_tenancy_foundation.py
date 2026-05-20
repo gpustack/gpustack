@@ -50,6 +50,9 @@ Logical groups, run in order:
     after rename).
 13. Extend ``accesspolicyenum`` with ``ALLOWED_PRINCIPALS`` and ``ORG``.
 14. Drop the legacy ``usermodelroutelink`` table.
+15. Extract login credentials into ``user_passwords`` and drop
+    ``hashed_password`` / ``require_password_change`` from
+    ``principals``.
 
 Revision ID: 7c5e3f9a2d18
 Revises: 8bf38a6bb3b5
@@ -91,7 +94,19 @@ def _enums_to_create(bind):
     return [
         sa.Enum('OWNER', 'MEMBER', name='orgrole'),
         sa.Enum('ORG', 'GROUP', 'USER', name='principaltype'),
+        sa.Enum('ARGON2', name='passwordalgorithm'),
     ]
+
+
+def _password_algorithm_ref(bind):
+    """Column-reference variant of ``passwordalgorithm``. See
+    :func:`_org_role_ref` for the create_type=False rationale.
+    """
+    if bind.dialect.name == 'postgresql':
+        from sqlalchemy.dialects.postgresql import ENUM as PGEnum
+
+        return PGEnum('ARGON2', name='passwordalgorithm', create_type=False)
+    return sa.Enum('ARGON2', name='passwordalgorithm')
 
 
 def _org_role_ref(bind):
@@ -768,6 +783,76 @@ def upgrade() -> None:
     # writing to it instead of the unified table.
     if user_link_table:
         op.drop_table(user_link_table)
+
+    # ------------------------------------------------------------------
+    # 16. Extract login credentials into ``user_passwords``.
+    # ------------------------------------------------------------------
+    # Pulls ``hashed_password`` and ``require_password_change`` off the
+    # identity row into a dedicated table. Leaves Principal as pure
+    # identity and lets the hash algorithm evolve without a schema
+    # break — each row records its own ``algorithm``, the verifier
+    # picks the right comparator at login time.
+    #
+    # Backfill: one row per USER principal that has a non-empty
+    # password hash. System users and SSO-only users have empty / NULL
+    # hashes — they don't get a row (no login).
+    password_algorithm = _password_algorithm_ref(bind)
+    if not table_exists('user_passwords'):
+        op.create_table(
+            'user_passwords',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('owner_principal_id', sa.Integer(), nullable=False),
+            sa.Column(
+                'algorithm',
+                password_algorithm,
+                nullable=False,
+                server_default='ARGON2',
+            ),
+            sa.Column('hashed_secret', sa.String(length=255), nullable=False),
+            sa.Column(
+                'require_password_change',
+                sa.Boolean(),
+                nullable=False,
+                server_default=(bool_false),
+            ),
+            sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
+            sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
+            sa.Column('deleted_at', sa.TIMESTAMP(), nullable=True),
+            sa.ForeignKeyConstraint(
+                ['owner_principal_id'], ['principals.id'], ondelete='CASCADE',
+            ),
+            sa.PrimaryKeyConstraint('id'),
+        )
+        with op.batch_alter_table('user_passwords', schema=None) as batch_op:
+            batch_op.create_index(
+                'ix_user_passwords_owner_principal_id',
+                ['owner_principal_id'],
+                unique=False,
+            )
+
+    op.execute(
+        sa.text(
+            """
+            INSERT INTO user_passwords
+                (owner_principal_id, algorithm, hashed_secret,
+                 require_password_change,
+                 created_at, updated_at)
+            SELECT id, 'ARGON2', hashed_password,
+                   require_password_change,
+                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+              FROM principals
+             WHERE kind = 'USER'
+               AND hashed_password IS NOT NULL
+               AND hashed_password <> ''
+            """
+        )
+    )
+
+    with op.batch_alter_table('principals', schema=None) as batch_op:
+        if column_exists('principals', 'hashed_password'):
+            batch_op.drop_column('hashed_password')
+        if column_exists('principals', 'require_password_change'):
+            batch_op.drop_column('require_password_change')
 
 
 def downgrade() -> None:

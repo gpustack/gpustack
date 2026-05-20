@@ -575,7 +575,6 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                     slug=f'{system_name_prefix}-{hashed_suffix}',
                     is_system=True,
                     role=UserRole.Worker,
-                    hashed_password="",
                     cluster=cluster,
                 )
                 if existing_user is None

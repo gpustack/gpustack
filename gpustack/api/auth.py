@@ -33,6 +33,7 @@ from gpustack.security import (
     verify_hashed_secret,
     get_key_pair,
 )
+from gpustack.server.passwords import verify_password
 from gpustack.server.services import APIKeyService, UserService, WorkerService
 from gpustack.websocket_proxy.authenticator import (
     Authenticator as WebsocketAuthenticator,
@@ -288,7 +289,7 @@ async def authenticate_user(
     if not user:
         raise UnauthorizedException(message="Incorrect username or password")
 
-    if not verify_hashed_secret(user.hashed_password, password):
+    if not await verify_password(session, user.id, password):
         raise UnauthorizedException(message="Incorrect username or password")
 
     if not user.is_active:

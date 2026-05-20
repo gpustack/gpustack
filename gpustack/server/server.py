@@ -34,6 +34,7 @@ from gpustack.security import (
 )
 from gpustack.routes.auth import remove_initial_password_file_if_exists
 from gpustack.server.app import create_app
+from gpustack.server.passwords import set_password
 from gpustack.server.services import (
     create_user_with_principal,
     provision_bootstrap_admin_orgs,
@@ -526,11 +527,16 @@ class Server:
         user = User(
             slug="admin",
             name="Default System Admin",
-            hashed_password=get_secret_hash(bootstrap_password),
             is_admin=True,
-            require_password_change=require_password_change,
         )
         user = await create_user_with_principal(session, user)
+        await set_password(
+            session,
+            user.id,
+            bootstrap_password,
+            require_password_change=require_password_change,
+            auto_commit=False,
+        )
         await provision_bootstrap_admin_orgs(session, user)
         await session.commit()
 
@@ -623,7 +629,6 @@ class Server:
                         slug=f'{system_name_prefix}-{worker.id}',
                         is_system=True,
                         role=UserRole.Worker,
-                        hashed_password="",
                         cluster=default_cluster,
                         cluster_id=default_cluster.id,
                         worker=worker,
@@ -822,9 +827,7 @@ class Server:
             slug=default_cluster_user_name,
             is_system=True,
             is_admin=False,
-            require_password_change=False,
             role=UserRole.Cluster,
-            hashed_password="",
             cluster=default_cluster,
         )
         await create_user_with_principal(session, default_cluster_user)
