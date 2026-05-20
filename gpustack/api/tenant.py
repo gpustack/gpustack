@@ -345,7 +345,7 @@ def bypass_tenant_filter(ctx: TenantContext) -> bool:
     Two categories bypass:
     - Platform admin with no principal context (cross-principal platform
       view).
-    - System users (worker / cluster service accounts that the server
+    - System principals (worker / cluster service accounts that the server
       itself spawns). They authenticate as ``kind=SYSTEM`` and need to
       read every tenant's resources to do their job — e.g. a worker
       fetching the Model row for an instance assigned to it.
@@ -364,8 +364,9 @@ def tenant_list_conditions(
     """Build SQLAlchemy WHERE clauses to scope a list query to the caller.
 
     Visibility model:
-    - System users (workers / cluster service accounts) and platform
-      admin without org context see everything — returns no conditions.
+    - System principals (workers / cluster service accounts) and
+      platform admin without org context see everything — returns no
+      conditions.
     - Everyone else with a principal context filters by
       ``model.owner_principal_id == ctx.current_principal_id``.
       Membership in the org is already enforced by
@@ -398,8 +399,8 @@ def cluster_visibility_conditions(
       ``ctx.accessible_cluster_ids``): global clusters the admin
       authorised, or another principal's cluster sublet to us.
 
-    Either path makes the cluster visible. System users and platform
-    admins (no-context) bypass entirely.
+    Either path makes the cluster visible. System principals and
+    platform admins (no-context) bypass entirely.
     """
     from sqlalchemy import or_
 
@@ -517,10 +518,10 @@ def assert_org_owned_writable(
     backends — anything with a nullable ``owner_principal_id`` and these
     write rules:
 
-    - Platform admin / system user → allowed (bypass via
-      ``bypass_tenant_filter`` for "All" mode admin and system users;
-      admin in act-as falls through to row-owner check, where they're
-      treated like an Org owner).
+    - Platform admin / system principal → allowed (bypass via
+      ``bypass_tenant_filter`` for "All" mode admin and system
+      principals; admin in act-as falls through to row-owner check,
+      where they're treated like an Org owner).
     - **Owned by current principal**: an Org owner can write; platform
       admin in act-as bypasses the role check (admin is admin
       everywhere, even when scoped to one Org).

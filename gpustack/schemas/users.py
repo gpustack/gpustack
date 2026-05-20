@@ -4,14 +4,18 @@ Before identity consolidation ``User`` was its own table; today
 ``User = Principal`` (the table-mapped class lives in
 :mod:`gpustack.schemas.principals`). Code keeps using ``User`` for
 clarity at call sites that are conceptually user-shaped (login,
-api-key ownership, …), while every USER row physically lives in
-``principals`` alongside ORG and GROUP rows.
+admin user CRUD, api-key ownership, …), while every USER row
+physically lives in ``principals`` alongside ORG / GROUP / SYSTEM
+rows. SYSTEM-context call sites should construct / query
+``Principal`` directly to avoid mis-suggesting a human account.
 
 Pydantic DTOs (``UserCreate``, ``UserUpdate``, ``UserPublic``, …) stay
-here — they're API-surface shapes, not table mappings. They omit the
-ORG / GROUP-only columns (``slug``, ``description``, ``kind``,
-``parent_principal_id``) because those aren't part of the user-facing
-contract.
+here — they're API-surface shapes, not table mappings. They expose
+``username`` and ``full_name`` JSON keys for backward compat, aliased
+to the underlying ``slug`` / ``name`` columns via Pydantic
+``validation_alias`` + ``serialization_alias``. ORG / GROUP-only
+columns (``description``, ``kind``, ``parent_principal_id``) aren't
+on the user wire surface.
 
 Re-exports ``AuthProviderEnum`` so existing
 ``from gpustack.schemas.users import AuthProviderEnum`` callers keep

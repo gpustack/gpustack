@@ -95,9 +95,6 @@ class UserService:
         self.session.expunge(result)
         return result
 
-    async def create(self, user: User):
-        return await create_user_with_principal(self.session, user)
-
     async def update(self, user: User, source: Union[dict, SQLModel, None] = None):
         result = await user.update(self.session, source)
         await delete_cache_by_key(self.get_by_id, user.id)
@@ -195,26 +192,6 @@ class UserService:
             )
             names.add(r.name)
         return names
-
-
-async def create_user_with_principal(session: AsyncSession, user: User) -> User:
-    """Persist a User row (which is just a Principal of kind USER).
-
-    Ensures ``kind`` defaults to USER and that ``name`` has a value —
-    falling back to ``slug`` (the login) when no display name is
-    supplied, so per-principal display labels (cluster-access grants,
-    model-route ACLs, the org members list) show a meaningful string
-    instead of ``#{id}``.
-
-    Caller commits.
-    """
-    if user.kind is None:
-        user.kind = PrincipalType.USER
-    if user.name is None:
-        user.name = user.slug
-    session.add(user)
-    await session.flush([user])
-    return user
 
 
 async def provision_bootstrap_admin_orgs(session: AsyncSession, user: User) -> None:

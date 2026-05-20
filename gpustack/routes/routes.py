@@ -305,8 +305,9 @@ for admin_router in admin_routers:
 # v1_base_router and worker_client_router register overlapping endpoints
 # (e.g. /v2/models, /v2/workers) — putting v1_base_router first means
 # regular user requests resolve through ``get_current_user`` (which also
-# accepts worker / cluster system users), and only routes that are unique
-# to the worker / cluster client paths fall through to those routers.
+# accepts worker / cluster system principals), and only routes that
+# are unique to the worker / cluster client paths fall through to
+# those routers.
 management_router.include_router(
     v1_base_router, dependencies=[Depends(get_current_user)], prefix=versioned_prefix
 )

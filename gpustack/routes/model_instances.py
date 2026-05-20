@@ -100,7 +100,7 @@ async def get_model_instances(
     if state:
         fields["state"] = state
 
-    # System users (workers, cluster service accounts) and admin in
+    # System principals (workers, cluster service accounts) and admin in
     # "All" mode must see every Org's instances regardless of their
     # ``principal_id`` — otherwise a worker's awatch stream
     # would silently filter out instances scheduled to it on clusters

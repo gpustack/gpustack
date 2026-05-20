@@ -34,7 +34,7 @@ from gpustack.schemas.users import (
     UserSelfUpdate,
 )
 from gpustack.server.passwords import set_password
-from gpustack.server.services import UserService, create_user_with_principal
+from gpustack.server.services import UserService
 
 router = APIRouter()
 
@@ -134,7 +134,7 @@ async def create_user(session: SessionDep, user_in: UserCreate):
         # Admin additionally joins the platform Org as OWNER; regular
         # users do NOT auto-join — admin can add them later if shared
         # workspace access is needed.
-        user = await create_user_with_principal(session, to_create)
+        user = await User.create(session, to_create, auto_commit=False)
         if user_in.password:
             await set_password(
                 session,
