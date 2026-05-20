@@ -3,7 +3,7 @@ import os
 from typing import List, Optional, Union
 from tqdm.contrib.concurrent import thread_map
 
-from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download
 from modelscope.hub.api import HubApi
 from modelscope.hub.snapshot_download import (
     snapshot_download as modelscope_snapshot_download,
@@ -134,10 +134,16 @@ class HfDownloader:
                     extra_filename=extra_filename,
                 )
 
-            snapshot_download(
+            # huggingface_hub>=1.0 snapshot_download aggregates per-file progress
+            # through a non-tqdm wrapper. Reuse download_file with "*" so each
+            # file still gets its own tqdm.
+            cls.download_file(
                 repo_id=repo_id,
+                filename="*",
+                extra_filename=None,
                 token=token,
                 local_dir=local_dir,
+                max_workers=max_workers,
             )
             return [local_dir]
 

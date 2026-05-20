@@ -617,24 +617,25 @@ class ModelFileDownloadTask:
         kwargs["disable"] = False  # enable the progress bar anyway
         original_init(tqdm_instance, *args, **kwargs)
 
-        # Assign unique ID and line number for this tqdm instance
-        tqdm_id = self._tqdm_counter
-        self._tqdm_counter += 1
+        # Only track byte-unit tqdm bars; skip counters like "Fetching N files".
+        if getattr(tqdm_instance, 'unit', None) != 'B':
+            return
+
+        # Assign unique ID, line number, and progress tracking under a lock so
+        # concurrent thread_map workers don't collide on _tqdm_counter.
+        with self._speed_lock:
+            tqdm_id = self._tqdm_counter
+            self._tqdm_counter += 1
+            line_number = tqdm_id
+            self._file_line_mapping[tqdm_id] = line_number
+            self._file_progress_tracking[tqdm_id] = {
+                'last_update_time': 0,
+                'last_progress': 0.0,
+            }
+            if hasattr(self, '_model_file_size'):
+                # Resume: tqdm initial n is the already-downloaded byte count.
+                self._model_downloaded_size += tqdm_instance.n
         tqdm_instance._gpustack_id = tqdm_id
-
-        # Assign a fixed line number for this file (same as tqdm_id)
-        line_number = tqdm_id
-        self._file_line_mapping[tqdm_id] = line_number
-
-        # Initialize progress tracking for this file
-        self._file_progress_tracking[tqdm_id] = {
-            'last_update_time': 0,
-            'last_progress': 0.0,
-        }
-
-        if hasattr(self, '_model_file_size'):
-            # Resume downloading
-            self._model_downloaded_size += tqdm_instance.n
 
         # Write initial progress line for this file using ANSI cursor positioning
         file_desc = getattr(tqdm_instance, 'desc', None) or f"File {tqdm_id}"
@@ -646,7 +647,9 @@ class ModelFileDownloadTask:
     def _handle_tqdm_update(self, tqdm_instance, original_update, n=1):
         # Get the tqdm ID and line number for this instance
         tqdm_id = getattr(tqdm_instance, '_gpustack_id', None)
-        if not tqdm_id or tqdm_id not in self._file_line_mapping:
+        if tqdm_id is None or tqdm_id not in self._file_line_mapping:
+            return
+        if getattr(tqdm_instance, 'unit', None) != 'B':
             return
         if self._resume_threshold and n > self._resume_threshold:
             # https://github.com/modelscope/modelscope/blob/609442d271bd7ed106a0933b1937289be7c1ad01/modelscope/hub/file_download.py#L417-L422
