@@ -80,7 +80,7 @@ class UserService:
         # callers don't need to know about the rename.
         #
         # ``cluster`` / ``worker`` are eager-loaded here because the
-        # auth deps (``get_cluster_user`` / ``get_worker_user``) use
+        # auth deps (``get_cluster_principal`` / ``get_worker_principal``) use
         # them to discriminate which infra row a SYSTEM principal
         # represents — without the load, the inverse-FK relationship
         # would be NoLoad and the discriminator would always see None.

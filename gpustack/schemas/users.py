@@ -47,9 +47,11 @@ from gpustack.schemas.principals import (  # noqa: F401  re-exports
 User = Principal
 
 
-# System-actor naming conventions.
+# System-actor naming conventions. The slug shape stays
+# ``system/cluster-1`` for the default cluster's SYSTEM principal —
+# changing the on-disk value would orphan existing rows.
 system_name_prefix = "system/cluster"
-default_cluster_user_name = f"{system_name_prefix}-1"
+default_cluster_principal_slug = f"{system_name_prefix}-1"
 
 
 # --------------------------------------------------------------------
@@ -180,14 +182,14 @@ class UserPublic(UserBase):
 UsersPublic = PaginatedList[UserPublic]
 
 
-def is_default_cluster_user(cluster_user: Principal) -> bool:
+def is_default_cluster_principal(principal: Principal) -> bool:
     return (
-        cluster_user.kind == PrincipalType.SYSTEM
-        and cluster_user.slug == default_cluster_user_name
+        principal.kind == PrincipalType.SYSTEM
+        and principal.slug == default_cluster_principal_slug
     )
 
 
-async def get_default_cluster_user(session: AsyncSession) -> Optional[Principal]:
+async def get_default_cluster_principal(session: AsyncSession) -> Optional[Principal]:
     # ``Principal.cluster`` is ``lazy='noload'`` (so generic reads don't
     # silently fan out per row). Bootstrap callers
     # (``Server._migrate_legacy_token`` / ``_ensure_registration_token``)
@@ -195,6 +197,6 @@ async def get_default_cluster_user(session: AsyncSession) -> Optional[Principal]
     return await Principal.one_by_field(
         session=session,
         field="slug",
-        value=default_cluster_user_name,
+        value=default_cluster_principal_slug,
         options=[selectinload(Principal.cluster)],
     )

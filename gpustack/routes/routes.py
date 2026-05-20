@@ -49,8 +49,8 @@ from gpustack.api.exceptions import error_responses, openai_api_error_responses
 from gpustack.api.auth import (
     get_admin_user,
     get_current_user,
-    get_cluster_user,
-    get_worker_user,
+    get_cluster_principal,
+    get_worker_principal,
     management_scope,
     inference_scope,
 )
@@ -312,12 +312,12 @@ management_router.include_router(
 )
 management_router.include_router(
     worker_client_router,
-    dependencies=[Depends(get_worker_user)],
+    dependencies=[Depends(get_worker_principal)],
     prefix=versioned_prefix,
 )
 management_router.include_router(
     cluster_client_router,
-    dependencies=[Depends(get_cluster_user)],
+    dependencies=[Depends(get_cluster_principal)],
     prefix=versioned_prefix,
 )
 management_router.include_router(

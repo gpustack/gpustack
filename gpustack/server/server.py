@@ -16,8 +16,8 @@ from gpustack.gpu_instances import sync_builtin_templates_to_db
 from gpustack.logging import setup_logging
 from gpustack.schemas.users import (
     User,
-    get_default_cluster_user,
-    default_cluster_user_name,
+    get_default_cluster_principal,
+    default_cluster_principal_slug,
 )
 from gpustack.schemas.principals import Principal, PrincipalType, platform_principal_id
 from gpustack.schemas.models import Model, ModelInstance
@@ -547,14 +547,14 @@ class Server:
         if not self._config.token:
             return
         # this should be created from sql migration script.
-        cluster_user = await get_default_cluster_user(session)
-        if cluster_user is None or cluster_user.cluster is None:
+        cluster_principal = await get_default_cluster_principal(session)
+        if cluster_principal is None or cluster_principal.cluster is None:
             logger.debug(
                 "Default cluster user not exist, skipping legacy token migration."
             )
             return
 
-        default_cluster = cluster_user.cluster
+        default_cluster = cluster_principal.cluster
         if not default_cluster:
             logger.debug(
                 "Default cluster does not exist, skipping legacy token migration."
@@ -568,12 +568,12 @@ class Server:
 
             if default_cluster.system_principal_id is None:
                 raise RuntimeError("Default cluster has no system principal.")
-            default_cluster_user = await Principal.one_by_id(
+            default_cluster_principal = await Principal.one_by_id(
                 session=session, id=default_cluster.system_principal_id
             )
-            if default_cluster_user is None:
+            if default_cluster_principal is None:
                 raise RuntimeError("Default cluster user does not exist.")
-            if len(default_cluster_user.api_keys) > 0:
+            if len(default_cluster_principal.api_keys) > 0:
                 raise RuntimeError(
                     "Default cluster user already has API keys, cannot migrate legacy token."
                 )
@@ -582,8 +582,8 @@ class Server:
                 name="Legacy Cluster Token",
                 access_key="",
                 hashed_secret_key=get_secret_hash(self._config.token),
-                user_id=default_cluster_user.id,
-                user=default_cluster_user,
+                user_id=default_cluster_principal.id,
+                user=default_cluster_principal,
             )
             await ApiKey.create(session, new_key, auto_commit=False)
             await session.commit()
@@ -614,29 +614,29 @@ class Server:
         # legacy workers it'll be NULL until we provision one below.
         for worker in workers:
             try:
-                worker_user = None
+                worker_principal = None
                 if worker.system_principal_id is not None:
-                    worker_user = await Principal.one_by_id(
+                    worker_principal = await Principal.one_by_id(
                         session=session, id=worker.system_principal_id
                     )
-                if not worker_user:
-                    to_create_user = Principal(
+                if not worker_principal:
+                    to_create_principal = Principal(
                         slug=f'{system_name_prefix}-{worker.id}',
                         kind=PrincipalType.SYSTEM,
                     )
-                    worker_user = await create_user_with_principal(
-                        session, to_create_user
+                    worker_principal = await create_user_with_principal(
+                        session, to_create_principal
                     )
-                    worker.system_principal_id = worker_user.id
+                    worker.system_principal_id = worker_principal.id
                     await worker.save(session=session, auto_commit=False)
                     access_key = secrets.token_hex(8)
                     secret_key = secrets.token_hex(16)
                     to_create_apikey = ApiKey(
-                        name=worker_user.slug,
+                        name=worker_principal.slug,
                         access_key=access_key,
                         hashed_secret_key=get_secret_hash(secret_key),
-                        user=worker_user,
-                        user_id=worker_user.id,
+                        user=worker_principal,
+                        user_id=worker_principal.id,
                     )
                     await ApiKey.create(session, to_create_apikey, auto_commit=False)
                     await worker.update(
@@ -653,20 +653,20 @@ class Server:
                 raise e
 
     async def _ensure_registration_token(self, session: AsyncSession):
-        cluster_user = await get_default_cluster_user(session)
-        if cluster_user is None or cluster_user.cluster is None:
+        cluster_principal = await get_default_cluster_principal(session)
+        if cluster_principal is None or cluster_principal.cluster is None:
             logger.debug(
                 "Default cluster user not exist, skipping registration token generation."
             )
             return
         # Hold a local reference: ``ApiKey.create`` triggers
         # ``ActiveRecordMixin._refresh_related_objects`` which calls
-        # ``session.refresh(cluster_user)``, expiring its eagerly-loaded
+        # ``session.refresh(cluster_principal)``, expiring its eagerly-loaded
         # ``cluster`` attribute. With ``User.cluster`` set to
-        # ``lazy="noload"``, accessing ``cluster_user.cluster``
+        # ``lazy="noload"``, accessing ``cluster_principal.cluster``
         # afterwards returns ``None`` and the subsequent update would
         # blow up.
-        cluster = cluster_user.cluster
+        cluster = cluster_principal.cluster
         token = cluster.registration_token
         if not token:
             try:
@@ -676,8 +676,8 @@ class Server:
                     name="Default Cluster Token",
                     access_key=access_key,
                     hashed_secret_key=get_secret_hash(secret_key),
-                    user_id=cluster_user.id,
-                    user=cluster_user,
+                    user_id=cluster_principal.id,
+                    user=cluster_principal,
                 )
                 await ApiKey.create(session, new_key, auto_commit=False)
                 token = f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
@@ -791,8 +791,8 @@ class Server:
     async def _init_default_cluster(self, session: AsyncSession):
         if not self._should_create_default_cluster():
             return
-        default_cluster_user = await get_default_cluster_user(session)
-        if default_cluster_user:
+        default_cluster_principal = await get_default_cluster_principal(session)
+        if default_cluster_principal:
             return
         user_defined_default_cluster = await self.user_defined_default_cluster(session)
         set_default = user_defined_default_cluster is None
@@ -815,14 +815,14 @@ class Server:
             session, default_cluster, auto_commit=False
         )
 
-        default_cluster_user = Principal(
-            slug=default_cluster_user_name,
+        default_cluster_principal = Principal(
+            slug=default_cluster_principal_slug,
             kind=PrincipalType.SYSTEM,
         )
-        default_cluster_user = await create_user_with_principal(
-            session, default_cluster_user
+        default_cluster_principal = await create_user_with_principal(
+            session, default_cluster_principal
         )
-        default_cluster.system_principal_id = default_cluster_user.id
+        default_cluster.system_principal_id = default_cluster_principal.id
         await default_cluster.save(session=session, auto_commit=False)
 
         # No cluster_access grant needed: the cluster's `owner_principal_id`

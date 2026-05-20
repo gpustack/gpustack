@@ -56,7 +56,13 @@ OrgRoleError = ForbiddenException
 class TenantContext:
     """Per-request tenant resolution result."""
 
-    user: User
+    # The authenticated principal for this request. Can be any kind
+    # ``get_current_user`` resolves to — USER (cookie / API key /
+    # password), SYSTEM (worker / cluster bootstrap via Basic auth or
+    # service API key) — so the field is typed as ``Principal`` and
+    # call sites that need to discriminate read ``user.kind`` directly
+    # (see :func:`bypass_tenant_filter`).
+    user: Principal
     is_platform_admin: bool
     # The principal the request is operating as. ORG-principal for an
     # Org context; the user's own USER-principal for personal scope;
@@ -98,7 +104,7 @@ class TenantContext:
         """
         if self.current_principal_id is not None:
             return self.current_principal_id
-        return getattr(self.user, "id", None)
+        return self.user.id
 
 
 async def _resolve_effective_org_role(
@@ -211,7 +217,7 @@ async def _accessible_clusters(
 
 def _resolve_requested_principal_id(
     request: Request,
-    user: User,
+    user: Principal,
     header_value: Optional[str],
 ) -> Optional[int]:
     api_key: Optional[ApiKey] = getattr(request.state, "api_key", None)

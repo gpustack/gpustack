@@ -50,7 +50,6 @@ from gpustack.schemas.workers import (
     WorkerStateEnum,
 )
 from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
-from gpustack.schemas.users import User
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.config import (
@@ -465,7 +464,7 @@ def _build_worker_config_dict(cluster: Cluster) -> Dict[str, Any]:
     return worker_config
 
 
-async def _resolve_existing_worker_user(
+async def _resolve_existing_worker_principal(
     session, existing_worker: Optional[Worker]
 ) -> Optional[Principal]:
     if existing_worker is None or existing_worker.system_principal_id is None:
@@ -477,10 +476,10 @@ async def _resolve_existing_worker_user(
     )
 
 
-def _existing_api_key(existing_user: Optional[User]) -> Optional[ApiKey]:
-    if existing_user is None or not existing_user.api_keys:
+def _existing_api_key(existing_principal: Optional[Principal]) -> Optional[ApiKey]:
+    if existing_principal is None or not existing_principal.api_keys:
         return None
-    return existing_user.api_keys[0]
+    return existing_principal.api_keys[0]
 
 
 async def _persist_worker_registration(
@@ -489,8 +488,8 @@ async def _persist_worker_registration(
     existing_worker: Optional[Worker],
     new_worker: Worker,
     new_token: str,
-    to_create_user: Optional[Principal],
-    existing_user: Optional[Principal],
+    to_create_principal: Optional[Principal],
+    existing_principal: Optional[Principal],
     to_create_apikey: Optional[ApiKey],
     all_workers: List[Worker],
     cluster: Cluster,
@@ -504,16 +503,18 @@ async def _persist_worker_registration(
         worker = existing_worker
     else:
         worker = await retry_create_worker(session, new_worker, all_workers)
-    created_user = None
-    if to_create_user is not None:
-        created_user = await create_user_with_principal(session, to_create_user)
+    created_principal = None
+    if to_create_principal is not None:
+        created_principal = await create_user_with_principal(
+            session, to_create_principal
+        )
         # Inverse FK direction: the worker row records which SYSTEM
         # principal it claims, not the other way around.
-        worker.system_principal_id = created_user.id
+        worker.system_principal_id = created_principal.id
         await worker.save(session=session, auto_commit=False)
     if to_create_apikey is not None:
-        to_create_apikey.user = existing_user or created_user
-        to_create_apikey.user_id = (existing_user or created_user).id
+        to_create_apikey.user = existing_principal or created_principal
+        to_create_apikey.user_id = (existing_principal or created_principal).id
         await ApiKey.create(session=session, source=to_create_apikey, auto_commit=False)
     if cluster.state != ClusterStateEnum.READY:
         cluster.state = ClusterStateEnum.READY
@@ -573,18 +574,18 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
             if new_worker.worker_uuid == "":
                 new_worker.worker_uuid = retry_create_unique_worker_uuid(all_workers)
 
-            existing_user = await _resolve_existing_worker_user(
+            existing_principal = await _resolve_existing_worker_principal(
                 session, existing_worker
             )
-            to_create_user = (
+            to_create_principal = (
                 Principal(
                     slug=f'{system_name_prefix}-{hashed_suffix}',
                     kind=PrincipalType.SYSTEM,
                 )
-                if existing_user is None
+                if existing_principal is None
                 else None
             )
-            existing_api_key = _existing_api_key(existing_user)
+            existing_api_key = _existing_api_key(existing_principal)
             to_create_apikey = (
                 ApiKey(
                     name=f'{system_name_prefix}-{hashed_suffix}',
@@ -601,8 +602,8 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                     existing_worker=existing_worker,
                     new_worker=new_worker,
                     new_token=new_token,
-                    to_create_user=to_create_user,
-                    existing_user=existing_user,
+                    to_create_principal=to_create_principal,
+                    existing_principal=existing_principal,
                     to_create_apikey=to_create_apikey,
                     all_workers=all_workers,
                     cluster=cluster,

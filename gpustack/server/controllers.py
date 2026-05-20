@@ -93,7 +93,7 @@ from gpustack.schemas.clusters import (
 
 from gpustack.schemas.users import (
     User,
-    is_default_cluster_user,
+    is_default_cluster_principal,
 )
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.cache import delete_cache_by_key
@@ -829,8 +829,8 @@ async def get_cluster_registry(
     cluster = await Cluster.one_by_id(session, cluster_id)
     if cluster is None or cluster.system_principal_id is None:
         return None
-    cluster_user = await Principal.one_by_id(session, cluster.system_principal_id)
-    if cluster_user is None or is_default_cluster_user(cluster_user):
+    cluster_principal = await Principal.one_by_id(session, cluster.system_principal_id)
+    if cluster_principal is None or is_default_cluster_principal(cluster_principal):
         return None
     cluster_registry = mcp_handler.cluster_registry(cluster)
     if cluster_registry is None:
