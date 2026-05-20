@@ -147,6 +147,7 @@ def match_hugging_face_files(
     files = [
         file["name"] if isinstance(file, dict) else file
         for file in hffs.ls(repo_id, recursive=True)
+        if not isinstance(file, dict) or file.get("type") == "file"
     ]
 
     file_list: List[str] = []
