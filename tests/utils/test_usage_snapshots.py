@@ -34,7 +34,7 @@ def test_build_model_usage_snapshot_includes_user_and_api_key_fields():
         "qwen3.5-9b",
         huggingface_repo_id="Qwen/Qwen3.5-9B",
     )
-    user = User(id=2, slug="alice", hashed_password="x")
+    user = User(id=2, slug="alice")
     api_key = ApiKey(
         id=5,
         name="test",

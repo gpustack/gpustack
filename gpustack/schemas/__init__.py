@@ -63,6 +63,10 @@ from gpustack.schemas.workers import (
     MemoryInfo,
 )
 from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
+from gpustack.schemas.user_passwords import (  # noqa: F401  table registration
+    PasswordAlgorithm,
+    UserPassword,
+)
 from gpustack.schemas.api_keys import ApiKey, ApiKeyCreate, ApiKeyPublic, ApiKeysPublic
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.model_usage import ModelUsage

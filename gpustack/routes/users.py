@@ -13,7 +13,6 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ConflictException,
 )
-from gpustack.security import get_secret_hash
 from gpustack.schemas.organizations import OrganizationPublic
 from gpustack.schemas.principals import (
     OrgRole,
@@ -34,6 +33,7 @@ from gpustack.schemas.users import (
     UsersPublic,
     UserSelfUpdate,
 )
+from gpustack.server.passwords import set_password
 from gpustack.server.services import UserService, create_user_with_principal
 
 router = APIRouter()
@@ -132,12 +132,18 @@ async def create_user(session: SessionDep, user_in: UserCreate):
             is_admin=user_in.is_admin,
             is_active=user_in.is_active,
         )
-        if user_in.password:
-            to_create.hashed_password = get_secret_hash(user_in.password)
         # Admin additionally joins the platform Org as OWNER; regular
         # users do NOT auto-join — admin can add them later if shared
         # workspace access is needed.
         user = await create_user_with_principal(session, to_create)
+        if user_in.password:
+            await set_password(
+                session,
+                user.id,
+                user_in.password,
+                require_password_change=user_in.require_password_change,
+                auto_commit=False,
+            )
         if user.is_admin:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             platform_id = await get_platform_principal_id(session)
@@ -175,14 +181,24 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
     try:
         # ``by_alias=True`` maps the wire-level ``username`` / ``full_name``
         # back onto the Principal columns ``slug`` / ``name`` for the
-        # storage write — see :class:`UserBase`.
-        update_data = user_in.model_dump(by_alias=True)
-        if user_in.password:
-            hashed_password = get_secret_hash(user_in.password)
-            update_data["hashed_password"] = hashed_password
-        del update_data["password"]
-        del update_data["source"]
+        # storage write — see :class:`UserBase`. ``exclude_none=True``
+        # so omitting an optional field (e.g. ``full_name``) on the
+        # PUT request leaves the stored value alone rather than
+        # clobbering it with NULL; matches :func:`update_user_me`.
+        # Password + require-change flag live on the ``user_passwords``
+        # row, handled separately.
+        update_data = user_in.model_dump(by_alias=True, exclude_none=True)
+        update_data.pop("password", None)
+        update_data.pop("source", None)
+        require_change = update_data.pop("require_password_change", False)
         await UserService(session).update(user, update_data)
+        if user_in.password:
+            await set_password(
+                session,
+                user.id,
+                user_in.password,
+                require_password_change=require_change,
+            )
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 
@@ -267,11 +283,10 @@ async def update_user_me(
 ):
     try:
         update_data = user_in.model_dump(by_alias=True, exclude_none=True)
-        if "password" in update_data:
-            hashed_password = get_secret_hash(update_data["password"])
-            update_data["hashed_password"] = hashed_password
-            del update_data["password"]
+        plain = update_data.pop("password", None)
         await UserService(session).update(user, update_data)
+        if plain:
+            await set_password(session, user.id, plain)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 

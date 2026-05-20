@@ -90,7 +90,7 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
             ),
         ]
     )
-    user = User(id=1, slug="admin", hashed_password="x", is_admin=True)
+    user = User(id=1, slug="admin", is_admin=True)
 
     response = await get_usage_meta(session=session, user=user, ctx=_ctx_for(user))
 
@@ -150,7 +150,7 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
             _mock_exec_result([]),
         ]
     )
-    user = User(id=2, slug="alice", hashed_password="x", is_admin=False)
+    user = User(id=2, slug="alice", is_admin=False)
 
     response = await get_usage_meta(session=session, user=user, ctx=_ctx_for(user))
 
@@ -212,7 +212,7 @@ async def test_get_usage_breakdown_returns_paginated_route_items():
             ),
         ]
     )
-    user = User(id=1, slug="admin", hashed_password="x", is_admin=True)
+    user = User(id=1, slug="admin", is_admin=True)
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
@@ -309,7 +309,7 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
             ),
         ]
     )
-    user = User(id=1, slug="admin", hashed_password="x", is_admin=True)
+    user = User(id=1, slug="admin", is_admin=True)
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
@@ -365,7 +365,7 @@ async def test_get_usage_breakdown_ignores_incomplete_api_key_identity_groups():
             _mock_exec_result([]),
         ]
     )
-    user = User(id=1, slug="admin", hashed_password="x", is_admin=True)
+    user = User(id=1, slug="admin", is_admin=True)
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
@@ -418,7 +418,7 @@ async def test_get_usage_breakdown_formats_month_date_label_as_year_month():
             ),
         ]
     )
-    user = User(id=1, slug="admin", hashed_password="x", is_admin=True)
+    user = User(id=1, slug="admin", is_admin=True)
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 30),
@@ -445,7 +445,7 @@ async def test_get_usage_breakdown_filters_deleted_api_key_by_value_and_current(
             _mock_exec_result([]),
         ]
     )
-    user = User(id=1, slug="admin", hashed_password="x", is_admin=True)
+    user = User(id=1, slug="admin", is_admin=True)
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
@@ -491,7 +491,7 @@ async def test_get_usage_breakdown_defaults_regular_user_to_self_scope():
             _mock_exec_result([]),
         ]
     )
-    user = User(id=2, slug="alice", hashed_password="x", is_admin=False)
+    user = User(id=2, slug="alice", is_admin=False)
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),
@@ -509,7 +509,7 @@ async def test_get_usage_breakdown_defaults_regular_user_to_self_scope():
 @pytest.mark.asyncio
 async def test_get_usage_breakdown_rejects_regular_user_user_group():
     session = MagicMock()
-    user = User(id=2, slug="alice", hashed_password="x", is_admin=False)
+    user = User(id=2, slug="alice", is_admin=False)
     request = UsageBreakdownRequest(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 4, 2),

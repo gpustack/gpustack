@@ -16,11 +16,7 @@ from gpustack.api.exceptions import (
 from gpustack.schemas.users import UpdatePassword
 from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.users import User, AuthProviderEnum
-from gpustack.security import (
-    JWTManager,
-    get_secret_hash,
-    verify_hashed_secret,
-)
+from gpustack.security import JWTManager
 from gpustack import envs
 from gpustack.api.auth import (
     SESSION_COOKIE_NAME,
@@ -29,6 +25,7 @@ from gpustack.api.auth import (
     authenticate_user,
 )
 from gpustack.server.deps import CurrentUserDep, SessionDep
+from gpustack.server.passwords import change_password
 from gpustack.server.services import (
     create_user_with_principal,
     sync_user_group_memberships,
@@ -270,11 +267,9 @@ async def saml_callback(request: Request, session: SessionDep):
                 slug=username,
                 name=full_name or username,
                 avatar_url=avatar_url,
-                hashed_password="",
                 is_admin=False,
                 is_active=not config.external_auth_default_inactive,
                 source=AuthProviderEnum.SAML,
-                require_password_change=False,
             )
             user = await create_user_with_principal(session, user_info)
             await session.commit()
@@ -528,11 +523,9 @@ async def oidc_callback(request: Request, session: SessionDep):
             slug=username,
             name=full_name or username,
             avatar_url=avatar_url,
-            hashed_password="",
             is_admin=False,
             is_active=not config.external_auth_default_inactive,
             source=AuthProviderEnum.OIDC,
-            require_password_change=False,
         )
         user = await create_user_with_principal(session, user_info)
         await session.commit()
@@ -650,12 +643,11 @@ async def update_password(
     user: CurrentUserDep,
     update_in: UpdatePassword,
 ):
-    if not verify_hashed_secret(user.hashed_password, update_in.current_password):
+    ok = await change_password(
+        session, user.id, update_in.current_password, update_in.new_password
+    )
+    if not ok:
         raise InvalidException(message="Incorrect current password")
-
-    hashed_password = get_secret_hash(update_in.new_password)
-    patch = {"hashed_password": hashed_password, "require_password_change": False}
-    await user.update(session, patch)
 
     remove_initial_password_file_if_exists(request.app.state.server_config)
 

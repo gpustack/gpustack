@@ -207,7 +207,6 @@ class PrincipalBase(SQLModel):
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
-    require_password_change: bool = Field(default=False, nullable=False)
 
     # ``is_system`` and ``role`` describe internal system actors
     # (cluster / worker service accounts) — still USER-kind, not the
@@ -268,9 +267,10 @@ class Principal(PrincipalBase, BaseModelMixin, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
 
-    # USER-only: password hash. NULL for ORG / GROUP, and for SSO-only
-    # USER rows that never set a local password.
-    hashed_password: Optional[str] = None
+    # Login credentials (hashed password + force-change flag) live in
+    # the dedicated ``user_passwords`` table; see
+    # :mod:`gpustack.schemas.user_passwords`. SSO-only USER rows and
+    # system actors simply have no row there.
 
     # ``foreign_keys`` disambiguates these from ``clusters.owner_principal_id``
     # / ``workers.owner_principal_id``, which are the inverse direction
