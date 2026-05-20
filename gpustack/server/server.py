@@ -19,7 +19,7 @@ from gpustack.schemas.users import (
     get_default_cluster_user,
     default_cluster_user_name,
 )
-from gpustack.schemas.principals import PrincipalType, platform_principal_id
+from gpustack.schemas.principals import Principal, PrincipalType, platform_principal_id
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
@@ -568,7 +568,7 @@ class Server:
 
             if default_cluster.system_principal_id is None:
                 raise RuntimeError("Default cluster has no system principal.")
-            default_cluster_user = await User.one_by_id(
+            default_cluster_user = await Principal.one_by_id(
                 session=session, id=default_cluster.system_principal_id
             )
             if default_cluster_user is None:
@@ -616,11 +616,11 @@ class Server:
             try:
                 worker_user = None
                 if worker.system_principal_id is not None:
-                    worker_user = await User.one_by_id(
+                    worker_user = await Principal.one_by_id(
                         session=session, id=worker.system_principal_id
                     )
                 if not worker_user:
-                    to_create_user = User(
+                    to_create_user = Principal(
                         slug=f'{system_name_prefix}-{worker.id}',
                         kind=PrincipalType.SYSTEM,
                     )
@@ -815,7 +815,7 @@ class Server:
             session, default_cluster, auto_commit=False
         )
 
-        default_cluster_user = User(
+        default_cluster_user = Principal(
             slug=default_cluster_user_name,
             kind=PrincipalType.SYSTEM,
         )
