@@ -51,7 +51,6 @@ class RouteTargetResolution(NamedTuple):
     overridden_model_name: Optional[str]
 
 
-
 class UserService:
 
     def __init__(self, session: AsyncSession):
@@ -75,18 +74,18 @@ class UserService:
     @locked_cached()
     async def get_by_username(self, username: str) -> Optional[User]:
         # ``username`` is the wire-level name for the storage column
-        # ``slug`` after identity consolidation. The cache key still
-        # passes through the legacy parameter name so OAuth2 password
+        # ``name`` (k8s-style identifier). The cache key passes
+        # through the legacy parameter name so OAuth2 password
         # callers don't need to know about the rename.
         #
         # ``cluster`` / ``worker`` are eager-loaded here because the
-        # auth deps (``get_cluster_principal`` / ``get_worker_principal``) use
-        # them to discriminate which infra row a SYSTEM principal
+        # auth deps (``get_cluster_principal`` / ``get_worker_principal``)
+        # use them to discriminate which infra row a SYSTEM principal
         # represents — without the load, the inverse-FK relationship
         # would be NoLoad and the discriminator would always see None.
         result = await User.one_by_field(
             self.session,
-            "slug",
+            "name",
             username,
             options=[selectinload(User.cluster), selectinload(User.worker)],
         )
@@ -99,7 +98,7 @@ class UserService:
         result = await user.update(self.session, source)
         await delete_cache_by_key(self.get_by_id, user.id)
         await delete_cache_by_key(self.get_user_accessible_model_names, user.id)
-        await delete_cache_by_key(self.get_by_username, user.slug)
+        await delete_cache_by_key(self.get_by_username, user.name)
         return result
 
     async def delete(self, user: User):
@@ -107,7 +106,7 @@ class UserService:
         result = await user.delete(self.session)
         await delete_cache_by_key(self.get_by_id, user.id)
         await delete_cache_by_key(self.get_user_accessible_model_names, user.id)
-        await delete_cache_by_key(self.get_by_username, user.slug)
+        await delete_cache_by_key(self.get_by_username, user.name)
         for apikey in apikeys:
             await delete_cache_by_key(
                 APIKeyService.get_by_access_key, apikey.access_key
@@ -144,9 +143,10 @@ class UserService:
     async def get_user_accessible_model_names(self, user_id: int) -> Set[str]:
         # Get all accessible model names for the user. The set holds two
         # forms per route:
-        #   1. Org-effective name (`<slug>/<route>` for non-platform
-        #      Orgs, raw for platform) — matches `/v1/models` output and
-        #      the gateway's ingress header matcher.
+        #   1. Org-effective name (`<owner-name>/<route>` for
+        #      non-platform Orgs, raw for platform) — matches
+        #      `/v1/models` output and the gateway's ingress header
+        #      matcher.
         #   2. Raw `route.name` — matches the post-`modelMapping` value
         #      that Higress's AI proxy hands back via
         #      `x-higress-llm-model` on the auth callback. Without this
@@ -186,7 +186,7 @@ class UserService:
             names.add(
                 effective_route_name(
                     r.name,
-                    getattr(owner, "slug", None),
+                    getattr(owner, "name", None),
                     getattr(owner, "id", None) == platform_principal_id(),
                 )
             )
@@ -230,11 +230,14 @@ async def _insert_group_or_refetch(
     """
     grp = Principal(
         kind=PrincipalType.GROUP,
-        name=name,
+        # GROUPs have no ``name`` (the URL-safe identifier) — only a
+        # ``display_name`` that's unique among active groups via the
+        # partial index. The IdP-supplied group name lands here.
+        display_name=name,
         # Tag the Group with the provider that brought it into
         # existence. UI uses this to badge IdP-managed rows; sync
-        # doesn't condition on it (matching is by name regardless of
-        # source).
+        # doesn't condition on it (matching is by display_name
+        # regardless of source).
         source=provider,
         created_at=now,
         updated_at=now,
@@ -250,7 +253,7 @@ async def _insert_group_or_refetch(
                 select(Principal).where(
                     Principal.kind == PrincipalType.GROUP,
                     Principal.deleted_at.is_(None),
-                    Principal.name == name,
+                    Principal.display_name == name,
                 )
             )
         ).first()
@@ -321,11 +324,11 @@ async def sync_user_group_memberships(
                 select(Principal).where(
                     Principal.kind == PrincipalType.GROUP,
                     Principal.deleted_at.is_(None),
-                    Principal.name.in_(wanted_names),
+                    Principal.display_name.in_(wanted_names),
                 )
             )
         ).all()
-        existing_by_name = {p.name: p for p in existing}
+        existing_by_name = {p.display_name: p for p in existing}
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         for name in wanted_names:
@@ -513,9 +516,10 @@ async def collect_route_cache_names(
     """Names to invalidate when a route's resolution may change.
 
     Callers in routes/openai.py and gateway/auth callbacks key the
-    @locked_cached entries by whatever string they receive — that is the
-    raw route_name for the platform Org and the slug-prefixed effective
-    name for any other Org. Both must be cleared.
+    @locked_cached entries by whatever string they receive — that is
+    the raw route_name for the platform Org and the
+    ``<owner-name>/<route-name>`` effective name for any other Org.
+    Both must be cleared.
     """
     names = {route_name}
     route = await ModelRoute.one_by_id(session, route_id)
@@ -524,7 +528,7 @@ async def collect_route_cache_names(
         if owner:
             names.add(
                 effective_route_name(
-                    route_name, owner.slug, owner.id == platform_principal_id()
+                    route_name, owner.name, owner.id == platform_principal_id()
                 )
             )
     return names
@@ -539,13 +543,14 @@ class ModelRouteService:
         self, name: str
     ) -> Optional[Tuple[AccessPolicyEnum, str]]:
         # Higress's auth callback may hand us either the Org-effective
-        # name (`<slug>/<route>`) or the raw `route.name` depending on
-        # whether `modelMapping` has fired yet. Resolve both forms.
+        # name (`<owner-name>/<route>`) or the raw `route.name`
+        # depending on whether `modelMapping` has fired yet. Resolve
+        # both forms.
         route: Optional[ModelRoute] = None
         if "/" in name:
-            slug, _, rest = name.partition("/")
+            owner_name, _, rest = name.partition("/")
             if rest:
-                owner = await Principal.one_by_field(self.session, "slug", slug)
+                owner = await Principal.one_by_field(self.session, "name", owner_name)
                 if owner is not None:
                     route = await ModelRoute.one_by_fields(
                         self.session,
@@ -583,18 +588,18 @@ class ModelRouteService:
     @locked_cached()
     async def resolve_route_targets(self, name: str) -> List[RouteTargetResolution]:
         """Resolve a request model name to routing decisions, honoring an
-        optional `<slug>/<route>` principal prefix.
+        optional `<owner-name>/<route>` principal prefix.
         """
         owner_principal_id: Optional[int] = None
         raw_name = name
         if "/" in name:
-            slug, _, rest = name.partition("/")
+            owner_name, _, rest = name.partition("/")
             if rest:
-                owner = await Principal.one_by_field(self.session, "slug", slug)
+                owner = await Principal.one_by_field(self.session, "name", owner_name)
                 if owner is not None:
                     owner_principal_id = owner.id
                     raw_name = rest
-                # If the slug didn't match a principal, fall through and
+                # If the principal name didn't match, fall through and
                 # try the literal name (handles edge cases like a route
                 # called "literal/with/slashes" before the prefix
                 # convention existed).
@@ -607,8 +612,8 @@ class ModelRouteService:
             self.session,
             fields=target_fields,
         )
-        # When a principal slug was parsed, narrow to that owner's
-        # route by joining through the parent ModelRoute's
+        # When a principal name prefix was parsed, narrow to that
+        # owner's route by joining through the parent ModelRoute's
         # ``owner_principal_id``. Avoids an extra round-trip when the
         # route name is globally unique (the typical single-Org case).
         if owner_principal_id is not None and len(targets) > 0:
@@ -692,8 +697,8 @@ class ModelService:
 
     async def delete(self, model: Model):
         # ORM cascade bypasses child service caches; collect ids and route
-        # names (raw + slug-prefixed effective) BEFORE deleting so we can
-        # invalidate them explicitly below.
+        # names (raw + owner-name-prefixed effective) BEFORE deleting so
+        # we can invalidate them explicitly below.
         instance_ids = list(
             (
                 await self.session.exec(
@@ -703,17 +708,19 @@ class ModelService:
         )
         route_names: Set[str] = set()
         stmt = (
-            select(ModelRouteTarget.route_name, Principal.slug, Principal.id)
+            select(ModelRouteTarget.route_name, Principal.name, Principal.id)
             .join(ModelRoute, ModelRoute.id == ModelRouteTarget.route_id)
             .join(Principal, Principal.id == ModelRoute.owner_principal_id)
             .where(ModelRouteTarget.model_id == model.id)
         )
-        for r_name, slug, p_id in (await self.session.exec(stmt)).all():
+        for r_name, owner_name, p_id in (await self.session.exec(stmt)).all():
             if not r_name:
                 continue
             route_names.add(r_name)
             route_names.add(
-                effective_route_name(r_name, slug, p_id == platform_principal_id())
+                effective_route_name(
+                    r_name, owner_name, p_id == platform_principal_id()
+                )
             )
 
         result = await model.delete(self.session)

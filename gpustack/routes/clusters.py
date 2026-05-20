@@ -326,7 +326,7 @@ async def create_cluster(
         }
     )
     to_create_principal = Principal(
-        slug=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
+        name=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
         kind=PrincipalType.SYSTEM,
     )
     to_create_apikey = ApiKey(
@@ -548,7 +548,7 @@ async def get_cluster_manifests(
         raise InvalidException(
             message=f"Cannot get manifests for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
         )
-    # TODO: Redundant principal slugs at the cluster level to reduce multiple queries.
+    # TODO: Redundant principal names at the cluster level to reduce multiple queries.
     principal = await Principal.one_by_id(session, cluster.owner_principal_id)
     if not principal:
         raise NotFoundException(
@@ -561,7 +561,7 @@ async def get_cluster_manifests(
     config = TemplateConfig(
         registration=get_registration_from_cluster(request, cluster),
         cluster_suffix=cluster.hashed_suffix,
-        cluster_owner_principal_slug=principal.slug,
+        cluster_owner_principal_name=principal.name,
         namespace=getattr(cluster.worker_config, "namespace", None),
         runtime_enum=runtime,
         k8s_volume_mounts=cluster.k8s_volume_mounts,

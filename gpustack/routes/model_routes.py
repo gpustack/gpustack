@@ -185,9 +185,9 @@ async def create_model_route(
     session: SessionDep, ctx: TenantContextDep, input: ModelRouteCreate
 ):
     # Names are unique within their owning Org. The gateway emits an
-    # Org-slug prefix as the effective model name for non-platform Orgs,
-    # so two Orgs can each have a route called "qwen3-0.6b" without
-    # colliding in the AI proxy match rules.
+    # owner-name prefix as the effective model name for non-platform
+    # Orgs, so two Orgs can each have a route called "qwen3-0.6b"
+    # without colliding in the AI proxy match rules.
     target_org_id = ctx.target_principal_id_for_write()
     existing = await ModelRoute.one_by_fields(
         session,
@@ -269,7 +269,8 @@ async def update_model_route(
         not_found_message=f"ModelRoute with id '{id}' not found.",
     )
     # Names are unique within their owning Org (effective name on the
-    # gateway side carries the Org slug prefix for non-platform Orgs).
+    # gateway side carries the owner-name prefix for non-platform
+    # Orgs).
     duplicated_name = await ModelRoute.one_by_fields(
         session,
         {
@@ -818,8 +819,8 @@ async def _list_route_users(session, route_id: int) -> List[ModelUserAccessExten
     return [
         ModelUserAccessExtended(
             id=user.id,
-            username=user.slug,
-            full_name=user.name,
+            username=user.name,
+            full_name=user.display_name,
             avatar_url=user.avatar_url,
         )
         for user, _ in rows

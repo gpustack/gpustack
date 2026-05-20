@@ -79,7 +79,7 @@ def build_model_usage_snapshot(
         snapshot.update(
             {
                 "user_id": user.id,
-                "user_name": user.slug,
+                "user_name": user.name,
             }
         )
     if provider is not None:

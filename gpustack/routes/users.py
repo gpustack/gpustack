@@ -53,7 +53,7 @@ async def get_users(
 ):
     fuzzy_fields = {}
     if search:
-        fuzzy_fields = {"slug": search, "name": search}
+        fuzzy_fields = {"name": search, "display_name": search}
 
     if params.watch:
         return StreamingResponse(
@@ -120,14 +120,14 @@ async def list_user_memberships(session: SessionDep, id: int):
 
 @router.post("", response_model=UserPublic)
 async def create_user(session: SessionDep, user_in: UserCreate):
-    existing = await User.one_by_field(session, "slug", user_in.username)
+    existing = await User.one_by_field(session, "name", user_in.username)
     if existing:
         raise AlreadyExistsException(message=f"User {user_in.username} already exists")
 
     try:
         to_create = User(
-            slug=user_in.username,
-            name=user_in.full_name,
+            name=user_in.username,
+            display_name=user_in.full_name,
             is_admin=user_in.is_admin,
             is_active=user_in.is_active,
         )
@@ -179,8 +179,8 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
 
     try:
         # ``by_alias=True`` maps the wire-level ``username`` / ``full_name``
-        # back onto the Principal columns ``slug`` / ``name`` for the
-        # storage write — see :class:`UserBase`. ``exclude_none=True``
+        # back onto the Principal columns ``name`` / ``display_name``
+        # for the storage write — see :class:`UserBase`. ``exclude_none=True``
         # so omitting an optional field (e.g. ``full_name``) on the
         # PUT request leaves the stored value alone rather than
         # clobbering it with NULL; matches :func:`update_user_me`.
@@ -309,7 +309,7 @@ async def list_user_directory(
         raise ForbiddenException(message="Insufficient permission")
     fuzzy_fields = {}
     if search:
-        fuzzy_fields = {"slug": search, "name": search}
+        fuzzy_fields = {"name": search, "display_name": search}
     async with async_session() as session:
         return await User.paginated_by_query(
             session=session,

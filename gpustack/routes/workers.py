@@ -579,7 +579,7 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
             )
             to_create_principal = (
                 Principal(
-                    slug=f'{system_name_prefix}-{hashed_suffix}',
+                    name=f'{system_name_prefix}-{hashed_suffix}',
                     kind=PrincipalType.SYSTEM,
                 )
                 if existing_principal is None

@@ -26,64 +26,71 @@ from gpustack.schemas.principals import (
 # by :func:`init_platform_principal_id`).
 
 
-slug_pattern = r'^[a-z](?:[a-z0-9\-]*[a-z0-9])?$'
+# URL-safe identifier format — k8s-style ``metadata.name`` (lowercase,
+# starts with letter, only letters/digits/hyphens, can't end with
+# hyphen).
+name_pattern = r'^[a-z](?:[a-z0-9\-]*[a-z0-9])?$'
 
 # "Personal" is the conceptual user-self namespace (no longer a separate
 # Org row); "Global" is the UI label for admin-curated Platform rows
 # (e.g. inference backends with owner_principal_id IS NULL). Letting users
 # create regular Orgs with these names would collide with built-in UX
 # slots. Match case-insensitively after trimming whitespace.
+RESERVED_ORG_DISPLAY_NAMES = {"personal", "global", "system", "system-toolkit"}
 RESERVED_ORG_NAMES = {"personal", "global", "system", "system-toolkit"}
-RESERVED_ORG_SLUGS = {"personal", "global", "system", "system-toolkit"}
-# User-principal slug pattern — keep humans from grabbing the slot of a
-# user's auto-generated Personal namespace.
-personal_slug_pattern = re.compile(r'^user-\d+$')
+# Legacy user-principal name pattern — keep humans from grabbing the
+# slot of a user's auto-generated Personal namespace.
+personal_name_pattern = re.compile(r'^user-\d+$')
 
 
-def _check_reserved_name(name: str) -> None:
-    """Raise ValueError if name is reserved for the system."""
+def _check_reserved_display_name(display_name: str) -> None:
+    """Raise ValueError if display_name is reserved for the system."""
+    if not isinstance(display_name, str):
+        raise ValueError("display_name must be a string")
+    if display_name.strip().lower() in RESERVED_ORG_DISPLAY_NAMES:
+        raise ValueError(
+            f"'{display_name}' is a reserved organization name; please choose another"
+        )
+
+
+def _check_name_format(name: str) -> None:
+    """Raise ValueError if the URL-safe ``name`` fails the formatting
+    / reserved checks.
+    """
     if not isinstance(name, str):
         raise ValueError("name must be a string")
-    if name.strip().lower() in RESERVED_ORG_NAMES:
+    if not re.match(name_pattern, name):
         raise ValueError(
-            f"'{name}' is a reserved organization name; please choose another"
-        )
-
-
-def _check_slug_format(slug: str) -> None:
-    """Raise ValueError if slug fails the formatting / reserved checks."""
-    if not isinstance(slug, str):
-        raise ValueError("slug must be a string")
-    if not re.match(slug_pattern, slug):
-        raise ValueError(
-            "slug must be lowercase, start with a letter, only contain "
+            "name must be lowercase, start with a letter, only contain "
             "letters, numbers, and hyphens, and not end with a hyphen"
         )
-    if slug.lower() in RESERVED_ORG_SLUGS or personal_slug_pattern.match(slug):
-        raise ValueError(f"'{slug}' is a reserved slug; please choose another")
+    if name.lower() in RESERVED_ORG_NAMES or personal_name_pattern.match(name):
+        raise ValueError(f"'{name}' is a reserved name; please choose another")
 
 
-def validate_org_input(*, name: Optional[str], slug: Optional[str] = None) -> None:
+def validate_org_input(
+    *, display_name: Optional[str], name: Optional[str] = None
+) -> None:
     """Validate user-supplied Org create/update payloads."""
+    if display_name is not None:
+        _check_reserved_display_name(display_name)
     if name is not None:
-        _check_reserved_name(name)
-    if slug is not None:
-        _check_slug_format(slug)
+        _check_name_format(name)
 
 
 class OrganizationUpdate(SQLModel):
-    name: str = Field(nullable=False)
+    display_name: str = Field(nullable=False)
     description: Optional[str] = Field(default=None, nullable=True)
 
 
 class OrganizationCreate(OrganizationUpdate):
-    slug: str = Field(nullable=False)
+    name: str = Field(nullable=False)
 
 
 class OrganizationListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
+        "display_name",
         "name",
-        "slug",
         "created_at",
         "updated_at",
     ]
@@ -91,8 +98,8 @@ class OrganizationListParams(ListParams):
 
 class OrganizationPublic(SQLModel):
     id: int
-    name: str
-    slug: Optional[str] = None
+    name: Optional[str] = None
+    display_name: str
     description: Optional[str] = None
     # ``is_personal`` is no longer a stored flag — a row is "personal"
     # iff it's a USER principal (rendered through this DTO when listing
@@ -104,18 +111,17 @@ class OrganizationPublic(SQLModel):
 
     @classmethod
     def from_principal(cls, p: Principal) -> "OrganizationPublic":
-        """Render a Principal row as the legacy Organization shape.
+        """Render a Principal row as the Organization shape.
 
-        For USER principals, surface ``name="Personal"`` so the
+        For USER principals, surface ``display_name="Personal"`` so the
         OrgSwitcher renders the canonical label instead of the user's
-        username (which is what's stored on the principal row for
-        URL-prefix purposes via ``slug=user-{id}``).
+        own display name.
         """
         is_personal = p.kind == PrincipalType.USER
         return cls(
             id=p.id,
-            name="Personal" if is_personal else p.name,
-            slug=p.slug,
+            name=p.name,
+            display_name="Personal" if is_personal else (p.display_name or ""),
             description=p.description,
             is_personal=is_personal,
             created_at=p.created_at,
@@ -131,15 +137,16 @@ class OrganizationMembershipPublic(SQLModel):
 
     USER and GROUP principals are peer-level in the new identity
     model, so the membership API treats them uniformly: identity
-    fields (``principal_id``, ``principal_kind``, ``principal_name``,
-    ``principal_description``) come off the ``principals`` row. For a
-    USER, ``principal_name`` is the display name (formerly ``full_name``
-    on the legacy ``users`` table); for a GROUP it's the group name.
+    fields (``principal_id``, ``principal_kind``,
+    ``principal_display_name``, ``principal_description``) come off
+    the ``principals`` row. ``principal_display_name`` is the human
+    label (the ``display_name`` column) — what cluster-access /
+    ACL pickers / the members list render.
     """
 
     principal_id: int
     principal_kind: str
-    principal_name: Optional[str] = None
+    principal_display_name: Optional[str] = None
     principal_description: Optional[str] = None
     organization_id: int
     role: Optional[str] = None

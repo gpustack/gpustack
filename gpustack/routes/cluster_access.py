@@ -97,7 +97,7 @@ async def _resolve_principal_views(
                 cluster_id=r.cluster_id,
                 principal_id=r.principal_id,
                 principal_type=kind,
-                principal_name=p.name if p else None,
+                principal_display_name=p.display_name if p else None,
                 principal_parent_id=parent,
                 granted_by=r.granted_by,
                 created_at=r.created_at,

@@ -910,7 +910,7 @@ async def ensure_route_generic_proxy_router_config(
     routes are untouched.
 
     ``effective_name`` is the fully-qualified model name including the
-    Org slug prefix (e.g. ``org1/qwen3-0.6b``) for non-platform Orgs;
+    Org name prefix (e.g. ``org1/qwen3-0.6b``) for non-platform Orgs;
     platform Org keeps the unprefixed ``model_route.name``.
     """
     route_name = effective_name if generic_proxy_enabled else None
@@ -1026,14 +1026,14 @@ async def sync_gateway(
         destinations, fallback_destinations = await calculate_destinations(
             session, model_route
         )
-    # Effective model name = `<org-slug>/<route.name>` for non-platform
+    # Effective model name = `<owner-name>/<route.name>` for non-platform
     # Orgs (so two Orgs can use the same `route.name` without colliding
     # in Higress's AI proxy match rules), unprefixed for the platform Org
     # (backward compatible for existing clients).
     route_owner = await Principal.one_by_id(session, model_route.owner_principal_id)
     effective_name = effective_route_name(
         model_route.name,
-        getattr(route_owner, "slug", None),
+        getattr(route_owner, "name", None),
         getattr(route_owner, "id", None) == platform_principal_id(),
     )
     ingress_name = mcp_handler.model_route_ingress_name(model_route.id)
@@ -2634,7 +2634,7 @@ class ClusterController:
             ssh_public_key=ssh_public_key,
             server_api_port=self._cfg.api_port,
             cluster_id=cluster.id,
-            cluster_owner_principal_slug=principal.slug,
+            cluster_owner_principal_name=principal.name,
         )
 
 
@@ -3157,5 +3157,5 @@ class GPUInstanceSSHPublicKeyController:
             ssh_public_key=ssh_public_key,
             server_api_port=self._cfg.api_port,
             cluster_ids=cluster_ids,
-            cluster_owner_principal_slug=principal.slug,
+            cluster_owner_principal_name=principal.name,
         )

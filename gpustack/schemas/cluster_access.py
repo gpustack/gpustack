@@ -66,10 +66,10 @@ class ClusterAccessPublic(SQLModel):
     # second principals lookup. Resolved server-side from the principals
     # row.
     principal_type: PrincipalType
-    # Human-readable label for the principal — display name on the
-    # principals row for every kind. Same rationale: server has the
-    # join cheaply.
-    principal_name: Optional[str] = None
+    # Human-readable label for the principal — the ``display_name``
+    # column on the principals row, populated for every kind. Server
+    # has the join cheaply.
+    principal_display_name: Optional[str] = None
     # For GROUP principals, the parent ORG. NULL for USER and ORG.
     principal_parent_id: Optional[int] = None
     granted_by: Optional[int] = None

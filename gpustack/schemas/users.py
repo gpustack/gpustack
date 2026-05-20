@@ -12,7 +12,7 @@ rows. SYSTEM-context call sites should construct / query
 Pydantic DTOs (``UserCreate``, ``UserUpdate``, ``UserPublic``, …) stay
 here — they're API-surface shapes, not table mappings. They expose
 ``username`` and ``full_name`` JSON keys for backward compat, aliased
-to the underlying ``slug`` / ``name`` columns via Pydantic
+to the underlying ``name`` / ``display_name`` columns via Pydantic
 ``validation_alias`` + ``serialization_alias``. ORG / GROUP-only
 columns (``description``, ``kind``, ``parent_principal_id``) aren't
 on the user wire surface.
@@ -51,11 +51,11 @@ from gpustack.schemas.principals import (  # noqa: F401  re-exports
 User = Principal
 
 
-# System-actor naming conventions. The slug shape stays
+# System-actor naming conventions. The on-disk ``name`` string stays
 # ``system/cluster-1`` for the default cluster's SYSTEM principal —
-# changing the on-disk value would orphan existing rows.
+# changing the value would orphan existing rows.
 system_name_prefix = "system/cluster"
-default_cluster_principal_slug = f"{system_name_prefix}-1"
+default_cluster_principal_name = f"{system_name_prefix}-1"
 
 
 # --------------------------------------------------------------------
@@ -84,27 +84,28 @@ class UserBase(SQLModel):
     The wire-level field names ``username`` / ``full_name`` are kept
     for backward compatibility with API clients (OAuth2 password flow,
     the bundled UI, the SDK). Internally they map onto the unified
-    Principal columns ``slug`` and ``name``; the ``validation_alias``
-    on each lets ``UserPublic.model_validate(principal)`` read directly
-    off a ``Principal`` row without an explicit conversion step.
+    Principal columns ``name`` and ``display_name``; the
+    ``validation_alias`` on each lets
+    ``UserPublic.model_validate(principal)`` read directly off a
+    ``Principal`` row without an explicit conversion step.
     """
 
     # ``populate_by_name=True`` so callers can still construct DTOs via
     # the wire field name (e.g. ``UserCreate(username='alice')``);
     # ``validation_alias`` makes ``model_validate(principal)`` pick up
-    # ``principal.slug`` / ``principal.name`` automatically.
+    # ``principal.name`` / ``principal.display_name`` automatically.
     model_config = ConfigDict(populate_by_name=True)
 
     username: str = PField(
-        validation_alias=AliasChoices('username', 'slug'),
-        serialization_alias='slug',
+        validation_alias=AliasChoices('username', 'name'),
+        serialization_alias='name',
     )
     is_admin: bool = False
     is_active: bool = True
     full_name: Optional[str] = PField(
         default=None,
-        validation_alias=AliasChoices('full_name', 'name'),
-        serialization_alias='name',
+        validation_alias=AliasChoices('full_name', 'display_name'),
+        serialization_alias='display_name',
     )
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
@@ -129,16 +130,17 @@ class UserSelfUpdate(SQLModel):
     """Schema for users updating their own profile — excludes
     privileged fields.
 
-    Wire field name stays ``full_name``; persisted as ``name`` on the
-    Principal row (see :class:`UserBase` for the rename rationale).
+    Wire field name stays ``full_name``; persisted as ``display_name``
+    on the Principal row (see :class:`UserBase` for the alias
+    rationale).
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
     full_name: Optional[str] = PField(
         default=None,
-        validation_alias=AliasChoices('full_name', 'name'),
-        serialization_alias='name',
+        validation_alias=AliasChoices('full_name', 'display_name'),
+        serialization_alias='display_name',
     )
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
@@ -167,9 +169,9 @@ class UserActivationUpdate(SQLModel):
 
 class UserListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
-        "slug",
-        "is_admin",
         "name",
+        "is_admin",
+        "display_name",
         "source",
         "is_active",
         "created_at",
@@ -189,7 +191,7 @@ UsersPublic = PaginatedList[UserPublic]
 def is_default_cluster_principal(principal: Principal) -> bool:
     return (
         principal.kind == PrincipalType.SYSTEM
-        and principal.slug == default_cluster_principal_slug
+        and principal.name == default_cluster_principal_name
     )
 
 
@@ -200,7 +202,7 @@ async def get_default_cluster_principal(session: AsyncSession) -> Optional[Princ
     # need the related Cluster row, so eager-load it here.
     return await Principal.one_by_field(
         session=session,
-        field="slug",
-        value=default_cluster_principal_slug,
+        field="name",
+        value=default_cluster_principal_name,
         options=[selectinload(Principal.cluster)],
     )

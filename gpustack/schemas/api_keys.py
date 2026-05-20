@@ -78,7 +78,7 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
 
     @property
     def user_name(self) -> Optional[str]:
-        return self.user.slug if self.user else None
+        return self.user.name if self.user else None
 
 
 class ApiKeyListParams(ListParams):

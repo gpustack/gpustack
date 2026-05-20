@@ -198,7 +198,7 @@ async def create_api_key(
         if key_in.custom
         else f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
     )
-    return _api_key_to_public(api_key, value=value, user_name=user.slug)
+    return _api_key_to_public(api_key, value=value, user_name=user.name)
 
 
 def _api_key_in_scope(api_key: ApiKey, ctx) -> bool:
@@ -236,7 +236,7 @@ async def update_api_key(
     session: SessionDep, ctx: TenantContextDep, id: int, key_in: ApiKeyUpdate
 ):
     api_key = await ApiKey.one_by_id(session, id, options=[selectinload(ApiKey.user)])
-    user_name = api_key.user.slug if api_key and api_key.user else None
+    user_name = api_key.user.name if api_key and api_key.user else None
     if not api_key or not _api_key_in_scope(api_key, ctx):
         raise NotFoundException(message="Api key not found")
     try:

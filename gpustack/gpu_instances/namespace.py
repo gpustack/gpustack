@@ -8,7 +8,7 @@ from kubernetes_asyncio import client
 from kubernetes_asyncio.client.api_client import ApiClient
 
 from .__util__ import get_k8s_client
-from ..schemas.principals import PLATFORM_PRINCIPAL_SLUG
+from ..schemas.principals import PLATFORM_PRINCIPAL_NAME
 
 NAMESPACE_PREFIX = "gpustack"
 
@@ -16,28 +16,28 @@ logger = logging.getLogger(__name__)
 
 
 def get_namespace_name(
-    principal_slug: Optional[str] = None,
+    principal_name: Optional[str] = None,
 ) -> str:
     """
-    Get the namespace name for the given principal slug.
+    Get the namespace name for the given principal ``name``.
     """
 
-    if principal_slug is None:
-        principal_slug = PLATFORM_PRINCIPAL_SLUG
+    if principal_name is None:
+        principal_name = PLATFORM_PRINCIPAL_NAME
 
-    return f"{NAMESPACE_PREFIX}-{principal_slug}"
+    return f"{NAMESPACE_PREFIX}-{principal_name}"
 
 
 async def sync_namespace_to_cluster(
     server_api_port: int,
     cluster_id: int,
-    cluster_owner_principal_slug: Optional[str] = None,
+    cluster_owner_principal_name: Optional[str] = None,
 ):
     """
     Sync the namespace to a single cluster by creating the namespace in the cluster if it does not exist.
     """
 
-    name = get_namespace_name(cluster_owner_principal_slug)
+    name = get_namespace_name(cluster_owner_principal_name)
 
     async with get_k8s_client(server_api_port, cluster_id) as api:
         await ensure_namespace_in_cluster(

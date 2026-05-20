@@ -123,7 +123,7 @@ def _route_to_oai_model(
     route, principal_by_id: Dict[int, Principal], with_meta: Optional[bool]
 ) -> OAIModel:
     # Wrap the route name through ``effective_route_name`` so non-platform
-    # owners get a `<slug>/` prefix in the published id — this matches the
+    # owners get a `<name>/` prefix in the published id — this matches the
     # gateway's ingress dispatch.
     owner = (
         principal_by_id.get(route.owner_principal_id)
@@ -133,7 +133,7 @@ def _route_to_oai_model(
     return OAIModel(
         id=effective_route_name(
             route.name,
-            getattr(owner, "slug", None),
+            getattr(owner, "name", None),
             getattr(owner, "id", None) == platform_principal_id(),
         ),
         object="model",
@@ -147,8 +147,8 @@ async def _prefetch_owner_principals(
     session: AsyncSession, routes
 ) -> Dict[int, Principal]:
     """Bulk-load owner principals so each route's published id is
-    slug-prefixed for non-platform owners. Empty when all routes belong
-    to the platform Org."""
+    owner-name-prefixed for non-platform owners. Empty when all routes
+    belong to the platform Org."""
     principal_ids = {
         r.owner_principal_id for r in routes if r.owner_principal_id is not None
     }

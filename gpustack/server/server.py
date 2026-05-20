@@ -17,7 +17,7 @@ from gpustack.logging import setup_logging
 from gpustack.schemas.users import (
     User,
     get_default_cluster_principal,
-    default_cluster_principal_slug,
+    default_cluster_principal_name,
 )
 from gpustack.schemas.principals import Principal, PrincipalType, platform_principal_id
 from gpustack.schemas.models import Model, ModelInstance
@@ -525,8 +525,8 @@ class Server:
             )
 
         user = User(
-            slug="admin",
-            name="Default System Admin",
+            name="admin",
+            display_name="Default System Admin",
             is_admin=True,
         )
         user = await User.create(session, user, auto_commit=False)
@@ -618,7 +618,7 @@ class Server:
                     )
                 if not worker_principal:
                     to_create_principal = Principal(
-                        slug=f'{system_name_prefix}-{worker.id}',
+                        name=f'{system_name_prefix}-{worker.id}',
                         kind=PrincipalType.SYSTEM,
                     )
                     worker_principal = await Principal.create(
@@ -629,7 +629,7 @@ class Server:
                     access_key = secrets.token_hex(8)
                     secret_key = secrets.token_hex(16)
                     to_create_apikey = ApiKey(
-                        name=worker_principal.slug,
+                        name=worker_principal.name,
                         access_key=access_key,
                         hashed_secret_key=get_secret_hash(secret_key),
                         user=worker_principal,
@@ -813,7 +813,7 @@ class Server:
         )
 
         default_cluster_principal = Principal(
-            slug=default_cluster_principal_slug,
+            name=default_cluster_principal_name,
             kind=PrincipalType.SYSTEM,
         )
         default_cluster_principal = await Principal.create(

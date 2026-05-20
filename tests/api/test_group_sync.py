@@ -68,12 +68,12 @@ def test_coerce_non_string_scalar_is_empty():
 # ---- sync_user_group_memberships -------------------------------------------
 
 
-def _principal(id: int, name: str) -> Principal:
+def _principal(id: int, display_name: str) -> Principal:
     """Make a Group-principal Mock that quacks like a real row."""
     p = MagicMock(spec=Principal)
     p.id = id
     p.kind = PrincipalType.GROUP
-    p.name = name
+    p.display_name = display_name
     p.deleted_at = None
     return p
 

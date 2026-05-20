@@ -43,7 +43,7 @@ async def sync_ssh_public_key_to_cluster(
     ssh_public_key: str,
     server_api_port: int,
     cluster_id: int,
-    cluster_owner_principal_slug: Optional[str] = None,
+    cluster_owner_principal_name: Optional[str] = None,
 ):
     """
     Sync the instance ssh public key to a single cluster by creating or patching a custom resource in the cluster.
@@ -55,7 +55,7 @@ async def sync_ssh_public_key_to_cluster(
     api_version = f"{group}/{version}"
     kind = "InstanceSSHPublicKey"
 
-    namespace = get_namespace_name(cluster_owner_principal_slug)
+    namespace = get_namespace_name(cluster_owner_principal_name)
 
     async with get_k8s_client(server_api_port, cluster_id) as api:
         # Ensure the namespace exists before creating the custom object.
@@ -121,7 +121,7 @@ async def sync_ssh_public_key_to_clusters(
     ssh_public_key: str,
     server_api_port: int,
     cluster_ids: int | list[int],
-    cluster_owner_principal_slug: Optional[str] = None,
+    cluster_owner_principal_name: Optional[str] = None,
 ):
     """
     Sync the instance ssh public key to multiple clusters in parallel.
@@ -135,7 +135,7 @@ async def sync_ssh_public_key_to_clusters(
             ssh_public_key=ssh_public_key,
             server_api_port=server_api_port,
             cluster_id=cluster_id,
-            cluster_owner_principal_slug=cluster_owner_principal_slug,
+            cluster_owner_principal_name=cluster_owner_principal_name,
         )
         for cluster_id in cluster_ids
     ]
