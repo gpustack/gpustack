@@ -70,7 +70,6 @@ async def get_users(
             fields={
                 "kind": PrincipalType.USER,
                 "deleted_at": None,
-                "is_system": False,
             },
             order_by=params.order_by,
         )
@@ -320,6 +319,5 @@ async def list_user_directory(
             fields={
                 "kind": PrincipalType.USER,
                 "deleted_at": None,
-                "is_system": False,
             },
         )

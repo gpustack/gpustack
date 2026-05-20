@@ -50,7 +50,8 @@ from gpustack.schemas.workers import (
     WorkerStateEnum,
 )
 from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
-from gpustack.schemas.users import User, UserRole
+from gpustack.schemas.users import User
+from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.config import (
     SensitivePredefinedConfig,
@@ -434,9 +435,12 @@ def retry_create_unique_worker_uuid(workers: List[Worker]) -> str:
 
 
 def _resolve_create_worker_cluster_id(user, worker_in: WorkerCreate) -> int:
-    cluster_id = (
-        worker_in.cluster_id if worker_in.cluster_id is not None else user.cluster_id
-    )
+    # Fall back to the caller's cluster when the request body omits it.
+    # For a SYSTEM principal that's the cluster bootstrap account, its
+    # ``cluster`` is the back-populated relationship via
+    # ``Cluster.system_principal_id`` (selectinload'd by the auth flow).
+    fallback = user.cluster.id if user.cluster is not None else None
+    cluster_id = worker_in.cluster_id if worker_in.cluster_id is not None else fallback
     if cluster_id is None:
         raise ForbiddenException(message="Missing cluster_id for worker registration")
     return cluster_id
@@ -464,12 +468,11 @@ def _build_worker_config_dict(cluster: Cluster) -> Dict[str, Any]:
 async def _resolve_existing_worker_user(
     session, existing_worker: Optional[Worker]
 ) -> Optional[User]:
-    if existing_worker is None:
+    if existing_worker is None or existing_worker.system_principal_id is None:
         return None
-    return await User.one_by_field(
+    return await User.one_by_id(
         session=session,
-        field="worker_id",
-        value=existing_worker.id,
+        id=existing_worker.system_principal_id,
         options=[selectinload(User.api_keys)],
     )
 
@@ -503,8 +506,11 @@ async def _persist_worker_registration(
         worker = await retry_create_worker(session, new_worker, all_workers)
     created_user = None
     if to_create_user is not None:
-        to_create_user.worker = worker
         created_user = await create_user_with_principal(session, to_create_user)
+        # Inverse FK direction: the worker row records which SYSTEM
+        # principal it claims, not the other way around.
+        worker.system_principal_id = created_user.id
+        await worker.save(session=session, auto_commit=False)
     if to_create_apikey is not None:
         to_create_apikey.user = existing_user or created_user
         to_create_apikey.user_id = (existing_user or created_user).id
@@ -521,9 +527,9 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
     # Worker registration runs through two paths: (1) v1_base_router with
     # a human session — admin-only, since spinning up workers is a
     # platform-level action; (2) cluster_client_router with the cluster
-    # service-account token (user.is_system=True). Allow both, deny the
-    # rest.
-    if not (user.is_admin or getattr(user, "is_system", False)):
+    # service-account token (``user.kind == SYSTEM``). Allow both, deny
+    # the rest.
+    if not (user.is_admin or user.kind == PrincipalType.SYSTEM):
         raise ForbiddenException(message="Only platform admin can register workers")
     async with create_worker_semaphore:
         async with async_session() as session:
@@ -573,9 +579,7 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
             to_create_user = (
                 User(
                     slug=f'{system_name_prefix}-{hashed_suffix}',
-                    is_system=True,
-                    role=UserRole.Worker,
-                    cluster=cluster,
+                    kind=PrincipalType.SYSTEM,
                 )
                 if existing_user is None
                 else None

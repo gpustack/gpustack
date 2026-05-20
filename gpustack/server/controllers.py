@@ -823,15 +823,16 @@ async def sync_ready_replicas(session: AsyncSession, model: Model) -> bool:
 async def get_cluster_registry(
     session: AsyncSession, cluster_id: int
 ) -> Optional[McpBridgeRegistry]:
-    cluster_user = await User.one_by_field(
-        session=session,
-        field="cluster_id",
-        value=cluster_id,
-        options=[selectinload(User.cluster)],
-    )
-    if is_default_cluster_user(cluster_user):
+    # Resolve the cluster's SYSTEM principal via the inverse FK
+    # (``Cluster.system_principal_id``) — that link replaces the old
+    # ``User.cluster_id`` lookup after the FK direction was inverted.
+    cluster = await Cluster.one_by_id(session, cluster_id)
+    if cluster is None or cluster.system_principal_id is None:
         return None
-    cluster_registry = mcp_handler.cluster_registry(cluster_user.cluster)
+    cluster_user = await User.one_by_id(session, cluster.system_principal_id)
+    if cluster_user is None or is_default_cluster_user(cluster_user):
+        return None
+    cluster_registry = mcp_handler.cluster_registry(cluster)
     if cluster_registry is None:
         return None
     return cluster_registry

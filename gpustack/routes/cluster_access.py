@@ -61,10 +61,10 @@ async def _validate_principal(
                 f"not a {principal_type.value}"
             )
         )
-    # Disallow granting access to system users (workers etc.). They
-    # already bypass cluster_access via ``is_system``.
-    if target.kind == PrincipalType.USER and target.is_system:
-        raise InvalidException(message=f"User principal {principal_id} not found")
+    # System principals (kind=SYSTEM) bypass cluster_access entirely
+    # via :func:`bypass_tenant_filter`; the API surface here is
+    # constrained to USER / GROUP / ORG kinds so SYSTEM never reaches
+    # this validator.
     return target
 
 

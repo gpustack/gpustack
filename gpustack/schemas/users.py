@@ -13,7 +13,7 @@ ORG / GROUP-only columns (``slug``, ``description``, ``kind``,
 ``parent_principal_id``) because those aren't part of the user-facing
 contract.
 
-Re-exports the enums (``AuthProviderEnum``, ``UserRole``) so existing
+Re-exports ``AuthProviderEnum`` so existing
 ``from gpustack.schemas.users import AuthProviderEnum`` callers keep
 working unchanged.
 """
@@ -38,7 +38,6 @@ from gpustack.schemas.principals import (  # noqa: F401  re-exports
     AuthProviderEnum,
     Principal,
     PrincipalType,
-    UserRole,
 )
 
 
@@ -106,13 +105,6 @@ class UserBase(SQLModel):
     )
     source: Optional[str] = Field(default=AuthProviderEnum.Local)
     require_password_change: bool = Field(default=False)
-
-    is_system: bool = False
-    role: Optional[UserRole] = Field(
-        default=None, description="Role of the user, e.g., worker or cluster"
-    )
-    cluster_id: Optional[int] = None
-    worker_id: Optional[int] = None
 
 
 class UserCreate(UserBase):
@@ -190,8 +182,7 @@ UsersPublic = PaginatedList[UserPublic]
 
 def is_default_cluster_user(cluster_user: User) -> bool:
     return (
-        cluster_user.is_system
-        and cluster_user.cluster_id is not None
+        cluster_user.kind == PrincipalType.SYSTEM
         and cluster_user.slug == default_cluster_user_name
     )
 

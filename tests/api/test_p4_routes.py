@@ -31,7 +31,6 @@ def _principal(
     p.kind = kind
     p.name = name
     p.deleted_at = None
-    p.is_system = False
     return p
 
 
@@ -161,15 +160,14 @@ async def test_add_principal_rejects_system_user(monkeypatch):
         "one_by_id",
         AsyncMock(return_value=_route()),
     )
-    # Post-consolidation, system-user detection reads ``is_system``
-    # straight off the loaded Principal row — there's no separate
-    # ``User.one_by_field`` lookup.
-    sys_user_principal = _principal(id=2, kind=PrincipalType.USER)
-    sys_user_principal.is_system = True
+    # System actors live in ``kind=SYSTEM`` rows now (workers / cluster
+    # bootstrap accounts). Trying to add one as a USER-kind ACL grant
+    # fails on the kind-mismatch check in ``_validate_principal``.
+    sys_principal = _principal(id=2, kind=PrincipalType.SYSTEM)
     monkeypatch.setattr(
         principals_route.Principal,
         "one_by_id",
-        AsyncMock(return_value=sys_user_principal),
+        AsyncMock(return_value=sys_principal),
     )
     with pytest.raises(InvalidException):
         await principals_route.add_route_principal(

@@ -16,11 +16,10 @@ from gpustack.gpu_instances import sync_builtin_templates_to_db
 from gpustack.logging import setup_logging
 from gpustack.schemas.users import (
     User,
-    UserRole,
     get_default_cluster_user,
     default_cluster_user_name,
 )
-from gpustack.schemas.principals import platform_principal_id
+from gpustack.schemas.principals import PrincipalType, platform_principal_id
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
@@ -499,7 +498,11 @@ class Server:
         # admin to be regenerated on master restart.
         existing_admin = await User.first_by_fields(
             session=session,
-            fields={"is_admin": True, "is_system": False, "is_active": True},
+            fields={
+                "is_admin": True,
+                "kind": PrincipalType.USER,
+                "is_active": True,
+            },
         )
         if existing_admin:
             return
@@ -563,13 +566,10 @@ class Server:
             default_cluster.registration_token = self._config.token
             await default_cluster.update(session=session, auto_commit=False)
 
-            default_cluster_user = await User.one_by_fields(
-                session=session,
-                fields={
-                    "cluster_id": default_cluster.id,
-                    "is_system": True,
-                    "role": UserRole.Cluster,
-                },
+            if default_cluster.system_principal_id is None:
+                raise RuntimeError("Default cluster has no system principal.")
+            default_cluster_user = await User.one_by_id(
+                session=session, id=default_cluster.system_principal_id
             )
             if default_cluster_user is None:
                 raise RuntimeError("Default cluster user does not exist.")
@@ -610,33 +610,25 @@ class Server:
         if len(workers) == 0:
             return
         system_name_prefix = "system/worker"
-        worker_ids = [worker.id for worker in workers]
-        worker_users = await User.all_by_fields(
-            session=session,
-            fields={
-                "cluster_id": default_cluster.id,
-                "is_system": True,
-                "role": UserRole.Worker,
-            },
-            extra_conditions=[User.worker_id.in_(worker_ids)],
-        )
-        user_by_worker_id = {user.worker_id: user for user in worker_users}
+        # ``worker.system_principal_id`` is the post-inversion link. For
+        # legacy workers it'll be NULL until we provision one below.
         for worker in workers:
             try:
-                worker_user = user_by_worker_id.get(worker.id, None)
+                worker_user = None
+                if worker.system_principal_id is not None:
+                    worker_user = await User.one_by_id(
+                        session=session, id=worker.system_principal_id
+                    )
                 if not worker_user:
                     to_create_user = User(
                         slug=f'{system_name_prefix}-{worker.id}',
-                        is_system=True,
-                        role=UserRole.Worker,
-                        cluster=default_cluster,
-                        cluster_id=default_cluster.id,
-                        worker=worker,
-                        worker_id=worker.id,
+                        kind=PrincipalType.SYSTEM,
                     )
                     worker_user = await create_user_with_principal(
                         session, to_create_user
                     )
+                    worker.system_principal_id = worker_user.id
+                    await worker.save(session=session, auto_commit=False)
                     access_key = secrets.token_hex(8)
                     secret_key = secrets.token_hex(16)
                     to_create_apikey = ApiKey(
@@ -825,12 +817,13 @@ class Server:
 
         default_cluster_user = User(
             slug=default_cluster_user_name,
-            is_system=True,
-            is_admin=False,
-            role=UserRole.Cluster,
-            cluster=default_cluster,
+            kind=PrincipalType.SYSTEM,
         )
-        await create_user_with_principal(session, default_cluster_user)
+        default_cluster_user = await create_user_with_principal(
+            session, default_cluster_user
+        )
+        default_cluster.system_principal_id = default_cluster_user.id
+        await default_cluster.save(session=session, auto_commit=False)
 
         # No cluster_access grant needed: the cluster's `owner_principal_id`
         # already binds it to the platform Org, whose members are

@@ -21,6 +21,7 @@ from gpustack.api.tenant import (
 )
 from gpustack.schemas import Worker
 from gpustack.schemas.common import Pagination
+from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
     InferenceBackendCreate,
@@ -368,7 +369,10 @@ async def list_backend_configs(  # noqa: C901
         bypass_filter = (
             ctx is None
             or (ctx.is_platform_admin and ctx.current_principal_id is None)
-            or getattr(getattr(ctx, "user", None), "is_system", False)
+            or (
+                getattr(ctx, "user", None) is not None
+                and ctx.user.kind == PrincipalType.SYSTEM
+            )
         )
         if bypass_filter:
             visible_rows = [b for b in all_rows if b.owner_principal_id is None]
@@ -516,7 +520,7 @@ def _hybrid_backend_conditions(ctx) -> List:
     """
     if ctx is None:
         return []
-    if getattr(ctx.user, "is_system", False):
+    if ctx.user is not None and ctx.user.kind == PrincipalType.SYSTEM:
         return []
     if ctx.is_platform_admin and ctx.current_principal_id is None:
         return []
@@ -796,9 +800,12 @@ async def get_inference_backends(  # noqa: C901
                 ctx.is_platform_admin and ctx.current_principal_id is None
             ):
                 return True
-            # System users (worker / cluster) need every Org's overrides
-            # because they actually run the deploys.
-            if getattr(getattr(ctx, "user", None), "is_system", False):
+            # System principals (worker / cluster) need every Org's
+            # overrides because they actually run the deploys.
+            if (
+                getattr(ctx, "user", None) is not None
+                and ctx.user.kind == PrincipalType.SYSTEM
+            ):
                 return True
             org_id = getattr(b, "owner_principal_id", None)
             if org_id is None:

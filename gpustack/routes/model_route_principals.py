@@ -65,10 +65,10 @@ async def _validate_principal(
                 f"not a {principal_type.value}"
             )
         )
-    # System users (workers / cluster service accounts) are USER-kind
-    # but shouldn't appear in ACL grants — they bypass via is_system.
-    if target.kind == PrincipalType.USER and target.is_system:
-        raise InvalidException(message=f"User principal {principal_id} not found")
+    # Caller-requested kind is constrained to USER / GROUP / ORG by
+    # the API surface; SYSTEM principals are rejected by the
+    # ``target.kind != principal_type`` mismatch above (no API path
+    # asks for kind=SYSTEM in an ACL grant).
     return target
 
 

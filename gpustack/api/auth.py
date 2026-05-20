@@ -27,14 +27,15 @@ from gpustack.api.exceptions import (
     HTTPException,
 )
 from gpustack.schemas.api_keys import ApiKey, PermissionScope
-from gpustack.schemas.users import User, UserRole
+from gpustack.schemas.users import User
+from gpustack.schemas.principals import PrincipalType
 from gpustack.security import (
     JWTManager,
     verify_hashed_secret,
     get_key_pair,
 )
 from gpustack.server.passwords import verify_password
-from gpustack.server.services import APIKeyService, UserService, WorkerService
+from gpustack.server.services import APIKeyService, UserService
 from gpustack.websocket_proxy.authenticator import (
     Authenticator as WebsocketAuthenticator,
 )
@@ -148,11 +149,12 @@ async def get_admin_user(
 async def get_cluster_user(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> User:
-    if (
-        current_user.is_system
-        and current_user.role == UserRole.Cluster
-        and current_user.cluster_id is not None
-    ):
+    # A SYSTEM principal that the *cluster* claims (1:1 via
+    # ``Cluster.system_principal_id``) is the cluster bootstrap
+    # account. ``current_user.cluster`` is the back-populated
+    # relationship — eagerly loaded by ``UserService.get_by_username``
+    # so this check is a cheap attribute read.
+    if current_user.kind == PrincipalType.SYSTEM and current_user.cluster is not None:
         return current_user
     return await get_admin_user(current_user)
 
@@ -160,11 +162,7 @@ async def get_cluster_user(
 async def get_worker_user(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> User:
-    if (
-        current_user.is_system
-        and current_user.role == UserRole.Worker
-        and current_user.worker is not None
-    ):
+    if current_user.kind == PrincipalType.SYSTEM and current_user.worker is not None:
         return current_user
     return await get_admin_user(current_user)
 
@@ -179,7 +177,15 @@ async def authenticate_system_user(
 ) -> Optional[User]:
     if credentials.username.startswith(SYSTEM_WORKER_USER_PREFIX):
         if credentials.password == config.token:
-            return User(slug=credentials.username, is_admin=True)
+            # In-memory principal — never persisted. SYSTEM kind is
+            # what downstream checks (``get_cluster_user`` /
+            # ``get_worker_user``) gate on, plus ``is_admin`` flips on
+            # the all-access guards used by legacy worker callers.
+            return User(
+                slug=credentials.username,
+                kind=PrincipalType.SYSTEM,
+                is_admin=True,
+            )
     return None
 
 
@@ -406,8 +412,8 @@ async def authenticate_worker_by_request_headers(
         user, _ = await get_user_from_api_token(session, bearer_token.credentials)
         if user is None:
             return None
-        if user.worker_id is not None:
-            user.worker = await WorkerService(session).get_by_id(user.worker_id)
+        # ``user.worker`` is populated by ``UserService.get_by_id`` via
+        # selectinload — no extra fetch needed.
         return user
 
 
@@ -450,7 +456,7 @@ class BearerTokenAuthenticator(WebsocketAuthenticator):
             return False
         if websocket.headers.get("x-client-id") != user.worker.worker_uuid:
             logger.debug(
-                f"Authenticated worker {user.worker_id} with bearer token but client_id {websocket.headers.get('x-client-id')} does not match worker_uuid {user.worker.worker_uuid}"
+                f"Authenticated worker {user.worker.id} with bearer token but client_id {websocket.headers.get('x-client-id')} does not match worker_uuid {user.worker.worker_uuid}"
             )
             return False
         websocket.scope["user"] = user
