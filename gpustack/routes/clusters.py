@@ -327,7 +327,7 @@ async def create_cluster(
         }
     )
     to_create_user = User(
-        username=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
+        slug=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
         is_system=True,
         role=UserRole.Cluster,
         hashed_password="",

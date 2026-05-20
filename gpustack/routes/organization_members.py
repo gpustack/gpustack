@@ -38,7 +38,6 @@ from gpustack.schemas.principals import (
     PrincipalMembership,
     PrincipalType,
 )
-from gpustack.schemas.users import User
 from gpustack.server.deps import SessionDep, TenantContextDep
 
 router = APIRouter()
@@ -161,13 +160,11 @@ async def _enrich_with_labels(
     org_principal_id: int,
     rows: List[PrincipalMembership],
 ) -> List[OrganizationMembershipPublic]:
-    """Bulk-resolve display labels for each membership row.
+    """Resolve display labels for each membership row.
 
-    Principal-level fields come off ``principals``. ``full_name`` is
-    looked up on ``users`` for USER-kind members only — a single
-    bounded query, scoped to just the user-principals in this page.
-    Drops away once identity consolidation moves full_name onto the
-    principal row.
+    After identity consolidation, every label lives on the ``principals``
+    row directly — ``principal_name`` is the display name for both USER
+    and GROUP members.
     """
     member_ids = {r.member_principal_id for r in rows}
     if not member_ids:
@@ -185,32 +182,12 @@ async def _enrich_with_labels(
         ).all()
     }
 
-    user_principal_ids = [
-        pid for pid, p in principal_by_id.items() if p.kind == PrincipalType.USER
-    ]
-    full_name_by_principal: dict[int, Optional[str]] = {}
-    if user_principal_ids:
-        full_name_by_principal = {
-            u.id: u.full_name
-            for u in (
-                await session.exec(select(User).where(User.id.in_(user_principal_ids)))
-            ).all()
-        }
-
     out: List[OrganizationMembershipPublic] = []
     for r in rows:
         p = principal_by_id.get(r.member_principal_id)
         if p is None:
             continue
-        out.append(
-            _to_public(
-                p,
-                r.role,
-                r.created_at,
-                org_principal_id,
-                full_name=full_name_by_principal.get(p.id),
-            )
-        )
+        out.append(_to_public(p, r.role, r.created_at, org_principal_id))
     return out
 
 
@@ -219,15 +196,12 @@ def _to_public(
     role: Optional[OrgRole],
     created_at: datetime,
     organization_id: int,
-    *,
-    full_name: Optional[str] = None,
 ) -> OrganizationMembershipPublic:
     return OrganizationMembershipPublic(
         principal_id=p.id,
         principal_kind=p.kind,
         principal_name=p.name,
         principal_description=p.description,
-        full_name=full_name,
         organization_id=organization_id,
         role=role,
         created_at=created_at,
@@ -297,31 +271,16 @@ async def add_org_members(
         raise NotFoundException(message=f"Principal(s) not found: {missing}")
 
     # USER-kind: filter out system users (workers / cluster service
-    # accounts must not be enrolled as Org members). System-user
-    # detection still lives on the ``users`` table, so a single
-    # bounded query — only over the USER-kind principals we're about
-    # to insert — gates them. We reuse the ``users`` rows we pulled
-    # to fill ``full_name`` on the response.
-    user_principal_ids = [
-        pid for pid, p in principal_by_id.items() if p.kind == PrincipalType.USER
+    # accounts must not be enrolled as Org members). ``is_system``
+    # lives on the unified ``principals`` row now, so the check is a
+    # straight read off ``principal_by_id``.
+    bad = [
+        pid
+        for pid, p in principal_by_id.items()
+        if p.kind == PrincipalType.USER and p.is_system
     ]
-    users_by_principal: dict[int, User] = {}
-    if user_principal_ids:
-        users_by_principal = {
-            u.id: u
-            for u in (
-                await session.exec(select(User).where(User.id.in_(user_principal_ids)))
-            ).all()
-        }
-        bad = [
-            pid
-            for pid in user_principal_ids
-            if (u := users_by_principal.get(pid)) is None
-            or u.is_system
-            or u.deleted_at is not None
-        ]
-        if bad:
-            raise NotFoundException(message=f"Principal(s) not eligible: {bad}")
+    if bad:
+        raise NotFoundException(message=f"Principal(s) not eligible: {bad}")
 
     existing_rows = (
         await session.exec(
@@ -371,16 +330,7 @@ async def add_org_members(
         await session.rollback()
         raise InvalidException(message=f"Failed to add members: {e}")
 
-    return [
-        _to_public(
-            p,
-            row.role,
-            row.created_at,
-            org.id,
-            full_name=getattr(users_by_principal.get(p.id), "full_name", None),
-        )
-        for p, row in stored
-    ]
+    return [_to_public(p, row.role, row.created_at, org.id) for p, row in stored]
 
 
 @router.put(
@@ -423,12 +373,7 @@ async def update_org_member(
         await session.rollback()
         raise InvalidException(message=f"Failed to update member: {e}")
 
-    # After identity consolidation, the user IS the principal — read
-    # ``full_name`` straight off ``p`` instead of a second lookup.
-    full_name = p.full_name if p.kind == PrincipalType.USER else None
-    return _to_public(
-        p, membership.role, membership.created_at, org_id, full_name=full_name
-    )
+    return _to_public(p, membership.role, membership.created_at, org_id)
 
 
 @router.delete("/organizations/{org_id}/members/{principal_id}")

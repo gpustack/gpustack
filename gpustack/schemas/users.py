@@ -22,7 +22,12 @@ import re
 from datetime import datetime
 from typing import ClassVar, List, Optional
 
-from pydantic import field_validator
+from pydantic import (
+    AliasChoices,
+    ConfigDict,
+    Field as PField,
+    field_validator,
+)
 from sqlalchemy import Text
 from sqlalchemy.orm import selectinload
 from sqlmodel import Column, Field, SQLModel
@@ -70,12 +75,32 @@ class UserBase(SQLModel):
 
     ``kind`` and the ORG/GROUP-only columns are intentionally omitted —
     they don't belong on the user-facing CRUD surface.
+
+    The wire-level field names ``username`` / ``full_name`` are kept
+    for backward compatibility with API clients (OAuth2 password flow,
+    the bundled UI, the SDK). Internally they map onto the unified
+    Principal columns ``slug`` and ``name``; the ``validation_alias``
+    on each lets ``UserPublic.model_validate(principal)`` read directly
+    off a ``Principal`` row without an explicit conversion step.
     """
 
-    username: str
+    # ``populate_by_name=True`` so callers can still construct DTOs via
+    # the wire field name (e.g. ``UserCreate(username='alice')``);
+    # ``validation_alias`` makes ``model_validate(principal)`` pick up
+    # ``principal.slug`` / ``principal.name`` automatically.
+    model_config = ConfigDict(populate_by_name=True)
+
+    username: str = PField(
+        validation_alias=AliasChoices('username', 'slug'),
+        serialization_alias='slug',
+    )
     is_admin: bool = False
     is_active: bool = True
-    full_name: Optional[str] = None
+    full_name: Optional[str] = PField(
+        default=None,
+        validation_alias=AliasChoices('full_name', 'name'),
+        serialization_alias='name',
+    )
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
@@ -105,9 +130,18 @@ class UserUpdate(UserBase):
 class UserSelfUpdate(SQLModel):
     """Schema for users updating their own profile — excludes
     privileged fields.
+
+    Wire field name stays ``full_name``; persisted as ``name`` on the
+    Principal row (see :class:`UserBase` for the rename rationale).
     """
 
-    full_name: Optional[str] = None
+    model_config = ConfigDict(populate_by_name=True)
+
+    full_name: Optional[str] = PField(
+        default=None,
+        validation_alias=AliasChoices('full_name', 'name'),
+        serialization_alias='name',
+    )
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
@@ -135,9 +169,9 @@ class UserActivationUpdate(SQLModel):
 
 class UserListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
-        "username",
+        "slug",
         "is_admin",
-        "full_name",
+        "name",
         "source",
         "is_active",
         "created_at",
@@ -158,7 +192,7 @@ def is_default_cluster_user(cluster_user: User) -> bool:
     return (
         cluster_user.is_system
         and cluster_user.cluster_id is not None
-        and cluster_user.username == default_cluster_user_name
+        and cluster_user.slug == default_cluster_user_name
     )
 
 
@@ -169,7 +203,7 @@ async def get_default_cluster_user(session: AsyncSession) -> Optional[User]:
     # need the related Cluster row, so eager-load it here.
     return await User.one_by_field(
         session=session,
-        field="username",
+        field="slug",
         value=default_cluster_user_name,
         options=[selectinload(User.cluster)],
     )

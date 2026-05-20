@@ -14,6 +14,7 @@ from gpustack.api.exceptions import (
     BadRequestException,
 )
 from gpustack.schemas.users import UpdatePassword
+from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.users import User, AuthProviderEnum
 from gpustack.security import (
     JWTManager,
@@ -261,14 +262,13 @@ async def saml_callback(request: Request, session: SessionDep):
             )
 
         # determine whether the user already exists
-        user = await User.first_by_field(
-            session=session, field="username", value=username
-        )
+        user = await User.first_by_field(session=session, field="slug", value=username)
         # create user
         if not user:
             user_info = User(
-                username=username,
-                full_name=full_name,
+                kind=PrincipalType.USER,
+                slug=username,
+                name=full_name or username,
                 avatar_url=avatar_url,
                 hashed_password="",
                 is_admin=False,
@@ -520,12 +520,13 @@ async def oidc_callback(request: Request, session: SessionDep):
             logger.error(f"Get OIDC user info error: {str(e)}")
             raise UnauthorizedException(message=str(e))
     # determine whether the user already exists
-    user = await User.first_by_field(session=session, field="username", value=username)
+    user = await User.first_by_field(session=session, field="slug", value=username)
     # create user
     if not user:
         user_info = User(
-            username=username,
-            full_name=full_name,
+            kind=PrincipalType.USER,
+            slug=username,
+            name=full_name or username,
             avatar_url=avatar_url,
             hashed_password="",
             is_admin=False,
@@ -584,10 +585,9 @@ async def login(
     password: Annotated[str, Form()] = "",
 ):
     user = await authenticate_user(session, username, password)
-    user_name = user.username
     jwt_manager: JWTManager = request.app.state.jwt_manager
     access_token = jwt_manager.create_jwt_token(
-        username=user_name,
+        username=user.slug,
     )
     response.set_cookie(
         key=SESSION_COOKIE_NAME,

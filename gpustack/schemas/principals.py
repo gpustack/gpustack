@@ -150,15 +150,22 @@ class PrincipalBase(SQLModel):
         sa_column=Column(SQLEnum(PrincipalType), nullable=False),
     )
 
-    # User-facing identifier used in URLs and ``effective_route_name``.
-    # Globally unique among non-NULL values. ``user-{id}`` for USER
-    # kind; user-supplied for ORG; NULL for GROUP (groups never appear
-    # in URL prefixes).
+    # Stable identifier for the principal. Globally unique among
+    # non-NULL values.
+    #
+    # * USER: the login name (what the legacy schema called
+    #   ``username``). Not used as a URL prefix — USER-owned model
+    #   routes don't exist, so format is unconstrained beyond the
+    #   uniqueness check.
+    # * ORG: user-supplied URL-safe slug; appears as the
+    #   ``<owner-slug>/<route-name>`` prefix in inference URLs.
+    # * GROUP: NULL (groups have no canonical identifier; their
+    #   ``name`` is uniquely indexed instead).
     slug: Optional[str] = Field(default=None, nullable=True)
 
-    # Display name. For USER this is typically the same as ``username``
-    # at creation time but can be edited freely. For ORG / GROUP it's
-    # the human-readable label.
+    # Display name. For USER this is the human label (legacy
+    # ``full_name``, falling back to login at creation time). For
+    # ORG / GROUP it's the user-supplied label.
     name: Optional[str] = Field(default=None, nullable=True)
 
     description: Optional[str] = Field(
@@ -191,15 +198,12 @@ class PrincipalBase(SQLModel):
     )
 
     # ---- USER-only columns (NULL / default-valued on ORG / GROUP) ----
-
-    # Login identifier. Nullable because ORG / GROUP rows have no
-    # login. Application layer enforces uniqueness among non-NULL
-    # values (USER kind).
-    username: Optional[str] = Field(default=None, nullable=True)
+    # Login (``username``) and display name (``full_name``) collapsed
+    # into ``slug`` and ``name`` above — same columns are used for all
+    # principal kinds.
 
     is_admin: bool = Field(default=False, nullable=False)
     is_active: bool = Field(default=True, nullable=False)
-    full_name: Optional[str] = Field(default=None, nullable=True)
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )

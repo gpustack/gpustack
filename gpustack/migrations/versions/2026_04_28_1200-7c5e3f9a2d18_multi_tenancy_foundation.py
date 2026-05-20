@@ -15,8 +15,9 @@ Logical groups, run in order:
    from ``schemas/stmt.py`` at startup).
 2. Extend the existing ``users`` table with the principal-shaped
    columns (``kind``, ``slug``, ``name``, ``description``,
-   ``parent_principal_id``), backfill USER kind data, and make
-   ``username`` nullable so ORG / GROUP rows can land here with NULL.
+   ``parent_principal_id``), backfill USER kind data (``slug`` = old
+   ``username``, ``name`` = ``full_name`` or ``username``), then drop
+   ``username`` / ``full_name`` — the new columns subsume them.
 3. Insert the platform Org-principal row (``slug='default'``,
    ``kind='ORG'``) as a row in the still-named ``users`` table.
 4. Rename ``users`` → ``principals``. Existing ``user_id`` FKs
@@ -166,9 +167,28 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 2. Extend ``users`` with the principal-shaped columns.
     # ------------------------------------------------------------------
-    # ``username`` is dropped to NULLABLE so ORG / GROUP rows (which
-    # have no login identifier) can be inserted here / created later.
-    # Uniqueness among USER rows is enforced at the application layer.
+    # USER's identifier collapses into ``slug`` (was ``username``) and
+    # display name collapses into ``name`` (was ``full_name`` falling
+    # back to ``username``). The old columns are dropped at the end of
+    # this step.
+    #
+    # Preflight: if any existing user has ``username`` equal to the
+    # platform Org slug we're about to seed, the unique slug index
+    # would collide. Surface the conflict before mutating anything so
+    # the operator can rename the user and retry.
+    conflict = bind.execute(
+        sa.text(
+            "SELECT id, username FROM users WHERE username = :slug"
+        ).bindparams(slug=PLATFORM_PRINCIPAL_SLUG)
+    ).first()
+    if conflict is not None:
+        raise RuntimeError(
+            f"Cannot upgrade: user id={conflict[0]} username="
+            f"{conflict[1]!r} collides with the reserved platform Org "
+            f"slug {PLATFORM_PRINCIPAL_SLUG!r}. Rename that user "
+            "before re-running the migration."
+        )
+
     with op.batch_alter_table('users', schema=None) as batch_op:
         if not column_exists('users', 'kind'):
             batch_op.add_column(
@@ -190,32 +210,32 @@ def upgrade() -> None:
             batch_op.add_column(
                 sa.Column('parent_principal_id', sa.Integer(), nullable=True)
             )
-        batch_op.alter_column(
-            'username',
-            existing_type=sa.String(),
-            nullable=True,
-        )
 
-    # Backfill USER-kind data for existing user rows. ``name`` falls
-    # back to ``username`` when ``full_name`` is NULL so display-name
-    # readers always have something to show.
+    # Backfill USER-kind data for existing user rows.
     op.execute(
         sa.text(
             """
             UPDATE users
             SET kind = 'USER',
-                slug = 'user-' || CAST(id AS VARCHAR),
+                slug = username,
                 name = COALESCE(full_name, username)
             WHERE kind IS NULL
             """
         )
     )
 
-    # Promote ``kind`` to NOT NULL now that every existing row has a value.
+    # Drop the legacy identifier/display columns now that the data
+    # lives in ``slug`` / ``name``. The unique index on ``username``
+    # disappears with it; the new ``slug`` unique constraint replaces
+    # it in step 5.
     with op.batch_alter_table('users', schema=None) as batch_op:
         batch_op.alter_column(
             'kind', existing_type=principal_type, nullable=False
         )
+        if column_exists('users', 'full_name'):
+            batch_op.drop_column('full_name')
+        if column_exists('users', 'username'):
+            batch_op.drop_column('username')
 
     # ------------------------------------------------------------------
     # 3. Seed the platform Org-principal as a row in ``users``.
@@ -236,7 +256,6 @@ def upgrade() -> None:
             f"""
             INSERT INTO users
                 (id, kind, slug, name, description,
-                 username,
                  is_admin, is_active, require_password_change, is_system,
                  hashed_password,
                  source,
@@ -244,7 +263,6 @@ def upgrade() -> None:
             SELECT
                 COALESCE((SELECT MAX(id) FROM users), 0) + 1,
                 'ORG', :slug, :name, :desc,
-                NULL,
                 {bool_false}, {bool_true}, {bool_false}, {bool_false},
                 '',
                 'Local',

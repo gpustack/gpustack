@@ -51,34 +51,6 @@ class RouteTargetResolution(NamedTuple):
     overridden_model_name: Optional[str]
 
 
-def _sync_principal_name(
-    user: User,
-    source: Union[dict, SQLModel, None],
-) -> Union[dict, SQLModel, None]:
-    """Mirror ``full_name`` (falling back to ``username``) into the
-    Principal-level ``name`` column whenever an update payload touches
-    either field. Idempotent; leaves ``source`` alone if neither
-    appears.
-
-    Accepts both dict payloads and ``SQLModel`` instances (Pydantic
-    DTOs) — the latter is converted to a dict so we can attach the
-    derived ``name``. Partial payloads fall back to the existing
-    ``user`` row for whichever of ``full_name`` / ``username`` is not
-    in the update, otherwise renaming only one of the two fields would
-    leave ``name`` stale relative to the merged result.
-    """
-    if source is None:
-        return None
-    update_dict = (
-        source if isinstance(source, dict) else source.model_dump(exclude_unset=True)
-    )
-    if 'full_name' not in update_dict and 'username' not in update_dict:
-        return source
-    full_name = update_dict.get('full_name', user.full_name)
-    username = update_dict.get('username', user.username)
-    update_dict = {**update_dict, 'name': full_name or username}
-    return update_dict
-
 
 class UserService:
 
@@ -102,7 +74,11 @@ class UserService:
 
     @locked_cached()
     async def get_by_username(self, username: str) -> Optional[User]:
-        result = await User.one_by_field(self.session, "username", username)
+        # ``username`` is the wire-level name for the storage column
+        # ``slug`` after identity consolidation. The cache key still
+        # passes through the legacy parameter name so OAuth2 password
+        # callers don't need to know about the rename.
+        result = await User.one_by_field(self.session, "slug", username)
         if result is None:
             return None
         self.session.expunge(result)
@@ -112,16 +88,10 @@ class UserService:
         return await create_user_with_principal(self.session, user)
 
     async def update(self, user: User, source: Union[dict, SQLModel, None] = None):
-        # Keep ``principals.name`` in lockstep with the user-facing
-        # display fields (``full_name`` / ``username``) whenever either
-        # changes. ``name`` is what cluster-access grants, ACL pickers,
-        # and the org members list render — letting it drift produces
-        # the ``#{id}`` fallback in the UI.
-        source = _sync_principal_name(user, source)
         result = await user.update(self.session, source)
         await delete_cache_by_key(self.get_by_id, user.id)
         await delete_cache_by_key(self.get_user_accessible_model_names, user.id)
-        await delete_cache_by_key(self.get_by_username, user.username)
+        await delete_cache_by_key(self.get_by_username, user.slug)
         return result
 
     async def delete(self, user: User):
@@ -129,7 +99,7 @@ class UserService:
         result = await user.delete(self.session)
         await delete_cache_by_key(self.get_by_id, user.id)
         await delete_cache_by_key(self.get_user_accessible_model_names, user.id)
-        await delete_cache_by_key(self.get_by_username, user.username)
+        await delete_cache_by_key(self.get_by_username, user.slug)
         for apikey in apikeys:
             await delete_cache_by_key(
                 APIKeyService.get_by_access_key, apikey.access_key
@@ -217,32 +187,22 @@ class UserService:
 
 
 async def create_user_with_principal(session: AsyncSession, user: User) -> User:
-    """Persist a User row (which is just a Principal of kind USER) and
-    backfill its canonical ``slug`` and ``name``.
+    """Persist a User row (which is just a Principal of kind USER).
 
-    Historically this function persisted two linked rows — a ``users``
-    row plus a 1:1 ``principals`` row — and the comment here was a
-    long explanation of the flush ordering required to satisfy a
-    NOT NULL FK between them. After identity consolidation that's all
-    gone: the user IS a principal, so we just insert, then stamp the
-    ``user-{id}`` slug once the auto-generated id is known.
-
-    ``name`` mirrors the migration's backfill — ``full_name`` if
-    present, otherwise ``username`` — so per-principal display labels
-    (cluster-access grants, model-route ACLs, the org members list)
-    show a meaningful string instead of ``#{id}``.
+    Ensures ``kind`` defaults to USER and that ``name`` has a value —
+    falling back to ``slug`` (the login) when no display name is
+    supplied, so per-principal display labels (cluster-access grants,
+    model-route ACLs, the org members list) show a meaningful string
+    instead of ``#{id}``.
 
     Caller commits.
     """
     if user.kind is None:
         user.kind = PrincipalType.USER
     if user.name is None:
-        user.name = user.full_name or user.username
+        user.name = user.slug
     session.add(user)
     await session.flush([user])
-    if user.slug is None:
-        user.slug = f"user-{user.id}"
-        await session.flush([user])
     return user
 
 

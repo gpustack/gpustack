@@ -68,17 +68,6 @@ def _principal(
     return p
 
 
-def _user_row(id: int = 2, principal_id: int = 200):
-    u = MagicMock()
-    u.id = id
-    u.principal_id = principal_id
-    u.username = f"user-{id}"
-    u.full_name = None
-    u.is_system = False
-    u.deleted_at = None
-    return u
-
-
 def _session_returning(*results):
     """Make a mock async session whose successive .exec() return the queued results."""
     session = MagicMock()

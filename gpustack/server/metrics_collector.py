@@ -419,7 +419,7 @@ def _build_metric_snapshot(
             snapshot.update(
                 {
                     "user_id": user.id,
-                    "user_name": user.username,
+                    "user_name": user.slug,
                 }
             )
         if api_key is not None:

@@ -524,8 +524,8 @@ class Server:
             )
 
         user = User(
-            username="admin",
-            full_name="Default System Admin",
+            slug="admin",
+            name="Default System Admin",
             hashed_password=get_secret_hash(bootstrap_password),
             is_admin=True,
             require_password_change=require_password_change,
@@ -620,7 +620,7 @@ class Server:
                 worker_user = user_by_worker_id.get(worker.id, None)
                 if not worker_user:
                     to_create_user = User(
-                        username=f'{system_name_prefix}-{worker.id}',
+                        slug=f'{system_name_prefix}-{worker.id}',
                         is_system=True,
                         role=UserRole.Worker,
                         hashed_password="",
@@ -635,7 +635,7 @@ class Server:
                     access_key = secrets.token_hex(8)
                     secret_key = secrets.token_hex(16)
                     to_create_apikey = ApiKey(
-                        name=worker_user.username,
+                        name=worker_user.slug,
                         access_key=access_key,
                         hashed_secret_key=get_secret_hash(secret_key),
                         user=worker_user,
@@ -819,7 +819,7 @@ class Server:
         )
 
         default_cluster_user = User(
-            username=default_cluster_user_name,
+            slug=default_cluster_user_name,
             is_system=True,
             is_admin=False,
             require_password_change=False,
