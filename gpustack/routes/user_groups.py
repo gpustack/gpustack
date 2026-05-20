@@ -223,8 +223,8 @@ async def list_group_members(session: SessionDep, ctx: TenantContextDep, group_i
                 user_id=getattr(u, "id", 0),
                 group_id=group_id,
                 created_at=r.created_at,
-                username=getattr(u, "username", None),
-                full_name=getattr(u, "full_name", None),
+                username=getattr(u, "slug", None),
+                full_name=getattr(u, "name", None),
             )
         )
     return out
@@ -320,8 +320,8 @@ async def add_group_members(
             user_id=user.id,
             group_id=group_id,
             created_at=link.created_at,
-            username=user.username,
-            full_name=user.full_name,
+            username=user.slug,
+            full_name=user.name,
         )
         for user, link in stored_pairs
     ]

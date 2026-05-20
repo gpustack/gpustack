@@ -818,8 +818,8 @@ async def _list_route_users(session, route_id: int) -> List[ModelUserAccessExten
     return [
         ModelUserAccessExtended(
             id=user.id,
-            username=user.username,
-            full_name=user.full_name,
+            username=user.slug,
+            full_name=user.name,
             avatar_url=user.avatar_url,
         )
         for user, _ in rows

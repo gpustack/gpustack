@@ -178,7 +178,7 @@ async def authenticate_system_user(
 ) -> Optional[User]:
     if credentials.username.startswith(SYSTEM_WORKER_USER_PREFIX):
         if credentials.password == config.token:
-            return User(username=credentials.username, is_admin=True)
+            return User(slug=credentials.username, is_admin=True)
     return None
 
 

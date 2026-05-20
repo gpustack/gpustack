@@ -53,7 +53,7 @@ async def get_users(
 ):
     fuzzy_fields = {}
     if search:
-        fuzzy_fields = {"username": search, "full_name": search}
+        fuzzy_fields = {"slug": search, "name": search}
 
     if params.watch:
         return StreamingResponse(
@@ -121,14 +121,14 @@ async def list_user_memberships(session: SessionDep, id: int):
 
 @router.post("", response_model=UserPublic)
 async def create_user(session: SessionDep, user_in: UserCreate):
-    existing = await User.one_by_field(session, "username", user_in.username)
+    existing = await User.one_by_field(session, "slug", user_in.username)
     if existing:
         raise AlreadyExistsException(message=f"User {user_in.username} already exists")
 
     try:
         to_create = User(
-            username=user_in.username,
-            full_name=user_in.full_name,
+            slug=user_in.username,
+            name=user_in.full_name,
             is_admin=user_in.is_admin,
             is_active=user_in.is_active,
         )
@@ -173,7 +173,10 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
         raise ConflictException(message="Cannot deactivate the only admin user")
 
     try:
-        update_data = user_in.model_dump()
+        # ``by_alias=True`` maps the wire-level ``username`` / ``full_name``
+        # back onto the Principal columns ``slug`` / ``name`` for the
+        # storage write — see :class:`UserBase`.
+        update_data = user_in.model_dump(by_alias=True)
         if user_in.password:
             hashed_password = get_secret_hash(user_in.password)
             update_data["hashed_password"] = hashed_password
@@ -263,7 +266,7 @@ async def update_user_me(
     session: SessionDep, user: CurrentUserDep, user_in: UserSelfUpdate
 ):
     try:
-        update_data = user_in.model_dump(exclude_none=True)
+        update_data = user_in.model_dump(by_alias=True, exclude_none=True)
         if "password" in update_data:
             hashed_password = get_secret_hash(update_data["password"])
             update_data["hashed_password"] = hashed_password
@@ -292,7 +295,7 @@ async def list_user_directory(
         raise ForbiddenException(message="Insufficient permission")
     fuzzy_fields = {}
     if search:
-        fuzzy_fields = {"username": search, "full_name": search}
+        fuzzy_fields = {"slug": search, "name": search}
     async with async_session() as session:
         return await User.paginated_by_query(
             session=session,
