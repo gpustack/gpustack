@@ -111,7 +111,7 @@ async def get_current_user(
     try:
         server_config: Config = request.app.state.server_config
         if basic_credentials and is_system_user(basic_credentials.username):
-            user = await authenticate_system_user(server_config, basic_credentials)
+            user = await authenticate_system_principal(server_config, basic_credentials)
         elif basic_credentials:
             user = await authenticate_basic_user(session, basic_credentials)
         elif cookie_token:
@@ -146,41 +146,48 @@ async def get_admin_user(
     return current_user
 
 
-async def get_cluster_user(
-    current_user: Annotated[User, Depends(get_current_user)],
-) -> User:
+async def get_cluster_principal(
+    current_principal: Annotated[Principal, Depends(get_current_user)],
+) -> Principal:
     # A SYSTEM principal that the *cluster* claims (1:1 via
     # ``Cluster.system_principal_id``) is the cluster bootstrap
-    # account. ``current_user.cluster`` is the back-populated
+    # account. ``current_principal.cluster`` is the back-populated
     # relationship — eagerly loaded by ``UserService.get_by_username``
     # so this check is a cheap attribute read.
-    if current_user.kind == PrincipalType.SYSTEM and current_user.cluster is not None:
-        return current_user
-    return await get_admin_user(current_user)
+    if (
+        current_principal.kind == PrincipalType.SYSTEM
+        and current_principal.cluster is not None
+    ):
+        return current_principal
+    return await get_admin_user(current_principal)
 
 
-async def get_worker_user(
-    current_user: Annotated[User, Depends(get_current_user)],
-) -> User:
-    if current_user.kind == PrincipalType.SYSTEM and current_user.worker is not None:
-        return current_user
-    return await get_admin_user(current_user)
+async def get_worker_principal(
+    current_principal: Annotated[Principal, Depends(get_current_user)],
+) -> Principal:
+    if (
+        current_principal.kind == PrincipalType.SYSTEM
+        and current_principal.worker is not None
+    ):
+        return current_principal
+    return await get_admin_user(current_principal)
 
 
 def is_system_user(username: str) -> bool:
     return username.startswith(SYSTEM_USER_PREFIX)
 
 
-async def authenticate_system_user(
+async def authenticate_system_principal(
     config: Config,
     credentials: HTTPBasicCredentials,
-) -> Optional[User]:
+) -> Optional[Principal]:
     if credentials.username.startswith(SYSTEM_WORKER_USER_PREFIX):
         if credentials.password == config.token:
             # In-memory principal — never persisted. SYSTEM kind is
-            # what downstream checks (``get_cluster_user`` /
-            # ``get_worker_user``) gate on, plus ``is_admin`` flips on
-            # the all-access guards used by legacy worker callers.
+            # what downstream checks (``get_cluster_principal`` /
+            # ``get_worker_principal``) gate on, plus ``is_admin``
+            # flips on the all-access guards used by legacy worker
+            # callers.
             return Principal(
                 slug=credentials.username,
                 kind=PrincipalType.SYSTEM,
@@ -252,7 +259,7 @@ def parse_hyphen_uuid(value: str) -> Optional[str]:
 
 async def get_user_from_api_token(
     session: AsyncSession, token: str
-) -> Tuple[Optional[User], Optional[ApiKey]]:
+) -> Tuple[Optional[Principal], Optional[ApiKey]]:
     try:
         access_key, secret_key = get_key_pair(token)
         worker_uuid = parse_hyphen_uuid(access_key)
@@ -383,7 +390,7 @@ def management_scope(
 async def authenticate_worker_by_request_headers(
     header_dict: Dict[str, str],
     validate_proxy: Optional[bool] = None,
-) -> Optional[User]:
+) -> Optional[Principal]:
     """
     Authenticate a worker based on request headers, used for both WebSocket and non-WebSocket requests.
     For WebSocket requests, the Bearer token is expected in the "Authorization" header.

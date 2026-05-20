@@ -326,7 +326,7 @@ async def create_cluster(
             "is_default": auto_default,
         }
     )
-    to_create_user = Principal(
+    to_create_principal = Principal(
         slug=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
         kind=PrincipalType.SYSTEM,
     )
@@ -356,7 +356,7 @@ async def create_cluster(
             await WorkerPool.create(
                 session=session, source=to_create_pool, auto_commit=False
             )
-        user = await create_user_with_principal(session, to_create_user)
+        user = await create_user_with_principal(session, to_create_principal)
         cluster.system_principal_id = user.id
         await cluster.save(session=session, auto_commit=False)
         to_create_apikey.user_id = user.id

@@ -15,7 +15,7 @@ from gpustack.schemas.model_routes import ModelRoute
 from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.model_usage_details import ModelUsageDetails
 from gpustack.schemas.models import Model, is_embedding_model, is_reranker_model
-from gpustack.schemas.users import User
+from gpustack.schemas.principals import Principal
 from gpustack.server.db import async_session
 from gpustack.utils.usage_snapshots import build_model_usage_snapshot
 
@@ -382,7 +382,7 @@ def _build_metric_snapshot(
     metric: ModelUsageMetrics,
     model_by_id: Dict[int, Model],
     provider_by_id: Dict[int, ModelProvider],
-    user_by_id: Dict[int, User],
+    user_by_id: Dict[int, Principal],
     api_key_by_access_key: Dict[str, ApiKey],
     cluster_names_by_id: Dict[int, str],
     route_name_by_id: Dict[int, str],
@@ -497,10 +497,14 @@ async def store_usage_metrics(
                     else []
                 ),
             )
-            users = await User.all_by_fields(
+            # Generic principal lookup — the caller of a model_usage
+            # record can be a USER (human via login + API key) or a
+            # SYSTEM principal (worker proxying inference). No kind
+            # filter, no User-shape implication.
+            users = await Principal.all_by_fields(
                 session=session,
                 fields={},
-                extra_conditions=[User.id.in_(dedup_user_ids)],
+                extra_conditions=[Principal.id.in_(dedup_user_ids)],
             )
             api_keys = await ApiKey.all_by_fields(
                 session=session,
