@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import ClassVar, Dict, Optional, Any
+from typing import ClassVar, Dict, Optional, Any, TYPE_CHECKING
 from pydantic import ConfigDict, BaseModel, field_validator
 from urllib.parse import urlparse
 from sqlmodel import (
@@ -27,6 +27,9 @@ from sqlalchemy.orm import declarative_base
 
 from gpustack.utils.network import is_offline
 from .clusters import ClusterProvider, Cluster, WorkerPool
+
+if TYPE_CHECKING:
+    from gpustack.schemas.principals import Principal
 from gpustack.schemas.config import (
     PredefinedConfigNoDefaults,
     ModelInstanceProxyModeEnum,
@@ -345,6 +348,20 @@ class WorkerBase(WorkerCreate):
         sa_column=Column(UTCDateTime), default=None
     )
     unreachable: bool = False
+    # SYSTEM principal that represents this worker's registration
+    # token. Mirror of clusters.system_principal_id. Nullable +
+    # ON DELETE SET NULL so a re-provisioned principal doesn't drag
+    # the worker row down. UNIQUE: at most one worker claims a given
+    # SYSTEM principal.
+    system_principal_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="SET NULL"),
+            nullable=True,
+            unique=True,
+        ),
+    )
 
     def compute_state(self):
         if self.maintenance and self.maintenance.enabled:
@@ -441,6 +458,21 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
     )
     worker_pool: Optional[WorkerPool] = Relationship(
         back_populates="pool_workers", sa_relationship_kwargs={"lazy": "noload"}
+    )
+    # 1:1 to the SYSTEM principal representing this worker, via the
+    # UNIQUE ``system_principal_id`` FK above. Back-populated from
+    # :attr:`Principal.worker`. ``cascade="delete"`` restores the
+    # prior worker→principal cleanup semantic (legacy
+    # ``principals.worker_id ON DELETE CASCADE``); see the matching
+    # comment on :attr:`Cluster.system_principal`.
+    system_principal: Optional["Principal"] = Relationship(
+        sa_relationship_kwargs={
+            "cascade": "delete",
+            "lazy": "noload",
+            "uselist": False,
+            "foreign_keys": "[Worker.system_principal_id]",
+        },
+        back_populates="worker",
     )
 
     # This field should be replaced by x509 credential if mTLS is supported.

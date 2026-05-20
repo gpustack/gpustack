@@ -230,7 +230,7 @@ SELECT {pid} AS pid, u.id AS user_id, m.*
 FROM principals u
 CROSS JOIN model_routes m
 WHERE u.kind = 'USER' AND u.deleted_at IS NULL
-  AND u.is_admin = {sql_false} AND u.is_system = {sql_false}
+  AND u.is_admin = {sql_false}
   AND m.access_policy IN ('PUBLIC', 'AUTHED')
 
 UNION ALL
@@ -243,7 +243,7 @@ JOIN model_routes m
   ON m.owner_principal_id = pu.principal_id
   AND m.access_policy = 'ORG'
 WHERE u.kind = 'USER' AND u.deleted_at IS NULL
-  AND u.is_admin = {sql_false} AND u.is_system = {sql_false}
+  AND u.is_admin = {sql_false}
 
 UNION ALL
 
@@ -256,7 +256,7 @@ JOIN model_routes m
   ON m.id = mrp.route_id
   AND m.access_policy = 'ALLOWED_USERS'
 WHERE u.kind = 'USER' AND u.deleted_at IS NULL
-  AND u.is_admin = {sql_false} AND u.is_system = {sql_false}
+  AND u.is_admin = {sql_false}
 
 UNION ALL
 
@@ -270,5 +270,5 @@ JOIN model_routes m
   ON m.id = mrp.route_id
   AND m.access_policy = 'ALLOWED_PRINCIPALS'
 WHERE u.kind = 'USER' AND u.deleted_at IS NULL
-  AND u.is_admin = {sql_false} AND u.is_system = {sql_false}
+  AND u.is_admin = {sql_false}
 '''

@@ -57,15 +57,6 @@ class AuthProviderEnum(str, Enum):
     SAML = "SAML"
 
 
-class UserRole(Enum):
-    """System-actor role on USER rows (cluster / worker service
-    accounts). Orthogonal to organization membership roles.
-    """
-
-    Worker = "Worker"
-    Cluster = "Cluster"
-
-
 # Canonical slug of the built-in platform Org-principal. Created by the
 # multi-tenancy foundation migration; system / infrastructure resources
 # default to it.
@@ -107,11 +98,19 @@ class PrincipalType(str, Enum):
     Kept named ``PrincipalType`` (rather than ``PrincipalKind``) for
     continuity with the cluster-access / model-route ACL APIs that
     already accepted this enum on the wire.
+
+    ``SYSTEM`` covers internal service accounts (cluster bootstrap
+    tokens, per-worker registration tokens). Which specific infra row
+    a SYSTEM principal serves is recorded on the *infra* side —
+    ``clusters.system_principal_id`` / ``workers.system_principal_id``
+    point at the principal, not the other way around — so the principal
+    table doesn't need a polymorphic ``role`` column to disambiguate.
     """
 
     USER = "user"
     ORG = "org"
     GROUP = "group"
+    SYSTEM = "system"
 
 
 class OrgRole(str, Enum):
@@ -200,29 +199,19 @@ class PrincipalBase(SQLModel):
     # ---- USER-only columns (NULL / default-valued on ORG / GROUP) ----
     # Login (``username``) and display name (``full_name``) collapsed
     # into ``slug`` and ``name`` above — same columns are used for all
-    # principal kinds.
+    # principal kinds. The ``is_system`` flag and per-system-actor
+    # affinity columns (``role`` / ``cluster_id`` / ``worker_id``)
+    # were removed when the SYSTEM kind was introduced and the FK
+    # direction was inverted: ``clusters.system_principal_id`` /
+    # ``workers.system_principal_id`` now record which principal an
+    # infra row's service account is. The :attr:`Principal.cluster`
+    # / :attr:`Principal.worker` relationships below are SQLModel
+    # back-populations of those inverse FKs.
 
     is_admin: bool = Field(default=False, nullable=False)
     is_active: bool = Field(default=True, nullable=False)
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
-    )
-
-    # ``is_system`` and ``role`` describe internal system actors
-    # (cluster / worker service accounts) — still USER-kind, not the
-    # SYSTEM kind that the Phase 3 cleanup will introduce.
-    is_system: bool = Field(default=False, nullable=False)
-    role: Optional[UserRole] = Field(
-        default=None,
-        description="Role of the system user (Worker / Cluster)",
-    )
-    cluster_id: Optional[int] = Field(
-        default=None,
-        sa_column=Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE")),
-    )
-    worker_id: Optional[int] = Field(
-        default=None,
-        sa_column=Column(Integer, ForeignKey("workers.id", ondelete="CASCADE")),
     )
 
     def model_post_init(self, __context) -> None:
@@ -244,9 +233,17 @@ class PrincipalBase(SQLModel):
 class Principal(PrincipalBase, BaseModelMixin, table=True):
     """Unified identity row.
 
-    USER rows carry credentials and the system-actor fields
-    (``cluster_id`` / ``worker_id`` / ``role``). ORG and GROUP rows
-    leave those NULL. The discriminator is :attr:`kind`.
+    Four kinds:
+
+    * ``USER`` — human accounts; have a login credential in
+      ``user_passwords`` (local) or come from an SSO provider.
+    * ``ORG`` — tenancy boundary; owns resources.
+    * ``GROUP`` — IdP-synced group; membership confers Org roles on
+      its members.
+    * ``SYSTEM`` — internal service accounts for cluster bootstrap
+      and per-worker registration. Which infra row a SYSTEM principal
+      serves is recorded on the *infra* side
+      (``clusters.system_principal_id`` / ``workers.system_principal_id``).
     """
 
     __tablename__ = 'principals'
@@ -272,21 +269,26 @@ class Principal(PrincipalBase, BaseModelMixin, table=True):
     # :mod:`gpustack.schemas.user_passwords`. SSO-only USER rows and
     # system actors simply have no row there.
 
-    # ``foreign_keys`` disambiguates these from ``clusters.owner_principal_id``
-    # / ``workers.owner_principal_id``, which are the inverse direction
-    # (Cluster→Principal, Worker→Principal) and would otherwise produce
-    # an AmbiguousForeignKeysError on mapper configuration.
+    # Inverse 1:1 back-populations of the ``system_principal_id`` FK
+    # on ``clusters`` / ``workers``. ``foreign_keys`` pins each to the
+    # ``system_principal_id`` column so the mapper doesn't conflate
+    # them with the ``owner_principal_id`` FK on the same tables.
+    # ``uselist=False`` because the column is UNIQUE — at most one
+    # cluster / worker can claim a given SYSTEM principal.
     cluster: Optional[Cluster] = Relationship(
-        back_populates="cluster_users",
+        back_populates="system_principal",
         sa_relationship_kwargs={
             "lazy": "noload",
-            "foreign_keys": "[Principal.cluster_id]",
+            "uselist": False,
+            "foreign_keys": "[Cluster.system_principal_id]",
         },
     )
     worker: Optional[Worker] = Relationship(
+        back_populates="system_principal",
         sa_relationship_kwargs={
             "lazy": "noload",
-            "foreign_keys": "[Principal.worker_id]",
+            "uselist": False,
+            "foreign_keys": "[Worker.system_principal_id]",
         },
     )
     # ApiKey carries two FKs to principals (user_id + owner_principal_id);

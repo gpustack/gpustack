@@ -193,7 +193,7 @@ async def delete_group(session: SessionDep, group_id: int):
 
 async def _resolve_user(session, user_id: int) -> Optional[User]:
     user = await User.one_by_id(session, user_id)
-    if not user or user.is_system or user.deleted_at is not None:
+    if not user or user.kind != PrincipalType.USER or user.deleted_at is not None:
         return None
     return user
 
@@ -255,7 +255,7 @@ async def add_group_members(
 
     rows = (await session.exec(select(User).where(User.id.in_(user_ids)))).all()
     users_by_id: dict[int, User] = {
-        u.id: u for u in rows if not u.is_system and u.deleted_at is None
+        u.id: u for u in rows if u.kind == PrincipalType.USER and u.deleted_at is None
     }
     missing = [uid for uid in user_ids if uid not in users_by_id]
     if missing:

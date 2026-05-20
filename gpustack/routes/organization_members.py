@@ -270,17 +270,10 @@ async def add_org_members(
     if missing:
         raise NotFoundException(message=f"Principal(s) not found: {missing}")
 
-    # USER-kind: filter out system users (workers / cluster service
-    # accounts must not be enrolled as Org members). ``is_system``
-    # lives on the unified ``principals`` row now, so the check is a
-    # straight read off ``principal_by_id``.
-    bad = [
-        pid
-        for pid, p in principal_by_id.items()
-        if p.kind == PrincipalType.USER and p.is_system
-    ]
-    if bad:
-        raise NotFoundException(message=f"Principal(s) not eligible: {bad}")
+    # System principals (cluster / worker service accounts) live in
+    # their own ``kind=SYSTEM`` row now, which the kind filter on
+    # ``principal_by_id`` (USER / GROUP only, above) already excludes —
+    # so no additional check is needed for them here.
 
     existing_rows = (
         await session.exec(

@@ -248,8 +248,9 @@ tenant_routers = model_routers + [
     },
     # Inference backends are platform-wide (admin curates) but every Org
     # owner/manager needs to read them to pick a backend at deploy time.
-    # Worker / cluster system users also reach this through v1_base_router
-    # since `get_current_user` accepts ``is_system=True`` callers.
+    # Worker / cluster system principals also reach this through
+    # v1_base_router since `get_current_user` accepts ``kind=SYSTEM``
+    # callers.
     {
         "router": inference_backend.router,
         "prefix": "/inference-backends",

@@ -381,6 +381,20 @@ class ClusterBase(ClusterCreateBase):
     )
     reported_gateway_endpoint: Optional[str] = None
     is_default: bool = Field(default=False)
+    # SYSTEM principal that represents this cluster's bootstrap
+    # account. Nullable so a cluster can be created before its service
+    # principal is provisioned; SET NULL on principal delete so an
+    # orphaned bootstrap row doesn't drag the cluster down with it.
+    # UNIQUE: at most one cluster claims a given SYSTEM principal.
+    system_principal_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            sa.Integer,
+            sa.ForeignKey("principals.id", ondelete="SET NULL"),
+            nullable=True,
+            unique=True,
+        ),
+    )
 
 
 class Cluster(ClusterBase, BaseModelMixin, table=True):
@@ -414,13 +428,21 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
     cluster_model_instances: List["ModelInstance"] = Relationship(
         sa_relationship_kwargs={"lazy": "noload"}, back_populates="cluster"
     )
-    cluster_users: list["Principal"] = Relationship(
+    # The SYSTEM principal this cluster's bootstrap token authenticates
+    # as. 1:1 via the UNIQUE ``system_principal_id`` FK above. Back-
+    # populated from :attr:`Principal.cluster`. ``cascade="delete"``
+    # restores the prior cluster→principal cleanup semantic: the
+    # legacy schema had ``principals.cluster_id ON DELETE CASCADE``,
+    # so deleting a cluster also dropped its bootstrap principal. The
+    # inverted FK can't express that cascade at the DB level
+    # (``ON DELETE SET NULL`` only fires the other direction), so the
+    # ORM-level cascade in :class:`BaseModelMixin` re-creates it.
+    system_principal: Optional["Principal"] = Relationship(
         sa_relationship_kwargs={
             "cascade": "delete",
             "lazy": "noload",
-            # Disambiguate from clusters.owner_principal_id (inverse
-            # direction); cluster_users links via principals.cluster_id.
-            "foreign_keys": "[Principal.cluster_id]",
+            "uselist": False,
+            "foreign_keys": "[Cluster.system_principal_id]",
         },
         back_populates="cluster",
     )

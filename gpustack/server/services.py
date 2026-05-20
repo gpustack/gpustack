@@ -78,7 +78,18 @@ class UserService:
         # ``slug`` after identity consolidation. The cache key still
         # passes through the legacy parameter name so OAuth2 password
         # callers don't need to know about the rename.
-        result = await User.one_by_field(self.session, "slug", username)
+        #
+        # ``cluster`` / ``worker`` are eager-loaded here because the
+        # auth deps (``get_cluster_user`` / ``get_worker_user``) use
+        # them to discriminate which infra row a SYSTEM principal
+        # represents — without the load, the inverse-FK relationship
+        # would be NoLoad and the discriminator would always see None.
+        result = await User.one_by_field(
+            self.session,
+            "slug",
+            username,
+            options=[selectinload(User.cluster), selectinload(User.worker)],
+        )
         if result is None:
             return None
         self.session.expunge(result)
@@ -151,7 +162,7 @@ class UserService:
         user: User = await self.get_by_id(user_id)
         if user is None:
             return set()
-        if user.is_admin or user.is_system:
+        if user.is_admin or user.kind == PrincipalType.SYSTEM:
             routes = await ModelRoute.all_by_field(self.session, "deleted_at", None)
         else:
             routes = await MyModel.all_by_fields(

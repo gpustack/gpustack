@@ -260,7 +260,7 @@ async def get_tenant_context(
     accessible_cluster_ids: Set[int] = set()
     current_is_personal_scope = False
 
-    if current_principal_id is not None and not user.is_system:
+    if current_principal_id is not None and user.kind != PrincipalType.SYSTEM:
         # Personal scope short-circuit: when the request points at the
         # caller's own USER-principal there's no org membership to
         # resolve. Group grants still apply (the user's groups are
@@ -340,11 +340,11 @@ def bypass_tenant_filter(ctx: TenantContext) -> bool:
     - Platform admin with no principal context (cross-principal platform
       view).
     - System users (worker / cluster service accounts that the server
-      itself spawns). They authenticate as ``is_system=True`` and need
-      to read every tenant's resources to do their job — e.g. a worker
+      itself spawns). They authenticate as ``kind=SYSTEM`` and need to
+      read every tenant's resources to do their job — e.g. a worker
       fetching the Model row for an instance assigned to it.
     """
-    if ctx.user is not None and getattr(ctx.user, "is_system", False):
+    if ctx.user is not None and ctx.user.kind == PrincipalType.SYSTEM:
         return True
     if ctx.is_platform_admin and ctx.current_principal_id is None:
         return True

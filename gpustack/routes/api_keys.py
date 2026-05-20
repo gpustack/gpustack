@@ -23,6 +23,7 @@ from gpustack.schemas.api_keys import (
     ApiKeysPublic,
     ApiKeyUpdate,
 )
+from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.users import User
 from gpustack.server.services import APIKeyService
 from gpustack.utils.api_keys import get_masked_api_key_value
@@ -31,15 +32,16 @@ router = APIRouter()
 
 
 def _is_system_owned(api_key: ApiKey) -> bool:
-    """API keys whose user is system-owned (workers, cluster sync, etc.).
+    """API keys whose owner is a SYSTEM principal (workers, cluster
+    sync, etc.).
 
-    Filters by ``user.is_system`` rather than the api_key name because
-    not every system-managed key follows the ``system/`` naming scheme
-    (``Legacy Cluster Token``, ``Default Cluster Token``, …). Requires
-    ``selectinload(ApiKey.user)`` on the query feeding this so the
-    relationship is hydrated before access.
+    Filters by the owner's ``kind`` rather than the api_key name
+    because not every system-managed key follows the ``system/``
+    naming scheme (``Legacy Cluster Token``, ``Default Cluster Token``,
+    …). Requires ``selectinload(ApiKey.user)`` on the query feeding
+    this so the relationship is hydrated before access.
     """
-    return bool(api_key.user and api_key.user.is_system)
+    return bool(api_key.user and api_key.user.kind == PrincipalType.SYSTEM)
 
 
 def _api_key_to_public(
@@ -97,11 +99,11 @@ async def get_api_keys(
 
     # Hide system-owned keys (workers, cluster sync, legacy/default
     # cluster tokens). The set isn't covered by a clean name prefix —
-    # entries like "Default Cluster Token" / "Legacy Cluster Token" exist
-    # alongside the "system/..." names — so we filter by the owning
-    # user's ``is_system`` flag, which catches every variant.
+    # entries like "Default Cluster Token" / "Legacy Cluster Token"
+    # exist alongside the "system/..." names — so we filter by the
+    # owning principal's kind, which catches every variant.
     extra_conditions = [
-        ApiKey.user_id.notin_(select(User.id).where(User.is_system.is_(True))),
+        ApiKey.user_id.notin_(select(User.id).where(User.kind == PrincipalType.SYSTEM)),
     ]
 
     if params.watch:

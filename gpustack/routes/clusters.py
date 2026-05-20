@@ -51,8 +51,8 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudOptions,
 )
-from gpustack.schemas.principals import platform_principal_id
-from gpustack.schemas.users import User, UserRole, system_name_prefix
+from gpustack.schemas.principals import PrincipalType, platform_principal_id
+from gpustack.schemas.users import User, system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
@@ -328,8 +328,7 @@ async def create_cluster(
     )
     to_create_user = User(
         slug=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
-        is_system=True,
-        role=UserRole.Cluster,
+        kind=PrincipalType.SYSTEM,
     )
     to_create_apikey = ApiKey(
         name=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
@@ -357,8 +356,9 @@ async def create_cluster(
             await WorkerPool.create(
                 session=session, source=to_create_pool, auto_commit=False
             )
-        to_create_user.cluster = cluster
         user = await create_user_with_principal(session, to_create_user)
+        cluster.system_principal_id = user.id
+        await cluster.save(session=session, auto_commit=False)
         to_create_apikey.user_id = user.id
         await ApiKey.create(session=session, source=to_create_apikey, auto_commit=False)
         await session.commit()

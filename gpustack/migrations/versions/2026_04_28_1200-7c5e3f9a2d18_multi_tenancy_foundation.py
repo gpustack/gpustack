@@ -53,6 +53,10 @@ Logical groups, run in order:
 15. Extract login credentials into ``user_passwords`` and drop
     ``hashed_password`` / ``require_password_change`` from
     ``principals``.
+16. Promote system actors to a dedicated ``SYSTEM`` kind, invert the
+    cluster/worker→principal FK direction (``clusters.system_principal_id``
+    / ``workers.system_principal_id``), and drop ``is_system`` /
+    ``role`` / ``cluster_id`` / ``worker_id`` from ``principals``.
 
 Revision ID: 7c5e3f9a2d18
 Revises: 8bf38a6bb3b5
@@ -853,6 +857,138 @@ def upgrade() -> None:
             batch_op.drop_column('hashed_password')
         if column_exists('principals', 'require_password_change'):
             batch_op.drop_column('require_password_change')
+
+    # ------------------------------------------------------------------
+    # 17. Promote system actors to SYSTEM kind + invert infra FK.
+    # ------------------------------------------------------------------
+    # Two-piece move that together makes ``principals`` pure identity:
+    #
+    #   a. ``is_system=true`` rows promote to ``kind='SYSTEM'``. The
+    #      flag drops out: every USER-listing / ACL filter that used to
+    #      say "is_system = false" now says "kind = 'USER'", which is
+    #      what those callers actually meant.
+    #   b. The Principal→Cluster / Principal→Worker FK direction is
+    #      inverted. ``clusters.system_principal_id`` /
+    #      ``workers.system_principal_id`` (UNIQUE, FK→principals.id,
+    #      ON DELETE SET NULL) record which SYSTEM principal each infra
+    #      row's bootstrap token authenticates as. The old
+    #      ``role`` enum (Worker / Cluster) drops out — derivable from
+    #      which table claims the principal.
+    #
+    # Done last because the source columns
+    # (``is_system`` / ``cluster_id`` / ``worker_id``) need to survive
+    # long enough to populate the inverse links.
+
+    # 17a. Add ``SYSTEM`` to the principaltype enum.
+    principal_type_enum = sa.Enum(
+        'USER', 'ORG', 'GROUP', name='principaltype'
+    )
+    sql_enum.add_enum_values(
+        {'principals': 'kind'}, principal_type_enum, 'SYSTEM'
+    )
+
+    # 17b. Add ``system_principal_id`` to clusters and workers
+    # (nullable, UNIQUE, SET NULL on principal delete).
+    with op.batch_alter_table('clusters', schema=None) as batch_op:
+        if not column_exists('clusters', 'system_principal_id'):
+            batch_op.add_column(
+                sa.Column('system_principal_id', sa.Integer(), nullable=True)
+            )
+            batch_op.create_foreign_key(
+                'fk_clusters_system_principal_id_principals',
+                'principals',
+                ['system_principal_id'],
+                ['id'],
+                ondelete='SET NULL',
+            )
+            batch_op.create_unique_constraint(
+                'uix_clusters_system_principal_id', ['system_principal_id']
+            )
+    with op.batch_alter_table('workers', schema=None) as batch_op:
+        if not column_exists('workers', 'system_principal_id'):
+            batch_op.add_column(
+                sa.Column('system_principal_id', sa.Integer(), nullable=True)
+            )
+            batch_op.create_foreign_key(
+                'fk_workers_system_principal_id_principals',
+                'principals',
+                ['system_principal_id'],
+                ['id'],
+                ondelete='SET NULL',
+            )
+            batch_op.create_unique_constraint(
+                'uix_workers_system_principal_id', ['system_principal_id']
+            )
+
+    # 17c. Backfill the inverse links from the legacy
+    # principals.cluster_id / principals.worker_id columns. Pre-rename
+    # invariants: exactly one ``role='Cluster'`` system principal per
+    # cluster, and exactly one ``role='Worker'`` system principal per
+    # worker. ``LIMIT`` on the subselect is belt-and-braces against any
+    # historical duplicates a rough upgrade might have left behind.
+    op.execute(
+        sa.text(
+            f"""
+            UPDATE clusters
+            SET system_principal_id = (
+                SELECT id FROM principals p
+                 WHERE p.cluster_id = clusters.id
+                   AND p.is_system = {bool_true}
+                   AND p.role = 'Cluster'
+                 LIMIT 1
+            )
+            """
+        )
+    )
+    op.execute(
+        sa.text(
+            f"""
+            UPDATE workers
+            SET system_principal_id = (
+                SELECT id FROM principals p
+                 WHERE p.worker_id = workers.id
+                   AND p.is_system = {bool_true}
+                   AND p.role = 'Worker'
+                 LIMIT 1
+            )
+            """
+        )
+    )
+
+    # 17d. Promote kind to SYSTEM for service-account rows.
+    op.execute(
+        sa.text(
+            f"UPDATE principals SET kind = 'SYSTEM' WHERE is_system = {bool_true}"
+        )
+    )
+
+    # 17e. Drop the now-redundant columns from principals.
+    #
+    # The column drops trip a "depends on" error unless the FK
+    # constraints are dropped first, and the constraint names came
+    # from the v2.0 migration with shapes like ``fk_users_cluster_id``
+    # (not the autogen ``fk_principals_*`` template). Read the live
+    # FK names off the table via inspector so the upgrade survives
+    # whatever historical migration named them.
+    inspector = sa.inspect(bind)
+    for fk in inspector.get_foreign_keys('principals'):
+        if fk.get('referred_table') in ('clusters', 'workers'):
+            op.drop_constraint(fk['name'], 'principals', type_='foreignkey')
+
+    with op.batch_alter_table('principals', schema=None) as batch_op:
+        if column_exists('principals', 'cluster_id'):
+            batch_op.drop_column('cluster_id')
+        if column_exists('principals', 'worker_id'):
+            batch_op.drop_column('worker_id')
+        if column_exists('principals', 'role'):
+            batch_op.drop_column('role')
+        if column_exists('principals', 'is_system'):
+            batch_op.drop_column('is_system')
+
+    # The ``userrole`` enum (Worker / Cluster) is now unreferenced. On
+    # PG, leave the type in place — dropping an enum still referenced
+    # by historical migrations would re-fail on a future ``alembic
+    # downgrade``; an orphaned enum type is harmless.
 
 
 def downgrade() -> None:

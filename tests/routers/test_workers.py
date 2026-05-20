@@ -205,8 +205,10 @@ def _ctx(*, is_platform_admin=False, current_principal_id=None, org_role=None):
     ``org_role`` (via ``assert_org_owned_writable`` and
     ``assert_cluster_resource_visible``), so a SimpleNamespace is enough.
     """
+    from gpustack.schemas.principals import PrincipalType
+
     return SimpleNamespace(
-        user=SimpleNamespace(is_system=False),
+        user=SimpleNamespace(kind=PrincipalType.USER),
         is_platform_admin=is_platform_admin,
         current_principal_id=current_principal_id,
         org_role=org_role,
