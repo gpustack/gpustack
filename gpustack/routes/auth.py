@@ -256,13 +256,13 @@ async def saml_callback(request: Request, session: SessionDep):
             )
 
         # determine whether the user already exists
-        user = await User.first_by_field(session=session, field="slug", value=username)
+        user = await User.first_by_field(session=session, field="name", value=username)
         # create user
         if not user:
             user_info = User(
                 kind=PrincipalType.USER,
-                slug=username,
-                name=full_name or username,
+                name=username,
+                display_name=full_name or username,
                 avatar_url=avatar_url,
                 is_admin=False,
                 is_active=not config.external_auth_default_inactive,
@@ -511,13 +511,13 @@ async def oidc_callback(request: Request, session: SessionDep):
             logger.error(f"Get OIDC user info error: {str(e)}")
             raise UnauthorizedException(message=str(e))
     # determine whether the user already exists
-    user = await User.first_by_field(session=session, field="slug", value=username)
+    user = await User.first_by_field(session=session, field="name", value=username)
     # create user
     if not user:
         user_info = User(
             kind=PrincipalType.USER,
-            slug=username,
-            name=full_name or username,
+            name=username,
+            display_name=full_name or username,
             avatar_url=avatar_url,
             is_admin=False,
             is_active=not config.external_auth_default_inactive,
@@ -575,7 +575,7 @@ async def login(
     user = await authenticate_user(session, username, password)
     jwt_manager: JWTManager = request.app.state.jwt_manager
     access_token = jwt_manager.create_jwt_token(
-        username=user.slug,
+        username=user.name,
     )
     response.set_cookie(
         key=SESSION_COOKIE_NAME,

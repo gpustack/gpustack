@@ -189,7 +189,7 @@ async def authenticate_system_principal(
             # flips on the all-access guards used by legacy worker
             # callers.
             return Principal(
-                slug=credentials.username,
+                name=credentials.username,
                 kind=PrincipalType.SYSTEM,
                 is_admin=True,
             )

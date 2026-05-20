@@ -40,9 +40,10 @@ class PrincipalView(BaseModel):
     route_id: int
     principal_type: PrincipalType
     principal_id: int
-    # Resolved at read time from the joined principals row so the
-    # client can render a label without an extra lookup.
-    principal_name: Optional[str] = None
+    # Resolved at read time from the joined principals row's
+    # ``display_name`` column so the client can render a label without
+    # an extra lookup.
+    principal_display_name: Optional[str] = None
 
 
 async def _load_route(session, route_id: int) -> ModelRoute:
@@ -75,13 +76,13 @@ async def _validate_principal(
 def _row_to_view(
     row: ModelRoutePrincipalLink,
     kind: PrincipalType,
-    name: Optional[str] = None,
+    display_name: Optional[str] = None,
 ) -> PrincipalView:
     return PrincipalView(
         route_id=row.route_id,
         principal_type=kind,
         principal_id=row.principal_id,
-        principal_name=name,
+        principal_display_name=display_name,
     )
 
 
@@ -103,7 +104,7 @@ async def _resolve_views(
                 if r.principal_id in by_id
                 else PrincipalType.USER
             ),
-            by_id[r.principal_id].name if r.principal_id in by_id else None,
+            by_id[r.principal_id].display_name if r.principal_id in by_id else None,
         )
         for r in rows
     ]

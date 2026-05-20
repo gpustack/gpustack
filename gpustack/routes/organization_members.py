@@ -162,9 +162,8 @@ async def _enrich_with_labels(
 ) -> List[OrganizationMembershipPublic]:
     """Resolve display labels for each membership row.
 
-    After identity consolidation, every label lives on the ``principals``
-    row directly — ``principal_name`` is the display name for both USER
-    and GROUP members.
+    Every label lives on the ``principals`` row's ``display_name``
+    column for both USER and GROUP members.
     """
     member_ids = {r.member_principal_id for r in rows}
     if not member_ids:
@@ -200,7 +199,7 @@ def _to_public(
     return OrganizationMembershipPublic(
         principal_id=p.id,
         principal_kind=p.kind,
-        principal_name=p.name,
+        principal_display_name=p.display_name,
         principal_description=p.description,
         organization_id=organization_id,
         role=role,

@@ -29,35 +29,37 @@ if TYPE_CHECKING:
 
 # Route names intentionally exclude `/` — the dispatch parser
 # (`ModelRouteService.resolve_route_targets`) splits the inbound
-# `model` string on the first `/` to separate Org slug from raw name.
-# Allowing `/` inside route names would create irresolvable ambiguity
-# (e.g. literal route "a/b" in platform Org vs. route "b" in Org with
-# slug "a"). `:` IS allowed — LoRA child routes use the form
-# `<base>:<lora>`, which is unambiguous since the Org-prefix split
-# happens before `:` is ever consulted.
+# `model` string on the first `/` to separate the owner's ``name``
+# (k8s-style identifier) from the raw route name. Allowing `/` inside
+# route names would create irresolvable ambiguity (e.g. literal route
+# "a/b" in platform Org vs. route "b" in Org with ``name="a"``). `:`
+# IS allowed — LoRA child routes use the form `<base>:<lora>`, which
+# is unambiguous since the owner-prefix split happens before `:` is
+# ever consulted.
 name_pattern = r'^[A-Za-z](?:[A-Za-z0-9_\-\.:]*[A-Za-z0-9])?$'
 
 
 def effective_route_name(
     route_name: str,
-    org_slug: Optional[str],
+    owner_name: Optional[str],
     is_platform_org: bool,
 ) -> str:
     """The model name clients see and gateways route on.
 
     The platform Org keeps unprefixed names (backward compat — existing
     clients calling `model: "qwen3-0.6b"` keep working). Other Orgs get
-    a slug prefix (`org1/qwen3-0.6b`) so two Orgs can use the same route
-    name without colliding in Higress's AI proxy match rules.
+    an owner-name prefix (`org1/qwen3-0.6b`) so two Orgs can use the
+    same route name without colliding in Higress's AI proxy match
+    rules.
 
     Format follows the OpenAI / HuggingFace / OpenRouter convention
-    (`namespace/model`); slug is already constrained to
+    (`namespace/model`); the owner's ``name`` column is constrained to
     `^[a-z](?:[a-z0-9\\-]*[a-z0-9])?$` and route names exclude `/` (see
     ``name_pattern``) so the joined string parses unambiguously.
     """
-    if is_platform_org or not org_slug:
+    if is_platform_org or not owner_name:
         return route_name
-    return f"{org_slug}/{route_name}"
+    return f"{owner_name}/{route_name}"
 
 
 class AccessPolicyEnum(str, Enum):
@@ -329,11 +331,11 @@ class ModelRoute(ModelRouteBase, BaseModelMixin, table=True):
 class ModelRoutePublic(ModelRouteBase, PublicFields):
     # The model name clients should send in their request body. Equals
     # `name` for the platform Org (backward compat); for other Orgs it
-    # is `<org-slug>/<name>`. Frontends currently derive this themselves
-    # via `effectiveRouteName(name, org)` since they have the owning Org
-    # row in hand from a separate fetch — the field is reserved here so
-    # a future server-side enrichment can populate it without breaking
-    # consumers.
+    # is `<owner-name>/<name>`. Frontends currently derive this
+    # themselves via `effectiveRouteName(name, org)` since they have
+    # the owning Org row in hand from a separate fetch — the field is
+    # reserved here so a future server-side enrichment can populate it
+    # without breaking consumers.
     effective_name: Optional[str] = None
 
 

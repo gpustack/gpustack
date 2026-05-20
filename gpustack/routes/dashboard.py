@@ -360,7 +360,7 @@ async def get_model_usage_summary(
     statement = (
         select(
             ModelUsage.user_id,
-            User.slug.label('username'),
+            User.name.label('username'),
             func.sum(ModelUsage.prompt_token_count).label('total_prompt_tokens'),
             func.sum(ModelUsage.completion_token_count).label(
                 'total_completion_tokens'
@@ -368,7 +368,7 @@ async def get_model_usage_summary(
         )
         .join(User, ModelUsage.user_id == User.id)
         .where(ModelUsage.date >= one_month_ago)
-        .group_by(ModelUsage.user_id, User.slug)
+        .group_by(ModelUsage.user_id, User.name)
         .order_by(
             func.sum(
                 ModelUsage.prompt_token_count + ModelUsage.completion_token_count

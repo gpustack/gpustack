@@ -563,8 +563,9 @@ def generic_proxy_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 
     ``defaultConfig.aliasNameMapping`` is maintained per-route by
     [[generic_proxy_router_diff_spec]] — each entry maps ``str(route_id)`` to
-    the route's effective model name (with Org slug prefix for non-platform
-    Orgs). The reconciler only mutates ``aliasNameMapping``; it never touches
+    the route's effective model name (with owner-name prefix for
+    non-platform Orgs). The reconciler only mutates ``aliasNameMapping``;
+    it never touches
     ``defaultConfigDisable``, since flipping that rewrites Envoy's filter
     chain and tears down every live connection.
 

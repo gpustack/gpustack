@@ -68,10 +68,10 @@ class AuthProviderEnum(str, Enum):
     SAML = "SAML"
 
 
-# Canonical slug of the built-in platform Org-principal. Created by the
-# multi-tenancy foundation migration; system / infrastructure resources
-# default to it.
-PLATFORM_PRINCIPAL_SLUG = 'default'
+# Canonical ``name`` of the built-in platform Org-principal. Created
+# by the multi-tenancy foundation migration; system / infrastructure
+# resources default to it.
+PLATFORM_PRINCIPAL_NAME = 'default'
 
 # Module-private mutable resolved at server startup by
 # :func:`init_platform_principal_id`. Used to be exported as
@@ -148,9 +148,9 @@ class PrincipalBase(SQLModel):
 
     The only USER-context column left is ``is_admin`` (platform admin
     flag — meaningless on ORG / GROUP / SYSTEM and just stays False
-    there). Everything else is shared identity surface: kind, slug,
-    name, description, source, parent_principal_id, is_active,
-    avatar_url.
+    there). Everything else is shared identity surface: kind, name,
+    display_name, description, source, parent_principal_id,
+    is_active, avatar_url.
     """
 
     # Discriminator. Defaults to USER so legacy ``User(...)`` calls
@@ -163,22 +163,27 @@ class PrincipalBase(SQLModel):
     )
 
     # Stable identifier for the principal. Globally unique among
-    # non-NULL values.
+    # non-NULL values. Matches the k8s convention where
+    # ``metadata.name`` is the URL-safe identifier — the upcoming GPU
+    # service API and k8s namespace plumbing both key off this
+    # column directly.
     #
     # * USER: the login name (what the legacy schema called
     #   ``username``). Not used as a URL prefix — USER-owned model
     #   routes don't exist, so format is unconstrained beyond the
     #   uniqueness check.
-    # * ORG: user-supplied URL-safe slug; appears as the
-    #   ``<owner-slug>/<route-name>`` prefix in inference URLs.
+    # * ORG: user-supplied URL-safe identifier; appears as the
+    #   ``<owner-name>/<route-name>`` prefix in inference URLs.
     # * GROUP: NULL (groups have no canonical identifier; their
-    #   ``name`` is uniquely indexed instead).
-    slug: Optional[str] = Field(default=None, nullable=True)
-
-    # Display name. For USER this is the human label (legacy
-    # ``full_name``, falling back to login at creation time). For
-    # ORG / GROUP it's the user-supplied label.
+    #   ``display_name`` is uniquely indexed instead).
     name: Optional[str] = Field(default=None, nullable=True)
+
+    # Human-readable display label. For USER this was the legacy
+    # ``full_name`` (falling back to login at creation time); for
+    # ORG / GROUP it's the user-supplied label. Cluster-access
+    # grants, model-route ACL pickers, and the Org members list all
+    # render this string.
+    display_name: Optional[str] = Field(default=None, nullable=True)
 
     description: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
@@ -253,15 +258,15 @@ class Principal(PrincipalBase, BaseModelMixin, table=True):
 
     __tablename__ = 'principals'
     __table_args__ = (
-        UniqueConstraint('slug', name='uix_principals_slug'),
-        # Group names are globally unique among active groups.
+        UniqueConstraint('name', name='uix_principals_name'),
+        # Group display names are globally unique among active groups.
         # Postgres supports partial unique indexes — declared here for
-        # autogenerate parity with the migration. MySQL / SQLite have
-        # no partial index, so the migration creates a plain non-unique
-        # index and the route handlers enforce uniqueness in code.
+        # autogenerate parity with the migration. MySQL has no partial
+        # index, so the migration creates a plain non-unique index and
+        # the route handlers enforce uniqueness in code.
         Index(
-            'uix_principals_group_name',
-            'name',
+            'uix_principals_group_display_name',
+            'display_name',
             unique=True,
             postgresql_where=text("kind = 'GROUP' AND deleted_at IS NULL"),
         ),
@@ -313,7 +318,7 @@ class PrincipalListParams(ListParams):
     kind: Optional[PrincipalType] = None
     sortable_fields: ClassVar[List[str]] = [
         "name",
-        "slug",
+        "display_name",
         "kind",
         "created_at",
         "updated_at",
@@ -323,8 +328,8 @@ class PrincipalListParams(ListParams):
 class PrincipalPublic(SQLModel):
     id: int
     kind: PrincipalType
-    slug: Optional[str] = None
     name: Optional[str] = None
+    display_name: Optional[str] = None
     description: Optional[str] = None
     source: AuthProviderEnum = AuthProviderEnum.Local
     created_at: datetime
@@ -402,7 +407,7 @@ async def init_platform_principal_id(session: AsyncSession) -> int:
     """
     global _PLATFORM_PRINCIPAL_ID, _PLATFORM_PRINCIPAL_ID_INITIALIZED
     p = await Principal.one_by_field(
-        session=session, field='slug', value=PLATFORM_PRINCIPAL_SLUG
+        session=session, field='name', value=PLATFORM_PRINCIPAL_NAME
     )
     if p is None:
         raise RuntimeError(
@@ -414,7 +419,7 @@ async def init_platform_principal_id(session: AsyncSession) -> int:
 
 
 async def get_platform_principal_id(session: AsyncSession) -> int:
-    """Read the platform principal's id, resolving by slug if startup
+    """Read the platform principal's id, resolving by name if startup
     init has not been performed yet (tests, scripts).
     """
     if _PLATFORM_PRINCIPAL_ID_INITIALIZED:

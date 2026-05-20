@@ -2,11 +2,16 @@
 
 Sets up the entire tenancy storage layer in one upgrade. The
 identity surface is a single ``principals`` table (renamed from
-``users``, extended with kind / slug / description / parent columns).
-USER, ORG, and GROUP are all rows in that table; the discriminator
-is ``kind``. Resource ownership (``owner_principal_id``), ACL grants,
-and memberships all reference ``principals.id`` directly — no
-polymorphic ``(type, id)`` pairs.
+``users``, extended with kind / name / display_name / description /
+parent columns). USER, ORG, GROUP, and SYSTEM are all rows in that
+table; the discriminator is ``kind``. Resource ownership
+(``owner_principal_id``), ACL grants, and memberships all reference
+``principals.id`` directly — no polymorphic ``(type, id)`` pairs.
+
+The identity surface uses k8s-style column naming: ``name`` is the
+URL-safe identifier (analogous to ``metadata.name`` in k8s), and
+``display_name`` is the human-readable label. This matches the GPU
+service API the upcoming k8s integration will speak.
 
 Logical groups, run in order:
 
@@ -14,19 +19,20 @@ Logical groups, run in order:
    ``usermodelroutelink``; the server recreates the new-shape view
    from ``schemas/stmt.py`` at startup).
 2. Extend the existing ``users`` table with the principal-shaped
-   columns (``kind``, ``slug``, ``name``, ``description``,
-   ``parent_principal_id``), backfill USER kind data (``slug`` = old
-   ``username``, ``name`` = ``full_name`` or ``username``), then drop
-   ``username`` / ``full_name`` — the new columns subsume them.
-3. Insert the platform Org-principal row (``slug='default'``,
+   columns (``kind``, ``name``, ``display_name``, ``description``,
+   ``parent_principal_id``), backfill USER kind data (``name`` = old
+   ``username``, ``display_name`` = ``full_name`` or ``username``),
+   then drop ``username`` / ``full_name`` — the new columns subsume
+   them.
+3. Insert the platform Org-principal row (``name='default'``,
    ``kind='ORG'``) as a row in the still-named ``users`` table.
 4. Rename ``users`` → ``principals``. Existing ``user_id`` FKs
    (``api_keys`` / ``cluster_access`` / ``model_usages``) silently
    retarget the renamed table — same column name, same numeric
    values, no FK definition change required.
 5. Add the principal-specific constraints / indexes that aren't on
-   the old ``users`` table (slug unique, group-name partial unique,
-   parent self-FK).
+   the old ``users`` table (name unique, group-display-name partial
+   unique, parent self-FK).
 6. Create the new related tables (``principal_memberships``,
    ``cluster_access``, ``model_route_principals``).
 7. Backfill admin memberships in the platform Org (role=OWNER).
@@ -73,7 +79,7 @@ import gpustack.utils.sql_enum as sql_enum
 from gpustack.migrations.utils import column_exists, table_exists
 from gpustack.schemas.principals import (
     AuthProviderEnum,
-    PLATFORM_PRINCIPAL_SLUG,
+    PLATFORM_PRINCIPAL_NAME,
 )
 from gpustack.schemas.stmt import model_user_after_drop_view_stmt
 
@@ -85,7 +91,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-PLATFORM_PRINCIPAL_NAME = 'Default'
+PLATFORM_PRINCIPAL_DISPLAY_NAME = 'Default'
 
 
 def _enums_to_create(bind):
@@ -186,25 +192,25 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 2. Extend ``users`` with the principal-shaped columns.
     # ------------------------------------------------------------------
-    # USER's identifier collapses into ``slug`` (was ``username``) and
-    # display name collapses into ``name`` (was ``full_name`` falling
-    # back to ``username``). The old columns are dropped at the end of
-    # this step.
+    # USER's identifier collapses into ``name`` (was ``username``) and
+    # display label collapses into ``display_name`` (was ``full_name``
+    # falling back to ``username``). The old columns are dropped at
+    # the end of this step.
     #
     # Preflight: if any existing user has ``username`` equal to the
-    # platform Org slug we're about to seed, the unique slug index
+    # platform Org name we're about to seed, the unique name index
     # would collide. Surface the conflict before mutating anything so
     # the operator can rename the user and retry.
     conflict = bind.execute(
         sa.text(
-            "SELECT id, username FROM users WHERE username = :slug"
-        ).bindparams(slug=PLATFORM_PRINCIPAL_SLUG)
+            "SELECT id, username FROM users WHERE username = :name"
+        ).bindparams(name=PLATFORM_PRINCIPAL_NAME)
     ).first()
     if conflict is not None:
         raise RuntimeError(
             f"Cannot upgrade: user id={conflict[0]} username="
             f"{conflict[1]!r} collides with the reserved platform Org "
-            f"slug {PLATFORM_PRINCIPAL_SLUG!r}. Rename that user "
+            f"name {PLATFORM_PRINCIPAL_NAME!r}. Rename that user "
             "before re-running the migration."
         )
 
@@ -213,13 +219,13 @@ def upgrade() -> None:
             batch_op.add_column(
                 sa.Column('kind', principal_type, nullable=True)
             )
-        if not column_exists('users', 'slug'):
-            batch_op.add_column(
-                sa.Column('slug', sa.String(length=255), nullable=True)
-            )
         if not column_exists('users', 'name'):
             batch_op.add_column(
                 sa.Column('name', sa.String(length=255), nullable=True)
+            )
+        if not column_exists('users', 'display_name'):
+            batch_op.add_column(
+                sa.Column('display_name', sa.String(length=255), nullable=True)
             )
         if not column_exists('users', 'description'):
             batch_op.add_column(
@@ -236,17 +242,17 @@ def upgrade() -> None:
             """
             UPDATE users
             SET kind = 'USER',
-                slug = username,
-                name = COALESCE(full_name, username)
+                name = username,
+                display_name = COALESCE(full_name, username)
             WHERE kind IS NULL
             """
         )
     )
 
     # Drop the legacy identifier/display columns now that the data
-    # lives in ``slug`` / ``name``. The unique index on ``username``
-    # disappears with it; the new ``slug`` unique constraint replaces
-    # it in step 5.
+    # lives in ``name`` / ``display_name``. The unique index on
+    # ``username`` disappears with it; the new ``name`` unique
+    # constraint replaces it in step 5.
     with op.batch_alter_table('users', schema=None) as batch_op:
         batch_op.alter_column(
             'kind', existing_type=principal_type, nullable=False
@@ -261,7 +267,7 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # Insert with id = MAX(id) + 1 so it sits above all USER rows;
     # this becomes the stable platform principal id once the rename
-    # below renames the table. Idempotent via slug existence check.
+    # below renames the table. Idempotent via name existence check.
     bool_false = 'false' if dialect == 'postgresql' else '0'
     bool_true = 'true' if dialect == 'postgresql' else '1'
     # ``hashed_password`` is declared NOT NULL on upgraded v2.1.2
@@ -274,39 +280,39 @@ def upgrade() -> None:
         sa.text(
             f"""
             INSERT INTO users
-                (id, kind, slug, name, description,
+                (id, kind, name, display_name, description,
                  is_admin, is_active, require_password_change, is_system,
                  hashed_password,
                  source,
                  created_at, updated_at, deleted_at)
             SELECT
                 COALESCE((SELECT MAX(id) FROM users), 0) + 1,
-                'ORG', :slug, :name, :desc,
+                'ORG', :name, :display_name, :desc,
                 {bool_false}, {bool_true}, {bool_false}, {bool_false},
                 '',
                 'Local',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
             WHERE NOT EXISTS (
-                SELECT 1 FROM users WHERE slug = :slug
+                SELECT 1 FROM users WHERE name = :name
             )
             """
         ).bindparams(
-            slug=PLATFORM_PRINCIPAL_SLUG,
             name=PLATFORM_PRINCIPAL_NAME,
+            display_name=PLATFORM_PRINCIPAL_DISPLAY_NAME,
             desc='Built-in platform organization',
         )
     )
 
-    # Resolve the platform principal's actual id from slug; every
+    # Resolve the platform principal's actual id from name; every
     # downstream backfill uses this resolved value.
     platform_id = bind.execute(
         sa.text(
-            "SELECT id FROM users WHERE slug = :slug AND kind = 'ORG'"
-        ).bindparams(slug=PLATFORM_PRINCIPAL_SLUG)
+            "SELECT id FROM users WHERE name = :name AND kind = 'ORG'"
+        ).bindparams(name=PLATFORM_PRINCIPAL_NAME)
     ).scalar()
     if platform_id is None:
         raise RuntimeError(
-            f"Platform principal not found by slug={PLATFORM_PRINCIPAL_SLUG!r} "
+            f"Platform principal not found by name={PLATFORM_PRINCIPAL_NAME!r} "
             "after seed; backfill cannot continue"
         )
 
@@ -333,7 +339,7 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     with op.batch_alter_table('principals', schema=None) as batch_op:
         batch_op.create_unique_constraint(
-            'uix_principals_slug', ['slug']
+            'uix_principals_name', ['name']
         )
         batch_op.create_foreign_key(
             'fk_principals_parent_principal_id_principals',
@@ -343,19 +349,19 @@ def upgrade() -> None:
             ondelete='CASCADE',
         )
 
-    # Group names are globally unique among active groups. Postgres
-    # supports partial unique indexes natively. MySQL / SQLite have no
-    # equivalent — a plain (non-unique) index supports lookups and
-    # uniqueness is enforced in the route handlers.
+    # Group display names are globally unique among active groups.
+    # Postgres supports partial unique indexes natively. MySQL has
+    # no equivalent — a plain (non-unique) index supports lookups
+    # and uniqueness is enforced in the route handlers.
     if dialect == 'postgresql':
         op.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uix_principals_group_name "
-            "ON principals (name) "
+            "CREATE UNIQUE INDEX IF NOT EXISTS uix_principals_group_display_name "
+            "ON principals (display_name) "
             "WHERE kind = 'GROUP' AND deleted_at IS NULL"
         )
     else:
         op.create_index(
-            'ix_principals_group_name', 'principals', ['name']
+            'ix_principals_group_display_name', 'principals', ['display_name']
         )
 
     # ------------------------------------------------------------------

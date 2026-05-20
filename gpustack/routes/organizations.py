@@ -51,7 +51,7 @@ async def get_organizations(
 ):
     fuzzy_fields = {}
     if search:
-        fuzzy_fields = {"name": search, "slug": search}
+        fuzzy_fields = {"name": search, "display_name": search}
 
     fields = {"deleted_at": None, "kind": PrincipalType.ORG}
 
@@ -83,28 +83,29 @@ async def get_organization(session: SessionDep, id: int):
 
 @router.post("", response_model=OrganizationPublic)
 async def create_organization(session: SessionDep, org_in: OrganizationCreate):
-    # Block reserved names ("Personal" / "Global") and slug patterns
-    # ("user-N") on the input side. Validation lives in the route, not
-    # the schema, so the same model can serialize already-existing
-    # auto-created USER-principals without rejecting them.
+    # Block reserved display-names ("Personal" / "Global") and name
+    # patterns ("user-N") on the input side. Validation lives in the
+    # route, not the schema, so the same model can serialize
+    # already-existing auto-created USER-principals without rejecting
+    # them.
     try:
-        validate_org_input(name=org_in.name, slug=org_in.slug)
+        validate_org_input(display_name=org_in.display_name, name=org_in.name)
     except ValueError as e:
         raise InvalidException(message=str(e))
 
     existing = await Principal.one_by_fields(
-        session, {"slug": org_in.slug, "deleted_at": None}
+        session, {"name": org_in.name, "deleted_at": None}
     )
     if existing:
         raise AlreadyExistsException(
-            message=f"Organization with slug '{org_in.slug}' already exists"
+            message=f"Organization with name '{org_in.name}' already exists"
         )
 
     try:
         to_create = Principal(
             kind=PrincipalType.ORG,
             name=org_in.name,
-            slug=org_in.slug,
+            display_name=org_in.display_name,
             description=org_in.description,
         )
         created = await Principal.create(session, to_create)
@@ -122,7 +123,7 @@ async def update_organization(session: SessionDep, id: int, org_in: Organization
         raise NotFoundException(message="Organization not found")
 
     try:
-        validate_org_input(name=org_in.name)
+        validate_org_input(display_name=org_in.display_name)
     except ValueError as e:
         raise InvalidException(message=str(e))
 
@@ -252,7 +253,7 @@ async def list_organization_directory(
         raise ForbiddenException(message="Insufficient permission")
     fuzzy_fields = {}
     if search:
-        fuzzy_fields = {"name": search, "slug": search}
+        fuzzy_fields = {"name": search, "display_name": search}
     fields = {"deleted_at": None, "kind": PrincipalType.ORG}
     page_data = await Principal.paginated_by_query(
         session=session,

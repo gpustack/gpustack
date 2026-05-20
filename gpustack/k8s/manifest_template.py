@@ -14,7 +14,7 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
     # system namespace for cluster registration, defaults to "gpustack-system",
     # used for placing the components for the whole Kubernetes cluster.
     system_namespace: Optional[str] = None
-    # cluster owner namespace, defaults to "gpustack-{cluster_owner_principal_slug}",
+    # cluster owner namespace, defaults to "gpustack-{cluster_owner_principal_name}",
     # used to placing the Kubernetes resources for the cluster owner.
     cluster_owner_namespace: Optional[str] = None
     # cluster-specific namespace, defaults to "gpustack-system" or "gpustack-system-{cluster_suffix}",
@@ -22,7 +22,7 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
     # legacy, will be removed in the future, installed new components should be placed in the system namespace.
     namespace: Optional[str] = None
     cluster_suffix: Optional[str] = None
-    cluster_owner_principal_slug: Optional[str] = None
+    cluster_owner_principal_name: Optional[str] = None
     runtime_enum: Optional[ManufacturerEnum] = None
     runtime: Optional[str] = None
     k8s_volume_mounts: Optional[List[K8sVolumeMount]] = None
@@ -83,7 +83,7 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
             self.system_namespace = "gpustack-system"
         if self.cluster_owner_namespace is None:
             self.cluster_owner_namespace = get_namespace_name(
-                self.cluster_owner_principal_slug
+                self.cluster_owner_principal_name
             )
         if self.namespace is None and self.cluster_suffix is not None:
             self.namespace = f"gpustack-system-{self.cluster_suffix}"

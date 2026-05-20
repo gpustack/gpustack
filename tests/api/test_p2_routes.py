@@ -53,14 +53,14 @@ def _ctx(
 def _principal(
     id: int = 10,
     kind: PrincipalType = PrincipalType.ORG,
-    name: str = "Acme",
-    slug: str | None = "acme",
+    display_name: str = "Acme",
+    name: str | None = "acme",
 ):
     p = MagicMock(spec=Principal)
     p.id = id
     p.kind = kind
     p.name = name
-    p.slug = slug
+    p.display_name = display_name
     p.description = None
     p.deleted_at = None
     p.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -121,23 +121,25 @@ def test_can_manage_member_cannot_manage():
 
 
 @pytest.mark.asyncio
-async def test_create_organization_rejects_duplicate_slug(monkeypatch):
+async def test_create_organization_rejects_duplicate_name(monkeypatch):
     session = MagicMock()
     monkeypatch.setattr(
         organizations_route.Principal,
         "one_by_fields",
-        AsyncMock(return_value=_principal(name="Existing", slug="acme")),
+        AsyncMock(return_value=_principal(display_name="Existing", name="acme")),
     )
     with pytest.raises(AlreadyExistsException):
         await organizations_route.create_organization(
             session=session,
-            org_in=organizations_route.OrganizationCreate(name="Acme", slug="acme"),
+            org_in=organizations_route.OrganizationCreate(
+                display_name="Acme", name="acme"
+            ),
         )
 
 
 @pytest.mark.asyncio
 async def test_delete_platform_org_blocked(monkeypatch):
-    platform = _principal(id=1, name="Platform", slug="default")
+    platform = _principal(id=1, display_name="Platform", name="default")
     monkeypatch.setattr(
         organizations_route.Principal,
         "one_by_id",
@@ -149,7 +151,7 @@ async def test_delete_platform_org_blocked(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_delete_org_blocked_when_resources_exist(monkeypatch):
-    org = _principal(id=2, name="Acme", slug="acme")
+    org = _principal(id=2, display_name="Acme", name="acme")
     monkeypatch.setattr(
         organizations_route.Principal,
         "one_by_id",
@@ -181,8 +183,10 @@ def _patch_org_and_member(monkeypatch, org, member_principal):
 
 @pytest.mark.asyncio
 async def test_remove_only_owner_blocked(monkeypatch):
-    org = _principal(id=10, name="Acme", slug="acme")
-    member = _principal(id=200, kind=PrincipalType.USER, name="user-2", slug="user-2")
+    org = _principal(id=10, display_name="Acme", name="acme")
+    member = _principal(
+        id=200, kind=PrincipalType.USER, display_name="user-2", name="user-2"
+    )
     membership = MagicMock(spec=PrincipalMembership)
     membership.parent_principal_id = 10
     membership.member_principal_id = 200
@@ -208,8 +212,10 @@ async def test_remove_only_owner_blocked(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_demote_only_owner_blocked(monkeypatch):
-    org = _principal(id=10, name="Acme", slug="acme")
-    member = _principal(id=200, kind=PrincipalType.USER, name="user-2", slug="user-2")
+    org = _principal(id=10, display_name="Acme", name="acme")
+    member = _principal(
+        id=200, kind=PrincipalType.USER, display_name="user-2", name="user-2"
+    )
     membership = MagicMock(spec=PrincipalMembership)
     membership.parent_principal_id = 10
     membership.member_principal_id = 200
@@ -243,8 +249,10 @@ async def test_remove_only_owner_blocked_for_group_owner(monkeypatch):
     when it's the last owner — the unified API treats both kinds
     symmetrically.
     """
-    org = _principal(id=10, name="Acme", slug="acme")
-    group = _principal(id=300, kind=PrincipalType.GROUP, name="gpu-admins", slug=None)
+    org = _principal(id=10, display_name="Acme", name="acme")
+    group = _principal(
+        id=300, kind=PrincipalType.GROUP, display_name="gpu-admins", name=None
+    )
     membership = MagicMock(spec=PrincipalMembership)
     membership.parent_principal_id = 10
     membership.member_principal_id = 300
@@ -331,7 +339,7 @@ async def test_grant_cluster_access_rejects_duplicate(monkeypatch):
     cluster = MagicMock()
     cluster.id = 1
     cluster.deleted_at = None
-    org = _principal(id=2, kind=PrincipalType.ORG, name="Acme", slug="acme")
+    org = _principal(id=2, kind=PrincipalType.ORG, display_name="Acme", name="acme")
     monkeypatch.setattr(
         cluster_access_route.Cluster,
         "one_by_id",
@@ -384,8 +392,8 @@ async def test_create_group_rejects_duplicate_name(monkeypatch):
     existing = _principal(
         id=5,
         kind=PrincipalType.GROUP,
-        name="team-a",
-        slug=None,
+        display_name="team-a",
+        name=None,
     )
     monkeypatch.setattr(
         user_groups_route.Principal,
@@ -395,7 +403,7 @@ async def test_create_group_rejects_duplicate_name(monkeypatch):
     with pytest.raises(AlreadyExistsException):
         await user_groups_route.create_group(
             session=MagicMock(),
-            body=user_groups_route.UserGroupCreate(name="team-a"),
+            body=user_groups_route.UserGroupCreate(display_name="team-a"),
         )
 
 
@@ -404,8 +412,8 @@ async def test_add_group_members_rejects_missing_user(monkeypatch):
     group = _principal(
         id=5,
         kind=PrincipalType.GROUP,
-        name="team-a",
-        slug=None,
+        display_name="team-a",
+        name=None,
     )
     monkeypatch.setattr(
         user_groups_route.Principal,

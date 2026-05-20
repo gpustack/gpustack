@@ -128,17 +128,19 @@ async def create_group(session: SessionDep, body: UserGroupCreate):
         session,
         {
             "kind": PrincipalType.GROUP,
-            "name": body.name,
+            "display_name": body.display_name,
             "deleted_at": None,
         },
     )
     if existing:
-        raise AlreadyExistsException(message=f"Group '{body.name}' already exists")
+        raise AlreadyExistsException(
+            message=f"Group '{body.display_name}' already exists"
+        )
 
     try:
         group = Principal(
             kind=PrincipalType.GROUP,
-            name=body.name,
+            display_name=body.display_name,
             description=body.description,
         )
         created = await Principal.create(session, group)
@@ -156,17 +158,19 @@ async def create_group(session: SessionDep, body: UserGroupCreate):
 async def update_group(session: SessionDep, group_id: int, body: UserGroupUpdate):
     group = await _load_group(session, group_id)
 
-    if body.name != group.name:
+    if body.display_name != group.display_name:
         clash = await Principal.one_by_fields(
             session,
             {
                 "kind": PrincipalType.GROUP,
-                "name": body.name,
+                "display_name": body.display_name,
                 "deleted_at": None,
             },
         )
         if clash and clash.id != group.id:
-            raise AlreadyExistsException(message=f"Group '{body.name}' already exists")
+            raise AlreadyExistsException(
+                message=f"Group '{body.display_name}' already exists"
+            )
 
     try:
         await group.update(session, body.model_dump(exclude_unset=True))
@@ -223,8 +227,8 @@ async def list_group_members(session: SessionDep, ctx: TenantContextDep, group_i
                 user_id=getattr(u, "id", 0),
                 group_id=group_id,
                 created_at=r.created_at,
-                username=getattr(u, "slug", None),
-                full_name=getattr(u, "name", None),
+                username=getattr(u, "name", None),
+                full_name=getattr(u, "display_name", None),
             )
         )
     return out
@@ -320,8 +324,8 @@ async def add_group_members(
             user_id=user.id,
             group_id=group_id,
             created_at=link.created_at,
-            username=user.slug,
-            full_name=user.name,
+            username=user.name,
+            full_name=user.display_name,
         )
         for user, link in stored_pairs
     ]
