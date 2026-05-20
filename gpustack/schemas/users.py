@@ -180,21 +180,21 @@ class UserPublic(UserBase):
 UsersPublic = PaginatedList[UserPublic]
 
 
-def is_default_cluster_user(cluster_user: User) -> bool:
+def is_default_cluster_user(cluster_user: Principal) -> bool:
     return (
         cluster_user.kind == PrincipalType.SYSTEM
         and cluster_user.slug == default_cluster_user_name
     )
 
 
-async def get_default_cluster_user(session: AsyncSession) -> Optional[User]:
+async def get_default_cluster_user(session: AsyncSession) -> Optional[Principal]:
     # ``Principal.cluster`` is ``lazy='noload'`` (so generic reads don't
     # silently fan out per row). Bootstrap callers
     # (``Server._migrate_legacy_token`` / ``_ensure_registration_token``)
     # need the related Cluster row, so eager-load it here.
-    return await User.one_by_field(
+    return await Principal.one_by_field(
         session=session,
         field="slug",
         value=default_cluster_user_name,
-        options=[selectinload(User.cluster)],
+        options=[selectinload(Principal.cluster)],
     )

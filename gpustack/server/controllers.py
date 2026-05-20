@@ -829,7 +829,7 @@ async def get_cluster_registry(
     cluster = await Cluster.one_by_id(session, cluster_id)
     if cluster is None or cluster.system_principal_id is None:
         return None
-    cluster_user = await User.one_by_id(session, cluster.system_principal_id)
+    cluster_user = await Principal.one_by_id(session, cluster.system_principal_id)
     if cluster_user is None or is_default_cluster_user(cluster_user):
         return None
     cluster_registry = mcp_handler.cluster_registry(cluster)

@@ -28,7 +28,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.schemas.api_keys import ApiKey, PermissionScope
 from gpustack.schemas.users import User
-from gpustack.schemas.principals import PrincipalType
+from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.security import (
     JWTManager,
     verify_hashed_secret,
@@ -181,7 +181,7 @@ async def authenticate_system_user(
             # what downstream checks (``get_cluster_user`` /
             # ``get_worker_user``) gate on, plus ``is_admin`` flips on
             # the all-access guards used by legacy worker callers.
-            return User(
+            return Principal(
                 slug=credentials.username,
                 kind=PrincipalType.SYSTEM,
                 is_admin=True,

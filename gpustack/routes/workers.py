@@ -51,7 +51,7 @@ from gpustack.schemas.workers import (
 )
 from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
 from gpustack.schemas.users import User
-from gpustack.schemas.principals import PrincipalType
+from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.config import (
     SensitivePredefinedConfig,
@@ -467,13 +467,13 @@ def _build_worker_config_dict(cluster: Cluster) -> Dict[str, Any]:
 
 async def _resolve_existing_worker_user(
     session, existing_worker: Optional[Worker]
-) -> Optional[User]:
+) -> Optional[Principal]:
     if existing_worker is None or existing_worker.system_principal_id is None:
         return None
-    return await User.one_by_id(
+    return await Principal.one_by_id(
         session=session,
         id=existing_worker.system_principal_id,
-        options=[selectinload(User.api_keys)],
+        options=[selectinload(Principal.api_keys)],
     )
 
 
@@ -489,8 +489,8 @@ async def _persist_worker_registration(
     existing_worker: Optional[Worker],
     new_worker: Worker,
     new_token: str,
-    to_create_user: Optional[User],
-    existing_user: Optional[User],
+    to_create_user: Optional[Principal],
+    existing_user: Optional[Principal],
     to_create_apikey: Optional[ApiKey],
     all_workers: List[Worker],
     cluster: Cluster,
@@ -577,7 +577,7 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                 session, existing_worker
             )
             to_create_user = (
-                User(
+                Principal(
                     slug=f'{system_name_prefix}-{hashed_suffix}',
                     kind=PrincipalType.SYSTEM,
                 )

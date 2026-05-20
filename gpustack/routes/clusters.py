@@ -52,7 +52,7 @@ from gpustack.schemas.clusters import (
     CloudOptions,
 )
 from gpustack.schemas.principals import PrincipalType, platform_principal_id
-from gpustack.schemas.users import User, system_name_prefix
+from gpustack.schemas.users import system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
@@ -326,7 +326,7 @@ async def create_cluster(
             "is_default": auto_default,
         }
     )
-    to_create_user = User(
+    to_create_user = Principal(
         slug=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
         kind=PrincipalType.SYSTEM,
     )
