@@ -39,6 +39,7 @@ from gpustack.server.cache import (
     delete_cache_by_key,
     locked_cached,
 )
+from gpustack.utils.usage_snapshots import propagate_user_rename
 
 
 logger = logging.getLogger(__name__)
@@ -95,10 +96,20 @@ class UserService:
         return result
 
     async def update(self, user: User, source: Union[dict, SQLModel, None] = None):
-        result = await user.update(self.session, source)
+        old_name = user.name
+        result = await user.update(self.session, source, auto_commit=False)
+        # Refresh denormalized ``user_name`` snapshots on usage rows so
+        # dashboards reflect the new name. Bundled in the same
+        # transaction as the user-row write so a rollback rolls back
+        # both. See :func:`propagate_user_rename` for scope notes.
+        if user.name != old_name:
+            await propagate_user_rename(self.session, user.id, user.name)
+        await self.session.commit()
         await delete_cache_by_key(self.get_by_id, user.id)
         await delete_cache_by_key(self.get_user_accessible_model_names, user.id)
         await delete_cache_by_key(self.get_by_username, user.name)
+        if old_name != user.name:
+            await delete_cache_by_key(self.get_by_username, old_name)
         return result
 
     async def delete(self, user: User):
