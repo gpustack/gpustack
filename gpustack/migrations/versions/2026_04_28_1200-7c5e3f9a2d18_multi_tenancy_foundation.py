@@ -734,37 +734,28 @@ def upgrade() -> None:
     # The old (route_id, user_id) pairs become (route_id, principal_id):
     # after the users → principals rename, user.id IS the USER-principal
     # id, so the copy is a direct projection.
+    #
+    # No ON CONFLICT / IGNORE clause needed: the target table was
+    # just created (step 6) so it's empty, and the source has a
+    # composite PRIMARY KEY on (route_id, user_id) which matches the
+    # target's UNIQUE(route_id, principal_id) 1:1 — duplicates are
+    # structurally impossible.
     user_link_table = (
         'usermodelroutelink' if table_exists('usermodelroutelink') else None
     )
     if user_link_table:
-        if dialect == 'postgresql':
-            op.execute(
-                sa.text(
-                    f"""
-                    INSERT INTO model_route_principals
-                        (route_id, principal_id, created_at, updated_at)
-                    SELECT uml.route_id, uml.user_id,
-                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                    FROM {user_link_table} uml
-                    WHERE uml.route_id IS NOT NULL AND uml.user_id IS NOT NULL
-                    ON CONFLICT (route_id, principal_id) DO NOTHING
-                    """
-                )
+        op.execute(
+            sa.text(
+                f"""
+                INSERT INTO model_route_principals
+                    (route_id, principal_id, created_at, updated_at)
+                SELECT uml.route_id, uml.user_id,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM {user_link_table} uml
+                WHERE uml.route_id IS NOT NULL AND uml.user_id IS NOT NULL
+                """
             )
-        else:
-            op.execute(
-                sa.text(
-                    f"""
-                    INSERT OR IGNORE INTO model_route_principals
-                        (route_id, principal_id, created_at, updated_at)
-                    SELECT uml.route_id, uml.user_id,
-                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                    FROM {user_link_table} uml
-                    WHERE uml.route_id IS NOT NULL AND uml.user_id IS NOT NULL
-                    """
-                )
-            )
+        )
 
     # ------------------------------------------------------------------
     # 14. Extend access_policy enum.
