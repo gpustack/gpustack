@@ -68,12 +68,12 @@ def test_coerce_non_string_scalar_is_empty():
 # ---- sync_user_group_memberships -------------------------------------------
 
 
-def _principal(id: int, display_name: str) -> Principal:
+def _principal(id: int, name: str) -> Principal:
     """Make a Group-principal Mock that quacks like a real row."""
     p = MagicMock(spec=Principal)
     p.id = id
     p.kind = PrincipalType.GROUP
-    p.display_name = display_name
+    p.name = name
     p.deleted_at = None
     return p
 
@@ -101,7 +101,8 @@ def _session(exec_results, *, flush_raises=None):
 
     ``flush_raises``: optional list, one entry per ``flush`` call. A
     non-None entry is raised as the side effect of that call. Lets a
-    test simulate an ``IntegrityError`` from the partial unique index.
+    test simulate an ``IntegrityError`` from
+    ``uix_principals_group_name``.
 
     Also mocks ``begin_nested`` as an async context manager so the
     SAVEPOINT-wrapped insert path in ``sync_user_group_memberships``

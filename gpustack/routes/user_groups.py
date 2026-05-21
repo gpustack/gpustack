@@ -128,19 +128,17 @@ async def create_group(session: SessionDep, body: UserGroupCreate):
         session,
         {
             "kind": PrincipalType.GROUP,
-            "display_name": body.display_name,
+            "name": body.name,
             "deleted_at": None,
         },
     )
     if existing:
-        raise AlreadyExistsException(
-            message=f"Group '{body.display_name}' already exists"
-        )
+        raise AlreadyExistsException(message=f"Group '{body.name}' already exists")
 
     try:
         group = Principal(
             kind=PrincipalType.GROUP,
-            display_name=body.display_name,
+            name=body.name,
             description=body.description,
         )
         created = await Principal.create(session, group)
@@ -158,19 +156,17 @@ async def create_group(session: SessionDep, body: UserGroupCreate):
 async def update_group(session: SessionDep, group_id: int, body: UserGroupUpdate):
     group = await _load_group(session, group_id)
 
-    if body.display_name != group.display_name:
+    if body.name != group.name:
         clash = await Principal.one_by_fields(
             session,
             {
                 "kind": PrincipalType.GROUP,
-                "display_name": body.display_name,
+                "name": body.name,
                 "deleted_at": None,
             },
         )
         if clash and clash.id != group.id:
-            raise AlreadyExistsException(
-                message=f"Group '{body.display_name}' already exists"
-            )
+            raise AlreadyExistsException(message=f"Group '{body.name}' already exists")
 
     try:
         await group.update(session, body.model_dump(exclude_unset=True))

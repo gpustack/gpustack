@@ -93,9 +93,18 @@ async def create_organization(session: SessionDep, org_in: OrganizationCreate):
     except ValueError as e:
         raise InvalidException(message=str(e))
 
-    existing = await Principal.one_by_fields(
-        session, {"name": org_in.name, "deleted_at": None}
-    )
+    # USER / ORG / SYSTEM share one name namespace (see partitioning
+    # rationale on ``Principal.name``); a GROUP with the same name is
+    # in a separate partition and does not block Org creation.
+    existing = (
+        await session.exec(
+            select(Principal).where(
+                Principal.name == org_in.name,
+                Principal.kind != PrincipalType.GROUP,
+                Principal.deleted_at.is_(None),
+            )
+        )
+    ).first()
     if existing:
         raise AlreadyExistsException(
             message=f"Organization with name '{org_in.name}' already exists"

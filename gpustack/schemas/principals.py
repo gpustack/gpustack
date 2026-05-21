@@ -42,7 +42,6 @@ from sqlmodel import (
     Integer,
     Relationship,
     SQLModel,
-    UniqueConstraint,
 )
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -162,11 +161,21 @@ class PrincipalBase(SQLModel):
         sa_column=Column(SQLEnum(PrincipalType), nullable=False),
     )
 
-    # Stable identifier for the principal. Globally unique among
-    # non-NULL values. Matches the k8s convention where
-    # ``metadata.name`` is the URL-safe identifier — the upcoming GPU
-    # service API and k8s namespace plumbing both key off this
-    # column directly.
+    # Stable identifier for the principal. Uniqueness is partitioned:
+    # GROUP has its own namespace; USER / ORG / SYSTEM share one. The
+    # GROUP partition exists because IdP-supplied group names commonly
+    # coincide with admin-chosen Org names — forcing them globally
+    # unique would break OIDC/SAML group sync the moment an admin
+    # happens to name an Org the same as an IdP group. The shared
+    # namespace for the admin-curated kinds is conservative: most
+    # name lookups already scope by kind (``init_platform_principal_id``
+    # → ORG, ``get_default_cluster_principal`` → SYSTEM, the
+    # ``<owner-name>/<route>`` URL resolver → ORG), but
+    # ``get_by_username`` (login) does not, and relies on USER / ORG /
+    # SYSTEM not colliding to avoid mis-resolving a login to an ORG
+    # row. Matches the k8s convention where ``metadata.name`` is the
+    # URL-safe identifier — the upcoming GPU service API and k8s
+    # namespace plumbing both key off this column directly.
     #
     # * USER: the login name (what the legacy schema called
     #   ``username``). Not used as a URL prefix — USER-owned model
@@ -174,8 +183,9 @@ class PrincipalBase(SQLModel):
     #   uniqueness check.
     # * ORG: user-supplied URL-safe identifier; appears as the
     #   ``<owner-name>/<route-name>`` prefix in inference URLs.
-    # * GROUP: NULL (groups have no canonical identifier; their
-    #   ``display_name`` is uniquely indexed instead).
+    # * GROUP: admin- or IdP-supplied identifier. Not used in URLs
+    #   (groups are not route-owners), so format is unconstrained
+    #   beyond the global uniqueness check.
     name: Optional[str] = Field(default=None, nullable=True)
 
     # Human-readable display label. For USER this was the legacy
@@ -258,15 +268,22 @@ class Principal(PrincipalBase, BaseModelMixin, table=True):
 
     __tablename__ = 'principals'
     __table_args__ = (
-        UniqueConstraint('name', name='uix_principals_name'),
-        # Group display names are globally unique among active groups.
-        # Postgres supports partial unique indexes — declared here for
-        # autogenerate parity with the migration. MySQL has no partial
-        # index, so the migration creates a plain non-unique index and
-        # the route handlers enforce uniqueness in code.
+        # Two partial unique indexes — see the ``name`` field comment
+        # for the partitioning rationale (non-GROUP kinds share one
+        # namespace; GROUP has its own). Both are declared here for
+        # autogenerate parity with the migration. On MySQL the
+        # migration falls back to a single plain (non-unique) index
+        # since partial indexes are unsupported; uniqueness within
+        # each partition is then enforced by the create routes.
         Index(
-            'uix_principals_group_display_name',
-            'display_name',
+            'uix_principals_non_group_name',
+            'name',
+            unique=True,
+            postgresql_where=text("kind <> 'GROUP' AND deleted_at IS NULL"),
+        ),
+        Index(
+            'uix_principals_group_name',
+            'name',
             unique=True,
             postgresql_where=text("kind = 'GROUP' AND deleted_at IS NULL"),
         ),
@@ -406,8 +423,12 @@ async def init_platform_principal_id(session: AsyncSession) -> int:
     Idempotent. Callable from tests.
     """
     global _PLATFORM_PRINCIPAL_ID, _PLATFORM_PRINCIPAL_ID_INITIALIZED
-    p = await Principal.one_by_field(
-        session=session, field='name', value=PLATFORM_PRINCIPAL_NAME
+    # Platform principal is always an ORG — scope by kind so an
+    # IdP-synced GROUP that happens to be named 'default' can't shadow
+    # it under the partitioned name uniqueness model.
+    p = await Principal.one_by_fields(
+        session=session,
+        fields={'kind': PrincipalType.ORG, 'name': PLATFORM_PRINCIPAL_NAME},
     )
     if p is None:
         raise RuntimeError(

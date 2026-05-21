@@ -22,9 +22,7 @@ from gpustack.schemas.users import AuthProviderEnum
 
 
 class UserGroupUpdate(SQLModel):
-    # Groups have no URL-safe ``name`` column; ``display_name`` is
-    # what the IdP supplies and what's uniquely indexed.
-    display_name: str = Field(nullable=False)
+    name: str = Field(nullable=False)
     description: Optional[str] = Field(default=None, nullable=True)
 
 
@@ -34,7 +32,7 @@ class UserGroupCreate(UserGroupUpdate):
 
 class UserGroupListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
-        "display_name",
+        "name",
         "created_at",
         "updated_at",
     ]
@@ -42,7 +40,7 @@ class UserGroupListParams(ListParams):
 
 class UserGroupPublic(SQLModel):
     id: int
-    display_name: str
+    name: str
     description: Optional[str] = None
     # Count of active users in this group — denormalized on the
     # response so admin listings can render "Members" at a glance
@@ -62,7 +60,7 @@ class UserGroupPublic(SQLModel):
     ) -> "UserGroupPublic":
         return cls(
             id=p.id,
-            display_name=p.display_name,
+            name=p.name,
             description=p.description,
             member_count=member_count,
             source=p.source,

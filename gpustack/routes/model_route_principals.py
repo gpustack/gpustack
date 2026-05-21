@@ -40,9 +40,11 @@ class PrincipalView(BaseModel):
     route_id: int
     principal_type: PrincipalType
     principal_id: int
-    # Resolved at read time from the joined principals row's
-    # ``display_name`` column so the client can render a label without
-    # an extra lookup.
+    # Stable identifier and optional human label from the joined
+    # principals row. UI renders ``display_name || name``; both are
+    # sent so the client can show them side-by-side or disambiguate
+    # equal display names.
+    principal_name: Optional[str] = None
     principal_display_name: Optional[str] = None
 
 
@@ -76,12 +78,14 @@ async def _validate_principal(
 def _row_to_view(
     row: ModelRoutePrincipalLink,
     kind: PrincipalType,
+    name: Optional[str] = None,
     display_name: Optional[str] = None,
 ) -> PrincipalView:
     return PrincipalView(
         route_id=row.route_id,
         principal_type=kind,
         principal_id=row.principal_id,
+        principal_name=name,
         principal_display_name=display_name,
     )
 
@@ -96,18 +100,18 @@ async def _resolve_views(
             select(Principal).where(Principal.id.in_(principal_ids))
         )
         by_id = {p.id: p for p in result.all()}
-    return [
-        _row_to_view(
-            r,
-            (
-                by_id[r.principal_id].kind
-                if r.principal_id in by_id
-                else PrincipalType.USER
-            ),
-            by_id[r.principal_id].display_name if r.principal_id in by_id else None,
+    out: List[PrincipalView] = []
+    for r in rows:
+        p = by_id.get(r.principal_id)
+        out.append(
+            _row_to_view(
+                r,
+                p.kind if p else PrincipalType.USER,
+                p.name if p else None,
+                p.display_name if p else None,
+            )
         )
-        for r in rows
-    ]
+    return out
 
 
 @router.get("/{id}/principals", response_model=List[PrincipalView])

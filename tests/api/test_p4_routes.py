@@ -1,5 +1,6 @@
 """Unit tests for P4 (ALLOWED_PRINCIPALS extension) route logic."""
 
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -24,11 +25,13 @@ def _route(id: int = 1):
 def _principal(
     id: int = 5,
     kind: PrincipalType = PrincipalType.ORG,
-    display_name: str = "principal",
+    name: str = "principal",
+    display_name: Optional[str] = None,
 ):
     p = MagicMock(spec=Principal)
     p.id = id
     p.kind = kind
+    p.name = name
     p.display_name = display_name
     p.deleted_at = None
     return p
