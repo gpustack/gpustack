@@ -220,7 +220,8 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
     request.app.state.jwt_manager = type(
         "JWTManager", (), {"create_jwt_token": lambda self, username: "jwt-token"}
     )()
-    request.query_params = {"code": "auth-code"}
+    request.query_params = {"code": "auth-code", "state": "test-state"}
+    request.cookies = {"gpustack_oidc_state": "test-state"}
 
     monkeypatch.setattr("gpustack.routes.auth.httpx.AsyncClient", FakeAsyncClient)
     monkeypatch.setattr("gpustack.routes.auth.use_proxy_env_for_url", lambda url: False)
