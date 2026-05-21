@@ -1,11 +1,44 @@
 from typing import Optional
 from datetime import date
 
+from sqlalchemy import update
+from sqlmodel.ext.asyncio.session import AsyncSession
+
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_provider import ModelProvider
+from gpustack.schemas.model_usage import ModelUsage
+from gpustack.schemas.model_usage_details import (
+    ModelUsageDetails,
+    ModelUsageDetailsArchive,
+)
 from gpustack.schemas.models import Model
 from gpustack.schemas.usage import USAGE_GRANULARITY_MONTH
 from gpustack.schemas.users import User
+
+
+async def propagate_user_rename(
+    session: AsyncSession,
+    user_id: int,
+    new_name: Optional[str],
+) -> None:
+    """Refresh the ``user_name`` snapshot on existing usage rows.
+
+    The denorm exists so usage stays attributable after the user row is
+    deleted, but a live rename should still flow through — dashboards
+    group by ``user_name`` and would otherwise show the stale value
+    until the user is hard-deleted. Runs on the caller's session and
+    leaves committing to them so the user-row write and the snapshot
+    refresh land in the same transaction.
+
+    Counterpart denorms (``cluster_name``, ``model_name``,
+    ``api_key_name``, ``provider_name``) have the same drift property
+    but are out of scope for this helper; add sibling helpers when
+    those rename paths grow.
+    """
+    for table in (ModelUsage, ModelUsageDetails, ModelUsageDetailsArchive):
+        await session.exec(
+            update(table).where(table.user_id == user_id).values(user_name=new_name)
+        )
 
 
 def format_usage_user_label(user_name: Optional[str]) -> str:
