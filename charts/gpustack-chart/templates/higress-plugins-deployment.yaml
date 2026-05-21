@@ -16,6 +16,9 @@ spec:
         app: {{ .Release.Name }}-higress-plugins
 {{ include "chart_labels" . | indent 8 }}
     spec:
+      {{- with (include "image_pull_secrets" . | trim) }}
+      {{- nindent 6 . }}
+      {{- end }}
       containers:
         - name: higress-plugins
           image: {{ include "higressPlugins.image" . }}

@@ -5,8 +5,41 @@ debug: false
 # registrationToken is used to authenticate workers with the server.
 # If null, a random 32-character token is generated on first install and reused on upgrades.
 registrationToken: null
-systemDefaultContainerRegistry: null
+# Global values are propagated to all sub-charts (Helm convention).
+# `global.hub` is the container registry host (e.g. docker.io).
+# For air-gapped or private registry installs, override:
+#   --set global.hub=myregistry.example.com
+global:
+  hub: docker.io
+# Image pull secrets for the gpustack server, worker, and higress-plugins images.
+# The chart always creates a docker-registry Secret named "gpustack-image-pull-secret".
+# Two ways to populate it, which may be combined:
+#   1. Reference existing Secrets in the release namespace by name:
+#        imagePullSecrets:
+#          existingSecrets:
+#            - my-existing-secret
+#   2. Provide registry credentials; the auto-created Secret will contain the auth:
+#        imagePullSecrets:
+#          credentials:
+#            registry: docker.io
+#            username: myuser
+#            password: mypassword
+#            email: ""      # optional
+#
+# When no credentials are provided, the auto-created Secret contains an empty
+# {"auths":{}} and is harmless. The Secret is also pre-wired into the bundled
+# higress-core sub-chart (see higress-core.gateway.imagePullSecrets and
+# higress-core.controller.imagePullSecrets below).
+imagePullSecrets:
+  existingSecrets: []
+  credentials:
+    registry: docker.io
+    username: null
+    password: null
+    email: null
 image:
+  # Image repository including namespace (no registry). The final reference is
+  # rendered as `{global.hub}/{image.repository}:{image.tag}`.
   repository: gpustack/gpustack
   tag: null
   pullPolicy: IfNotPresent
@@ -53,14 +86,19 @@ higress-core:
     ingressClass: higress
     # GPUStack manages its own plugin server; disable the built-in one
     enablePluginServer: false
-    hub: docker.io/gpustack
+    # `hub` is inherited from the top-level `global.hub` via Helm's
+    # global-values propagation. Override here only when higress images
+    # live in a different registry than the rest of GPUStack.
   downstream:
     idleTimeout: 1800
   upstream:
     idleTimeout: 3
   gateway:
     hub: null
-    image: mirrored-higress-gateway
+    image: gpustack/mirrored-higress-gateway
+    imagePullSecrets:
+      - name: gpustack-image-pull-secret
+
   service:
     # Preserve real client IP at the gateway (required for IP-based
     # rate limiting, audit logging, and X-Forwarded-For correctness).
@@ -70,15 +108,18 @@ higress-core:
     externalTrafficPolicy: Local
   controller:
     hub: null
-    image: mirrored-higress-higress
+    image: gpustack/mirrored-higress-higress
+    imagePullSecrets:
+      - name: gpustack-image-pull-secret
   pilot:
     hub: null
-    image: mirrored-higress-pilot
+    image: gpustack/mirrored-higress-pilot
 higressPlugins:
   image:
+    # Image repository including namespace (no registry); final reference is `{global.hub}/{repository}:{tag}`.
     repository: gpustack/higress-plugins
     pullPolicy: IfNotPresent
-    tag: "0.2.1.post4"
+    tag: "0.2.2-post1"
 worker:
   enabled: true
   # GPU vendor for the worker nodes. Controls driver volume mounts and runtimeClassName.

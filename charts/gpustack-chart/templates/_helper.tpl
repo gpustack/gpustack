@@ -14,15 +14,17 @@
 {{ end -}}
 
 
-{{ define "system_default_registry" -}}
-{{ if .Values.systemDefaultContainerRegistry -}}
-{{ trimSuffix "/" .Values.systemDefaultContainerRegistry }}/
-{{- end -}}
+{{/*
+Resolve the registry + namespace prefix for images managed by this chart.
+Pulls from `.Values.global.hub`, trimming any trailing slash for safe printf.
+*/}}
+{{ define "gpustack.hub" -}}
+{{ trimSuffix "/" (required "global.hub is required" .Values.global.hub) -}}
 {{ end -}}
 
 
 {{ define "gpustack.image" -}}
-{{ printf "%s%s" (include "system_default_registry" .) .Values.image.repository -}}
+{{ printf "%s/%s" (include "gpustack.hub" .) .Values.image.repository -}}
 {{ end -}}
 
 
@@ -53,7 +55,7 @@ GPUSTACK_WORKER_METRICS_PORT: "{{ .Values.worker.metricsPort }}"
 {{- end -}}
 
 {{ define "higressPlugins.image" -}}
-{{ printf "%s%s" (include "system_default_registry" .) .Values.higressPlugins.image.repository }}:{{ required "higressPlugins.image.tag is required" .Values.higressPlugins.image.tag }}
+{{ printf "%s/%s:%s" (include "gpustack.hub" .) .Values.higressPlugins.image.repository (required "higressPlugins.image.tag is required" .Values.higressPlugins.image.tag) -}}
 {{- end -}}
 
 {{ define "chart_labels" -}}
@@ -90,5 +92,23 @@ tls:
   - secretName: {{ include "tls_secret_name" . }}
     hosts:
       - {{ .Values.server.ingress.hostname }}
+{{- end }}
+{{- end -}}
+
+
+{{- define "image_pull_secret_create_name" -}}
+gpustack-image-pull-secret
+{{- end -}}
+
+
+{{- define "image_pull_secrets" -}}
+{{- $names := list -}}
+{{- range .Values.imagePullSecrets.existingSecrets -}}
+{{- $names = append $names . -}}
+{{- end -}}
+{{- $names = append $names (include "image_pull_secret_create_name" .) -}}
+imagePullSecrets:
+{{- range $names }}
+  - name: {{ . }}
 {{- end }}
 {{- end -}}

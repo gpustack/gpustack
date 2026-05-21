@@ -17,6 +17,9 @@ spec:
       labels:
         app: {{ .Release.Name }}-worker
     spec:
+      {{- with (include "image_pull_secrets" . | trim) }}
+      {{- nindent 6 . }}
+      {{- end }}
       containers:
         - env:
             - name: GPUSTACK_SERVER_URL
