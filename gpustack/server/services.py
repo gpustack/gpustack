@@ -234,21 +234,25 @@ async def _insert_group_or_refetch(
 
     Wraps the insert in a SAVEPOINT (``session.begin_nested``) so the
     surrounding sync transaction survives an ``IntegrityError`` from
-    a unique-constraint collision. The collision can come from the
-    partial unique index on Postgres, or from an application-layer
-    pre-check race on MySQL — either way we just re-read the row the
-    winner inserted.
+    the ``uix_principals_group_name`` partial unique index when two
+    concurrent first-time logins push the same group name — we just
+    re-read the row the winner inserted. On MySQL the partial unique
+    index isn't supported; the migration falls back to a plain index
+    and the SAVEPOINT acts purely as defensive scaffolding (the race
+    window is wider but real conflicts still resolve via the
+    re-fetch).
     """
     grp = Principal(
         kind=PrincipalType.GROUP,
-        # GROUPs have no ``name`` (the URL-safe identifier) — only a
-        # ``display_name`` that's unique among active groups via the
-        # partial index. The IdP-supplied group name lands here.
-        display_name=name,
+        # IdP-supplied group name; unique within the GROUP partition
+        # (``uix_principals_group_name`` on PG, app-layer pre-check on
+        # MySQL). A non-GROUP principal with the same ``name`` lives
+        # in a separate partition and does not conflict.
+        name=name,
         # Tag the Group with the provider that brought it into
         # existence. UI uses this to badge IdP-managed rows; sync
-        # doesn't condition on it (matching is by display_name
-        # regardless of source).
+        # doesn't condition on it (matching is by name regardless of
+        # source).
         source=provider,
         created_at=now,
         updated_at=now,
@@ -264,7 +268,7 @@ async def _insert_group_or_refetch(
                 select(Principal).where(
                     Principal.kind == PrincipalType.GROUP,
                     Principal.deleted_at.is_(None),
-                    Principal.display_name == name,
+                    Principal.name == name,
                 )
             )
         ).first()
@@ -335,24 +339,23 @@ async def sync_user_group_memberships(
                 select(Principal).where(
                     Principal.kind == PrincipalType.GROUP,
                     Principal.deleted_at.is_(None),
-                    Principal.display_name.in_(wanted_names),
+                    Principal.name.in_(wanted_names),
                 )
             )
         ).all()
-        existing_by_name = {p.display_name: p for p in existing}
+        existing_by_name = {p.name: p for p in existing}
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         for name in wanted_names:
             grp = existing_by_name.get(name)
             if grp is None:
-                # Race-tolerant create: a concurrent first-time login of
-                # another user can be inserting the same group name. On
-                # Postgres the partial unique index aborts the loser
-                # with IntegrityError; on MySQL the window is wider
-                # (no DB-level unique index — see migration notes) but
-                # the SAVEPOINT lets us recover in both cases. The
-                # SAVEPOINT scopes the failure to the insert so the
-                # surrounding sync transaction stays alive.
+                # Race-tolerant create: a concurrent first-time login
+                # of another user can be inserting the same group name.
+                # On PG the ``uix_principals_group_name`` partial
+                # unique index aborts the loser with IntegrityError;
+                # on MySQL there's no partial unique so the window is
+                # wider but the SAVEPOINT-wrapped insert still lets us
+                # re-read the winner's row.
                 grp = await _insert_group_or_refetch(session, name, provider, now)
             desired_group_ids.add(grp.id)
 
@@ -561,7 +564,20 @@ class ModelRouteService:
         if "/" in name:
             owner_name, _, rest = name.partition("/")
             if rest:
-                owner = await Principal.one_by_field(self.session, "name", owner_name)
+                # Route owners are always ORG principals — USER /
+                # SYSTEM / GROUP never own routes. Scope the lookup
+                # accordingly so a same-named non-ORG principal (e.g.
+                # a GROUP under the partitioned name model) can't be
+                # mis-resolved as the URL prefix owner.
+                owner = (
+                    await self.session.exec(
+                        select(Principal).where(
+                            Principal.name == owner_name,
+                            Principal.kind == PrincipalType.ORG,
+                            Principal.deleted_at.is_(None),
+                        )
+                    )
+                ).first()
                 if owner is not None:
                     route = await ModelRoute.one_by_fields(
                         self.session,
@@ -606,7 +622,20 @@ class ModelRouteService:
         if "/" in name:
             owner_name, _, rest = name.partition("/")
             if rest:
-                owner = await Principal.one_by_field(self.session, "name", owner_name)
+                # Route owners are always ORG principals — USER /
+                # SYSTEM / GROUP never own routes. Scope the lookup
+                # accordingly so a same-named non-ORG principal (e.g.
+                # a GROUP under the partitioned name model) can't be
+                # mis-resolved as the URL prefix owner.
+                owner = (
+                    await self.session.exec(
+                        select(Principal).where(
+                            Principal.name == owner_name,
+                            Principal.kind == PrincipalType.ORG,
+                            Principal.deleted_at.is_(None),
+                        )
+                    )
+                ).first()
                 if owner is not None:
                     owner_principal_id = owner.id
                     raw_name = rest

@@ -338,9 +338,6 @@ def upgrade() -> None:
     # 5. Principal-specific constraints / indexes on the renamed table.
     # ------------------------------------------------------------------
     with op.batch_alter_table('principals', schema=None) as batch_op:
-        batch_op.create_unique_constraint(
-            'uix_principals_name', ['name']
-        )
         batch_op.create_foreign_key(
             'fk_principals_parent_principal_id_principals',
             'principals',
@@ -349,20 +346,37 @@ def upgrade() -> None:
             ondelete='CASCADE',
         )
 
-    # Group display names are globally unique among active groups.
+    # ``principals.name`` uniqueness is partitioned by kind:
+    # - GROUP has its own namespace — IdP-supplied group names
+    #   commonly coincide with admin-chosen Org names; forcing the
+    #   two to be globally unique would break OIDC/SAML group sync
+    #   the moment an admin happens to name an Org the same as an
+    #   IdP group.
+    # - USER / ORG / SYSTEM share one namespace — admin-curated kinds
+    #   that have always shared one. Most lookups already scope by
+    #   kind (platform-Org resolution, default-cluster SYSTEM
+    #   resolution, the ``<owner-name>/<route>`` URL resolver), but
+    #   ``get_by_username`` (login) does not and relies on this
+    #   shared partition to avoid mis-resolving a login to an ORG row.
+    #
     # Postgres supports partial unique indexes natively. MySQL has
-    # no equivalent — a plain (non-unique) index supports lookups
-    # and uniqueness is enforced in the route handlers.
+    # no equivalent — fall back to a single plain (non-unique) index
+    # for lookup performance; uniqueness within each partition is
+    # enforced by the create routes (``create_user`` /
+    # ``create_organization`` / ``_insert_group_or_refetch``).
     if dialect == 'postgresql':
         op.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uix_principals_group_display_name "
-            "ON principals (display_name) "
+            "CREATE UNIQUE INDEX IF NOT EXISTS uix_principals_non_group_name "
+            "ON principals (name) "
+            "WHERE kind <> 'GROUP' AND deleted_at IS NULL"
+        )
+        op.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uix_principals_group_name "
+            "ON principals (name) "
             "WHERE kind = 'GROUP' AND deleted_at IS NULL"
         )
     else:
-        op.create_index(
-            'ix_principals_group_display_name', 'principals', ['display_name']
-        )
+        op.create_index('ix_principals_name', 'principals', ['name'])
 
     # ------------------------------------------------------------------
     # 6. New related tables.

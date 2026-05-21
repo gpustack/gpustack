@@ -36,10 +36,11 @@ async def list_my_orgs(session: SessionDep, user: CurrentUserDep):
     Group-membership).
 
     "Personal" is no longer a stored Org row. After the principals
-    refactor it's the user's own USER-principal (pre-refactor flag
-    ``is_personal=True`` is now ``kind == USER`` rendered by
-    ``OrganizationPublic.from_principal``). Synthesizing it here keeps
-    the OrgSwitcher render path unchanged on the UI side.
+    refactor it's the user's own USER-principal, rendered through
+    ``OrganizationPublic.from_principal`` with ``is_personal=True``.
+    The DTO passes the user's real ``name`` / ``display_name`` through
+    unmodified; the UI is responsible for substituting its localized
+    "Personal" label when ``is_personal`` is set.
     """
     items: List[MyOrganization] = []
 

@@ -31,11 +31,14 @@ from gpustack.schemas.principals import (
 # hyphen).
 name_pattern = r'^[a-z](?:[a-z0-9\-]*[a-z0-9])?$'
 
-# "Personal" is the conceptual user-self namespace (no longer a separate
-# Org row); "Global" is the UI label for admin-curated Platform rows
-# (e.g. inference backends with owner_principal_id IS NULL). Letting users
-# create regular Orgs with these names would collide with built-in UX
-# slots. Match case-insensitively after trimming whitespace.
+# "Personal" is the UI label for the user-self namespace (USER
+# principal rendered via ``OrganizationPublic.from_principal`` with
+# ``is_personal=True``); "Global" is the UI label for admin-curated
+# Platform rows (e.g. inference backends with owner_principal_id IS
+# NULL). Backend never emits these strings as a real Org's
+# ``display_name``, but letting an admin create a regular Org named
+# "Personal" / "Global" would visually collide with those built-in
+# UX slots. Match case-insensitively after trimming whitespace.
 RESERVED_ORG_DISPLAY_NAMES = {"personal", "global", "system", "system-toolkit"}
 RESERVED_ORG_NAMES = {"personal", "global", "system", "system-toolkit"}
 # Legacy user-principal name pattern — keep humans from grabbing the
@@ -113,15 +116,17 @@ class OrganizationPublic(SQLModel):
     def from_principal(cls, p: Principal) -> "OrganizationPublic":
         """Render a Principal row as the Organization shape.
 
-        For USER principals, surface ``display_name="Personal"`` so the
-        OrgSwitcher renders the canonical label instead of the user's
-        own display name.
+        ``name`` and ``display_name`` are passed through verbatim from
+        the principal row; the client decides the rendered label. For
+        USER principals (the Personal slot), ``is_personal=True`` flags
+        the row so the UI can substitute its localized "Personal"
+        label instead of the user's own ``display_name``.
         """
         is_personal = p.kind == PrincipalType.USER
         return cls(
             id=p.id,
             name=p.name,
-            display_name="Personal" if is_personal else p.display_name,
+            display_name=p.display_name,
             description=p.description,
             is_personal=is_personal,
             created_at=p.created_at,
@@ -137,15 +142,18 @@ class OrganizationMembershipPublic(SQLModel):
 
     USER and GROUP principals are peer-level in the new identity
     model, so the membership API treats them uniformly: identity
-    fields (``principal_id``, ``principal_kind``,
+    fields (``principal_id``, ``principal_kind``, ``principal_name``,
     ``principal_display_name``, ``principal_description``) come off
-    the ``principals`` row. ``principal_display_name`` is the human
-    label (the ``display_name`` column) — what cluster-access /
-    ACL pickers / the members list render.
+    the ``principals`` row. ``principal_name`` is the stable
+    identifier; ``principal_display_name`` is the optional human
+    label. The UI is expected to render ``display_name || name``;
+    both are sent so the UI can show them side-by-side or use
+    ``name`` to disambiguate equal ``display_name`` values.
     """
 
     principal_id: int
     principal_kind: str
+    principal_name: Optional[str] = None
     principal_display_name: Optional[str] = None
     principal_description: Optional[str] = None
     organization_id: int

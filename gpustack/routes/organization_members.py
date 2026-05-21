@@ -160,10 +160,12 @@ async def _enrich_with_labels(
     org_principal_id: int,
     rows: List[PrincipalMembership],
 ) -> List[OrganizationMembershipPublic]:
-    """Resolve display labels for each membership row.
+    """Resolve identity fields for each membership row.
 
-    Every label lives on the ``principals`` row's ``display_name``
-    column for both USER and GROUP members.
+    Sends both ``Principal.name`` (stable identifier) and
+    ``Principal.display_name`` (optional human label); the UI picks
+    which to render. GROUP rows commonly have only ``name``; USER
+    rows commonly have both.
     """
     member_ids = {r.member_principal_id for r in rows}
     if not member_ids:
@@ -199,6 +201,7 @@ def _to_public(
     return OrganizationMembershipPublic(
         principal_id=p.id,
         principal_kind=p.kind,
+        principal_name=p.name,
         principal_display_name=p.display_name,
         principal_description=p.description,
         organization_id=organization_id,

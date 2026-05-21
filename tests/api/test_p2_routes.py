@@ -121,13 +121,9 @@ def test_can_manage_member_cannot_manage():
 
 
 @pytest.mark.asyncio
-async def test_create_organization_rejects_duplicate_name(monkeypatch):
-    session = MagicMock()
-    monkeypatch.setattr(
-        organizations_route.Principal,
-        "one_by_fields",
-        AsyncMock(return_value=_principal(display_name="Existing", name="acme")),
-    )
+async def test_create_organization_rejects_duplicate_name():
+    # Non-GROUP principal already holding the name → reject.
+    session = _session_returning(_principal(display_name="Existing", name="acme"))
     with pytest.raises(AlreadyExistsException):
         await organizations_route.create_organization(
             session=session,
@@ -251,7 +247,7 @@ async def test_remove_only_owner_blocked_for_group_owner(monkeypatch):
     """
     org = _principal(id=10, display_name="Acme", name="acme")
     group = _principal(
-        id=300, kind=PrincipalType.GROUP, display_name="gpu-admins", name=None
+        id=300, kind=PrincipalType.GROUP, display_name=None, name="gpu-admins"
     )
     membership = MagicMock(spec=PrincipalMembership)
     membership.parent_principal_id = 10
@@ -392,8 +388,8 @@ async def test_create_group_rejects_duplicate_name(monkeypatch):
     existing = _principal(
         id=5,
         kind=PrincipalType.GROUP,
-        display_name="team-a",
-        name=None,
+        display_name=None,
+        name="team-a",
     )
     monkeypatch.setattr(
         user_groups_route.Principal,
@@ -403,7 +399,7 @@ async def test_create_group_rejects_duplicate_name(monkeypatch):
     with pytest.raises(AlreadyExistsException):
         await user_groups_route.create_group(
             session=MagicMock(),
-            body=user_groups_route.UserGroupCreate(display_name="team-a"),
+            body=user_groups_route.UserGroupCreate(name="team-a"),
         )
 
 
@@ -412,8 +408,8 @@ async def test_add_group_members_rejects_missing_user(monkeypatch):
     group = _principal(
         id=5,
         kind=PrincipalType.GROUP,
-        display_name="team-a",
-        name=None,
+        display_name=None,
+        name="team-a",
     )
     monkeypatch.setattr(
         user_groups_route.Principal,

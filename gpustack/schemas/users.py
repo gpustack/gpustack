@@ -200,9 +200,15 @@ async def get_default_cluster_principal(session: AsyncSession) -> Optional[Princ
     # silently fan out per row). Bootstrap callers
     # (``Server._migrate_legacy_token`` / ``_ensure_registration_token``)
     # need the related Cluster row, so eager-load it here.
-    return await Principal.one_by_field(
+    # Default cluster principal is SYSTEM kind. Scope by kind so a
+    # GROUP that happens to share the same ``name`` (different
+    # partition under the partitioned name uniqueness model) can't
+    # shadow it.
+    return await Principal.one_by_fields(
         session=session,
-        field="name",
-        value=default_cluster_principal_name,
+        fields={
+            "kind": PrincipalType.SYSTEM,
+            "name": default_cluster_principal_name,
+        },
         options=[selectinload(Principal.cluster)],
     )
