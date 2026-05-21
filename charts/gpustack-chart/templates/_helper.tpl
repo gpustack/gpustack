@@ -96,19 +96,9 @@ tls:
 {{- end -}}
 
 
-{{- define "image_pull_secret_create_name" -}}
-gpustack-image-pull-secret
-{{- end -}}
-
-
 {{- define "image_pull_secrets" -}}
-{{- $names := list -}}
-{{- range .Values.imagePullSecrets.existingSecrets -}}
-{{- $names = append $names . -}}
-{{- end -}}
-{{- $names = append $names (include "image_pull_secret_create_name" .) -}}
+{{- with .Values.global.imagePullSecrets }}
 imagePullSecrets:
-{{- range $names }}
-  - name: {{ . }}
+{{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end -}}

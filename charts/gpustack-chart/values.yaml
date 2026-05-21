@@ -9,29 +9,37 @@ registrationToken: null
 # `global.hub` is the container registry host (e.g. docker.io).
 # For air-gapped or private registry installs, override:
 #   --set global.hub=myregistry.example.com
+#
+# `global.imagePullSecrets` is the list of Secret references attached to every
+# pod created by this chart and propagated to sub-charts (higress-core,
+# gpustack-enterprise) that follow the same convention. Defaults to a single
+# entry pointing at the canonical `gpustack-image-pull-secret` that this chart
+# auto-creates (see `imagePullSecret` below).
+#
+# To reference your own pre-existing Secrets, replace the list entirely:
+#   global:
+#     imagePullSecrets:
+#       - name: my-existing-secret
+#       - name: another-secret
+# When the list no longer references `gpustack-image-pull-secret` and no
+# credentials are provided below, the chart skips creating the canonical
+# Secret to avoid leaving an unused resource behind.
 global:
   hub: docker.io
-# Image pull secrets for the gpustack server, worker, and higress-plugins images.
-# The chart always creates a docker-registry Secret named "gpustack-image-pull-secret".
-# Two ways to populate it, which may be combined:
-#   1. Reference existing Secrets in the release namespace by name:
-#        imagePullSecrets:
-#          existingSecrets:
-#            - my-existing-secret
-#   2. Provide registry credentials; the auto-created Secret will contain the auth:
-#        imagePullSecrets:
-#          credentials:
-#            registry: docker.io
-#            username: myuser
-#            password: mypassword
-#            email: ""      # optional
-#
-# When no credentials are provided, the auto-created Secret contains an empty
-# {"auths":{}} and is harmless. The Secret is also pre-wired into the bundled
-# higress-core sub-chart (see higress-core.gateway.imagePullSecrets and
-# higress-core.controller.imagePullSecrets below).
-imagePullSecrets:
-  existingSecrets: []
+  imagePullSecrets:
+    - name: gpustack-image-pull-secret
+
+# Auto-creation of the canonical `gpustack-image-pull-secret` docker-registry
+# Secret. The Secret is created when either:
+#   - `credentials.username` and `credentials.password` are set (populated
+#     `.dockerconfigjson`), or
+#   - `global.imagePullSecrets` above still references the canonical name
+#     (created with an empty `{"auths":{}}` — harmless to reference, useful as
+#     a placeholder when no credentials are needed).
+# If the user fully swaps `global.imagePullSecrets` to externally managed
+# Secrets AND provides no credentials here, the canonical Secret is not
+# created.
+imagePullSecret:
   credentials:
     registry: docker.io
     username: null
