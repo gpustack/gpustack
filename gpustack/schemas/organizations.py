@@ -79,7 +79,7 @@ def validate_org_input(
 
 
 class OrganizationUpdate(SQLModel):
-    display_name: str = Field(nullable=False)
+    display_name: Optional[str] = Field(default=None, nullable=True)
     description: Optional[str] = Field(default=None, nullable=True)
 
 
@@ -99,7 +99,7 @@ class OrganizationListParams(ListParams):
 class OrganizationPublic(SQLModel):
     id: int
     name: Optional[str] = None
-    display_name: str
+    display_name: Optional[str] = None
     description: Optional[str] = None
     # ``is_personal`` is no longer a stored flag — a row is "personal"
     # iff it's a USER principal (rendered through this DTO when listing
@@ -121,7 +121,7 @@ class OrganizationPublic(SQLModel):
         return cls(
             id=p.id,
             name=p.name,
-            display_name="Personal" if is_personal else (p.display_name or ""),
+            display_name="Personal" if is_personal else p.display_name,
             description=p.description,
             is_personal=is_personal,
             created_at=p.created_at,
