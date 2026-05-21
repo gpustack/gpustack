@@ -199,6 +199,55 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   }'
 ```
 
+## CAS Authentication
+
+GPUStack supports CAS (Central Authentication Service) integration for enterprise single sign-on. CAS authentication allows users to log in through a centralized CAS server, enabling seamless integration with existing identity management systems.
+
+### Configuration
+
+To enable CAS authentication, set the following environment variables when starting the GPUStack container:
+
+```bash
+docker run -d --name gpustack \
+    --restart unless-stopped \
+    -p 80:80 \
+    --volume gpustack-data:/var/lib/gpustack \
+    -e GPUSTACK_CAS_SERVER_URL="https://cas.example.com/cas" \
+    -e GPUSTACK_CAS_CALLBACK_URL="https://your-gpustack-server/auth/cas/callback" \
+    -e GPUSTACK_CAS_VALIDATE_ENDPOINT="/serviceValidate" \
+    -e GPUSTACK_CAS_USERNAME_ATTRIBUTE="username" \
+    -e GPUSTACK_CAS_FULL_NAME_ATTRIBUTE="displayName" \
+    -e GPUSTACK_CAS_AVATAR_ATTRIBUTE="" \
+    -e GPUSTACK_SERVER_EXTERNAL_URL="https://your-gpustack-server" \
+    gpustack/gpustack
+```
+
+### Configuration Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `GPUSTACK_CAS_SERVER_URL` | CAS server base URL (e.g., `https://cas.example.com/cas`) | - |
+| `GPUSTACK_CAS_CALLBACK_URL` | CAS callback URL for GPUStack | Auto-detected |
+| `GPUSTACK_CAS_VALIDATE_ENDPOINT` | CAS ticket validation endpoint | `/serviceValidate` |
+| `GPUSTACK_CAS_USERNAME_ATTRIBUTE` | CAS attribute for username mapping | `username` |
+| `GPUSTACK_CAS_FULL_NAME_ATTRIBUTE` | CAS attribute for user's full name | - |
+| `GPUSTACK_CAS_AVATAR_ATTRIBUTE` | CAS attribute for user avatar URL | - |
+| `GPUSTACK_EXTERNAL_AUTH_DEFAULT_INACTIVE` | Whether new users from CAS are inactive by default | `false` |
+| `GPUSTACK_SERVER_EXTERNAL_URL` | External URL for the GPUStack server | - |
+
+### User Flow
+
+When CAS is enabled:
+1. Users clicking "CAS Single Sign-On" button on the login page are redirected to the CAS server
+2. After successful CAS authentication, users are redirected back to GPUStack with a ticket
+3. GPUStack validates the ticket with the CAS server and extracts user attributes
+4. A new user account is automatically created if the user doesn't exist
+5. Users are logged into GPUStack with a session cookie
+
+### Supported CAS Protocols
+
+GPUStack supports CAS protocol versions 2.0 and 3.0, using the standard `/serviceValidate` endpoint for ticket validation. The XML response from CAS is parsed to extract user identity and attributes.
+
 ## Documentation
 
 Please see the [official docs site](https://docs.gpustack.ai) for complete documentation.
