@@ -11,11 +11,15 @@ rows. SYSTEM-context call sites should construct / query
 
 Pydantic DTOs (``UserCreate``, ``UserUpdate``, ``UserPublic``, …) stay
 here — they're API-surface shapes, not table mappings. They expose
-``username`` and ``full_name`` JSON keys for backward compat, aliased
-to the underlying ``name`` / ``display_name`` columns via Pydantic
-``validation_alias`` + ``serialization_alias``. ORG / GROUP-only
-columns (``description``, ``kind``, ``parent_principal_id``) aren't
-on the user wire surface.
+``username`` and ``full_name`` JSON keys for backward compat;
+``validation_alias`` lets ``UserPublic.model_validate(principal)``
+read directly off the underlying ``name`` / ``display_name`` columns
+without an explicit conversion step. The wire→storage rename on
+writes is handled in the route handlers (see ``routes/users.py``)
+rather than via ``serialization_alias``, so FastAPI's default
+``response_model_by_alias=True`` doesn't leak the storage column
+names into responses. ORG / GROUP-only columns (``description``,
+``kind``, ``parent_principal_id``) aren't on the user wire surface.
 
 Re-exports ``AuthProviderEnum`` so existing
 ``from gpustack.schemas.users import AuthProviderEnum`` callers keep
@@ -87,7 +91,11 @@ class UserBase(SQLModel):
     Principal columns ``name`` and ``display_name``; the
     ``validation_alias`` on each lets
     ``UserPublic.model_validate(principal)`` read directly off a
-    ``Principal`` row without an explicit conversion step.
+    ``Principal`` row without an explicit conversion step. No
+    ``serialization_alias`` is set — FastAPI's default
+    ``response_model_by_alias=True`` would otherwise emit the storage
+    column names on the wire. Route handlers map wire→storage
+    explicitly when writing back to the Principal row.
     """
 
     # ``populate_by_name=True`` so callers can still construct DTOs via
@@ -98,14 +106,12 @@ class UserBase(SQLModel):
 
     username: str = PField(
         validation_alias=AliasChoices('username', 'name'),
-        serialization_alias='name',
     )
     is_admin: bool = False
     is_active: bool = True
     full_name: Optional[str] = PField(
         default=None,
         validation_alias=AliasChoices('full_name', 'display_name'),
-        serialization_alias='display_name',
     )
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
@@ -132,7 +138,7 @@ class UserSelfUpdate(SQLModel):
 
     Wire field name stays ``full_name``; persisted as ``display_name``
     on the Principal row (see :class:`UserBase` for the alias
-    rationale).
+    rationale). The route handler maps wire→storage explicitly.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -140,7 +146,6 @@ class UserSelfUpdate(SQLModel):
     full_name: Optional[str] = PField(
         default=None,
         validation_alias=AliasChoices('full_name', 'display_name'),
-        serialization_alias='display_name',
     )
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
