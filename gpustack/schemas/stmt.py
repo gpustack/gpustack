@@ -171,13 +171,19 @@ def principal_users_after_create_view_stmt() -> str:
     3. Transitive: user is in a Group that is itself a member of an
        Org — propagates Org membership to every active user in the
        Group.
+
+    ``UNION`` (not ``UNION ALL``): a user that is a direct member of an
+    Org AND a member of a Group that's a member of the same Org would
+    otherwise emit two ``(org_id, user_id)`` rows from branches 2 and 3,
+    which downstream ``non_admin_user_models`` JOINs would multiply into
+    duplicate model rows for that user.
     """
     return '''
 CREATE VIEW principal_users AS
 SELECT u.id AS principal_id, u.id AS user_id
 FROM principals u
 WHERE u.kind = 'USER' AND u.deleted_at IS NULL
-UNION ALL
+UNION
 SELECT pm.parent_principal_id AS principal_id, pm.member_principal_id AS user_id
 FROM principal_memberships pm
 JOIN principals u ON u.id = pm.member_principal_id
@@ -187,7 +193,7 @@ WHERE pm.deleted_at IS NULL
   AND u.deleted_at IS NULL
   AND u.kind = 'USER'
   AND pr.kind IN ('ORG', 'GROUP')
-UNION ALL
+UNION
 SELECT org_pm.parent_principal_id AS principal_id, group_pm.member_principal_id AS user_id
 FROM principal_memberships group_pm
 JOIN principal_memberships org_pm
