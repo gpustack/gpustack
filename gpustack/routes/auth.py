@@ -1,5 +1,7 @@
+import hmac
 import json
 import os
+import secrets
 from pathlib import Path
 import httpx
 import logging
@@ -21,6 +23,7 @@ from gpustack import envs
 from gpustack.api.auth import (
     SESSION_COOKIE_NAME,
     OIDC_ID_TOKEN_COOKIE_NAME,
+    OIDC_STATE_COOKIE_NAME,
     SSO_LOGIN_COOKIE_NAME,
     authenticate_user,
 )
@@ -433,14 +436,28 @@ def _coerce_group_claim(raw) -> List[str]:
 async def oidc_login(request: Request):
     config: Config = request.app.state.server_config
     authorization_endpoint = config.openid_configuration["authorization_endpoint"]
-    authUrl = (
-        f'{authorization_endpoint}?response_type=code&'
-        f'client_id={config.oidc_client_id}&'
-        f'redirect_uri={config.oidc_redirect_uri}&'
-        f'scope=openid profile email&state=random_state_string'
+    state = secrets.token_urlsafe(32)
+    params = urlencode(
+        {
+            "response_type": "code",
+            "client_id": config.oidc_client_id,
+            "redirect_uri": config.oidc_redirect_uri,
+            "scope": "openid profile email",
+            "state": state,
+        }
     )
+    authUrl = f'{authorization_endpoint}?{params}'
 
-    return RedirectResponse(url=authUrl)
+    response = RedirectResponse(url=authUrl)
+    response.set_cookie(
+        key=OIDC_STATE_COOKIE_NAME,
+        value=state,
+        httponly=True,
+        max_age=600,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+    return response
 
 
 @router.get("/oidc/callback")
@@ -448,6 +465,16 @@ async def oidc_callback(request: Request, session: SessionDep):
     logger.debug("Invoke oidc callback.")
     config: Config = request.app.state.server_config
     query = dict(request.query_params)
+
+    expected_state = request.cookies.get(OIDC_STATE_COOKIE_NAME)
+    received_state = query.get("state")
+    if (
+        not expected_state
+        or not received_state
+        or not hmac.compare_digest(expected_state, received_state)
+    ):
+        raise UnauthorizedException(message="Invalid OIDC state")
+
     code = query['code']
     data = {
         "grant_type": "authorization_code",
@@ -532,6 +559,7 @@ async def oidc_callback(request: Request, session: SessionDep):
         username=username,
     )
     response = RedirectResponse(url='/')
+    response.delete_cookie(key=OIDC_STATE_COOKIE_NAME)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=access_token,
