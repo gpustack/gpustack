@@ -189,15 +189,19 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
         raise ConflictException(message="Cannot deactivate the only admin user")
 
     try:
-        # ``by_alias=True`` maps the wire-level ``username`` / ``full_name``
-        # back onto the Principal columns ``name`` / ``display_name``
-        # for the storage write — see :class:`UserBase`. ``exclude_none=True``
-        # so omitting an optional field (e.g. ``full_name``) on the
-        # PUT request leaves the stored value alone rather than
-        # clobbering it with NULL; matches :func:`update_user_me`.
-        # Password + require-change flag live on the ``user_passwords``
-        # row, handled separately.
-        update_data = user_in.model_dump(by_alias=True, exclude_none=True)
+        # ``exclude_none=True`` so omitting an optional field (e.g.
+        # ``full_name``) on the PUT request leaves the stored value
+        # alone rather than clobbering it with NULL; matches
+        # :func:`update_user_me`. Wire-level ``username`` /
+        # ``full_name`` are mapped back onto the Principal columns
+        # ``name`` / ``display_name`` for the storage write — see
+        # :class:`UserBase`. Password + require-change flag live on
+        # the ``user_passwords`` row, handled separately.
+        update_data = user_in.model_dump(exclude_none=True)
+        if "username" in update_data:
+            update_data["name"] = update_data.pop("username")
+        if "full_name" in update_data:
+            update_data["display_name"] = update_data.pop("full_name")
         update_data.pop("password", None)
         update_data.pop("source", None)
         require_change = update_data.pop("require_password_change", False)
@@ -292,7 +296,9 @@ async def update_user_me(
     session: SessionDep, user: CurrentUserDep, user_in: UserSelfUpdate
 ):
     try:
-        update_data = user_in.model_dump(by_alias=True, exclude_none=True)
+        update_data = user_in.model_dump(exclude_none=True)
+        if "full_name" in update_data:
+            update_data["display_name"] = update_data.pop("full_name")
         plain = update_data.pop("password", None)
         await UserService(session).update(user, update_data)
         if plain:
