@@ -85,51 +85,112 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 
 ### GPUStack Helm Chart Parameters
 
-| Parameter                              | Default                  | Description                                                                       |
-| -------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
-| debug                                  | false                    | Enable debug mode                                                                 |
-| registrationToken                      | null                     | Registration token; auto-generated if null, reused across upgrades                |
-| defaultDataDir                         | /var/lib/gpustack        | Host data directory path for worker nodes                                         |
-| enableWorkers                          | true                     | Enable worker nodes                                                               |
-| clusterDomain                          | cluster.local            | Kubernetes cluster service domain suffix                                          |
-| systemDefaultContainerRegistry         | null                     | Default image registry prefix                                                     |
-| gpustackImage                          | null                     | Full image name (overrides repository/tag)                                        |
-| image.repository                       | gpustack/gpustack        | Image repository name                                                             |
-| image.tag                              | null                     | Image tag, defaults to chart's appVersion                                         |
-| image.pullPolicy                       | IfNotPresent             | Image pull policy                                                                 |
-| server.ingress.hostname                | null                     | Ingress hostname                                                                  |
-| server.ingress.tls.cert                | null                     | Ingress TLS certificate content                                                   |
-| server.ingress.tls.key                 | null                     | Ingress TLS private key content                                                   |
-| server.externalDatabaseURL             | null                     | External database connection string                                               |
-| server.dataVolume.hostPath             | null                     | Host path for server data volume; if set, uses a hostPath volume instead of a PVC |
-| server.dataVolume.size                 | 10Gi                     | Server data volume size (PVC)                                                     |
-| server.apiPort                         | 30080                    | API service port                                                                  |
-| server.metricsPort                     | 10161                    | Metrics port                                                                      |
-| server.environmentConfig               | {}                       | Extra environment variables for GPUStack server                                   |
-| gateway.ingressClassname               | higress                  | Higress IngressClass name; GPUStack checks if it exists to enable in-cluster mode |
-| higress-core.enabled                   | true                     | Deploy Higress gateway as a sub-chart; disable if Higress is already installed    |
-| higress-core.global.ingressClass       | higress                  | Must match `gateway.ingressClassname`                                             |
-| higress-core.global.enablePluginServer | false                    | GPUStack manages its own plugin server; keep disabled                             |
-| higress-core.global.hub                | docker.io/gpustack       | Image hub for Higress component images                                            |
-| higress-core.downstream.idleTimeout    | 1800                     | Downstream idle timeout in seconds                                                |
-| higress-core.upstream.idleTimeout      | 3                        | Upstream idle timeout in seconds                                                  |
-| higress-core.gateway.hub               | null                     | Image hub override for the gateway component                                      |
-| higress-core.gateway.image             | mirrored-higress-gateway | Gateway image name                                                                |
-| higress-core.controller.hub            | null                     | Image hub override for the controller component                                   |
-| higress-core.controller.image          | mirrored-higress-higress | Controller image name                                                             |
-| higress-core.pilot.hub                 | null                     | Image hub override for the pilot component                                        |
-| higress-core.pilot.image               | mirrored-higress-pilot   | Pilot image name                                                                  |
-| higressPlugins.image.repository        | gpustack/higress-plugins | Higress plugins image repository                                                  |
-| higressPlugins.image.tag               | "0.2.0"                  | Higress plugins image tag; required, versioned independently from GPUStack        |
-| higressPlugins.image.pullPolicy        | IfNotPresent             | Higress plugins image pull policy                                                 |
-| worker.gpuVendor                       | nvidia                   | GPU vendor (null/nvidia/mthreads/amd/ascend/hygon/metax/iluvatar/cambricon/thead) |
-| worker.port                            | 10150                    | Worker service port                                                               |
-| worker.metricsPort                     | 10151                    | Worker metrics port                                                               |
-| worker.environmentConfig               | {}                       | Extra environment variables for GPUStack worker                                   |
-| worker.extraVolumeMounts               | []                       | Extra volume mounts appended to the worker container                              |
-| worker.extraVolumes                    | []                       | Extra volumes appended to the worker DaemonSet                                    |
+| Parameter                                | Default                           | Description                                                               |
+| ---------------------------------------- | --------------------------------- | ------------------------------------------------------------------------- |
+| debug                                    | false                             | Enable debug mode                                                         |
+| registrationToken                        | null                              | Registration token; auto-generated if null, reused across upgrades        |
+| defaultDataDir                           | /var/lib/gpustack                 | Host data directory path for worker nodes                                 |
+| enableWorkers                            | true                              | Enable worker nodes                                                       |
+| clusterDomain                            | cluster.local                     | Kubernetes cluster service domain suffix                                  |
+| global.hub                               | docker.io                         | Container registry host; override for private registry                    |
+| image.repository                         | gpustack/gpustack                 | Image repo with namespace; see note below                                 |
+| image.tag                                | null                              | Image tag, defaults to chart's appVersion                                 |
+| image.pullPolicy                         | IfNotPresent                      | Image pull policy                                                         |
+| imagePullSecrets.existingSecrets         | []                                | Existing Secret names (release namespace) to use as image pull secrets    |
+| imagePullSecrets.credentials.registry    | docker.io                         | Registry host used when the chart creates a docker-registry Secret        |
+| imagePullSecrets.credentials.username    | null                              | Registry username; creates Secret when set with password                  |
+| imagePullSecrets.credentials.password    | null                              | Registry password; creates Secret when set with username                  |
+| imagePullSecrets.credentials.email       | null                              | Optional email for the docker-registry Secret                             |
+| server.ingress.hostname                  | null                              | Ingress hostname                                                          |
+| server.ingress.tls.cert                  | null                              | Ingress TLS certificate content                                           |
+| server.ingress.tls.key                   | null                              | Ingress TLS private key content                                           |
+| server.externalDatabaseURL               | null                              | External database connection string                                       |
+| server.dataVolume.hostPath               | null                              | Host path for data volume; if set, uses hostPath instead of PVC           |
+| server.dataVolume.size                   | 10Gi                              | Server data volume size (PVC)                                             |
+| server.apiPort                           | 30080                             | API service port                                                          |
+| server.metricsPort                       | 10161                             | Metrics port                                                              |
+| server.environmentConfig                 | {}                                | Extra environment variables for GPUStack server                           |
+| gateway.ingressClassname                 | higress                           | Higress IngressClass name; enables in-cluster mode when found             |
+| higress-core.enabled                     | true                              | Deploy Higress gateway as a sub-chart; disable if already installed       |
+| higress-core.global.ingressClass         | higress                           | Must match `gateway.ingressClassname`                                     |
+| higress-core.global.enablePluginServer   | false                             | GPUStack manages its own plugin server; keep disabled                     |
+| higress-core.global.hub                  | (inherits global.hub)             | Override hub for higress-core images only                                 |
+| higress-core.downstream.idleTimeout      | 1800                              | Downstream idle timeout in seconds                                        |
+| higress-core.upstream.idleTimeout        | 3                                 | Upstream idle timeout in seconds                                          |
+| higress-core.gateway.hub                 | null                              | Image hub override for the gateway component                              |
+| higress-core.gateway.image               | gpustack/mirrored-higress-gateway | Gateway image name (with namespace)                                       |
+| higress-core.gateway.imagePullSecrets    | [gpustack-image-pull-secret]      | Gateway pull secrets; pre-populated to pick up the auto-created Secret    |
+| higress-core.controller.hub              | null                              | Image hub override for the controller component                           |
+| higress-core.controller.image            | gpustack/mirrored-higress-higress | Controller image name (with namespace)                                    |
+| higress-core.controller.imagePullSecrets | [gpustack-image-pull-secret]      | Controller pull secrets; pre-populated to pick up the auto-created Secret |
+| higress-core.pilot.hub                   | null                              | Image hub override for the pilot component                                |
+| higress-core.pilot.image                 | gpustack/mirrored-higress-pilot   | Pilot image name (with namespace)                                         |
+| higressPlugins.image.repository          | gpustack/higress-plugins          | Image repo with namespace; see note below                                 |
+| higressPlugins.image.tag                 | "0.2.2-post1"                     | Higress plugins image tag; CI overrides from uv.lock at package time      |
+| higressPlugins.image.pullPolicy          | IfNotPresent                      | Higress plugins image pull policy                                         |
+| worker.gpuVendor                         | nvidia                            | GPU vendor; see values.yaml for full list                                 |
+| worker.port                              | 10150                             | Worker service port                                                       |
+| worker.metricsPort                       | 10151                             | Worker metrics port                                                       |
+| worker.environmentConfig                 | {}                                | Extra environment variables for GPUStack worker                           |
+| worker.extraVolumeMounts                 | []                                | Extra volume mounts appended to the worker container                      |
+| worker.extraVolumes                      | []                                | Extra volumes appended to the worker DaemonSet                            |
 
 To customize parameters, use `--set key=value` or `-f your-values.yaml` during installation.
+
+> **Note:** `higressPlugins.image.repository` is resolved as `{global.hub}/{higressPlugins.image.repository}:{higressPlugins.image.tag}`. The same pattern applies to `image.repository` (`{global.hub}/{image.repository}:{image.tag}`).
+
+### Pulling Images From a Private Registry
+
+To pull all images (gpustack server/worker, higress-plugins, and the bundled higress-core gateway/controller/pilot) from a mirrored private registry, override `global.hub`:
+
+```bash
+helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace \
+  --set global.hub=myregistry.example.com
+```
+
+This relies on Helm's global-values propagation: `global.hub` is shared with the `higress-core` sub-chart automatically, so a single setting covers every image. The `image.repository` values include the namespace (e.g. `gpustack/gpustack`), so `global.hub` only needs the registry host.
+
+The chart passes `global.hub` as `GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY` to the server, ensuring that inference engine images (e.g. vLLM, llama.cpp backends) are also pulled from the same registry.
+
+If individual components live in a different namespace, override the `image` fields (e.g. `higress-core.gateway.image`, `higress-core.controller.image`, `higress-core.pilot.image`).
+
+#### Image Pull Credentials
+
+GPUStack supports two ways to configure image pull credentials, which may be combined:
+
+1. Reference one or more existing Secrets in the release namespace:
+
+   ```bash
+   helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace \
+     --set imagePullSecrets.existingSecrets[0]=my-existing-secret
+   ```
+
+2. Provide registry credentials; the chart creates a `docker-registry` Secret named `gpustack-image-pull-secret` and references it automatically:
+
+   ```bash
+   helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace \
+     --set imagePullSecrets.credentials.registry=registry.example.com \
+     --set imagePullSecrets.credentials.username=myuser \
+     --set imagePullSecrets.credentials.password=mypassword
+   ```
+
+Both options apply to the gpustack server, worker, and higress-plugins pods.
+
+The chart always creates a `docker-registry` Secret named `gpustack-image-pull-secret`. When credentials are provided (option 2), it contains the auth data; otherwise it contains an empty `{"auths":{}}`. This Secret is pre-wired into the bundled `higress-core` sub-chart so that gateway and controller pods can pull images without additional configuration. An empty auth Secret is harmless — kubelet ignores it and falls back to other available credentials.
+
+If you use option 1 only and need the existing Secret(s) to apply to `higress-core` as well, append them under the sub-chart fields:
+
+```yaml
+higress-core:
+  gateway:
+    imagePullSecrets:
+      - name: gpustack-image-pull-secret
+      - name: my-existing-secret
+  controller:
+    imagePullSecrets:
+      - name: gpustack-image-pull-secret
+      - name: my-existing-secret
+```
 
 ## Accessing GPUStack
 

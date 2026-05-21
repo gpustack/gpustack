@@ -328,13 +328,28 @@ jobs:
           IMAGE_TAG:   ${{ steps.chart_meta.outputs.image_tag }}
         run: |
           set -euo pipefail
-          yq -i '.version    = strenv(VERSION)'     charts/gpustack-chart/Chart.yaml
-          yq -i '.appVersion = strenv(APP_VERSION)' charts/gpustack-chart/Chart.yaml
-          yq -i '.image.tag  = strenv(IMAGE_TAG)'   charts/gpustack-chart/values.yaml
+          # Resolve gpustack-higress-plugins version from uv.lock so the chart
+          # always ships an image tag that matches the locked Python dependency.
+          PLUGINS_VERSION=$(yq -p=toml -oy \
+            '.package[] | select(.name == "gpustack-higress-plugins") | .version' \
+            uv.lock)
+          # Verify yq supports -p=toml (requires v4.30+)
+          yq --version | grep -oP 'v\K[0-9.]+' | awk -F. '{ exit !($1>4 || ($1==4 && $2>=30)) }'
+          if [[ -z "${PLUGINS_VERSION}" || "${PLUGINS_VERSION}" == "null" ]]; then
+            echo "Failed to resolve gpustack-higress-plugins version from uv.lock" >&2
+            exit 1
+          fi
+          export PLUGINS_VERSION
+          yq -i '.version    = strenv(VERSION)'                       charts/gpustack-chart/Chart.yaml
+          yq -i '.appVersion = strenv(APP_VERSION)'                   charts/gpustack-chart/Chart.yaml
+          yq -i '.image.tag  = strenv(IMAGE_TAG)'                     charts/gpustack-chart/values.yaml
+          yq -i '.higressPlugins.image.tag = strenv(PLUGINS_VERSION)' charts/gpustack-chart/values.yaml
           echo "--- Chart.yaml ---"
           cat charts/gpustack-chart/Chart.yaml
           echo "--- values.yaml image stanza ---"
           yq '.image' charts/gpustack-chart/values.yaml
+          echo "--- values.yaml higressPlugins.image stanza ---"
+          yq '.higressPlugins.image' charts/gpustack-chart/values.yaml
 
       - name: Helm lint
         run: helm lint charts/gpustack-chart

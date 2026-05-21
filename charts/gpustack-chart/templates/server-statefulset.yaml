@@ -20,6 +20,9 @@ spec:
         prometheus.io/port: "{{ .Values.server.metricsPort }}"
         prometheus.io/path: "/metrics"
     spec:
+      {{- with (include "image_pull_secrets" . | trim) }}
+      {{- nindent 6 . }}
+      {{- end }}
       containers:
         - env:
             - name: GPUSTACK_SERVER_ID
@@ -50,6 +53,10 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: metadata.namespace
+            - name: GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY
+              value: {{ include "gpustack.hub" . }}
+            - name: GPUSTACK_IMAGE_NAME_OVERRIDE
+              value: {{ include "gpustack.image" . }}:{{ include "gpustack.imageTag" . }}
           envFrom:
             {{- if .Values.worker.enabled }}
             - secretRef:
