@@ -219,6 +219,14 @@ def model_user_after_create_view_stmt(db_type: str) -> str:
         if db_type == "mysql"
         else "CAST(m.id AS TEXT) || ':' || CAST(u.id AS TEXT)"
     )
+    # MySQL's CAST(... AS TEXT) is invalid; CHAR is the canonical
+    # variable-length text target there. PG / openGauss / sqlite all
+    # accept TEXT.
+    text_type = "CHAR" if db_type == "mysql" else "TEXT"
+    # MySQL only accepts ``INTEGER`` as a CAST target from 8.0.17; older
+    # servers / OceanBase compat modes want ``SIGNED``. PG / openGauss
+    # both accept ``INTEGER``.
+    int_type = "SIGNED" if db_type == "mysql" else "INTEGER"
     # 4-branch UNION ALL — each branch is a straight index join, so the
     # planner doesn't have to materialize every (user, route) pair to
     # then OR-filter EXISTS subqueries against it. ``mrp.deleted_at IS
@@ -230,9 +238,21 @@ def model_user_after_create_view_stmt(db_type: str) -> str:
     # ALLOWED_USERS branch becomes ``mrp.principal_id = u.id`` (the
     # user's USER-principal id IS the user's id) instead of joining
     # through the now-removed ``users.principal_id`` column.
+    #
+    # ``via_principal_id`` / ``via_principal_kind`` record which principal
+    # granted this (user, route) row visibility, so the API layer can
+    # partition results into Personal vs Org-scoped views without
+    # re-deriving the chain. NULL on the PUBLIC/AUTHED branch — those
+    # grants aren't principal-mediated. The kind is normalized to TEXT
+    # so PG's native ``principaltype`` enum doesn't poison the UNION's
+    # column type inference.
     return f'''
 CREATE VIEW non_admin_user_models AS
-SELECT {pid} AS pid, u.id AS user_id, m.*
+SELECT {pid} AS pid,
+       u.id AS user_id,
+       CAST(NULL AS {int_type}) AS via_principal_id,
+       CAST(NULL AS {text_type}) AS via_principal_kind,
+       m.*
 FROM principals u
 CROSS JOIN model_routes m
 WHERE u.kind = 'USER' AND u.deleted_at IS NULL
@@ -241,7 +261,11 @@ WHERE u.kind = 'USER' AND u.deleted_at IS NULL
 
 UNION ALL
 
-SELECT {pid} AS pid, u.id AS user_id, m.*
+SELECT {pid} AS pid,
+       u.id AS user_id,
+       m.owner_principal_id AS via_principal_id,
+       CAST('ORG' AS {text_type}) AS via_principal_kind,
+       m.*
 FROM principals u
 JOIN principal_users pu
   ON pu.user_id = u.id
@@ -253,7 +277,11 @@ WHERE u.kind = 'USER' AND u.deleted_at IS NULL
 
 UNION ALL
 
-SELECT {pid} AS pid, u.id AS user_id, m.*
+SELECT {pid} AS pid,
+       u.id AS user_id,
+       u.id AS via_principal_id,
+       CAST('USER' AS {text_type}) AS via_principal_kind,
+       m.*
 FROM principals u
 JOIN model_route_principals mrp
   ON mrp.principal_id = u.id
@@ -266,12 +294,18 @@ WHERE u.kind = 'USER' AND u.deleted_at IS NULL
 
 UNION ALL
 
-SELECT {pid} AS pid, u.id AS user_id, m.*
+SELECT {pid} AS pid,
+       u.id AS user_id,
+       mrp.principal_id AS via_principal_id,
+       CAST(pr.kind AS {text_type}) AS via_principal_kind,
+       m.*
 FROM principals u
 JOIN principal_users pu ON pu.user_id = u.id
 JOIN model_route_principals mrp
   ON mrp.principal_id = pu.principal_id
   AND mrp.deleted_at IS NULL
+JOIN principals pr
+  ON pr.id = mrp.principal_id
 JOIN model_routes m
   ON m.id = mrp.route_id
   AND m.access_policy = 'ALLOWED_PRINCIPALS'
