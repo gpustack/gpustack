@@ -23,7 +23,7 @@ from gpustack.schemas.api_keys import (
     ApiKeysPublic,
     ApiKeyUpdate,
 )
-from gpustack.schemas.principals import PrincipalType
+from gpustack.schemas.principals import OrgRole, PrincipalType
 from gpustack.schemas.users import User
 from gpustack.server.services import APIKeyService
 from gpustack.utils.api_keys import get_masked_api_key_value
@@ -68,6 +68,42 @@ def _is_hidden_api_key(api_key: ApiKey) -> bool:
     return _is_system_owned(api_key)
 
 
+def _can_manage_org_api_keys(ctx) -> bool:
+    if ctx.user.is_admin:
+        return True
+    return ctx.current_principal_id is not None and ctx.org_role == OrgRole.OWNER
+
+
+def _api_key_list_fields(ctx, user_id: Optional[str]) -> dict:
+    """Build list filters for the caller's API key management scope.
+
+    Org owners manage all API keys in the current Org. Regular members only
+    manage their own keys in that Org. Platform admins keep the historical
+    cross-org behavior: no org context lists their own keys unless user_id is
+    supplied, with "*" meaning all users.
+    """
+    user = ctx.user
+    fields = {}
+    if ctx.current_principal_id is not None:
+        fields["owner_principal_id"] = ctx.current_principal_id
+
+    if _can_manage_org_api_keys(ctx):
+        if user_id is None:
+            if user.is_admin and ctx.current_principal_id is None:
+                fields["user_id"] = user.id
+            return fields
+        if user_id == "*":
+            return fields
+        try:
+            fields["user_id"] = int(user_id)
+        except ValueError:
+            raise InvalidException(message="user_id must be an integer or '*'")
+        return fields
+
+    fields["user_id"] = user.id
+    return fields
+
+
 @router.get("", response_model=ApiKeysPublic)
 async def get_api_keys(
     session: SessionDep,
@@ -78,20 +114,7 @@ async def get_api_keys(
     ),
     search: str = None,
 ):
-    user = ctx.user
-    fields = {"user_id": user.id}
-    if user.is_admin and user_id is not None:
-        if user_id == "*":
-            fields = {}
-        else:
-            try:
-                fields = {"user_id": int(user_id)}
-            except ValueError:
-                raise InvalidException(message="user_id must be an integer or '*'")
-    # Tenant filter: scope keys to the current org context unless the platform
-    # admin is explicitly browsing across orgs (no header / no api key org).
-    if ctx.current_principal_id is not None:
-        fields["owner_principal_id"] = ctx.current_principal_id
+    fields = _api_key_list_fields(ctx, user_id)
 
     fuzzy_fields = {}
     if search:
@@ -203,7 +226,7 @@ async def create_api_key(
 
 def _api_key_in_scope(api_key: ApiKey, ctx) -> bool:
     """An api_key is in the caller's scope if the caller is its owner, or a
-    platform admin acting either across all orgs or in the key's org.
+    platform/org admin acting either across all orgs or in the key's org.
     """
     user = ctx.user
     if api_key.user_id == user.id and (
@@ -214,6 +237,12 @@ def _api_key_in_scope(api_key: ApiKey, ctx) -> bool:
     if user.is_admin and (
         ctx.current_principal_id is None
         or api_key.owner_principal_id == ctx.current_principal_id
+    ):
+        return True
+    if (
+        ctx.current_principal_id is not None
+        and ctx.org_role == OrgRole.OWNER
+        and api_key.owner_principal_id == ctx.current_principal_id
     ):
         return True
     return False
