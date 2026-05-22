@@ -408,6 +408,13 @@ class MyModel(ModelRouteBase, BaseModelMixin, table=True):
     pid: str
     id: int
     user_id: int = Field(default=0)
+    # Records which principal granted this (user, route) row visibility.
+    # NULL on PUBLIC/AUTHED rows (not principal-mediated). The kind is
+    # stored as plain text — see ``model_user_after_create_view_stmt``
+    # for why it isn't the ``principaltype`` enum. Server-side only;
+    # not surfaced via ``MyModelPublic``.
+    via_principal_id: Optional[int] = None
+    via_principal_kind: Optional[str] = None
 
 
 class MyModelPublic(ModelRoutePublic):
