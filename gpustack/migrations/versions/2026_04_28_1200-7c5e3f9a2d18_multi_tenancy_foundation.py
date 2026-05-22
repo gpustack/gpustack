@@ -697,6 +697,65 @@ def upgrade() -> None:
                     ondelete='SET NULL',
                 )
 
+    # model_usages also needs a consumer-side tenant pointer for "usage made
+    # with this Org's API keys" views. It intentionally differs from
+    # owner_principal_id when Org A calls a deployment shared by Org B.
+    if not column_exists('model_usages', 'consumer_principal_id'):
+        with op.batch_alter_table('model_usages', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column('consumer_principal_id', sa.Integer(), nullable=True)
+            )
+            batch_op.create_foreign_key(
+                'fk_model_usages_consumer_principal_id_principals',
+                'principals',
+                ['consumer_principal_id'],
+                ['id'],
+                ondelete='SET NULL',
+            )
+            batch_op.create_index(
+                'ix_model_usages_consumer_principal_id',
+                ['consumer_principal_id'],
+                unique=False,
+            )
+
+    for tbl in (
+        'model_usages',
+        'model_usage_details',
+        'model_usage_details_archive',
+    ):
+        if not table_exists(tbl) or not column_exists(tbl, 'consumer_principal_id'):
+            continue
+        if dialect == 'mysql':
+            op.execute(
+                sa.text(
+                    f"""
+                    UPDATE {tbl} mu
+                    JOIN api_keys ak ON ak.access_key = mu.access_key
+                    SET mu.consumer_principal_id = ak.owner_principal_id
+                    WHERE mu.consumer_principal_id IS NULL
+                    """
+                )
+            )
+        else:
+            op.execute(
+                sa.text(
+                    f"""
+                    UPDATE {tbl}
+                    SET consumer_principal_id = (
+                        SELECT api_keys.owner_principal_id
+                        FROM api_keys
+                        WHERE api_keys.access_key = {tbl}.access_key
+                    )
+                    WHERE consumer_principal_id IS NULL
+                      AND EXISTS (
+                        SELECT 1
+                        FROM api_keys
+                        WHERE api_keys.access_key = {tbl}.access_key
+                      )
+                    """
+                )
+            )
+
     # model_files only had worker_id; add cluster_id for direct
     # cluster_access-based filtering.
     if not column_exists('model_files', 'cluster_id'):
@@ -1003,9 +1062,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    dialect = bind.dialect.name
-
     # Splitting principals back into a USER-only ``users`` table is not
     # mechanical: ORG/GROUP rows have ids in the same space as the
     # original users, and FK definitions on legacy tables (api_keys,

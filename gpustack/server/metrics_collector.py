@@ -324,6 +324,7 @@ async def create_or_update_model_usage(
             "model_route_id": metric.model_route_id,
             "access_key": metric.access_key,
             "operation": metric.operation,
+            "consumer_principal_id": metric.consumer_principal_id,
             "date": metric.date,
         },
     )
@@ -432,6 +433,7 @@ def _build_metric_snapshot(
                     "api_key_name": api_key.name,
                     "access_key": api_key.access_key,
                     "api_key_is_custom": api_key.is_custom,
+                    "consumer_principal_id": api_key.owner_principal_id,
                 }
             )
         if model_route_id is not None:

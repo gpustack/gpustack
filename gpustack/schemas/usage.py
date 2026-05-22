@@ -121,9 +121,9 @@ class UsageBaseRequest(BaseModel):
     end_date: Date
     filters: UsageFilterRequest = Field(default_factory=UsageFilterRequest)
     # See USAGE_SCOPE_* constants. Defaults to "all" so that managers /
-    # admins who omit the parameter get the org-wide provider view; the
-    # endpoint downgrades to "self" automatically when the caller has
-    # no managerial role (and rejects the request if they explicitly
+    # admins who omit the parameter get the org-wide view; the endpoint
+    # downgrades to "self" automatically when the caller has no
+    # managerial role (and rejects the request if they explicitly
     # asked for "all").
     scope: str = USAGE_SCOPE_ALL
 

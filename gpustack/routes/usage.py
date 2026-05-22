@@ -386,13 +386,20 @@ def _apply_usage_scope_and_filters(
     scope: str,
     org_id: Optional[int] = None,
 ) -> Select:
-    # ``self`` view always restricts to the caller's own rows. ``all``
-    # view restricts by owner_principal_id when one is in context (platform
-    # admin in cross-org "All" mode has org_id=None and sees everything).
+    # ``self`` scope always restricts to the caller's own rows and
+    # current Org. ``all`` scope restricts to the current Org unless
+    # platform admin is in cross-org "All" mode. The Org dimension is
+    # the consumer side (API-key owner), which answers "what did this
+    # Org spend" — the only question the Usage page surfaces today. A
+    # symmetric provider view (rows whose model / deployment is owned
+    # by this Org) is deferred until there's an actual product surface
+    # for it.
     if scope == USAGE_SCOPE_SELF:
         statement = statement.where(ModelUsage.user_id == user.id)
+        if org_id is not None:
+            statement = statement.where(ModelUsage.consumer_principal_id == org_id)
     elif org_id is not None:
-        statement = statement.where(ModelUsage.owner_principal_id == org_id)
+        statement = statement.where(ModelUsage.consumer_principal_id == org_id)
 
     for group_by, items in [
         (USAGE_GROUP_BY_USER, filters.users),
@@ -510,9 +517,13 @@ async def get_usage_meta(
     base_statement = _base_statement()
     if scope == USAGE_SCOPE_SELF:
         base_statement = base_statement.where(ModelUsage.user_id == user.id)
+        if ctx.current_principal_id is not None:
+            base_statement = base_statement.where(
+                ModelUsage.consumer_principal_id == ctx.current_principal_id
+            )
     elif ctx.current_principal_id is not None:
         base_statement = base_statement.where(
-            ModelUsage.owner_principal_id == ctx.current_principal_id
+            ModelUsage.consumer_principal_id == ctx.current_principal_id
         )
 
     user_options: List[UsageFilterOption] = []

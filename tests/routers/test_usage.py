@@ -9,6 +9,7 @@ from gpustack.routes.usage import (
     get_usage_breakdown,
     get_usage_meta,
 )
+from gpustack.schemas.principals import OrgRole
 from gpustack.schemas.users import User
 from gpustack.schemas.usage import (
     UsageBreakdownRequest,
@@ -38,6 +39,14 @@ def _ctx_for(user):
     ctx.is_platform_admin = bool(getattr(user, "is_admin", False))
     ctx.current_principal_id = None if ctx.is_platform_admin else 1
     ctx.org_role = None
+    ctx.current_is_personal_scope = False
+    return ctx
+
+
+def _org_owner_ctx(user, org_id=1):
+    ctx = _ctx_for(user)
+    ctx.current_principal_id = org_id
+    ctx.org_role = OrgRole.OWNER
     return ctx
 
 
@@ -504,6 +513,38 @@ async def test_get_usage_breakdown_defaults_regular_user_to_self_scope():
 
     executed_sql = str(session.exec.call_args_list[0].args[0])
     assert "model_usages.user_id =" in executed_sql
+    assert "model_usages.consumer_principal_id =" in executed_sql
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_org_owner_scopes_by_consumer_principal():
+    """Org owner with default ``scope=all`` must filter the org
+    dimension by the API-key owner (``consumer_principal_id``), not
+    the deployment owner. A pure consumer (Org that only uses models
+    granted from elsewhere) would otherwise see an empty page even
+    though their members are actively spending."""
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result([SimpleNamespace()]),
+            _mock_exec_result([0]),
+            _mock_exec_result([]),
+        ]
+    )
+    user = User(id=2, name="owner", is_admin=False)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["route"],
+    )
+
+    await get_usage_breakdown(
+        session=session, user=user, ctx=_org_owner_ctx(user), request=request
+    )
+
+    executed_sql = str(session.exec.call_args_list[0].args[0])
+    assert "model_usages.consumer_principal_id =" in executed_sql
+    assert "model_usages.owner_principal_id =" not in executed_sql
 
 
 @pytest.mark.asyncio
