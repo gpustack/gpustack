@@ -676,6 +676,36 @@ class ModelRouteService:
             if target.model_id is not None
         ]
 
+    @locked_cached()
+    async def get_by_name(self, name: str) -> Optional[ModelRoute]:
+        """Resolve a request model name to its ``ModelRoute`` row.
+
+        Mirrors the ``<owner-name>/<route>`` prefix handling from
+        :meth:`get_model_auth_info_by_name` so the OpenAI proxy can
+        attribute requests to the route they entered through regardless
+        of whether Higress's ``modelMapping`` has rewritten the name yet.
+        """
+        if "/" in name:
+            owner_name, _, rest = name.partition("/")
+            if rest:
+                owner = (
+                    await self.session.exec(
+                        select(Principal).where(
+                            Principal.name == owner_name,
+                            Principal.kind == PrincipalType.ORG,
+                            Principal.deleted_at.is_(None),
+                        )
+                    )
+                ).first()
+                if owner is not None:
+                    route = await ModelRoute.one_by_fields(
+                        self.session,
+                        {"name": rest, "owner_principal_id": owner.id},
+                    )
+                    if route is not None:
+                        return route
+        return await ModelRoute.one_by_field(self.session, "name", name)
+
     async def update(
         self,
         model_route: ModelRoute,
@@ -689,6 +719,7 @@ class ModelRouteService:
         for name in names:
             await delete_cache_by_key(self.get_model_auth_info_by_name, name)
             await delete_cache_by_key(self.resolve_route_targets, name)
+            await delete_cache_by_key(self.get_by_name, name)
         return result
 
     async def delete(self, model_route: ModelRoute, auto_commit: bool = True):
@@ -700,6 +731,7 @@ class ModelRouteService:
         for name in names:
             await delete_cache_by_key(self.get_model_auth_info_by_name, name)
             await delete_cache_by_key(self.resolve_route_targets, name)
+            await delete_cache_by_key(self.get_by_name, name)
         return result
 
 
