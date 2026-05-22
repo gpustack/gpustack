@@ -133,6 +133,7 @@ def build_model_usage_snapshot(
                 "api_key_name": api_key.name,
                 "access_key": api_key.access_key,
                 "api_key_is_custom": api_key.is_custom,
+                "consumer_principal_id": api_key.owner_principal_id,
             }
         )
     if model_route_id is not None:

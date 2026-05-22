@@ -367,8 +367,12 @@ def upgrade() -> None:
             # audit-survival reasons as the other id columns on this table:
             # ``ON DELETE SET NULL`` on the live Principal would erase the
             # historical owner attribution that breakdown / billing relies
-            # on. Sourced at flush time from the model / api_key owner.
+            # on. Sourced at flush time from the model.
             sa.Column('owner_principal_id', sa.Integer(), nullable=True),
+            # Consumer tenant scope snapshot, denormalized from the API key
+            # owner. This can differ from owner_principal_id for cross-Org
+            # shared model usage.
+            sa.Column('consumer_principal_id', sa.Integer(), nullable=True),
             sa.Column('provider_id', sa.Integer(), nullable=True),
             sa.Column('provider_name', sa.String(255), nullable=True),
             sa.Column('provider_type', sa.String(255), nullable=True),
@@ -407,6 +411,12 @@ def upgrade() -> None:
         )
         op.create_index(
             f'ix_{table_name}_user_id', table_name, ['user_id'], unique=False
+        )
+        op.create_index(
+            f'ix_{table_name}_consumer_principal_id',
+            table_name,
+            ['consumer_principal_id'],
+            unique=False,
         )
         op.create_index(
             f'ix_{table_name}_api_key_id',
