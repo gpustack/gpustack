@@ -163,25 +163,25 @@ async def delete_gpu_instance_template(
         )
 
 
-def ensure_visible(tmpl, ctx: TenantContext):
-    if tmpl and is_visible(tmpl, ctx):
-        return tmpl
+def ensure_visible(obj, ctx: TenantContext):
+    if obj and is_visible(obj, ctx):
+        return obj
     raise NotFoundException(message="GPU instance template not found")
 
 
-def ensure_writable(tmpl, ctx: TenantContext):
-    if tmpl is None:
+def ensure_writable(obj, ctx: TenantContext):
+    if obj is None:
         raise NotFoundException(message="GPU instance template not found")
-    assert_org_owned_writable(ctx, tmpl, resource_label="gpu instance template")
-    return tmpl
+    assert_org_owned_writable(ctx, obj, resource_label="GPU instance template")
+    return obj
 
 
-def is_visible(tmpl, ctx: TenantContext) -> bool:
+def is_visible(obj, ctx: TenantContext) -> bool:
     if bypass_tenant_filter(ctx):
         return True
-    if tmpl.owner_principal_id is None:
+    if obj.owner_principal_id is None:
         return True
-    return ctx.current_principal_id == tmpl.owner_principal_id
+    return ctx.current_principal_id == obj.owner_principal_id
 
 
 def visible_conditions(ctx: TenantContext) -> list:
