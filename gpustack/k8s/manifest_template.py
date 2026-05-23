@@ -3,7 +3,7 @@ import base64
 import yaml
 from typing import List, Optional
 
-from gpustack.gpu_instances import get_namespace_name
+from gpustack.gpu_instances.cluster_apis_util import get_namespace_name
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.schemas.clusters import ClusterRegistrationTokenPublic
 from gpustack.schemas.clusters import K8sVolumeMount

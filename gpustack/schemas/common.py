@@ -4,7 +4,7 @@ from typing import ClassVar, Generic, List, Optional, Tuple, Type, TypeVar
 
 from fastapi import Query
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, TypeAdapter, computed_field, field_validator
+from pydantic import BaseModel, TypeAdapter, computed_field, field_validator, Field
 import sqlalchemy as sa
 from sqlalchemy import JSON as SQLAlchemyJSON, TypeDecorator
 
@@ -97,7 +97,7 @@ class ListParams(BaseModel):
 
 
 class ItemList(BaseModel, Generic[T]):
-    items: list[T]
+    items: list[T] = Field(default_factory=list)
 
 
 class PaginatedList(ItemList[T]):
@@ -207,9 +207,15 @@ _IGNORE_CAMEL_CASE_FIELDS = {
 
 def pydantic_camel_case_generator(s: str) -> str:
     """
-    Converts snake_case string to camelCase.
-    E.g., "image_pull_policy" -> "imagePullPolicy"
+    Converts snake_case string to camelCase,
+    but leaves fields in _IGNORE_CAMEL_CASE_FIELDS unchanged.
+
+    E.g., "image_pull_policy" -> "imagePullPolicy",
+          "created_at" -> "created_at",
+          "type_" -> "type".
     """
     if s in _IGNORE_CAMEL_CASE_FIELDS:
         return s
+    if s.endswith("_"):
+        return s[:-1]
     return ''.join(w.capitalize() if i else w for i, w in enumerate(s.split('_')))

@@ -16,6 +16,7 @@ from gpustack.api.tenant import (
     validate_owner_principal,
     assert_org_owned_writable,
 )
+from gpustack.gpu_instances import validate_k8s_object_name
 from gpustack.server.db import async_session
 
 from gpustack.schemas import (
@@ -93,6 +94,8 @@ async def create_gpu_instance_template(
         create_obj.owner_principal_id, ctx, resource_label="GPU instance template"
     )
     create_obj.owner_principal_id = ctx.current_principal_id
+
+    _validate_create_obj(create_obj)
 
     existed = await GPUInstanceTemplate.exist_by_fields(
         session=session,
@@ -207,3 +210,7 @@ async def handle_error(message: str):
         raise InternalServerErrorException(
             message=message,
         ) from e
+
+
+def _validate_create_obj(create_obj: GPUInstanceTemplateCreate):
+    validate_k8s_object_name(create_obj.name)

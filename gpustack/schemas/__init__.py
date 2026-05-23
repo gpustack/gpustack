@@ -138,6 +138,22 @@ from gpustack.schemas.cluster_access import (
     ClusterAccessPublic,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink  # noqa: F401
+from gpustack.schemas.gpu_instance_persistent_volume_types import (
+    GPUInstancePersistentVolumeType,
+    GPUInstancePersistentVolumeTypeListParams,
+    GPUInstancePersistentVolumeTypeCreate,
+    GPUInstancePersistentVolumeTypeUpdate,
+    GPUInstancePersistentVolumeTypePublic,
+    GPUInstancePersistentVolumeTypesPublic,
+)
+from gpustack.schemas.gpu_instance_persistent_volumes import (
+    GPUInstancePersistentVolume,
+    GPUInstancePersistentVolumeListParams,
+    GPUInstancePersistentVolumeCreate,
+    GPUInstancePersistentVolumeUpdate,
+    GPUInstancePersistentVolumePublic,
+    GPUInstancePersistentVolumesPublic,
+)
 from gpustack.schemas.gpu_instance_ssh_public_keys import (
     GPUInstanceSSHPublicKey,
     GPUInstanceSSHPublicKeyListParams,
@@ -153,6 +169,18 @@ from gpustack.schemas.gpu_instance_templates import (
     GPUInstanceTemplateUpdate,
     GPUInstanceTemplatePublic,
     GPUInstanceTemplatesPublic,
+)
+from gpustack.schemas.gpu_instance_types import (
+    GPUAggregatedInstanceTypePublic,
+    GPUAggregatedInstanceTypesPublic,
+)
+from gpustack.schemas.gpu_instances import (
+    GPUInstance,
+    GPUInstanceListParams,
+    GPUInstanceCreate,
+    GPUInstanceUpdate,
+    GPUInstancePublic,
+    GPUInstancesPublic,
 )
 
 __all__ = [
@@ -270,6 +298,18 @@ __all__ = [
     "UserGroupMembershipPublic",
     "ClusterAccess",
     "ClusterAccessPublic",
+    "GPUInstancePersistentVolumeType",
+    "GPUInstancePersistentVolumeTypeListParams",
+    "GPUInstancePersistentVolumeTypeCreate",
+    "GPUInstancePersistentVolumeTypeUpdate",
+    "GPUInstancePersistentVolumeTypePublic",
+    "GPUInstancePersistentVolumeTypesPublic",
+    "GPUInstancePersistentVolume",
+    "GPUInstancePersistentVolumeListParams",
+    "GPUInstancePersistentVolumeCreate",
+    "GPUInstancePersistentVolumeUpdate",
+    "GPUInstancePersistentVolumePublic",
+    "GPUInstancePersistentVolumesPublic",
     "GPUInstanceSSHPublicKey",
     "GPUInstanceSSHPublicKeyListParams",
     "GPUInstanceSSHPublicKeyCreate",
@@ -282,4 +322,12 @@ __all__ = [
     "GPUInstanceTemplateUpdate",
     "GPUInstanceTemplatePublic",
     "GPUInstanceTemplatesPublic",
+    "GPUAggregatedInstanceTypePublic",
+    "GPUAggregatedInstanceTypesPublic",
+    "GPUInstance",
+    "GPUInstanceListParams",
+    "GPUInstanceCreate",
+    "GPUInstanceUpdate",
+    "GPUInstancePublic",
+    "GPUInstancesPublic",
 ]

@@ -10,6 +10,7 @@ from gpustack.schemas.common import (
     pydantic_column_type,
     ListParams,
     PublicFields,
+    PaginatedList,
 )
 
 
@@ -23,7 +24,7 @@ class GPUInstanceSSHPublicKeySpec(BaseModel):
         populate_by_name=True,
     )
 
-    data: Optional[str] = None
+    data: str
     """
     The GPU instance SSH public key data,
     typically in OpenSSH format (e.g., "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC...").
@@ -43,7 +44,7 @@ class GPUInstanceSSHPublicKeyBase(SQLModel):
 
     # For tenant scope.
     # Every object belongs to one Org. The route layer fills this with
-    # ctx.current_principal_id (or PLATFORM_PRINCIPAL_ID for admin).
+    # ctx.current_principal_id (or platform_principal_id for admin).
     owner_principal_id: Optional[int] = Field(
         default=None,
         sa_column=Column(
@@ -56,7 +57,7 @@ class GPUInstanceSSHPublicKeyBase(SQLModel):
     display_name: Optional[str] = Field(
         nullable=True,
         default=None,
-        max_length=64,
+        max_length=63,
     )
     """
     Display name of the GPU instance SSH public key, for easier identification by users.
@@ -74,6 +75,9 @@ class GPUInstanceSSHPublicKeyBase(SQLModel):
     spec: GPUInstanceSSHPublicKeySpec = Field(
         sa_type=pydantic_column_type(GPUInstanceSSHPublicKeySpec),
     )
+    """
+    Spec for the GPU instance SSH public key, containing the key data and related information.
+    """
 
 
 class GPUInstanceSSHPublicKey(GPUInstanceSSHPublicKeyBase, BaseModelMixin, table=True):
@@ -96,7 +100,7 @@ class GPUInstanceSSHPublicKey(GPUInstanceSSHPublicKeyBase, BaseModelMixin, table
     id: Optional[int] = Field(default=None, primary_key=True)
 
     name: str = Field(
-        max_length=253,
+        max_length=63,
     )
     """
     Name of the GPU instance SSH public key.
@@ -124,11 +128,13 @@ class GPUInstanceSSHPublicKeyCreate(GPUInstanceSSHPublicKeyBase):
     """
 
 
-class GPUInstanceSSHPublicKeyPublic(GPUInstanceSSHPublicKeyBase, PublicFields):
+class GPUInstanceSSHPublicKeyPublic(GPUInstanceSSHPublicKeyCreate, PublicFields):
     """
     Represents the public view of a GPU instance SSH public key,
     containing only fields that are safe to expose to clients.
     """
+
+    pass
 
 
 class GPUInstanceSSHPublicKeyListParams(ListParams):
@@ -140,4 +146,4 @@ class GPUInstanceSSHPublicKeyListParams(ListParams):
     ]
 
 
-GPUInstanceSSHPublicKeysPublic = List[GPUInstanceSSHPublicKeyPublic]
+GPUInstanceSSHPublicKeysPublic = PaginatedList[GPUInstanceSSHPublicKeyPublic]
