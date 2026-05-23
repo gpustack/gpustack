@@ -22,6 +22,7 @@
 # - HIGRESS_APISERVER_VERSION: Version of Higress API server to use.
 ARG PYTHON_VERSION=3.11
 ARG GPUSTACK_BASE_IMAGE=base
+ARG GPUSTACK_OPERATOR_VERSION=dev
 ARG GPUSTACK_RUNTIME_ROCM_VERSION=7.0.2
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 ARG HIGRESS_VERSION=2.1.9
@@ -35,6 +36,7 @@ ARG GRAFANA_VERSION=12.2.4
 #   docker build --tag=gpustack/gpustack:base --file=pack/Dockerfile --target=base --progress=plain .
 #
 
+FROM gpustack/gpustack-operator:${GPUSTACK_OPERATOR_VERSION} AS gpustack-operator
 FROM gpustack/mirrored-higress-api-server:${HIGRESS_APISERVER_VERSION} AS apiserver
 FROM gpustack/mirrored-higress-higress:${HIGRESS_VERSION} AS controller
 FROM gpustack/mirrored-higress-pilot:${HIGRESS_VERSION} AS pilot
@@ -746,7 +748,11 @@ ENV GPUSTACK_RUNTIME_LOG_EXCEPTION="false" \
     GPUSTACK_RUNTIME_DOCKER_IMAGE_NO_PULL_VISUALIZATION="true" \
     GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS="${GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS}"
 
+COPY --from=gpustack-operator /usr/bin/gpustack /usr/bin/gpustack-operator
 COPY --chmod=755 pack/entrypoint.sh /usr/bin/entrypoint.sh
+
+## KUBE_FEATURE_WatchListClient=false: Disable WatchListClient to avoid potential issues with Kubernetes API server versions that do not support it.
+ENV KUBE_FEATURE_WatchListClient="false"
 
 WORKDIR /
 ENTRYPOINT [ "/usr/bin/entrypoint.sh" ]

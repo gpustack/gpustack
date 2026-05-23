@@ -1,6 +1,6 @@
-from typing import Optional, List, Literal, ClassVar
+from typing import Optional, List, ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
 from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
 from sqlmodel import Field, SQLModel
 
@@ -12,38 +12,13 @@ from gpustack.schemas.common import (
     ListParams,
     pydantic_column_type,
 )
+from gpustack.schemas.gpu_instances import GPUInstanceSpec
 
 
-class GPUInstancePort(BaseModel):
+class GPUInstanceSpecTemplate(GPUInstanceSpec):
     """
-    Represents a port mapping for GPU instances.
-    """
-
-    model_config = ConfigDict(
-        alias_generator=pydantic_camel_case_generator,
-        populate_by_name=True,
-    )
-
-    port: int
-    """
-    The port number inside the container to expose.
-    """
-
-    protocol: Literal["TCP", "UDP", "SCTP"] = "TCP"
-    """
-    The protocol for the port.
-    Defaults to "TCP".
-    """
-
-    name: Optional[str] = None
-    """
-    Name of the port mapping.
-    """
-
-
-class GPUInstanceEnvVar(BaseModel):
-    """
-    Represents an environment variable for GPU instances.
+    GPU instance spec template,
+    containing fields that define the configuration of a GPU instance.
     """
 
     model_config = ConfigDict(
@@ -51,126 +26,12 @@ class GPUInstanceEnvVar(BaseModel):
         populate_by_name=True,
     )
 
-    name: str
-    """
-    Name of the environment variable.
-    """
-
-    value: str
-    """
-    Value of the environment variable.
-    """
-
-
-class GPUInstanceResources(BaseModel):
-    """
-    Represents the resource requirements for a GPU instance.
-    """
-
-    model_config = ConfigDict(
-        alias_generator=pydantic_camel_case_generator,
-        populate_by_name=True,
+    type_: Optional[str] = Field(
+        default=None,
+        exclude=True,
     )
-
-    cpu: str = "1"
     """
-    CPU resource request/limit for the GPU instance,
-    e.g., "1" for 1 CPU.
-    """
-
-    ram: str = "2Gi"
-    """
-    RAM resource request/limit for the GPU instance,
-    e.g., "2Gi" for 2 gigabyte of memory.
-    """
-
-    local_storage: str = "15Gi"
-    """
-    Local storage resource request/limit for the GPU instance,
-    e.g., "15Gi" for 15 gigabytes of local storage.
-    """
-
-    accelerator: Optional[str] = None
-    """
-    Accelerator resource request/limit for the GPU instance,
-    e.g., "1" for 1 GPU.
-    """
-
-
-class GPUInstanceImagePullSecretReference(BaseModel):
-    """
-    Represents a reference to a Kubernetes Secret for pulling container images.
-    """
-
-    model_config = ConfigDict(
-        alias_generator=pydantic_camel_case_generator,
-        populate_by_name=True,
-    )
-
-    name: str
-    """
-    Name of the GPUStack Operator InstanceImagePullSecret to use for pulling container images.
-    """
-
-
-class GPUInstanceSpec(BaseModel):
-    """
-    Represents the specification for creating a GPU instance.
-    """
-
-    model_config = ConfigDict(
-        alias_generator=pydantic_camel_case_generator,
-        populate_by_name=True,
-    )
-
-    image: str
-    """
-    Container image of the GPU instance to use.
-    """
-
-    image_pull_policy: Literal["Always", "IfNotPresent", "Never"] = "IfNotPresent"
-    """
-    Container image pull policy for the GPU instance.
-    Defaults to "IfNotPresent".
-    """
-
-    command: Optional[List[str]] = None
-    """
-    Command to run the GPU instance.
-    If not specified, the default command from the image.
-    """
-
-    privileged: bool = False
-    """
-    Whether to run the GPU instance in privileged mode.
-    Defaults to False.
-    """
-
-    ports: Optional[List[GPUInstancePort]] = None
-    """
-    List of port mappings for the GPU instance.
-    """
-
-    env: Optional[List[GPUInstanceEnvVar]] = None
-    """
-    List of environment variables for the GPU instance.
-    """
-
-    resources: Optional[GPUInstanceResources] = None
-    """
-    Resource requirements for the GPU instance,
-    including CPU, RAM, local storage, and optional accelerator.
-    """
-
-    volume_mount: str = "/workspace"
-    """
-    The path inside the container where the GPU instance's volume will be mounted.
-    Defaults to "/workspace".
-    """
-
-    image_pull_secret: Optional[GPUInstanceImagePullSecretReference] = None
-    """
-    Optional reference to a GPUStack Operator InstanceImagePullSecret for pulling container images.
+    Hidden this field for template.
     """
 
 
@@ -200,7 +61,7 @@ class GPUInstanceTemplateBase(SQLModel):
     display_name: Optional[str] = Field(
         nullable=True,
         default=None,
-        max_length=64,
+        max_length=63,
     )
     """
     Display name of the GPU instance template, for easier identification by users.
@@ -225,8 +86,8 @@ class GPUInstanceTemplateBase(SQLModel):
     e.g., "nvidia", "amd", "ascend".
     """
 
-    spec: GPUInstanceSpec = Field(
-        sa_type=pydantic_column_type(GPUInstanceSpec),
+    spec: GPUInstanceSpecTemplate = Field(
+        sa_type=pydantic_column_type(GPUInstanceSpecTemplate),
     )
     """
     Spec for the GPU instance template, containing details like container image, resources, etc.
@@ -255,7 +116,7 @@ class GPUInstanceTemplate(GPUInstanceTemplateBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
     name: str = Field(
-        max_length=253,
+        max_length=63,
     )
     """
     Name of the GPU instance template.

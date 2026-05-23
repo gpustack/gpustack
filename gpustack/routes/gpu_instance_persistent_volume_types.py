@@ -2,9 +2,11 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.exc import IntegrityError
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
+    ConflictException,
     InternalServerErrorException,
     NotFoundException,
 )
@@ -17,12 +19,12 @@ from gpustack.api.tenant import (
 from gpustack.gpu_instances import validate_k8s_object_name
 
 from gpustack.schemas import (
-    GPUInstanceSSHPublicKey,
-    GPUInstanceSSHPublicKeyUpdate,
-    GPUInstanceSSHPublicKeyPublic,
-    GPUInstanceSSHPublicKeyListParams,
-    GPUInstanceSSHPublicKeysPublic,
-    GPUInstanceSSHPublicKeyCreate,
+    GPUInstancePersistentVolumeType,
+    GPUInstancePersistentVolumeTypeUpdate,
+    GPUInstancePersistentVolumeTypePublic,
+    GPUInstancePersistentVolumeTypeListParams,
+    GPUInstancePersistentVolumeTypesPublic,
+    GPUInstancePersistentVolumeTypeCreate,
 )
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.db import async_session
@@ -31,10 +33,10 @@ from gpustack.server.deps import SessionDep, TenantContextDep
 router = APIRouter()
 
 
-@router.get("", response_model=GPUInstanceSSHPublicKeysPublic)
-async def get_gpu_instance_ssh_public_keys(
+@router.get("", response_model=GPUInstancePersistentVolumeTypesPublic)
+async def get_gpu_instance_persistent_volume_types(
     ctx: TenantContextDep,
-    params: GPUInstanceSSHPublicKeyListParams = Depends(),
+    params: GPUInstancePersistentVolumeTypeListParams = Depends(),
     search: Optional[str] = None,
 ):
     owner_principal_id = ctx.current_principal_id or platform_principal_id()
@@ -51,7 +53,7 @@ async def get_gpu_instance_ssh_public_keys(
 
     if params.watch:
         return StreamingResponse(
-            GPUInstanceSSHPublicKey.streaming(
+            GPUInstancePersistentVolumeType.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
             ),
@@ -59,7 +61,7 @@ async def get_gpu_instance_ssh_public_keys(
         )
 
     async with async_session() as session:
-        return await GPUInstanceSSHPublicKey.paginated_by_query(
+        return await GPUInstancePersistentVolumeType.paginated_by_query(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
@@ -69,14 +71,14 @@ async def get_gpu_instance_ssh_public_keys(
         )
 
 
-@router.get("/{id}", response_model=GPUInstanceSSHPublicKeyPublic)
-async def get_gpu_instance_ssh_public_key(
+@router.get("/{id}", response_model=GPUInstancePersistentVolumeTypePublic)
+async def get_gpu_instance_persistent_volume_type(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
 ):
     return ensure_visible(
-        await GPUInstanceSSHPublicKey.one_by_id(
+        await GPUInstancePersistentVolumeType.one_by_id(
             session=session,
             id=id,
         ),
@@ -84,37 +86,39 @@ async def get_gpu_instance_ssh_public_key(
     )
 
 
-@router.post("", response_model=GPUInstanceSSHPublicKeyPublic)
-async def create_gpu_instance_ssh_public_key(
+@router.post("", response_model=GPUInstancePersistentVolumeTypePublic)
+async def create_gpu_instance_persistent_volume_type(
     session: SessionDep,
     ctx: TenantContextDep,
-    create_obj: GPUInstanceSSHPublicKeyCreate,
+    create_obj: GPUInstancePersistentVolumeTypeCreate,
 ):
     validate_owner_principal(
-        create_obj.owner_principal_id, ctx, resource_label="GPU instance SSH public key"
+        create_obj.owner_principal_id,
+        ctx,
+        resource_label="GPU instance persistent volume type",
     )
     create_obj.owner_principal_id = ctx.current_principal_id or platform_principal_id()
 
     _validate_create_obj(create_obj)
 
     async with handle_error(
-        message="Failed to create GPU instance SSH public key",
+        message="Failed to create GPU instance persistent volume type",
     ):
-        return await GPUInstanceSSHPublicKey.create(
+        return await GPUInstancePersistentVolumeType.create(
             session=session,
             source=create_obj,
         )
 
 
-@router.put("/{id}", response_model=GPUInstanceSSHPublicKeyPublic)
-async def update_gpu_instance_ssh_public_key(
+@router.put("/{id}", response_model=GPUInstancePersistentVolumeTypePublic)
+async def update_gpu_instance_persistent_volume_type(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
-    update_obj: GPUInstanceSSHPublicKeyUpdate,
+    update_obj: GPUInstancePersistentVolumeTypeUpdate,
 ):
     ret = ensure_writable(
-        await GPUInstanceSSHPublicKey.one_by_id(
+        await GPUInstancePersistentVolumeType.one_by_id(
             session=session,
             id=id,
         ),
@@ -122,7 +126,7 @@ async def update_gpu_instance_ssh_public_key(
     )
 
     async with handle_error(
-        message="Failed to update GPU instance SSH public key",
+        message="Failed to update GPU instance persistent volume type",
     ):
         await ret.update(
             session=session,
@@ -132,13 +136,13 @@ async def update_gpu_instance_ssh_public_key(
 
 
 @router.delete("/{id}")
-async def delete_gpu_instance_ssh_public_key(
+async def delete_gpu_instance_persistent_volume_type(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
 ):
     ret = ensure_writable(
-        await GPUInstanceSSHPublicKey.one_by_id(
+        await GPUInstancePersistentVolumeType.one_by_id(
             session=session,
             id=id,
         ),
@@ -146,7 +150,7 @@ async def delete_gpu_instance_ssh_public_key(
     )
 
     async with handle_error(
-        message="Failed to delete GPU instance SSH public key",
+        message="Failed to delete GPU instance persistent volume type",
     ):
         await ret.delete(
             session=session,
@@ -156,13 +160,15 @@ async def delete_gpu_instance_ssh_public_key(
 def ensure_visible(obj, ctx: TenantContext):
     if obj and is_visible(obj, ctx):
         return obj
-    raise NotFoundException(message="GPU instance SSH public key not found")
+    raise NotFoundException(message="GPU instance persistent volume type not found")
 
 
 def ensure_writable(obj, ctx: TenantContext):
     if obj is None:
-        raise NotFoundException(message="GPU instance SSH public key not found")
-    assert_org_owned_writable(ctx, obj, resource_label="GPU instance SSH public key")
+        raise NotFoundException(message="GPU instance persistent volume type not found")
+    assert_org_owned_writable(
+        ctx, obj, resource_label="GPU instance persistent volume type"
+    )
     return obj
 
 
@@ -176,11 +182,19 @@ def is_visible(obj, ctx: TenantContext) -> bool:
 async def handle_error(message: str):
     try:
         yield
+    except IntegrityError as e:
+        # ``ON DELETE RESTRICT`` from
+        # gpu_instance_persistent_volumes.persistent_volume_type_id
+        # surfaces here when a persistent volume still references this
+        # type.
+        raise ConflictException(
+            message=message,
+        ) from e
     except Exception as e:
         raise InternalServerErrorException(
             message=message,
         ) from e
 
 
-def _validate_create_obj(create_obj: GPUInstanceSSHPublicKeyCreate):
+def _validate_create_obj(create_obj: GPUInstancePersistentVolumeTypeCreate):
     validate_k8s_object_name(create_obj.name)

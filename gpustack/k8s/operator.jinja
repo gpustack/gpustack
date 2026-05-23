@@ -266,6 +266,8 @@ spec:
             name: gpustack-operator-worker-deployment
             defaultMode: 0755
   backoffLimit: 5
+  # Cleanup the job after 1 day.
+  ttlSecondsAfterFinished: 86400
 ---
 apiVersion: v1
 kind: Namespace

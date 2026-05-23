@@ -2,6 +2,10 @@ import asyncio
 from multiprocessing import Process
 import os
 import re
+import shutil
+import subprocess
+import tempfile
+import threading
 import importlib.util
 import aiohttp
 
@@ -50,6 +54,7 @@ from gpustack.server.controllers import (
     ModelRouteController,
     ModelRouteTargetController,
     ModelProviderController,
+    GPUInstanceController,
 )
 from gpustack.server.db import async_session
 from gpustack.server.lora_model_routes import (
@@ -101,13 +106,117 @@ from gpustack.api.auth import (
     authenticate_worker_by_request_headers,
 )
 
+from gpustack.gpu_instances import gateway_client
+from gpustack.gpu_instances.gateway import (
+    reconcile_gpustack_operator_subscription,
+)
+
 logger = logging.getLogger(__name__)
+
+
+class _ExternalSubprocess:
+    """Adapter that exposes a ``subprocess.Popen`` as a ``multiprocessing.Process``-like
+    handle, so it can live alongside the worker process in ``_sub_processes`` and be
+    driven by ``_start_sub_processes`` / ``_monitor_sub_processes``.
+
+    Stdout and stderr are captured and pumped line-by-line into the server logger
+    by background daemon threads, so the operator's output shows up in the same
+    place as the rest of the server log.
+    """
+
+    def __init__(self, args, name="", log=None, on_exit=None):
+        self._args = args
+        self.name = name or args[0]
+        self._popen = None
+        self._logger = log or logger
+        self._log_threads = []
+        self._on_exit = on_exit
+        self._exit_callback_invoked = False
+        self._exit_lock = threading.Lock()
+
+    def start(self):
+        self._popen = subprocess.Popen(
+            self._args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self._spawn_log_pump(self._popen.stdout, logging.INFO)
+        self._spawn_log_pump(self._popen.stderr, logging.INFO)
+        if self._on_exit is not None:
+            self._spawn_exit_watcher()
+
+    def stop(self):
+        if self._popen:
+            self._popen.terminate()
+            try:
+                self._popen.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._popen.kill()
+
+    def _spawn_exit_watcher(self):
+        def watch():
+            try:
+                self._popen.wait()
+            finally:
+                self._invoke_on_exit()
+
+        t = threading.Thread(
+            target=watch,
+            name=f"{self.name}-exit-watcher",
+            daemon=True,
+        )
+        t.start()
+
+    def _invoke_on_exit(self):
+        with self._exit_lock:
+            if self._exit_callback_invoked:
+                return
+            self._exit_callback_invoked = True
+        try:
+            self._on_exit()
+        except Exception:
+            self._logger.exception("[%s] on_exit callback failed", self.name)
+
+    def _spawn_log_pump(self, stream, level):
+        def pump():
+            try:
+                for line in iter(stream.readline, ""):
+                    line = line.rstrip()
+                    if line:
+                        self._logger.log(level, "[%s] %s", self.name, line)
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        t = threading.Thread(
+            target=pump,
+            name=f"{self.name}-log-{'out' if level == logging.INFO else 'err'}",
+            daemon=True,
+        )
+        t.start()
+        self._log_threads.append(t)
+
+    def is_alive(self) -> bool:
+        if self._popen is None:
+            return False
+        return self._popen.poll() is None
+
+    @property
+    def exitcode(self):
+        if self._popen is None:
+            return None
+        return self._popen.returncode
 
 
 class Server:
     def __init__(self, config: Config, worker_process: Process):
         self._config: Config = config
-        self._sub_processes = []
+        self._before_healthy_sub_processes = []
+        self._after_healthy_sub_processes = []
         self._async_tasks = []
         self._worker_process = worker_process
         # Coordination components
@@ -116,7 +225,7 @@ class Server:
 
     @property
     def all_processes(self):
-        return self._sub_processes
+        return self._before_healthy_sub_processes + self._after_healthy_sub_processes
 
     def _create_async_task(self, coro):
         self._async_tasks.append(asyncio.create_task(coro))
@@ -136,7 +245,9 @@ class Server:
         init_model_catalog(self._config.model_catalog_file)
         # it's safe to determine server_role after migration
         if self._config.server_role() == Config.ServerRole.BOTH:
-            self._sub_processes.append(self._worker_process)
+            self._after_healthy_sub_processes.append(self._worker_process)
+
+        self._enqueue_operator_process()
 
         # Create FastAPI app. Plugin ``__init__(app, cfg)`` runs here and
         # may attach a distributed-mode coordinator to the plugin instance.
@@ -168,6 +279,7 @@ class Server:
         self._start_default_registry_checker()
         self._start_proxy_servers(app)
         self._start_extension_plugins(app)
+        self._start_gpustack_operator_subscription()
 
         serving_host = (
             "127.0.0.1"
@@ -284,6 +396,9 @@ class Server:
         inference_backend_controller = InferenceBackendController()
         tasks.append(asyncio.create_task(inference_backend_controller.start()))
 
+        gpu_instance_controller = GPUInstanceController(self._config)
+        tasks.append(asyncio.create_task(gpu_instance_controller.start()))
+
         logger.debug("Controllers started.")
         return tasks
 
@@ -306,6 +421,19 @@ class Server:
         self._create_async_task(flush_worker_status_to_db())
 
         logger.debug("Worker status flusher started.")
+
+    def _start_gpustack_operator_subscription(self):
+        """Keep the in-process gpustack-operator gateway in sync with Cluster events.
+
+        Runs on every server instance — each server spawns its own
+        ``gpustack-operator`` subprocess and must feed it the current cluster
+        set, so this cannot be a leader-only task.
+        """
+        if shutil.which("gpustack-operator") is None:
+            return
+        self._create_async_task(reconcile_gpustack_operator_subscription())
+
+        logger.debug("GPUStack operator subscription started.")
 
     def _start_gateway_metrics_flusher(self):
         # Always start — both the gateway report endpoint and the in-process
@@ -352,18 +480,73 @@ class Server:
         logger.debug("Update checker started.")
 
     async def _monitor_sub_processes(self):
-        while self._sub_processes:
-            for process in self._sub_processes[:]:
+        while self.all_processes:
+            for process in self.all_processes[:]:
                 if not process.is_alive():
                     if process.exitcode != 0:
                         raise RuntimeError(
                             f"Sub process {process.name} died with exit code {process.exitcode}"
                         )
-                    self._sub_processes.remove(process)
+                    if process in self._before_healthy_sub_processes:
+                        self._before_healthy_sub_processes.remove(process)
+                    elif process in self._after_healthy_sub_processes:
+                        self._after_healthy_sub_processes.remove(process)
             await asyncio.sleep(5)
 
+    def _enqueue_operator_process(self):
+        """Queue the ``gpustack-operator wg`` subprocess for startup.
+
+        Skipped silently when the binary is not on PATH so deployments without
+        the operator addon installed don't fail.
+
+        The worker gateway is bound to a process-private unix socket whose
+        path is randomized for each server startup. This narrows the
+        socket's discoverability so unrelated local processes cannot easily
+        target it, and the path is handed to the in-process gateway client
+        so other server code can reach the operator's ``/apis/*`` endpoints.
+        """
+        if shutil.which("gpustack-operator") is None:
+            logger.debug("gpustack-operator binary not found on PATH, skipping start.")
+            return
+
+        socket_dir = tempfile.mkdtemp(prefix="gpustack-operator-")
+        os.chmod(socket_dir, 0o700)
+
+        socket_path = os.path.join(socket_dir, f"{secrets.token_hex(8)}.sock")
+        gateway_client.set_gateway_unix_path(socket_path)
+
+        args = [
+            "gpustack-operator",
+            "wg",
+            "--worker-conn-gpustack-api-port",
+            str(self._config.get_api_port()),
+            "--bind-unix-path",
+            socket_path,
+        ]
+        if self._config.debug:
+            args.append("--v=4")
+
+        def _cleanup_socket_dir():
+            shutil.rmtree(socket_dir, ignore_errors=True)
+
+        self._before_healthy_sub_processes.append(
+            _ExternalSubprocess(
+                args, name="gpustack-operator", on_exit=_cleanup_socket_dir
+            )
+        )
+
     def _start_sub_processes(self):
-        async def start_process_after_api_ready():
+        # Start before-healthy subprocesses synchronously so they are guaranteed
+        # to be spawned before any leader task (scheduler, controllers, ...) is
+        # scheduled. Otherwise the coroutine would only be queued and would not
+        # actually run until the first ``await`` in ``start()``, by which time
+        # controllers have already been created.
+        for process in self._before_healthy_sub_processes:
+            process.start()
+
+        async def wait_and_start_after_healthy():
+            # Wait for the API to be healthy before starting the rest of the processes,
+            # so that they can rely on the API being available when they start.
             api_url = f"http://127.0.0.1:{self._config.api_port}/healthz"
             async with aiohttp.ClientSession() as session:
                 while True:
@@ -377,13 +560,16 @@ class Server:
                     except asyncio.CancelledError:
                         return
 
-            for process in self._sub_processes:
+            # Start the rest of the processes after the API is ready.
+            for process in self._after_healthy_sub_processes:
                 process.start()
+
             await self._monitor_sub_processes()
 
-        if len(self._sub_processes) == 0:
+        if len(self.all_processes) == 0:
             return
-        self._create_async_task(start_process_after_api_ready())
+
+        self._create_async_task(wait_and_start_after_healthy())
 
     async def _wait_for_gateway_ready(self):
         if self._config.gateway_mode != GatewayModeEnum.embedded:
