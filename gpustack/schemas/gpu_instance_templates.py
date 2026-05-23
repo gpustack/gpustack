@@ -197,14 +197,6 @@ class GPUInstanceTemplateBase(SQLModel):
         ),
     )
 
-    name: str = Field(
-        max_length=253,
-    )
-    """
-    Name of the GPU instance template.
-    Must be unique in the scope of the owning principal.
-    """
-
     display_name: Optional[str] = Field(
         nullable=True,
         default=None,
@@ -226,15 +218,15 @@ class GPUInstanceTemplateBase(SQLModel):
     manufacturer: str = Field(
         index=True,
         unique=False,
+        default="cpu",
     )
     """
     Manufacturer of the GPU instance,
     e.g., "nvidia", "amd", "ascend".
     """
 
-    spec: Optional[GPUInstanceSpec] = Field(
+    spec: GPUInstanceSpec = Field(
         sa_type=pydantic_column_type(GPUInstanceSpec),
-        default=None,
     )
     """
     Spec for the GPU instance template, containing details like container image, resources, etc.
@@ -262,6 +254,43 @@ class GPUInstanceTemplate(GPUInstanceTemplateBase, BaseModelMixin, table=True):
     )
     id: Optional[int] = Field(default=None, primary_key=True)
 
+    name: str = Field(
+        max_length=253,
+    )
+    """
+    Name of the GPU instance template.
+    Must be unique in the scope of the owning principal.
+    """
+
+
+class GPUInstanceTemplateUpdate(GPUInstanceTemplateBase):
+    """
+    Represents the fields that can be updated for a GPU instance template.
+    """
+
+    pass
+
+
+class GPUInstanceTemplateCreate(GPUInstanceTemplateUpdate):
+    """
+    Represents the fields required to create a new GPU instance template.
+    """
+
+    name: str
+    """
+    Created name of the GPU instance template.
+    Must be unique in the scope of the owning principal.
+    """
+
+
+class GPUInstanceTemplatePublic(GPUInstanceTemplateCreate, PublicFields):
+    """
+    Represents the public view of a GPU instance template,
+    containing only fields that are safe to expose to clients.
+    """
+
+    pass
+
 
 class GPUInstanceTemplateListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
@@ -271,54 +300,6 @@ class GPUInstanceTemplateListParams(ListParams):
         "created_at",
         "updated_at",
     ]
-
-
-class GPUInstanceTemplateCreate(GPUInstanceTemplateBase):
-    """
-    Represents the fields required to create a new GPU instance template.
-    """
-
-    pass
-
-
-class GPUInstanceTemplateUpdate(GPUInstanceTemplateBase):
-    """
-    Represents the fields that can be updated for a GPU instance template.
-    """
-
-    name: Optional[str] = None
-    """
-    Updated name of the GPU instance template. Must be unique if provided.
-    """
-
-    display_name: Optional[str] = None
-    """
-    Updated display name of the GPU instance template.
-    """
-
-    description: Optional[str] = None
-    """
-    Updated description of the GPU instance template.
-    """
-
-    manufacturer: Optional[str] = None
-    """
-    Updated manufacturer of the GPU instance.
-    """
-
-    spec: Optional[GPUInstanceSpec] = None
-    """
-    Updated specification for the GPU instance template.
-    """
-
-
-class GPUInstanceTemplatePublic(GPUInstanceTemplateBase, PublicFields):
-    """
-    Represents the public view of a GPU instance template,
-    containing only fields that are safe to expose to clients.
-    """
-
-    pass
 
 
 GPUInstanceTemplatesPublic = PaginatedList[GPUInstanceTemplatePublic]
