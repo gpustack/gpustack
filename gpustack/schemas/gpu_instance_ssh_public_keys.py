@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, ClassVar, List
 
 from pydantic import ConfigDict, BaseModel
 from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
@@ -8,6 +8,8 @@ from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import (
     pydantic_camel_case_generator,
     pydantic_column_type,
+    ListParams,
+    PublicFields,
 )
 
 
@@ -40,7 +42,7 @@ class GPUInstanceSSHPublicKeyBase(SQLModel):
     )
 
     # For tenant scope.
-    # Every SSH Public Key belongs to one Org. The route layer fills this with
+    # Every object belongs to one Org. The route layer fills this with
     # ctx.current_principal_id (or PLATFORM_PRINCIPAL_ID for admin).
     owner_principal_id: Optional[int] = Field(
         default=None,
@@ -85,7 +87,7 @@ class GPUInstanceSSHPublicKeyBase(SQLModel):
 
 class GPUInstanceSSHPublicKey(GPUInstanceSSHPublicKeyBase, BaseModelMixin, table=True):
     """
-    Represents an SSH public key associated with a GPU instance.
+    Represents a GPU Instance SSH public key.
     """
 
     __tablename__ = 'gpu_instance_ssh_public_keys'
@@ -101,6 +103,23 @@ class GPUInstanceSSHPublicKey(GPUInstanceSSHPublicKeyBase, BaseModelMixin, table
         ),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
+
+
+class GPUInstanceSSHPublicKeyListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "id",
+        "name",
+        "created_at",
+        "updated_at",
+    ]
+
+
+class GPUInstanceSSHPublicKeyCreate(GPUInstanceSSHPublicKeyBase):
+    """
+    Represents the fields required to create a new GPU instance SSH public key.
+    """
+
+    pass
 
 
 class GPUInstanceSSHPublicKeyUpdate(GPUInstanceSSHPublicKeyBase):
@@ -129,8 +148,11 @@ class GPUInstanceSSHPublicKeyUpdate(GPUInstanceSSHPublicKeyBase):
     """
 
 
-class GPUInstanceSSHPublicKeyPublic(GPUInstanceSSHPublicKeyBase):
+class GPUInstanceSSHPublicKeyPublic(GPUInstanceSSHPublicKeyBase, PublicFields):
     """
     Represents the public view of a GPU instance SSH public key,
     containing only fields that are safe to expose to clients.
     """
+
+
+GPUInstanceSSHPublicKeysPublic = List[GPUInstanceSSHPublicKeyPublic]

@@ -140,8 +140,11 @@ from gpustack.schemas.cluster_access import (
 from gpustack.schemas.links import ModelRoutePrincipalLink  # noqa: F401
 from gpustack.schemas.gpu_instance_ssh_public_keys import (
     GPUInstanceSSHPublicKey,
+    GPUInstanceSSHPublicKeyListParams,
+    GPUInstanceSSHPublicKeyCreate,
     GPUInstanceSSHPublicKeyUpdate,
     GPUInstanceSSHPublicKeyPublic,
+    GPUInstanceSSHPublicKeysPublic,
 )
 from gpustack.schemas.gpu_instance_templates import (
     GPUInstanceTemplate,
@@ -268,8 +271,11 @@ __all__ = [
     "ClusterAccess",
     "ClusterAccessPublic",
     "GPUInstanceSSHPublicKey",
+    "GPUInstanceSSHPublicKeyListParams",
+    "GPUInstanceSSHPublicKeyCreate",
     "GPUInstanceSSHPublicKeyUpdate",
     "GPUInstanceSSHPublicKeyPublic",
+    "GPUInstanceSSHPublicKeysPublic",
     "GPUInstanceTemplate",
     "GPUInstanceTemplateListParams",
     "GPUInstanceTemplateCreate",
