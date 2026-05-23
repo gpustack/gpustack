@@ -53,14 +53,6 @@ class GPUInstanceSSHPublicKeyBase(SQLModel):
         ),
     )
 
-    name: str = Field(
-        max_length=253,
-    )
-    """
-    Name of the GPU instance SSH public key.
-    Must be unique in the scope of the owning principal.
-    """
-
     display_name: Optional[str] = Field(
         nullable=True,
         default=None,
@@ -79,9 +71,8 @@ class GPUInstanceSSHPublicKeyBase(SQLModel):
     Description of the GPU instance SSH public key.
     """
 
-    spec: Optional[GPUInstanceSSHPublicKeySpec] = Field(
+    spec: GPUInstanceSSHPublicKeySpec = Field(
         sa_type=pydantic_column_type(GPUInstanceSSHPublicKeySpec),
-        default=None,
     )
 
 
@@ -104,22 +95,13 @@ class GPUInstanceSSHPublicKey(GPUInstanceSSHPublicKeyBase, BaseModelMixin, table
     )
     id: Optional[int] = Field(default=None, primary_key=True)
 
-
-class GPUInstanceSSHPublicKeyListParams(ListParams):
-    sortable_fields: ClassVar[List[str]] = [
-        "id",
-        "name",
-        "created_at",
-        "updated_at",
-    ]
-
-
-class GPUInstanceSSHPublicKeyCreate(GPUInstanceSSHPublicKeyBase):
+    name: str = Field(
+        max_length=253,
+    )
     """
-    Represents the fields required to create a new GPU instance SSH public key.
+    Name of the GPU instance SSH public key.
+    Must be unique in the scope of the owning principal.
     """
-
-    pass
 
 
 class GPUInstanceSSHPublicKeyUpdate(GPUInstanceSSHPublicKeyBase):
@@ -127,24 +109,18 @@ class GPUInstanceSSHPublicKeyUpdate(GPUInstanceSSHPublicKeyBase):
     Represents the fields that can be updated for a GPU instance SSH public key.
     """
 
-    name: Optional[str] = None
+    pass
+
+
+class GPUInstanceSSHPublicKeyCreate(GPUInstanceSSHPublicKeyBase):
     """
-    Updated name of the GPU instance SSH public key. Must be unique if provided.
+    Represents the fields required to create a new GPU instance SSH public key.
     """
 
-    display_name: Optional[str] = None
+    name: str
     """
-    Updated display name of the GPU instance SSH public key.
-    """
-
-    description: Optional[str] = None
-    """
-    Updated description of the GPU instance SSH public key.
-    """
-
-    spec: Optional[GPUInstanceSSHPublicKeySpec] = None
-    """
-    Updated specification for the GPU instance SSH public key.
+    Created name of the GPU instance SSH public key.
+    Must be unique in the scope of the owning principal.
     """
 
 
@@ -153,6 +129,15 @@ class GPUInstanceSSHPublicKeyPublic(GPUInstanceSSHPublicKeyBase, PublicFields):
     Represents the public view of a GPU instance SSH public key,
     containing only fields that are safe to expose to clients.
     """
+
+
+class GPUInstanceSSHPublicKeyListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "id",
+        "name",
+        "created_at",
+        "updated_at",
+    ]
 
 
 GPUInstanceSSHPublicKeysPublic = List[GPUInstanceSSHPublicKeyPublic]
