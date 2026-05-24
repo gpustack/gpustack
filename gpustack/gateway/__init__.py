@@ -396,28 +396,6 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     return resource_name, expected_spec
 
 
-def model_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
-    resource_name = "gpustack-model-router"
-    enabled_paths = supported_openai_routes + supported_anthropic_routes
-    enabled_paths.append("/model/proxy")
-    expected_spec = WasmPluginSpec(
-        defaultConfig={
-            'modelToHeader': 'x-higress-llm-model',
-            'enableOnPathSuffix': enabled_paths,
-        },
-        defaultConfigDisable=False,
-        failStrategy="FAIL_OPEN",
-        imagePullPolicy="UNSPECIFIED_POLICY",
-        matchRules=[],
-        phase="AUTHN",
-        priority=900,
-        url=get_plugin_url_with_name_and_version(
-            name="model-router", version="2.0.0", cfg=cfg
-        ),
-    )
-    return resource_name, expected_spec
-
-
 def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-set-model-pre-route"
     enabled_path_suffixes = supported_openai_routes + supported_anthropic_routes
@@ -447,7 +425,7 @@ def model_mapper_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         phase="AUTHN",
         priority=800,
         url=get_plugin_url_with_name_and_version(
-            name="model-mapper", version="2.0.0", cfg=cfg
+            name="gpustack-model-mapper", version="1.0.0", cfg=cfg
         ),
         defaultConfigDisable=False,
         defaultConfig={"modelMapping": {}},
@@ -552,14 +530,25 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 
 def generic_proxy_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     """
-    Generic-proxy router: extracts the alias id between ``prefix`` and the next
-    ``/`` in :path, looks it up in ``aliasNameMapping``, and writes the resolved
-    model name into ``targetHeader`` (x-higress-llm-model).
+    Generic-proxy router. Operates in two complementary modes per request and
+    fully replaces Higress's built-in ``model-router`` — that plugin must be
+    disabled wherever this one is active, otherwise both will write
+    ``x-higress-llm-model`` and the winner becomes priority-dependent.
 
-    Priority 800 puts this AFTER Higress's built-in model-router (priority 900)
-    so when we write the header, it overrides the body-extracted value the
-    model-router wrote first. It stays AHEAD of rate-limit plugins (~600) so
-    those see the resolved model name, not the alias id.
+    1. **Path-driven**: when ``:path`` matches ``prefix`` (``/model/proxy/``),
+       the first segment after the prefix is the alias id; it is looked up in
+       ``aliasNameMapping`` and the resolved model name is written into
+       ``targetHeader`` and back into the body's ``model`` field (JSON or
+       multipart). Used by gpustack's generic-proxy routes.
+    2. **Body-driven** (model-router parity): when the path doesn't match
+       ``prefix`` but does match ``enableOnPathSuffix``, the ``model`` field
+       is read from the JSON / multipart body and projected into
+       ``targetHeader``. Used by the standard OpenAI / Anthropic AI routes.
+
+    Priority 900 matches model-router's original slot, so downstream plugins
+    (ext-auth at 360, rate-limit ~600) keep observing the resolved model name
+    without any other ordering change. Phase ``AUTHN`` ensures the header is
+    set before ext-auth runs.
 
     ``defaultConfig.aliasNameMapping`` is maintained per-route by
     [[generic_proxy_router_diff_spec]] — each entry maps ``str(route_id)`` to
@@ -575,35 +564,47 @@ def generic_proxy_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         apiVersion: extensions.higress.io/v1alpha1
         kind: WasmPlugin
         metadata:
-          name: gpustack-generic-proxy-router
+          name: gpustack-model-router
         spec:
-          phase: UNSPECIFIED_PHASE
-          priority: 800
+          phase: AUTHN
+          priority: 900
           defaultConfigDisable: false
           defaultConfig:
             prefix: "/model/proxy/"
             targetHeader: "x-higress-llm-model"
+            enableOnPathSuffix:
+              - /v1/chat/completions
+              - /v1/messages
+              - ...
             aliasNameMapping:
               "1": "route-one"
               "2": "route-two"
     """
+    # K8s WasmPlugin resource name — intentionally reuses the legacy
+    # ``gpustack-model-router`` slot previously occupied by Higress's built-in
+    # model-router so the upgrade is an in-place swap. The plugin image name
+    # passed to ``get_plugin_url_with_name_and_version`` below stays
+    # ``gpustack-generic-proxy-router`` (its identity in the plugin manifest).
+    resource_name = gpustack_generic_proxy_router_name
+    enabled_path_suffixes = supported_openai_routes + supported_anthropic_routes
     expected_spec = WasmPluginSpec(
         defaultConfig={
             "prefix": "/model/proxy/",
             "targetHeader": "x-higress-llm-model",
+            "enableOnPathSuffix": enabled_path_suffixes,
             "aliasNameMapping": {},
         },
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
         imagePullPolicy="UNSPECIFIED_POLICY",
         matchRules=[],
-        phase="UNSPECIFIED_PHASE",
-        priority=800,  # after model-router (900), before rate-limit plugins (~600)
+        phase="AUTHN",
+        priority=900,
         url=get_plugin_url_with_name_and_version(
             name="gpustack-generic-proxy-router", version="1.0.0", cfg=cfg
         ),
     )
-    return gpustack_generic_proxy_router_name, expected_spec
+    return resource_name, expected_spec
 
 
 def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
@@ -772,6 +773,42 @@ def spec_replace(
     return expected_spec
 
 
+# Keys in the generic-proxy router's defaultConfig that survive init-time
+# diffs: when a key is non-None on the live spec, the diff carries it over
+# instead of letting the factory's defaults overwrite it. Add a key here when
+# you introduce a new field that should be either controller-managed (like
+# ``aliasNameMapping``) or operator-tunable (like ``maxBodyBytes``).
+_GENERIC_PROXY_ROUTER_PRESERVED_KEYS = [
+    "aliasNameMapping",
+    "maxBodyBytes",
+]
+
+
+def generic_proxy_router_spec_diff(
+    current_spec: Optional[WasmPluginSpec],
+    expected_spec: WasmPluginSpec,
+) -> WasmPluginSpec:
+    """
+    Init-time diff for the generic-proxy router. Returns a fresh spec based on
+    ``expected_spec`` so every ``defaultConfig`` key (prefix, targetHeader,
+    enableOnPathSuffix, ...) is refreshed on each startup, except for keys
+    listed in ``_GENERIC_PROXY_ROUTER_PRESERVED_KEYS`` — those are carried
+    over from the live spec whenever the live value is non-None.
+
+    The input ``expected_spec`` is not mutated, so the caller can reuse it
+    across invocations.
+    """
+    if current_spec is None:
+        return expected_spec
+    merged_default_config = dict(expected_spec.defaultConfig or {})
+    current_default_config = current_spec.defaultConfig or {}
+    for key in _GENERIC_PROXY_ROUTER_PRESERVED_KEYS:
+        value = current_default_config.get(key)
+        if value is not None:
+            merged_default_config[key] = value
+    return expected_spec.model_copy(update={"defaultConfig": merged_default_config})
+
+
 def validate_ai_statistics_plugin_content_types():
     for content_type in envs.GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES:
         if content_type == "audio/pcm":
@@ -794,11 +831,10 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
         plugin_list: List[Tuple[str, WasmPluginSpec]] = [
             ext_auth_plugin(cfg=cfg),
             ai_statistics_plugin(cfg=cfg),
-            model_router_plugin(cfg=cfg),
+            generic_proxy_router_plugin(cfg=cfg),
             ai_proxy_plugin(cfg=cfg),
             model_pre_route_plugin(cfg=cfg),
             model_mapper_plugin(cfg=cfg),
-            generic_proxy_router_plugin(cfg=cfg),
         ]
         if cfg.server_role() != Config.ServerRole.WORKER:
             plugin_list.append(transformer_plugin(cfg=cfg))
@@ -814,14 +850,20 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
                 await ensure_gateway_timeout(cfg=cfg, api_client=api_client)
                 await ensure_ingress_resources(cfg=cfg, api_client=api_client)
             for plugin_name, plugin_spec in plugin_list:
-                create_only = plugin_name in [
-                    gpustack_ai_proxy_name,
-                    gpustack_model_mapper_name,
-                    gpustack_generic_proxy_router_name,
-                ]
-                spec_diff_func = partial(
-                    spec_replace, expected_spec=plugin_spec, create_only=create_only
-                )
+                if plugin_name == gpustack_generic_proxy_router_name:
+                    spec_diff_func = partial(
+                        generic_proxy_router_spec_diff, expected_spec=plugin_spec
+                    )
+                else:
+                    create_only = plugin_name in [
+                        gpustack_ai_proxy_name,
+                        gpustack_model_mapper_name,
+                    ]
+                    spec_diff_func = partial(
+                        spec_replace,
+                        expected_spec=plugin_spec,
+                        create_only=create_only,
+                    )
                 await ensure_wasm_plugin(
                     api=gw_client.ExtensionsHigressIoV1Api(api_client),
                     name=plugin_name,
