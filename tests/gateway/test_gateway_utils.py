@@ -1,3 +1,4 @@
+from gpustack.gateway import generic_proxy_router_spec_diff
 from gpustack.gateway.utils import (
     RoutePrefix,
     cleanup_generic_proxy_router_spec_diff,
@@ -259,6 +260,132 @@ def test_cleanup_spec_diff_empties_when_no_routes_remain():
     assert _alias_mapping(spec) == {}
     assert spec.defaultConfig["prefix"] == "/model/proxy/"
     assert spec.defaultConfigDisable is False
+
+
+# --- Generic proxy router init-time spec diff -----------------------------
+
+
+def _expected_router_spec() -> WasmPluginSpec:
+    """Match the shape produced by generic_proxy_router_plugin(cfg)."""
+    return WasmPluginSpec(
+        defaultConfig={
+            "prefix": "/model/proxy/",
+            "targetHeader": "x-higress-llm-model",
+            "enableOnPathSuffix": ["/v1/chat/completions", "/v1/messages"],
+            "aliasNameMapping": {},
+        },
+        defaultConfigDisable=False,
+        phase="AUTHN",
+        priority=900,
+        url="http://plugin-server/gpustack-generic-proxy-router/1.0.0/plugin.wasm",
+    )
+
+
+def test_init_diff_passes_through_when_plugin_missing():
+    """No live spec → factory expected_spec is returned untouched (no live state to merge)."""
+    expected = _expected_router_spec()
+    result = generic_proxy_router_spec_diff(None, expected)
+    assert result is expected
+
+
+def test_init_diff_preserves_live_alias_name_mapping():
+    """Controller-managed mapping must survive a restart even though every other field is refreshed."""
+    expected = _expected_router_spec()
+    live = _expected_router_spec()
+    live.defaultConfig = {
+        # stale defaultConfig as if an older release wrote it
+        "prefix": "/old/prefix/",
+        "targetHeader": "x-old-header",
+        "aliasNameMapping": {"1": "route-one", "2": "route-two"},
+    }
+
+    result = generic_proxy_router_spec_diff(live, expected)
+
+    # refreshed from expected
+    assert result.defaultConfig["prefix"] == "/model/proxy/"
+    assert result.defaultConfig["targetHeader"] == "x-higress-llm-model"
+    assert result.defaultConfig["enableOnPathSuffix"] == [
+        "/v1/chat/completions",
+        "/v1/messages",
+    ]
+    # preserved from live
+    assert result.defaultConfig["aliasNameMapping"] == {
+        "1": "route-one",
+        "2": "route-two",
+    }
+
+
+def test_init_diff_preserves_operator_max_body_bytes():
+    """``maxBodyBytes`` isn't set by the factory; if the operator set it on the live spec, keep it."""
+    expected = _expected_router_spec()
+    live = _expected_router_spec()
+    live.defaultConfig = {
+        "aliasNameMapping": {"1": "route-one"},
+        "maxBodyBytes": 10 * 1024 * 1024,
+    }
+
+    result = generic_proxy_router_spec_diff(live, expected)
+
+    assert result.defaultConfig["maxBodyBytes"] == 10 * 1024 * 1024
+    assert result.defaultConfig["aliasNameMapping"] == {"1": "route-one"}
+
+
+def test_init_diff_drops_live_default_config_keys_outside_preserve_list():
+    """
+    Anything in the live defaultConfig that isn't on the preserve list (e.g. an
+    operator's ad-hoc ``enableOnPathSuffix`` override) gets overwritten by the
+    factory's value on restart.
+    """
+    expected = _expected_router_spec()
+    live = _expected_router_spec()
+    live.defaultConfig = {
+        "enableOnPathSuffix": ["/operator-tweaked"],
+        "autoRouting": {"enable": True},
+        "aliasNameMapping": {"1": "route-one"},
+    }
+
+    result = generic_proxy_router_spec_diff(live, expected)
+
+    assert result.defaultConfig["enableOnPathSuffix"] == [
+        "/v1/chat/completions",
+        "/v1/messages",
+    ]
+    assert "autoRouting" not in result.defaultConfig
+    assert result.defaultConfig["aliasNameMapping"] == {"1": "route-one"}
+
+
+def test_init_diff_treats_none_values_as_unset():
+    """A live key explicitly set to None falls through to the factory's value."""
+    expected = _expected_router_spec()
+    live = _expected_router_spec()
+    live.defaultConfig = {
+        "aliasNameMapping": None,
+        "maxBodyBytes": None,
+    }
+
+    result = generic_proxy_router_spec_diff(live, expected)
+
+    # factory's {} wins because live value was None
+    assert result.defaultConfig["aliasNameMapping"] == {}
+    # maxBodyBytes wasn't in the factory either → stays unset
+    assert "maxBodyBytes" not in result.defaultConfig
+
+
+def test_init_diff_does_not_mutate_expected_spec():
+    """
+    The diff is built with ``partial(spec_diff, expected_spec=plugin_spec)`` —
+    if it mutated ``expected_spec.defaultConfig`` in place, state would leak
+    across hypothetical re-invocations.
+    """
+    expected = _expected_router_spec()
+    expected_config_before = dict(expected.defaultConfig)
+    live = _expected_router_spec()
+    live.defaultConfig = {"aliasNameMapping": {"1": "route-one"}}
+
+    generic_proxy_router_spec_diff(live, expected)
+
+    assert expected.defaultConfig == expected_config_before
+    assert expected.defaultConfig["aliasNameMapping"] == {}
 
 
 # --- Main ingress path rules ----------------------------------------------
