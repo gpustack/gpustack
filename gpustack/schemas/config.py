@@ -67,6 +67,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
     namespace: str = "gpustack-system"
 
     # Worker options
+    worker_ifname: Optional[str] = None
     disable_worker_metrics: bool = False
     worker_port: int = 10150
     worker_metrics_port: int = 10151

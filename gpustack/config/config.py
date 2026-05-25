@@ -67,7 +67,6 @@ class WorkerConfig(PredefinedConfig):
     token: Optional[str] = None
     server_url: Optional[str] = None
     worker_ip: Optional[str] = None
-    worker_ifname: Optional[str] = None
     worker_name: Optional[str] = None
 
 

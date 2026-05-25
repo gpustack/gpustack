@@ -105,6 +105,7 @@ image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
 service_discovery_name: "worker"
 namespace: "gpustack-system"
+worker_ifname: en0
 worker_port: 10150
 worker_metrics_port: 10151
 disable_worker_metrics: false
