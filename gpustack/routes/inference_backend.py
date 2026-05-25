@@ -462,6 +462,8 @@ async def list_backend_configs(  # noqa: C901
                     enabled=True,
                     backend_source=BackendSourceEnum.BUILT_IN,
                     default_env=backend.default_env,
+                    parameter_format=backend.parameter_format,
+                    common_parameters=backend.common_parameters,
                 )
             else:
                 if (
@@ -479,6 +481,8 @@ async def list_backend_configs(  # noqa: C901
                     enabled=backend.enabled,
                     backend_source=backend.backend_source,
                     default_env=backend.default_env,
+                    parameter_format=backend.parameter_format,
+                    common_parameters=backend.common_parameters,
                 )
 
             items.append(backend_item)
@@ -1076,6 +1080,8 @@ async def create_inference_backend(
             default_env=backend_in.default_env,
             enabled=backend_in.enabled,
             backend_source=backend_in.backend_source,
+            parameter_format=backend_in.parameter_format,
+            common_parameters=backend_in.common_parameters,
             owner_principal_id=target_org_id,
         )
         backend = await InferenceBackend.create(session, backend)
@@ -1135,6 +1141,8 @@ async def _redirect_global_edit_to_org_row(
         enabled=True,
         is_built_in=backend.is_built_in,
         backend_source=backend.backend_source,
+        parameter_format=backend_in.parameter_format,
+        common_parameters=backend_in.common_parameters,
         owner_principal_id=ctx.current_principal_id,
     )
     return await InferenceBackend.create(session, new_row)
@@ -1206,6 +1214,8 @@ async def update_inference_backend(  # noqa: C901
             "description": backend_in.description,
             "default_env": backend_in.default_env,
             "backend_source": backend_in.backend_source,
+            "parameter_format": backend_in.parameter_format,
+            "common_parameters": backend_in.common_parameters,
         }
         if backend_in.backend_source == BackendSourceEnum.COMMUNITY:
             if backend_in.enabled is not None:
@@ -1338,6 +1348,7 @@ async def create_inference_backend_from_yaml(  # noqa: C901
             "default_version",
             "default_backend_param",
             "default_run_command",
+            "default_entrypoint",
             "health_check_path",
             "description",
             "default_env",
