@@ -48,12 +48,15 @@ def upgrade() -> None:
         *proxy_mode_to_add,
     )
 
-    ### k8s volume mount
-    if not column_exists('clusters', 'k8s_volume_mounts'):
+    ### k8s deployment values (imagePullSecrets, nodeSelector, volumeMounts,
+    ### gpuVendorOverrides). Container for every K8s pod-spec knob the
+    ### cluster needs; subsumed the previous standalone k8s_volume_mounts
+    ### column before that field shipped.
+    if not column_exists('clusters', 'k8s_options'):
         with op.batch_alter_table('clusters', schema=None) as batch_op:
             batch_op.add_column(
                 sa.Column(
-                    'k8s_volume_mounts',
+                    'k8s_options',
                     gpustack.schemas.common.JSON(),
                     nullable=True,
                 )
@@ -602,9 +605,9 @@ def downgrade() -> None:
         *proxy_mode_to_add,
     )
 
-    ### k8s volume mount
+    ### k8s deployment values
     with op.batch_alter_table('clusters', schema=None) as batch_op:
-        batch_op.drop_column('k8s_volume_mounts')
+        batch_op.drop_column('k8s_options')
     ### end
 
     ### custom API_KEY

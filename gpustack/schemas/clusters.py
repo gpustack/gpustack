@@ -1,3 +1,4 @@
+import re
 import secrets
 from urllib.parse import urlparse
 from enum import Enum
@@ -23,6 +24,8 @@ from sqlmodel import (
 )
 import sqlalchemy as sa
 from typing import TYPE_CHECKING
+
+from gpustack_runtime.detector import ManufacturerEnum
 
 from gpustack.schemas.config import (
     SensitivePredefinedConfig,
@@ -69,6 +72,32 @@ class Volume(BaseModel):
         if not all(c in allowed_chars for c in v):
             raise ValueError("Volume name contains invalid characters")
         return v
+
+
+class ImageCredential(BaseModel):
+    """
+    A docker registry credential. At manifest render time each entry is
+    materialized into a ``kubernetes.io/dockerconfigjson`` Secret named
+    ``gpustack-image-pull-secret-<index>`` in the worker namespace, which
+    every worker DaemonSet then references via ``imagePullSecrets``.
+
+    ``username`` / ``password`` are optional so a credential entry can act
+    as a placeholder Secret for a public or pre-configured registry — the
+    rendered ``.dockerconfigjson`` falls back to an empty ``{"auths":{}}``
+    payload when either is missing, matching the gpustack Helm chart
+    convention.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    registry: str = PydanticField(
+        ...,
+        description="Docker registry host (e.g. docker.io, registry.example.com).",
+    )
+    username: Optional[str] = None
+    password: Optional[str] = PydanticField(
+        default=None,
+        description="Registry password / access token. Stored as-is — handle as a secret.",
+    )
 
 
 class HostPathVolumeSource(BaseModel):
@@ -137,8 +166,6 @@ class K8sVolumeMount(BaseModel):
             return v
         if len(v) > 63:
             raise ValueError("Volume name must be less than 64 characters")
-        import re
-
         if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", v):
             raise ValueError(
                 "Volume name must be a valid DNS-1123 label (e.g. 'my-name', or '123-abc'); "
@@ -146,6 +173,100 @@ class K8sVolumeMount(BaseModel):
                 "and must start and end with an alphanumeric character."
             )
         return v
+
+
+class K8sOptionsOverride(BaseModel):
+    """
+    Per-vendor override layered on top of K8sOptions at manifest render time.
+    Only carries fields that are genuinely vendor-scoped — currently just
+    nodeSelector, since vendor node labels (e.g. nvidia.com/gpu,
+    huawei.com/Ascend910) differ per runtime. Registry-scoped fields like
+    imageCredentials stay cluster-level on K8sOptions.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    node_selector: Optional[Dict[str, str]] = PydanticField(
+        default=None,
+        alias="nodeSelector",
+    )
+
+
+class K8sOptions(BaseModel):
+    """
+    All Kubernetes-side deployment knobs for a cluster's worker DaemonSets:
+    pod spec primitives (imageCredentials, nodeSelector, volumeMounts) plus
+    per-vendor overrides. Top-level on the cluster (parallel to
+    ``worker_config``) so K8s deployment concerns are isolated from worker
+    process behaviour; structure mirrors how Helm chart values are usually
+    organised under ``worker.*`` for future chart migration.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    image_credentials: Optional[List[ImageCredential]] = PydanticField(
+        default=None,
+        alias="imageCredentials",
+        description=(
+            "Docker registry credentials. Each entry becomes a "
+            "kubernetes.io/dockerconfigjson Secret named "
+            "``gpustack-image-pull-secret-<index>`` in the worker namespace "
+            "and is referenced from every worker DaemonSet's imagePullSecrets."
+        ),
+    )
+    node_selector: Optional[Dict[str, str]] = PydanticField(
+        default=None,
+        alias="nodeSelector",
+        description="Pod spec nodeSelector labels applied to manifests rendered for the cluster.",
+    )
+    volume_mounts: Optional[List[K8sVolumeMount]] = PydanticField(
+        default=None,
+        alias="volumeMounts",
+        description=(
+            "Pod spec volumes and volumeMounts applied to every worker "
+            "DaemonSet. The first entry is reserved for the gpustack data "
+            "dir; the route layer enforces that invariant."
+        ),
+    )
+    gpu_vendor_overrides: Optional[Dict[ManufacturerEnum, K8sOptionsOverride]] = (
+        PydanticField(
+            default=None,
+            alias="gpuVendorOverrides",
+            description=(
+                "Per-vendor (runtime) overrides layered on top of the base values "
+                "when rendering manifests for that runtime. nodeSelector merges by "
+                "key with override winning."
+            ),
+        )
+    )
+
+    def resolve_for(self, runtime: Optional[ManufacturerEnum]) -> "K8sOptions":
+        """
+        Return a flattened K8sOptions with the matching vendor override merged
+        on top of the base values. The returned instance has gpu_vendor_overrides
+        unset so consumers (e.g. jinja templates) see a single layer.
+        """
+        override: Optional[K8sOptionsOverride] = None
+        if runtime is not None and self.gpu_vendor_overrides:
+            override = self.gpu_vendor_overrides.get(runtime)
+
+        if override is None:
+            return K8sOptions(
+                image_credentials=self.image_credentials,
+                node_selector=self.node_selector,
+                volume_mounts=self.volume_mounts,
+            )
+
+        merged_node_selector: Optional[Dict[str, str]] = None
+        if self.node_selector or override.node_selector:
+            merged_node_selector = {
+                **(self.node_selector or {}),
+                **(override.node_selector or {}),
+            }
+
+        return K8sOptions(
+            image_credentials=self.image_credentials,
+            node_selector=merged_node_selector,
+            volume_mounts=self.volume_mounts,
+        )
 
 
 class CloudOptions(BaseModel):
@@ -332,11 +453,11 @@ class ClusterUpdate(SQLModel):
             )
         ),
     )
-    k8s_volume_mounts: Optional[List[K8sVolumeMount]] = Field(
+    k8s_options: Optional[K8sOptions] = Field(
         default=None,
         sa_column=Column(
             pydantic_column_type(
-                List[K8sVolumeMount],
+                K8sOptions,
                 exclude_none=True,
                 exclude_unset=True,
                 exclude_defaults=True,
