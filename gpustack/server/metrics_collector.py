@@ -123,7 +123,11 @@ def _resolve_metric_datetime(
 def _make_buffer_key(metric: ModelUsageMetrics) -> str:
     # Include the completion-anchored date so streams that cross midnight
     # accumulate into the correct billing-period rollup instead of being
-    # merged with the next day's traffic.
+    # merged with the next day's traffic. ``organization_id`` is included
+    # to match the DB upsert key in ``create_or_update_model_usage`` —
+    # otherwise the same user calling from different Org contexts within
+    # one flush window would merge in memory but split on write, losing
+    # tokens.
     metric_date, _ = _resolve_metric_datetime(metric)
     operation = metric.operation.value if metric.operation else ""
     return ".".join(
@@ -134,6 +138,7 @@ def _make_buffer_key(metric: ModelUsageMetrics) -> str:
             metric.model,
             metric.user_id,
             metric.access_key,
+            metric.organization_id,
             metric.model_route_id,
             operation,
             metric_date.isoformat(),
@@ -465,6 +470,19 @@ def _build_metric_snapshot(
     snapshot.setdefault("provider_type", metric.provider_type)
     snapshot.setdefault("access_key", metric.access_key)
     snapshot.setdefault("api_key_is_custom", None)
+    # The api_key path above stamps ``consumer_principal_id`` from
+    # ``api_key.owner_principal_id`` whenever a key is present. For
+    # cookie-authed traffic (no api_key) the gateway plugin still
+    # provides the active tenant via the wire-format
+    # ``organization_id`` header — parse it back to int so the row
+    # carries its Org scope. Direct-to-gpustack cookie calls don't
+    # populate this field and land NULL; that's by design (no Org
+    # context known at that path).
+    if "consumer_principal_id" not in snapshot and metric.organization_id:
+        try:
+            snapshot["consumer_principal_id"] = int(metric.organization_id)
+        except (TypeError, ValueError):
+            pass
     return snapshot
 
 
