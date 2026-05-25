@@ -1,21 +1,30 @@
+{%- for worker in config.workers %}
 ---
-# DaemonSet
+# DaemonSet for {{ worker.name }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   labels:
-    app: gpustack-worker
-  name: gpustack-worker
+    app: {{ worker.ds_name }}
+    {%- if config.multi_vendor_mode %}
+    app.kubernetes.io/component: worker
+    gpustack.io/runtime: {{ worker.name }}
+    {%- endif %}
+  name: {{ worker.ds_name }}
   namespace: {{ config.namespace }}
 spec:
   revisionHistoryLimit: 10
   selector:
     matchLabels:
-      app: gpustack-worker
+      app: {{ worker.ds_name }}
   template:
     metadata:
       labels:
-        app: gpustack-worker
+        app: {{ worker.ds_name }}
+        {%- if config.multi_vendor_mode %}
+        app.kubernetes.io/component: worker
+        gpustack.io/runtime: {{ worker.name }}
+        {%- endif %}
     spec:
       containers:
         - env:
@@ -46,7 +55,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            {%- if config.runtime == 'hygon' %}
+            {%- if worker.runtime == 'hygon' %}
             - name: ROCM_PATH
               value: /opt/dtk
             - name: ROCM_SMI_LIB_PATH
@@ -75,12 +84,12 @@ spec:
           terminationMessagePath: /dev/termination-log
           terminationMessagePolicy: File
           volumeMounts:
-            {%- if config.runtime == 'amd' %}
+            {%- if worker.runtime == 'amd' %}
             - name: gpustack-amd-driver
               mountPath: /opt/rocm
               readOnly: true
             {%- endif %}
-            {%- if config.runtime == 'ascend' %}
+            {%- if worker.runtime == 'ascend' %}
             - name: gpustack-ascend-driver
               mountPath: /usr/local/Ascend/driver
               readOnly: true
@@ -88,7 +97,7 @@ spec:
               mountPath: /usr/local/Ascend/ascend-toolkit
               readOnly: true
             {%- endif %}
-            {%- if config.runtime == 'hygon' %}
+            {%- if worker.runtime == 'hygon' %}
             - name: gpustack-hygon-driver
               mountPath: /opt/hyhal
               readOnly: true
@@ -96,7 +105,7 @@ spec:
               mountPath: /opt/dtk
               readOnly: true
             {%- endif %}
-            {%- if config.runtime == 'metax' %}
+            {%- if worker.runtime == 'metax' %}
             - name: gpustack-metax-driver
               mountPath: /opt/mxdriver
               readOnly: true
@@ -104,25 +113,25 @@ spec:
               mountPath: /opt/maca
               readOnly: true
             {%- endif %}
-            {%- if config.runtime == 'iluvatar' %}
+            {%- if worker.runtime == 'iluvatar' %}
             - name: gpustack-iluvatar-toolkit
               mountPath: /usr/local/corex
               readOnly: true
             {%- endif %}
-            {%- if config.runtime == 'cambricon' %}
+            {%- if worker.runtime == 'cambricon' %}
             - name: gpustack-cambricon-bin
               mountPath: /usr/bin/cnmon
             - name: gpustack-cambricon-toolkit
               mountPath: /usr/local/neuware
               readOnly: true
             {%- endif %}
-            {%- if config.runtime == 'thead' %}
+            {%- if worker.runtime == 'thead' %}
             - name: gpustack-thead-toolkit
               mountPath: /usr/local/PPU_SDK
               readOnly: true
             {%- endif %}
-            {%- if config.k8s_volume_mounts %}
-            {%- for vm in config.k8s_volume_mounts %}
+            {%- if config.k8s_options and config.k8s_options.volume_mounts %}
+            {%- for vm in config.k8s_options.volume_mounts %}
             - name: {{ vm.name | to_yaml }}
               mountPath: {{ vm.mount_path | to_yaml }}
               readOnly: {{ vm.read_only | lower }}
@@ -154,7 +163,7 @@ spec:
             failureThreshold: 5
             successThreshold: 1
       volumes:
-        {%- if config.runtime == 'ascend' %}
+        {%- if worker.runtime == 'ascend' %}
         - name: gpustack-ascend-driver
           hostPath:
             path: /usr/local/Ascend/driver
@@ -164,13 +173,13 @@ spec:
             path: /usr/local/Ascend/ascend-toolkit
             type: DirectoryOrCreate
         {%- endif %}
-        {%- if config.runtime == 'amd' %}
+        {%- if worker.runtime == 'amd' %}
         - name: gpustack-amd-driver
           hostPath:
             path: /opt/rocm
             type: DirectoryOrCreate
         {%- endif %}
-        {%- if config.runtime == 'hygon' %}
+        {%- if worker.runtime == 'hygon' %}
         - name: gpustack-hygon-driver
           hostPath:
             path: /opt/hyhal
@@ -180,7 +189,7 @@ spec:
             path: /opt/dtk
             type: DirectoryOrCreate
         {%- endif %}
-        {%- if config.runtime == 'metax' %}
+        {%- if worker.runtime == 'metax' %}
         - name: gpustack-metax-driver
           hostPath:
             path: /opt/mxdriver
@@ -190,13 +199,13 @@ spec:
             path: /opt/maca
             type: DirectoryOrCreate
         {%- endif %}
-        {%- if config.runtime == 'iluvatar' %}
+        {%- if worker.runtime == 'iluvatar' %}
         - name: gpustack-iluvatar-toolkit
           hostPath:
             path: /usr/local/corex
             type: DirectoryOrCreate
         {%- endif %}
-        {%- if config.runtime == 'cambricon' %}
+        {%- if worker.runtime == 'cambricon' %}
         - name: gpustack-cambricon-bin
           hostPath:
             path: /usr/bin/cnmon
@@ -206,27 +215,58 @@ spec:
             path: /usr/local/neuware
             type: DirectoryOrCreate
         {%- endif %}
-        {%- if config.runtime == 'thead' %}
+        {%- if worker.runtime == 'thead' %}
         - name: gpustack-thead-toolkit
           hostPath:
             path: /usr/local/PPU_SDK
             type: DirectoryOrCreate
         {%- endif %}
-        {%- if config.k8s_volume_mounts %}
-        {%- for vm in config.k8s_volume_mounts %}
+        {%- if config.k8s_options and config.k8s_options.volume_mounts %}
+        {%- for vm in config.k8s_options.volume_mounts %}
         - name: {{ vm.name | to_yaml }}
           {{ vm.volume_source | to_yaml | indent(10) }}
         {%- endfor %}
         {%- endif %}
+      {%- if config.multi_vendor_mode %}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: worker
+              namespaceSelector: {}
+        {%- if worker.is_cpu and worker.cpu_exclusion_keys %}
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                {%- for key in worker.cpu_exclusion_keys %}
+                  - key: {{ key }}
+                    operator: DoesNotExist
+                {%- endfor %}
+        {%- endif %}
+      {%- endif %}
+      {%- if worker.node_selector %}
+      nodeSelector:
+        {{ worker.node_selector | to_yaml | indent(8) }}
+      {%- endif %}
+      {%- if config.image_pull_secrets %}
+      imagePullSecrets:
+      {%- for ips in config.image_pull_secrets %}
+        - name: {{ ips.name }}
+      {%- endfor %}
+      {%- endif %}
       hostNetwork: true
       hostIPC: true
       dnsPolicy: ClusterFirstWithHostNet
       serviceAccountName: gpustack-worker
-      {%- if config.runtime in ['nvidia', 'mthreads'] %}
-      runtimeClassName: {{ config.runtime }}
+      {%- if worker.runtime in ['nvidia', 'mthreads'] %}
+      runtimeClassName: {{ worker.runtime }}
       {%- endif %}
   updateStrategy:
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
     type: RollingUpdate
+{%- endfor %}

@@ -123,6 +123,16 @@ data:
         spec:
           serviceAccountName: gpustack-operator-worker
           restartPolicy: Always
+          {%- if config.image_pull_secrets %}
+          imagePullSecrets:
+          {%- for ips in config.image_pull_secrets %}
+            - name: {{ ips.name }}
+          {%- endfor %}
+          {%- endif %}
+          {%- if config.k8s_options and config.k8s_options.node_selector %}
+          nodeSelector:
+            {{ config.k8s_options.node_selector | to_yaml | indent(12) }}
+          {%- endif %}
           affinity:
             podAntiAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
@@ -249,6 +259,16 @@ spec:
   template:
     spec:
       serviceAccountName: gpustack-operator-worker
+      {%- if config.image_pull_secrets %}
+      imagePullSecrets:
+      {%- for ips in config.image_pull_secrets %}
+        - name: {{ ips.name }}
+      {%- endfor %}
+      {%- endif %}
+      {%- if config.k8s_options and config.k8s_options.node_selector %}
+      nodeSelector:
+        {{ config.k8s_options.node_selector | to_yaml | indent(8) }}
+      {%- endif %}
       containers:
       - name: main
         image: {{ config.operator_image }}
