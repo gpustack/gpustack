@@ -34,7 +34,8 @@ from gpustack.schemas.model_routes import (
 )
 from gpustack.schemas.principals import Principal, platform_principal_id
 from gpustack.schemas.workers import Worker
-from gpustack.server.deps import SessionDep, CurrentUserDep
+from gpustack.routes.model_routes import _my_model_visibility_sql
+from gpustack.server.deps import SessionDep, CurrentUserDep, TenantContextDep
 from gpustack.server.services import (
     ModelInstanceService,
     ModelRouteService,
@@ -90,6 +91,7 @@ def get_legacy_api_router() -> APIRouter:
 async def list_models(
     user: CurrentUserDep,
     session: SessionDep,
+    ctx: TenantContextDep,
     categories: List[str] = Query(
         [],
         description="Model categories to filter by.",
@@ -104,6 +106,15 @@ async def list_models(
     if target_class == MyModel:
         # Non-admin users should only see their own private models when filtering by categories.
         statement = statement.where(target_class.user_id == user.id)
+        # Apply the same Personal vs Org-act-as partition as
+        # ``/v2/my-models``: otherwise the Playground happily lists
+        # (and lets the user invoke) a model that the My Models page
+        # — under the same view — has hidden. Org-mediated grants
+        # surface only in the matching Org context; user/group
+        # grants surface in Personal.
+        vis = _my_model_visibility_sql(ctx)
+        if vis is not None:
+            statement = statement.where(vis)
 
     if categories:
         conditions = build_category_conditions(session, target_class, categories)
