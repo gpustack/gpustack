@@ -85,6 +85,9 @@ class ModelUsageMetrics(BaseModel):
     # None when the gateway report doesn't carry it; middleware-fed metrics
     # always populate it so per-operation rollups survive unification.
     operation: Optional[OperationEnum] = None
+    # Tenant identifier sourced from the gateway's X-Organization-Id header
+    # (configurable via the token-usage plugin's ``organizationIDHeader``).
+    organization_id: Optional[str] = None
 
 
 def _unixmilli_to_naive_utc(ms: Optional[int]) -> Optional[datetime]:
