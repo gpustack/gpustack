@@ -336,6 +336,8 @@ class InferenceBackendListItem(BaseModel):
     enabled: Optional[bool] = Field(None)
     backend_source: Optional[BackendSourceEnum] = Field(None)
     default_env: Optional[Dict[str, str]] = Field(None)
+    parameter_format: Optional[ParameterFormatEnum] = Field(None)
+    common_parameters: Optional[List[str]] = Field(None)
 
 
 class InferenceBackendResponse(BaseModel):
