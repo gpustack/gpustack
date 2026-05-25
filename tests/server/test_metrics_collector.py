@@ -54,12 +54,14 @@ def test_make_buffer_key():
         model_route_id=9,
         completed_at=_FIXED_COMPLETED_AT_MS,
     )
-    assert _make_buffer_key(m) == f"1..qwen3-0.6b.2.abc.9..{_FIXED_DATE_ISO}"
+    # Segment order: model_id, provider_id, model, user_id, access_key,
+    # organization_id, model_route_id, operation, date.
+    assert _make_buffer_key(m) == f"1..qwen3-0.6b.2.abc..9..{_FIXED_DATE_ISO}"
 
 
 def test_make_buffer_key_none_fields():
     m = ModelUsageMetrics(model="qwen3-0.6b", completed_at=_FIXED_COMPLETED_AT_MS)
-    assert _make_buffer_key(m) == f"..qwen3-0.6b.....{_FIXED_DATE_ISO}"
+    assert _make_buffer_key(m) == f"..qwen3-0.6b......{_FIXED_DATE_ISO}"
 
 
 def test_make_buffer_key_route_separates_otherwise_identical_metrics():
@@ -76,6 +78,24 @@ def test_make_buffer_key_route_separates_otherwise_identical_metrics():
     assert _make_buffer_key(
         ModelUsageMetrics(**base, model_route_id=1)
     ) != _make_buffer_key(ModelUsageMetrics(**base, model_route_id=2))
+
+
+def test_make_buffer_key_organization_separates_otherwise_identical_metrics():
+    """Same user / api_key / route called from two Org contexts within
+    one flush window must stay separate — the DB upsert key in
+    ``create_or_update_model_usage`` includes ``consumer_principal_id``,
+    so merging in memory and splitting on write would lose tokens."""
+    base = dict(
+        model="qwen3-0.6b",
+        model_id=1,
+        user_id=2,
+        access_key="abc",
+        model_route_id=9,
+        completed_at=_FIXED_COMPLETED_AT_MS,
+    )
+    assert _make_buffer_key(
+        ModelUsageMetrics(**base, organization_id="1")
+    ) != _make_buffer_key(ModelUsageMetrics(**base, organization_id="2"))
 
 
 def test_accumulate_new_entry():
