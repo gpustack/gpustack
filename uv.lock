@@ -1394,6 +1394,7 @@ dependencies = [
     { name = "attrs" },
     { name = "blobfile" },
     { name = "cachetools" },
+    { name = "certifi" },
     { name = "colorama" },
     { name = "cryptography" },
     { name = "dataclasses-json" },
@@ -1438,7 +1439,6 @@ dependencies = [
     { name = "sqlmodel" },
     { name = "tenacity" },
     { name = "transformers" },
-    { name = "truststore" },
     { name = "tzdata" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -1503,6 +1503,7 @@ requires-dist = [
     { name = "bitsandbytes", marker = "extra == 'vllm'", specifier = ">=0.45.2" },
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "cachetools", specifier = ">=6.0.0" },
+    { name = "certifi", specifier = ">=2024.0.0" },
     { name = "colorama", specifier = ">=0.4.6" },
     { name = "cryptography", specifier = ">=43.0.0" },
     { name = "dataclasses-json", specifier = ">=0.6.7" },
@@ -1552,7 +1553,6 @@ requires-dist = [
     { name = "timm", marker = "extra == 'all'", specifier = ">=1.0.15" },
     { name = "timm", marker = "extra == 'vllm'", specifier = ">=1.0.15" },
     { name = "transformers", specifier = ">=4.51.3,!=4.57.0" },
-    { name = "truststore", specifier = ">=0.9.1" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", specifier = ">=0.32.0" },
     { name = "vllm", marker = "extra == 'all'", specifier = "==0.10.1.1" },
@@ -5319,15 +5319,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8d/a9/549e51e9b1b2c9b854fd761a1d23df0ba2fbc60bd0c13b489ffa518cfcb7/triton-3.3.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b74db445b1c562844d3cfad6e9679c72e93fdfb1a90a24052b03bb5c49d1242e", size = 155600257, upload-time = "2025-05-29T23:39:36.085Z" },
     { url = "https://files.pythonhosted.org/packages/21/2f/3e56ea7b58f80ff68899b1dbe810ff257c9d177d288c6b0f55bf2fe4eb50/triton-3.3.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b31e3aa26f8cb3cc5bf4e187bf737cbacf17311e1112b781d4a059353dfd731b", size = 155689937, upload-time = "2025-05-29T23:39:44.182Z" },
     { url = "https://files.pythonhosted.org/packages/24/5f/950fb373bf9c01ad4eb5a8cd5eaf32cdf9e238c02f9293557a2129b9c4ac/triton-3.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9999e83aba21e1a78c1f36f21bce621b77bcaa530277a50484a7cb4a822f6e43", size = 155669138, upload-time = "2025-05-29T23:39:51.771Z" },
-]
-
-[[package]]
-name = "truststore"
-version = "0.10.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/53/a3/1585216310e344e8102c22482f6060c7a6ea0322b63e026372e6dcefcfd6/truststore-0.10.4.tar.gz", hash = "sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301", size = 26169, upload-time = "2025-08-12T18:49:02.73Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl", hash = "sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981", size = 18660, upload-time = "2025-08-12T18:49:01.46Z" },
 ]
 
 [[package]]
