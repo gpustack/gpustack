@@ -214,11 +214,6 @@ WHERE group_pm.deleted_at IS NULL
 
 def model_user_after_create_view_stmt(db_type: str) -> str:
     sql_false = '0' if db_type == "sqlite" else 'FALSE'
-    pid = (
-        "CONCAT(m.id, ':', u.id)"
-        if db_type == "mysql"
-        else "CAST(m.id AS TEXT) || ':' || CAST(u.id AS TEXT)"
-    )
     # MySQL's CAST(... AS TEXT) is invalid; CHAR is the canonical
     # variable-length text target there. PG / openGauss / sqlite all
     # accept TEXT.
@@ -227,6 +222,27 @@ def model_user_after_create_view_stmt(db_type: str) -> str:
     # servers / OceanBase compat modes want ``SIGNED``. PG / openGauss
     # both accept ``INTEGER``.
     int_type = "SIGNED" if db_type == "mysql" else "INTEGER"
+
+    def _pid(via_expr: str) -> str:
+        # ``pid`` keys identity-map lookups on MyModel, so it has to be
+        # genuinely unique per emitted row. ``route_id:user_id`` alone
+        # collides whenever a (user, route) is covered by multiple
+        # grant chains; folding ``via_principal_id`` into the suffix
+        # restores uniqueness. ``IFNULL`` / ``COALESCE`` are mandatory:
+        # both ``CONCAT(...)`` (MySQL) and ``||`` (PG / openGauss /
+        # sqlite) propagate NULL through the whole expression, so a raw
+        # NULL via on the PUBLIC/AUTHED branch would make pid itself
+        # NULL.
+        if db_type == "mysql":
+            return (
+                f"CONCAT(m.id, ':', u.id, ':', "
+                f"IFNULL(CAST({via_expr} AS CHAR), ''))"
+            )
+        return (
+            f"CAST(m.id AS TEXT) || ':' || CAST(u.id AS TEXT) "
+            f"|| ':' || COALESCE(CAST({via_expr} AS TEXT), '')"
+        )
+
     # 4-branch UNION ALL — each branch is a straight index join, so the
     # planner doesn't have to materialize every (user, route) pair to
     # then OR-filter EXISTS subqueries against it. ``mrp.deleted_at IS
@@ -246,9 +262,15 @@ def model_user_after_create_view_stmt(db_type: str) -> str:
     # grants aren't principal-mediated. The kind is normalized to TEXT
     # so PG's native ``principaltype`` enum doesn't poison the UNION's
     # column type inference.
+    #
+    # The view's contract is one row per chain — multi-chain (user,
+    # route) collapse to "one row per route" is the API layer's job
+    # (see ``_get_model_routes``), because the visibility filter
+    # discriminates by chain ``via_principal_kind`` and would drop the
+    # wrong chain if the view picked one up front.
     return f'''
 CREATE VIEW non_admin_user_models AS
-SELECT {pid} AS pid,
+SELECT {_pid("NULL")} AS pid,
        u.id AS user_id,
        CAST(NULL AS {int_type}) AS via_principal_id,
        CAST(NULL AS {text_type}) AS via_principal_kind,
@@ -261,7 +283,7 @@ WHERE u.kind = 'USER' AND u.deleted_at IS NULL
 
 UNION ALL
 
-SELECT {pid} AS pid,
+SELECT {_pid("m.owner_principal_id")} AS pid,
        u.id AS user_id,
        m.owner_principal_id AS via_principal_id,
        CAST('ORG' AS {text_type}) AS via_principal_kind,
@@ -277,7 +299,7 @@ WHERE u.kind = 'USER' AND u.deleted_at IS NULL
 
 UNION ALL
 
-SELECT {pid} AS pid,
+SELECT {_pid("u.id")} AS pid,
        u.id AS user_id,
        u.id AS via_principal_id,
        CAST('USER' AS {text_type}) AS via_principal_kind,
@@ -294,7 +316,7 @@ WHERE u.kind = 'USER' AND u.deleted_at IS NULL
 
 UNION ALL
 
-SELECT {pid} AS pid,
+SELECT {_pid("mrp.principal_id")} AS pid,
        u.id AS user_id,
        mrp.principal_id AS via_principal_id,
        CAST(pr.kind AS {text_type}) AS via_principal_kind,
