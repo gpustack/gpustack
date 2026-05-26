@@ -1,8 +1,8 @@
 """gpu instances
 
-Revision ID: eaf47d421866
+Revision ID: 277d9f8742f6
 Revises: 7c5e3f9a2d18
-Create Date: 2026-05-24 13:09:38.096632
+Create Date: 2026-05-26 21:32:17.490309
 
 """
 from typing import Sequence, Union
@@ -14,7 +14,7 @@ import gpustack
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = 'eaf47d421866'
+revision: str = '277d9f8742f6'
 down_revision: Union[str, None] = '7c5e3f9a2d18'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -103,7 +103,7 @@ def upgrade() -> None:
     sa.Column('status', gpustack.schemas.common.JSON(), nullable=True),
     sa.ForeignKeyConstraint(['cluster_id'], ['clusters.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['owner_principal_id'], ['principals.id'], ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['persistent_volume_id'], ['gpu_instance_persistent_volumes.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['persistent_volume_id'], ['gpu_instance_persistent_volumes.id'], ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('owner_principal_id', 'name', name='uq_gpu_instance_name_per_principal')
     )

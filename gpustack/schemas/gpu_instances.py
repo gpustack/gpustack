@@ -472,9 +472,7 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
     """
 
     # Mirror of ``spec.volume.persistent[_template].name`` as a real FK
-    # column with ``ON DELETE RESTRICT``. The DB blocks deleting a
-    # GPUInstancePersistentVolume while any GPU instance still references
-    # it. The route resolves the user-facing name to this id at create
+    # column. The route resolves the user-facing name to this id at create
     # time; ephemeral-volume instances leave this NULL.
     persistent_volume_id: Optional[int] = Field(
         default=None,
@@ -482,7 +480,7 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
             Integer,
             ForeignKey(
                 "gpu_instance_persistent_volumes.id",
-                ondelete="RESTRICT",
+                ondelete="SET NULL",
             ),
             nullable=True,
         ),

@@ -261,9 +261,7 @@ async def _validate_create_object_volume(
     ``persistent_volume_id`` (``None`` for ephemeral volumes).
 
     The returned id is what the caller stamps onto
-    :class:`GPUInstance.persistent_volume_id` so the DB-side
-    ``ON DELETE RESTRICT`` constraint can block PV deletion while any
-    GPU instance still binds it. Three branches mirror
+    :class:`GPUInstance.persistent_volume_id`. Three branches mirror
     ``spec.volume``:
 
     - ``ephemeral``: no FK; returns ``None``.
