@@ -869,18 +869,20 @@ class Config(WorkerConfig, BaseSettings):
 
     def get_system_reserved(self) -> Dict[str, int]:
         system_reserved_in_bytes = {**(self.system_reserved or {})}
-        system_reserved_in_bytes["ram"] = (
+        ram = (
             system_reserved_in_bytes.get(
                 "ram", system_reserved_in_bytes.pop("memory", 0)
             )
-            << 30
+            or 0
         )
-        system_reserved_in_bytes["vram"] = (
+        vram = (
             system_reserved_in_bytes.get(
                 "vram", system_reserved_in_bytes.pop("gpu_memory", 0)
             )
-            << 30
+            or 0
         )
+        system_reserved_in_bytes["ram"] = int(ram) << 30
+        system_reserved_in_bytes["vram"] = int(vram) << 30
         return system_reserved_in_bytes
 
     def get_proxy_port(self) -> int:
