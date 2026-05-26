@@ -448,7 +448,11 @@ async def distribute_models_to_user(
     ]:
         for user_id in ids:
             my_model = MyModel(
-                pid=f"{model_id}:{user_id}",
+                # Match the view's pid layout (``route_id:user_id:via``).
+                # The publisher doesn't know the granting chain, so the
+                # via suffix is empty — same shape as the PUBLIC/AUTHED
+                # branch of ``non_admin_user_models``.
+                pid=f"{model_id}:{user_id}:",
                 user_id=user_id,
                 **model_dict,
             )

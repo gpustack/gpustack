@@ -1,7 +1,8 @@
 import logging
 import secrets
+from sqlalchemy import true
 from sqlalchemy.orm import selectinload
-from sqlmodel import col, or_, select
+from sqlmodel import col, func, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from typing import Any, Callable, List, Optional, Set, Tuple, Union, Dict
 from fastapi import APIRouter, Depends, Query
@@ -329,6 +330,9 @@ async def _get_model_routes(
                 extra_conditions.extend(_model_route_grant_conditions(ctx))
             else:
                 extra_conditions.extend(tenant_list_conditions(ctx, ModelRoute))
+        my_model_sql_filter = _append_my_model_conditions(
+            extra_conditions, target_class, my_model_sql_filter
+        )
         if my_model_sql_filter is not None:
             extra_conditions.append(my_model_sql_filter)
         if categories:
@@ -344,6 +348,50 @@ async def _get_model_routes(
             order_by=params.order_by,
             extra_conditions=extra_conditions,
         )
+
+
+def _append_my_model_conditions(extra_conditions, target_class, visibility_filter):
+    """Push the MyModel dedup subquery into ``extra_conditions`` and
+    return ``None`` to signal the visibility filter has been absorbed
+    into the subquery (don't double-apply on the outer query). For
+    non-MyModel targets, return ``visibility_filter`` unchanged so the
+    caller's downstream branch handles it as before.
+    """
+    if target_class is not MyModel:
+        return visibility_filter
+    extra_conditions.append(_my_model_dedup_condition(visibility_filter))
+    return None
+
+
+def _my_model_dedup_condition(visibility_filter):
+    """Collapse multi-chain ``(user, route)`` rows down to one in the
+    MyModel list path. The view emits one row per (user, route,
+    granting-principal) chain by contract; without this, ``COUNT(*)``
+    counts chains instead of routes and the page slice can drop chains
+    arbitrarily.
+
+    Ranking happens inside the visibility-filtered chain set —
+    otherwise ``rn=1`` could land on a chain the caller's scope would
+    have dropped, hiding the route entirely. ``MIN(via_principal_id)``
+    is used as a deterministic tiebreak; the surviving ``via_*`` is
+    arbitrary among the visible chains, matching the agreed semantics
+    of "one row per route, via 任取一条". ``_get_model_route`` orders
+    by the same key so detail and list agree on which chain to surface.
+    """
+    ranked = (
+        select(
+            MyModel.pid,
+            func.row_number()
+            .over(
+                partition_by=[MyModel.id, MyModel.user_id],
+                order_by=[col(MyModel.via_principal_id).asc()],
+            )
+            .label("rn"),
+        )
+        .where(visibility_filter if visibility_filter is not None else true())
+        .subquery()
+    )
+    return col(MyModel.pid).in_(select(ranked.c.pid).where(ranked.c.rn == 1))
 
 
 @router.get("/{id}", response_model=ModelRoutePublic, response_model_exclude_none=True)
@@ -373,7 +421,10 @@ async def _get_model_route(
     # The MyModel view emits one row per (user, route, granting-principal)
     # chain; ``one_by_fields`` would .first() back an arbitrary row that
     # might be filtered out by the caller's context. Push the same
-    # visibility predicate as the list path into the query.
+    # visibility predicate as the list path into the query, and order
+    # by ``via_principal_id`` so the chain we surface here matches the
+    # one ``_get_model_routes`` picked via ``ROW_NUMBER() ... ORDER BY
+    # via_principal_id ASC`` (see :func:`_my_model_dedup_condition`).
     if target_class is MyModel and ctx is not None:
         vis = _my_model_visibility_sql(ctx)
         stmt = select(MyModel)
@@ -381,6 +432,7 @@ async def _get_model_route(
             stmt = stmt.where(getattr(MyModel, key) == value)
         if vis is not None:
             stmt = stmt.where(vis)
+        stmt = stmt.order_by(col(MyModel.via_principal_id).asc())
         existing = (await session.exec(stmt.limit(1))).first()
     else:
         existing = await target_class.one_by_fields(
