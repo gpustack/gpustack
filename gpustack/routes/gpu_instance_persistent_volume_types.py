@@ -188,7 +188,8 @@ async def handle_error(message: str):
         # surfaces here when a persistent volume still references this
         # type.
         raise ConflictException(
-            message=message,
+            message=message
+            + ", as it is still referenced by existing GPU instance persistent volumes",
         ) from e
     except Exception as e:
         raise InternalServerErrorException(

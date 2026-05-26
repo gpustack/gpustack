@@ -3214,7 +3214,7 @@ class GPUInstanceController:
 
             async with ops:
                 # Create/Update referenced SSH public keys if needed.
-                if fresh.spec.ssh_public_keys:
+                if fresh.spec.ssh_public_keys is not None:
                     try:
                         data = await self._aggregate_ssh_public_key_data(session, fresh)
                         await ops.upsert_ssh_public_key(

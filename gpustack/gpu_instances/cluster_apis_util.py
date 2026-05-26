@@ -57,9 +57,8 @@ def spec_instance(instance: GPUInstance) -> dict:
         if tmpl is not None:
             volume["persistent"] = {"name": tmpl["name"]}
 
-    ssh_keys = spec.pop("sshPublicKeys", None)
-    if ssh_keys:
-        spec["sshPublicKey"] = {"name": instance.name}
+    spec.pop("sshPublicKeys", None)
+    spec["sshPublicKey"] = {"name": instance.name}
 
     return spec
 
