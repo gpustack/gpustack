@@ -79,7 +79,7 @@ server:
   externalDatabaseURL: null
   dataVolume:
     hostPath: null
-    size: 10Gi
+    size: 100Gi
   apiPort: 30080
   metricsPort: 10161
   environmentConfig: {}
@@ -139,7 +139,7 @@ higressPlugins:
     pullPolicy: IfNotPresent
     tag: "0.2.2-post1"
 worker:
-  enabled: true
+  enabled: false
   # GPU vendors for the worker nodes. Accepts a list to allow a single
   # cluster to schedule workers for multiple runtimes side-by-side.
   # Controls per-DaemonSet driver volume mounts and runtimeClassName.
