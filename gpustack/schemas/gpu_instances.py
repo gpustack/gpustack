@@ -1,6 +1,12 @@
 from typing import Optional, ClassVar, List, Literal
 
-from pydantic import ConfigDict, BaseModel, AliasChoices, Field as PField
+from pydantic import (
+    ConfigDict,
+    BaseModel,
+    AliasChoices,
+    Field as PField,
+    model_validator,
+)
 from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
 from sqlmodel import SQLModel, Field
 
@@ -397,6 +403,17 @@ class GPUInstanceStatusPublic(GPUInstanceStatus):
     """
 
     count: Optional[int] = Field(default=None, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_parent_instance(cls, value):
+        # Pydantic v2 rejects parent-class instances when validating
+        # against a child model. The ORM row stores ``GPUInstanceStatus``
+        # while the public response expects ``GPUInstanceStatusPublic``,
+        # so dump the parent to a dict and let it re-validate as the child.
+        if isinstance(value, GPUInstanceStatus) and not isinstance(value, cls):
+            return value.model_dump()
+        return value
 
 
 class GPUInstanceBase(SQLModel):
