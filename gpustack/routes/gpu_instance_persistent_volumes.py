@@ -2,12 +2,10 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
-    ConflictException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
@@ -184,12 +182,6 @@ def is_visible(obj, ctx: TenantContext) -> bool:
 async def handle_error(message: str):
     try:
         yield
-    except IntegrityError as e:
-        # ``ON DELETE RESTRICT`` from gpu_instances.persistent_volume_id
-        # surfaces here when a GPU instance still references this PV.
-        raise ConflictException(
-            message=message,
-        ) from e
     except Exception as e:
         raise InternalServerErrorException(
             message=message,

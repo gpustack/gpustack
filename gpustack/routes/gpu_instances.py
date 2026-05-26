@@ -126,8 +126,6 @@ async def update_gpu_instance(
         ctx,
     )
 
-    _validate_update_object(update_obj, ret)
-
     source = _build_update_source(update_obj, ret)
     if not source:
         return ret
@@ -199,9 +197,6 @@ async def _validate_create_obj(
 ) -> Optional[int]:
     """Enforce create-time invariants that aren't expressible in the schema:
 
-    - If ``spec.ports`` exposes TCP/22, ``spec.sshPublicKeys`` must be
-      provided — otherwise the instance would boot an SSH listener with
-      no authorized keys.
     - ``spec.volume`` is required, and exactly one of ``ephemeral``,
       ``persistent``, ``persistentTemplate`` must be set.
     - If ``spec.volume.persistent`` is set, it must reference an existing PV by name,
@@ -211,21 +206,24 @@ async def _validate_create_obj(
       its name must not yet exist and its type must reference an existing PV type by name.
       The template is then provisioned inline,
       and the new PV's id is returned for stamping onto the GPU instance's FK.
+
+    Return the resolved ``persistent_volume_id`` (``None`` for ephemeral volumes).
+
+    The returned id is what the caller stamps onto
+    :class:`GPUInstance.persistent_volume_id`. Three branches mirror
+    ``spec.volume``:
+
+    - ``ephemeral``: no FK; returns ``None``.
+    - ``persistent``: existing PV by ``(owner, name)``; returns its id.
+    - ``persistentTemplate``: provisions a new PV inline (after
+      resolving its ``spec.type`` to a PV type id) and returns the new
+      row's id.
     """
 
     validate_k8s_object_name(create_obj.name)
 
-    spec = create_obj.spec
+    volume = create_obj.spec.volume
 
-    exposes_ssh = any(p.port == 22 and p.protocol == "TCP" for p in (spec.ports or []))
-    if exposes_ssh and not spec.ssh_public_keys:
-        raise InvalidException(
-            message=(
-                "spec.sshPublicKeys is required when spec.ports " "exposes TCP port 22"
-            ),
-        )
-
-    volume = spec.volume
     if volume is None:
         raise InvalidException(
             message=(
@@ -250,27 +248,6 @@ async def _validate_create_obj(
                 f"got {volume_choices_set or 'none'}"
             ),
         )
-
-    return await _validate_create_object_volume(session, create_obj)
-
-
-async def _validate_create_object_volume(
-    session: AsyncSession, create_obj: GPUInstanceCreate
-) -> Optional[int]:
-    """Prepare sub resources for creation and return the resolved
-    ``persistent_volume_id`` (``None`` for ephemeral volumes).
-
-    The returned id is what the caller stamps onto
-    :class:`GPUInstance.persistent_volume_id`. Three branches mirror
-    ``spec.volume``:
-
-    - ``ephemeral``: no FK; returns ``None``.
-    - ``persistent``: existing PV by ``(owner, name)``; returns its id.
-    - ``persistentTemplate``: provisions a new PV inline (after
-      resolving its ``spec.type`` to a PV type id) and returns the new
-      row's id.
-    """
-    volume = create_obj.spec.volume
 
     if volume.persistent is not None:
         pv = await GPUInstancePersistentVolume.first_by_fields(
@@ -345,33 +322,6 @@ def _build_create_source(
     return source
 
 
-def _validate_update_object(
-    update_obj: GPUInstanceUpdate,
-    existing_obj: GPUInstance,
-):
-    """Enforce update-time invariants that aren't expressible in the schema:
-
-    - If ``spec.ports`` is being updated to expose TCP/22, either
-      ``spec.sshPublicKeys`` must be provided in the update or already
-      exist on the object — otherwise the instance would boot an SSH
-      listener with no authorized keys.
-    """
-
-    spec = update_obj.spec
-    if spec is None:
-        return
-
-    exposes_ssh = any(
-        p.port == 22 and p.protocol == "TCP" for p in (existing_obj.spec.ports or [])
-    )
-    if exposes_ssh and not spec.ssh_public_keys:
-        raise InvalidException(
-            message=(
-                "spec.sshPublicKeys is required when spec.ports " "exposes TCP port 22"
-            ),
-        )
-
-
 def _build_update_source(
     update_obj: GPUInstanceUpdate, existing_obj: GPUInstance
 ) -> dict:
@@ -398,7 +348,7 @@ def _build_update_source(
         and "ssh_public_keys" in update_obj.spec.model_fields_set
     ):
         merged_spec = existing_obj.spec.model_copy(
-            update={"ssh_public_keys": update_obj.spec.ssh_public_keys},
+            update={"ssh_public_keys": update_obj.spec.ssh_public_keys or []},
         )
         source["spec"] = merged_spec
 
