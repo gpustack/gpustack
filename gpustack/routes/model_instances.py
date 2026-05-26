@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Dict, List, Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Request, status, HTTPException
@@ -9,7 +10,6 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.server.services import ModelInstanceService
 from gpustack.server.worker_request import request_to_worker, stream_to_worker
-from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -322,26 +322,26 @@ async def fetch_serve_log_options_from_worker(
     worker: Worker,
     model_instance_id: int,
 ) -> ServeLogOptionsResponse:
-    log_options_url = (
-        f"http://{worker.advertise_address}:{worker.port}/serveLogOptions"
-        f"/{model_instance_id}"
-    )
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
-    use_proxy_env = use_proxy_env_for_url(log_options_url)
-    client: aiohttp.ClientSession = (
-        request.app.state.http_client
-        if use_proxy_env
-        else request.app.state.http_client_no_proxy
-    )
     try:
-        async with client.get(log_options_url, timeout=timeout) as resp:
-            if resp.status != 200:
-                raise ValueError(
-                    f"HTTP {resp.status}: error fetching model instance log options"
-                )
-            data = await resp.json()
-    except ValueError:
-        raise
+        resp, body = await request_to_worker(
+            worker=worker,
+            method="GET",
+            path=f"serveLogOptions/{model_instance_id}",
+            proxy_client=request.app.state.http_client,
+            no_proxy_client=request.app.state.http_client_no_proxy,
+            timeout=timeout,
+        )
+    except Exception as e:
+        raise ValueError(str(e)) from e
+
+    if resp.status != 200:
+        raise ValueError(
+            f"HTTP {resp.status}: error fetching model instance log options"
+        )
+
+    try:
+        data = json.loads(body) if body else {}
     except Exception as e:
         raise ValueError(str(e)) from e
 
