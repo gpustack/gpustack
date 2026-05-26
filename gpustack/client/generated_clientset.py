@@ -12,6 +12,7 @@ from .generated_inference_backend_client import InferenceBackendClient
 from .generated_benchmark_client import BenchmarkClient
 from .generated_model_route_target_client import ModelRouteTargetClient
 
+from gpustack.ssl_context import make_ssl_context
 from gpustack.utils.network import use_proxy_env_for_url
 
 
@@ -40,7 +41,9 @@ class ClientSet:
         self.base_url = base_url
         self.headers = headers
 
-        verify = None
+        # Default to the process-wide SSL context backed by the OS trust
+        # bundle. Loopback HTTPS keeps the existing "skip verification" behavior.
+        verify = make_ssl_context()
         parsed_url = urlparse(base_url)
         if parsed_url.hostname == "127.0.0.1" and parsed_url.scheme == "https":
             verify = False
