@@ -188,7 +188,14 @@ async def create_model_route(
     # owner-name prefix as the effective model name for non-platform
     # Orgs, so two Orgs can each have a route called "qwen3-0.6b"
     # without colliding in the AI proxy match rules.
-    target_org_id = ctx.target_principal_id_for_write()
+    #
+    # Resolve owner from the current Org context, falling back to the
+    # platform Org for admin "All" mode. Routes are an Org-owned
+    # resource — using the admin's USER-principal here (as
+    # ``target_principal_id_for_write`` would) misaligns the route from
+    # its targets, since Models default to the platform Org and trip
+    # the cross-Org check in ``_assert_target_tenant_aligned``.
+    target_org_id = ctx.current_principal_id or platform_principal_id()
     existing = await ModelRoute.one_by_fields(
         session,
         {
@@ -205,12 +212,7 @@ async def create_model_route(
     targets = input.targets or []
     await validate_targets(session, targets, route_owner_principal_id=target_org_id)
     source["targets"] = len(targets)
-    # Stamp the route's owning org from the caller's tenant context.
-    # ModelRouteBase defaults `owner_principal_id` to platform_principal_id()
-    # so `model_dump()` always emits the key — `setdefault` would silently
-    # keep it at 1 for non-platform admins. Override directly.
-    if target_org_id is not None:
-        source["owner_principal_id"] = target_org_id
+    source["owner_principal_id"] = target_org_id
 
     # Multi-tenant default: a non-platform Org's new route is scoped to
     # that Org (ORG policy — `non_admin_user_models` matches by the
