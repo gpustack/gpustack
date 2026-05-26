@@ -1,9 +1,10 @@
 import ssl
 from typing import Any, Dict, Optional, Union
-import truststore
 
 import httpx
 from attrs import define, evolve, field
+
+from gpustack.ssl_context import make_ssl_context
 
 default_versioned_prefix = "/v2"
 
@@ -96,10 +97,13 @@ class HTTPClient:
 
     def get_httpx_client(self) -> httpx.Client:
         """Get the underlying httpx.Client, constructing a new one if not previously set"""
-        # Use system trust store.
-        verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        if self._verify_ssl is not None:
-            verify = self._verify_ssl
+        # ``verify_ssl=None`` historically meant "fall back to the OS trust
+        # store" (when the truststore default was injected here). Preserve
+        # that semantic so callers that bypass ClientSet do not silently
+        # downgrade to httpx's certifi-only default.
+        verify = (
+            self._verify_ssl if self._verify_ssl is not None else make_ssl_context()
+        )
         if self._client is None:
             self._client = httpx.Client(
                 base_url=self.versioned_url,
@@ -131,10 +135,9 @@ class HTTPClient:
 
     def get_async_httpx_client(self) -> httpx.AsyncClient:
         """Get the underlying httpx.AsyncClient, constructing a new one if not previously set"""
-        # Use system trust store.
-        verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        if self._verify_ssl is not None:
-            verify = self._verify_ssl
+        verify = (
+            self._verify_ssl if self._verify_ssl is not None else make_ssl_context()
+        )
         if self._async_client is None:
             self._async_client = httpx.AsyncClient(
                 base_url=self.versioned_url,
@@ -253,10 +256,9 @@ class AuthenticatedHTTPClient:
     def get_httpx_client(self) -> httpx.Client:
         """Get the underlying httpx.Client, constructing a new one if not previously set"""
 
-        # Use system trust store.
-        verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        if self._verify_ssl is not None:
-            verify = self._verify_ssl
+        verify = (
+            self._verify_ssl if self._verify_ssl is not None else make_ssl_context()
+        )
         if self._client is None:
             self._headers[self.auth_header_name] = (
                 f"{self.prefix} {self.token}" if self.prefix else self.token
