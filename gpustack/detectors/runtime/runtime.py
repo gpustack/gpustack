@@ -44,8 +44,14 @@ class Runtime(GPUDetector):
                     utilization_rate=dev.cores_utilization,
                 ),
                 memory=MemoryInfo(
-                    total=dev.memory << 20,  # MiB -> Bytes
-                    used=dev.memory_used << 20,  # MiB -> Bytes
+                    total=(
+                        int(dev.memory * (1 << 20)) if dev.memory is not None else 0
+                    ),  # MiB -> Bytes
+                    used=(
+                        int(dev.memory_used * (1 << 20))
+                        if dev.memory_used is not None
+                        else 0
+                    ),  # MiB -> Bytes
                     utilization_rate=dev.memory_utilization,
                 ),
                 temperature=dev.temperature,
