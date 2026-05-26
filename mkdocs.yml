@@ -92,8 +92,6 @@ extra:
       link: https://pypi.org/project/gpustack/
     - icon: fontawesome/brands/discord
       link: https://discord.gg/VXYJzuaqwD
-    - icon: fontawesome/brands/weixin
-      link: https://github.com/gpustack/gpustack/blob/main/docs/assets/wechat-group-qrcode.jpg
 extra_javascript:
   - image-selector/assets/extra.js
   - https://unpkg.com/katex@0/dist/katex.min.js
