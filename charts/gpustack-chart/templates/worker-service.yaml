@@ -15,7 +15,11 @@ metadata:
 spec:
   type: ClusterIP
   selector:
+    {{- if include "gpustack.multiVendorMode" . }}
+    app.kubernetes.io/component: worker
+    {{- else }}
     app: {{ .Release.Name }}-worker
+    {{- end }}
   ports:
     - name: api
       port: {{ .Values.worker.port }}

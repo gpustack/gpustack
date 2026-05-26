@@ -93,6 +93,7 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | enableWorkers                            | true                              | Enable worker nodes                                                       |
 | clusterDomain                            | cluster.local                     | Kubernetes cluster service domain suffix                                  |
 | global.hub                               | docker.io                         | Container registry host; override for private registry                    |
+| global.nodeSelector                      | {}                                | Default nodeSelector for every component; replaced by server/worker value |
 | image.repository                         | gpustack/gpustack                 | Image repo with namespace; see note below                                 |
 | image.tag                                | null                              | Image tag, defaults to chart's appVersion                                 |
 | image.pullPolicy                         | IfNotPresent                      | Image pull policy                                                         |
@@ -110,6 +111,7 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | server.apiPort                           | 30080                             | API service port                                                          |
 | server.metricsPort                       | 10161                             | Metrics port                                                              |
 | server.environmentConfig                 | {}                                | Extra environment variables for GPUStack server                           |
+| server.nodeSelector                      | {}                                | Server pod nodeSelector; replaces `global.nodeSelector` when non-empty    |
 | gateway.ingressClassname                 | higress                           | Higress IngressClass name; enables in-cluster mode when found             |
 | higress-core.enabled                     | true                              | Deploy Higress gateway as a sub-chart; disable if already installed       |
 | higress-core.global.ingressClass         | higress                           | Must match `gateway.ingressClassname`                                     |
@@ -128,16 +130,56 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | higressPlugins.image.repository          | gpustack/higress-plugins          | Image repo with namespace; see note below                                 |
 | higressPlugins.image.tag                 | "0.2.2-post1"                     | Higress plugins image tag; CI overrides from uv.lock at package time      |
 | higressPlugins.image.pullPolicy          | IfNotPresent                      | Higress plugins image pull policy                                         |
-| worker.gpuVendor                         | nvidia                            | GPU vendor; see values.yaml for full list                                 |
+| worker.gpuVendors                        | [nvidia]                          | List of GPU vendors; `[]` for CPU-only, 2+ enables multi-vendor mode      |
+| worker.nodeSelector                      | {}                                | Base worker nodeSelector; replaces `global.nodeSelector` when non-empty   |
+| worker.gpuVendorOverrides                | {}                                | Per-vendor `nodeSelector` overrides; required in multi-vendor mode        |
 | worker.port                              | 10150                             | Worker service port                                                       |
 | worker.metricsPort                       | 10151                             | Worker metrics port                                                       |
 | worker.environmentConfig                 | {}                                | Extra environment variables for GPUStack worker                           |
+| worker.dataDir                           | /var/lib/gpustack                 | Host path mounted at /var/lib/gpustack inside every worker pod            |
 | worker.extraVolumeMounts                 | []                                | Extra volume mounts appended to the worker container                      |
 | worker.extraVolumes                      | []                                | Extra volumes appended to the worker DaemonSet                            |
 
 To customize parameters, use `--set key=value` or `-f your-values.yaml` during installation.
 
 > **Note:** `higressPlugins.image.repository` is resolved as `{global.hub}/{higressPlugins.image.repository}:{higressPlugins.image.tag}`. The same pattern applies to `image.repository` (`{global.hub}/{image.repository}:{image.tag}`).
+
+### Multi-vendor Worker Deployment
+
+When `worker.gpuVendors` lists two or more vendors, the chart renders a per-vendor DaemonSet (`<release>-worker-<vendor>`) alongside a CPU fallback DaemonSet (`<release>-worker`). Each vendor DS gets the per-vendor driver mounts and `runtimeClassName`; the CPU DS handles nodes that don't match any vendor.
+
+Per-vendor scheduling is required in this mode — the chart fails the install otherwise. For each vendor, set `worker.gpuVendorOverrides.<vendor>.nodeSelector` so the vendor DS targets the right nodes and the CPU DS avoids them via a `DoesNotExist` nodeAffinity on the union of vendor-override keys. All worker pods additionally get a required `podAntiAffinity` (topologyKey=hostname, namespaceSelector={}) so two workers can't share a node — protects the `hostNetwork: true` ports from collision across namespaces.
+
+Example values:
+
+```yaml
+worker:
+  gpuVendors:
+    - nvidia
+    - amd
+  gpuVendorOverrides:
+    nvidia:
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+    amd:
+      nodeSelector:
+        amd.com/gpu.present: "true"
+```
+
+The install is rejected when:
+
+- a configured vendor is missing its `nodeSelector` override (CPU DS and vendor DS would compete for the same nodes);
+- two vendor overrides have identical `nodeSelector` maps (DaemonSets would target the same node set and `podAntiAffinity` would leave one Pending forever);
+- a `worker.nodeSelector` (or `global.nodeSelector` when worker is empty) key also appears in any vendor override (the CPU DS would simultaneously require and forbid that key).
+
+### NodeSelector Scoping
+
+`global.nodeSelector` is the chart-wide default. Component-level values override it as follows:
+
+- **Server pod** uses `server.nodeSelector` when non-empty, otherwise falls back to `global.nodeSelector`. Override semantics — no merging.
+- **Worker base** uses `worker.nodeSelector` with the same fallback to `global.nodeSelector`.
+- **Per-vendor worker DS** merges its `gpuVendorOverrides.<vendor>.nodeSelector` on top of the worker base; vendor keys win on conflict.
+- **CPU fallback DS** uses the worker base unchanged (no vendor override applied).
 
 ### Pulling Images From a Private Registry
 

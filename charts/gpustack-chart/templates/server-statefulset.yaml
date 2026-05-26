@@ -96,6 +96,10 @@ spec:
       securityContext: {}
       serviceAccountName: {{ .Release.Name }}-server
       terminationGracePeriodSeconds: 30
+      {{- with (include "gpustack.serverNodeSelector" . | trim) }}
+      nodeSelector:
+        {{- nindent 8 . }}
+      {{- end }}
       {{- if .Values.server.dataVolume.hostPath }}
       volumes:
         - name: gpustack-data-dir

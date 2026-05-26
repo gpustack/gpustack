@@ -28,6 +28,12 @@ global:
   hub: docker.io
   imagePullSecrets:
     - name: gpustack-image-pull-secret
+  # Default nodeSelector applied to every GPUStack component (server + worker)
+  # when no component-level nodeSelector is provided. Component-level
+  # `server.nodeSelector` / `worker.nodeSelector`, when non-empty, REPLACE
+  # this value entirely (no merging). For per-vendor worker scheduling, see
+  # `worker.gpuVendorOverrides` below.
+  nodeSelector: {}
 
 # Auto-creation of the canonical `gpustack-image-pull-secret` docker-registry
 # Secret. The Secret is created when either:
@@ -77,6 +83,10 @@ server:
   apiPort: 30080
   metricsPort: 10161
   environmentConfig: {}
+  # Node selector for the server pod. When non-empty, REPLACES
+  # `global.nodeSelector` entirely (no merging). Leave empty/null to fall
+  # back to `global.nodeSelector`.
+  nodeSelector: {}
 clusterDomain: cluster.local
 gateway:
   # IngressClass name for the Higress gateway; GPUStack checks if it exists in the cluster to enable in-cluster gateway mode
@@ -130,9 +140,10 @@ higressPlugins:
     tag: "0.2.2-post1"
 worker:
   enabled: true
-  # GPU vendor for the worker nodes. Controls driver volume mounts and runtimeClassName.
-  # Supported values:
-  #   null      - no vendor-specific driver mounts or runtimeClassName (e.g. CPU-only nodes)
+  # GPU vendors for the worker nodes. Accepts a list to allow a single
+  # cluster to schedule workers for multiple runtimes side-by-side.
+  # Controls per-DaemonSet driver volume mounts and runtimeClassName.
+  # Supported values (per entry):
   #   nvidia    - NVIDIA GPU; sets runtimeClassName to "nvidia"
   #   mthreads  - Moore Threads GPU; sets runtimeClassName to "mthreads"
   #   amd       - AMD GPU (ROCm); mounts /opt/rocm
@@ -142,7 +153,52 @@ worker:
   #   iluvatar  - Iluvatar GPU; mounts /usr/local/corex
   #   cambricon - Cambricon MLU; mounts /usr/bin/cnmon and /usr/local/neuware
   #   thead     - T-Head PPU; mounts /usr/local/PPU_SDK
-  gpuVendor: nvidia
+  #
+  # Rendering modes:
+  #   - 0 or 1 entry: single DaemonSet `<release>-worker`, no vendor labels,
+  #     no anti-affinity (byte-compatible with the v1 chart layout).
+  #   - 2+ entries: per-vendor DaemonSet `<release>-worker-<vendor>` plus a
+  #     CPU fallback DaemonSet `<release>-worker`. The CPU DS gets a
+  #     `DoesNotExist` nodeAffinity for every label key declared in
+  #     `gpuVendorOverrides[*].nodeSelector` so it never competes for the
+  #     same nodes. All worker pods get a required podAntiAffinity
+  #     (topologyKey=hostname, namespaceSelector={}) so two GPUStack worker
+  #     pods cannot share a node even across namespaces — protects the
+  #     `hostNetwork: true` ports from collision.
+  #
+  # Set to [] for a CPU-only worker.
+  gpuVendors:
+    - nvidia
+  # Base nodeSelector for ALL worker DaemonSets. When non-empty, REPLACES
+  # `global.nodeSelector` entirely (no merging with global). Leave empty
+  # to fall back to `global.nodeSelector`. Per-vendor DaemonSets merge
+  # their override on top of this base (override keys win).
+  nodeSelector: {}
+  # Per-vendor scheduling overrides. The vendor DaemonSet's effective
+  # nodeSelector is `worker.nodeSelector` (or `global.nodeSelector` when
+  # the worker value is empty) merged with the vendor's nodeSelector below
+  # — vendor keys win on conflict.
+  #
+  # REQUIRED in multi-vendor mode (`gpuVendors` length >= 2). The chart
+  # rejects the install when any of the following holds, mirroring the
+  # invariants enforced by the cluster route layer:
+  #   - a configured vendor has no `nodeSelector` block (the CPU DS and
+  #     that vendor DS would compete for the same nodes);
+  #   - two vendors share an IDENTICAL nodeSelector (their DaemonSets
+  #     would target the same node set and podAntiAffinity would leave
+  #     one Pending forever — typical copy-paste mistake);
+  #   - any base nodeSelector key also appears in a vendor override (the
+  #     CPU DS would simultaneously require and forbid that key and
+  #     never schedule).
+  gpuVendorOverrides: {}
+  # Example:
+  # gpuVendorOverrides:
+  #   nvidia:
+  #     nodeSelector:
+  #       nvidia.com/gpu.present: "true"
+  #   amd:
+  #     nodeSelector:
+  #       amd.com/gpu.present: "true"
   port: 10150
   metricsPort: 10151
   environmentConfig: {}
