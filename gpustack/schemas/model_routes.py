@@ -115,6 +115,28 @@ class ModelRouteTargetUpdate(SQLModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_provider_model_name(cls, data):
+        # Accept the pre-v2.2.0 ``provider_model_name`` key as a
+        # deprecated alias for ``overridden_model_name``. Conflicting
+        # values on both keys are rejected to avoid silent picking.
+        if not isinstance(data, dict) or "provider_model_name" not in data:
+            return data
+        legacy = data.pop("provider_model_name")
+        if "overridden_model_name" in data:
+            canonical = data["overridden_model_name"]
+            if canonical != legacy:
+                raise ValueError(
+                    "Got both 'overridden_model_name' and the legacy alias "
+                    "'provider_model_name' with different values. Drop "
+                    "'provider_model_name' (deprecated) and send only "
+                    "'overridden_model_name'."
+                )
+        else:
+            data["overridden_model_name"] = legacy
+        return data
+
     @field_validator("overridden_model_name", mode="before")
     def validate_overridden_model_name(cls, v):
         if v is None:
