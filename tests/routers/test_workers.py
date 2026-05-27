@@ -213,6 +213,10 @@ def _ctx(*, is_platform_admin=False, current_principal_id=None, org_role=None):
         current_principal_id=current_principal_id,
         org_role=org_role,
         accessible_cluster_ids=set(),
+        accessible_cluster_owner_ids=set(),
+        # These worker tests all set up Org scope (current_principal_id
+        # is an Org id), never Personal scope — keep the flag False.
+        current_is_personal_scope=False,
     )
 
 

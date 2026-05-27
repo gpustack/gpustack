@@ -16,6 +16,7 @@ from gpustack.schemas.principals import (
     Principal,
     PrincipalMembership,
     PrincipalType,
+    get_authenticated_principal_id,
 )
 from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
 
@@ -148,7 +149,16 @@ async def list_my_clusters_in_org(
     )
     group_principal_ids = list((await session.exec(group_stmt)).all())
 
-    principal_ids = [user_principal_id, org_id, *group_principal_ids]
+    # ``system/authenticated`` covers Default-Org "shared with all
+    # users" grants (and any future admin-applied global grant) on the
+    # same code path as explicit principal grants — every authenticated
+    # caller is an implicit member.
+    principal_ids = [
+        user_principal_id,
+        org_id,
+        await get_authenticated_principal_id(session),
+        *group_principal_ids,
+    ]
     cluster_id_stmt = select(ClusterAccess.cluster_id).where(
         ClusterAccess.principal_id.in_(principal_ids)
     )

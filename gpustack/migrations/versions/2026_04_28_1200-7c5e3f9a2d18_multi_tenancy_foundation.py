@@ -78,6 +78,8 @@ import gpustack  # noqa: F401  (keeps SQLModel registrations side-effect-loaded)
 import gpustack.utils.sql_enum as sql_enum
 from gpustack.migrations.utils import column_exists, table_exists
 from gpustack.schemas.principals import (
+    AUTHENTICATED_PRINCIPAL_DISPLAY_NAME,
+    AUTHENTICATED_PRINCIPAL_NAME,
     AuthProviderEnum,
     PLATFORM_PRINCIPAL_NAME,
 )
@@ -1138,6 +1140,91 @@ def upgrade() -> None:
     # PG, leave the type in place — dropping an enum still referenced
     # by historical migrations would re-fail on a future ``alembic
     # downgrade``; an orphaned enum type is harmless.
+
+    # ------------------------------------------------------------------
+    # 18. Seed ``system/authenticated`` + backfill Default-Org grants.
+    # ------------------------------------------------------------------
+    # ``system/authenticated`` is the built-in GROUP principal that
+    # ``_accessible_clusters`` treats as implicitly containing every
+    # authenticated caller. A ``cluster_access`` row granting it is
+    # therefore a global grant.
+    #
+    # Default-Org clusters default to "shared with all users" — the
+    # ``create_cluster`` route now seeds that row at create time. Here
+    # we cover the upgrade case: every Default-Org cluster that
+    # pre-dates this revision gets the same row, idempotent via the
+    # ``NOT EXISTS`` guard and the composite UNIQUE on
+    # ``(cluster_id, principal_id)``.
+
+    # 18a. Seed the GROUP principal. Lives in the GROUP name
+    # partition (its own partial uniqueness index, set up above), so
+    # it can't collide with the admin-curated USER / ORG / SYSTEM rows
+    # in the other partition.
+    op.execute(
+        sa.text(
+            f"""
+            INSERT INTO principals
+                (kind, name, display_name, description,
+                 is_admin, is_active,
+                 source,
+                 created_at, updated_at, deleted_at)
+            SELECT
+                'GROUP', :name, :display_name, :desc,
+                {bool_false}, {bool_true},
+                'Local',
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
+            WHERE NOT EXISTS (
+                SELECT 1 FROM principals
+                WHERE kind = 'GROUP' AND name = :name
+            )
+            """
+        ).bindparams(
+            name=AUTHENTICATED_PRINCIPAL_NAME,
+            display_name=AUTHENTICATED_PRINCIPAL_DISPLAY_NAME,
+            desc=(
+                'Built-in group containing every authenticated principal. '
+                'Grant access to this principal to share a resource with all users.'
+            ),
+        )
+    )
+
+    authenticated_id = bind.execute(
+        sa.text(
+            "SELECT id FROM principals "
+            "WHERE kind = 'GROUP' AND name = :name AND deleted_at IS NULL"
+        ).bindparams(name=AUTHENTICATED_PRINCIPAL_NAME)
+    ).scalar()
+    if authenticated_id is None:
+        raise RuntimeError(
+            f"Authenticated principal not found by name="
+            f"{AUTHENTICATED_PRINCIPAL_NAME!r} after seed; "
+            "backfill cannot continue"
+        )
+
+    # 18b. Backfill ``cluster_access`` rows for every existing
+    # Default-Org cluster. ``platform_id`` was resolved in step 3.
+    op.execute(
+        sa.text(
+            """
+            INSERT INTO cluster_access
+                (cluster_id, principal_id, granted_by,
+                 created_at, updated_at, deleted_at)
+            SELECT c.id, :authenticated_id, NULL,
+                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
+            FROM clusters c
+            WHERE c.owner_principal_id = :platform_id
+              AND c.deleted_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM cluster_access ca
+                WHERE ca.cluster_id = c.id
+                  AND ca.principal_id = :authenticated_id
+              )
+            """
+        ).bindparams(
+            authenticated_id=authenticated_id,
+            platform_id=platform_id,
+        )
+    )
 
 
 def downgrade() -> None:

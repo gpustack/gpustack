@@ -72,6 +72,33 @@ class AuthProviderEnum(str, Enum):
 # resources default to it.
 PLATFORM_PRINCIPAL_NAME = 'default'
 
+# Canonical ``name`` of the built-in "all authenticated users" group
+# principal. Shares the ``system/`` reserved prefix with
+# ``system/cluster-…`` / ``system/worker-…`` so every built-in
+# reserved-name principal follows one convention. Every authenticated
+# request is treated as a member of this group at auth-context
+# resolution time, without a backing ``principal_memberships`` row.
+# ClusterAccess (and any future ACL table) can grant to this
+# principal_id, and the grant takes effect for every authenticated
+# user. Lazy-seeded on server startup by
+# :func:`init_authenticated_principal_id` so no schema migration is
+# required.
+AUTHENTICATED_PRINCIPAL_NAME = 'system/authenticated'
+AUTHENTICATED_PRINCIPAL_DISPLAY_NAME = 'All Authenticated Users'
+
+# Names starting with this prefix are reserved for internal /
+# built-in principals (``system/cluster-…``, ``system/worker-…``,
+# ``system/authenticated``). Group-CRUD routes hide and lock these
+# rows so admins can't accidentally rename / delete them; cluster_access
+# / ACL surfaces continue to render them for revoke flows.
+RESERVED_PRINCIPAL_NAME_PREFIX = 'system/'
+
+
+def is_reserved_principal_name(name: Optional[str]) -> bool:
+    """Return True if ``name`` is in the reserved built-in namespace."""
+    return bool(name) and name.startswith(RESERVED_PRINCIPAL_NAME_PREFIX)
+
+
 # Module-private mutable resolved at server startup by
 # :func:`init_platform_principal_id`. Used to be exported as
 # ``PLATFORM_PRINCIPAL_ID`` (a hardcoded ``1`` baked into schema
@@ -83,6 +110,7 @@ PLATFORM_PRINCIPAL_NAME = 'default'
 # the runtime update. Underscore prefix discourages that import path;
 # every reader goes through :func:`platform_principal_id`.
 _PLATFORM_PRINCIPAL_ID: int = 1
+_AUTHENTICATED_PRINCIPAL_ID: int = 0
 
 
 def platform_principal_id() -> int:
@@ -94,6 +122,17 @@ def platform_principal_id() -> int:
     ``_PLATFORM_PRINCIPAL_ID`` directly.
     """
     return _PLATFORM_PRINCIPAL_ID
+
+
+def authenticated_principal_id() -> int:
+    """Sync getter for the ``system/authenticated`` group principal id.
+
+    Used by ``_accessible_clusters`` (and any future ACL resolver) to
+    union grants written against this group with the caller's direct /
+    group / org grants — every authenticated principal is an implicit
+    member, so the row applies universally.
+    """
+    return _AUTHENTICATED_PRINCIPAL_ID
 
 
 # Public alias for ``default_factory=`` on SQLModel fields. Identical
@@ -412,6 +451,7 @@ class PrincipalMembership(PrincipalMembershipBase, BaseModelMixin, table=True):
 # --------------------------------------------------------------------
 
 _PLATFORM_PRINCIPAL_ID_INITIALIZED: bool = False
+_AUTHENTICATED_PRINCIPAL_ID_INITIALIZED: bool = False
 
 
 async def init_platform_principal_id(session: AsyncSession) -> int:
@@ -439,6 +479,30 @@ async def init_platform_principal_id(session: AsyncSession) -> int:
     return p.id
 
 
+async def init_authenticated_principal_id(session: AsyncSession) -> int:
+    """Resolve and bind the ``system/authenticated`` group principal id.
+
+    The row is seeded by the shared-GPU-services migration alongside
+    the cluster_access backfill — same pattern as the platform
+    principal — so this is a read-only resolver. Raises if absent so
+    a missing seed surfaces loudly instead of letting auth-resolution
+    silently widen.
+    """
+    global _AUTHENTICATED_PRINCIPAL_ID, _AUTHENTICATED_PRINCIPAL_ID_INITIALIZED
+    p = await Principal.one_by_fields(
+        session=session,
+        fields={'kind': PrincipalType.GROUP, 'name': AUTHENTICATED_PRINCIPAL_NAME},
+    )
+    if p is None:
+        raise RuntimeError(
+            f"Authenticated principal not found by name="
+            f"{AUTHENTICATED_PRINCIPAL_NAME!r}; database may be uninitialized"
+        )
+    _AUTHENTICATED_PRINCIPAL_ID = p.id
+    _AUTHENTICATED_PRINCIPAL_ID_INITIALIZED = True
+    return p.id
+
+
 async def get_platform_principal_id(session: AsyncSession) -> int:
     """Read the platform principal's id, resolving by name if startup
     init has not been performed yet (tests, scripts).
@@ -448,8 +512,20 @@ async def get_platform_principal_id(session: AsyncSession) -> int:
     return await init_platform_principal_id(session)
 
 
+async def get_authenticated_principal_id(session: AsyncSession) -> int:
+    """Read the ``system/authenticated`` principal id, seeding it on
+    first call. Counterpart to :func:`get_platform_principal_id`.
+    """
+    if _AUTHENTICATED_PRINCIPAL_ID_INITIALIZED:
+        return _AUTHENTICATED_PRINCIPAL_ID
+    return await init_authenticated_principal_id(session)
+
+
 def _reset_platform_principal_for_tests() -> None:
     """Test hook — clears the initialised flag and resets the value."""
     global _PLATFORM_PRINCIPAL_ID, _PLATFORM_PRINCIPAL_ID_INITIALIZED
+    global _AUTHENTICATED_PRINCIPAL_ID, _AUTHENTICATED_PRINCIPAL_ID_INITIALIZED
     _PLATFORM_PRINCIPAL_ID = 1
     _PLATFORM_PRINCIPAL_ID_INITIALIZED = False
+    _AUTHENTICATED_PRINCIPAL_ID = 0
+    _AUTHENTICATED_PRINCIPAL_ID_INITIALIZED = False

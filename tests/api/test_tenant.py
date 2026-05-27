@@ -11,10 +11,19 @@ from gpustack.api.tenant import (
     require_org_role,
     require_platform_admin,
 )
+from gpustack.schemas import principals as principals_module
 from gpustack.schemas.principals import (
     OrgRole,
     PrincipalType,
 )
+
+
+# Pre-seed the cached ``system/authenticated`` principal id so the
+# ``get_authenticated_principal_id`` async helper short-circuits via
+# its cache and doesn't try to query the mock session (which only
+# queues canned results for the specific calls the tests model).
+principals_module._AUTHENTICATED_PRINCIPAL_ID = 9999
+principals_module._AUTHENTICATED_PRINCIPAL_ID_INITIALIZED = True
 
 
 def _request(api_key=None):
@@ -76,6 +85,14 @@ def _session_returning(*scalar_lists):
     return session
 
 
+def _cluster_rows(*pairs):
+    """Helper for ``_accessible_clusters`` mock results: pass tuples of
+    ``(cluster_id, owner_principal_id)`` matching the joined-row shape
+    the function unpacks.
+    """
+    return list(pairs)
+
+
 # ---- _resolve_requested_principal_id ---------------------------------------
 
 
@@ -134,7 +151,7 @@ async def test_member_uses_team_org_via_header():
     session = _session_returning(
         [OrgRole.MEMBER],  # _resolve_effective_org_role (direct ∪ via-group)
         [11, 12],  # _user_group_principal_ids (all groups, no org filter)
-        [101, 102],  # _accessible_clusters
+        _cluster_rows((101, 5), (102, 5)),  # _accessible_clusters
         _principal(id=5, kind=PrincipalType.ORG),  # org existence check
     )
 
@@ -149,6 +166,7 @@ async def test_member_uses_team_org_via_header():
     assert ctx.current_principal_id == 5
     assert ctx.org_role == OrgRole.MEMBER
     assert ctx.accessible_cluster_ids == {101, 102}
+    assert ctx.accessible_cluster_owner_ids == {5}
     assert ctx.current_is_personal_scope is False
 
 
@@ -163,7 +181,7 @@ async def test_member_inherits_role_via_group_membership():
         # direct ∪ via-group — only via-group has a row.
         [OrgRole.OWNER],
         [42],  # _user_group_principal_ids
-        [101],  # _accessible_clusters
+        _cluster_rows((101, 5)),  # _accessible_clusters
         _principal(id=5, kind=PrincipalType.ORG),
     )
 
@@ -187,7 +205,7 @@ async def test_personal_scope_short_circuits():
     request = _request()
     session = _session_returning(
         [],  # _user_group_principal_ids
-        [],  # _accessible_clusters
+        _cluster_rows(),  # _accessible_clusters
     )
 
     ctx = await get_tenant_context(
@@ -200,6 +218,7 @@ async def test_personal_scope_short_circuits():
     assert ctx.current_principal_id == 100
     assert ctx.current_is_personal_scope is True
     assert ctx.org_role is None
+    assert ctx.accessible_cluster_owner_ids == set()
 
 
 @pytest.mark.asyncio
@@ -224,7 +243,7 @@ async def test_platform_admin_can_act_in_org_without_membership():
     session = _session_returning(
         [],  # union: no membership; admin still passes
         [],  # _user_group_principal_ids
-        [],  # _accessible_clusters
+        _cluster_rows(),  # _accessible_clusters
         _principal(id=7, kind=PrincipalType.ORG),
     )
 
@@ -247,7 +266,7 @@ async def test_api_key_overrides_header():
     session = _session_returning(
         [OrgRole.MEMBER],  # union: direct membership in org 42
         [],
-        [],
+        _cluster_rows(),  # _accessible_clusters
         _principal(id=42, kind=PrincipalType.ORG),
     )
 
