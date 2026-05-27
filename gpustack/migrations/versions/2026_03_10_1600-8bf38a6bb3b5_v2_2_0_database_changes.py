@@ -63,6 +63,48 @@ def upgrade() -> None:
             )
     ### end
 
+    ### Backfill worker_config.namespace for pre-existing Kubernetes clusters.
+    ### Earlier versions rendered worker DaemonSets and the operator into
+    ### "gpustack-system-{hashed_suffix}" via the now-removed cluster_suffix
+    ### template field. After unifying on "gpustack-system" new clusters render
+    ### there directly, but upgraded clusters must keep targeting their
+    ### original namespace or the operator will not find the resources it
+    ### previously deployed. Persist the legacy namespace in worker_config so
+    ### the render pipeline still picks it up.
+    clusters_jsonable = sa.table(
+        'clusters',
+        sa.column('id', sa.Integer),
+        sa.column('worker_config', sa.JSON),
+    )
+    k8s_cluster_rows = conn.execute(
+        sa.text(
+            "SELECT id, hashed_suffix, worker_config FROM clusters "
+            "WHERE provider = 'Kubernetes'"
+        )
+    ).fetchall()
+    for cluster_id, hashed_suffix, worker_config in k8s_cluster_rows:
+        if not hashed_suffix:
+            continue
+        if isinstance(worker_config, str):
+            try:
+                worker_config = json.loads(worker_config) if worker_config else {}
+            except json.JSONDecodeError:
+                worker_config = {}
+        # Cover None, the JSON literal "null" (which parses to None), and any
+        # other non-dict shape the column might somehow be holding.
+        if not isinstance(worker_config, dict):
+            worker_config = {}
+        # Respect a namespace the user already set; only backfill when missing.
+        if worker_config.get('namespace'):
+            continue
+        worker_config['namespace'] = f'gpustack-system-{hashed_suffix}'
+        conn.execute(
+            sa.update(clusters_jsonable)
+            .where(clusters_jsonable.c.id == cluster_id)
+            .values(worker_config=worker_config)
+        )
+    ### end
+
     ### custom API_KEY
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         if not column_exists('api_keys', 'is_custom'):

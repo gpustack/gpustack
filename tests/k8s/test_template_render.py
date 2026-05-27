@@ -31,7 +31,6 @@ def _registration():
 def _config(**kwargs):
     return TemplateConfig(
         registration=_registration(),
-        cluster_suffix="abc",
         cluster_owner_principal_name="alice",
         **kwargs,
     )
@@ -234,7 +233,7 @@ def test_multi_vendor_service_uses_common_component_label():
 
 def test_image_credentials_materialise_to_dockerconfigjson_secrets():
     """Each ImageCredential renders a kubernetes.io/dockerconfigjson Secret
-    in the worker namespace, with a deterministic index-based name."""
+    in the gpustack-system namespace, with a deterministic index-based name."""
     import base64
     import json
 
@@ -254,7 +253,7 @@ def test_image_credentials_materialise_to_dockerconfigjson_secrets():
         for d in docs
         if d.get("kind") == "Secret"
         and d["metadata"]["name"].startswith("gpustack-image-pull-secret-")
-        and d["metadata"]["namespace"] == "gpustack-system-abc"
+        and d["metadata"]["namespace"] == "gpustack-system"
     }
     assert set(secrets.keys()) == {
         "gpustack-image-pull-secret-0",
@@ -271,9 +270,9 @@ def test_image_credentials_materialise_to_dockerconfigjson_secrets():
     assert decoded["auths"]["harbor.example.com"]["auth"] == expected_auth
 
 
-def test_image_credentials_mirror_into_system_namespace_when_distinct():
-    """The operator components live in config.system_namespace; mirror the
-    Secrets there too so they can pull from the same registry."""
+def test_image_credentials_emitted_once_in_shared_namespace():
+    """Worker DaemonSets and the operator Job share the gpustack-system
+    namespace, so each ImageCredential renders exactly one Secret there."""
     values = K8sOptions(
         image_credentials=[
             ImageCredential(
@@ -290,9 +289,8 @@ def test_image_credentials_mirror_into_system_namespace_when_distinct():
         if d.get("kind") == "Secret"
         and d["metadata"]["name"] == "gpustack-image-pull-secret-0"
     ]
-    namespaces = sorted(s["metadata"]["namespace"] for s in secrets)
-    # cluster_suffix='abc' → worker ns = gpustack-system-abc, system ns = gpustack-system
-    assert namespaces == ["gpustack-system", "gpustack-system-abc"]
+    namespaces = [s["metadata"]["namespace"] for s in secrets]
+    assert namespaces == ["gpustack-system"]
 
 
 def test_image_credentials_referenced_by_all_worker_daemonsets():
@@ -342,7 +340,7 @@ def test_image_credentials_without_username_password_emit_placeholder_secret():
         for d in docs
         if d.get("kind") == "Secret"
         and d["metadata"]["name"] == "gpustack-image-pull-secret-0"
-        and d["metadata"]["namespace"] == "gpustack-system-abc"
+        and d["metadata"]["namespace"] == "gpustack-system"
     )
     decoded = json.loads(base64.b64decode(secret["data"][".dockerconfigjson"]))
     assert decoded == {"auths": {}}
@@ -370,7 +368,7 @@ def test_image_credentials_with_only_username_falls_back_to_placeholder():
         for d in docs
         if d.get("kind") == "Secret"
         and d["metadata"]["name"] == "gpustack-image-pull-secret-0"
-        and d["metadata"]["namespace"] == "gpustack-system-abc"
+        and d["metadata"]["namespace"] == "gpustack-system"
     )
     decoded = json.loads(base64.b64decode(secret["data"][".dockerconfigjson"]))
     assert decoded == {"auths": {}}

@@ -59,17 +59,11 @@ class WorkerRenderSpec(BaseModel):
 
 
 class TemplateConfig(ClusterRegistrationTokenPublic):
-    # system namespace for cluster registration, defaults to "gpustack-system",
-    # used for placing the components for the whole Kubernetes cluster.
-    system_namespace: Optional[str] = None
     # cluster owner namespace, defaults to "gpustack-{cluster_owner_principal_name}",
     # used to placing the Kubernetes resources for the cluster owner.
     cluster_owner_namespace: Optional[str] = None
-    # cluster-specific namespace, defaults to "gpustack-system" or "gpustack-system-{cluster_suffix}",
-    # used for placing the components for a specific Kubernetes cluster,
-    # legacy, will be removed in the future, installed new components should be placed in the system namespace.
+    # cluster-specific namespace, defaults to "gpustack-system".
     namespace: Optional[str] = None
-    cluster_suffix: Optional[str] = None
     cluster_owner_principal_name: Optional[str] = None
     runtimes: Optional[List[ManufacturerEnum]] = None
     k8s_options: Optional[K8sOptions] = None
@@ -138,16 +132,12 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
             super().__init__(**base_data)
         else:
             super().__init__(**data)
-        if self.system_namespace is None:
-            self.system_namespace = "gpustack-system"
+        if self.namespace is None:
+            self.namespace = "gpustack-system"
         if self.cluster_owner_namespace is None:
             self.cluster_owner_namespace = get_namespace_name(
                 self.cluster_owner_principal_name
             )
-        if self.namespace is None and self.cluster_suffix is not None:
-            self.namespace = f"gpustack-system-{self.cluster_suffix}"
-        elif self.namespace is None:
-            self.namespace = "gpustack-system"
         self.image_pull_secrets = self._build_image_pull_secrets()
         self.workers = self._build_workers()
 
