@@ -1510,8 +1510,8 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.2.3.post2" },
-    { name = "gpustack-runner", specifier = "==0.1.26.post1" },
-    { name = "gpustack-runtime", specifier = "==0.2.0.post1" },
+    { name = "gpustack-runner", specifier = "==0.1.26.post2" },
+    { name = "gpustack-runtime", specifier = "==0.2.0.post2" },
     { name = "hf-xet", specifier = ">=1.3.1,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=1.0.0" },
@@ -1601,21 +1601,21 @@ wheels = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.26.post1"
+version = "0.1.26.post2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ef/ad/4a61afd6ba04ae78d03481f1b156b6aa412a94b99c884c565e799439e3d4/gpustack_runner-0.1.26.post1.tar.gz", hash = "sha256:32471e283c625fb31ae3257b9c9361e30c27cbf28c887a30f0886370546226ac", size = 13445617, upload-time = "2026-05-12T11:15:29.254Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/3d/2b14aa09209608cc27f9dd7d48aadef9262aced8f251b1b2546c34882047/gpustack_runner-0.1.26.post2.tar.gz", hash = "sha256:45ea36db250498192da4f96ea1a57108421a18d7654babb759d72d942beeb0a6", size = 13448773, upload-time = "2026-05-27T06:17:29.575Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/7e/d4ecf3535e4c56d5907b11243330aad5c04b1ec8b9b079ae4fafe2f1ca2a/gpustack_runner-0.1.26.post1-py3-none-any.whl", hash = "sha256:80828afb7efae4f62278f621995c50f5e60b541c97dfb382a498f9407218721d", size = 29198, upload-time = "2026-05-12T11:15:27.619Z" },
+    { url = "https://files.pythonhosted.org/packages/28/be/986381e717bcfc6a48ff992a05b1c420caed8dd9ef5ba3dbc47c826898c6/gpustack_runner-0.1.26.post2-py3-none-any.whl", hash = "sha256:e9b8f7d9df67878a768a35ffc25f48153e68a72b147410c9095d9e933b8221b8", size = 29348, upload-time = "2026-05-27T06:17:27.73Z" },
 ]
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.2.0.post1"
+version = "0.2.0.post2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -1629,9 +1629,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/98/9cfe0b8bce637d98d3060b166095fa0d52009a1acf8a321ec4e4e5eb4779/gpustack_runtime-0.2.0.post1.tar.gz", hash = "sha256:2136c8c4811c319622c3fd9309366eda33e6acf0c1ef01cbab4dbf23c2a08ba4", size = 1473499, upload-time = "2026-05-19T12:21:38.38Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ca/77/04f1deac9cdad47fcbbddbf7fe783cce26e7a03ee2a710da97eba1be1659/gpustack_runtime-0.2.0.post2.tar.gz", hash = "sha256:f36628636a3f20ebf0648baab12d2385977b935d86ab1ece2f4bfd067271433d", size = 1473525, upload-time = "2026-05-27T06:46:35.879Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3c/39/02ae6f425057f2a08d042a876da1df207e8aef768aa82161ac5bc2462bd7/gpustack_runtime-0.2.0.post1-py3-none-any.whl", hash = "sha256:3bdb397c0c3d4a6d2d3e1854d74efe1abb7e377dcfc9bfe82d959a5874f9812a", size = 1457104, upload-time = "2026-05-19T12:21:36.692Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/6f/d1bca9a2a4a00721b452f392851eeee77a4da04894518cb7ead537c53078/gpustack_runtime-0.2.0.post2-py3-none-any.whl", hash = "sha256:b21758e6fcf4d5de010044cb4f9258825faf95a33019191a1b1405901914170d", size = 1457133, upload-time = "2026-05-27T06:46:34.056Z" },
 ]
 
 [[package]]
