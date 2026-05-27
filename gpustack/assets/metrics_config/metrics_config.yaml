@@ -95,6 +95,10 @@ gpustack_metrics:
     type: Counter
     description: "Total number of successful requests."
 
+  gpustack:request_preemptions:
+    type: Counter
+    description: "Cumulative number of preemptions from the engine."
+
   gpustack:inter_token_latency_seconds:
     type: Histogram
     description: "Time to generate the next token after the previous token has been produced."
@@ -117,7 +121,7 @@ gpustack_metrics:
 # -----------------------------
 runtime_mapping:
   vLLM:
-    "*": # 0.19.1
+    "*": # 0.21.0
       vllm:num_requests_running: gpustack:num_requests_running
       vllm:num_requests_waiting: gpustack:num_requests_waiting
       vllm:prefix_cache_hits: gpustack:prefix_cache_hits
@@ -137,6 +141,7 @@ runtime_mapping:
       vllm:request_params_n: gpustack:request_params_n
       vllm:request_params_max_tokens: gpustack:request_params_max_tokens
       vllm:request_success: gpustack:request_success
+      vllm:num_preemptions: gpustack:request_preemptions
       vllm:request_prompt_tokens: gpustack:request_prompt_tokens
       vllm:request_generation_tokens: gpustack:request_generation_tokens
       vllm:inter_token_latency_seconds: gpustack:inter_token_latency_seconds
@@ -152,9 +157,10 @@ runtime_mapping:
        vllm:gpu_cache_usage_perc: gpustack:kv_cache_usage_ratio
 
   SGLang:
-    "*": # 0.5.10.post1
+    "*": # 0.5.12.post1
       sglang:num_running_reqs: gpustack:num_requests_running
       sglang:num_queue_reqs: gpustack:num_requests_waiting
+      sglang:num_retracted_requests: gpustack:request_preemptions
       sglang:cache_hit_rate: gpustack:prefix_cache_hit_rate
       sglang:token_usage: gpustack:kv_cache_usage_ratio
       sglang:prompt_tokens: gpustack:prompt_tokens
@@ -181,5 +187,6 @@ runtime_mapping:
       time_per_output_token_seconds: gpustack:time_per_output_token_seconds
       e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
       request_success: gpustack:request_success
+      num_preemptions: gpustack:request_preemptions
       request_prompt_tokens: gpustack:request_prompt_tokens
       request_generation_tokens: gpustack:request_generation_tokens
