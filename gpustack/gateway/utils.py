@@ -5,7 +5,18 @@ import math
 from urllib.parse import urlparse
 from dataclasses import dataclass
 from functools import partial
-from typing import List, Optional, Tuple, Union, Dict, Any, Literal, Callable, Set
+from typing import (
+    List,
+    Optional,
+    Tuple,
+    Union,
+    Dict,
+    Any,
+    Literal,
+    Callable,
+    Set,
+    Mapping,
+)
 from tenacity import retry, stop_after_attempt, wait_fixed
 from fastapi import HTTPException
 from starlette.datastructures import Headers
@@ -1471,7 +1482,7 @@ def ai_proxy_diff_spec(
     return current_spec
 
 
-def get_instance_id_from_header(headers: Headers) -> int:
+def get_instance_id_from_header(headers: Mapping[str, str]) -> int:
     """Parse the model instance ID from the ``x-gpustack-model-instance`` routing header.
 
     The header value follows the pattern ``model-<model_id>-<instance_id>.<suffix>``
@@ -1482,7 +1493,9 @@ def get_instance_id_from_header(headers: Headers) -> int:
         HTTPException (400): if the header is absent.
         NotFoundException: if the header value does not match the expected pattern.
     """
-    model_destination = headers.get(router_header_key, None)
+    if not isinstance(headers, Headers):
+        headers = Headers(headers)
+    model_destination = headers.get(router_header_key)
     if model_destination is None:
         raise HTTPException(
             status_code=400, detail=f"Missing {router_header_key} header"
