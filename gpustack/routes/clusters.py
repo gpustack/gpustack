@@ -663,7 +663,6 @@ async def get_cluster_manifests(
 
     config = TemplateConfig(
         registration=get_registration_from_cluster(request, cluster),
-        cluster_suffix=cluster.hashed_suffix,
         cluster_owner_principal_name=principal.name,
         namespace=getattr(cluster.worker_config, "namespace", None),
         runtimes=runtime,

@@ -2,13 +2,13 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ config.system_namespace }}
+  name: {{ config.namespace }}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: gpustack-operator-worker
-  namespace: {{ config.system_namespace }}
+  namespace: {{ config.namespace }}
   labels:
     app.kubernetes.io/part-of: gpustack-operator-worker
 ---
@@ -21,7 +21,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: gpustack-operator-worker
-    namespace: {{ config.system_namespace }}
+    namespace: {{ config.namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -31,14 +31,14 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: gpustack-operator-worker-deployment
-  namespace: {{ config.system_namespace }}
+  namespace: {{ config.namespace }}
 data:
   values.yaml: |
 
     #@data/values
     ---
     certmanagerEnabled: false
-    namespaceName: "{{ config.system_namespace }}"
+    namespaceName: "{{ config.namespace }}"
 
   template.yaml: |
 
@@ -254,7 +254,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: gpustack-operator-worker-deployment
-  namespace: {{ config.system_namespace }}
+  namespace: {{ config.namespace }}
 spec:
   template:
     spec:
