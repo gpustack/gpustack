@@ -38,11 +38,13 @@ from gpustack.api.exceptions import (
 )
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.cluster_access import ClusterAccess
+from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.principals import (
     OrgRole,
     Principal,
     PrincipalMembership,
     PrincipalType,
+    get_authenticated_principal_id,
 )
 from gpustack.schemas.users import User
 from gpustack.server.db import get_session
@@ -70,6 +72,11 @@ class TenantContext:
     current_principal_id: Optional[int]
     org_role: Optional[OrgRole]
     accessible_cluster_ids: Set[int] = field(default_factory=set)
+    # Owner-Org principal ids of the clusters in ``accessible_cluster_ids``.
+    # Surfaces "which Orgs run infra I'm allowed to touch" — used by
+    # cluster-bound resource visibility (PV types, future analogs)
+    # without re-querying ``clusters`` per call.
+    accessible_cluster_owner_ids: Set[int] = field(default_factory=set)
     # True when ``current_principal_id`` is the user's own
     # USER-principal (personal scope) rather than an ORG-principal.
     # Lets endpoints treat the "owner of a one-member namespace" case
@@ -200,19 +207,51 @@ async def _accessible_clusters(
     user_principal_id: int,
     org_principal_id: Optional[int],
     group_principal_ids: List[int],
-) -> Set[int]:
-    """Cluster ids reachable from any of: org, user, or any joined group."""
-    principal_ids = [user_principal_id, *group_principal_ids]
+) -> tuple[Set[int], Set[int]]:
+    """Cluster ids + their owner-principal ids reachable from any of:
+    org, user, joined group, or the built-in ``system/authenticated``
+    group.
+
+    ``system/authenticated`` is always part of the lookup set — every
+    authenticated caller is an implicit member of it. ClusterAccess
+    rows written against it become global grants that any logged-in
+    user inherits. Default-Org clusters use this mechanism:
+    ``create_cluster`` seeds one such row per Default-Org cluster,
+    which UI surfaces as an "Everyone" grant that admin can revoke or
+    re-apply.
+
+    Returns ``(cluster_ids, owner_principal_ids)`` so downstream code
+    (PV-type visibility, etc.) can scope cluster-bound resources by
+    "Orgs whose infrastructure I can use" without re-querying
+    ``clusters``.
+    """
+    principal_ids = [
+        user_principal_id,
+        *group_principal_ids,
+        # Async getter so CLI / offline call sites that never ran
+        # ``_init_data`` fail loudly (init raises) rather than silently
+        # use the uninitialised sentinel ``0`` — which would make the
+        # IN-clause skip every ``system/authenticated`` grant.
+        await get_authenticated_principal_id(session),
+    ]
     if org_principal_id is not None:
         principal_ids.append(org_principal_id)
 
-    if not principal_ids:
-        return set()
-
-    stmt = select(ClusterAccess.cluster_id).where(
-        ClusterAccess.principal_id.in_(principal_ids),
+    stmt = (
+        select(Cluster.id, Cluster.owner_principal_id)
+        .join(ClusterAccess, ClusterAccess.cluster_id == Cluster.id)
+        .where(
+            ClusterAccess.principal_id.in_(principal_ids),
+            Cluster.deleted_at.is_(None),
+        )
     )
-    return set((await session.exec(stmt)).all())
+    cluster_ids: Set[int] = set()
+    owner_ids: Set[int] = set()
+    for cid, oid in (await session.exec(stmt)).all():
+        cluster_ids.add(cid)
+        if oid is not None:
+            owner_ids.add(oid)
+    return cluster_ids, owner_ids
 
 
 def _resolve_requested_principal_id(
@@ -264,6 +303,7 @@ async def get_tenant_context(
 
     org_role: Optional[OrgRole] = None
     accessible_cluster_ids: Set[int] = set()
+    accessible_cluster_owner_ids: Set[int] = set()
     current_is_personal_scope = False
 
     if current_principal_id is not None and user.kind != PrincipalType.SYSTEM:
@@ -275,7 +315,10 @@ async def get_tenant_context(
         if current_principal_id == user.id:
             current_is_personal_scope = True
             group_ids = await _user_group_principal_ids(session, user.id)
-            accessible_cluster_ids = await _accessible_clusters(
+            (
+                accessible_cluster_ids,
+                accessible_cluster_owner_ids,
+            ) = await _accessible_clusters(
                 session,
                 user.id,
                 None,
@@ -293,7 +336,10 @@ async def get_tenant_context(
                 )
 
             group_ids = await _user_group_principal_ids(session, user.id)
-            accessible_cluster_ids = await _accessible_clusters(
+            (
+                accessible_cluster_ids,
+                accessible_cluster_owner_ids,
+            ) = await _accessible_clusters(
                 session,
                 user.id,
                 current_principal_id,
@@ -324,6 +370,7 @@ async def get_tenant_context(
         current_principal_id=current_principal_id,
         org_role=org_role,
         accessible_cluster_ids=accessible_cluster_ids,
+        accessible_cluster_owner_ids=accessible_cluster_owner_ids,
         current_is_personal_scope=current_is_personal_scope,
     )
     request.state.tenant_context = ctx
@@ -511,8 +558,9 @@ def assert_org_owned_writable(
     resource: Any,
     *,
     resource_label: str = "resource",
+    allow_member: bool = False,
 ) -> None:
-    """403 if the caller can't mutate an org-owned infrastructure row.
+    """403 if the caller can't mutate an org-owned row.
 
     Used for clusters / cloud_credentials / worker_pools / inference
     backends — anything with a nullable ``owner_principal_id`` and these
@@ -529,6 +577,13 @@ def assert_org_owned_writable(
       and admin-in-act-as cannot mutate Global rows directly. Resource
       handlers redirect such writes to the caller's own row instead.
     - **Other principal's row**: never writable for non-admin.
+
+    ``allow_member`` (default False) keeps infra-level writes
+    (cluster, cloud_credential, worker_pool, inference_backend, PV
+    type, template) gated on the OWNER role. Workload-level rows
+    (GPU instance, SSH key, persistent volume) set it True so an Org
+    Member can manage workloads scoped to the Org they belong to —
+    consistent with how Personal-scope users manage their own.
     """
     if bypass_tenant_filter(ctx):
         return
@@ -544,9 +599,14 @@ def assert_org_owned_writable(
                 "current organization"
             )
         )
-    # Platform admin acting-as the Org passes the role check unconditionally;
-    # for non-admin we require Org owner.
-    if not ctx.is_platform_admin and ctx.org_role != OrgRole.OWNER:
+    # Platform admin acting-as the Org passes the role check unconditionally.
+    # ``allow_member=True`` accepts any Org role AND Personal scope (the
+    # user managing their own USER-principal namespace). ``allow_member=False``
+    # is the infra-level gate: only Admin or Org Owner — Personal scope has
+    # no Org-role ladder, so it falls on the non-OWNER side here too.
+    if ctx.is_platform_admin or allow_member:
+        return
+    if ctx.current_is_personal_scope or ctx.org_role != OrgRole.OWNER:
         raise OrgRoleError(
             message=(
                 f"Insufficient organization role to modify this " f"{resource_label}"
@@ -566,12 +626,22 @@ def validate_owner_principal(
     ctx: TenantContext,
     *,
     resource_label: str = "resource",
+    allow_member: bool = False,
 ) -> None:
     """Decide whether the caller can create a row owned by
     ``input_owner_principal_id``.
 
     - Platform admin: any value (including NULL = global)
     - Org owner: must equal ``current_principal_id``; can't create global
+    - Personal scope: must equal the caller's own USER-principal id.
+      No Org-role ladder applies — the user owns their own namespace.
+
+    ``allow_member`` (default False) keeps infra-level creates
+    (cluster, cloud_credential, worker_pool, inference_backend, PV
+    type, template) gated on the OWNER role. Workload-level rows
+    (GPU instance, SSH key, persistent volume) set it True so an Org
+    Member can spin up workloads in the Org they belong to — same
+    permission ladder as Personal scope, just stamped on the Org.
     """
     if ctx.is_platform_admin:
         return
@@ -586,7 +656,14 @@ def validate_owner_principal(
         raise InvalidException(
             message="owner_principal_id must match the current organization"
         )
-    if ctx.org_role != OrgRole.OWNER:
+    # ``allow_member=True`` accepts any Org role AND Personal scope (the
+    # user creating in their own USER-principal namespace).
+    # ``allow_member=False`` is the infra-level gate: only Admin or Org
+    # Owner — Personal scope has no Org-role ladder, so it falls on the
+    # non-OWNER side here too.
+    if allow_member:
+        return
+    if ctx.current_is_personal_scope or ctx.org_role != OrgRole.OWNER:
         raise InvalidException(
             message=(f"Insufficient organization role to create a " f"{resource_label}")
         )

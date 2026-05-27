@@ -50,7 +50,12 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudOptions,
 )
-from gpustack.schemas.principals import PrincipalType, platform_principal_id
+from gpustack.schemas.cluster_access import ClusterAccess
+from gpustack.schemas.principals import (
+    PrincipalType,
+    get_authenticated_principal_id,
+    platform_principal_id,
+)
 from gpustack.schemas.users import system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
@@ -98,6 +103,26 @@ def _is_cluster_visible(cluster: Cluster, ctx: TenantContext) -> bool:
     return False
 
 
+def _is_cluster_manageable(cluster: Cluster, ctx: TenantContext) -> bool:
+    """Manageability mirror: drops cross-Org grants. Bypass for admin
+    in "All" mode (sees everything regardless)."""
+    if bypass_tenant_filter(ctx):
+        return True
+    return (
+        ctx.current_principal_id is not None
+        and cluster.owner_principal_id == ctx.current_principal_id
+    )
+
+
+def _cluster_manageable_conditions(ctx: TenantContext) -> List[Any]:
+    """SQL twin of :func:`_is_cluster_manageable`."""
+    if bypass_tenant_filter(ctx):
+        return []
+    if ctx.current_principal_id is None:
+        return [Cluster.id == -1]
+    return [Cluster.owner_principal_id == ctx.current_principal_id]
+
+
 @router.get("", response_model=ClustersPublic, response_model_exclude_none=True)
 async def get_clusters(
     session: SessionDep,
@@ -105,7 +130,19 @@ async def get_clusters(
     params: ClusterListParams = Depends(),
     name: str = None,
     search: str = None,
+    mine: bool = False,
 ):
+    """List clusters.
+
+    Default visibility is "everything the caller can use" — own-Org
+    clusters plus clusters granted via ``cluster_access``. Pickers
+    (e.g. GPU-instance create) use this default.
+
+    ``mine=true`` restricts to clusters owned by the caller's current
+    principal — drops grants from other Orgs, so management pages
+    don't surface read-only rows the caller can't actually edit.
+    Platform admin still sees everything (bypass).
+    """
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search}
@@ -114,13 +151,24 @@ async def get_clusters(
     if name:
         fields = {"name": name}
 
+    extra_conditions = (
+        _cluster_manageable_conditions(ctx)
+        if mine
+        else cluster_visibility_conditions(ctx, Cluster)
+    )
+
     if params.watch:
+        filter_func = (
+            (lambda c: _is_cluster_manageable(c, ctx))
+            if mine
+            else (lambda c: _is_cluster_visible(c, ctx))
+        )
         return StreamingResponse(
             Cluster.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 options=CLUSTER_LOAD_OPTIONS,
-                filter_func=lambda c: _is_cluster_visible(c, ctx),
+                filter_func=filter_func,
             ),
             media_type="text/event-stream",
         )
@@ -134,7 +182,7 @@ async def get_clusters(
             fields=fields,
             fuzzy_fields=fuzzy_fields,
             options=CLUSTER_LOAD_OPTIONS,
-            extra_conditions=cluster_visibility_conditions(ctx, Cluster),
+            extra_conditions=extra_conditions,
         )
 
         if not items:
@@ -367,6 +415,20 @@ async def create_cluster(
         await cluster.save(session=session, auto_commit=False)
         to_create_apikey.user_id = cluster_principal.id
         await ApiKey.create(session=session, source=to_create_apikey, auto_commit=False)
+        # Default-Org clusters default to "shared with everyone" — seed
+        # an explicit ClusterAccess grant against ``system/authenticated``
+        # so the policy is visible (and revocable) from the UI's
+        # cluster-access view rather than baked into request resolution.
+        if cluster.owner_principal_id == platform_principal_id():
+            await ClusterAccess.create(
+                session=session,
+                source=ClusterAccess(
+                    cluster_id=cluster.id,
+                    principal_id=await get_authenticated_principal_id(session),
+                    granted_by=ctx.user.id,
+                ),
+                auto_commit=False,
+            )
         await session.commit()
         await session.refresh(cluster)
         return cluster

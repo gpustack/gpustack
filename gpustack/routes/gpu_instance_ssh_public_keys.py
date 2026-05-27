@@ -90,10 +90,16 @@ async def create_gpu_instance_ssh_public_key(
     ctx: TenantContextDep,
     create_obj: GPUInstanceSSHPublicKeyCreate,
 ):
+    if create_obj.owner_principal_id is None:
+        create_obj.owner_principal_id = (
+            ctx.current_principal_id or platform_principal_id()
+        )
     validate_owner_principal(
-        create_obj.owner_principal_id, ctx, resource_label="GPU instance SSH public key"
+        create_obj.owner_principal_id,
+        ctx,
+        resource_label="GPU instance SSH public key",
+        allow_member=True,
     )
-    create_obj.owner_principal_id = ctx.current_principal_id or platform_principal_id()
 
     _validate_create_obj(create_obj)
 
@@ -162,7 +168,9 @@ def ensure_visible(obj, ctx: TenantContext):
 def ensure_writable(obj, ctx: TenantContext):
     if obj is None:
         raise NotFoundException(message="GPU instance SSH public key not found")
-    assert_org_owned_writable(ctx, obj, resource_label="GPU instance SSH public key")
+    assert_org_owned_writable(
+        ctx, obj, resource_label="GPU instance SSH public key", allow_member=True
+    )
     return obj
 
 

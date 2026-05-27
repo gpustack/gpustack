@@ -16,6 +16,7 @@ from gpustack.api.tenant import (
     assert_org_owned_writable,
     validate_owner_principal,
 )
+from sqlmodel import select
 from gpustack.gpu_instances import validate_k8s_object_name
 
 from gpustack.schemas import (
@@ -93,14 +94,18 @@ async def create_gpu_instance_persistent_volume(
     ctx: TenantContextDep,
     create_obj: GPUInstancePersistentVolumeCreate,
 ):
+    if create_obj.owner_principal_id is None:
+        create_obj.owner_principal_id = (
+            ctx.current_principal_id or platform_principal_id()
+        )
     validate_owner_principal(
         create_obj.owner_principal_id,
         ctx,
         resource_label="GPU instance persistent volume",
+        allow_member=True,
     )
-    create_obj.owner_principal_id = ctx.current_principal_id or platform_principal_id()
 
-    persistent_volume_type_id = await _validate_create_obj(session, create_obj)
+    persistent_volume_type_id = await _validate_create_obj(session, ctx, create_obj)
 
     source = _build_create_source(create_obj, ctx.user.id, persistent_volume_type_id)
     async with handle_error(
@@ -168,7 +173,12 @@ def ensure_visible(obj, ctx: TenantContext):
 def ensure_writable(obj, ctx: TenantContext):
     if obj is None:
         raise NotFoundException(message="GPU instance persistent volume not found")
-    assert_org_owned_writable(ctx, obj, resource_label="GPU instance persistent volume")
+    assert_org_owned_writable(
+        ctx,
+        obj,
+        resource_label="GPU instance persistent volume",
+        allow_member=True,
+    )
     return obj
 
 
@@ -190,16 +200,16 @@ async def handle_error(message: str):
 
 async def _validate_create_obj(
     session: AsyncSession,
+    ctx: TenantContext,
     create_obj: GPUInstancePersistentVolumeCreate,
 ) -> int:
     validate_k8s_object_name(create_obj.name)
 
-    pvt = await GPUInstancePersistentVolumeType.first_by_fields(
-        session=session,
-        fields={
-            "owner_principal_id": create_obj.owner_principal_id,
-            "name": create_obj.spec.type_,
-        },
+    pvt = await resolve_pv_type_for_ctx(
+        session,
+        ctx,
+        owner_principal_id=create_obj.owner_principal_id,
+        name=create_obj.spec.type_,
     )
     if pvt is None:
         raise InvalidException(
@@ -210,6 +220,51 @@ async def _validate_create_obj(
         )
 
     return pvt.id
+
+
+async def resolve_pv_type_for_ctx(
+    session: AsyncSession,
+    ctx: TenantContext,
+    *,
+    owner_principal_id: int,
+    name: str,
+) -> Optional[GPUInstancePersistentVolumeType]:
+    """Resolve a PV type by name from any Org the caller can use:
+
+    - the PV's own owner principal (caller's own types), and
+    - any Org that owns a cluster the caller has access to
+      (covers Default-Org "Everyone" grants and cross-Org cluster
+      grants — Org1 grants its cluster to Org2 → Org2's user can
+      reference Org1's PV types by name when provisioning).
+
+    Returns the first matching row, or ``None`` if no Org in the
+    accessible set defines a type with that name. ``ctx`` may bypass
+    tenant scoping (admin / SYSTEM); in that case lookup is unscoped.
+    """
+    # Always scope by ``owner_principal_id`` — even for admin in
+    # "All" mode. Two Orgs can independently define a PV type with
+    # the same name; without the scope the lookup picks an
+    # arbitrary one and the resulting PV would silently bind to the
+    # wrong Org's storage backend. Tenant scoping is otherwise
+    # unbounded here (admin / SYSTEM bypass): they may resolve a
+    # type from any Org, but only the one matching the PV being
+    # created.
+    if bypass_tenant_filter(ctx):
+        stmt = select(GPUInstancePersistentVolumeType).where(
+            GPUInstancePersistentVolumeType.name == name,
+            GPUInstancePersistentVolumeType.owner_principal_id == owner_principal_id,
+        )
+        return (await session.exec(stmt)).first()
+
+    owner_ids = set(ctx.accessible_cluster_owner_ids)
+    owner_ids.add(owner_principal_id)
+    if not owner_ids:
+        return None
+    stmt = select(GPUInstancePersistentVolumeType).where(
+        GPUInstancePersistentVolumeType.name == name,
+        GPUInstancePersistentVolumeType.owner_principal_id.in_(owner_ids),
+    )
+    return (await session.exec(stmt)).first()
 
 
 def _build_create_source(

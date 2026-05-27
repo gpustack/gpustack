@@ -38,24 +38,54 @@ async def get_gpu_instance_persistent_volume_types(
     ctx: TenantContextDep,
     params: GPUInstancePersistentVolumeTypeListParams = Depends(),
     search: Optional[str] = None,
+    mine: bool = False,
 ):
-    owner_principal_id = ctx.current_principal_id or platform_principal_id()
-    if bypass_tenant_filter(ctx):
-        owner_principal_id = None
+    """List PV types.
 
-    fields: dict = {}
-    if owner_principal_id is not None:
-        fields["owner_principal_id"] = owner_principal_id
+    Default visibility unions the caller's own types with types owned
+    by every Org whose cluster the caller can use — covers Default-Org
+    "Everyone" grants and cross-Org cluster grants, so PV-create
+    pickers find any type referenceable from a cluster they target.
 
+    ``mine=true`` restricts to types owned by the caller's current
+    principal — drops cross-Org rows so the Storage Type management
+    page doesn't surface read-only types from other Orgs that
+    happened to grant the caller a cluster.
+    """
     fuzzy_fields: dict = {}
     if search:
         fuzzy_fields["name"] = search
 
+    extra_conditions: list = []
+    filter_func = lambda row: is_visible(row, ctx)  # noqa: E731
+    if not bypass_tenant_filter(ctx):
+        if mine:
+            if ctx.current_principal_id is None:
+                extra_conditions = [GPUInstancePersistentVolumeType.id == -1]
+            else:
+                extra_conditions = [
+                    GPUInstancePersistentVolumeType.owner_principal_id
+                    == ctx.current_principal_id
+                ]
+            filter_func = lambda row: is_manageable(row, ctx)  # noqa: E731
+        else:
+            owner_ids = set(ctx.accessible_cluster_owner_ids)
+            if ctx.current_principal_id is not None:
+                owner_ids.add(ctx.current_principal_id)
+            if not owner_ids:
+                # No avenue; force empty result rather than leak.
+                extra_conditions = [GPUInstancePersistentVolumeType.id == -1]
+            else:
+                extra_conditions = [
+                    GPUInstancePersistentVolumeType.owner_principal_id.in_(owner_ids)
+                ]
+
     if params.watch:
         return StreamingResponse(
             GPUInstancePersistentVolumeType.streaming(
-                fields=fields,
+                fields={},
                 fuzzy_fields=fuzzy_fields,
+                filter_func=filter_func,
             ),
             media_type="text/event-stream",
         )
@@ -63,11 +93,12 @@ async def get_gpu_instance_persistent_volume_types(
     async with async_session() as session:
         return await GPUInstancePersistentVolumeType.paginated_by_query(
             session=session,
-            fields=fields,
+            fields={},
             fuzzy_fields=fuzzy_fields,
             order_by=params.order_by,
             page=params.page,
             per_page=params.perPage,
+            extra_conditions=extra_conditions,
         )
 
 
@@ -92,12 +123,15 @@ async def create_gpu_instance_persistent_volume_type(
     ctx: TenantContextDep,
     create_obj: GPUInstancePersistentVolumeTypeCreate,
 ):
+    if create_obj.owner_principal_id is None:
+        create_obj.owner_principal_id = (
+            ctx.current_principal_id or platform_principal_id()
+        )
     validate_owner_principal(
         create_obj.owner_principal_id,
         ctx,
         resource_label="GPU instance persistent volume type",
     )
-    create_obj.owner_principal_id = ctx.current_principal_id or platform_principal_id()
 
     _validate_create_obj(create_obj)
 
@@ -175,7 +209,29 @@ def ensure_writable(obj, ctx: TenantContext):
 def is_visible(obj, ctx: TenantContext) -> bool:
     if bypass_tenant_filter(ctx):
         return True
-    return ctx.current_principal_id == obj.owner_principal_id
+    # Caller's own Org always sees its PV types.
+    if (
+        ctx.current_principal_id is not None
+        and obj.owner_principal_id == ctx.current_principal_id
+    ):
+        return True
+    # PV types owned by an Org whose cluster the caller can use —
+    # covers Default-Org "Everyone" grants and cross-Org cluster
+    # grants (Org1 grants its cluster to Org2 → Org2 can pick Org1's
+    # PV types when provisioning storage on that cluster).
+    return obj.owner_principal_id in ctx.accessible_cluster_owner_ids
+
+
+def is_manageable(obj, ctx: TenantContext) -> bool:
+    """Manageability mirror of :func:`is_visible`: drops cross-Org rows
+    that came in via cluster-access. Bypass for admin in "All" mode.
+    """
+    if bypass_tenant_filter(ctx):
+        return True
+    return (
+        ctx.current_principal_id is not None
+        and obj.owner_principal_id == ctx.current_principal_id
+    )
 
 
 @asynccontextmanager

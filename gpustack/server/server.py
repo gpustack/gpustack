@@ -23,7 +23,13 @@ from gpustack.schemas.users import (
     get_default_cluster_principal,
     default_cluster_principal_name,
 )
-from gpustack.schemas.principals import Principal, PrincipalType, platform_principal_id
+from gpustack.schemas.principals import (
+    Principal,
+    PrincipalType,
+    init_authenticated_principal_id,
+    init_platform_principal_id,
+    platform_principal_id,
+)
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
@@ -630,6 +636,10 @@ class Server:
         # MAX(users.id), so every downstream init step that defaults to
         # ``platform_principal_id()`` needs the live value bound.
         await self._init_platform_principal_id(session)
+        # ``system/authenticated`` is seeded lazily on first call —
+        # bind it at startup so the resolver returns a real id before
+        # the first request lands on ``_accessible_clusters``.
+        await self._init_authenticated_principal_id(session)
 
         init_data_funcs = [
             self._init_user,
@@ -667,9 +677,10 @@ class Server:
         )
 
     async def _init_platform_principal_id(self, session: AsyncSession):
-        from gpustack.schemas.principals import init_platform_principal_id
-
         await init_platform_principal_id(session)
+
+    async def _init_authenticated_principal_id(self, session: AsyncSession):
+        await init_authenticated_principal_id(session)
 
     async def _init_user(self, session: AsyncSession):
         # Skip bootstrap when any non-system admin already exists, so that

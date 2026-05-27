@@ -16,11 +16,11 @@ from gpustack.api.tenant import (
     validate_owner_principal,
 )
 from gpustack.gpu_instances import validate_k8s_object_name
+from gpustack.routes.gpu_instance_persistent_volumes import resolve_pv_type_for_ctx
 
 from gpustack.schemas import (
     GPUInstance,
     GPUInstancePersistentVolume,
-    GPUInstancePersistentVolumeType,
     GPUInstanceUpdate,
     GPUInstancePublic,
     GPUInstanceListParams,
@@ -94,12 +94,18 @@ async def create_gpu_instance(
     ctx: TenantContextDep,
     create_obj: GPUInstanceCreate,
 ):
+    if create_obj.owner_principal_id is None:
+        create_obj.owner_principal_id = (
+            ctx.current_principal_id or platform_principal_id()
+        )
     validate_owner_principal(
-        create_obj.owner_principal_id, ctx, resource_label="GPU instance"
+        create_obj.owner_principal_id,
+        ctx,
+        resource_label="GPU instance",
+        allow_member=True,
     )
-    create_obj.owner_principal_id = ctx.current_principal_id or platform_principal_id()
 
-    persistent_volume_id = await _validate_create_obj(session, ctx.user.id, create_obj)
+    persistent_volume_id = await _validate_create_obj(session, ctx, create_obj)
 
     source = _build_create_source(create_obj, ctx.user.id, persistent_volume_id)
     async with handle_error(
@@ -171,7 +177,9 @@ def ensure_visible(obj, ctx: TenantContext):
 def ensure_writable(obj, ctx: TenantContext):
     if obj is None:
         raise NotFoundException(message="GPU instance not found")
-    assert_org_owned_writable(ctx, obj, resource_label="GPU instance")
+    assert_org_owned_writable(
+        ctx, obj, resource_label="GPU instance", allow_member=True
+    )
     return obj
 
 
@@ -193,7 +201,7 @@ async def handle_error(message: str):
 
 async def _validate_create_obj(
     session: AsyncSession,
-    creator_id: int,
+    ctx: TenantContext,
     create_obj: GPUInstanceCreate,
 ) -> Optional[int]:
     """Enforce create-time invariants that aren't expressible in the schema:
@@ -283,12 +291,11 @@ async def _validate_create_obj(
                 ),
             )
 
-        pvt = await GPUInstancePersistentVolumeType.first_by_fields(
-            session=session,
-            fields={
-                "owner_principal_id": create_obj.owner_principal_id,
-                "name": template.spec.type_,
-            },
+        pvt = await resolve_pv_type_for_ctx(
+            session,
+            ctx,
+            owner_principal_id=create_obj.owner_principal_id,
+            name=template.spec.type_,
         )
         if pvt is None:
             raise InvalidException(
@@ -302,7 +309,7 @@ async def _validate_create_obj(
             name=template.name,
             spec=template.spec,
             owner_principal_id=create_obj.owner_principal_id,
-            creator_id=creator_id,
+            creator_id=ctx.user.id,
             persistent_volume_type_id=pvt.id,
         )
         created = await GPUInstancePersistentVolume.create(

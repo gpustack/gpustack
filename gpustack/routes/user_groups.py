@@ -28,6 +28,8 @@ from gpustack.schemas.principals import (
     Principal,
     PrincipalMembership,
     PrincipalType,
+    RESERVED_PRINCIPAL_NAME_PREFIX,
+    is_reserved_principal_name,
 )
 from gpustack.schemas.user_groups import (
     UserGroupCreate,
@@ -48,8 +50,22 @@ class GroupMembershipCreate(BaseModel):
 
 
 async def _load_group(session, group_id: int) -> Principal:
+    """Load a user-curated group by id.
+
+    Built-in reserved groups (``system/`` prefix) are deliberately
+    hidden from the Group-CRUD surface — admins shouldn't be able to
+    rename / delete them, and the Groups list page has no useful
+    rendering for them (Members is always 0 since membership is
+    implicit). They're still consumed by cluster_access / ACL views,
+    which render principal_kind=GROUP grants directly.
+    """
     group = await Principal.one_by_id(session, group_id)
-    if not group or group.deleted_at is not None or group.kind != PrincipalType.GROUP:
+    if (
+        not group
+        or group.deleted_at is not None
+        or group.kind != PrincipalType.GROUP
+        or is_reserved_principal_name(group.name)
+    ):
         raise NotFoundException(message="Group not found")
     return group
 
@@ -86,12 +102,24 @@ async def list_groups(
     ctx: TenantContextDep,
     params: UserGroupListParams = Depends(),
     search: Optional[str] = None,
+    include_reserved: bool = False,
 ):
     """List all groups. Visible to any authenticated user — Group names
     are global identifiers in the system; rendering an Org's
     group-memberships needs to be able to enumerate candidate groups.
+
+    By default reserved built-in groups (``system/…``) are excluded:
+    the Groups CRUD page would render them as 0-member editable rows
+    that the server then rejects on write. ACL pickers (cluster_access
+    grant, model-route ACL, …) pass ``include_reserved=true`` so
+    ``system/authenticated`` shows up and can be granted to.
     """
     fuzzy_fields = {"name": search} if search else {}
+    extra_conditions = []
+    if not include_reserved:
+        extra_conditions.append(
+            Principal.name.not_like(f"{RESERVED_PRINCIPAL_NAME_PREFIX}%"),
+        )
     page = await Principal.paginated_by_query(
         session=session,
         fields={
@@ -102,6 +130,7 @@ async def list_groups(
         page=params.page,
         per_page=params.perPage,
         order_by=params.order_by,
+        extra_conditions=extra_conditions,
     )
     counts = await _bulk_member_counts(session, [g.id for g in page.items])
     page.items = [
@@ -124,6 +153,16 @@ async def get_group(session: SessionDep, ctx: TenantContextDep, group_id: int):
     dependencies=[Depends(require_platform_admin)],
 )
 async def create_group(session: SessionDep, body: UserGroupCreate):
+    if is_reserved_principal_name(body.name):
+        # ``system/`` is reserved for built-in principals
+        # (``system/authenticated``, ``system/cluster-…``, …) that the
+        # server seeds itself.
+        raise InvalidException(
+            message=(
+                f"Group name must not start with "
+                f"'{RESERVED_PRINCIPAL_NAME_PREFIX}' (reserved prefix)"
+            )
+        )
     existing = await Principal.one_by_fields(
         session,
         {
@@ -157,6 +196,13 @@ async def update_group(session: SessionDep, group_id: int, body: UserGroupUpdate
     group = await _load_group(session, group_id)
 
     if body.name != group.name:
+        if is_reserved_principal_name(body.name):
+            raise InvalidException(
+                message=(
+                    f"Group name must not start with "
+                    f"'{RESERVED_PRINCIPAL_NAME_PREFIX}' (reserved prefix)"
+                )
+            )
         clash = await Principal.one_by_fields(
             session,
             {
