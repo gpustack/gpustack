@@ -1,9 +1,7 @@
 from fastapi import APIRouter
 from starlette.responses import StreamingResponse
 
-from gpustack.api.tenant import (
-    bypass_tenant_filter,
-)
+from gpustack.api.tenant import cluster_visibility_conditions
 from gpustack.gpu_instances import gateway_client
 
 from gpustack.schemas import (
@@ -11,7 +9,6 @@ from gpustack.schemas import (
     Cluster,
 )
 from gpustack.schemas.clusters import ClusterProvider
-from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.db import async_session
 from gpustack.server.deps import TenantContextDep
 
@@ -23,20 +20,16 @@ async def get_gpu_instance_types(
     ctx: TenantContextDep,
     watch: bool = False,
 ):
-    owner_principal_id = ctx.current_principal_id or platform_principal_id()
-    if bypass_tenant_filter(ctx):
-        owner_principal_id = None
-
-    fields: dict = {
-        "provider": ClusterProvider.Kubernetes,
-    }
-    if owner_principal_id is not None:
-        fields["owner_principal_id"] = owner_principal_id
-
+    # Mirror cluster-list visibility: surface every Kubernetes cluster
+    # the caller can see — both the ones they own AND the ones granted
+    # via ``cluster_access``. Without the grants path an Org member
+    # would see an empty instance-type list even after a platform
+    # admin authorised them on a K8s cluster.
     async with async_session() as session:
         clusters = await Cluster.all_by_fields(
             session=session,
-            fields=fields,
+            fields={"provider": ClusterProvider.Kubernetes},
+            extra_conditions=cluster_visibility_conditions(ctx, Cluster),
         )
 
     cluster_ids = [c.id for c in clusters]
