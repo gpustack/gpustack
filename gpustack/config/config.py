@@ -949,6 +949,18 @@ def get_cluster_operator_image_name(
     return f"{registry + '/' if registry else ''}{operator_image}"
 
 
+def get_cluster_container_registry(
+    worker_config: Optional[PredefinedConfigNoDefaults],
+) -> Optional[str]:
+    cfg = get_global_config()
+    if worker_config is None:
+        return determine_default_registry(cfg.system_default_container_registry)
+    return determine_default_registry(
+        worker_config.system_default_container_registry
+        or cfg.system_default_container_registry
+    )
+
+
 def get_openid_configuration(issuer: str) -> dict:
     """Fetch OpenID configuration from the issuer."""
     url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
