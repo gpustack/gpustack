@@ -3621,9 +3621,11 @@ class GPUInstanceController:
         if (instance.status or GPUInstanceStatus()).phase != self.PHASE_READY:
             return False
 
-        fields = ["host_ips", "pod_ips"]
+        fields = []
         if instance.spec.ports:
-            fields.append("ports")
+            fields.extend(["access_addresses", "ports"])
+        if instance.spec.resources and instance.spec.resources.accelerator:
+            fields.append("allocations")
         return all(getattr(instance.status, field) for field in fields)
 
     @staticmethod
