@@ -445,8 +445,10 @@ async def set_default_cluster(session: SessionDep, ctx: TenantContextDep, id: in
     assert_cluster_writable(ctx, cluster)
 
     try:
-        # Unset any existing default in this cluster's Org. The partial
-        # unique index guarantees there's at most one to begin with.
+        # Unset any existing default in this cluster's Org. Postgres
+        # holds this to one via a partial unique index; MySQL/OceanBase
+        # have no partial-index equivalent, so we tolerate (and clear)
+        # any duplicates instead of relying on the DB.
         existing_defaults = await Cluster.all_by_fields(
             session,
             {

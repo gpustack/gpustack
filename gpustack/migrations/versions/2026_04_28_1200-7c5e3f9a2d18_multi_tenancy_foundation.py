@@ -569,15 +569,18 @@ def upgrade() -> None:
         batch_op.alter_column(
             'owner_principal_id', existing_type=sa.Integer(), nullable=False
         )
-        # Unique scope was (user_id, name); add owner_principal_id so the
-        # same key name can coexist across owner namespaces.
-        try:
-            batch_op.drop_constraint('uix_user_id_name', type_='unique')
-        except Exception:
-            pass
+        # Unique scope was (user_id, name); widen to
+        # (user_id, owner_principal_id, name) so the same key name can
+        # coexist across owner namespaces. The new index must be created
+        # BEFORE dropping the old one: on MySQL/OceanBase the old unique
+        # index is the only thing satisfying the user_id FK index
+        # requirement; dropping it first errors with "needed in a foreign
+        # key constraint". The new composite keeps ``user_id`` as the
+        # leftmost prefix so it can take over that role.
         batch_op.create_unique_constraint(
             'uix_user_owner_name', ['user_id', 'owner_principal_id', 'name']
         )
+        batch_op.drop_constraint('uix_user_id_name', type_='unique')
         batch_op.create_foreign_key(
             'fk_api_keys_owner_principal_id_principals',
             'principals',
@@ -652,10 +655,17 @@ def upgrade() -> None:
                 nullable=False,
             )
 
-    # At most one default cluster per principal. Partial unique covers
-    # active rows only (excluding soft-deleted), letting a principal
-    # "rotate" defaults by soft-deleting the old + flipping the new
-    # without conflict.
+    # At most one default cluster per principal. Postgres expresses
+    # this as a partial unique on the active (non-soft-deleted, default)
+    # rows so a principal can "rotate" defaults by soft-deleting the
+    # old + flipping the new without conflict. MySQL/OceanBase have
+    # no partial-index equivalent — fall back to a composite
+    # (owner_principal_id, is_default) index that speeds up the
+    # default-cluster lookup. A plain (owner_principal_id) index
+    # would be redundant with the FK's auto-created index. Uniqueness
+    # is enforced by the cluster routes (``create_cluster`` only
+    # auto-defaults when none exist; ``set_default_cluster`` unsets
+    # prior defaults first).
     if dialect == 'postgresql':
         op.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS uix_clusters_default_per_owner "
@@ -663,10 +673,10 @@ def upgrade() -> None:
             "WHERE is_default = true AND deleted_at IS NULL"
         )
     else:
-        op.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uix_clusters_default_per_owner "
-            "ON clusters (owner_principal_id) "
-            "WHERE is_default = 1 AND deleted_at IS NULL"
+        op.create_index(
+            'ix_clusters_default_per_owner',
+            'clusters',
+            ['owner_principal_id', 'is_default'],
         )
 
     # ------------------------------------------------------------------
@@ -772,6 +782,62 @@ def upgrade() -> None:
     # globally unique — composite unique on (backend_name, owner_principal_id)
     # lets each owner carry their own row alongside the Platform row.
     if not column_exists('inference_backends', 'owner_principal_id'):
+        # Drop the stale unique-on-backend_name objects up-front using
+        # eager DDL — ``batch_alter_table`` flushes lazily on __exit__, so
+        # a try/except around a batch op can't catch "key doesn't exist"
+        # errors at the right point. Going through the catalog directly
+        # also sidesteps SQLAlchemy inspector inconsistencies (notably,
+        # on MySQL/OceanBase neither ``get_unique_constraints`` nor
+        # ``get_indexes`` reliably reports the explicit unique index
+        # ``ix_inference_backends_backend_name``).
+        if dialect == 'postgresql':
+            # Find single-column unique constraints whose column is
+            # ``backend_name``. ``conkey`` is a 1-based attnum array;
+            # avoid ``WITH ORDINALITY`` and set-returning functions in
+            # the predicate so this also runs on openGauss.
+            for name_row in bind.execute(
+                sa.text(
+                    "SELECT c.conname FROM pg_constraint c "
+                    "JOIN pg_class t ON t.oid = c.conrelid "
+                    "WHERE t.relname = 'inference_backends' "
+                    "AND c.contype = 'u' "
+                    "AND array_length(c.conkey, 1) = 1 "
+                    "AND (SELECT a.attname FROM pg_attribute a "
+                    "     WHERE a.attrelid = c.conrelid "
+                    "     AND a.attnum = c.conkey[1]) = 'backend_name'"
+                )
+            ):
+                op.execute(
+                    f'ALTER TABLE inference_backends '
+                    f'DROP CONSTRAINT IF EXISTS "{name_row[0]}"'
+                )
+            op.execute(
+                "DROP INDEX IF EXISTS ix_inference_backends_backend_name"
+            )
+        else:
+            # MySQL/OceanBase: every unique object on backend_name is
+            # backed by a unique index — drop them all from
+            # information_schema. NON_UNIQUE = 0 picks unique-only;
+            # exclude PRIMARY just in case.
+            unique_idx_names = [
+                row[0]
+                for row in bind.execute(
+                    sa.text(
+                        "SELECT DISTINCT INDEX_NAME FROM "
+                        "information_schema.STATISTICS "
+                        "WHERE TABLE_SCHEMA = DATABASE() "
+                        "AND TABLE_NAME = 'inference_backends' "
+                        "AND COLUMN_NAME = 'backend_name' "
+                        "AND NON_UNIQUE = 0 "
+                        "AND INDEX_NAME <> 'PRIMARY'"
+                    )
+                )
+            ]
+            for name in unique_idx_names:
+                op.execute(
+                    f"ALTER TABLE inference_backends DROP INDEX `{name}`"
+                )
+
         with op.batch_alter_table('inference_backends', schema=None) as batch_op:
             batch_op.add_column(
                 sa.Column('owner_principal_id', sa.Integer(), nullable=True)
@@ -783,16 +849,6 @@ def upgrade() -> None:
                 ['id'],
                 ondelete='CASCADE',
             )
-            try:
-                batch_op.drop_constraint(
-                    'inference_backends_backend_name_key', type_='unique'
-                )
-            except Exception:
-                pass
-            try:
-                batch_op.drop_index('ix_inference_backends_backend_name')
-            except Exception:
-                pass
             batch_op.create_unique_constraint(
                 'uix_inference_backends_name_owner',
                 ['backend_name', 'owner_principal_id'],
@@ -1037,13 +1093,36 @@ def upgrade() -> None:
     # The column drops trip a "depends on" error unless the FK
     # constraints are dropped first, and the constraint names came
     # from the v2.0 migration with shapes like ``fk_users_cluster_id``
-    # (not the autogen ``fk_principals_*`` template). Read the live
-    # FK names off the table via inspector so the upgrade survives
-    # whatever historical migration named them.
+    # (not the autogen ``fk_principals_*`` template). Discover the
+    # live FK names off the columns we're about to drop, so the
+    # upgrade survives whatever historical migration named them.
+    # The SQLAlchemy inspector has been observed to miss FKs on
+    # OceanBase, so on MySQL-family dialects we also query
+    # ``information_schema.KEY_COLUMN_USAGE`` directly and union the
+    # results.
+    fk_names_to_drop = set()
     inspector = sa.inspect(bind)
     for fk in inspector.get_foreign_keys('principals'):
-        if fk.get('referred_table') in ('clusters', 'workers'):
-            op.drop_constraint(fk['name'], 'principals', type_='foreignkey')
+        cols = fk.get('constrained_columns') or []
+        if fk.get('name') and any(
+            c in ('cluster_id', 'worker_id') for c in cols
+        ):
+            fk_names_to_drop.add(fk['name'])
+    if dialect == 'mysql':
+        for row in bind.execute(
+            sa.text(
+                "SELECT DISTINCT CONSTRAINT_NAME "
+                "FROM information_schema.KEY_COLUMN_USAGE "
+                "WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = 'principals' "
+                "AND REFERENCED_TABLE_NAME IS NOT NULL "
+                "AND COLUMN_NAME IN ('cluster_id', 'worker_id')"
+            )
+        ):
+            fk_names_to_drop.add(row[0])
+
+    for name in fk_names_to_drop:
+        op.drop_constraint(name, 'principals', type_='foreignkey')
 
     with op.batch_alter_table('principals', schema=None) as batch_op:
         if column_exists('principals', 'cluster_id'):
