@@ -1,4 +1,4 @@
-"""Pure topology validation for vLLM native multi-node deployments.
+"""Pure topology validation for vLLM MP multi-node deployments.
 
 Lives in ``utils`` (not in ``worker.backends``) so scheduler / policies code
 can import these helpers without dragging in worker-only dependencies such as

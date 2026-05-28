@@ -60,12 +60,29 @@ GPUStack integrates with vLLM-Omni to deliver a seamless experience for deployin
 
 #### Distributed Inference Across Workers (Experimental)
 
-vLLM supports distributed inference across multiple workers using [Ray](https://ray.io). You can enable a Ray cluster in GPUStack by checking the `Allow Distributed Inference Across Workers` option when deploying a model. This allows vLLM to run distributed inference across multiple workers.
+When a single worker lacks enough VRAM or compute to host a model, vLLM can split one model instance across multiple workers and run inference cooperatively. GPUStack orchestrates these cross-node processes as a single model instance and still exposes only one OpenAI-compatible endpoint externally.
+
+Check `Allow Distributed Inference Across Workers` when deploying a model to enable it.
+
+GPUStack provides two execution paths for vLLM distributed inference, selected by vLLM's `--distributed-executor-backend` parameter. You generally do not need to set it manually — GPUStack picks one automatically based on the container image and vLLM version.
+
+##### Ray Backend
+
+- **When used**: The default path on GPUStack's official runner images — runner images always ship with Ray bundled, regardless of vLLM version. Also used when `--distributed-executor-backend` is explicitly set to `ray` or any non-`mp` value (e.g. `external_launcher`) in the backend parameters.
+- **How it works**: GPUStack starts a [Ray](https://ray.io) sidecar process on every participating node to form a cluster. The leader node runs the main vLLM process and exposes the API server, while Ray coordinates task scheduling across nodes.
+
+##### MultiProcessing Backend
+
+- **When used**: When `--distributed-executor-backend=mp` is set explicitly in the backend parameters; or when running a custom image (backend version with a `-custom` suffix) on vLLM ≥ `0.18.0` — vLLM dropped Ray from its default dependencies in `0.18.0`, so a custom image may not include Ray, and GPUStack falls back to `mp` to avoid startup failures.
+- **How it works**: Uses vLLM's multiprocessing-based multi-node execution directly, without a Ray sidecar. GPUStack injects topology arguments such as `--nnodes`, `--node-rank`, `--master-addr`, and `--master-port` based on the cluster layout.
+- **Headless followers**: Instances scheduled as followers automatically receive `--headless`, **so they only participate in distributed computation and do not start an OpenAI API server**. Only the leader exposes the HTTP endpoint; all external requests enter through the leader and are dispatched to the followers. Seeing `--headless` in a follower instance's logs is expected behavior, which is also why follower instances do not occupy an API port.
+- **Topology shape**: GPUStack automatically picks one of `dp_only`, `mp_only`, or `nested` parameter layouts based on the parallelism configuration (TP / PP / DP).
+
 
 !!! warning "Known Limitations"
 
     1. Model files must be accessible at the same path on all participating workers. You must either use a shared file system or download the model files to the same path on all participating workers.
-    2. Each worker can only be assigned to one distributed vLLM model instance at a time.
+    2. In Ray mode, each worker can only be assigned to one distributed vLLM model instance at a time.
 
 Auto-scheduling is supported with the following conditions:
 

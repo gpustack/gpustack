@@ -48,7 +48,11 @@ def extend_sglang_mounted_lora_arguments(
     backend_parameters: Optional[List[str]],
 ) -> None:
     """Inject SGLang --lora-paths flags. Skipped when caller already set them.
-    m.lora_name is the fully-qualified "<base>:<lora>" id; registered verbatim.
+
+    m.lora_name is the fully-qualified "<base>:<lora>" id used everywhere else
+    in GPUStack, but sglang's OpenAI handler splits model="<base>:<lora>" on
+    ":" and matches the right-hand side against registered names — so the
+    --lora-paths entry must be registered under the bare "<lora>" suffix.
     """
     if not mounted_loras:
         return
@@ -61,7 +65,10 @@ def extend_sglang_mounted_lora_arguments(
     for m in mounted_loras:
         if not m.lora_name or not m.path:
             continue
-        modules.append((m.lora_name, m.path))
+        adapter_name = (
+            m.lora_name.rsplit(":", 1)[1] if ":" in m.lora_name else m.lora_name
+        )
+        modules.append((adapter_name, m.path))
     if not modules:
         return
 

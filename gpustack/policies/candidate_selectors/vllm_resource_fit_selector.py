@@ -747,11 +747,11 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             )
             == "mp"
         ):
-            self._validate_native_multinode_arguments()
+            self._validate_mp_multinode_arguments()
 
-    def _validate_native_multinode_arguments(self):
+    def _validate_mp_multinode_arguments(self):
         """
-        Sanity-check user-provided native multi-node parallelism arguments
+        Sanity-check user-provided MP multi-node parallelism arguments
         before worker selection. Cross-node-topology invariants (TP divides
         every node's GPU count, ``workers_per_dp`` fits the cluster, etc.)
         are enforced later in :func:`cal_multinode_topology` once the
@@ -788,7 +788,7 @@ def _create_candidate(
     """
     Create a candidate with all GPUs from the selected workers.
 
-    Returns ``(None, reason)`` when the worker combination fails vLLM's native
+    Returns ``(None, reason)`` when the worker combination fails vLLM's MP
     multi-node topology constraints (e.g. heterogeneous nodes requested for
     cross-node TP/PP). The outer worker-combination loop skips this group and
     tries the next one — without raising, because a different combination
