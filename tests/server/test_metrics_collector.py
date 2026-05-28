@@ -1,6 +1,7 @@
 import asyncio
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -9,6 +10,7 @@ from gpustack.server.metrics_collector import (
     ModelUsageMetrics,
     _estimate_partial_usage,
     _make_buffer_key,
+    _resolve_metric_datetime,
     _resolve_usage_tokens,
     accumulate_gateway_metrics,
     create_or_update_model_usage,
@@ -24,6 +26,13 @@ def clear_buffer():
     yield
     gateway_metrics_buffer.clear()
     gateway_details_buffer.clear()
+
+
+@pytest.fixture(autouse=True)
+def pin_rollup_tz(monkeypatch):
+    # Pin to UTC so date assertions are deterministic regardless of the
+    # host's local timezone. Per-test overrides can re-monkeypatch this.
+    monkeypatch.setattr("gpustack.server.metrics_collector._ROLLUP_TZ", ZoneInfo("UTC"))
 
 
 def test_model_usage_metrics_defaults():
@@ -319,6 +328,68 @@ def test_accumulate_splits_rollup_across_midnight():
         )
     )
     assert len(gateway_metrics_buffer) == 2
+
+
+# ---------------------------------------------------------------------------
+# Date bucket follows ``_ROLLUP_TZ``, not UTC — regression guard for the
+# off-by-one-day issue where post-local-midnight traffic was attributed to
+# the previous UTC day in deployments east of UTC.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_metric_datetime_buckets_in_local_tz(monkeypatch):
+    # 1700000000000 ms = 2023-11-14T22:13:20 UTC = 2023-11-15 06:13:20 +08:00.
+    # Under Asia/Shanghai the bucket must land on Nov-15, even though the UTC
+    # date is Nov-14. The returned dt stays naive UTC so audit/lifecycle
+    # stamps don't drift.
+    monkeypatch.setattr(
+        "gpustack.server.metrics_collector._ROLLUP_TZ", ZoneInfo("Asia/Shanghai")
+    )
+    metric = ModelUsageMetrics(model="m", completed_at=1700000000000)
+    bucket_date, dt = _resolve_metric_datetime(metric)
+    assert bucket_date == date(2023, 11, 15)
+    assert (dt.year, dt.month, dt.day) == (2023, 11, 14)
+
+
+def test_resolve_metric_datetime_buckets_in_utc_by_default(monkeypatch):
+    # Same instant under UTC must bucket on Nov-14 — guards the inverse so
+    # the local-tz patch can't silently regress to "always Asia/Shanghai".
+    monkeypatch.setattr("gpustack.server.metrics_collector._ROLLUP_TZ", ZoneInfo("UTC"))
+    metric = ModelUsageMetrics(model="m", completed_at=1700000000000)
+    bucket_date, _ = _resolve_metric_datetime(metric)
+    assert bucket_date == date(2023, 11, 14)
+
+
+def test_make_buffer_key_splits_across_local_midnight(monkeypatch):
+    # Two completions straddling local midnight in Asia/Shanghai must hash
+    # to distinct buffer keys — without the timezone-aware bucketing both
+    # would collapse into the same UTC date.
+    monkeypatch.setattr(
+        "gpustack.server.metrics_collector._ROLLUP_TZ", ZoneInfo("Asia/Shanghai")
+    )
+    # 1700000000000 ms = 2023-11-14T22:13:20 UTC; subtract 6h14m20s
+    # (22460s) → 2023-11-14 15:59:00 UTC = 2023-11-14 23:59 +08:00.
+    just_before_local_midnight_ms = 1700000000000 - 22460 * 1000
+    # Subtract 6h12m20s (22340s) → 2023-11-14 16:01:00 UTC = 2023-11-15 00:01 +08:00.
+    just_after_local_midnight_ms = 1700000000000 - 22340 * 1000
+
+    m_before = ModelUsageMetrics(
+        model="m",
+        model_id=1,
+        user_id=2,
+        completed_at=just_before_local_midnight_ms,
+    )
+    m_after = ModelUsageMetrics(
+        model="m",
+        model_id=1,
+        user_id=2,
+        completed_at=just_after_local_midnight_ms,
+    )
+
+    key_before = _make_buffer_key(m_before)
+    key_after = _make_buffer_key(m_after)
+    assert key_before.endswith(".2023-11-14")
+    assert key_after.endswith(".2023-11-15")
 
 
 @pytest.mark.asyncio
