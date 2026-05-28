@@ -7,7 +7,7 @@ items:
   #
 
   ## Ubuntu
-  - name: "ubuntu-24.04"
+  - name: "ubuntu-24-04"
     displayName: "Ubuntu 24.04 LTS"
     manufacturer: "cpu"
     spec:
@@ -26,7 +26,7 @@ items:
         memory: "2Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "ubuntu-22.04"
+  - name: "ubuntu-22-04"
     displayName: "Ubuntu 22.04 LTS"
     manufacturer: "cpu"
     spec:
@@ -51,7 +51,7 @@ items:
   #
 
   ## PyTorch
-  - name: "pytorch-2.12-cuda-13.2"
+  - name: "pytorch-2-12-cuda-13-2"
     displayName: "PyTorch 2.12 + CUDA 13.2"
     manufacturer: "nvidia"
     spec:
@@ -70,7 +70,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.11-cuda-13.1"
+  - name: "pytorch-2-11-cuda-13-2"
     displayName: "PyTorch 2.11 + CUDA 13.2"
     manufacturer: "nvidia"
     spec:
@@ -89,7 +89,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.10-cuda-13.0"
+  - name: "pytorch-2-10-cuda-13-0"
     displayName: "PyTorch 2.10 + CUDA 13.0"
     manufacturer: "nvidia"
     spec:
@@ -108,7 +108,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.9-cuda-13.0"
+  - name: "pytorch-2-9-cuda-13-0"
     displayName: "PyTorch 2.9 + CUDA 13.0"
     manufacturer: "nvidia"
     spec:
@@ -127,7 +127,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.8-cuda-12.9"
+  - name: "pytorch-2-8-cuda-12-9"
     displayName: "PyTorch 2.8 + CUDA 12.9"
     manufacturer: "nvidia"
     spec:
@@ -146,7 +146,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.7-cuda-12.8"
+  - name: "pytorch-2-7-cuda-12-8"
     displayName: "PyTorch 2.7 + CUDA 12.8"
     manufacturer: "nvidia"
     spec:
@@ -165,7 +165,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.6-cuda-12.6"
+  - name: "pytorch-2-6-cuda-12-6"
     displayName: "PyTorch 2.6 + CUDA 12.6"
     manufacturer: "nvidia"
     spec:
@@ -185,7 +185,7 @@ items:
         localStorage: "15Gi"
       volumeMount: "/workspace"
   ## Jupyter Lab
-  - name: "jupyter-lab-4.5-cuda-12.8"
+  - name: "jupyter-lab-4-5-cuda-12-8"
     displayName: "Jupyter Lab 4.5 + CUDA 12.8"
     manufacturer: "nvidia"
     spec:
@@ -207,7 +207,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "jupyter-lab-4.4-cuda-12.4"
+  - name: "jupyter-lab-4-4-cuda-12-4"
     displayName: "Jupyter Lab 4.4 + CUDA 12.4"
     manufacturer: "nvidia"
     spec:
@@ -235,7 +235,7 @@ items:
   #
 
   ## PyTorch
-  - name: "pytorch-2.10-rocm-7.2"
+  - name: "pytorch-2-10-rocm-7-2"
     displayName: "PyTorch 2.10 + ROCm 7.2"
     manufacturer: "amd"
     spec:
@@ -254,7 +254,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.9-rocm-7.1"
+  - name: "pytorch-2-9-rocm-7-1"
     displayName: "PyTorch 2.9 + ROCm 7.1"
     manufacturer: "amd"
     spec:
@@ -273,7 +273,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.8-rocm-7.1"
+  - name: "pytorch-2-8-rocm-7-1"
     displayName: "PyTorch 2.8 + ROCm 7.1"
     manufacturer: "amd"
     spec:
@@ -292,7 +292,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.7-rocm-7.0"
+  - name: "pytorch-2-7-rocm-7-0"
     displayName: "PyTorch 2.7 + ROCm 7.0"
     manufacturer: "amd"
     spec:
@@ -311,7 +311,7 @@ items:
         memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "pytorch-2.6-rocm-6.4"
+  - name: "pytorch-2-6-rocm-6-4"
     displayName: "PyTorch 2.6 + ROCm 6.4"
     manufacturer: "amd"
     spec:
