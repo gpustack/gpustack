@@ -11,6 +11,8 @@ from gpustack_runtime.cmds import (
     append_images,
 )
 
+from gpustack.extension import iter_plugin_classes, Plugin
+
 # The higress version should be sync with HIGRESS_VERSION in pack/Dockerfile.
 higress_version = "2.1.9"
 
@@ -47,7 +49,22 @@ append_images(
 )
 
 
+def _append_plugin_images():
+    # Deferred until the images subcommand is wired so a misbehaving plugin
+    # can't crash unrelated CLI entry points (start, --help, version).
+    for name, plugin_cls in iter_plugin_classes():
+        if not (isinstance(plugin_cls, type) and issubclass(plugin_cls, Plugin)):
+            continue
+        try:
+            append_images(*plugin_cls.extra_image_list())
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to append images from plugin '{name}': {e}"
+            ) from e
+
+
 def setup_images_cmd(subparsers: argparse._SubParsersAction):
+    _append_plugin_images()
     ListImagesSubCommand.register(subparsers)
     SaveImagesSubCommand.register(subparsers)
     CopyImagesSubCommand.register(subparsers)
