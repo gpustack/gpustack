@@ -236,7 +236,7 @@ class VLLMServer(InferenceServer):
         )
 
         # Adjust run container for distributed follower (Ray path only).
-        # For native multi-node followers (mp), --headless and topology args injected
+        # For MP multi-node followers, --headless and topology args injected
         # by _build_command_args, so no command swap is needed.
         if deployment_metadata.distributed_follower and executor_backend == "ray":
             ray_command, ray_command_args, ray_ports = self._build_ray_configuration(
@@ -611,7 +611,7 @@ class VLLMServer(InferenceServer):
             )
         )
         arguments.extend(self._build_ray_distributed_arguments(ctx))
-        arguments.extend(self._build_native_multinode_arguments(ctx))
+        arguments.extend(self._build_mp_multinode_arguments(ctx))
         arguments.extend(self._build_extended_kv_cache_arguments(ctx))
         arguments.extend(self._build_ascend_310p_arguments(ctx))
 
@@ -714,12 +714,12 @@ class VLLMServer(InferenceServer):
             )
         return arguments
 
-    def _build_native_multinode_arguments(
+    def _build_mp_multinode_arguments(
         self,
         ctx: _VLLMArgsContext,
     ) -> List[str]:
         """
-        Native multi-node (non-Ray) path. Dispatches to one of three parameter
+        MP multi-node (non-Ray) path. Dispatches to one of three parameter
         shapes based on the resolved topology:
 
         - ``dp_only``  → ``--data-parallel-*`` only; vLLM treats every node as
@@ -910,7 +910,7 @@ class MultinodeTopology:
 
     Fields:
       - ``shape``: which set of vLLM arguments to emit (see
-        :py:meth:`VLLMServer._build_native_multinode_arguments`).
+        :py:meth:`VLLMServer._build_mp_multinode_arguments`).
       - ``tp`` / ``pp``: cluster-wide, identical on every node.
       - ``dp``: total DP rank count across the whole cluster.
       - ``dpl``: ``--data-parallel-size-local`` value to emit on this node.
@@ -1004,7 +1004,7 @@ def get_auto_parallelism_arguments(
         and deployment_metadata is not None
         and resolve_executor_backend(backend_parameters, backend_version) == "mp"
     ):
-        # Native multi-node: derive shape-specific defaults for tp/pp/dp/dpl
+        # MP multi-node: derive shape-specific defaults for tp/pp/dp/dpl
         # so the cluster works out-of-the-box; subordinate workers receive
         # the same backend_parameters, so any non-None field acts as a hard
         # cluster-wide constraint.

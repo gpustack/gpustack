@@ -436,12 +436,12 @@ def resolve_executor_backend(
     Resolve the dispatch branch for vLLM distributed execution.
 
     Returns ``"ray"`` if GPUStack should take the Ray sidecar path (legacy),
-    ``"mp"`` for the native multi-node headless path (current).
+    ``"mp"`` for the MP multi-node headless path (current).
 
     Precedence:
     1. User-supplied ``--distributed-executor-backend`` wins. Any explicit value
        other than ``"mp"`` is routed to the ray branch — GPUStack does not inject
-       its own native topology arguments and leaves the choice to vLLM.
+       its own MP topology arguments and leaves the choice to vLLM.
     2. Otherwise the default depends on ``backend_version`` via
        :func:`should_default_to_ray`.
     """

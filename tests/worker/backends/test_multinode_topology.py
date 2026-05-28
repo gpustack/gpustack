@@ -616,7 +616,7 @@ def test_create_candidate_returns_candidate_when_topology_fits():
 
 
 def test_create_candidate_skips_topology_check_for_ray_backend():
-    """Ray-path candidates don't go through native topology validation."""
+    """Ray-path candidates don't go through MP topology validation."""
     from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
         _create_candidate,
     )

@@ -191,6 +191,7 @@ nav:
           - Adding a GPU Cluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
           - Adding a GPU Cluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
           - Managing Model Routes: tutorials/managing-model-routes.md
+          - Serving Models with LoRA Adapters: tutorials/serving-with-lora-adapters.md
       - Integrations:
           - Inference APIs: integrations/inference-apis.md
           - Integrate with Claude Code: integrations/integrate-with-claude-code.md
