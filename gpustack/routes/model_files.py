@@ -18,6 +18,8 @@ from gpustack.api.tenant import (
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
+from gpustack.config.config import get_global_config
+from gpustack.utils.locks import get_lock_path
 from gpustack.schemas.model_files import (
     ModelFile,
     ModelFileCreate,
@@ -275,6 +277,11 @@ async def reset_model_file(session: SessionDep, ctx: TenantContextDep, id: int):
     )
 
     try:
+        cfg = get_global_config()
+        lock_path = get_lock_path(cfg.cache_dir, model_file)
+        if Path(lock_path).exists():
+            Path(lock_path).unlink()
+
         model_file.state = ModelFileStateEnum.DOWNLOADING
         model_file.download_progress = 0
         model_file.state_message = ""
