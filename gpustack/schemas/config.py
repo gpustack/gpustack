@@ -59,7 +59,6 @@ class PredefinedConfig(SensitivePredefinedConfig):
     benchmark_image_repo: str = (
         f"gpustack/benchmark-runner:{__benchmark_runner_version__}"
     )
-    operator_image: str = f"gpustack/gpustack-operator:{__operator_version__}"
     gateway_mode: GatewayModeEnum = GatewayModeEnum.auto
     gateway_kubeconfig: Optional[str] = None
     gateway_namespace: str = "higress-system"
@@ -100,6 +99,10 @@ class PredefinedConfig(SensitivePredefinedConfig):
     enable_hf_transfer: bool = False  # Deprecated
     enable_hf_xet: bool = False  # Deprecated
     proxy_mode: Optional[ModelInstanceProxyModeEnum] = None
+
+    # Operator options (belong to Worker)
+    operator_image: str = f"gpustack/gpustack-operator:{__operator_version__}"
+    gpu_instances_access_static_address: Optional[str] = None
 
 
 class PredefinedConfigNoDefaults(PredefinedConfig):

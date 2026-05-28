@@ -59,6 +59,7 @@ from gpustack.config.config import (
     get_global_config,
     get_cluster_image_name,
     get_cluster_operator_image_name,
+    get_cluster_container_registry,
 )
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack_runtime.detector import ManufacturerEnum
@@ -611,6 +612,14 @@ def get_registration_from_cluster(
         args=[],
         # Below fields are used for configure GPUStack Operator.
         operator_image=get_cluster_operator_image_name(cluster.worker_config),
+        operator_container_registry=get_cluster_container_registry(
+            cluster.worker_config
+        ),
+        operator_instance_access_static_address=(
+            cluster.worker_config.gpu_instances_access_static_address
+            if cluster.worker_config
+            else None
+        ),
     )
 
 

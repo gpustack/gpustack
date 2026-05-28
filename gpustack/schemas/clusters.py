@@ -10,6 +10,7 @@ from pydantic import (
     ConfigDict,
     PrivateAttr,
     Field as PydanticField,
+    model_validator,
 )
 from sqlmodel import (
     Field,
@@ -688,6 +689,40 @@ class ClusterRegistrationTokenPublic(BaseModel):
 
     # Below fields are used for configure GPUStack Operator.
     operator_image: str
+    operator_container_registry: Optional[str] = None
+    operator_container_namespace: Optional[str] = None
+    operator_instance_access_static_address: Optional[str] = None
+
+    @model_validator(mode="after")
+    def post_process(self) -> "ClusterRegistrationTokenPublic":
+        # Infer operator namespace from operator image and operator container registry.
+        #
+        # Assume the operator image is provided by ``get_cluster_operator_image_name``,
+        # and the operator container registry is provided by ``get_cluster_operator_container_registry``.
+        # So that, the operator image is always prefixed with the operator container registry if operator container registry is specified.
+        #
+        # We can infer the operator container namespace from the operator image
+        # by stripping the operator container registry prefix (if specified)
+        # and the operator image name suffix.
+        #
+        # For example, if the operator image is "reg-a/ns-a/s-ns-b/gpustack-operator:v1.0.0" and the operator container registry is "reg-a",
+        # then we can strip the "reg-a/" prefix to get the original operator image "ns-a/s-ns-b/gpustack-operator:v1.0.0",
+        # and then we can infer the operator container namespace is "ns-a/s-ns-b".
+        if self.operator_container_namespace is None:
+            image_name = self.operator_image
+            if self.operator_container_registry and image_name.startswith(
+                self.operator_container_registry + "/"
+            ):
+                image_name = image_name[len(self.operator_container_registry) + 1 :]
+            if "/" in image_name:
+                self.operator_container_namespace = image_name.rsplit("/", 1)[0]
+
+            # Ignore the operator container namespace if it's "gpustack",
+            # which is the default namespace used in gpustack Helm chart and doesn't need to be specified in the operator image.
+            if self.operator_container_namespace == "gpustack":
+                self.operator_container_namespace = None
+
+        return self
 
 
 class CredentialType(str, Enum):

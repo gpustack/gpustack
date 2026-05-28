@@ -161,7 +161,6 @@ data:
                 - gpustack
                 - worker
                 - -v=2
-                - --disable-peer
                 #@ if/end data.values.certmanagerEnabled:
                 - --cert-dir=/var/run/gpustack/certs
               resources:
@@ -190,6 +189,22 @@ data:
                       fieldPath: spec.nodeName
                 - name: KUBERNETES_SERVICE_NAME
                   value: gpustack-operator-worker
+                {%- if config.operator_container_registry %}
+                - name: GPUSTACK_CONTAINER_REGISTRY
+                  value: {{ config.operator_container_registry }}
+                {%- endif %}
+                {%- if config.operator_container_namespace %}
+                - name: GPUSTACK_CONTAINER_NAMESPACE
+                  value: {{ config.operator_container_namespace }}
+                {%- endif %}
+                {%- if config.image_pull_secrets %}
+                - name: GPUSTACK_IMAGE_PULL_SECRETS
+                  value: {{  config.image_pull_secrets | map(attribute='name') | join(',') }}
+                {%- endif %}
+                {%- if config.operator_instance_access_static_address  %}
+                - name: GPUSTACK_INSTANCE_ACCESS_STATIC_ADDRESS
+                  value: {{ config.operator_instance_access_static_address }}
+                {%- endif %}
               ports:
                 - name: https
                   containerPort: 31443
