@@ -45,6 +45,7 @@ class BenchmarkRunner:
     _config: Config
     _benchmark: Benchmark
     _model_path: str
+    _processor_arg: str
     _model_endpoint: str
     _model_backend_parameters: Optional[List[str]]
     _api_url: str
@@ -102,6 +103,12 @@ class BenchmarkRunner:
 
             self._benchmark_dir = self._config.benchmark_dir
             self._model_path = instance_snapshot.resolved_path
+            # tokenizer_source overrides --processor for GGUF models so the
+            # benchmark runner can load a HF-format tokenizer instead of the
+            # raw .gguf file (which AutoTokenizer cannot decode).
+            self._processor_arg = (
+                instance_snapshot.tokenizer_source or instance_snapshot.resolved_path
+            )
             self._model_endpoint = f"http://{instance_snapshot.worker_ip}:{instance_snapshot.ports[0] if instance_snapshot.ports else ''}"
             self._model_backend_parameters = instance_snapshot.backend_parameters
 
@@ -231,7 +238,7 @@ class BenchmarkRunner:
             "--sample-requests",
             "0",
             "--processor",
-            self._model_path,
+            self._processor_arg,
             "--output-dir",
             f"{self._benchmark_dir}",
             "--outputs",

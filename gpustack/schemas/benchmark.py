@@ -72,6 +72,12 @@ class ModelInstanceSnapshot(ModelInstanceRuntimeInfo):
     name: str
     resolved_path: Optional[str] = None
 
+    # Optional override of the value passed to `benchmark-runner --processor`.
+    # Populated for GGUF models so the runner can load a HF-format tokenizer
+    # (config.json + tokenizer.json) from a sibling repo, since the .gguf file
+    # itself is not a valid HF AutoTokenizer source.
+    tokenizer_source: Optional[str] = None
+
     # resource info
     state: Optional[str] = None
     state_message: Optional[str] = None
