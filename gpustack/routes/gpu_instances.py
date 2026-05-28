@@ -101,7 +101,7 @@ async def create_gpu_instance(
 
     persistent_volume_id = await _validate_create_obj(session, create_obj)
 
-    source = _build_create_source(create_obj, persistent_volume_id)
+    source = _build_create_source(create_obj, ctx.user.id, persistent_volume_id)
     async with handle_error(
         message="Failed to create GPU instance",
     ):
@@ -314,9 +314,13 @@ async def _validate_create_obj(
 
 
 def _build_create_source(
-    create_obj: GPUInstanceCreate, persistent_volume_id: Optional[int]
+    create_obj: GPUInstanceCreate,
+    creator_id: Optional[int],
+    persistent_volume_id: Optional[int],
 ) -> dict:
     source: dict = create_obj.model_dump()
+    if creator_id is not None:
+        source["creator_id"] = creator_id
     if persistent_volume_id is not None:
         source["persistent_volume_id"] = persistent_volume_id
     return source

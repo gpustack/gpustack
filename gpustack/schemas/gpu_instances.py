@@ -488,6 +488,19 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
     Reference to the cluster where the GPU instance is running.
     """
 
+    # Record the creator of the GPU instance for auditing and ownership purposes.
+    creator_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    """
+    Reference to the principal who created the GPU instance.
+    """
+
     # Mirror of ``spec.volume.persistent[_template].name`` as a real FK
     # column. The route resolves the user-facing name to this id at create
     # time; ephemeral-volume instances leave this NULL.
@@ -580,6 +593,11 @@ class GPUInstancePublic(GPUInstanceCreate, PublicFields):
         alias_generator=pydantic_camel_case_generator,
         populate_by_name=True,
     )
+
+    creator_id: Optional[int] = None
+    """
+    Reference to the principal who created the GPU instance.
+    """
 
     status: Optional[GPUInstanceStatusPublic] = None
     """
