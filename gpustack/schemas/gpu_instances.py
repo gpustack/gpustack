@@ -549,6 +549,7 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
     )
     id: Optional[int] = Field(default=None, primary_key=True)
 
+    # Record the cluster where the GPU instance is running for auditing and management purposes.
     cluster_id: Optional[int] = Field(
         default=None,
         sa_column=Column(

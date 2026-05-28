@@ -99,7 +99,7 @@ async def create_gpu_instance(
     )
     create_obj.owner_principal_id = ctx.current_principal_id or platform_principal_id()
 
-    persistent_volume_id = await _validate_create_obj(session, create_obj)
+    persistent_volume_id = await _validate_create_obj(session, ctx.user.id, create_obj)
 
     source = _build_create_source(create_obj, ctx.user.id, persistent_volume_id)
     async with handle_error(
@@ -193,6 +193,7 @@ async def handle_error(message: str):
 
 async def _validate_create_obj(
     session: AsyncSession,
+    creator_id: int,
     create_obj: GPUInstanceCreate,
 ) -> Optional[int]:
     """Enforce create-time invariants that aren't expressible in the schema:
@@ -301,6 +302,7 @@ async def _validate_create_obj(
             name=template.name,
             spec=template.spec,
             owner_principal_id=create_obj.owner_principal_id,
+            creator_id=creator_id,
             persistent_volume_type_id=pvt.id,
         )
         created = await GPUInstancePersistentVolume.create(
@@ -315,12 +317,11 @@ async def _validate_create_obj(
 
 def _build_create_source(
     create_obj: GPUInstanceCreate,
-    creator_id: Optional[int],
+    creator_id: int,
     persistent_volume_id: Optional[int],
 ) -> dict:
     source: dict = create_obj.model_dump()
-    if creator_id is not None:
-        source["creator_id"] = creator_id
+    source["creator_id"] = creator_id
     if persistent_volume_id is not None:
         source["persistent_volume_id"] = persistent_volume_id
     return source

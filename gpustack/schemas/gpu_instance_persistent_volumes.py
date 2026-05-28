@@ -36,22 +36,6 @@ class GPUInstancePersistentVolumeSpec(BaseModel):
     """
 
 
-class GPUInstancePersistentVolumeStatus(BaseModel):
-    """
-    Represents the status of a GPU instance persistent volume, including any relevant state information.
-    """
-
-    model_config = ConfigDict(
-        alias_generator=pydantic_camel_case_generator,
-        populate_by_name=True,
-    )
-
-    phase: Optional[str] = None
-    """
-    The current phase of the GPU instance persistent volume, such as "Available", "Unavailable" or "Pending".
-    """
-
-
 class GPUInstancePersistentVolumeBase(SQLModel):
     """
     Base model for GPU instance persistent volumes, containing common fields.
@@ -114,6 +98,19 @@ class GPUInstancePersistentVolume(
     )
     id: Optional[int] = Field(default=None, primary_key=True)
 
+    # Record the creator of the GPU instance persistent volume for auditing and ownership purposes.
+    creator_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    """
+    Reference to the principal who created the GPU instance persistent volume.
+    """
+
     # Mirror of ``spec.type_`` as a real FK column with ``ON DELETE
     # RESTRICT`` so the DB blocks deleting a GPUInstancePersistentVolumeType
     # while any persistent volume still references it. The route layer
@@ -160,6 +157,11 @@ class GPUInstancePersistentVolumeCreate(GPUInstancePersistentVolumeUpdate):
     Represents the fields required to create a new GPU instance persistent volume.
     """
 
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
     name: str
     """
     Created name of the GPU instance persistent volume.
@@ -180,9 +182,14 @@ class GPUInstancePersistentVolumePublic(
     containing only fields that are safe to expose to clients.
     """
 
-    status: Optional[GPUInstancePersistentVolumeStatus] = None
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    creator_id: Optional[int] = None
     """
-    Current status of the GPU instance persistent volume.
+    Reference to the principal who created the GPU instance persistent volume.
     """
 
 
