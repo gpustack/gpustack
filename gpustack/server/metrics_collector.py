@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, tzinfo
 from typing import Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -32,7 +33,9 @@ FLUSH_INTERVAL_SECONDS = 10
 #   "{model_id}.{provider_id}.{model}.{user_id}.{access_key}.{operation}.{date}"
 # ``operation`` and ``date`` are part of the key so per-operation rollups
 # stay separate and a stream that crosses midnight lands in the period
-# it ends in (anchored on completed_at).
+# it ends in (anchored on completed_at). ``date`` is computed in the
+# configured rollup timezone (see ``_resolve_rollup_tz``), not UTC, so
+# midnight here means local-calendar midnight.
 gateway_metrics_buffer: Dict[str, "ModelUsageMetrics"] = {}
 # Raw per-report metrics retained for ``model_usage_details`` audit rows.
 # Unlike ``gateway_metrics_buffer``, entries are not aggregated.
@@ -103,6 +106,33 @@ def _unixmilli_to_naive_utc(ms: Optional[int]) -> Optional[datetime]:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).replace(tzinfo=None)
 
 
+def _resolve_rollup_tz() -> tzinfo:
+    """Resolve the timezone used to bucket the daily ``model_usages.date`` rollup.
+
+    Priority:
+      1. ``GPUSTACK_USAGE_ROLLUP_TIMEZONE`` env (IANA name, e.g. ``Asia/Shanghai``).
+      2. Operating system local timezone (``TZ`` env / ``/etc/localtime``).
+    Falls back to UTC if the OS lookup somehow yields no tzinfo.
+    """
+    tz_name = envs.USAGE_ROLLUP_TIMEZONE
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            # ``ValueError`` covers malformed keys (absolute paths, ``..``
+            # segments) that ``ZoneInfo`` rejects before lookup.
+            logger.warning(
+                "Invalid GPUSTACK_USAGE_ROLLUP_TIMEZONE=%r, falling back to OS local tz",
+                tz_name,
+            )
+    return datetime.now(timezone.utc).astimezone().tzinfo or timezone.utc
+
+
+# Resolved once at import time. Tests can monkeypatch this attribute to pin
+# a deterministic timezone independent of the host's ``TZ``.
+_ROLLUP_TZ: tzinfo = _resolve_rollup_tz()
+
+
 def _resolve_metric_datetime(
     metric: ModelUsageMetrics,
 ) -> Tuple[date, datetime]:
@@ -111,13 +141,20 @@ def _resolve_metric_datetime(
     Prefers ``completed_at`` so a stream that crosses a calendar boundary
     lands in the period it ends in (per the proxy contract). Falls back to
     ``started_at`` and finally to server ``now`` if both are absent.
+
+    The returned ``date`` is bucketed in ``_ROLLUP_TZ`` — **not** UTC — so a
+    request completing at e.g. ``2026-05-27T16:30Z`` (= ``2026-05-28 00:30``
+    in Asia/Shanghai) lands in the May-28 bucket instead of being attributed
+    to the previous UTC day. The returned ``datetime`` stays naive UTC so
+    downstream audit / lifecycle stamps keep matching ``UTCDateTime``.
     """
     dt = (
         _unixmilli_to_naive_utc(metric.completed_at)
         or _unixmilli_to_naive_utc(metric.started_at)
         or datetime.now(timezone.utc).replace(tzinfo=None)
     )
-    return dt.date(), dt
+    bucket_date = dt.replace(tzinfo=timezone.utc).astimezone(_ROLLUP_TZ).date()
+    return bucket_date, dt
 
 
 def _make_buffer_key(metric: ModelUsageMetrics) -> str:

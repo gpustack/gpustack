@@ -147,6 +147,14 @@ USAGE_ESTIMATED_TOKENS_PER_OUTPUT_CHUNK = max(
     1, int(os.getenv("GPUSTACK_USAGE_ESTIMATED_TOKENS_PER_OUTPUT_CHUNK", 1))
 )
 
+# Timezone used to bucket the ``model_usages.date`` daily rollup (and the
+# matching ``model_usage_details.date`` audit column). Empty (default) ⇒ use
+# the operating system's local timezone (resolved from ``TZ`` env var /
+# ``/etc/localtime``). Set to an IANA name (``Asia/Shanghai``, ``UTC``, ...)
+# to override — useful when the server container runs in UTC but operators
+# expect rollups to follow a different region's calendar day.
+USAGE_ROLLUP_TIMEZONE = os.getenv("GPUSTACK_USAGE_ROLLUP_TIMEZONE", "")
+
 # Usage details archival.
 # Rows in ``model_usage_details`` older than the retention threshold (anchored
 # on COALESCE(completed_at, created_at)) are moved to
