@@ -1,8 +1,8 @@
 """gpu instances
 
-Revision ID: 277d9f8742f6
+Revision ID: 61929acb0676
 Revises: 7c5e3f9a2d18
-Create Date: 2026-05-26 21:32:17.490309
+Create Date: 2026-05-28 08:52:30.654938
 
 """
 from typing import Sequence, Union
@@ -11,10 +11,9 @@ from alembic import op
 import sqlalchemy as sa
 import sqlmodel
 import gpustack
-from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '277d9f8742f6'
+revision: str = '61929acb0676'
 down_revision: Union[str, None] = '7c5e3f9a2d18'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -97,11 +96,13 @@ def upgrade() -> None:
     sa.Column('description', sqlmodel.sql.sqltypes.AutoString(length=1024), nullable=True),
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('cluster_id', sa.Integer(), nullable=False),
+    sa.Column('creator_id', sa.Integer(), nullable=True),
     sa.Column('persistent_volume_id', sa.Integer(), nullable=True),
     sa.Column('name', sqlmodel.sql.sqltypes.AutoString(length=63), nullable=False),
     sa.Column('spec', gpustack.schemas.common.JSON(), nullable=False),
     sa.Column('status', gpustack.schemas.common.JSON(), nullable=True),
     sa.ForeignKeyConstraint(['cluster_id'], ['clusters.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['creator_id'], ['principals.id'], ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['owner_principal_id'], ['principals.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['persistent_volume_id'], ['gpu_instance_persistent_volumes.id'], ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id'),
