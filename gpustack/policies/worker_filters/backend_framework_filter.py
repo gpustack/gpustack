@@ -159,7 +159,7 @@ class BackendFrameworkFilter(WorkerFilter):
             )
             return workers, []
 
-        if self.model.backend == BackendEnum.CUSTOM:
+        if self.backend_name == BackendEnum.CUSTOM:
             return workers, []
 
         async with async_session() as session:
