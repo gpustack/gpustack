@@ -95,3 +95,12 @@ class Plugin:
         intent is to override; this hook runs last and last-write-wins.
         """
         pass
+
+    @classmethod
+    def extra_image_list(cls) -> List[str]:
+        """Contribute image names to the global GPUStack image list.
+
+        Called at CLI-parse time, before any FastAPI app exists, so this
+        must be a classmethod and must not depend on instance state.
+        """
+        return []
