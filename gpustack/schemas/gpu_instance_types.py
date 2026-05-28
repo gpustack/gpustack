@@ -127,30 +127,9 @@ class GPUAggregatedInstanceTypeOnceMaxRequestCandidate(BaseModel):
     """
 
 
-class GPUAggregatedInstanceTypeOnceMaxRequestTier(BaseModel):
+class GPUAggregatedInstanceTypeOverviewResource(BaseModel):
     """
-    Represents the accelerator tier for selecting GPU instance types based on once max request.
-    """
-
-    model_config = ConfigDict(
-        alias_generator=pydantic_camel_case_generator,
-        populate_by_name=True,
-    )
-
-    once_max_request: str
-    """
-    Maximum resource that can be requested in this tier, e.g. "4".
-    """
-
-    candidates: Optional[List[GPUAggregatedInstanceTypeOnceMaxRequestCandidate]] = None
-    """
-    Candidate GPU instance types for this once max request tier.
-    """
-
-
-class GPUAggregatedInstanceTypeRemainingResource(BaseModel):
-    """
-    Represents the remaining resources of a GPU instance type that can be requested.
+    Represents the overview resources of a GPU instance type that can be requested.
 
     """
 
@@ -161,22 +140,43 @@ class GPUAggregatedInstanceTypeRemainingResource(BaseModel):
 
     accelerator: Optional[str] = None
     """
-    The remaining accelerator resource that can be requested, e.g. "16".
+    The overview accelerator resource that can be requested, e.g. "16".
     """
 
     cpu: str
     """
-    The remaining CPU resource that can be requested, e.g. "64".
+    The overview CPU resource that can be requested, e.g. "64".
     """
 
     ram: str
     """
-    The remaining RAM resource that can be requested, e.g. "256Gi".
+    The overview RAM resource that can be requested, e.g. "256Gi".
     """
 
     local_storage: str
     """
-    The remaining local storage resource that can be requested, e.g. "1Ti".
+    The overview local storage resource that can be requested, e.g. "1Ti".
+    """
+
+
+class GPUAggregatedInstanceTypeOnceMaxRequestTier(BaseModel):
+    """
+    Represents the accelerator tier for selecting GPU instance types based on once max request.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    once_max_request: GPUAggregatedInstanceTypeOverviewResource
+    """
+    The once max request overview resources of this accelerator tier.
+    """
+
+    candidates: Optional[List[GPUAggregatedInstanceTypeOnceMaxRequestCandidate]] = None
+    """
+    Candidate GPU instance types for this once max request tier.
     """
 
 
@@ -190,9 +190,9 @@ class GPUAggregatedInstanceTypeStatus(BaseModel):
         populate_by_name=True,
     )
 
-    remaining: GPUAggregatedInstanceTypeRemainingResource
+    once_max_request: GPUAggregatedInstanceTypeOverviewResource
     """
-    The remaining resources of the GPU instance type.
+    The once max request overview resources of the GPU instance type.
     """
 
     accelerator_tiers: Optional[List[GPUAggregatedInstanceTypeOnceMaxRequestTier]] = (

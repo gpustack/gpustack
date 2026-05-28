@@ -340,6 +340,63 @@ class GPUInstanceSpecUpdate(BaseModel):
     """
 
 
+class GPUInstanceAcceleratorAllocation(BaseModel):
+    """
+    Represents the allocation status of an accelerator device for a GPU instance.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    id: str
+    """
+    Unique identifier is the universally unique identifier for this device.
+    """
+
+    index: int
+    """
+    Index is the logic number of the device, starting from 0.
+    """
+
+    mode: int
+    """
+    Mode is the allocation mode of the device.
+    """
+
+    allocated: Optional[int] = None
+    """
+    Allocated is the allocated units of the device.
+    """
+
+
+class GPUInstanceDevicesAllocationGroup(BaseModel):
+    """
+    Represents a group of allocated accelerator devices for a GPU instance, grouped by manufacturer and type.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    id: str
+    """
+    Unique identifier is the universally unique identifier for this device group.
+    """
+
+    manufacturer: str
+    """
+    Name of the manufacturer, e.g., "nvidia", "amd", etc.
+    """
+
+    accelerators: Optional[List[GPUInstanceAcceleratorAllocation]] = None
+    """
+    List of the allocated accelerator devices in this group.
+    """
+
+
 class GPUInstanceStatus(BaseModel):
     """
     Represents the status of a GPU instance, including any relevant state information.
@@ -370,6 +427,17 @@ class GPUInstanceStatus(BaseModel):
     Optional message providing additional details about the current phase of the GPU instance.
     """
 
+    node_name: Optional[str] = None
+    """
+    The name of the Kubernetes node where the GPU instance is running.
+    """
+
+    access_addresses: Optional[List[str]] = None
+    """
+    Optional list of addresses (e.g., IPs or hostnames) that can be used
+    to access the GPU instance.
+    """
+
     host_ips: Optional[List[GPUInstanceIP]] = PField(
         default=None,
         validation_alias=AliasChoices("hostIPs", "host_ips"),
@@ -391,6 +459,11 @@ class GPUInstanceStatus(BaseModel):
     ports: Optional[List[GPUInstanceServicePort]] = None
     """
     Optional list of port expose from the GPU instance.
+    """
+
+    allocations: Optional[List[GPUInstanceDevicesAllocationGroup]] = None
+    """
+    Optional list of allocated accelerator devices for the GPU instance, grouped by manufacturer and type.
     """
 
 
