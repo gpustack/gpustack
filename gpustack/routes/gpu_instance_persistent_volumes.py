@@ -102,7 +102,7 @@ async def create_gpu_instance_persistent_volume(
 
     persistent_volume_type_id = await _validate_create_obj(session, create_obj)
 
-    source = _build_create_source(create_obj, persistent_volume_type_id)
+    source = _build_create_source(create_obj, ctx.user.id, persistent_volume_type_id)
     async with handle_error(
         message="Failed to create GPU instance persistent volume",
     ):
@@ -213,8 +213,11 @@ async def _validate_create_obj(
 
 
 def _build_create_source(
-    create_obj: GPUInstancePersistentVolumeCreate, persistent_volume_type_id: int
+    create_obj: GPUInstancePersistentVolumeCreate,
+    creator_id: int,
+    persistent_volume_type_id: int,
 ) -> dict:
     source: dict = create_obj.model_dump()
+    source["creator_id"] = creator_id
     source["persistent_volume_type_id"] = persistent_volume_type_id
     return source
