@@ -155,6 +155,7 @@ The following metrics are exposed by GPUStack and can be scraped by Prometheus. 
 | gpustack:time_per_output_token_seconds | Histogram | Time per generated token.                                                   |
 | gpustack:e2e_request_latency_seconds   | Histogram | End-to-end request latency.                                                 |
 | gpustack:request_success               | Counter   | Total number of successful requests.                                        |
+| gpustack:request_preemptions           | Counter   | Total number of preemptions from the engine.                                |
 
 These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as defined in metrics_config.yaml.
 
