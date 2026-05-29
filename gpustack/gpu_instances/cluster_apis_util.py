@@ -238,7 +238,7 @@ def get_persistent_volume_type_name(
     if principal_identifier is None:
         principal_identifier = PLATFORM_PRINCIPAL_NAME
 
-    return f"{PREFIX}-{principal_identifier}-{name}"
+    return f"{PREFIX}.{principal_identifier}.{name}"
 
 
 def parse_persistent_volume_type_name(
@@ -252,10 +252,10 @@ def parse_persistent_volume_type_name(
     or None if it is not.
     """
 
-    if not persistent_volume_type_name.startswith(f"{PREFIX}-"):
+    if not persistent_volume_type_name.startswith(f"{PREFIX}."):
         return None
 
-    parts = persistent_volume_type_name.split("-")
+    parts = persistent_volume_type_name.split(".")
     if len(parts) < 3:
         return None
 
@@ -263,4 +263,4 @@ def parse_persistent_volume_type_name(
         return None
 
     # {name}, {principal_name}
-    return "-".join(parts[2:]), parts[1]
+    return ".".join(parts[2:]), parts[1]
