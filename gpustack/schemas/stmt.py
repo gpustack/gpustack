@@ -243,7 +243,7 @@ def model_user_after_create_view_stmt(db_type: str) -> str:
             f"|| ':' || COALESCE(CAST({via_expr} AS TEXT), '')"
         )
 
-    # 4-branch UNION ALL — each branch is a straight index join, so the
+    # 3-branch UNION ALL — each branch is a straight index join, so the
     # planner doesn't have to materialize every (user, route) pair to
     # then OR-filter EXISTS subqueries against it. ``mrp.deleted_at IS
     # NULL`` is required on every ACL branch: leaving it off was the
@@ -280,22 +280,6 @@ CROSS JOIN model_routes m
 WHERE u.kind = 'USER' AND u.deleted_at IS NULL
   AND u.is_admin = {sql_false}
   AND m.access_policy IN ('PUBLIC', 'AUTHED')
-
-UNION ALL
-
-SELECT {_pid("m.owner_principal_id")} AS pid,
-       u.id AS user_id,
-       m.owner_principal_id AS via_principal_id,
-       CAST('ORG' AS {text_type}) AS via_principal_kind,
-       m.*
-FROM principals u
-JOIN principal_users pu
-  ON pu.user_id = u.id
-JOIN model_routes m
-  ON m.owner_principal_id = pu.principal_id
-  AND m.access_policy = 'ORG'
-WHERE u.kind = 'USER' AND u.deleted_at IS NULL
-  AND u.is_admin = {sql_false}
 
 UNION ALL
 

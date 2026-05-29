@@ -891,11 +891,13 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 14. Extend access_policy enum.
     # ------------------------------------------------------------------
-    # ORG = scoped to members of the route's owning Organization (default
-    # for non-platform Org routes). ALLOWED_PRINCIPALS = explicit per-user
-    # / group / org grants via model_route_principals. ALLOWED_USERS
-    # stays as the OSS-facing per-user-only policy; rows are stored
-    # alongside ALLOWED_PRINCIPALS rows in the unified principals table.
+    # ALLOWED_PRINCIPALS = explicit per-user / group / org grants via
+    # model_route_principals. It also backs the "team-private" default
+    # for non-platform Org routes: such a route is created as
+    # ALLOWED_PRINCIPALS with its owning Org auto-granted, so members
+    # see it without a dedicated ORG policy. ALLOWED_USERS stays as the
+    # OSS-facing per-user-only policy; rows are stored alongside
+    # ALLOWED_PRINCIPALS rows in the unified principals table.
     access_policy_enum = sa.Enum(
         'PUBLIC', 'AUTHED', 'ALLOWED_USERS', name='accesspolicyenum'
     )
@@ -903,7 +905,6 @@ def upgrade() -> None:
         {'model_routes': 'access_policy'},
         access_policy_enum,
         'ALLOWED_PRINCIPALS',
-        'ORG',
     )
 
     # ------------------------------------------------------------------

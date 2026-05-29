@@ -489,20 +489,22 @@ async def create_model_route(
     source["owner_principal_id"] = target_org_id
 
     # Multi-tenant default: a non-platform Org's new route is scoped to
-    # that Org (ORG policy — `non_admin_user_models` matches by the
-    # route's `owner_principal_id`). The Default (platform) Org keeps
+    # that Org via ALLOWED_PRINCIPALS with the owning Org auto-granted
+    # below — `non_admin_user_models` matches it through the Org grant
+    # in `model_route_principals`. The Default (platform) Org keeps
     # AUTHED — admin's shared catalog stays visible to every
     # authenticated user, and existing routes migrated to the platform
     # Org must keep working. Caller's explicit `access_policy` always
-    # wins.
+    # wins (and then manages its own principal grants via /principals).
     owner_org_id = source.get("owner_principal_id")
     is_platform_org = owner_org_id == platform_principal_id()
-    if (
+    org_scoped_default = (
         not is_platform_org
         and owner_org_id is not None
         and "access_policy" not in input.model_fields_set
-    ):
-        source["access_policy"] = AccessPolicyEnum.ORG
+    )
+    if org_scoped_default:
+        source["access_policy"] = AccessPolicyEnum.ALLOWED_PRINCIPALS
 
     try:
         route: ModelRoute = await ModelRoute.create(
@@ -515,6 +517,17 @@ async def create_model_route(
             targets=targets,
             auto_commit=False,
         )
+        # Auto-grant the owning Org so the defaulted ALLOWED_PRINCIPALS
+        # route is visible to its members out of the box. Users can add
+        # or remove principals afterward via /principals — the Org grant
+        # is an ordinary row, not special-cased.
+        if org_scoped_default:
+            session.add(
+                ModelRoutePrincipalLink(
+                    route_id=route.id,
+                    principal_id=owner_org_id,
+                )
+            )
         await session.commit()
         await session.refresh(route)
         await revoke_model_access_cache(session=session)

@@ -65,10 +65,6 @@ def effective_route_name(
 class AccessPolicyEnum(str, Enum):
     PUBLIC = "public"
     AUTHED = "authed"
-    # ORG = scoped to members of the route's owning Organization. The
-    # default for new routes in non-platform Orgs — semantically the
-    # "team-private" scope, no principal table involvement.
-    ORG = "org"
     # Per-user grants. Rows are stored in ``model_route_principals``
     # with ``principal_id`` pointing at a USER-kind principal.
     ALLOWED_USERS = "allowed_users"
@@ -76,6 +72,12 @@ class AccessPolicyEnum(str, Enum):
     # ``model_route_principals``. Mutually exclusive with
     # ``ALLOWED_USERS`` — pick the policy whose granularity matches
     # the deployment's identity model.
+    #
+    # Also serves as the "team-private" scope: a new route in a
+    # non-platform Org defaults to ALLOWED_PRINCIPALS with its owning
+    # Org auto-granted (see ``create_model_route``), so the route is
+    # visible to that Org's members and the grant is editable like any
+    # other principal grant.
     ALLOWED_PRINCIPALS = "allowed_principals"
 
 
