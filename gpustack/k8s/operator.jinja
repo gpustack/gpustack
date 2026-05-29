@@ -189,9 +189,9 @@ data:
                       fieldPath: spec.nodeName
                 - name: KUBERNETES_SERVICE_NAME
                   value: gpustack-operator-worker
-                {%- if config.operator_container_registry %}
+                {%- if config.system_default_container_registry %}
                 - name: GPUSTACK_CONTAINER_REGISTRY
-                  value: {{ config.operator_container_registry }}
+                  value: {{ config.system_default_container_registry }}
                 {%- endif %}
                 {%- if config.operator_container_namespace %}
                 - name: GPUSTACK_CONTAINER_NAMESPACE

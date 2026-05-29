@@ -2304,7 +2304,10 @@ class WorkerProvisioningController:
         user_data = await client.construct_user_data(
             server_url=worker.cluster.server_url or cfg.server_external_url,
             token=worker.cluster.registration_token,
-            image_name=get_cluster_image_name(worker.cluster.worker_config),
+            image_name=get_cluster_image_name(
+                worker.cluster.worker_config,
+                worker.cluster.system_default_container_registry,
+            ),
             os_image=worker.worker_pool.os_image,
             secret_configs=secret_configs,
             worker_name=worker.name,

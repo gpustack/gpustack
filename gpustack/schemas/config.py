@@ -2,7 +2,7 @@ from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
-from gpustack import __benchmark_runner_version__, __operator_version__
+from gpustack import __benchmark_runner_version__
 
 
 class GatewayModeEnum(str, Enum):
@@ -63,7 +63,6 @@ class PredefinedConfig(SensitivePredefinedConfig):
     gateway_kubeconfig: Optional[str] = None
     gateway_namespace: str = "higress-system"
     service_discovery_name: Optional[str] = None
-    namespace: str = "gpustack-system"
 
     # Worker options
     worker_ifname: Optional[str] = None
@@ -100,10 +99,6 @@ class PredefinedConfig(SensitivePredefinedConfig):
     enable_hf_xet: bool = False  # Deprecated
     proxy_mode: Optional[ModelInstanceProxyModeEnum] = None
 
-    # Operator options (belong to Worker)
-    operator_image: str = f"gpustack/gpustack-operator:{__operator_version__}"
-    gpu_instances_access_static_address: Optional[str] = None
-
 
 class PredefinedConfigNoDefaults(PredefinedConfig):
     debug: Optional[bool] = None
@@ -117,10 +112,8 @@ class PredefinedConfigNoDefaults(PredefinedConfig):
     benchmark_max_duration_seconds: Optional[int] = None
     image_repo: Optional[str] = None
     benchmark_image_repo: Optional[str] = None
-    operator_image: Optional[str] = None
     gateway_mode: Optional[str] = None
     gateway_namespace: Optional[str] = None
-    namespace: Optional[str] = None
 
 
 def parse_base_model_to_env_vars(

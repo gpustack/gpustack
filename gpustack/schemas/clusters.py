@@ -10,7 +10,6 @@ from pydantic import (
     ConfigDict,
     PrivateAttr,
     Field as PydanticField,
-    model_validator,
 )
 from sqlmodel import (
     Field,
@@ -192,6 +191,28 @@ class K8sOptionsOverride(BaseModel):
     )
 
 
+class GpuInstanceOptions(BaseModel):
+    """
+    GPU-instance support knobs for the operator. Its mere presence on
+    ``k8s_options.gpu_instance_options`` signals "GPU instances enabled"
+    for this cluster — leaving the field unset opts the cluster out, so
+    no separate boolean flag is needed.
+
+    Not wired into manifest rendering yet; persisted so the operator /
+    future render paths can pick it up without another schema change.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    gpu_instances_access_static_address: Optional[str] = PydanticField(
+        default=None,
+        alias="gpuInstancesAccessStaticAddress",
+        description=(
+            "Static address surfaced to the operator for accessing GPU "
+            "instances in this cluster (e.g. LoadBalancer VIP)."
+        ),
+    )
+
+
 class K8sOptions(BaseModel):
     """
     All Kubernetes-side deployment knobs for a cluster's worker DaemonSets:
@@ -238,6 +259,29 @@ class K8sOptions(BaseModel):
             ),
         )
     )
+    operator_image: Optional[str] = PydanticField(
+        default=None,
+        alias="operatorImage",
+        description=(
+            "Override for the gpustack-operator container image. Falls back "
+            "to the server's GPUSTACK_OPERATOR_IMAGE / built-in default when unset."
+        ),
+    )
+    gpu_instance_options: Optional[GpuInstanceOptions] = PydanticField(
+        default=None,
+        alias="gpuInstanceOptions",
+        description=(
+            "GPU-instance support knobs. Presence of this field enables GPU "
+            "instance handling for the cluster; absence opts the cluster out."
+        ),
+    )
+    namespace: Optional[str] = PydanticField(
+        default=None,
+        description=(
+            "Kubernetes namespace this cluster's manifests render into. "
+            "Falls back to ``gpustack-system`` at render time when unset."
+        ),
+    )
 
     def resolve_for(self, runtime: Optional[ManufacturerEnum]) -> "K8sOptions":
         """
@@ -254,6 +298,9 @@ class K8sOptions(BaseModel):
                 image_credentials=self.image_credentials,
                 node_selector=self.node_selector,
                 volume_mounts=self.volume_mounts,
+                operator_image=self.operator_image,
+                gpu_instance_options=self.gpu_instance_options,
+                namespace=self.namespace,
             )
 
         merged_node_selector: Optional[Dict[str, str]] = None
@@ -267,6 +314,9 @@ class K8sOptions(BaseModel):
             image_credentials=self.image_credentials,
             node_selector=merged_node_selector,
             volume_mounts=self.volume_mounts,
+            operator_image=self.operator_image,
+            gpu_instance_options=self.gpu_instance_options,
+            namespace=self.namespace,
         )
 
 
@@ -443,6 +493,14 @@ class ClusterUpdate(SQLModel):
     description: Optional[str] = None
     gateway_endpoint: Optional[str] = None
     server_url: Optional[str] = None
+    # Per-cluster default container registry. Promoted out of worker_config
+    # so it can be referenced/overridden independently of the worker process
+    # config (image rendering, registration token, worker config response
+    # all read this directly). Falls back to the server's
+    # GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY when unset.
+    system_default_container_registry: Optional[str] = Field(
+        default=None, sa_column=Column(String(255), nullable=True)
+    )
     worker_config: Optional[PredefinedConfigNoDefaults] = Field(
         default=None,
         sa_column=Column(
@@ -686,43 +744,6 @@ class ClusterRegistrationTokenPublic(BaseModel):
     image: str
     env: Dict[str, str]
     args: List[str]
-
-    # Below fields are used for configure GPUStack Operator.
-    operator_image: str
-    operator_container_registry: Optional[str] = None
-    operator_container_namespace: Optional[str] = None
-    operator_instance_access_static_address: Optional[str] = None
-
-    @model_validator(mode="after")
-    def post_process(self) -> "ClusterRegistrationTokenPublic":
-        # Infer operator namespace from operator image and operator container registry.
-        #
-        # Assume the operator image is provided by ``get_cluster_operator_image_name``,
-        # and the operator container registry is provided by ``get_cluster_operator_container_registry``.
-        # So that, the operator image is always prefixed with the operator container registry if operator container registry is specified.
-        #
-        # We can infer the operator container namespace from the operator image
-        # by stripping the operator container registry prefix (if specified)
-        # and the operator image name suffix.
-        #
-        # For example, if the operator image is "reg-a/ns-a/s-ns-b/gpustack-operator:v1.0.0" and the operator container registry is "reg-a",
-        # then we can strip the "reg-a/" prefix to get the original operator image "ns-a/s-ns-b/gpustack-operator:v1.0.0",
-        # and then we can infer the operator container namespace is "ns-a/s-ns-b".
-        if self.operator_container_namespace is None:
-            image_name = self.operator_image
-            if self.operator_container_registry and image_name.startswith(
-                self.operator_container_registry + "/"
-            ):
-                image_name = image_name[len(self.operator_container_registry) + 1 :]
-            if "/" in image_name:
-                self.operator_container_namespace = image_name.rsplit("/", 1)[0]
-
-            # Ignore the operator container namespace if it's "gpustack",
-            # which is the default namespace used in gpustack Helm chart and doesn't need to be specified in the operator image.
-            if self.operator_container_namespace == "gpustack":
-                self.operator_container_namespace = None
-
-        return self
 
 
 class CredentialType(str, Enum):

@@ -27,7 +27,12 @@ async def reconcile_gpustack_operator_subscription():
 
 async def _reconcile(event: Event):
     cluster: Cluster = event.data
-    if cluster is None or cluster.provider != ClusterProvider.Kubernetes:
+    if (
+        cluster is None
+        or cluster.provider != ClusterProvider.Kubernetes
+        or cluster.k8s_options is None
+        or cluster.k8s_options.gpu_instance_options is None
+    ):
         return
     if event.type == EventType.DELETED:
         await gateway_client.unsubscribe_worker(str(cluster.id))

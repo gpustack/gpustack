@@ -452,15 +452,16 @@ def _build_worker_config_dict(cluster: Cluster) -> Dict[str, Any]:
         if cluster.worker_config is None
         else cluster.worker_config.model_dump(exclude=sensitive_fields)
     )
+    # ``system_default_container_registry`` now lives in its own column on
+    # the cluster; inject the cluster value (then the server-wide default)
+    # into the worker config dict so workers keep receiving the setting via
+    # the existing PredefinedConfig channel.
     cfg = get_global_config()
-    if (
-        cfg.system_default_container_registry is not None
-        and len(cfg.system_default_container_registry) > 0
-    ):
-        worker_config.setdefault(
-            "system_default_container_registry",
-            cfg.system_default_container_registry,
-        )
+    cluster_registry = (cluster.system_default_container_registry or "").strip()
+    cfg_registry = (cfg.system_default_container_registry or "").strip()
+    effective_registry = cluster_registry or cfg_registry
+    if effective_registry:
+        worker_config["system_default_container_registry"] = effective_registry
     return worker_config
 
 

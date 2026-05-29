@@ -63,28 +63,28 @@ def upgrade() -> None:
             )
     ### end
 
-    ### Backfill worker_config.namespace for pre-existing Kubernetes clusters.
+    ### Backfill k8s_options.namespace for pre-existing Kubernetes clusters.
     ### Earlier versions rendered worker DaemonSets and the operator into
     ### "gpustack-system-{hashed_suffix}" via the now-removed cluster_suffix
     ### template field. After unifying on "gpustack-system" new clusters render
     ### there directly, but upgraded clusters must keep targeting their
     ### original namespace or the operator will not find the resources it
-    ### previously deployed. Persist the legacy namespace in worker_config so
-    ### the render pipeline still picks it up.
+    ### previously deployed. Persist the legacy namespace in k8s_options so
+    ### the render pipeline still picks it up (namespace lives on k8s_options
+    ### going forward; worker_config no longer carries it).
     clusters_jsonable = sa.table(
         'clusters',
         sa.column('id', sa.Integer),
         sa.column('worker_config', sa.JSON),
+        sa.column('k8s_options', sa.JSON),
     )
     k8s_cluster_rows = conn.execute(
         sa.text(
-            "SELECT id, hashed_suffix, worker_config FROM clusters "
+            "SELECT id, hashed_suffix, worker_config, k8s_options FROM clusters "
             "WHERE provider = 'Kubernetes'"
         )
     ).fetchall()
-    for cluster_id, hashed_suffix, worker_config in k8s_cluster_rows:
-        if not hashed_suffix:
-            continue
+    for cluster_id, hashed_suffix, worker_config, k8s_options in k8s_cluster_rows:
         if isinstance(worker_config, str):
             try:
                 worker_config = json.loads(worker_config) if worker_config else {}
@@ -94,14 +94,94 @@ def upgrade() -> None:
         # other non-dict shape the column might somehow be holding.
         if not isinstance(worker_config, dict):
             worker_config = {}
-        # Respect a namespace the user already set; only backfill when missing.
-        if worker_config.get('namespace'):
+        if isinstance(k8s_options, str):
+            try:
+                k8s_options = json.loads(k8s_options) if k8s_options else {}
+            except json.JSONDecodeError:
+                k8s_options = {}
+        if not isinstance(k8s_options, dict):
+            k8s_options = {}
+
+        # Prefer an explicit value the user already set on either side;
+        # otherwise fall back to the legacy hashed-suffix namespace. Without
+        # either (legacy install with no hashed_suffix) we can't reconstruct a
+        # cluster-specific namespace, so leave it null and let render fall
+        # through to the gpustack-system default — but still strip any stale
+        # worker_config.namespace key below.
+        existing_ns = k8s_options.get('namespace') or worker_config.get('namespace')
+        target_ns = existing_ns or (
+            f'gpustack-system-{hashed_suffix}' if hashed_suffix else None
+        )
+
+        changed = False
+        if target_ns and k8s_options.get('namespace') != target_ns:
+            k8s_options['namespace'] = target_ns
+            changed = True
+        if 'namespace' in worker_config:
+            worker_config.pop('namespace')
+            changed = True
+
+        if not changed:
             continue
-        worker_config['namespace'] = f'gpustack-system-{hashed_suffix}'
+
         conn.execute(
             sa.update(clusters_jsonable)
             .where(clusters_jsonable.c.id == cluster_id)
-            .values(worker_config=worker_config)
+            .values(
+                worker_config=worker_config or None,
+                k8s_options=k8s_options or None,
+            )
+        )
+    ### end
+
+    ### Promote system_default_container_registry out of worker_config into a
+    ### dedicated column on clusters. Server-side render paths read the
+    ### column directly; worker delivery (routes/workers.py) re-injects the
+    ### value into the worker_config payload so the worker-side
+    ### PredefinedConfig channel keeps working.
+    if not column_exists('clusters', 'system_default_container_registry'):
+        with op.batch_alter_table('clusters', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    'system_default_container_registry',
+                    sa.String(length=255),
+                    nullable=True,
+                )
+            )
+
+    clusters_registry_jsonable = sa.table(
+        'clusters',
+        sa.column('id', sa.Integer),
+        sa.column('worker_config', sa.JSON),
+        sa.column('system_default_container_registry', sa.String),
+    )
+    registry_rows = conn.execute(
+        sa.text(
+            "SELECT id, worker_config, system_default_container_registry "
+            "FROM clusters"
+        )
+    ).fetchall()
+    for cluster_id, worker_config, existing_registry in registry_rows:
+        if isinstance(worker_config, str):
+            try:
+                worker_config = json.loads(worker_config) if worker_config else {}
+            except json.JSONDecodeError:
+                worker_config = {}
+        if not isinstance(worker_config, dict):
+            worker_config = {}
+        if 'system_default_container_registry' not in worker_config:
+            continue
+        value = worker_config.pop('system_default_container_registry')
+        # Don't overwrite a value the user may have already set directly on
+        # the column.
+        new_registry = existing_registry if existing_registry else value
+        conn.execute(
+            sa.update(clusters_registry_jsonable)
+            .where(clusters_registry_jsonable.c.id == cluster_id)
+            .values(
+                worker_config=worker_config or None,
+                system_default_container_registry=new_registry,
+            )
         )
     ### end
 
@@ -660,6 +740,44 @@ def downgrade() -> None:
     ### k8s deployment values
     with op.batch_alter_table('clusters', schema=None) as batch_op:
         batch_op.drop_column('k8s_options')
+    ### end
+
+    ### Demote system_default_container_registry back into worker_config so a
+    ### downgrade keeps the same effective configuration before dropping the
+    ### dedicated column.
+    conn = op.get_bind()
+    clusters_registry_jsonable = sa.table(
+        'clusters',
+        sa.column('id', sa.Integer),
+        sa.column('worker_config', sa.JSON),
+        sa.column('system_default_container_registry', sa.String),
+    )
+    registry_rows = conn.execute(
+        sa.text(
+            "SELECT id, worker_config, system_default_container_registry "
+            "FROM clusters WHERE system_default_container_registry IS NOT NULL"
+        )
+    ).fetchall()
+    for cluster_id, worker_config, cluster_registry in registry_rows:
+        if not cluster_registry:
+            continue
+        if isinstance(worker_config, str):
+            try:
+                worker_config = json.loads(worker_config) if worker_config else {}
+            except json.JSONDecodeError:
+                worker_config = {}
+        if not isinstance(worker_config, dict):
+            worker_config = {}
+        if worker_config.get('system_default_container_registry') is None:
+            worker_config['system_default_container_registry'] = cluster_registry
+            conn.execute(
+                sa.update(clusters_registry_jsonable)
+                .where(clusters_registry_jsonable.c.id == cluster_id)
+                .values(worker_config=worker_config or None)
+            )
+
+    with op.batch_alter_table('clusters', schema=None) as batch_op:
+        batch_op.drop_column('system_default_container_registry')
     ### end
 
     ### custom API_KEY
