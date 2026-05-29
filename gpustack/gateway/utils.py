@@ -1,4 +1,5 @@
 import re
+import hashlib
 import logging
 import copy
 import math
@@ -235,11 +236,27 @@ def model_instance_prefix(
     return f"{model_prefix(model_instance.model_id)}{model_instance.id}"
 
 
+def lora_registry_name_suffix(lora_route_name: str) -> str:
+    """Stable RFC1123-safe suffix identifying a LoRA adapter's aliased registry.
+
+    Derived from the LoRA route name (``<base>:<lora>``) by hashing, so the same
+    LoRA always yields the same suffix regardless of position in ``lora_list`` or
+    of characters in the LoRA name. Both the McpBridge registration side and the
+    destination side compute it independently and must agree, otherwise the alias
+    service would dangle (503).
+    """
+    digest = hashlib.sha256(lora_route_name.encode("utf-8")).hexdigest()[:8]
+    return f"l{digest}"
+
+
 def model_instance_registry(
     model_instance: Union[ModelInstance, ModelInstancePublic],
     worker: Optional[Worker] = None,
+    name_suffix: Optional[str] = None,
 ) -> Optional[McpBridgeRegistry]:
     name = model_instance_prefix(model_instance)
+    if name_suffix:
+        name = f"{name}-{name_suffix}"
     if worker is not None:
         if worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER:
             return _worker_reserve_proxy_registry(worker, name)
@@ -768,6 +785,7 @@ def model_instances_registry_list(
     model_instances: List[Union[ModelInstance, ModelInstancePublic]],
     workers: Optional[Dict[int, Worker]] = None,
     downstream_model_name: Optional[str] = None,
+    registry_name_suffix: Optional[str] = None,
 ) -> DestinationTupleList:
     registries: DestinationTupleList = []
     for model_instance in model_instances:
@@ -776,7 +794,9 @@ def model_instances_registry_list(
             if model_instance.worker_id
             else None
         )
-        registry = model_instance_registry(model_instance, worker=worker)
+        registry = model_instance_registry(
+            model_instance, worker=worker, name_suffix=registry_name_suffix
+        )
         if registry is not None:
             registries.append(
                 (1, downstream_model_name or model_instance.model_name, registry)
@@ -1025,9 +1045,16 @@ async def ensure_model_mcp_bridge(
     namespace: str,
     cluster_id: int,
     workers: Optional[Dict[int, Worker]] = None,
+    lora_route_names: Optional[List[str]] = None,
 ) -> List[McpBridgeRegistry]:
     desired_registry: List[McpBridgeRegistry] = []
     to_delete_prefix: Optional[str] = model_prefix(model_id)
+    # Each LoRA gets its own registry aliasing the same instance address under a
+    # distinct service name, so the gateway can weight traffic across LoRAs and the
+    # model-mapper can rewrite per LoRA (both key on service). See calculate_model_destinations.
+    name_suffixes = [None] + [
+        lora_registry_name_suffix(name) for name in lora_route_names or []
+    ]
     if event_type != EventType.DELETED:
         for model_instance in model_instances:
             worker = (
@@ -1035,9 +1062,12 @@ async def ensure_model_mcp_bridge(
                 if model_instance.worker_id
                 else None
             )
-            registry = model_instance_registry(model_instance, worker=worker)
-            if registry is not None:
-                desired_registry.append(registry)
+            for name_suffix in name_suffixes:
+                registry = model_instance_registry(
+                    model_instance, worker=worker, name_suffix=name_suffix
+                )
+                if registry is not None:
+                    desired_registry.append(registry)
     await ensure_mcp_bridge(
         client=networking_higress_api,
         namespace=namespace,
@@ -1485,9 +1515,11 @@ def ai_proxy_diff_spec(
 def get_instance_id_from_header(headers: Mapping[str, str]) -> int:
     """Parse the model instance ID from the ``x-gpustack-model-instance`` routing header.
 
-    The header value follows the pattern ``model-<model_id>-<instance_id>.<suffix>``
-    injected by the API gateway. The instance ID is the last numeric segment
-    before the first dot.
+    The header value follows the pattern
+    ``model-<model_id>-<instance_id>[-l<lora>].<type>`` injected by the API
+    gateway. The instance ID is the second numeric segment; LoRA targets append
+    an extra ``-l<hash>`` alias segment (see ``lora_registry_name_suffix``) which
+    must be skipped.
 
     Raises:
         HTTPException (400): if the header is absent.
@@ -1501,9 +1533,9 @@ def get_instance_id_from_header(headers: Mapping[str, str]) -> int:
             status_code=400, detail=f"Missing {router_header_key} header"
         )
 
-    # Match pattern: model-<model_id>-<instance_id>.suffix
-    # instance_id is the last numeric segment before the first dot
-    match = re.match(r'^model-.*-(\d+)\..+', model_destination)
+    # Match pattern: model-<model_id>-<instance_id>[-<alias>].<type>
+    # instance_id is the second numeric segment, optionally followed by a LoRA alias.
+    match = re.match(r'^model-\d+-(\d+)(?:-[^.]+)?\..+', model_destination)
     if not match:
         raise NotFoundException(
             message=f"Invalid model destination format: {model_destination}"

@@ -50,6 +50,7 @@ class RouteTargetResolution(NamedTuple):
 
     model_id: int
     overridden_model_name: Optional[str]
+    weight: int
 
 
 class UserService:
@@ -671,6 +672,7 @@ class ModelRouteService:
             RouteTargetResolution(
                 model_id=target.model_id,
                 overridden_model_name=target.overridden_model_name,
+                weight=target.weight,
             )
             for target in targets
             if target.model_id is not None

@@ -202,6 +202,10 @@ class ModelController:
             )
             worker_by_id = {worker.id: worker for worker in workers}
 
+        lora_route_names = [
+            lora_route_name_for(model.name, entry.lora_name)
+            for entry in normalized_lora_list(model)
+        ]
         await mcp_handler.ensure_model_mcp_bridge(
             event_type=event_type,
             model_id=model.id,
@@ -210,6 +214,7 @@ class ModelController:
             namespace=self._config.gateway_namespace,
             cluster_id=model.cluster_id,
             workers=worker_by_id,
+            lora_route_names=lora_route_names,
         )
 
     async def _reconcile(self, event: Event):
@@ -1222,6 +1227,14 @@ async def calculate_model_destinations(
     LoRA module name reach vLLM intact.
     """
     downstream_model_name = overridden_model_name or model.name
+    # LoRA targets share the base model's instances; route them to a per-LoRA
+    # aliased service (same address, distinct name) registered in ensure_model_mcp_bridge
+    # so the gateway can weight and rewrite per LoRA instead of collapsing onto one.
+    registry_name_suffix = (
+        mcp_handler.lora_registry_name_suffix(overridden_model_name)
+        if overridden_model_name is not None and ":" in overridden_model_name
+        else None
+    )
     cluster_registry = await get_cluster_registry(session, model.cluster_id)
     if cluster_registry is not None:
         return [(1, downstream_model_name, cluster_registry)]
@@ -1253,7 +1266,10 @@ async def calculate_model_destinations(
     )
     workers = {worker.id: worker for worker in worker_list}
     return mcp_handler.model_instances_registry_list(
-        instances, workers, downstream_model_name=downstream_model_name
+        instances,
+        workers,
+        downstream_model_name=downstream_model_name,
+        registry_name_suffix=registry_name_suffix,
     )
 
 
