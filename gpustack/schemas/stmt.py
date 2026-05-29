@@ -243,17 +243,17 @@ def model_user_after_create_view_stmt(db_type: str) -> str:
             f"|| ':' || COALESCE(CAST({via_expr} AS TEXT), '')"
         )
 
-    # 3-branch UNION ALL — each branch is a straight index join, so the
+    # 2-branch UNION ALL — each branch is a straight index join, so the
     # planner doesn't have to materialize every (user, route) pair to
     # then OR-filter EXISTS subqueries against it. ``mrp.deleted_at IS
-    # NULL`` is required on every ACL branch: leaving it off was the
+    # NULL`` is required on the ACL branch: leaving it off was the
     # soft-delete-leak bug from review.
     # After identity consolidation, USER rows live in ``principals``
-    # (kind = 'USER'). Every reference to the old ``users`` table is
-    # rewritten to ``principals`` with a kind filter. The
-    # ALLOWED_USERS branch becomes ``mrp.principal_id = u.id`` (the
-    # user's USER-principal id IS the user's id) instead of joining
-    # through the now-removed ``users.principal_id`` column.
+    # (kind = 'USER'). The single ACL branch joins through
+    # ``principal_users``, which maps a USER-principal to itself — so a
+    # USER grant resolves exactly like the released ``allowed_users``
+    # policy did (now folded into ALLOWED_PRINCIPALS; the migration
+    # converted existing rows), and that separate branch is gone.
     #
     # ``via_principal_id`` / ``via_principal_kind`` record which principal
     # granted this (user, route) row visibility, so the API layer can
@@ -280,23 +280,6 @@ CROSS JOIN model_routes m
 WHERE u.kind = 'USER' AND u.deleted_at IS NULL
   AND u.is_admin = {sql_false}
   AND m.access_policy IN ('PUBLIC', 'AUTHED')
-
-UNION ALL
-
-SELECT {_pid("u.id")} AS pid,
-       u.id AS user_id,
-       u.id AS via_principal_id,
-       CAST('USER' AS {text_type}) AS via_principal_kind,
-       m.*
-FROM principals u
-JOIN model_route_principals mrp
-  ON mrp.principal_id = u.id
-  AND mrp.deleted_at IS NULL
-JOIN model_routes m
-  ON m.id = mrp.route_id
-  AND m.access_policy = 'ALLOWED_USERS'
-WHERE u.kind = 'USER' AND u.deleted_at IS NULL
-  AND u.is_admin = {sql_false}
 
 UNION ALL
 
