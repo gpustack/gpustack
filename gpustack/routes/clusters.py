@@ -592,97 +592,6 @@ async def create_worker_pool(
         raise InternalServerErrorException(message=f"Failed to create worker pool: {e}")
 
 
-def _validate_multi_vendor_overrides(
-    requested_runtimes: Optional[List[ManufacturerEnum]],
-    k8s_options,
-) -> None:
-    """
-    When 2+ distinct GPU runtimes are requested, each must have a configured
-    ``gpu_vendor_overrides[<runtime>].node_selector``. The override's keys
-    drive the CPU worker's DoesNotExist node-affinity, without which the CPU
-    DS and the vendor DSes would compete for the same nodes and the wrong
-    vendor's hostPath mounts could land on incompatible hardware.
-    """
-    if not requested_runtimes:
-        return
-
-    distinct: List[ManufacturerEnum] = []
-    seen: set = set()
-    for r in requested_runtimes:
-        if r == ManufacturerEnum.UNKNOWN:
-            continue
-        if r in seen:
-            continue
-        seen.add(r)
-        distinct.append(r)
-
-    if len(distinct) < 2:
-        return
-
-    overrides = (
-        k8s_options.gpu_vendor_overrides
-        if k8s_options is not None and k8s_options.gpu_vendor_overrides
-        else {}
-    )
-    missing = [
-        r.value
-        for r in distinct
-        if r not in overrides
-        or overrides[r].node_selector is None
-        or len(overrides[r].node_selector) == 0
-    ]
-    if missing:
-        raise InvalidException(
-            message=(
-                "Multi-vendor manifest requires "
-                "k8s_options.gpuVendorOverrides[<runtime>].nodeSelector "
-                f"to be configured for each requested runtime. Missing: {', '.join(missing)}."
-            )
-        )
-
-    # Two vendors using an identical nodeSelector means both DSes target the
-    # same node set; podAntiAffinity would let one DS arbitrarily win each
-    # node and leave the other Pending forever.
-    duplicates: List[str] = []
-    for i, r1 in enumerate(distinct):
-        for r2 in distinct[i + 1 :]:
-            if overrides[r1].node_selector == overrides[r2].node_selector:
-                duplicates.append(f"{r1.value}+{r2.value}")
-    if duplicates:
-        raise InvalidException(
-            message=(
-                "Multi-vendor manifest cannot use the same nodeSelector for "
-                "different runtimes — each vendor must scope to a distinct "
-                f"node set. Conflicting pairs: {', '.join(duplicates)}."
-            )
-        )
-
-    # Base nodeSelector keys must not also appear in any vendor override.
-    # The CPU worker collects all override keys into DoesNotExist match
-    # expressions, so a key shared with the base would make CPU DS
-    # simultaneously require and forbid it — never schedulable.
-    base_keys = (
-        set(k8s_options.node_selector.keys())
-        if k8s_options is not None and k8s_options.node_selector
-        else set()
-    )
-    if base_keys:
-        override_keys: set = set()
-        for ov in overrides.values():
-            if ov.node_selector:
-                override_keys.update(ov.node_selector.keys())
-        clashing = sorted(base_keys & override_keys)
-        if clashing:
-            raise InvalidException(
-                message=(
-                    "Multi-vendor manifest cannot reuse k8s_options.nodeSelector "
-                    "keys inside gpuVendorOverrides[*].nodeSelector — the CPU "
-                    "worker would simultaneously require and forbid the key. "
-                    f"Conflicting keys: {', '.join(clashing)}."
-                )
-            )
-
-
 def get_registration_from_cluster(
     request: Request, cluster: Cluster
 ) -> ClusterRegistrationTokenPublic:
@@ -745,8 +654,6 @@ async def get_cluster_manifests(
                 f"{cluster.name}(id: {id}) not found"
             )
         )
-
-    _validate_multi_vendor_overrides(runtime, cluster.k8s_options)
 
     # Resolve server-wide defaults onto a copy of k8s_options so the render
     # model only ever reads k8s_options. Copy (not mutate) the loaded cluster
