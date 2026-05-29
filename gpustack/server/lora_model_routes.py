@@ -10,7 +10,14 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
 )
-from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget, TargetStateEnum
+from gpustack.schemas.links import ModelRoutePrincipalLink
+from gpustack.schemas.model_routes import (
+    AccessPolicyEnum,
+    ModelRoute,
+    ModelRouteTarget,
+    TargetStateEnum,
+)
+from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.services import ModelRouteService
 from gpustack.utils.lora_model_source import (
     lora_route_name_for,
@@ -46,6 +53,19 @@ async def create_lora_model_routes(
     )
     existing_names = {r.name for r in existing}
 
+    # Org-scoped models default to ALLOWED_PRINCIPALS; their routes are
+    # made visible to the owning Org via a principal grant (see
+    # ``create_model``). A LoRA child route is a separate ACL subject, so
+    # it needs its own grant to match the base model's visibility — auto-
+    # grant the owning (non-platform) Org on each newly created route.
+    # Platform-owned or non-ALLOWED_PRINCIPALS routes get nothing here.
+    owner_org_id = model.owner_principal_id
+    grant_owner_org = (
+        access_policy == AccessPolicyEnum.ALLOWED_PRINCIPALS
+        and owner_org_id is not None
+        and owner_org_id != platform_principal_id()
+    )
+
     for entry in entries:
         route_name = lora_route_name_for(model.name, entry.lora_name)
         if route_name in existing_names:
@@ -78,6 +98,14 @@ async def create_lora_model_routes(
         )
         model_route = await ModelRoute.create(session, model_route, auto_commit=False)
         await session.flush()
+
+        if grant_owner_org:
+            session.add(
+                ModelRoutePrincipalLink(
+                    route_id=model_route.id,
+                    principal_id=owner_org_id,
+                )
+            )
 
         model_route_target = ModelRouteTarget(
             name=f"{route_name}-deployment",

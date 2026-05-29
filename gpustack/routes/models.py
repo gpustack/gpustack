@@ -47,10 +47,13 @@ from gpustack.schemas.models import (
     ModelsPublic,
 )
 from gpustack.schemas.model_routes import (
+    AccessPolicyEnum,
     ModelRoute,
     ModelRouteTarget,
     TargetStateEnum,
 )
+from gpustack.schemas.links import ModelRoutePrincipalLink
+from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.services import (
     ModelService,
     WorkerService,
@@ -555,6 +558,20 @@ async def create_model(
     if target_org_id is not None:
         model_in_dict["owner_principal_id"] = target_org_id
 
+    # Multi-tenant default: a non-platform Org's new model (and the
+    # route(s) it spawns) is scoped to that Org via ALLOWED_PRINCIPALS
+    # with the owning Org auto-granted below. The Default (platform) Org
+    # keeps AUTHED. Caller's explicit ``access_policy`` always wins and
+    # then manages its own grants via /principals. ``model_dump`` always
+    # emits ``access_policy`` (it has a default), so override directly.
+    org_scoped_default = (
+        target_org_id is not None
+        and target_org_id != platform_principal_id()
+        and "access_policy" not in model_in.model_fields_set
+    )
+    if org_scoped_default:
+        model_in_dict["access_policy"] = AccessPolicyEnum.ALLOWED_PRINCIPALS
+
     try:
         model: Model = await Model.create(
             session, source=model_in_dict, auto_commit=(not should_create_route)
@@ -586,6 +603,17 @@ async def create_model(
                 source=model_route_target,
                 auto_commit=False,
             )
+            if org_scoped_default:
+                # Auto-grant the owning Org on the primary route so its
+                # members see it out of the box. The route is brand new,
+                # so no existence check is needed; LoRA child routes get
+                # their own grants inside create_lora_model_routes.
+                session.add(
+                    ModelRoutePrincipalLink(
+                        route_id=model_route.id,
+                        principal_id=model.owner_principal_id,
+                    )
+                )
             await create_lora_model_routes(
                 session,
                 model,
