@@ -8,6 +8,27 @@ from gpustack.schemas.common import (
 )
 
 
+class GPUAggregatedInstanceTypeUnitResources(BaseModel):
+    """
+    Represents the unit resources of a GPU instance type.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    cpu: Optional[str] = None
+    """
+    The per-device unit CPU resources of the GPU instance type, ends with "m".
+    """
+
+    ram: Optional[str] = None
+    """
+    The per-device RAM resources of the GPU instance type, ends with "Mi".
+    """
+
+
 class GPUAggregatedInstanceTypeSpec(BaseModel):
     """
     Represents the specification of a GPU instance type.
@@ -57,6 +78,11 @@ class GPUAggregatedInstanceTypeSpec(BaseModel):
     """
     Indicates whether the GPU instance type is sliced.
     When it is blank, that means the GPU instance type is not sliced.
+    """
+
+    unit_resources: Optional[GPUAggregatedInstanceTypeUnitResources] = None
+    """
+    The unit resources of the GPU instance type, which represents the resources of one GPU card.
     """
 
 
