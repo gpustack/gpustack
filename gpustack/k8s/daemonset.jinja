@@ -236,16 +236,6 @@ spec:
                 matchLabels:
                   app.kubernetes.io/component: worker
               namespaceSelector: {}
-        {%- if worker.is_cpu and worker.cpu_exclusion_keys %}
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                {%- for key in worker.cpu_exclusion_keys %}
-                  - key: {{ key }}
-                    operator: DoesNotExist
-                {%- endfor %}
-        {%- endif %}
       {%- endif %}
       {%- if worker.node_selector %}
       nodeSelector:

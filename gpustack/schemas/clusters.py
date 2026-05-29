@@ -25,8 +25,6 @@ from sqlmodel import (
 import sqlalchemy as sa
 from typing import TYPE_CHECKING
 
-from gpustack_runtime.detector import ManufacturerEnum
-
 from gpustack.schemas.config import (
     SensitivePredefinedConfig,
     PredefinedConfigNoDefaults,
@@ -175,22 +173,6 @@ class K8sVolumeMount(BaseModel):
         return v
 
 
-class K8sOptionsOverride(BaseModel):
-    """
-    Per-vendor override layered on top of K8sOptions at manifest render time.
-    Only carries fields that are genuinely vendor-scoped — currently just
-    nodeSelector, since vendor node labels (e.g. nvidia.com/gpu,
-    huawei.com/Ascend910) differ per runtime. Registry-scoped fields like
-    imageCredentials stay cluster-level on K8sOptions.
-    """
-
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-    node_selector: Optional[Dict[str, str]] = PydanticField(
-        default=None,
-        alias="nodeSelector",
-    )
-
-
 class GpuInstanceOptions(BaseModel):
     """
     GPU-instance support knobs for the operator. Its mere presence on
@@ -216,11 +198,13 @@ class GpuInstanceOptions(BaseModel):
 class K8sOptions(BaseModel):
     """
     All Kubernetes-side deployment knobs for a cluster's worker DaemonSets:
-    pod spec primitives (imageCredentials, nodeSelector, volumeMounts) plus
-    per-vendor overrides. Top-level on the cluster (parallel to
-    ``worker_config``) so K8s deployment concerns are isolated from worker
-    process behaviour; structure mirrors how Helm chart values are usually
-    organised under ``worker.*`` for future chart migration.
+    pod spec primitives (imageCredentials, nodeSelector, volumeMounts). The
+    base ``nodeSelector`` applies to every rendered worker DaemonSet; each
+    per-runtime DaemonSet additionally gets a vendor PCI-presence label merged
+    on top at render time (see ``manifest_template``). Top-level on the cluster
+    (parallel to ``worker_config``) so K8s deployment concerns are isolated
+    from worker process behaviour; structure mirrors how Helm chart values are
+    usually organised under ``worker.*`` for future chart migration.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -248,17 +232,6 @@ class K8sOptions(BaseModel):
             "dir; the route layer enforces that invariant."
         ),
     )
-    gpu_vendor_overrides: Optional[Dict[ManufacturerEnum, K8sOptionsOverride]] = (
-        PydanticField(
-            default=None,
-            alias="gpuVendorOverrides",
-            description=(
-                "Per-vendor (runtime) overrides layered on top of the base values "
-                "when rendering manifests for that runtime. nodeSelector merges by "
-                "key with override winning."
-            ),
-        )
-    )
     operator_image: Optional[str] = PydanticField(
         default=None,
         alias="operatorImage",
@@ -282,42 +255,6 @@ class K8sOptions(BaseModel):
             "Falls back to ``gpustack-system`` at render time when unset."
         ),
     )
-
-    def resolve_for(self, runtime: Optional[ManufacturerEnum]) -> "K8sOptions":
-        """
-        Return a flattened K8sOptions with the matching vendor override merged
-        on top of the base values. The returned instance has gpu_vendor_overrides
-        unset so consumers (e.g. jinja templates) see a single layer.
-        """
-        override: Optional[K8sOptionsOverride] = None
-        if runtime is not None and self.gpu_vendor_overrides:
-            override = self.gpu_vendor_overrides.get(runtime)
-
-        if override is None:
-            return K8sOptions(
-                image_credentials=self.image_credentials,
-                node_selector=self.node_selector,
-                volume_mounts=self.volume_mounts,
-                operator_image=self.operator_image,
-                gpu_instance_options=self.gpu_instance_options,
-                namespace=self.namespace,
-            )
-
-        merged_node_selector: Optional[Dict[str, str]] = None
-        if self.node_selector or override.node_selector:
-            merged_node_selector = {
-                **(self.node_selector or {}),
-                **(override.node_selector or {}),
-            }
-
-        return K8sOptions(
-            image_credentials=self.image_credentials,
-            node_selector=merged_node_selector,
-            volume_mounts=self.volume_mounts,
-            operator_image=self.operator_image,
-            gpu_instance_options=self.gpu_instance_options,
-            namespace=self.namespace,
-        )
 
 
 class CloudOptions(BaseModel):
