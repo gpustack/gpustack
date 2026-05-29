@@ -24,6 +24,8 @@ from gpustack.schemas.model_routes import (
     SetFallbackTargetInput,
     ModelAuthorizationList,
     ModelAuthorizationUpdate,
+    ModelPrincipalAccess,
+    ModelPrincipalRef,
     ModelUserAccessExtended,
     MyModel,
     TargetStateEnum,
@@ -1155,6 +1157,88 @@ async def _replace_route_user_principals(
         )
 
 
+async def _list_route_principals(session, route_id: int) -> List[ModelPrincipalAccess]:
+    """Every principal grant on a route (any kind), with the principal's
+    name / display_name joined for display."""
+    rows = list(
+        (
+            await session.exec(
+                select(ModelRoutePrincipalLink).where(
+                    ModelRoutePrincipalLink.route_id == route_id,
+                    ModelRoutePrincipalLink.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    )
+    if not rows:
+        return []
+    principal_ids = {r.principal_id for r in rows}
+    result = await session.exec(
+        select(Principal).where(Principal.id.in_(principal_ids))
+    )
+    by_id = {p.id: p for p in result.all()}
+    out: List[ModelPrincipalAccess] = []
+    for r in rows:
+        p = by_id.get(r.principal_id)
+        out.append(
+            ModelPrincipalAccess(
+                principal_type=p.kind if p else PrincipalType.USER,
+                principal_id=r.principal_id,
+                principal_name=p.name if p else None,
+                principal_display_name=p.display_name if p else None,
+            )
+        )
+    return out
+
+
+async def _validate_principals(session, principals: List[ModelPrincipalRef]) -> None:
+    """Each ref must name an existing principal whose kind matches. Raises
+    InvalidException otherwise. SYSTEM principals fail the kind check (no
+    caller asks for kind=SYSTEM in an ACL grant)."""
+    for ref in principals:
+        target = await Principal.one_by_id(session, ref.principal_id)
+        if not target or target.deleted_at is not None:
+            raise InvalidException(message=f"Principal {ref.principal_id} not found")
+        if target.kind != ref.principal_type:
+            raise InvalidException(
+                message=(
+                    f"Principal {ref.principal_id} is a {target.kind.value}, "
+                    f"not a {ref.principal_type.value}"
+                )
+            )
+
+
+async def _replace_route_principals(
+    session, route_id: int, principal_ids: List[int]
+) -> None:
+    """Replace the route's entire principal grant set with exactly
+    ``principal_ids`` (any kind). Callers validate the refs first."""
+    desired: Set[int] = set(principal_ids)
+
+    existing = list(
+        (
+            await session.exec(
+                select(ModelRoutePrincipalLink).where(
+                    ModelRoutePrincipalLink.route_id == route_id,
+                    ModelRoutePrincipalLink.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    )
+    existing_by_principal = {row.principal_id: row for row in existing}
+
+    for principal_id, row in existing_by_principal.items():
+        if principal_id not in desired:
+            await session.delete(row)
+
+    for principal_id in desired:
+        if principal_id in existing_by_principal:
+            continue
+        session.add(
+            ModelRoutePrincipalLink(route_id=route_id, principal_id=principal_id)
+        )
+
+
 @router.get("/{id}/access", response_model=ModelAuthorizationList)
 async def get_model_authorization_list(session: SessionDep, id: int):
     model: ModelRoute = await ModelRoute.one_by_id(session, id)
@@ -1163,6 +1247,7 @@ async def get_model_authorization_list(session: SessionDep, id: int):
 
     return ModelAuthorizationList(
         items=await _list_route_users(session, id),
+        principals=await _list_route_principals(session, id),
         access_policy=model.access_policy,
     )
 
@@ -1175,13 +1260,20 @@ async def add_model_authorization(
     if not model:
         raise NotFoundException(message="Model not found")
 
-    # `users is None` means "leave the grant list alone" (grants managed
-    # out-of-band via /principals; a plain policy switch carries no
-    # list). An explicit list — including empty — declares the full set
-    # of USER-kind grants.
-    should_replace_users = access_request.users is not None
+    # Two mutually exclusive grant surfaces (else = "don't touch grants",
+    # e.g. a plain policy switch):
+    #   * ``principals`` (preferred) replaces the FULL grant set, any
+    #     kind. An empty list clears all grants.
+    #   * ``users`` (deprecated) replaces only USER-kind grants.
+    replace_principals = access_request.principals is not None
+    replace_users = not replace_principals and access_request.users is not None
+
+    # Validate up front so bad refs surface as 4xx, not the 500 wrapper
+    # around the mutation block below.
     requested_user_ids = [u.id for u in (access_request.users or [])]
-    if requested_user_ids:
+    if replace_principals:
+        await _validate_principals(session, access_request.principals)
+    elif replace_users and requested_user_ids:
         users = await User.all_by_fields(
             session=session,
             fields={},
@@ -1192,27 +1284,33 @@ async def add_model_authorization(
             if req_id not in existing_user_ids:
                 raise NotFoundException(message=f"User ID {req_id} not found")
 
-    # Cache invalidation needs the union of "previously granted" and
-    # "newly granted" user ids — anyone in either set may see a
-    # different model list after the change.
-    previous_users = await _list_route_users(session, id)
-    affected_user_ids: Optional[Set[int]] = {item.id for item in previous_users} | set(
-        requested_user_ids
-    )
-    cache_model = model
+    # Cache invalidation. The USER-list path can scope to the affected
+    # users (previously + newly granted). Replacing arbitrary principals
+    # (org / group) widens visibility unpredictably, so invalidate
+    # broadly — as does any access_policy change.
+    affected_user_ids: Optional[Set[int]] = None
+    cache_model: Optional[ModelRoute] = None
+    if replace_users:
+        previous_users = await _list_route_users(session, id)
+        affected_user_ids = {item.id for item in previous_users} | set(
+            requested_user_ids
+        )
+        cache_model = model
 
     if (
         access_request.access_policy is not None
         and access_request.access_policy != model.access_policy
     ):
         model.access_policy = access_request.access_policy
-        # Switching policy (e.g. to PUBLIC) widens visibility beyond
-        # the explicit user list — broaden cache invalidation.
         affected_user_ids = None
         cache_model = None
 
     try:
-        if should_replace_users:
+        if replace_principals:
+            await _replace_route_principals(
+                session, id, [p.principal_id for p in access_request.principals]
+            )
+        elif replace_users:
             await _replace_route_user_principals(session, id, requested_user_ids)
         await revoke_model_access_cache(
             session=session,
@@ -1226,6 +1324,7 @@ async def add_model_authorization(
 
     return ModelAuthorizationList(
         items=await _list_route_users(session, id),
+        principals=await _list_route_principals(session, id),
         access_policy=model.access_policy,
     )
 

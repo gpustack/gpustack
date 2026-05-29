@@ -1,7 +1,12 @@
 import re
 from enum import Enum
 from typing import ClassVar, Optional, Dict, Any, List, Set
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field as PydanticField,
+    field_validator,
+    model_validator,
+)
 from sqlmodel import (
     Field,
     Relationship,
@@ -20,7 +25,7 @@ from gpustack.schemas.common import (
     PublicFields,
     ItemList,
 )
-from gpustack.schemas.principals import _platform_principal_id
+from gpustack.schemas.principals import _platform_principal_id, PrincipalType
 
 if TYPE_CHECKING:
     from gpustack.schemas.models import Model
@@ -420,14 +425,33 @@ class ModelUserAccess(BaseModel):
     # More custom fields can be added here, e.g., quota, rate_limit, etc.
 
 
+class ModelPrincipalRef(BaseModel):
+    principal_type: PrincipalType
+    principal_id: int
+
+
+class ModelPrincipalAccess(ModelPrincipalRef):
+    # Stable name + optional human label from the joined principals row,
+    # so the client can render a grant without a second round trip.
+    principal_name: Optional[str] = None
+    principal_display_name: Optional[str] = None
+
+
 class ModelAuthorizationUpdate(BaseModel):
     access_policy: Optional[AccessPolicyEnum] = None
-    # ``None`` means "don't touch the user grant list" — used when grants
-    # are managed out-of-band via /principals, and by plain policy
-    # switches. An explicit list (the user picker) replaces the route's
-    # USER-kind grants with exactly that set. An empty list therefore
-    # clears them.
-    users: Optional[List[ModelUserAccess]] = None
+    # ``principals``, when provided, replaces the route's ENTIRE grant
+    # set (any kind — user / org / group) with exactly this list. This is
+    # the unified surface; an empty list clears all grants.
+    principals: Optional[List[ModelPrincipalRef]] = None
+    # ``users`` is the deprecated, released (v2.1.x) per-user surface: it
+    # replaces only the route's USER-kind grants, leaving org / group
+    # grants alone. Ignored when ``principals`` is provided. ``None`` for
+    # both means "don't touch grants" (e.g. a plain policy switch).
+    # Marked deprecated in the schema (no runtime warning — it's read on
+    # every request) to steer clients toward ``principals``.
+    users: Optional[List[ModelUserAccess]] = PydanticField(
+        default=None, json_schema_extra={"deprecated": True}
+    )
 
 
 class ModelUserAccessExtended(ModelUserAccess):
@@ -438,12 +462,20 @@ class ModelUserAccessExtended(ModelUserAccess):
 
 
 class ModelAuthorizationList(ItemList[ModelUserAccessExtended]):
+    # Deprecated USER-only subset, kept for released (v2.1.x) clients.
+    # Prefer ``principals`` (the full grant set). Schema-only deprecation
+    # marker — no runtime warning, since it's read on every response.
+    items: List[ModelUserAccessExtended] = PydanticField(
+        default_factory=list, json_schema_extra={"deprecated": True}
+    )
     # The route's current access_policy is returned alongside the
     # grants list so a single GET refreshes both halves of the
     # Access Settings dialog (some clients open it from a stale list
     # snapshot where the row's policy may not reflect the latest
     # save).
     access_policy: Optional[AccessPolicyEnum] = None
+    # Full grant set (any kind), the unified view going forward.
+    principals: Optional[List[ModelPrincipalAccess]] = None
 
 
 class MyModel(ModelRouteBase, BaseModelMixin, table=True):
