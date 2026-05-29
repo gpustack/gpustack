@@ -22,8 +22,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "1"
-        memory: "2Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "ubuntu-22-04"
@@ -41,8 +39,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "1"
-        memory: "2Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
 
@@ -66,8 +62,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-11-cuda-13-2"
@@ -85,8 +79,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-10-cuda-13-0"
@@ -104,8 +96,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-9-cuda-13-0"
@@ -123,8 +113,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-8-cuda-12-9"
@@ -142,8 +130,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-7-cuda-12-8"
@@ -161,8 +147,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-6-cuda-12-6"
@@ -180,8 +164,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   ## Jupyter Lab
@@ -203,8 +185,6 @@ items:
           port: 8888
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "jupyter-lab-4-4-cuda-12-4"
@@ -225,8 +205,6 @@ items:
           port: 8888
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
 
@@ -250,8 +228,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-9-rocm-7-1"
@@ -269,8 +245,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-8-rocm-7-1"
@@ -288,8 +262,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-7-rocm-7-0"
@@ -307,8 +279,6 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"
   - name: "pytorch-2-6-rocm-6-4"
@@ -326,7 +296,5 @@ items:
           port: 22
           protocol: "TCP"
       resources:
-        cpu: "2"
-        memory: "4Gi"
         localStorage: "15Gi"
       volumeMount: "/workspace"

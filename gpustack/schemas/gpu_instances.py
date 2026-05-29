@@ -81,19 +81,19 @@ class GPUInstanceResources(BaseModel):
         populate_by_name=True,
     )
 
-    cpu: str = "1"
+    cpu: Optional[str] = None
     """
     CPU resource request/limit for the GPU instance,
     e.g., "1" for 1 CPU.
     """
 
-    ram: str = "2Gi"
+    ram: Optional[str] = None
     """
     RAM resource request/limit for the GPU instance,
     e.g., "2Gi" for 2 gigabyte of memory.
     """
 
-    local_storage: str = "15Gi"
+    local_storage: Optional[str] = None
     """
     Local storage resource request/limit for the GPU instance,
     e.g., "15Gi" for 15 gigabytes of local storage.
