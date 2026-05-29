@@ -200,21 +200,28 @@ class PrincipalBase(SQLModel):
         sa_column=Column(SQLEnum(PrincipalType), nullable=False),
     )
 
-    # Stable identifier for the principal. Uniqueness is partitioned:
-    # GROUP has its own namespace; USER / ORG / SYSTEM share one. The
-    # GROUP partition exists because IdP-supplied group names commonly
-    # coincide with admin-chosen Org names — forcing them globally
-    # unique would break OIDC/SAML group sync the moment an admin
-    # happens to name an Org the same as an IdP group. The shared
-    # namespace for the admin-curated kinds is conservative: most
-    # name lookups already scope by kind (``init_platform_principal_id``
-    # → ORG, ``get_default_cluster_principal`` → SYSTEM, the
-    # ``<owner-name>/<route>`` URL resolver → ORG), but
-    # ``get_by_username`` (login) does not, and relies on USER / ORG /
-    # SYSTEM not colliding to avoid mis-resolving a login to an ORG
-    # row. Matches the k8s convention where ``metadata.name`` is the
-    # URL-safe identifier — the upcoming GPU service API and k8s
-    # namespace plumbing both key off this column directly.
+    # Stable identifier for the principal. Uniqueness is partitioned per
+    # kind: USER / ORG / GROUP each have their own independent name
+    # namespace, so the same ``name`` may exist once per kind (e.g. an
+    # admin Org "acme" and a user "acme" can coexist).
+    #   * GROUP is partitioned because IdP-supplied group names commonly
+    #     coincide with admin-chosen Org names — forcing them globally
+    #     unique would break OIDC/SAML group sync.
+    #   * USER is partitioned because USER names never appear in the
+    #     ``<owner-name>/<route>`` inference URL (personal Orgs, which are
+    #     USER principals, don't deploy), so they need not be unique
+    #     against ORG. The only login lookups are kind-scoped to USER
+    #     (``get_by_username`` and IdP provisioning), so a same-named ORG
+    #     can never be mis-resolved as a login.
+    #   * SYSTEM has no unique index: its rows are internally generated
+    #     (``system/cluster-<id>`` / ``system/worker-<id>``), structurally
+    #     unique, with no user-facing create path.
+    # Other name lookups already scope by kind
+    # (``init_platform_principal_id`` → ORG,
+    # ``get_default_cluster_principal`` → SYSTEM, the
+    # ``<owner-name>/<route>`` URL resolver → ORG). Matches the k8s
+    # convention where ``metadata.name`` is the URL-safe identifier — the
+    # GPU service API and k8s namespace plumbing both key off this column.
     #
     # * USER: the login name (what the legacy schema called
     #   ``username``). Not used as a URL prefix — USER-owned model
@@ -307,18 +314,25 @@ class Principal(PrincipalBase, BaseModelMixin, table=True):
 
     __tablename__ = 'principals'
     __table_args__ = (
-        # Two partial unique indexes — see the ``name`` field comment
-        # for the partitioning rationale (non-GROUP kinds share one
-        # namespace; GROUP has its own). Both are declared here for
-        # autogenerate parity with the migration. On MySQL the
-        # migration falls back to a single plain (non-unique) index
-        # since partial indexes are unsupported; uniqueness within
-        # each partition is then enforced by the create routes.
+        # One partial unique index per user-facing kind (USER / ORG /
+        # GROUP) — see the ``name`` field comment for the partitioning
+        # rationale. SYSTEM gets no index: its rows are internally
+        # generated and structurally unique. Declared here for
+        # autogenerate parity with the migration. On MySQL the migration
+        # falls back to a single plain (non-unique) index since partial
+        # indexes are unsupported; uniqueness within each partition is
+        # then enforced by the create routes.
         Index(
-            'uix_principals_non_group_name',
+            'uix_principals_user_name',
             'name',
             unique=True,
-            postgresql_where=text("kind <> 'GROUP' AND deleted_at IS NULL"),
+            postgresql_where=text("kind = 'USER' AND deleted_at IS NULL"),
+        ),
+        Index(
+            'uix_principals_org_name',
+            'name',
+            unique=True,
+            postgresql_where=text("kind = 'ORG' AND deleted_at IS NULL"),
         ),
         Index(
             'uix_principals_group_name',

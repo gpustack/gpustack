@@ -93,14 +93,14 @@ async def create_organization(session: SessionDep, org_in: OrganizationCreate):
     except ValueError as e:
         raise InvalidException(message=str(e))
 
-    # USER / ORG / SYSTEM share one name namespace (see partitioning
-    # rationale on ``Principal.name``); a GROUP with the same name is
-    # in a separate partition and does not block Org creation.
+    # ORG has its own name namespace (see partitioning rationale on
+    # ``Principal.name``); a same-named USER / SYSTEM / GROUP lives in a
+    # separate partition and does not block Org creation.
     existing = (
         await session.exec(
             select(Principal).where(
                 Principal.name == org_in.name,
-                Principal.kind != PrincipalType.GROUP,
+                Principal.kind == PrincipalType.ORG,
                 Principal.deleted_at.is_(None),
             )
         )

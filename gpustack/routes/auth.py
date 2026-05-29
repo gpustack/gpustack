@@ -256,8 +256,12 @@ async def saml_callback(request: Request, session: SessionDep):
                 config, attributes, config.external_auth_avatar_url
             )
 
-        # determine whether the user already exists
-        user = await User.first_by_field(session=session, field="name", value=username)
+        # determine whether the user already exists — scope to USER so a
+        # same-named ORG is not mistaken for an existing user (which would
+        # otherwise skip provisioning and issue a JWT for the Org row).
+        user = await User.first_by_fields(
+            session=session, fields={"name": username, "kind": PrincipalType.USER}
+        )
         # create user
         if not user:
             user_info = User(
@@ -535,8 +539,12 @@ async def oidc_callback(request: Request, session: SessionDep):
         except Exception as e:
             logger.error(f"Get OIDC user info error: {str(e)}")
             raise UnauthorizedException(message=str(e))
-    # determine whether the user already exists
-    user = await User.first_by_field(session=session, field="name", value=username)
+    # determine whether the user already exists — scope to USER so a
+    # same-named ORG is not mistaken for an existing user (which would
+    # otherwise skip provisioning and issue a JWT for the Org row).
+    user = await User.first_by_fields(
+        session=session, fields={"name": username, "kind": PrincipalType.USER}
+    )
     # create user
     if not user:
         user_info = User(
