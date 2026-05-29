@@ -71,7 +71,7 @@ class ClusterOps:
     """
 
     cluster_id: int
-    cluster_owner_principal_name: str
+    cluster_owner_principal_identifier: str
     api_client: client.api_client.ApiClient
     org_namespace: str
 
@@ -80,17 +80,17 @@ class ClusterOps:
         server_api_port: int,
         cluster_id: int,
         cluster_registration_token: str,
-        cluster_owner_principal_name: str,
+        cluster_owner_principal_identifier: str,
     ):
         self.cluster_id = cluster_id
-        self.cluster_owner_principal_name = cluster_owner_principal_name
+        self.cluster_owner_principal_identifier = cluster_owner_principal_identifier
         self.api_client = get_k8s_client(
             server_api_port=server_api_port,
             cluster_id=cluster_id,
             cluster_registration_token=cluster_registration_token,
         )
         self.org_namespace = get_namespace_name(
-            principal_name=cluster_owner_principal_name,
+            principal_identifier=cluster_owner_principal_identifier,
         )
 
     async def __aenter__(self) -> "ClusterOps":
