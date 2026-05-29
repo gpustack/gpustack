@@ -1,25 +1,19 @@
-"""Unit tests for P4 (ALLOWED_PRINCIPALS extension) route logic."""
+"""Unit tests for the unified ``/access`` principals surface.
 
-from typing import Optional
+Principal grants (any kind) are managed through ``POST /access`` with a
+``principals`` list and read back via ``GET /access``; there is no longer
+a separate ``/principals`` endpoint.
+"""
+
 from unittest.mock import AsyncMock, MagicMock
+from typing import Optional
 
 import pytest
 
-from gpustack.api.exceptions import (
-    AlreadyExistsException,
-    InvalidException,
-    NotFoundException,
-)
-from gpustack.routes import model_route_principals as principals_route
-from gpustack.schemas.model_routes import ModelRoute
+from gpustack.api.exceptions import InvalidException
+from gpustack.routes import model_routes
+from gpustack.schemas.model_routes import ModelPrincipalRef
 from gpustack.schemas.principals import Principal, PrincipalType
-
-
-def _route(id: int = 1):
-    route = MagicMock(spec=ModelRoute)
-    route.id = id
-    route.deleted_at = None
-    return route
 
 
 def _principal(
@@ -41,22 +35,12 @@ def _exec_returning(*results):
     queue = []
     for value in results:
         result = MagicMock()
-        if isinstance(value, list):
-            result.all = MagicMock(return_value=value)
-            scalars = MagicMock()
-            scalars.all = MagicMock(return_value=value)
-            result.scalars = MagicMock(return_value=scalars)
-            result.first = MagicMock(return_value=value[0] if value else None)
-            result.scalar_one_or_none = MagicMock(
-                return_value=value[0] if value else None
+        result.all = MagicMock(return_value=value if isinstance(value, list) else [])
+        result.first = MagicMock(
+            return_value=(
+                (value[0] if value else None) if isinstance(value, list) else value
             )
-        else:
-            result.scalar_one_or_none = MagicMock(return_value=value)
-            result.first = MagicMock(return_value=value)
-            scalars = MagicMock()
-            scalars.all = MagicMock(return_value=[])
-            result.scalars = MagicMock(return_value=scalars)
-            result.all = MagicMock(return_value=[])
+        )
         queue.append(result)
     return AsyncMock(side_effect=queue)
 
@@ -66,7 +50,6 @@ def _session(*results):
     s.exec = _exec_returning(*results)
     s.commit = AsyncMock()
     s.rollback = AsyncMock()
-    s.refresh = AsyncMock()
     s.delete = AsyncMock()
     s.add = MagicMock()
     return s
@@ -76,202 +59,115 @@ def _session(*results):
 
 
 @pytest.mark.asyncio
-async def test_list_principals_returns_attached_links(monkeypatch):
-    monkeypatch.setattr(
-        principals_route.ModelRoute,
-        "one_by_id",
-        AsyncMock(return_value=_route()),
-    )
-    link1 = MagicMock()
-    link1.id = 100
-    link1.route_id = 1
-    link1.principal_id = 5
-    # Two exec() calls: list rows, then bulk lookup of principals.
+async def test_list_route_principals_returns_grants():
+    link = MagicMock()
+    link.principal_id = 5
+    # Two exec() calls: the grant rows, then the bulk principal lookup.
     session = MagicMock()
-    session.exec = _exec_returning([link1], [_principal(id=5, kind=PrincipalType.ORG)])
-
-    result = await principals_route.list_route_principals(session=session, id=1)
+    session.exec = _exec_returning(
+        [link], [_principal(id=5, kind=PrincipalType.ORG, name="acme")]
+    )
+    result = await model_routes._list_route_principals(session, 1)
     assert len(result) == 1
-    assert result[0].route_id == 1
     assert result[0].principal_type == PrincipalType.ORG
     assert result[0].principal_id == 5
+    assert result[0].principal_name == "acme"
 
 
 @pytest.mark.asyncio
-async def test_list_principals_404_when_route_missing(monkeypatch):
-    monkeypatch.setattr(
-        principals_route.ModelRoute,
-        "one_by_id",
-        AsyncMock(return_value=None),
-    )
-    with pytest.raises(NotFoundException):
-        await principals_route.list_route_principals(session=MagicMock(), id=999)
+async def test_list_route_principals_empty():
+    session = MagicMock()
+    session.exec = _exec_returning([])
+    assert await model_routes._list_route_principals(session, 1) == []
 
 
-# ---- add --------------------------------------------------------------------
+# ---- validate ---------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_add_principal_validates_principal_exists(monkeypatch):
+async def test_validate_principals_not_found(monkeypatch):
     monkeypatch.setattr(
-        principals_route.ModelRoute,
-        "one_by_id",
-        AsyncMock(return_value=_route()),
-    )
-    monkeypatch.setattr(
-        principals_route.Principal,
-        "one_by_id",
-        AsyncMock(return_value=None),
+        model_routes.Principal, "one_by_id", AsyncMock(return_value=None)
     )
     with pytest.raises(InvalidException):
-        await principals_route.add_route_principal(
-            session=MagicMock(),
-            id=1,
-            body=principals_route.PrincipalRef(
-                principal_type=PrincipalType.ORG, principal_id=999
-            ),
+        await model_routes._validate_principals(
+            MagicMock(),
+            [ModelPrincipalRef(principal_type=PrincipalType.ORG, principal_id=999)],
         )
 
 
 @pytest.mark.asyncio
-async def test_add_principal_rejects_kind_mismatch(monkeypatch):
-    monkeypatch.setattr(
-        principals_route.ModelRoute,
-        "one_by_id",
-        AsyncMock(return_value=_route()),
-    )
+async def test_validate_principals_rejects_kind_mismatch(monkeypatch):
     # Caller declared GROUP, but the principal row is actually an ORG.
     monkeypatch.setattr(
-        principals_route.Principal,
+        model_routes.Principal,
         "one_by_id",
         AsyncMock(return_value=_principal(id=5, kind=PrincipalType.ORG)),
     )
     with pytest.raises(InvalidException):
-        await principals_route.add_route_principal(
-            session=MagicMock(),
-            id=1,
-            body=principals_route.PrincipalRef(
-                principal_type=PrincipalType.GROUP, principal_id=5
-            ),
+        await model_routes._validate_principals(
+            MagicMock(),
+            [ModelPrincipalRef(principal_type=PrincipalType.GROUP, principal_id=5)],
         )
 
 
 @pytest.mark.asyncio
-async def test_add_principal_rejects_system_user(monkeypatch):
+async def test_validate_principals_rejects_system(monkeypatch):
+    # System actors live in kind=SYSTEM rows; requesting one as a USER
+    # grant fails the kind check.
     monkeypatch.setattr(
-        principals_route.ModelRoute,
+        model_routes.Principal,
         "one_by_id",
-        AsyncMock(return_value=_route()),
-    )
-    # System actors live in ``kind=SYSTEM`` rows now (workers / cluster
-    # bootstrap accounts). Trying to add one as a USER-kind ACL grant
-    # fails on the kind-mismatch check in ``_validate_principal``.
-    sys_principal = _principal(id=2, kind=PrincipalType.SYSTEM)
-    monkeypatch.setattr(
-        principals_route.Principal,
-        "one_by_id",
-        AsyncMock(return_value=sys_principal),
+        AsyncMock(return_value=_principal(id=2, kind=PrincipalType.SYSTEM)),
     )
     with pytest.raises(InvalidException):
-        await principals_route.add_route_principal(
-            session=MagicMock(),
-            id=1,
-            body=principals_route.PrincipalRef(
-                principal_type=PrincipalType.USER, principal_id=2
-            ),
+        await model_routes._validate_principals(
+            MagicMock(),
+            [ModelPrincipalRef(principal_type=PrincipalType.USER, principal_id=2)],
         )
 
 
 @pytest.mark.asyncio
-async def test_add_principal_rejects_duplicate(monkeypatch):
+async def test_validate_principals_ok(monkeypatch):
     monkeypatch.setattr(
-        principals_route.ModelRoute,
-        "one_by_id",
-        AsyncMock(return_value=_route()),
-    )
-    monkeypatch.setattr(
-        principals_route.Principal,
+        model_routes.Principal,
         "one_by_id",
         AsyncMock(return_value=_principal(id=5, kind=PrincipalType.ORG)),
     )
-    existing_link = MagicMock()
-    session = _session(existing_link)
-    with pytest.raises(AlreadyExistsException):
-        await principals_route.add_route_principal(
-            session=session,
-            id=1,
-            body=principals_route.PrincipalRef(
-                principal_type=PrincipalType.ORG, principal_id=5
-            ),
-        )
+    # Should not raise.
+    await model_routes._validate_principals(
+        MagicMock(),
+        [ModelPrincipalRef(principal_type=PrincipalType.ORG, principal_id=5)],
+    )
+
+
+# ---- replace ----------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_add_principal_creates_link_and_invalidates_cache(monkeypatch):
-    monkeypatch.setattr(
-        principals_route.ModelRoute,
-        "one_by_id",
-        AsyncMock(return_value=_route()),
-    )
-    monkeypatch.setattr(
-        principals_route.Principal,
-        "one_by_id",
-        AsyncMock(return_value=_principal(id=5, kind=PrincipalType.ORG)),
-    )
-    cache_mock = AsyncMock()
-    monkeypatch.setattr(principals_route, "revoke_model_access_cache", cache_mock)
+async def test_replace_route_principals_adds_and_removes():
+    keep = MagicMock()
+    keep.principal_id = 5
+    drop = MagicMock()
+    drop.principal_id = 6
+    session = _session([keep, drop])  # existing grants
 
-    session = _session(None)  # no existing link
-    await principals_route.add_route_principal(
-        session=session,
-        id=1,
-        body=principals_route.PrincipalRef(
-            principal_type=PrincipalType.ORG, principal_id=5
-        ),
-    )
+    # Desired set keeps 5, drops 6, adds 7.
+    await model_routes._replace_route_principals(session, 1, [5, 7])
+
+    session.delete.assert_awaited_once_with(drop)
     session.add.assert_called_once()
-    session.commit.assert_awaited()
-    cache_mock.assert_awaited_once()
-
-
-# ---- remove -----------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_remove_principal_404_when_missing(monkeypatch):
-    monkeypatch.setattr(
-        principals_route.ModelRoute,
-        "one_by_id",
-        AsyncMock(return_value=_route()),
-    )
-    session = _session(None)
-    with pytest.raises(NotFoundException):
-        await principals_route.remove_route_principal(
-            session=session,
-            id=1,
-            principal_type=PrincipalType.USER,
-            principal_id=99,
-        )
+async def test_replace_route_principals_empty_clears_all():
+    a = MagicMock()
+    a.principal_id = 5
+    b = MagicMock()
+    b.principal_id = 6
+    session = _session([a, b])
 
+    await model_routes._replace_route_principals(session, 1, [])
 
-@pytest.mark.asyncio
-async def test_remove_principal_invalidates_cache(monkeypatch):
-    monkeypatch.setattr(
-        principals_route.ModelRoute,
-        "one_by_id",
-        AsyncMock(return_value=_route()),
-    )
-    cache_mock = AsyncMock()
-    monkeypatch.setattr(principals_route, "revoke_model_access_cache", cache_mock)
-
-    link = MagicMock()
-    session = _session(link)
-    await principals_route.remove_route_principal(
-        session=session,
-        id=1,
-        principal_type=PrincipalType.ORG,
-        principal_id=5,
-    )
-    session.delete.assert_awaited_once_with(link)
-    session.commit.assert_awaited()
-    cache_mock.assert_awaited_once()
+    assert session.delete.await_count == 2
+    session.add.assert_not_called()

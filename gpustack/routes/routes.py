@@ -19,7 +19,6 @@ from gpustack.routes import (
     model_evaluations,
     model_files,
     model_instances,
-    model_route_principals,
     model_sets,
     organization_members,
     organizations,
@@ -248,12 +247,6 @@ tenant_routers = model_routers + [
         "router": model_routes.router,
         "prefix": "/model-routes",
         "tags": ["Model Routes"],
-    },
-    {
-        "router": model_route_principals.router,
-        "prefix": "/model-routes",
-        "tags": ["Model Route Principals"],
-        "include_in_schema": _EXTENDED_API_IN_SCHEMA,
     },
     {
         "router": model_evaluations.router,
