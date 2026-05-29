@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel
+from sqlmodel import or_
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack import envs
@@ -392,6 +393,8 @@ def _validate_usage_metric(
     models: Dict[int, Model],
     providers: Dict[int, ModelProvider],
     user_ids: Set[int],
+    route_name_by_id: Dict[int, str],
+    route_base_model_id_by_id: Dict[int, int],
 ) -> bool:
     if metric.model_id is None and metric.provider_id is None:
         logger.debug(
@@ -404,10 +407,24 @@ def _validate_usage_metric(
             logger.debug(f"Model ID {metric.model_id} not found in database.")
             return False
         if model.name != metric.model:
-            logger.debug(
-                f"Model name {metric.model} does not match database record {model.name} for model ID {metric.model_id}."
-            )
-            return False
+            # LoRA requests carry the LoRA route name (e.g. "base:adapter") in
+            # `metric.model` since LoRA entries are expanded into ModelRoute
+            # names by `lora_route_name_for` and there is no standalone Model
+            # row. Accept the mismatch when model_route_id binds to a route
+            # whose name == metric.model and whose created_model_id == base.
+            route_id = metric.model_route_id
+            if (
+                route_id is None
+                or route_name_by_id.get(route_id) != metric.model
+                or route_base_model_id_by_id.get(route_id) != metric.model_id
+            ):
+                logger.debug(
+                    f"Dropping usage metric: model={metric.model!r} does not "
+                    f"match base model name {model.name!r} "
+                    f"(model_id={metric.model_id}) and no matching LoRA route "
+                    f"is bound (model_route_id={route_id})."
+                )
+                return False
     if metric.provider_id is not None:
         provider = providers.get(metric.provider_id)
         if not provider:
@@ -533,6 +550,7 @@ async def store_usage_metrics(
 
     all_metrics = list(metrics) + detail_metrics
     dedup_model_names = {m.model for m in all_metrics}
+    dedup_model_ids = {m.model_id for m in all_metrics if m.model_id is not None}
     dedup_user_ids = {m.user_id for m in all_metrics if m.user_id is not None}
     dedup_access_keys = {m.access_key for m in all_metrics if m.access_key is not None}
     dedup_provider_ids = {
@@ -543,10 +561,18 @@ async def store_usage_metrics(
     }
     async with async_session() as session:
         try:
+            # Load models by name OR id. LoRA requests carry the LoRA route
+            # name in `metric.model` (no Model row by that name), so the base
+            # model can only be reached via `metric.model_id`.
+            model_conditions = []
+            if dedup_model_names:
+                model_conditions.append(Model.name.in_(dedup_model_names))
+            if dedup_model_ids:
+                model_conditions.append(Model.id.in_(dedup_model_ids))
             models = await Model.all_by_fields(
                 session=session,
                 fields={},
-                extra_conditions=[Model.name.in_(dedup_model_names)],
+                extra_conditions=[or_(*model_conditions)] if model_conditions else [],
             )
             providers = await ModelProvider.all_by_fields(
                 session=session,
@@ -576,6 +602,7 @@ async def store_usage_metrics(
                 ),
             )
             route_name_by_id: Dict[int, str] = {}
+            route_base_model_id_by_id: Dict[int, int] = {}
             if dedup_route_ids:
                 routes = await ModelRoute.all_by_fields(
                     session=session,
@@ -583,6 +610,11 @@ async def store_usage_metrics(
                     extra_conditions=[ModelRoute.id.in_(dedup_route_ids)],
                 )
                 route_name_by_id = {r.id: r.name for r in routes}
+                route_base_model_id_by_id = {
+                    r.id: r.created_model_id
+                    for r in routes
+                    if r.created_model_id is not None
+                }
             validated_user_ids = {u.id for u in users}
             user_by_id = {u.id: u for u in users}
             api_key_by_access_key = {k.access_key: k for k in api_keys}
@@ -598,7 +630,12 @@ async def store_usage_metrics(
 
             for metric in metrics:
                 if not _validate_usage_metric(
-                    metric, model_by_id, provider_by_id, validated_user_ids
+                    metric,
+                    model_by_id,
+                    provider_by_id,
+                    validated_user_ids,
+                    route_name_by_id,
+                    route_base_model_id_by_id,
                 ):
                     continue
                 snapshot = _build_metric_snapshot(
@@ -629,7 +666,12 @@ async def store_usage_metrics(
 
             for metric in detail_metrics:
                 if not _validate_usage_metric(
-                    metric, model_by_id, provider_by_id, validated_user_ids
+                    metric,
+                    model_by_id,
+                    provider_by_id,
+                    validated_user_ids,
+                    route_name_by_id,
+                    route_base_model_id_by_id,
                 ):
                     continue
                 snapshot = _build_metric_snapshot(

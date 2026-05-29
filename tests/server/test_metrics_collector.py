@@ -6,16 +6,19 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from gpustack.schemas.model_usage import ModelUsage
+from gpustack.schemas.models import Model
 from gpustack.server.metrics_collector import (
     ModelUsageMetrics,
     _estimate_partial_usage,
     _make_buffer_key,
     _resolve_metric_datetime,
     _resolve_usage_tokens,
+    _validate_usage_metric,
     accumulate_gateway_metrics,
     create_or_update_model_usage,
     gateway_details_buffer,
     gateway_metrics_buffer,
+    store_usage_metrics,
 )
 
 
@@ -490,3 +493,141 @@ async def test_create_or_update_preserves_route_name_when_incoming_is_null(
     assert existing.model_route_name == "old-name"
     assert existing.prompt_token_count == 130
     save_mock.assert_awaited_once()
+
+
+def _fake_model(model_id: int, name: str) -> MagicMock:
+    model = MagicMock()
+    model.id = model_id
+    model.name = name
+    return model
+
+
+def test_validate_usage_metric_base_model_matches():
+    metric = ModelUsageMetrics(model="qwen3-0.6b", model_id=5, user_id=2)
+    models = {5: _fake_model(5, "qwen3-0.6b")}
+    assert _validate_usage_metric(metric, models, {}, {2}, {}, {}) is True
+
+
+def test_validate_usage_metric_lora_route_binding_accepts_mismatch():
+    """LoRA metrics carry the LoRA route name (``base:adapter``) in
+    ``metric.model``; validator must accept the mismatch with base
+    ``model.name`` as long as ``model_route_id`` resolves to a route
+    bound to the same base model id."""
+    metric = ModelUsageMetrics(
+        model="qwen3-0.6b:art", model_id=5, model_route_id=14, user_id=2
+    )
+    models = {5: _fake_model(5, "qwen3-0.6b")}
+    route_name_by_id = {14: "qwen3-0.6b:art"}
+    route_base_model_id_by_id = {14: 5}
+    assert (
+        _validate_usage_metric(
+            metric, models, {}, {2}, route_name_by_id, route_base_model_id_by_id
+        )
+        is True
+    )
+
+
+def test_validate_usage_metric_mismatch_without_route_is_rejected():
+    """Garbage ``metric.model`` with no compensating route binding must
+    still be dropped — the LoRA branch is a targeted exemption, not an
+    open door."""
+    metric = ModelUsageMetrics(
+        model="qwen3-0.6b:art", model_id=5, model_route_id=None, user_id=2
+    )
+    models = {5: _fake_model(5, "qwen3-0.6b")}
+    assert _validate_usage_metric(metric, models, {}, {2}, {}, {}) is False
+
+
+def test_validate_usage_metric_lora_route_bound_to_other_base_is_rejected():
+    """A LoRA route belonging to a different base model_id must not
+    rescue the mismatch — otherwise a malicious / regressed gateway
+    could attribute usage to the wrong model."""
+    metric = ModelUsageMetrics(
+        model="other-base:art", model_id=5, model_route_id=14, user_id=2
+    )
+    models = {5: _fake_model(5, "qwen3-0.6b")}
+    route_name_by_id = {14: "other-base:art"}
+    route_base_model_id_by_id = {14: 99}
+    assert (
+        _validate_usage_metric(
+            metric, models, {}, {2}, route_name_by_id, route_base_model_id_by_id
+        )
+        is False
+    )
+
+
+def test_validate_usage_metric_lora_route_name_mismatch_is_rejected():
+    """If the route id resolves but its name disagrees with
+    ``metric.model``, the upload is incoherent — drop it."""
+    metric = ModelUsageMetrics(
+        model="qwen3-0.6b:art", model_id=5, model_route_id=14, user_id=2
+    )
+    models = {5: _fake_model(5, "qwen3-0.6b")}
+    route_name_by_id = {14: "qwen3-0.6b:different-adapter"}
+    route_base_model_id_by_id = {14: 5}
+    assert (
+        _validate_usage_metric(
+            metric, models, {}, {2}, route_name_by_id, route_base_model_id_by_id
+        )
+        is False
+    )
+
+
+def test_validate_usage_metric_unknown_model_id_is_rejected():
+    metric = ModelUsageMetrics(model="qwen3-0.6b", model_id=999, user_id=2)
+    assert _validate_usage_metric(metric, {}, {}, {2}, {}, {}) is False
+
+
+def test_store_usage_metrics_loads_lora_base_model_by_id(monkeypatch):
+    """LoRA metrics carry the route name (``base:adapter``) in
+    ``metric.model``, which matches no Model row by name. The base model
+    must be loaded by ``metric.model_id`` instead — otherwise the metric is
+    dropped at the ``models.get(model_id)`` gate before the LoRA route
+    matching logic ever runs. Guards against regressing to a name-only
+    model query."""
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def commit(self):
+            pass
+
+        async def rollback(self):
+            pass
+
+        def add(self, obj):
+            pass
+
+    monkeypatch.setattr(
+        "gpustack.server.metrics_collector.async_session",
+        lambda: _FakeSession(),
+    )
+
+    model_query = AsyncMock(return_value=[])
+    monkeypatch.setattr(Model, "all_by_fields", model_query)
+    for class_path in (
+        "gpustack.server.metrics_collector.ModelProvider.all_by_fields",
+        "gpustack.server.metrics_collector.Principal.all_by_fields",
+        "gpustack.server.metrics_collector.ApiKey.all_by_fields",
+        "gpustack.server.metrics_collector.ModelRoute.all_by_fields",
+        "gpustack.server.metrics_collector.Cluster.all_by_fields",
+    ):
+        monkeypatch.setattr(class_path, AsyncMock(return_value=[]))
+
+    metric = ModelUsageMetrics(
+        model="qwen3-0.6b:art", model_id=1, model_route_id=14, user_id=2
+    )
+    asyncio.run(store_usage_metrics([metric]))
+
+    extra_conditions = model_query.call_args.kwargs["extra_conditions"]
+    sql = str(
+        extra_conditions[0].compile(compile_kwargs={"literal_binds": True})
+    ).lower()
+    # Loaded by BOTH name and id; the id branch is what rescues LoRA.
+    assert "name in" in sql
+    assert "id in" in sql
+    assert "1" in sql
