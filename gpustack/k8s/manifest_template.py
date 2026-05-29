@@ -3,12 +3,18 @@ import base64
 import json
 import yaml
 from typing import Dict, List, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
+from gpustack import __operator_version__
 from gpustack.gpu_instances.cluster_apis_util import get_namespace_name
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.schemas.clusters import ClusterRegistrationTokenPublic, K8sOptions
 from gpustack_runtime.detector import ManufacturerEnum
+
+
+_DEFAULT_OPERATOR_IMAGE = f"gpustack/gpustack-operator:{__operator_version__}"
+_DEFAULT_OPERATOR_NAMESPACE = "gpustack"
+_DEFAULT_CLUSTER_NAMESPACE = "gpustack-system"
 
 
 CPU_WORKER_NAME = "cpu"
@@ -62,11 +68,14 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
     # cluster owner namespace, defaults to "gpustack-{cluster_owner_principal_name}",
     # used to placing the Kubernetes resources for the cluster owner.
     cluster_owner_namespace: Optional[str] = None
-    # cluster-specific namespace, defaults to "gpustack-system".
-    namespace: Optional[str] = None
     cluster_owner_principal_name: Optional[str] = None
     runtimes: Optional[List[ManufacturerEnum]] = None
     k8s_options: Optional[K8sOptions] = None
+    # Cluster-level default container registry (mirrors
+    # ``clusters.system_default_container_registry``). Drives the operator
+    # image registry prefix and the GPUSTACK_CONTAINER_REGISTRY env var
+    # surfaced to the operator at runtime.
+    system_default_container_registry: Optional[str] = None
     workers: List[WorkerRenderSpec] = []
     # Pre-computed Secret render data, one per K8sOptions.image_credentials
     # entry. Both image_pull_secrets.jinja (Secret resource) and the
@@ -78,6 +87,77 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
     # multi-DaemonSet output (per-vendor DS + always-on CPU DS + safety nets
     # like podAntiAffinity and CPU nodeAffinity DoesNotExist).
     multi_vendor_mode: bool = False
+
+    @computed_field
+    @property
+    def namespace(self) -> str:
+        """
+        Kubernetes namespace this cluster's manifests render into. Reads
+        ``k8s_options.namespace`` — which the routes layer pre-resolves from
+        the server-wide ``Config.namespace`` when the cluster doesn't override
+        it — and falls back to the built-in ``gpustack-system`` default
+        otherwise (e.g. in unit tests). Referenced as ``config.namespace``
+        across every cluster-level jinja template.
+        """
+        if self.k8s_options and self.k8s_options.namespace:
+            return self.k8s_options.namespace
+        return _DEFAULT_CLUSTER_NAMESPACE
+
+    @computed_field
+    @property
+    def operator_image(self) -> str:
+        """
+        Fully-qualified operator image reference for ``operator.jinja``.
+        Reads ``k8s_options.operator_image`` — which the routes layer
+        pre-resolves from the server-wide ``Config.operator_image`` (settable
+        via ``GPUSTACK_OPERATOR_IMAGE``) when the cluster doesn't override it —
+        and falls back to the built-in default otherwise (e.g. in unit tests);
+        prefixes the cluster's container registry when one is configured and
+        the image doesn't already carry one.
+        """
+        image = (
+            self.k8s_options.operator_image if self.k8s_options else None
+        ) or _DEFAULT_OPERATOR_IMAGE
+        registry = (self.system_default_container_registry or "").strip().rstrip("/")
+        if registry and not image.startswith(registry + "/"):
+            return f"{registry}/{image}"
+        return image
+
+    @computed_field
+    @property
+    def operator_container_namespace(self) -> Optional[str]:
+        """
+        Namespace segment inferred from the resolved operator image — used by
+        the operator runtime (``GPUSTACK_CONTAINER_NAMESPACE``) to compose
+        sibling image references. Strip the cluster registry prefix first so
+        the leading segment isn't mistaken for a namespace, then take
+        everything up to the final ``/``. Suppressed when the namespace is
+        the built-in ``gpustack`` default since the operator already knows
+        that one.
+        """
+        image = self.operator_image
+        registry = (self.system_default_container_registry or "").strip().rstrip("/")
+        if registry and image.startswith(registry + "/"):
+            image = image[len(registry) + 1 :]
+        if "/" not in image:
+            return None
+        namespace = image.rsplit("/", 1)[0]
+        if namespace == _DEFAULT_OPERATOR_NAMESPACE:
+            return None
+        return namespace
+
+    @computed_field
+    @property
+    def operator_instance_access_static_address(self) -> Optional[str]:
+        if (
+            self.k8s_options
+            and self.k8s_options.gpu_instance_options
+            and self.k8s_options.gpu_instance_options.gpu_instances_access_static_address
+        ):
+            return (
+                self.k8s_options.gpu_instance_options.gpu_instances_access_static_address
+            )
+        return None
 
     def render(self) -> str:
         def b64encode(value):
@@ -132,8 +212,6 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
             super().__init__(**base_data)
         else:
             super().__init__(**data)
-        if self.namespace is None:
-            self.namespace = "gpustack-system"
         if self.cluster_owner_namespace is None:
             self.cluster_owner_namespace = get_namespace_name(
                 self.cluster_owner_principal_name

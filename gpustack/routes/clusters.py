@@ -49,6 +49,7 @@ from gpustack.schemas.clusters import (
     WorkerPoolPublic,
     WorkerPool,
     CloudOptions,
+    K8sOptions,
 )
 from gpustack.schemas.cluster_access import ClusterAccess
 from gpustack.schemas.principals import (
@@ -63,8 +64,6 @@ from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import (
     get_global_config,
     get_cluster_image_name,
-    get_cluster_operator_image_name,
-    get_cluster_container_registry,
 )
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack_runtime.detector import ManufacturerEnum
@@ -310,6 +309,29 @@ def create_update_check(
             )
 
 
+def hoist_system_default_container_registry(
+    input: Union[ClusterCreate, ClusterUpdate],
+):
+    """
+    Make ``cluster.system_default_container_registry`` the single source of
+    truth at persistence time.
+
+    If the caller put the value inside ``worker_config`` (the legacy shape),
+    promote it onto the top-level column and null it out in ``worker_config``
+    so downstream image-resolution helpers can read the cluster column
+    exclusively without ever reaching back into ``worker_config``. We don't
+    overwrite the column if the caller already set it.
+    """
+    if input.worker_config is None:
+        return
+    nested = input.worker_config.system_default_container_registry
+    if nested is None:
+        return
+    if not input.system_default_container_registry:
+        input.system_default_container_registry = nested
+    input.worker_config.system_default_container_registry = None
+
+
 def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
     """
     Assuming the first item of k8s_options.volume_mounts is for gpustack data dir,
@@ -352,6 +374,7 @@ async def create_cluster(
     create_update_check(input.provider, input)
     if input.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
+    hoist_system_default_container_registry(input)
 
     # Auto-promote the first cluster in an Org to that Org's default so
     # users don't have to flip a separate switch after onboarding.
@@ -448,6 +471,7 @@ async def update_cluster(
     create_update_check(cluster.provider, input)
     if cluster.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
+    hoist_system_default_container_registry(input)
 
     try:
         await cluster.update(session=session, source=input)
@@ -670,20 +694,10 @@ def get_registration_from_cluster(
         token=cluster.registration_token,
         server_url=get_server_url(request, cluster.server_url),
         image=get_cluster_image_name(
-            cluster.worker_config
+            cluster.worker_config, cluster.system_default_container_registry
         ),  # Default image, can be customized
         env=parse_base_model_to_env_vars(sensitive_registration),
         args=[],
-        # Below fields are used for configure GPUStack Operator.
-        operator_image=get_cluster_operator_image_name(cluster.worker_config),
-        operator_container_registry=get_cluster_container_registry(
-            cluster.worker_config
-        ),
-        operator_instance_access_static_address=(
-            cluster.worker_config.gpu_instances_access_static_address
-            if cluster.worker_config
-            else None
-        ),
     )
 
 
@@ -734,12 +748,22 @@ async def get_cluster_manifests(
 
     _validate_multi_vendor_overrides(runtime, cluster.k8s_options)
 
+    # Resolve server-wide defaults onto a copy of k8s_options so the render
+    # model only ever reads k8s_options. Copy (not mutate) the loaded cluster
+    # so we don't risk persisting these derived values back to the DB.
+    cfg = get_global_config()
+    k8s_options = (cluster.k8s_options or K8sOptions()).model_copy()
+    if not k8s_options.namespace:
+        k8s_options.namespace = cfg.namespace
+    if not k8s_options.operator_image:
+        k8s_options.operator_image = cfg.operator_image
+
     config = TemplateConfig(
         registration=get_registration_from_cluster(request, cluster),
         cluster_owner_principal_name=principal.name,
-        namespace=getattr(cluster.worker_config, "namespace", None),
         runtimes=runtime,
-        k8s_options=cluster.k8s_options,
+        k8s_options=k8s_options,
+        system_default_container_registry=cluster.system_default_container_registry,
     )
     yaml_content = config.render()
     return Response(

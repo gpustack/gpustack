@@ -24,7 +24,6 @@ def _registration():
         image="gpustack/gpustack:test",
         env={"GPUSTACK_TOKEN": "t"},
         args=[],
-        operator_image="gpustack/gpustack-operator:test",
     )
 
 
