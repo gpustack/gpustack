@@ -1175,7 +1175,12 @@ async def add_model_authorization(
     if not model:
         raise NotFoundException(message="Model not found")
 
-    requested_user_ids = [u.id for u in access_request.users]
+    # `users is None` means "leave the grant list alone" (grants managed
+    # out-of-band via /principals; a plain policy switch carries no
+    # list). An explicit list — including empty — declares the full set
+    # of USER-kind grants.
+    should_replace_users = access_request.users is not None
+    requested_user_ids = [u.id for u in (access_request.users or [])]
     if requested_user_ids:
         users = await User.all_by_fields(
             session=session,
@@ -1205,15 +1210,6 @@ async def add_model_authorization(
         # the explicit user list — broaden cache invalidation.
         affected_user_ids = None
         cache_model = None
-
-    # `users` is the source-of-truth for grants only under the
-    # ALLOWED_USERS policy. ALLOWED_PRINCIPALS manages grants via
-    # `/principals` (which can also create USER-kind rows), and the
-    # other policies don't care about the explicit list. Wiping
-    # USER-kind rows when the policy isn't ALLOWED_USERS would
-    # silently delete USER grants that ALLOWED_PRINCIPALS just
-    # attached.
-    should_replace_users = model.access_policy == AccessPolicyEnum.ALLOWED_USERS
 
     try:
         if should_replace_users:

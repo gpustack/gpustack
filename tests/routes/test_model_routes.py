@@ -350,7 +350,9 @@ def test_model_route_grant_predicate_owner_public_and_grant():
     # Owner-equality on the current principal.
     assert pred(
         SimpleNamespace(
-            id=3, access_policy=AccessPolicyEnum.ALLOWED_USERS, owner_principal_id=42
+            id=3,
+            access_policy=AccessPolicyEnum.ALLOWED_PRINCIPALS,
+            owner_principal_id=42,
         )
     )
     # Snapshotted grant.
@@ -428,7 +430,9 @@ async def test_get_model_routes_admin_act_as_watch_applies_grant_filter(monkeypa
     )
     assert flt(
         SimpleNamespace(
-            id=7, access_policy=AccessPolicyEnum.ALLOWED_USERS, owner_principal_id=42
+            id=7,
+            access_policy=AccessPolicyEnum.ALLOWED_PRINCIPALS,
+            owner_principal_id=42,
         )
     )
     assert flt(

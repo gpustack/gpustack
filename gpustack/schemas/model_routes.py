@@ -65,13 +65,15 @@ def effective_route_name(
 class AccessPolicyEnum(str, Enum):
     PUBLIC = "public"
     AUTHED = "authed"
-    # Per-user grants. Rows are stored in ``model_route_principals``
-    # with ``principal_id`` pointing at a USER-kind principal.
-    ALLOWED_USERS = "allowed_users"
     # Per-principal grants (user / org / group) via
-    # ``model_route_principals``. Mutually exclusive with
-    # ``ALLOWED_USERS`` — pick the policy whose granularity matches
-    # the deployment's identity model.
+    # ``model_route_principals``. The single "specific grants" policy:
+    #
+    #   * "specific users": grants are USER-kind rows. The OSS UI keeps
+    #     its user-only picker and the ``/access`` endpoint writes this
+    #     policy — for a USER grant the visibility view behaves exactly
+    #     like the released ``allowed_users`` policy it replaces.
+    #   * Org / group grants for the multi-tenant tier, managed via
+    #     ``/principals``.
     #
     # Also serves as the "team-private" scope: a new route in a
     # non-platform Org defaults to ALLOWED_PRINCIPALS with its owning
@@ -79,6 +81,19 @@ class AccessPolicyEnum(str, Enum):
     # visible to that Org's members and the grant is editable like any
     # other principal grant.
     ALLOWED_PRINCIPALS = "allowed_principals"
+
+    @classmethod
+    def _missing_(cls, value):
+        # Back-compat for the released v2.1.x OSS API, which used
+        # ``allowed_users`` as a distinct policy. It is folded into
+        # ALLOWED_PRINCIPALS (a USER-kind grant resolves identically)
+        # and stored rows were converted by the multi-tenancy
+        # migration, so the only place the legacy string can still
+        # appear is an older API client's request body — accept and
+        # coerce it instead of 422-ing.
+        if value == "allowed_users":
+            return cls.ALLOWED_PRINCIPALS
+        return None
 
 
 class TargetStateEnum(str, Enum):
@@ -407,7 +422,12 @@ class ModelUserAccess(BaseModel):
 
 class ModelAuthorizationUpdate(BaseModel):
     access_policy: Optional[AccessPolicyEnum] = None
-    users: List[ModelUserAccess]
+    # ``None`` means "don't touch the user grant list" — used when grants
+    # are managed out-of-band via /principals, and by plain policy
+    # switches. An explicit list (the user picker) replaces the route's
+    # USER-kind grants with exactly that set. An empty list therefore
+    # clears them.
+    users: Optional[List[ModelUserAccess]] = None
 
 
 class ModelUserAccessExtended(ModelUserAccess):

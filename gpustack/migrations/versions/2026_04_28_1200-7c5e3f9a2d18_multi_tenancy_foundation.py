@@ -54,7 +54,9 @@ Logical groups, run in order:
 12. Backfill ``model_route_principals`` from the legacy
     ``usermodelroutelink`` table (USER-kind principal_id == user.id
     after rename).
-13. Extend ``accesspolicyenum`` with ``ALLOWED_PRINCIPALS`` and ``ORG``.
+13. Recreate ``accesspolicyenum`` as {PUBLIC, AUTHED,
+    ALLOWED_PRINCIPALS}, folding the released ``ALLOWED_USERS`` into
+    ``ALLOWED_PRINCIPALS`` and converting existing rows.
 14. Drop the legacy ``usermodelroutelink`` table.
 15. Extract login credentials into ``user_passwords`` and drop
     ``hashed_password`` / ``require_password_change`` from
@@ -166,6 +168,91 @@ def _existing_auth_provider_enum(bind):
             AuthProviderEnum, name='authproviderenum', create_type=False
         )
     return sa.Enum(AuthProviderEnum, name='authproviderenum')
+
+
+def _consolidate_access_policy_enum(bind):
+    """Make ``ALLOWED_PRINCIPALS`` the single "specific grants" policy.
+
+    The released ``ALLOWED_USERS`` is folded into ``ALLOWED_PRINCIPALS``
+    — a USER-kind grant resolves identically — and existing rows on both
+    ``models`` and ``model_routes`` are converted.
+
+    The enum is recreated with the final value set, NOT
+    ``ALTER TYPE ... ADD VALUE`` + ``UPDATE``: on PostgreSQL a freshly
+    added enum label is unusable in the transaction that added it, and
+    committing it mid-migration (an autocommit block) would break this
+    migration's atomicity — it runs as part of one big transaction, so a
+    later failure must roll the whole thing back. The recreate is plain
+    transactional DDL. ``accesspolicyenum`` is shared by
+    ``models.access_policy`` and ``model_routes.access_policy`` (both
+    NOT NULL DEFAULT 'AUTHED'), so both columns convert in one pass; the
+    ``USING`` cast remaps ALLOWED_USERS and every other value passes
+    through unchanged.
+    """
+    dialect = bind.dialect.name
+    targets = [t for t in ('models', 'model_routes') if table_exists(t)]
+
+    if dialect == 'postgresql':  # also openGauss (PG-compatible dialect)
+        # The column DEFAULT is typed against the old enum; drop it
+        # before the swap and restore it after.
+        for table in targets:
+            bind.execute(
+                sa.text(
+                    f"ALTER TABLE {table} ALTER COLUMN access_policy DROP DEFAULT"
+                )
+            )
+        bind.execute(
+            sa.text(
+                "CREATE TYPE accesspolicyenum_new AS ENUM "
+                "('PUBLIC', 'AUTHED', 'ALLOWED_PRINCIPALS')"
+            )
+        )
+        for table in targets:
+            bind.execute(
+                sa.text(
+                    f"ALTER TABLE {table} ALTER COLUMN access_policy TYPE "
+                    "accesspolicyenum_new USING ("
+                    "CASE WHEN access_policy::text = 'ALLOWED_USERS' "
+                    "THEN 'ALLOWED_PRINCIPALS' ELSE access_policy::text END"
+                    ")::accesspolicyenum_new"
+                )
+            )
+        bind.execute(sa.text("DROP TYPE accesspolicyenum"))
+        bind.execute(
+            sa.text("ALTER TYPE accesspolicyenum_new RENAME TO accesspolicyenum")
+        )
+        for table in targets:
+            bind.execute(
+                sa.text(
+                    f"ALTER TABLE {table} ALTER COLUMN access_policy "
+                    "SET DEFAULT 'AUTHED'"
+                )
+            )
+    elif dialect == 'mysql':  # also OceanBase (MySQL-compatible dialect)
+        # Inline ENUM per column (no shared type). Widen to admit
+        # ALLOWED_PRINCIPALS, remap the data, then narrow to the final
+        # set. MySQL DDL auto-commits, so there's no in-transaction
+        # restriction to work around.
+        wide = (
+            "ENUM('PUBLIC', 'AUTHED', 'ALLOWED_USERS', 'ALLOWED_PRINCIPALS') "
+            "NOT NULL DEFAULT 'AUTHED'"
+        )
+        final = (
+            "ENUM('PUBLIC', 'AUTHED', 'ALLOWED_PRINCIPALS') NOT NULL DEFAULT 'AUTHED'"
+        )
+        for table in targets:
+            bind.execute(
+                sa.text(f"ALTER TABLE {table} MODIFY COLUMN access_policy {wide}")
+            )
+            bind.execute(
+                sa.text(
+                    f"UPDATE {table} SET access_policy = 'ALLOWED_PRINCIPALS' "
+                    "WHERE access_policy = 'ALLOWED_USERS'"
+                )
+            )
+            bind.execute(
+                sa.text(f"ALTER TABLE {table} MODIFY COLUMN access_policy {final}")
+            )
 
 
 def upgrade() -> None:
@@ -889,23 +976,15 @@ def upgrade() -> None:
         )
 
     # ------------------------------------------------------------------
-    # 14. Extend access_policy enum.
+    # 14. Consolidate access_policy -> ALLOWED_PRINCIPALS.
     # ------------------------------------------------------------------
-    # ALLOWED_PRINCIPALS = explicit per-user / group / org grants via
-    # model_route_principals. It also backs the "team-private" default
-    # for non-platform Org routes: such a route is created as
-    # ALLOWED_PRINCIPALS with its owning Org auto-granted, so members
-    # see it without a dedicated ORG policy. ALLOWED_USERS stays as the
-    # OSS-facing per-user-only policy; rows are stored alongside
-    # ALLOWED_PRINCIPALS rows in the unified principals table.
-    access_policy_enum = sa.Enum(
-        'PUBLIC', 'AUTHED', 'ALLOWED_USERS', name='accesspolicyenum'
-    )
-    sql_enum.add_enum_values(
-        {'model_routes': 'access_policy'},
-        access_policy_enum,
-        'ALLOWED_PRINCIPALS',
-    )
+    # ALLOWED_PRINCIPALS is the single "specific grants" policy: explicit
+    # per-user / group / org grants via model_route_principals, and the
+    # team-private default for non-platform Org routes (owning Org
+    # auto-granted on create). It subsumes the released ``ALLOWED_USERS``
+    # (a USER-kind grant resolves identically); the enum is recreated
+    # without that label and existing rows are converted.
+    _consolidate_access_policy_enum(bind)
 
     # ------------------------------------------------------------------
     # 15. Drop legacy usermodelroutelink.
