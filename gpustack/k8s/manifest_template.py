@@ -84,10 +84,11 @@ class WorkerRenderSpec(BaseModel):
 
 
 class TemplateConfig(ClusterRegistrationTokenPublic):
-    # cluster owner namespace, defaults to "gpustack-{cluster_owner_principal_name}",
-    # used to placing the Kubernetes resources for the cluster owner.
+    # cluster owner namespace, defaults to
+    # "gpustack-{cluster_owner_principal_identifier}", used to place the
+    # Kubernetes resources for the cluster owner.
     cluster_owner_namespace: Optional[str] = None
-    cluster_owner_principal_name: Optional[str] = None
+    cluster_owner_principal_identifier: Optional[str] = None
     runtimes: Optional[List[ManufacturerEnum]] = None
     k8s_options: Optional[K8sOptions] = None
     # Cluster-level default container registry (mirrors
@@ -233,7 +234,7 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
             super().__init__(**data)
         if self.cluster_owner_namespace is None:
             self.cluster_owner_namespace = get_namespace_name(
-                self.cluster_owner_principal_name
+                self.cluster_owner_principal_identifier
             )
         self.image_pull_secrets = self._build_image_pull_secrets()
         self.workers = self._build_workers()

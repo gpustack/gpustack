@@ -2,7 +2,11 @@ from typing import Optional, Tuple
 
 from kubernetes_asyncio import client
 
-from gpustack.schemas.principals import PLATFORM_PRINCIPAL_NAME
+from gpustack.schemas.principals import (
+    PLATFORM_PRINCIPAL_NAME,
+    Principal,
+    PrincipalType,
+)
 
 from gpustack.schemas import (
     GPUInstance,
@@ -166,17 +170,36 @@ def get_k8s_client(
     return api
 
 
+def principal_namespace_identifier(principal: Principal) -> str:
+    """Stable per-principal identifier that derives the k8s namespace
+    (and the PVT name / NFS subdir / S3 prefix that hang off it).
+
+    USER principals key off ``user-<id>`` rather than their ``name``:
+    - A USER ``name`` is a login identifier (often an email) that is not
+      a valid RFC 1123 namespace label, and — since USER and ORG no
+      longer share a name partition — may collide with a same-named Org.
+    - The ``user-<id>`` form is reserved against Org names (see
+      ``personal_name_pattern``), is numeric-stable across renames, and
+      is always a valid k8s label.
+    ORG / platform principals use their (already URL-safe) ``name``.
+    """
+    if principal.kind == PrincipalType.USER:
+        return f"user-{principal.id}"
+    return principal.name
+
+
 def get_namespace_name(
-    principal_name: Optional[str] = None,
+    principal_identifier: Optional[str] = None,
 ) -> str:
     """
-    Get the Kubernetes Namespace name for the given principal name.
+    Get the Kubernetes Namespace name for the given principal identifier
+    (see :func:`principal_namespace_identifier`).
     """
 
-    if principal_name is None:
-        principal_name = PLATFORM_PRINCIPAL_NAME
+    if principal_identifier is None:
+        principal_identifier = PLATFORM_PRINCIPAL_NAME
 
-    return f"{PREFIX}-{principal_name}"
+    return f"{PREFIX}-{principal_identifier}"
 
 
 def parse_namespace_name(
@@ -204,17 +227,18 @@ def parse_namespace_name(
 
 def get_persistent_volume_type_name(
     name: str,
-    principal_name: Optional[str] = None,
+    principal_identifier: Optional[str] = None,
 ) -> str:
     """
     Get the GPUStack-Operator InstancePersistentVolumeType name for
-    the given GPU instance persistent volume type name and  principal name.
+    the given GPU instance persistent volume type name and principal
+    identifier.
     """
 
-    if principal_name is None:
-        principal_name = PLATFORM_PRINCIPAL_NAME
+    if principal_identifier is None:
+        principal_identifier = PLATFORM_PRINCIPAL_NAME
 
-    return f"{PREFIX}-{principal_name}-{name}"
+    return f"{PREFIX}-{principal_identifier}-{name}"
 
 
 def parse_persistent_volume_type_name(

@@ -32,7 +32,7 @@ def _registration():
 def _config(**kwargs):
     return TemplateConfig(
         registration=_registration(),
-        cluster_owner_principal_name="alice",
+        cluster_owner_principal_identifier="alice",
         **kwargs,
     )
 

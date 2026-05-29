@@ -23,6 +23,7 @@ from gpustack.gpu_instances.cluster_apis_util import (
     spec_persistent_volume_type,
     get_persistent_volume_type_name,
     parse_persistent_volume_type_name,
+    principal_namespace_identifier,
 )
 from gpustack.schemas.gpu_instances import (
     GPUInstance,
@@ -3229,7 +3230,7 @@ class GPUInstanceController:
             built = await self._build_ops(session, fresh)
             if built is None:
                 return
-            ops, principal_name = built
+            ops, principal_identifier = built
 
             async with ops:
                 # Create/Update referenced SSH public keys if needed.
@@ -3312,13 +3313,13 @@ class GPUInstanceController:
 
                     pvt_cluster_name = get_persistent_volume_type_name(
                         pvt_name,
-                        principal_name=principal_name,
+                        principal_identifier=principal_identifier,
                     )
                     try:
                         await ops.create_persistent_volume_type(
                             name=pvt_cluster_name,
                             spec=spec_persistent_volume_type(
-                                pvt, ops.cluster_owner_principal_name
+                                pvt, ops.cluster_owner_principal_identifier
                             ),
                         )
                     except Exception as e:
@@ -3463,7 +3464,7 @@ class GPUInstanceController:
             built = await self._build_ops(session, instance)
             if built is None:
                 return
-            ops, principal_name = built
+            ops, principal_identifier = built
 
             async with ops:
                 # Delete Instance.
@@ -3539,7 +3540,7 @@ class GPUInstanceController:
                         # so we can delete the worker-side PVT unconditionally if it exists.
                         pvt_cluster_name = get_persistent_volume_type_name(
                             template.spec.type_,
-                            principal_name=principal_name,
+                            principal_identifier=principal_identifier,
                         )
                         try:
                             await ops.delete_persistent_volume_type(pvt_cluster_name)
@@ -3603,8 +3604,8 @@ class GPUInstanceController:
     ) -> Optional[Tuple[ClusterOps, str]]:
         """Resolve the cluster + principal and construct a ``ClusterOps``.
 
-        Returns ``(ops, principal_name)`` or ``None`` when either the
-        cluster or the owning principal has gone away.
+        Returns ``(ops, principal_identifier)`` or ``None`` when either
+        the cluster or the owning principal has gone away.
         """
 
         cluster = await Cluster.one_by_id(session, instance.cluster_id)
@@ -3625,13 +3626,14 @@ class GPUInstanceController:
             )
             return None
 
+        owner_identifier = principal_namespace_identifier(principal)
         ops = ClusterOps(
             server_api_port=self._config.get_api_port(),
             cluster_id=cluster.id,
             cluster_registration_token=cluster.registration_token,
-            cluster_owner_principal_name=principal.name,
+            cluster_owner_principal_identifier=owner_identifier,
         )
-        return ops, principal.name
+        return ops, owner_identifier
 
     def _is_all_ready(
         self,

@@ -60,6 +60,7 @@ from gpustack.schemas.principals import (
 from gpustack.schemas.users import system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
+from gpustack.gpu_instances.cluster_apis_util import principal_namespace_identifier
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import (
     get_global_config,
@@ -667,7 +668,7 @@ async def get_cluster_manifests(
 
     config = TemplateConfig(
         registration=get_registration_from_cluster(request, cluster),
-        cluster_owner_principal_name=principal.name,
+        cluster_owner_principal_identifier=principal_namespace_identifier(principal),
         runtimes=runtime,
         k8s_options=k8s_options,
         system_default_container_registry=cluster.system_default_container_registry,
