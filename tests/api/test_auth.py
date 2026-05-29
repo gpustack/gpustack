@@ -230,7 +230,7 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
         AsyncMock(return_value={"email": "user@example.com", "name": "Test User"}),
     )
     monkeypatch.setattr(
-        "gpustack.routes.auth.User.first_by_field", AsyncMock(return_value=object())
+        "gpustack.routes.auth.User.first_by_fields", AsyncMock(return_value=object())
     )
 
     response = await oidc_callback(request=request, session=object())

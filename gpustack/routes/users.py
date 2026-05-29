@@ -120,14 +120,14 @@ async def list_user_memberships(session: SessionDep, id: int):
 
 @router.post("", response_model=UserPublic)
 async def create_user(session: SessionDep, user_in: UserCreate):
-    # USER / ORG / SYSTEM share one name namespace (see partitioning
-    # rationale on ``Principal.name``); a GROUP with the same name is
-    # in a separate partition and does not block USER creation.
+    # USER has its own name namespace (see partitioning rationale on
+    # ``Principal.name``); a same-named ORG / SYSTEM / GROUP lives in a
+    # separate partition and does not block USER creation.
     existing = (
         await session.exec(
             select(Principal).where(
                 Principal.name == user_in.username,
-                Principal.kind != PrincipalType.GROUP,
+                Principal.kind == PrincipalType.USER,
                 Principal.deleted_at.is_(None),
             )
         )

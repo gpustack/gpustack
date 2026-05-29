@@ -435,18 +435,21 @@ def upgrade() -> None:
             ondelete='CASCADE',
         )
 
-    # ``principals.name`` uniqueness is partitioned by kind:
-    # - GROUP has its own namespace — IdP-supplied group names
-    #   commonly coincide with admin-chosen Org names; forcing the
-    #   two to be globally unique would break OIDC/SAML group sync
-    #   the moment an admin happens to name an Org the same as an
-    #   IdP group.
-    # - USER / ORG / SYSTEM share one namespace — admin-curated kinds
-    #   that have always shared one. Most lookups already scope by
-    #   kind (platform-Org resolution, default-cluster SYSTEM
-    #   resolution, the ``<owner-name>/<route>`` URL resolver), but
-    #   ``get_by_username`` (login) does not and relies on this
-    #   shared partition to avoid mis-resolving a login to an ORG row.
+    # ``principals.name`` uniqueness is partitioned by kind: USER, ORG,
+    # and GROUP each get their own independent name namespace.
+    # - USER is carved out so an admin-created Org and a (manually- or
+    #   IdP-provisioned) User may share a name. USER names never appear
+    #   in the ``<owner-name>/<route>`` inference URL (personal Orgs —
+    #   which are USER principals — don't deploy), and login lookups
+    #   (``get_by_username`` / IdP provisioning) are kind-scoped to USER,
+    #   so a same-named ORG can no longer be mis-resolved as a login.
+    # - GROUP has always had its own namespace — IdP-supplied group
+    #   names commonly coincide with admin-chosen Org names, and forcing
+    #   the two globally unique would break OIDC/SAML group sync.
+    # - SYSTEM gets no partial unique index: its rows are internally
+    #   generated (``system/cluster-<id>`` / ``system/worker-<id>``), so
+    #   they're structurally unique with no user-facing create path, and
+    #   the ``SYSTEM`` enum value doesn't even exist until step 17a.
     #
     # Postgres supports partial unique indexes natively. MySQL has
     # no equivalent — fall back to a single plain (non-unique) index
@@ -454,16 +457,12 @@ def upgrade() -> None:
     # enforced by the create routes (``create_user`` /
     # ``create_organization`` / ``_insert_group_or_refetch``).
     if dialect == 'postgresql':
-        op.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uix_principals_non_group_name "
-            "ON principals (name) "
-            "WHERE kind <> 'GROUP' AND deleted_at IS NULL"
-        )
-        op.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uix_principals_group_name "
-            "ON principals (name) "
-            "WHERE kind = 'GROUP' AND deleted_at IS NULL"
-        )
+        for kind in ('USER', 'ORG', 'GROUP'):
+            op.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS uix_principals_{kind.lower()}_name "
+                "ON principals (name) "
+                f"WHERE kind = '{kind}' AND deleted_at IS NULL"
+            )
     else:
         op.create_index('ix_principals_name', 'principals', ['name'])
 
