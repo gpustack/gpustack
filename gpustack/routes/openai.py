@@ -201,7 +201,13 @@ async def proxy_request_by_model(
             is_openai_exception=True,
         )
     request.state.stream = stream
-    target = random.choice(route_targets)
+    # Weighted target selection mirrors the Higress gateway path (ModelRouteTarget.weight).
+    # random.choices raises on an all-zero weight vector, so fall back to uniform there.
+    target_weights = [t.weight for t in route_targets]
+    if sum(target_weights) > 0:
+        target = random.choices(route_targets, weights=target_weights, k=1)[0]
+    else:
+        target = random.choice(route_targets)
     model = await ModelService(session).get_by_id(target.model_id)
     if not model:
         raise NotFoundException(

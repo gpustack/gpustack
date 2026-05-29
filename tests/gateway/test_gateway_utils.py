@@ -1,11 +1,23 @@
 from gpustack.gateway import generic_proxy_router_spec_diff
+import re
+
+import pytest
+from fastapi import HTTPException
+
+from gpustack.api.exceptions import NotFoundException
 from gpustack.gateway.utils import (
     RoutePrefix,
     cleanup_generic_proxy_router_spec_diff,
     generate_model_ingress,
     generic_proxy_router_diff_spec,
+    get_instance_id_from_header,
+    lora_registry_name_suffix,
+    model_instance_registry,
+    model_instances_registry_list,
     provider_registry,
+    router_header_key,
 )
+from gpustack.schemas.models import ModelInstance
 from gpustack.gateway.client.extensions_higress_io_v1_api import WasmPluginSpec
 from gpustack.schemas.model_provider import (
     ModelProvider,
@@ -425,3 +437,85 @@ def test_included_proxy_route_off_has_no_proxy_paths():
     )
     paths = [p.path for p in ingress.spec.rules[0].http.paths]
     assert not any("model/proxy" in p for p in paths)
+
+
+def test_lora_registry_name_suffix_stable_distinct_and_safe():
+    suffix = lora_registry_name_suffix("qwen3-0.6b:french")
+    # Stable: same LoRA route name always yields the same suffix.
+    assert lora_registry_name_suffix("qwen3-0.6b:french") == suffix
+    # Distinct: different LoRA route names do not collide.
+    assert lora_registry_name_suffix("qwen3-0.6b:german") != suffix
+    # RFC1123 label safe (lowercase alphanumeric + hyphen, starts/ends alnum).
+    assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", suffix)
+
+
+def test_model_instance_registry_name_suffix_static():
+    instance = ModelInstance(id=12, model_id=5, worker_ip="1.2.3.4", port=8000)
+    base = model_instance_registry(instance)
+    suffix = lora_registry_name_suffix("qwen3-0.6b:french")
+    alias = model_instance_registry(instance, name_suffix=suffix)
+    # Distinct service name, same upstream address/port/type.
+    assert base.name == "model-5-12"
+    assert alias.name == f"model-5-12-{suffix}"
+    assert alias.get_service_name() != base.get_service_name()
+    assert alias.domain == base.domain == "1.2.3.4:8000"
+    assert alias.port == base.port == 80
+    assert alias.type == base.type == "static"
+
+
+def test_model_instance_registry_name_suffix_dns():
+    instance = ModelInstance(
+        id=7, model_id=3, worker_ip="worker.example.com", port=8001
+    )
+    base = model_instance_registry(instance)
+    alias = model_instance_registry(instance, name_suffix="labcdef12")
+    assert base.type == "dns"
+    assert alias.name == "model-3-7-labcdef12"
+    assert alias.domain == base.domain == "worker.example.com"
+    assert alias.port == base.port == 8001
+    assert alias.type == "dns"
+
+
+def test_get_instance_id_from_header_base_and_lora_alias():
+    # Base service name: instance id is the second numeric segment.
+    assert get_instance_id_from_header({router_header_key: "model-1-2.static"}) == 2
+    # LoRA alias service name (extra -l<hash> segment) must still resolve to the
+    # underlying instance id, not the alias.
+    suffix = lora_registry_name_suffix("qwen3-0.6b:french")
+    assert (
+        get_instance_id_from_header({router_header_key: f"model-1-2-{suffix}.static"})
+        == 2
+    )
+    # Multi-digit model/instance ids.
+    assert (
+        get_instance_id_from_header({router_header_key: "model-10-234-labcdef12.dns"})
+        == 234
+    )
+
+
+def test_get_instance_id_from_header_invalid():
+    with pytest.raises(HTTPException):
+        get_instance_id_from_header({})
+    with pytest.raises(NotFoundException):
+        get_instance_id_from_header({router_header_key: "cluster-gateway.static"})
+
+
+def test_model_instances_registry_list_threads_suffix():
+    instances = [
+        ModelInstance(id=1, model_id=5, worker_ip="1.2.3.4", port=8000),
+        ModelInstance(id=2, model_id=5, worker_ip="1.2.3.5", port=8000),
+    ]
+    suffix = lora_registry_name_suffix("qwen3-0.6b:french")
+    dests = model_instances_registry_list(
+        instances,
+        downstream_model_name="qwen3-0.6b:french",
+        registry_name_suffix=suffix,
+    )
+    assert [model_name for _, model_name, _ in dests] == [
+        "qwen3-0.6b:french",
+        "qwen3-0.6b:french",
+    ]
+    assert [registry.name for _, _, registry in dests] == [
+        f"model-5-1-{suffix}",
+        f"model-5-2-{suffix}",
+    ]
