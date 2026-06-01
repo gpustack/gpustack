@@ -1174,12 +1174,20 @@ def read_lora_max_rank(paths: List[str]) -> Optional[int]:
         except Exception as e:
             logger.warning(f"Skip reading LoRA rank from {config_path}: {e}")
             continue
+        if not isinstance(data, dict):
+            logger.warning(
+                f"Skip reading LoRA rank from {config_path}: not a JSON object"
+            )
+            continue
         ranks = []
         if isinstance(data.get("r"), int):
             ranks.append(data["r"])
         # PEFT allows per-module overrides in rank_pattern that may exceed `r`.
-        rank_pattern = data.get("rank_pattern") or {}
-        ranks.extend(value for value in rank_pattern.values() if isinstance(value, int))
+        rank_pattern = data.get("rank_pattern")
+        if isinstance(rank_pattern, dict):
+            ranks.extend(
+                value for value in rank_pattern.values() if isinstance(value, int)
+            )
         if ranks:
             max_rank = max([max_rank, *ranks]) if max_rank is not None else max(ranks)
     return max_rank

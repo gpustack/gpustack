@@ -520,10 +520,11 @@ class ModelFileDownloadTask:
             )
 
     def _read_lora_adapter_config(self, model_paths) -> Optional[dict]:
-        """Return parsed adapter_config.json if present and valid, else None.
+        """Return parsed adapter_config.json as a dict, or None when the file is absent.
 
-        Presence of adapter_config.json is the authoritative marker of a PEFT LoRA,
-        which is the only LoRA form vLLM/SGLang/Ascend MindIE serve.
+        Presence of adapter_config.json is the authoritative marker of a PEFT LoRA
+        (the only LoRA form vLLM/SGLang/Ascend MindIE serve). Raises ValueError when the
+        file is present but cannot be parsed into a JSON object.
         """
         if not model_paths:
             return None
@@ -531,18 +532,16 @@ class ModelFileDownloadTask:
         if not cfg_path.is_file():
             return None
         try:
-            return json.loads(cfg_path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise ValueError(f"Invalid adapter_config.json: {e}") from e
+        if not isinstance(data, dict):
+            raise ValueError("adapter_config.json is not a JSON object")
+        return data
 
-    def _validate_lora_adapter_config(self, model_paths) -> Optional[str]:
-        """Return error if adapter_config is missing/invalid or base model mismatched."""
-        if not model_paths:
-            return "Empty resolved_paths for LoRA"
-        data = self._read_lora_adapter_config(model_paths)
-        if data is None:
-            return "adapter_config.json not found or invalid in LoRA directory"
-        base = data.get("base_model_name_or_path") or data.get("base_model_name")
+    def _validate_lora_base_model(self, cfg: dict) -> Optional[str]:
+        """Return error if the adapter's base model mismatches the expected base_model."""
+        base = cfg.get("base_model_name_or_path") or cfg.get("base_model_name")
         expected = (getattr(self._model_file, "base_model", None) or "").strip()
         if expected and base:
             nb = str(base).strip().strip("/").lower()
@@ -561,19 +560,35 @@ class ModelFileDownloadTask:
             )
         return None
 
+    def _fail_lora_resolution(self, message: str) -> None:
+        """Mark the model file ERROR for a LoRA problem and signal the caller to abort."""
+        self._update_model_file(
+            self._model_file.id,
+            state=ModelFileStateEnum.ERROR,
+            state_message=message,
+        )
+        self._write_to_instance_download_logs(
+            f"LoRA adapter validation failed: {message}",
+            is_error=True,
+        )
+        return None
+
     def _resolve_lora_state(self, model_paths) -> Optional[dict]:
         """Resolve is_lora for the downloaded artifact and return READY-update extras.
 
         Returns the extra kwargs to merge into the READY update (``{}`` when not a LoRA),
-        or ``None`` when validation failed and an ERROR state was already reported, in
-        which case the caller must abort.
+        or ``None`` when an ERROR state was already reported, in which case the caller
+        must abort.
 
         is_lora is an objective property of the artifact (presence of adapter_config.json),
         so backend detection is authoritative. The user-provided is_lora is kept only as an
         override hint for detection false-negatives: final = detected or user_hint.
         """
         user_hint_lora = self._model_file.is_lora
-        cfg = self._read_lora_adapter_config(model_paths)
+        try:
+            cfg = self._read_lora_adapter_config(model_paths)
+        except ValueError as e:
+            return self._fail_lora_resolution(str(e))
         detected_lora = cfg is not None
         self._model_file.is_lora = detected_lora or user_hint_lora
 
@@ -582,18 +597,9 @@ class ModelFileDownloadTask:
 
         if detected_lora:
             # Detected by adapter_config.json: validate strictly, backfill base_model.
-            err = self._validate_lora_adapter_config(model_paths)
+            err = self._validate_lora_base_model(cfg)
             if err:
-                self._update_model_file(
-                    self._model_file.id,
-                    state=ModelFileStateEnum.ERROR,
-                    state_message=err,
-                )
-                self._write_to_instance_download_logs(
-                    f"LoRA adapter validation failed: {err}",
-                    is_error=True,
-                )
-                return None
+                return self._fail_lora_resolution(err)
             if not self._model_file.base_model:
                 self._model_file.base_model = cfg.get(
                     "base_model_name_or_path"
