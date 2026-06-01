@@ -59,7 +59,7 @@ data:
     spec:
       selector:
         app.kubernetes.io/part-of: gpustack-operator
-        app.kubernetes.io/component: worker
+        app.kubernetes.io/component: operator
         app.kubernetes.io/name: gpustack-operator-worker
       sessionAffinity: ClientIP
       ports:
@@ -105,20 +105,20 @@ data:
       namespace: #@ data.values.namespaceName
       labels:
         app.kubernetes.io/part-of: gpustack-operator
-        app.kubernetes.io/component: worker
+        app.kubernetes.io/component: operator
         app.kubernetes.io/name: gpustack-operator-worker
     spec:
       replicas: 1
       selector:
         matchLabels:
           app.kubernetes.io/part-of: gpustack-operator
-          app.kubernetes.io/component: worker
+          app.kubernetes.io/component: operator
           app.kubernetes.io/name: gpustack-operator-worker
       template:
         metadata:
           labels:
             app.kubernetes.io/part-of: gpustack-operator
-            app.kubernetes.io/component: worker
+            app.kubernetes.io/component: operator
             app.kubernetes.io/name: gpustack-operator-worker
         spec:
           serviceAccountName: gpustack-operator-worker
@@ -148,7 +148,7 @@ data:
                         - key: app.kubernetes.io/component
                           operator: In
                           values:
-                            - worker
+                            - operator
                         - key: app.kubernetes.io/name
                           operator: In
                           values:
