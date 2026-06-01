@@ -286,19 +286,32 @@ jobs:
           #
           # Version mapping (kept in lockstep with image tags in metadata job):
           #
-          #   refs/tags/vX.Y.Z       -> chart=X.Y.Z         appVersion=X.Y.Z         image.tag=vX.Y.Z
-          #   refs/heads/main        -> chart=0.0.0-dev.<sha>     appVersion=dev          image.tag=dev-<sha>
-          #   refs/heads/vN.M-dev    -> chart=N.M.0-dev.<sha>     appVersion=vN.M-dev     image.tag=vN.M-dev-<sha>
-          #   workflow_dispatch      -> chart=0.0.0-manual.<sha>  appVersion=dev          image.tag=dev-<sha>
+          #   refs/tags/vX.Y.Z        -> chart=X.Y.Z         appVersion=X.Y.Z       image.tag=vX.Y.Z
+          #   refs/tags/vX.Y.Zrc<N>   -> chart=X.Y.Z-rc<N>   appVersion=X.Y.Zrc<N>  image.tag=vX.Y.Zrc<N>
+          #   refs/heads/main         -> chart=0.0.0-dev.<sha>     appVersion=dev          image.tag=dev-<sha>
+          #   refs/heads/vN.M-dev     -> chart=N.M.0-dev.<sha>     appVersion=vN.M-dev     image.tag=vN.M-dev-<sha>
+          #   workflow_dispatch       -> chart=0.0.0-manual.<sha>  appVersion=dev          image.tag=dev-<sha>
           #
+          # Release tags follow PEP 440 (e.g. 2.2.0rc1), but a Helm chart `version`
+          # must be SemVer-2 compliant, where the pre-release segment is separated
+          # by a hyphen (2.2.0-rc1). We convert the PEP 440 pre-release suffix to
+          # its SemVer form for the chart version only; appVersion (free-form) and
+          # the image tag keep the raw PEP 440 string so they match the published
+          # wheel and Docker image. An optional trailing suffix on the tag is
+          # preserved verbatim on all three values.
           set -euo pipefail
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
           REF="${GITHUB_REF}"
 
           if [[ "${REF}" == refs/tags/v*.*.* ]]; then
-            VERSION="${REF#refs/tags/v}"
-            APP_VERSION="${VERSION}"
-            IMAGE_TAG="v${VERSION}"
+            RAW="${REF#refs/tags/v}"
+            APP_VERSION="${RAW}"
+            IMAGE_TAG="v${RAW}"
+            if [[ "${RAW}" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc|alpha|beta)\.?([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+              VERSION="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
+            else
+              VERSION="${RAW}"
+            fi
           elif [[ "${REF}" == refs/heads/main ]]; then
             VERSION="0.0.0-dev.${SHORT_SHA}"
             APP_VERSION="dev"
