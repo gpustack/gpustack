@@ -519,20 +519,29 @@ class ModelFileDownloadTask:
                 state_message=str(e),
             )
 
-    def _validate_lora_adapter_config(self, model_paths) -> Optional[str]:
-        """Return error message if LoRA adapter_config is missing or mismatched."""
-        if not getattr(self._model_file, "is_lora", False):
+    def _read_lora_adapter_config(self, model_paths) -> Optional[dict]:
+        """Return parsed adapter_config.json if present and valid, else None.
+
+        Presence of adapter_config.json is the authoritative marker of a PEFT LoRA,
+        which is the only LoRA form vLLM/SGLang/Ascend MindIE serve.
+        """
+        if not model_paths:
             return None
+        cfg_path = Path(model_paths[0]) / "adapter_config.json"
+        if not cfg_path.is_file():
+            return None
+        try:
+            return json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def _validate_lora_adapter_config(self, model_paths) -> Optional[str]:
+        """Return error if adapter_config is missing/invalid or base model mismatched."""
         if not model_paths:
             return "Empty resolved_paths for LoRA"
-        root = Path(model_paths[0])
-        cfg_path = root / "adapter_config.json"
-        if not cfg_path.is_file():
-            return "adapter_config.json not found in LoRA directory"
-        try:
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            return f"Invalid adapter_config.json: {e}"
+        data = self._read_lora_adapter_config(model_paths)
+        if data is None:
+            return "adapter_config.json not found or invalid in LoRA directory"
         base = data.get("base_model_name_or_path") or data.get("base_model_name")
         expected = (getattr(self._model_file, "base_model", None) or "").strip()
         if expected and base:
@@ -552,6 +561,53 @@ class ModelFileDownloadTask:
             )
         return None
 
+    def _resolve_lora_state(self, model_paths) -> Optional[dict]:
+        """Resolve is_lora for the downloaded artifact and return READY-update extras.
+
+        Returns the extra kwargs to merge into the READY update (``{}`` when not a LoRA),
+        or ``None`` when validation failed and an ERROR state was already reported, in
+        which case the caller must abort.
+
+        is_lora is an objective property of the artifact (presence of adapter_config.json),
+        so backend detection is authoritative. The user-provided is_lora is kept only as an
+        override hint for detection false-negatives: final = detected or user_hint.
+        """
+        user_hint_lora = self._model_file.is_lora
+        cfg = self._read_lora_adapter_config(model_paths)
+        detected_lora = cfg is not None
+        self._model_file.is_lora = detected_lora or user_hint_lora
+
+        if not self._model_file.is_lora:
+            return {}
+
+        if detected_lora:
+            # Detected by adapter_config.json: validate strictly, backfill base_model.
+            err = self._validate_lora_adapter_config(model_paths)
+            if err:
+                self._update_model_file(
+                    self._model_file.id,
+                    state=ModelFileStateEnum.ERROR,
+                    state_message=err,
+                )
+                self._write_to_instance_download_logs(
+                    f"LoRA adapter validation failed: {err}",
+                    is_error=True,
+                )
+                return None
+            if not self._model_file.base_model:
+                self._model_file.base_model = cfg.get(
+                    "base_model_name_or_path"
+                ) or cfg.get("base_model_name")
+        else:
+            # User override with no adapter_config.json at the probe path: trust the
+            # user (likely a detection false-negative), skip path-based validation.
+            logger.info(
+                f"is_lora forced by user input for {self._model_file.readable_source}; "
+                "adapter_config.json not detected at resolved path."
+            )
+
+        return {"is_lora": True, "base_model": self._model_file.base_model}
+
     def _download_model_file(self):
         self._write_to_instance_download_logs(
             f"Downloading model file: {self._model_file.readable_source}"
@@ -564,25 +620,18 @@ class ModelFileDownloadTask:
             huggingface_token=self._config.huggingface_token,
         )
         self._download_completed = True
-        if self._model_file.is_lora:
-            err = self._validate_lora_adapter_config(model_paths)
-            if err:
-                self._update_model_file(
-                    self._model_file.id,
-                    state=ModelFileStateEnum.ERROR,
-                    state_message=err,
-                )
-                self._write_to_instance_download_logs(
-                    f"LoRA adapter validation failed: {err}",
-                    is_error=True,
-                )
-                return
+
+        extra = self._resolve_lora_state(model_paths)
+        if extra is None:
+            # Validation failed; ERROR state already reported by _resolve_lora_state.
+            return
 
         self._update_model_file(
             self._model_file.id,
             state=ModelFileStateEnum.READY,
             download_progress=100,
             resolved_paths=model_paths,
+            **extra,
         )
         self._write_to_instance_download_logs(
             f"Successfully downloaded {self._model_file.readable_source}"

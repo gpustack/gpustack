@@ -1,5 +1,8 @@
+import asyncio
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import true
@@ -15,7 +18,9 @@ from gpustack.schemas.model_routes import (
     ModelRoutesPublic,
     MyModel,
 )
+from gpustack.schemas.models import SourceEnum
 from gpustack.schemas.principals import Principal, PrincipalType
+import gpustack.server.lora_adapters_discovery as discovery
 
 
 def _ctx(
@@ -446,3 +451,128 @@ async def test_get_model_routes_admin_act_as_watch_applies_grant_filter(monkeypa
     # AND with the OR predicate and drop PUBLIC/AUTHED + foreign-owned
     # grants entirely.
     assert "owner_principal_id" not in captured["fields"]
+
+
+# ---------------------------------------------------------------------------
+# list_adapters_for_base (backs GET /v2/models/adapters)
+# ---------------------------------------------------------------------------
+
+
+def _adapters_session(model_files):
+    """A session whose exec(...).all() returns the given local ModelFile rows."""
+    session = MagicMock()
+    result = MagicMock()
+    result.all = MagicMock(return_value=model_files)
+    session.exec = AsyncMock(return_value=result)
+    return session
+
+
+def _local_lora(repo_id, base="qwen/qwen3-8b"):
+    model_file = MagicMock()
+    model_file.source = SourceEnum.HUGGING_FACE
+    model_file.huggingface_repo_id = repo_id
+    model_file.base_model = base
+    return model_file
+
+
+@pytest.mark.asyncio
+async def test_list_adapters_slow_remote_degrades_to_local(monkeypatch):
+    # A poor network stalls the remote calls; local results must not wait on them.
+    monkeypatch.setattr(discovery, "REMOTE_ADAPTER_DISCOVERY_BUDGET", 0.2)
+
+    async def slow_remote(*args, **kwargs):
+        await asyncio.sleep(5)
+        return []
+
+    monkeypatch.setattr(discovery, "_cached_hf_adapters", slow_remote)
+    monkeypatch.setattr(discovery, "_cached_ms_adapters", slow_remote)
+
+    session = _adapters_session([_local_lora("org/my-lora")])
+
+    start = time.monotonic()
+    result = await discovery.list_adapters_for_base(session, "Qwen/Qwen3-8B", q="lora")
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2.0
+    names = [item["lora_repo_name"] for item in result["lora_list"]]
+    assert names == ["org/my-lora"]
+
+
+@pytest.mark.asyncio
+async def test_list_adapters_remote_exception_degrades_to_local(monkeypatch):
+    async def boom(*args, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(discovery, "_cached_hf_adapters", boom)
+    monkeypatch.setattr(discovery, "_cached_ms_adapters", boom)
+
+    session = _adapters_session([_local_lora("org/my-lora")])
+
+    result = await discovery.list_adapters_for_base(session, "Qwen/Qwen3-8B", q="lora")
+
+    names = [item["lora_repo_name"] for item in result["lora_list"]]
+    assert names == ["org/my-lora"]
+
+
+@pytest.mark.asyncio
+async def test_list_adapters_merges_remote_with_local(monkeypatch):
+    async def hf(*args, **kwargs):
+        return [
+            {
+                "lora_repo_name": "remote/hf-lora",
+                "source": SourceEnum.HUGGING_FACE.value,
+                "is_local": False,
+            }
+        ]
+
+    async def empty(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(discovery, "_cached_hf_adapters", hf)
+    monkeypatch.setattr(discovery, "_cached_ms_adapters", empty)
+
+    session = _adapters_session([_local_lora("org/my-lora")])
+
+    result = await discovery.list_adapters_for_base(session, "Qwen/Qwen3-8B", q="lora")
+
+    names = [item["lora_repo_name"] for item in result["lora_list"]]
+    # Local first, then remote.
+    assert names == ["org/my-lora", "remote/hf-lora"]
+
+
+@pytest.mark.asyncio
+async def test_list_adapters_no_query_skips_remote(monkeypatch):
+    # No q: local only, remote must not be called.
+    calls = {"hf": 0, "ms": 0}
+
+    async def track_hf(*args, **kwargs):
+        calls["hf"] += 1
+        return []
+
+    async def track_ms(*args, **kwargs):
+        calls["ms"] += 1
+        return []
+
+    monkeypatch.setattr(discovery, "_cached_hf_adapters", track_hf)
+    monkeypatch.setattr(discovery, "_cached_ms_adapters", track_ms)
+
+    session = _adapters_session([_local_lora("org/my-lora")])
+
+    result = await discovery.list_adapters_for_base(session, "Qwen/Qwen3-8B")
+
+    names = [item["lora_repo_name"] for item in result["lora_list"]]
+    assert names == ["org/my-lora"]
+    assert calls == {"hf": 0, "ms": 0}
+
+
+@pytest.mark.asyncio
+async def test_list_local_loras_filters_by_q():
+    # q filters local by lora_repo_name, case-insensitive.
+    session = _adapters_session(
+        [_local_lora("org/chat-lora"), _local_lora("org/math-lora")]
+    )
+
+    result = await discovery.list_local_loras(session, "Qwen/Qwen3-8B", q="CHAT")
+
+    names = [item["lora_repo_name"] for item in result]
+    assert names == ["org/chat-lora"]

@@ -21,7 +21,11 @@ logger = logging.getLogger(__name__)
 HF_MODELS_API = "https://huggingface.co/api/models"
 MODELSCOPE_LINEAGE_LIST = "https://www.modelscope.cn/api/v1/models/lineage/list"
 
-_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
+_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=5.0)
+
+# Local LoRA results must not wait on slow/unreachable remotes (HF/ModelScope).
+# When a poor network stalls the remote calls past this budget, degrade to local-only.
+REMOTE_ADAPTER_DISCOVERY_BUDGET = 8.0  # seconds
 
 _LOCAL_LORA_NAME_FIELD: Dict[str, str] = {
     SourceEnum.HUGGING_FACE.value: "huggingface_repo_id",
@@ -39,7 +43,40 @@ def _looks_like_hf_or_ms_repo_id(base: str) -> bool:
     return "/" in s and not s.startswith("/")
 
 
-async def list_local_loras(session: AsyncSession, base: str) -> List[Dict[str, Any]]:
+def _dedup_adapters(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for item in items:
+        key = (item["lora_repo_name"], item["source"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _merge_adapters(
+    local: List[Dict[str, Any]], *remote_buckets: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    # Local first; drop remote repos already present locally.
+    merged = _dedup_adapters(local)
+    local_names = {item["lora_repo_name"] for item in merged}
+    seen = {(item["lora_repo_name"], item["source"]) for item in merged}
+    for bucket in remote_buckets:
+        for item in bucket:
+            if item["lora_repo_name"] in local_names:
+                continue
+            key = (item["lora_repo_name"], item["source"])
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
+async def list_local_loras(
+    session: AsyncSession, base: str, *, q: Optional[str] = None
+) -> List[Dict[str, Any]]:
     nb = _normalize_base(base)
     if not nb:
         return []
@@ -68,15 +105,10 @@ async def list_local_loras(session: AsyncSession, base: str) -> List[Dict[str, A
                 "is_local": True,
             }
         )
-    seen = set()
-    deduped = []
-    for item in out:
-        key = (item["lora_repo_name"], item["source"])
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-    return deduped
+    if q and q.strip():
+        keyword = q.strip().lower()
+        out = [item for item in out if keyword in item["lora_repo_name"].lower()]
+    return _dedup_adapters(out)
 
 
 def _parse_hf_models_json(payload: Any) -> List[str]:
@@ -307,43 +339,41 @@ async def list_adapters_for_base(
     limit: int = 40,
 ) -> Dict[str, Any]:
     """
-    Merge Hugging Face (Hub /api/models), ModelScope (lineage/list), and local ModelFile LoRAs.
+    Discover LoRA adapters for a base model (repo id like ``Qwen/Qwen3-8B``).
 
-    ``base_model_id`` should be a repo id like ``Qwen/Qwen3-8B`` for remote sources.
-    Optional ``q`` maps to Hub ``search`` and ModelScope ``Search``.
+    Without ``q``: local ModelFile LoRAs only (remote skipped, returns immediately).
+    With ``q``: local merged with Hugging Face + ModelScope.
     """
     base_model_id = (base_model_id or "").strip()
-    loc = await list_local_loras(session, base_model_id)
 
+    # No search keyword: local only, never touch remote.
+    if not (q and q.strip()):
+        loc = await list_local_loras(session, base_model_id)
+        return {"lora_list": loc}
+
+    loc = await list_local_loras(session, base_model_id, q=q)
+
+    hf, ms = [], []
     if _looks_like_hf_or_ms_repo_id(base_model_id):
-        hf_task = _cached_hf_adapters(base_model_id, q, limit)
-        ms_task = _cached_ms_adapters(base_model_id, q, limit)
-        hf, ms = await asyncio.gather(hf_task, ms_task)
-    else:
-        hf, ms = [], []
-        if base_model_id:
-            logger.debug(
-                "Skipping HF/ModelScope adapter discovery (expected org/name base id): %s",
-                base_model_id,
+        try:
+            hf, ms = await asyncio.wait_for(
+                asyncio.gather(
+                    _cached_hf_adapters(base_model_id, q, limit),
+                    _cached_ms_adapters(base_model_id, q, limit),
+                ),
+                timeout=REMOTE_ADAPTER_DISCOVERY_BUDGET,
             )
+        except Exception as e:
+            # CancelledError (BaseException in py3.8+) is not caught here, so a real
+            # request cancellation still propagates. Any other failure/timeout from the
+            # remote sources degrades to the already-computed local results.
+            logger.warning(
+                f"Remote LoRA adapter discovery degraded to local-only for base={base_model_id}: {e}"
+            )
+            hf, ms = [], []
+    elif base_model_id:
+        logger.debug(
+            f"Skipping HF/ModelScope adapter discovery (expected org/name base id): {base_model_id}"
+        )
 
-    # Local first; skip HF/ModelScope items whose lora_repo_name already exists locally.
-    merged: List[Dict[str, Any]] = []
-    seen = set()
-    local_names = {item["lora_repo_name"] for item in loc}
-    for item in loc:
-        key = (item["lora_repo_name"], item["source"])
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(item)
-    for bucket in (hf, ms):
-        for item in bucket:
-            if item["lora_repo_name"] in local_names:
-                continue
-            key = (item["lora_repo_name"], item["source"])
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(item)
-    return {"lora_list": merged}
+    return {"lora_list": _merge_adapters(loc, hf, ms)}
