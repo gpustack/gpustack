@@ -15,29 +15,87 @@ This tutorial shows how to attach multiple LoRA adapters to a single base model 
 Before proceeding, ensure the following:
 
 - GPUStack is installed and running.
-- A Linux worker node with a GPU is available. This tutorial uses `Qwen/Qwen3-0.6B` as the base model and `sch-ai/titlebreaker-lora-adapter` from Hugging Face as the LoRA adapter.
+- A Linux worker node with a GPU is available. The base model used here is `Qwen3-8B`, so the GPU needs enough memory to serve an 8B model (for example, 24 GB or more). The two adapters share this same instance and add only a small amount of extra memory.
+- Access to Hugging Face for downloading the model and adapter files.
+
+This tutorial mounts **two** LoRA adapters on a single base model so you can see how callers switch between fine-tunes per request. It uses the following configuration:
+
+| Item | Value used in this tutorial |
+| --- | --- |
+| Model source | `Hugging Face` |
+| Backend | `vLLM` |
+| Base model | `Qwen/Qwen3-8B` |
+| LoRA adapter 1 | `AMaslovskyi/qwen-devops-foundation-lora` (named `devops`) |
+| LoRA adapter 2 | `XinyuanWang/qwen3-8b-medical-lora` (named `medical`) |
+
+Both adapters declare `Qwen/Qwen3-8B` as their base model. This is a hard requirement: every adapter mounted on one deployment must share the same base model.
+
+!!! tip
+
+    Once you have completed the tutorial with these values, you can swap in `ModelScope` or `Local Path` as the source, `SGLang` or `Ascend MindIE` as the backend, and your own base model and adapters. See [Backend Compatibility & Limits](#backend-compatibility-limits) for the per-backend differences.
 
 ## Step 1: Deploy the Base Model with LoRA Adapters
 
-1. Navigate to the `Deployments` page and click `Deploy Model`.
-2. Choose the base model source (`Hugging Face` / `ModelScope` / `Local Path`), fill in the repository ID or local path, and select `vLLM`, `SGLang`, or `Ascend MindIE` as the backend.
-3. Expand the `Advanced` section, locate `LoRA Adapter`, and add adapters one by one:
+1. Navigate to the `Deployments` page and click `Deploy Model`, then choose `Hugging Face` as the source.
+2. In the search box, type `Qwen/Qwen3-8B` and select it from the results.
+3. Set the backend to `vLLM`.
+4. Expand the `Advanced` section and locate `LoRA Adapters`. Add the **first** adapter:
 
-   - Pick an adapter from the dropdown. The list supports search. If your adapter is not shown, first confirm on Hugging Face or ModelScope that the model actually provides one, then paste its repository ID into the search box to select it.
-   - `LoRA name`: Must take the form `<base-model-name>:<suffix>`, for example `llama-3-8b:alpaca`. The `<suffix>` distinguishes adapters when invoking the model.
-4. Click `Save` to finish the deployment.
+      - In the adapter dropdown, type `AMaslovskyi/qwen-devops-foundation-lora` and select it.
+      - In the `LoRA name` field, enter `devops`.
 
-![Screenshot: LoRA Adapter section on the Deployment form](../assets/tutorials/serving-with-lora-adapters/1-deployment-lora-form.png)
+5. Click to add the **second** adapter:
+
+      - In the adapter dropdown, type `XinyuanWang/qwen3-8b-medical-lora` and select it.
+      - In the `LoRA name` field, enter `medical`.
+
+6. Click `Save` to finish the deployment.
+
+![Screenshot: LoRA Adapters section on the Deployment form with both adapters added](../assets/tutorials/serving-with-lora-adapters/1-deployment-lora-form.png)
+
+!!! note
+
+    Enter only the bare adapter name (`devops`, `medical`) without the base model prefix. GPUStack automatically derives the full identifier (`qwen3-8b:devops`, `qwen3-8b:medical`), which is also the Model Route name you use to invoke each adapter (see [Step 2](#step-2-invoke-a-lora-adapter)).
+
+!!! tip
+
+    Each adapter needs a distinct `LoRA name` — to mount more, just repeat the add step. If an adapter you want does not appear in the dropdown, first confirm on Hugging Face or ModelScope that the model actually ships a LoRA adapter, then paste its full repository ID into the search box to select it.
 
 ## Step 2: Invoke a LoRA Adapter
 
-After deployment, GPUStack automatically creates a Model Route for each LoRA adapter, named exactly after the adapter. Each LoRA route appears alongside the base model's own Model Route on the `Model Routes` page and is tagged with a `LoRA` badge for easy identification.
+After deployment, GPUStack automatically creates a Model Route for each LoRA adapter, named `<base-model-name>:<adapter-name>`. In this tutorial that yields three routes — the base `qwen3-8b`, plus `qwen3-8b:devops` and `qwen3-8b:medical`. Each LoRA route appears alongside the base model's own Model Route on the `Model Routes` page and is tagged with a `LoRA` badge for easy identification.
 
-![Screenshot: Model Routes page listing both the base route and LoRA adapter routes](../assets/tutorials/serving-with-lora-adapters/3-model-routes-list.png)
+![Screenshot: Model Routes page listing the base route and both LoRA adapter routes](../assets/tutorials/serving-with-lora-adapters/3-model-routes-list.png)
 
-When you pick a model in `Playground`, the dropdown lists both the base model and every LoRA adapter; switching the option routes the request to the corresponding adapter. The same applies through the OpenAI-compatible API — set the `model` field to either the base model name or the adapter name. Under the hood, all adapters share the same GPU instance, so switching between them is far cheaper than swapping models.
+When you pick a model in `Playground`, the dropdown lists the base model and every LoRA adapter; switching the option routes the request to the corresponding adapter. The same applies through the OpenAI-compatible API — set the `model` field to the base model name or any adapter route name. Under the hood, all adapters share the same GPU instance, so switching between them is far cheaper than swapping models.
 
-![Screenshot: Playground model dropdown listing both the base model and LoRA adapters](../assets/tutorials/serving-with-lora-adapters/2-playground-model-list.png)
+![Screenshot: Playground model dropdown listing the base model and both LoRA adapters](../assets/tutorials/serving-with-lora-adapters/2-playground-model-list.png)
+
+For example, the same prompt can be routed to either fine-tune just by changing the `model` field. Send the DevOps adapter a Kubernetes question:
+
+```bash
+curl http://<your-gpustack-server>/v1/chat/completions \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3-8b:devops",
+    "messages": [{"role": "user", "content": "How do I debug a CrashLoopBackOff pod?"}]
+  }'
+```
+
+Then route a clinical question to the medical adapter by changing only the `model` value:
+
+```bash
+curl http://<your-gpustack-server>/v1/chat/completions \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3-8b:medical",
+    "messages": [{"role": "user", "content": "What are the first-line treatments for type 2 diabetes?"}]
+  }'
+```
+
+Replace `<your-gpustack-server>` with your server address and `<your-api-key>` with an API key created on the `API Keys` page. Sending `"model": "qwen3-8b"` instead targets the base model with no adapter applied.
 
 ## Step 3: Manage LoRA Adapters
 

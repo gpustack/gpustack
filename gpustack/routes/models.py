@@ -74,6 +74,7 @@ from gpustack.routes.model_common import (
 )
 from gpustack.config.config import get_global_config
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack.utils.lora_model_source import lora_route_name_for
 
 router = APIRouter()
 
@@ -352,11 +353,12 @@ async def validate_model_in(
 def validate_and_normalize_lora_list(
     model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
 ) -> None:
-    """Mutates model_in.lora_list to force each lora_name into "<base>:<suffix>" form.
+    """Normalize each lora_name to the stored "<base>:<short>" form.
 
-    Short names are auto-prepended with the base prefix; wrong/missing prefixes,
-    empty names, missing suffixes, and duplicates are rejected (rewriting wrong
-    prefixes would mask client bugs).
+    Accepts a bare short name and prepends the base prefix; a correct "<base>:"
+    prefix is kept as-is. Rejects wrong prefixes, embedded colons, empty names,
+    and duplicates. The API strips the prefix again on the way out (see
+    ModelPublic._strip_lora_prefix).
     """
     lora_list = getattr(model_in, "lora_list", None)
     if not lora_list:
@@ -366,33 +368,42 @@ def validate_and_normalize_lora_list(
     seen: set = set()
     for i, item in enumerate(lora_list):
         entry = LoraListEntry.model_validate(item) if isinstance(item, dict) else item
-        if not entry.lora_name:
+        short_name = (entry.lora_name or "").strip()
+        if not short_name:
             raise BadRequestException(
                 message="lora_name must not be empty in lora_list."
             )
-        if entry.lora_name == expected_prefix:
-            raise BadRequestException(
-                message=(
-                    f"lora_name '{entry.lora_name}' is missing the suffix "
-                    f"after the base model prefix '{expected_prefix}'."
-                )
-            )
-        if not entry.lora_name.startswith(expected_prefix):
-            if ":" in entry.lora_name:
+        if ":" in short_name:
+            if not short_name.startswith(expected_prefix):
                 raise BadRequestException(
                     message=(
-                        f"lora_name '{entry.lora_name}' does not start with the "
-                        f"base model prefix '{expected_prefix}'. Set lora_name "
-                        f"to '{expected_prefix}<your-suffix>'."
+                        f"lora_name '{short_name}' must not contain ':'. Set "
+                        f"lora_name to the bare adapter name (e.g. 'my-adapter'); "
+                        f"the '{expected_prefix}' prefix is added automatically."
                     )
                 )
-            entry.lora_name = f"{expected_prefix}{entry.lora_name}"
+            short_name = short_name[len(expected_prefix) :]
+            if not short_name:
+                raise BadRequestException(
+                    message=(
+                        f"lora_name is missing the suffix after the base model "
+                        f"prefix '{expected_prefix}'."
+                    )
+                )
+            if ":" in short_name:
+                raise BadRequestException(
+                    message=(
+                        f"lora_name '{entry.lora_name}' must not contain a nested "
+                        f"':' after the base model prefix."
+                    )
+                )
+        entry.lora_name = lora_route_name_for(model_in.name, short_name)
         lora_list[i] = entry
-        if entry.lora_name in seen:
+        if short_name in seen:
             raise BadRequestException(
-                message=f"Duplicate lora_name '{entry.lora_name}' in lora_list."
+                message=f"Duplicate lora_name '{short_name}' in lora_list."
             )
-        seen.add(entry.lora_name)
+        seen.add(short_name)
 
 
 async def validate_gpu_ids(  # noqa: C901
