@@ -48,9 +48,21 @@ from gpustack.worker.backends.base import (
     is_ascend_310p,
     is_ascend,
     cal_distributed_parallelism_arguments,
+    read_lora_max_rank,
 )
 
 logger = logging.getLogger(__name__)
+
+# vLLM only accepts a fixed set of values for --max-lora-rank; a rank in between
+# must be rounded up to the next allowed value.
+_VLLM_LORA_RANK_CHOICES = (8, 16, 32, 64, 128, 256, 320, 512)
+
+
+def _round_up_vllm_lora_rank(rank: int) -> int:
+    for choice in _VLLM_LORA_RANK_CHOICES:
+        if rank <= choice:
+            return choice
+    return rank  # Beyond the known set: pass through and let vLLM validate it.
 
 
 def extend_vllm_mounted_lora_arguments(
@@ -96,6 +108,14 @@ def extend_vllm_mounted_lora_arguments(
         arguments.append("--lora-modules")
         for m in modules:
             arguments.append(json.dumps(m))
+
+    if not find_parameter(backend_parameters or [], ["max-lora-rank", "max_lora_rank"]):
+        max_rank = read_lora_max_rank([m["path"] for m in modules])
+        if max_rank:
+            extend_args_no_exist(
+                arguments,
+                ("--max-lora-rank", str(_round_up_vllm_lora_rank(max_rank))),
+            )
 
 
 @dataclass

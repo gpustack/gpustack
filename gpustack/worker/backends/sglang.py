@@ -37,6 +37,7 @@ from gpustack.worker.backends.base import (
     cal_distributed_parallelism_arguments,
     is_ascend,
     is_ascend_310p,
+    read_lora_max_rank,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,11 @@ def extend_sglang_mounted_lora_arguments(
         arguments,
         ("--max-loras-per-batch", str(max(len(modules) + 1, 2))),
     )
+
+    if not find_parameter(backend_parameters or [], ["max-lora-rank", "max_lora_rank"]):
+        max_rank = read_lora_max_rank([path for _, path in modules])
+        if max_rank:
+            extend_args_no_exist(arguments, ("--max-lora-rank", str(max_rank)))
 
 
 class SGLangServer(InferenceServer):
