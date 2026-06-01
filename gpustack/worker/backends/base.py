@@ -1154,3 +1154,32 @@ def cal_distributed_parallelism_arguments(
             f"The number of GPUs selected for each worker is not equal: {num_gpus} != {tp}, fallback to using pipeline parallelism."
         )
     return tp, pp
+
+
+def read_lora_max_rank(paths: List[str]) -> Optional[int]:
+    """
+    Read the max LoRA rank across adapter dirs' adapter_config.json.
+
+    Returns the largest of each adapter's `r` and any `rank_pattern` values.
+    Returns None when no readable rank is found, so callers can skip injecting
+    --max-lora-rank and fall back to the engine default / user-provided value.
+    """
+    max_rank: Optional[int] = None
+    for path in paths:
+        if not path:
+            continue
+        config_path = os.path.join(path, "adapter_config.json")
+        try:
+            data = json.loads(Path(config_path).read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"Skip reading LoRA rank from {config_path}: {e}")
+            continue
+        ranks = []
+        if isinstance(data.get("r"), int):
+            ranks.append(data["r"])
+        # PEFT allows per-module overrides in rank_pattern that may exceed `r`.
+        rank_pattern = data.get("rank_pattern") or {}
+        ranks.extend(value for value in rank_pattern.values() if isinstance(value, int))
+        if ranks:
+            max_rank = max([max_rank, *ranks]) if max_rank is not None else max(ranks)
+    return max_rank
