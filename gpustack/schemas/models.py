@@ -360,7 +360,7 @@ class ModelPublic(
         prefix = f"{self.name}:"
         out = []
         for entry in lora_list:
-            data = entry.model_dump()
+            data = entry.model_dump() if isinstance(entry, BaseModel) else dict(entry)
             name = data.get("lora_name") or ""
             if name.startswith(prefix):
                 data["lora_name"] = name[len(prefix) :]
