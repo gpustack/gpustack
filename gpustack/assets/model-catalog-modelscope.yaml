@@ -1,6 +1,6 @@
 # YAML Variables
 .vllm_omni_ascend_stable_version: &vllm_omni_ascend_stable_version "0.14.1"
-.vllm_omni_stable_version: &vllm_omni_stable_version "0.20.1"
+.vllm_omni_stable_version: &vllm_omni_stable_version "0.21.0"
 
 draft_models:
 - name: Qwen3-8B-EAGLE3
@@ -438,7 +438,7 @@ model_sets:
   categories:
     - llm
   capabilities:
-    - context/128K
+    - context/256K
     - vision
     - tools
   licenses:
@@ -472,7 +472,7 @@ model_sets:
   categories:
     - llm
   capabilities:
-    - context/128K
+    - context/256K
     - vision
     - tools
   licenses:
@@ -1009,7 +1009,7 @@ model_sets:
   categories:
     - llm
   capabilities:
-    - context/1M
+    - context/198K
     - reasoning
     - tools
   licenses:
@@ -1353,10 +1353,13 @@ model_sets:
   description: DeepSeek-V4-Pro is the flagship of the DeepSeek-V4 family, featuring the deepseek_v4 architecture with continued advances in sparse attention, reasoning, and agentic capabilities.
   home: https://www.deepseek.com
   icon: /static/catalog_icons/deepseek.png
+  size: 1.6
+  activated_size: 49
+  size_unit: T
   categories:
     - llm
   capabilities:
-    - context/128K
+    - context/1M
     - reasoning
     - tools
   licenses:
@@ -1397,10 +1400,12 @@ model_sets:
   description: DeepSeek-V4-Flash is a smaller, faster variant in the DeepSeek-V4 family with the deepseek_v4 architecture, suitable for low-latency inference scenarios.
   home: https://www.deepseek.com
   icon: /static/catalog_icons/deepseek.png
+  size: 284
+  activated_size: 13
   categories:
     - llm
   capabilities:
-    - context/128K
+    - context/1M
     - reasoning
   licenses:
     - mit
@@ -1507,7 +1512,7 @@ model_sets:
   categories:
     - llm
   capabilities:
-    - context/192K
+    - context/200K
     - tools
   licenses:
     - modified-mit
@@ -1716,10 +1721,13 @@ model_sets:
   description: MiMo-V2.5-Pro is the text-only flagship variant of Xiaomi's MiMo-V2.5 series, optimized for agentic coding tasks with long-context support.
   home: https://github.com/XiaomiMiMo
   icon: /static/catalog_icons/XiaomiMiMo.png
+  size: 1.02
+  activated_size: 42
+  size_unit: T
   categories:
     - llm
   capabilities:
-    - context/128K
+    - context/1M
     - tools
   licenses:
     - mit
@@ -1741,7 +1749,7 @@ model_sets:
   categories:
     - llm
   capabilities:
-    - context/128K
+    - context/256K
     - tools
   licenses:
     - mistral-research-license
@@ -2162,6 +2170,7 @@ model_sets:
   description: FLUX.2 [dev] is the next-generation image-to-image and text-to-image model from Black Forest Labs, using the Flux2Pipeline.
   home: https://blackforestlabs.ai
   icon: /static/catalog_icons/blackforestlabs.png
+  size: 32
   categories:
     - image
   licenses:
@@ -2354,6 +2363,7 @@ model_sets:
   description: GLM-Image is Zhipu AI's text-to-image diffusion model built on the GlmImagePipeline architecture.
   home: https://z.ai
   icon: /static/catalog_icons/zai.png
+  size: 16
   categories:
     - image
   licenses:
@@ -2383,6 +2393,8 @@ model_sets:
   release_date: "2025-12-23"
   specs:
     - mode: standard
+      gpu_filters:
+        vendor: nvidia
       quantization: BF16
       source: model_scope
       model_scope_model_id: stepfun-ai/NextStep-1.1
@@ -2634,7 +2646,7 @@ model_sets:
   categories:
     - llm
   capabilities:
-    - context/128K
+    - context/256K
     - vision
   licenses:
     - apache-2.0
@@ -2656,7 +2668,7 @@ model_sets:
   categories:
     - llm
   capabilities:
-    - context/128K
+    - context/256K
     - vision
   licenses:
     - apache-2.0
@@ -2674,10 +2686,12 @@ model_sets:
   description: MiMo-V2.5 is Xiaomi's flagship multimodal model with the mimo_v2 architecture, supporting vision/audio/video understanding, long-context, and agentic workflows.
   home: https://github.com/XiaomiMiMo
   icon: /static/catalog_icons/XiaomiMiMo.png
+  size: 310
+  activated_size: 15
   categories:
     - llm
   capabilities:
-    - context/128K
+    - context/1M
     - vision
     - tools
   licenses:
@@ -2700,7 +2714,7 @@ model_sets:
   categories:
     - llm
   capabilities:
-    - context/64K
+    - context/256K
     - vision
   licenses:
     - apache-2.0
