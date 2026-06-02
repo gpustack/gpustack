@@ -13,9 +13,6 @@
   <a href="https://discord.gg/VXYJzuaqwD" target="_blank">
     <img alt="Discord" src="https://img.shields.io/badge/Discord-GPUStack-blue?logo=discord&logoColor=white">
   </a>
-  <a href="https://github.com/gpustack/gpustack/blob/main/docs/assets/wechat-group-qrcode.jpg" target="_blank">
-    <img alt="WeChat" src="https://img.shields.io/badge/微信群-GPUStack-blue?logo=wechat&logoColor=white">
-  </a>
 </p>
 
 <p align="center">
