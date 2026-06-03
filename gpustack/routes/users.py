@@ -33,10 +33,33 @@ from gpustack.schemas.users import (
     UsersPublic,
     UserSelfUpdate,
 )
-from gpustack.server.passwords import set_password
+from gpustack.server.passwords import (
+    is_password_change_required,
+    password_change_required_map,
+    set_password,
+)
 from gpustack.server.services import UserService
 
 router = APIRouter()
+
+
+async def _to_user_public(session, user: User) -> UserPublic:
+    # ``require_password_change`` lives on the ``user_passwords`` row,
+    # not on the Principal — hydrate it here so the wire response
+    # reflects the actual force-change state.
+    result = UserPublic.model_validate(user)
+    result.require_password_change = await is_password_change_required(session, user.id)
+    return result
+
+
+async def _to_users_public(session, page) -> UsersPublic:
+    flag_map = await password_change_required_map(session, [u.id for u in page.items])
+    items = []
+    for u in page.items:
+        item = UserPublic.model_validate(u)
+        item.require_password_change = flag_map.get(u.id, False)
+        items.append(item)
+    return UsersPublic(items=items, pagination=page.pagination)
 
 
 class UserMembership(BaseModel):
@@ -62,7 +85,7 @@ async def get_users(
         )
 
     async with async_session() as session:
-        return await User.paginated_by_query(
+        page = await User.paginated_by_query(
             session=session,
             fuzzy_fields=fuzzy_fields,
             page=params.page,
@@ -73,6 +96,7 @@ async def get_users(
             },
             order_by=params.order_by,
         )
+        return await _to_users_public(session, page)
 
 
 @router.get("/{id}", response_model=UserPublic)
@@ -80,7 +104,7 @@ async def get_user(session: SessionDep, id: int):
     user = await User.one_by_id(session, id)
     if not user:
         raise NotFoundException(message="User not found")
-    return user
+    return await _to_user_public(session, user)
 
 
 @router.get("/{id}/memberships", response_model=List[UserMembership])
@@ -172,7 +196,7 @@ async def create_user(session: SessionDep, user_in: UserCreate):
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create user: {e}")
 
-    return user
+    return await _to_user_public(session, user)
 
 
 @router.put("/{id}", response_model=UserPublic)
@@ -216,7 +240,7 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 
-    return user
+    return await _to_user_public(session, user)
 
 
 @router.patch("/{id}/activation", response_model=UserPublic)
@@ -233,7 +257,7 @@ async def update_user_activation(
 
     changed = user.is_active != activation_data.is_active
     if not changed:
-        return user
+        return await _to_user_public(session, user)
 
     if (
         user.is_active
@@ -251,7 +275,7 @@ async def update_user_activation(
             message=f"Failed to update user activation: {e}"
         )
 
-    return user
+    return await _to_user_public(session, user)
 
 
 @router.delete("/{id}")
@@ -287,8 +311,8 @@ me_router = APIRouter()
 
 
 @me_router.get("/me", response_model=UserPublic)
-async def get_user_me(user: CurrentUserDep):
-    return user
+async def get_user_me(session: SessionDep, user: CurrentUserDep):
+    return await _to_user_public(session, user)
 
 
 @me_router.put("/me", response_model=UserPublic)
@@ -306,7 +330,7 @@ async def update_user_me(
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 
-    return user
+    return await _to_user_public(session, user)
 
 
 # User-search endpoint accessible to org owners (any) and platform
@@ -328,7 +352,7 @@ async def list_user_directory(
     if search:
         fuzzy_fields = {"name": search, "display_name": search}
     async with async_session() as session:
-        return await User.paginated_by_query(
+        result = await User.paginated_by_query(
             session=session,
             fuzzy_fields=fuzzy_fields,
             page=page,
@@ -338,3 +362,4 @@ async def list_user_directory(
                 "deleted_at": None,
             },
         )
+        return await _to_users_public(session, result)

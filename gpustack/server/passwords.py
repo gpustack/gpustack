@@ -11,8 +11,9 @@ the storage contract.
 """
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Dict, Iterable, Optional
 
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.schemas.user_passwords import (
@@ -119,6 +120,29 @@ async def is_password_change_required(session: AsyncSession, principal_id: int) 
     """
     row = await _get(session, principal_id)
     return bool(row and row.require_password_change)
+
+
+async def password_change_required_map(
+    session: AsyncSession,
+    principal_ids: Iterable[int],
+) -> Dict[int, bool]:
+    """Batch variant of :func:`is_password_change_required` for list
+    endpoints — one query for the whole page instead of N. Missing ids
+    (no password row, e.g. SSO / system accounts) are absent from the
+    returned dict; callers should treat absence as ``False``.
+    """
+    ids = [pid for pid in principal_ids if pid is not None]
+    if not ids:
+        return {}
+    rows = (
+        await session.exec(
+            select(UserPassword).where(
+                UserPassword.owner_principal_id.in_(ids),
+                UserPassword.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    return {row.owner_principal_id: bool(row.require_password_change) for row in rows}
 
 
 async def clear_require_password_change(
