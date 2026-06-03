@@ -71,6 +71,7 @@ Revises: 8bf38a6bb3b5
 Create Date: 2026-04-28 12:00:00.000000
 
 """
+from datetime import datetime, timezone
 from typing import Sequence, Union
 
 from alembic import op
@@ -261,6 +262,17 @@ def upgrade() -> None:
     org_role = _org_role_ref(bind)
     principal_type = _principal_type_ref(bind)
 
+    # Stamp seeded rows with an explicit UTC instant rather than the
+    # dialect's ``CURRENT_TIMESTAMP``. Postgres / MySQL / openGauss
+    # convert ``CURRENT_TIMESTAMP`` to the session/server timezone when
+    # writing into a ``TIMESTAMP WITHOUT TIME ZONE`` column, but the
+    # app's ``UTCDateTime`` decoder assumes the stored naive value IS
+    # UTC and tags it accordingly on read — so a non-UTC DB server
+    # surfaces the "Default" Org (and other seeded rows) with a
+    # ``created_at`` that drifts from real wall time by the server's
+    # tz offset.
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+
     if dialect == 'postgresql':
         # Eagerly create the enum types so subsequent column references
         # can rely on them existing. The ``_ref`` variants used in
@@ -380,7 +392,7 @@ def upgrade() -> None:
                 {bool_false}, {bool_true}, {bool_false}, {bool_false},
                 '',
                 'Local',
-                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
+                :now_utc, :now_utc, NULL
             WHERE NOT EXISTS (
                 SELECT 1 FROM users WHERE name = :name
             )
@@ -389,6 +401,7 @@ def upgrade() -> None:
             name=PLATFORM_PRINCIPAL_NAME,
             display_name=PLATFORM_PRINCIPAL_DISPLAY_NAME,
             desc='Built-in platform organization',
+            now_utc=now_utc,
         )
     )
 
@@ -586,7 +599,7 @@ def upgrade() -> None:
                     (parent_principal_id, member_principal_id, role,
                      created_at, updated_at, deleted_at)
                 SELECT :platform_id, p.id, 'OWNER'::orgrole,
-                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
+                       :now_utc, :now_utc, NULL
                 FROM principals p
                 WHERE p.kind = 'USER'::principaltype
                   AND p.is_admin = true
@@ -598,7 +611,7 @@ def upgrade() -> None:
                       AND m.deleted_at IS NULL
                   )
                 """
-            ).bindparams(platform_id=platform_id)
+            ).bindparams(platform_id=platform_id, now_utc=now_utc)
         )
     else:
         op.execute(
@@ -608,7 +621,7 @@ def upgrade() -> None:
                     (parent_principal_id, member_principal_id, role,
                      created_at, updated_at, deleted_at)
                 SELECT :platform_id, p.id, 'OWNER',
-                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
+                       :now_utc, :now_utc, NULL
                 FROM principals p
                 WHERE p.kind = 'USER'
                   AND p.is_admin = 1
@@ -620,7 +633,7 @@ def upgrade() -> None:
                       AND m.deleted_at IS NULL
                   )
                 """
-            ).bindparams(platform_id=platform_id)
+            ).bindparams(platform_id=platform_id, now_utc=now_utc)
         )
 
     # ------------------------------------------------------------------
@@ -967,11 +980,11 @@ def upgrade() -> None:
                 INSERT INTO model_route_principals
                     (route_id, principal_id, created_at, updated_at)
                 SELECT uml.route_id, uml.user_id,
-                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                       :now_utc, :now_utc
                 FROM {user_link_table} uml
                 WHERE uml.route_id IS NOT NULL AND uml.user_id IS NOT NULL
                 """
-            )
+            ).bindparams(now_utc=now_utc)
         )
 
     # ------------------------------------------------------------------
@@ -1050,13 +1063,13 @@ def upgrade() -> None:
                  created_at, updated_at)
             SELECT id, 'ARGON2', hashed_password,
                    require_password_change,
-                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                   :now_utc, :now_utc
               FROM principals
              WHERE kind = 'USER'
                AND hashed_password IS NOT NULL
                AND hashed_password <> ''
             """
-        )
+        ).bindparams(now_utc=now_utc)
     )
 
     with op.batch_alter_table('principals', schema=None) as batch_op:
@@ -1251,7 +1264,7 @@ def upgrade() -> None:
                 'GROUP', :name, :display_name, :desc,
                 {bool_false}, {bool_true},
                 'Local',
-                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
+                :now_utc, :now_utc, NULL
             WHERE NOT EXISTS (
                 SELECT 1 FROM principals
                 WHERE kind = 'GROUP' AND name = :name
@@ -1264,6 +1277,7 @@ def upgrade() -> None:
                 'Built-in group containing every authenticated principal. '
                 'Grant access to this principal to share a resource with all users.'
             ),
+            now_utc=now_utc,
         )
     )
 
@@ -1289,7 +1303,7 @@ def upgrade() -> None:
                 (cluster_id, principal_id, granted_by,
                  created_at, updated_at, deleted_at)
             SELECT c.id, :authenticated_id, NULL,
-                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
+                   :now_utc, :now_utc, NULL
             FROM clusters c
             WHERE c.owner_principal_id = :platform_id
               AND c.deleted_at IS NULL
@@ -1302,6 +1316,7 @@ def upgrade() -> None:
         ).bindparams(
             authenticated_id=authenticated_id,
             platform_id=platform_id,
+            now_utc=now_utc,
         )
     )
 
