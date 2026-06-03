@@ -315,6 +315,35 @@ async def test_reconcile_skips_closed_window(events_session):
     assert c._open == {}
 
 
+@pytest.mark.asyncio
+async def test_reconcile_remetered_window_is_open(events_session):
+    # stop→start within history: the latest event (by id) is a re-meter, so the
+    # window must be open again — guards the MAX(id)-per-resource reduction.
+    events_session.add_all(
+        [
+            _ue(
+                occurred_at=datetime(2026, 5, 29, 10, 0, 0),
+                event_type=EVENT_TYPE_PHASE_TO_METERED,
+            ),
+            _ue(
+                occurred_at=datetime(2026, 5, 29, 10, 30, 0),
+                event_type=EVENT_TYPE_PHASE_LEFT_METERED,
+            ),
+            _ue(
+                occurred_at=datetime(2026, 5, 29, 11, 0, 0),
+                event_type=EVENT_TYPE_PHASE_TO_METERED,
+            ),
+        ]
+    )
+    await events_session.commit()
+
+    c = ResourceUsageCollector()
+    with patch.object(rc, "async_session", lambda: _yield(events_session)):
+        await c._reconcile_open_windows()
+    assert 1 in c._open
+    assert c._open[1].window_start == datetime(2026, 5, 29, 11, 0, 0)
+
+
 @pytest_asyncio.fixture
 async def events_and_metered_session():
     """A session backing both tables — reconcile rebuilds windows from
