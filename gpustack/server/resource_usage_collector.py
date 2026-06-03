@@ -208,28 +208,33 @@ class ResourceUsageCollector:
             # would raise, get swallowed below, and silently skip the
             # high-water resume — the very thing it exists to do).
             async with async_session() as session:
+                # Latest lifecycle event per instance, reduced in SQL: id is the
+                # autoincrement append order, so MAX(id) per resource_id is the
+                # most recent — one row per resource instead of the full history.
+                # Instance ids are a single space here, so group by resource_id.
+                latest_ids = (
+                    select(func.max(ResourceEvent.id))
+                    .where(ResourceEvent.resource_type.in_(_INSTANCE_RESOURCE_TYPES))
+                    .where(
+                        ResourceEvent.event_type.in_(
+                            [
+                                EVENT_TYPE_PHASE_TO_METERED,
+                                EVENT_TYPE_PHASE_LEFT_METERED,
+                                EVENT_TYPE_DELETED,
+                            ]
+                        )
+                    )
+                    .group_by(ResourceEvent.resource_id)
+                )
                 events = (
                     await session.exec(
-                        select(ResourceEvent)
-                        .where(
-                            ResourceEvent.resource_type.in_(_INSTANCE_RESOURCE_TYPES)
-                        )
-                        .where(
-                            ResourceEvent.event_type.in_(
-                                [
-                                    EVENT_TYPE_PHASE_TO_METERED,
-                                    EVENT_TYPE_PHASE_LEFT_METERED,
-                                    EVENT_TYPE_DELETED,
-                                ]
-                            )
-                        )
-                        .order_by(ResourceEvent.resource_id, ResourceEvent.occurred_at)
+                        select(ResourceEvent).where(ResourceEvent.id.in_(latest_ids))
                     )
                 ).all()
                 latest: Dict[int, ResourceEvent] = {}
                 for e in events:
                     if e.resource_id is not None:
-                        latest[e.resource_id] = e  # ordered → last is most recent
+                        latest[e.resource_id] = e  # one row per resource (latest)
                 for rid, e in latest.items():
                     if e.event_type == EVENT_TYPE_PHASE_TO_METERED:
                         window = _open_window_from_event(e)

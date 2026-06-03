@@ -109,22 +109,28 @@ class StorageUsageCollector:
             # closed-session seed would raise, get swallowed below, and
             # silently skip the high-water resume it exists to provide).
             async with async_session() as session:
+                # Latest lifecycle event per volume, reduced in SQL: id is the
+                # autoincrement append order, so MAX(id) per resource_id is the
+                # most recent — one row per volume instead of the full history.
+                latest_ids = (
+                    select(func.max(ResourceEvent.id))
+                    .where(ResourceEvent.resource_type == EVENT_RESOURCE_TYPE_PV)
+                    .where(
+                        ResourceEvent.event_type.in_(
+                            [EVENT_TYPE_CREATED, EVENT_TYPE_DELETED]
+                        )
+                    )
+                    .group_by(ResourceEvent.resource_id)
+                )
                 events = (
                     await session.exec(
-                        select(ResourceEvent)
-                        .where(ResourceEvent.resource_type == EVENT_RESOURCE_TYPE_PV)
-                        .where(
-                            ResourceEvent.event_type.in_(
-                                [EVENT_TYPE_CREATED, EVENT_TYPE_DELETED]
-                            )
-                        )
-                        .order_by(ResourceEvent.resource_id, ResourceEvent.occurred_at)
+                        select(ResourceEvent).where(ResourceEvent.id.in_(latest_ids))
                     )
                 ).all()
                 latest: Dict[int, ResourceEvent] = {}
                 for e in events:
                     if e.resource_id is not None:
-                        latest[e.resource_id] = e
+                        latest[e.resource_id] = e  # one row per volume (latest)
                 for rid, e in latest.items():
                     if e.event_type == EVENT_TYPE_CREATED:
                         vol = _open_volume_from_event(e)

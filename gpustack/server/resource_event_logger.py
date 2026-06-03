@@ -28,6 +28,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set, Tuple
 
+from sqlalchemy import func
 from sqlmodel import select
 
 from gpustack.schemas.gpu_instance_persistent_volumes import GPUInstancePersistentVolume
@@ -189,27 +190,36 @@ class ResourceEventLogger:
         """
         try:
             async with async_session() as session:
+                # Latest lifecycle event per (resource_type, resource_id),
+                # reduced in SQL instead of loading the whole history: id is the
+                # autoincrement append order, so MAX(id) per group is the most
+                # recent event — one row per resource. resource_type is in the
+                # group key because instance and PV ids are separate spaces and
+                # can collide.
+                latest_ids = (
+                    select(func.max(ResourceEvent.id))
+                    .where(
+                        ResourceEvent.event_type.in_(
+                            [
+                                EVENT_TYPE_CREATED,
+                                EVENT_TYPE_PHASE_TO_METERED,
+                                EVENT_TYPE_PHASE_LEFT_METERED,
+                                EVENT_TYPE_DELETED,
+                            ]
+                        )
+                    )
+                    .group_by(ResourceEvent.resource_type, ResourceEvent.resource_id)
+                )
                 events = (
                     await session.exec(
-                        select(ResourceEvent)
-                        .where(
-                            ResourceEvent.event_type.in_(
-                                [
-                                    EVENT_TYPE_CREATED,
-                                    EVENT_TYPE_PHASE_TO_METERED,
-                                    EVENT_TYPE_PHASE_LEFT_METERED,
-                                    EVENT_TYPE_DELETED,
-                                ]
-                            )
-                        )
-                        .order_by(ResourceEvent.resource_id, ResourceEvent.occurred_at)
+                        select(ResourceEvent).where(ResourceEvent.id.in_(latest_ids))
                     )
                 ).all()
         except Exception:
             logger.exception("resource_event_logger: startup warmup failed")
             return
 
-        # ordered by (resource_id, occurred_at) → last write per resource wins.
+        # One row per (resource_type, resource_id) already — the latest event.
         latest: Dict[Tuple[str, int], ResourceEvent] = {}
         for e in events:
             if e.resource_id is not None:
