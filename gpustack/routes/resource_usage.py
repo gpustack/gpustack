@@ -227,6 +227,71 @@ def _apply_scope(
     return statement
 
 
+async def _enrich_items(session, gb: str, items: List[dict]) -> None:
+    """Post-query enrichment of breakdown rows (mutates ``items`` in place).
+
+    * entity groupings (user / instance / volume): resolve display names
+      (``metered_usage`` doesn't snapshot them) and flag rows whose entity was
+      since deleted — the same "(Deleted)" treatment the token breakdown gives.
+    * instance-type / per-instance groupings: attach the flavor's display fields
+      (pretty product name + per-card cpu/mem/vram) so the UI renders them like
+      the GPU Instances list instead of the raw flavor slug. Dimensions are
+      flavor-constant per sku, so one representative row per sku is enough.
+    """
+    if gb in ("user", "instance", "volume"):
+        ids = [i["id"] for i in items if i.get("id") is not None]
+        existing: set = set()
+        names: dict = {}
+        if ids:
+            if gb == "user":
+                principals = (
+                    await session.exec(select(Principal).where(Principal.id.in_(ids)))
+                ).all()
+                names = {p.id: (p.display_name or p.name) for p in principals}
+                existing = set(names)
+            else:
+                model = GPUInstance if gb == "instance" else GPUInstancePersistentVolume
+                existing = set(
+                    (
+                        await session.exec(select(model.id).where(model.id.in_(ids)))
+                    ).all()
+                )
+        for i in items:
+            rid = i.get("id")
+            if rid is None:
+                continue
+            if gb == "user" and names.get(rid):
+                i["key"] = names[rid]
+            i["deleted"] = rid not in existing
+
+    if gb in ("instance_type", "instance"):
+        skus = [i.get("sku") for i in items if i.get("sku")]
+        dims_by_sku: dict = {}
+        if skus:
+            rep_ids = (
+                select(func.max(MeteredUsage.id))
+                .where(_UPTIME)
+                .where(MeteredUsage.sku.in_(skus))
+                .group_by(MeteredUsage.sku)
+            )
+            rows = (
+                await session.exec(
+                    select(MeteredUsage.sku, MeteredUsage.dimensions).where(
+                        MeteredUsage.id.in_(rep_ids)
+                    )
+                )
+            ).all()
+            dims_by_sku = {r[0]: (r[1] or {}) for r in rows}
+        for i in items:
+            d = dims_by_sku.get(i.get("sku")) or {}
+            i["dimensions"] = {
+                "product": d.get("product"),
+                "unit_cpu_milli": d.get("unit_cpu_milli"),
+                "unit_memory_mib": d.get("unit_memory_mib"),
+                "vram_mib": d.get("vram_mib"),
+            }
+
+
 async def _run_breakdown(
     session,
     *,
@@ -350,46 +415,7 @@ async def _run_breakdown(
         item["metrics"]["last_active"] = getattr(row, "last_active", None)
         items.append(item)
 
-    # For entity groupings, resolve display names (metered_usage doesn't
-    # snapshot them) and flag rows whose entity has since been deleted — same
-    # "(Deleted)" treatment the token breakdown gives stale identities.
-    gb = request.group_by
-    if gb in ("user", "instance", "volume"):
-        ids = [i["id"] for i in items if i.get("id") is not None]
-        existing: set = set()
-        names: dict = {}
-        if ids:
-            if gb == "user":
-                principals = (
-                    await session.exec(select(Principal).where(Principal.id.in_(ids)))
-                ).all()
-                names = {p.id: (p.display_name or p.name) for p in principals}
-                existing = set(names)
-            elif gb == "instance":
-                existing = set(
-                    (
-                        await session.exec(
-                            select(GPUInstance.id).where(GPUInstance.id.in_(ids))
-                        )
-                    ).all()
-                )
-            else:  # volume
-                existing = set(
-                    (
-                        await session.exec(
-                            select(GPUInstancePersistentVolume.id).where(
-                                GPUInstancePersistentVolume.id.in_(ids)
-                            )
-                        )
-                    ).all()
-                )
-        for i in items:
-            rid = i.get("id")
-            if rid is None:
-                continue
-            if gb == "user" and names.get(rid):
-                i["key"] = names[rid]
-            i["deleted"] = rid not in existing
+    await _enrich_items(session, request.group_by, items)
 
     return {
         "summary": metrics_of(summary_row) if summary_row is not None else {},
@@ -664,14 +690,22 @@ async def resource_meta(
             await session.exec(select(Principal).where(Principal.id.in_(ids)))
         ).all()
         name_by_id = {p.id: (p.display_name or p.name) for p in principals}
+        # A creator id that no longer resolves to a principal was deleted —
+        # flag it so the filter shows a "(Deleted)" tag (same as the Tokens tab).
         creators = [
-            {"id": cid, "label": name_by_id.get(cid) or f"User {cid}"} for cid in ids
+            {
+                "id": cid,
+                "label": name_by_id.get(cid) or f"User {cid}",
+                "deleted": cid not in name_by_id,
+            }
+            for cid in ids
         ]
         creators.sort(key=lambda c: (c["label"] or "").lower())
 
     # Distinct resources of one type — id + latest snapshot name. metered_usage
-    # snapshots the name, so deleted resources still resolve a label.
-    async def _resources(resource_type: str) -> List[Dict[str, Any]]:
+    # snapshots the name, so deleted resources still resolve a label; flag the
+    # ones no longer live (not in the source table) so the filter can tag them.
+    async def _resources(resource_type: str, model) -> List[Dict[str, Any]]:
         stmt = _scoped(
             select(
                 MeteredUsage.resource_id,
@@ -684,13 +718,26 @@ async def resource_meta(
             MeteredUsage.consumer_principal_id,
         )
         rows = (await session.exec(stmt)).all()
+        rids = [r.resource_id for r in rows]
+        live: set = set()
+        if rids:
+            live = set(
+                (await session.exec(select(model.id).where(model.id.in_(rids)))).all()
+            )
         out = [
-            {"id": r.resource_id, "label": r.name or f"#{r.resource_id}"} for r in rows
+            {
+                "id": r.resource_id,
+                "label": r.name or f"#{r.resource_id}",
+                "deleted": r.resource_id not in live,
+            }
+            for r in rows
         ]
         out.sort(key=lambda x: (x["label"] or "").lower())
         return out
 
-    instances = await _resources(RESOURCE_TYPE_GPU_INSTANCE)
-    volumes = await _resources(RESOURCE_TYPE_PERSISTENT_VOLUME)
+    instances = await _resources(RESOURCE_TYPE_GPU_INSTANCE, GPUInstance)
+    volumes = await _resources(
+        RESOURCE_TYPE_PERSISTENT_VOLUME, GPUInstancePersistentVolume
+    )
 
     return {"creators": creators, "instances": instances, "volumes": volumes}

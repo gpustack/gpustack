@@ -9,6 +9,7 @@ from gpustack.utils.resource_usage import (
     iter_utc_day_segments,
     iter_utc_hour_segments,
     parse_accelerator_count,
+    parse_gpu_descriptor,
     parse_gpu_type,
     parse_gpu_vram_mib,
     parse_quantity_to_mib,
@@ -159,3 +160,24 @@ def test_local_resource_type_constants_match_schema():
 
     assert _RESOURCE_TYPE_GPU_INSTANCE == RESOURCE_TYPE_GPU_INSTANCE
     assert _RESOURCE_TYPE_CPU_INSTANCE == RESOURCE_TYPE_CPU_INSTANCE
+
+
+def test_parse_gpu_descriptor():
+    desc = (
+        '{"name":"gpustack-nvidia-geforce-rtx-5090-d-18c-54gi",'
+        '"spec":{"product":"NVIDIA-GeForce-RTX-5090-D","memory":"32607Mi",'
+        '"unitResourcesParsed":{"cpu":{"cores":18},'
+        '"ram":{"value":54,"unit":"Gi"}}}}'
+    )
+    out = parse_gpu_descriptor(desc)
+    assert out["product"] == "NVIDIA-GeForce-RTX-5090-D"
+    assert out["unit_cpu_milli"] == 18000
+    assert out["unit_memory_mib"] == 54 * 1024
+    assert out["vram_mib"] == 32607  # per-card VRAM from spec.memory
+
+    # accepts an already-parsed dict too
+    assert parse_gpu_descriptor({"spec": {"product": "X"}}) == {"product": "X"}
+    # missing / unparseable → empty (e.g. CPU instances with no descriptor)
+    assert parse_gpu_descriptor(None) == {}
+    assert parse_gpu_descriptor("not json") == {}
+    assert parse_gpu_descriptor({}) == {}
