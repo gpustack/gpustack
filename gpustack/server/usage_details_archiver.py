@@ -156,7 +156,7 @@ class UsageDetailsArchiver:
         # Two-branch predicate (instead of COALESCE) so the planner can use
         # ix_..._completed_at on the modern fast path and fall back to
         # ix_..._created_at only for legacy rows missing completed_at.
-        # PG combines them via BitmapOr; MySQL/SQLite may seq-scan but the
+        # PG combines them via BitmapOr; MySQL may seq-scan but the
         # working set here is bounded by ``batch_size`` so it stays cheap.
         age_predicate = or_(
             and_(
