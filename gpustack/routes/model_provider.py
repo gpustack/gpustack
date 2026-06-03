@@ -134,7 +134,11 @@ def parse_api_tokens(
     return target_tokens
 
 
-@router.post("", response_model=ModelProviderPublic, response_model_exclude_none=True)
+@router.post(
+    "",
+    response_model=ModelProviderPublic,
+    response_model_exclude_none=True,
+)
 async def create_model_provider(
     session: SessionDep, ctx: TenantContextDep, input: ModelProviderCreate
 ):
@@ -203,7 +207,9 @@ def deleted_model_names(
 
 
 @router.put(
-    "/{id}", response_model=ModelProviderPublic, response_model_exclude_none=True
+    "/{id}",
+    response_model=ModelProviderPublic,
+    response_model_exclude_none=True,
 )
 async def update_model_provider(
     session: SessionDep,
@@ -248,7 +254,9 @@ async def update_model_provider(
     return ModelProvider._convert_to_public_class(updated_provider)
 
 
-@router.delete("/{id}")
+@router.delete(
+    "/{id}",
+)
 async def delete_model_provider(session: SessionDep, ctx: TenantContextDep, id: int):
     existing = await ModelProvider.one_by_id(
         session=session,
@@ -305,7 +313,9 @@ class CustomOAIModel(OAIModel):
     categories: Optional[List[str]] = None
 
 
-@router.post("/get-models")
+@router.post(
+    "/get-models",
+)
 async def get_models_from_provider(
     input: ProviderModelsInput,
 ):
@@ -374,7 +384,9 @@ async def get_models_from_provider(
     return result
 
 
-@router.post("/{id}/get-models")
+@router.post(
+    "/{id}/get-models",
+)
 async def get_models_from_specific_provider(
     session: SessionDep,
     ctx: TenantContextDep,

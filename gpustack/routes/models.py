@@ -520,7 +520,10 @@ async def validate_distributed_vllm_limit_per_worker(
             )
 
 
-@router.post("", response_model=ModelPublic)
+@router.post(
+    "",
+    response_model=ModelPublic,
+)
 async def create_model(
     session: SessionDep, ctx: TenantContextDep, model_in: ModelCreate
 ):
@@ -643,7 +646,10 @@ async def create_model(
     return model
 
 
-@router.put("/{id}", response_model=ModelPublic)
+@router.put(
+    "/{id}",
+    response_model=ModelPublic,
+)
 async def update_model(
     session: SessionDep, ctx: TenantContextDep, id: int, model_in: ModelUpdate
 ):
@@ -686,7 +692,9 @@ async def update_model(
     return updated
 
 
-@router.delete("/{id}")
+@router.delete(
+    "/{id}",
+)
 async def delete_model(session: SessionDep, ctx: TenantContextDep, id: int):
     model = await Model.one_by_id(
         session,

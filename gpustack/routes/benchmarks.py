@@ -301,7 +301,10 @@ async def validate_and_mutate_benchmark_in(
     return mutated
 
 
-@router.post("", response_model=BenchmarkPublic)
+@router.post(
+    "",
+    response_model=BenchmarkPublic,
+)
 async def create_benchmark(
     session: SessionDep, ctx: TenantContextDep, benchmark_in: BenchmarkCreate
 ):
@@ -321,7 +324,10 @@ async def create_benchmark(
     return benchmark
 
 
-@router.put("/{id}", response_model=BenchmarkPublic)
+@router.put(
+    "/{id}",
+    response_model=BenchmarkPublic,
+)
 async def update_benchmark(
     session: SessionDep,
     ctx: TenantContextDep,
@@ -340,7 +346,10 @@ async def update_benchmark(
     return benchmark
 
 
-@router.patch("/{id}/state", response_model=BenchmarkPublic)
+@router.patch(
+    "/{id}/state",
+    response_model=BenchmarkPublic,
+)
 async def update_benchmark_state(
     session: SessionDep,
     ctx: TenantContextDep,
@@ -412,7 +421,10 @@ async def get_benchmark_snapshot(
     )
 
 
-@router.post("/{id}/metrics", response_model=BenchmarkPublic)
+@router.post(
+    "/{id}/metrics",
+    response_model=BenchmarkPublic,
+)
 async def update_benchmark_metrics(
     session: SessionDep, ctx: TenantContextDep, id: int, metrics: BenchmarkMetrics
 ):
@@ -430,7 +442,9 @@ async def update_benchmark_metrics(
     return benchmark
 
 
-@router.delete("/{id}")
+@router.delete(
+    "/{id}",
+)
 async def delete_benchmark(session: SessionDep, ctx: TenantContextDep, id: int):
     benchmark = await Benchmark.one_by_id(session, id)
     assert_cluster_resource_visible(
