@@ -698,13 +698,16 @@ def assert_resource_visible(
 
 def require_org_role(*allowed: OrgRole):
     """Build a dependency that requires the requesting user to hold one of the
-    given roles in `current_principal_id`. Platform admins always pass.
+    given roles in `current_principal_id`. Platform admins and SYSTEM
+    principals (worker / cluster service accounts) always pass — mirrors
+    ``bypass_tenant_filter`` so write endpoints shared with worker callbacks
+    (e.g. benchmark metrics) keep working.
     """
 
     async def _dep(
         ctx: Annotated[TenantContext, Depends(get_tenant_context)],
     ) -> TenantContext:
-        if ctx.is_platform_admin:
+        if bypass_tenant_filter(ctx) or ctx.is_platform_admin:
             return ctx
         if ctx.current_principal_id is None:
             raise OrgRoleError(message="Organization context required")

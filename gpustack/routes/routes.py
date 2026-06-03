@@ -57,12 +57,20 @@ from gpustack.api.auth import (
     management_scope,
     inference_scope,
 )
+from gpustack.api.tenant import require_org_role
+from gpustack.schemas.principals import OrgRole
 from gpustack.websocket_proxy.message_server import router as message_server_router
 from gpustack.routes.gateway_metrics import router as gateway_metrics_router
 
 from gpustack_higress_plugins.server import router as higress_plugins_router
 
 versioned_prefix = "/v2"
+
+# Org-owner gate for management surfaces (Models / Model Routes /
+# Model Providers / Benchmarks / Model Files). Platform admin and
+# SYSTEM principals (worker / cluster callbacks reaching shared
+# routers) bypass via ``require_org_role`` itself.
+_org_owner_only = [Depends(require_org_role(OrgRole.OWNER))]
 
 # Toggle for surfacing extended API endpoints in the OpenAPI schema
 # and ``/docs``. Endpoints stay mounted regardless — only the public
@@ -152,23 +160,41 @@ cluster_client_router.add_api_route(
 )
 
 model_routers = [
-    {"router": models.router, "prefix": "/models", "tags": ["Models"]},
+    {
+        "router": models.router,
+        "prefix": "/models",
+        "tags": ["Models"],
+        "dependencies": _org_owner_only,
+    },
     {
         "router": model_instances.router,
         "prefix": "/model-instances",
         "tags": ["Model Instances"],
+        "dependencies": _org_owner_only,
     },
-    {"router": model_files.router, "prefix": "/model-files", "tags": ["Model Files"]},
-    {"router": benchmarks.router, "prefix": "/benchmarks", "tags": ["Benchmarks"]},
+    {
+        "router": model_files.router,
+        "prefix": "/model-files",
+        "tags": ["Model Files"],
+        "dependencies": _org_owner_only,
+    },
+    {
+        "router": benchmarks.router,
+        "prefix": "/benchmarks",
+        "tags": ["Benchmarks"],
+        "dependencies": _org_owner_only,
+    },
     {
         "router": benchmark_profiles.router,
         "prefix": "/benchmark-profiles",
         "tags": ["Benchmark Profiles"],
+        "dependencies": _org_owner_only,
     },
     {
         "router": model_routes.target_router,
         "prefix": "/model-route-targets",
         "tags": ["Model Route Targets"],
+        "dependencies": _org_owner_only,
     },
     {
         "router": gpu_instance_persistent_volume_types.router,
@@ -242,16 +268,19 @@ tenant_routers = model_routers + [
         "router": model_provider.router,
         "prefix": "/model-providers",
         "tags": ["Model Providers"],
+        "dependencies": _org_owner_only,
     },
     {
         "router": model_routes.router,
         "prefix": "/model-routes",
         "tags": ["Model Routes"],
+        "dependencies": _org_owner_only,
     },
     {
         "router": model_evaluations.router,
         "prefix": "/model-evaluations",
         "tags": ["Model Evaluations"],
+        "dependencies": _org_owner_only,
     },
     # Read-only platform catalogs (no tenant data) — every logged-in user
     # needs them to deploy models, including Org owners/managers.

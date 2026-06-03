@@ -456,7 +456,11 @@ async def _get_model_route(
     return existing
 
 
-@router.post("", response_model=ModelRoutePublic, response_model_exclude_none=True)
+@router.post(
+    "",
+    response_model=ModelRoutePublic,
+    response_model_exclude_none=True,
+)
 async def create_model_route(
     session: SessionDep, ctx: TenantContextDep, input: ModelRouteCreate
 ):
@@ -541,7 +545,11 @@ async def create_model_route(
         )
 
 
-@router.put("/{id}", response_model=ModelRoutePublic, response_model_exclude_none=True)
+@router.put(
+    "/{id}",
+    response_model=ModelRoutePublic,
+    response_model_exclude_none=True,
+)
 async def update_model_route(
     id: int,
     session: SessionDep,
@@ -600,7 +608,9 @@ async def update_model_route(
     return await ModelRoute.one_by_id(session=session, id=id)
 
 
-@router.delete("/{id}")
+@router.delete(
+    "/{id}",
+)
 async def delete_model_route(
     id: int,
     session: SessionDep,
@@ -650,11 +660,17 @@ async def unset_fallback_target(
 async def add_model_route_targets(
     id: int,
     session: SessionDep,
+    ctx: TenantContextDep,
     targets: List[ModelRouteTargetUpdateItem],
 ):
     route = await ModelRoute.one_by_id(session=session, id=id)
     if not route or route.deleted_at is not None:
         raise NotFoundException(f"ModelRoute with id '{id}' not found.")
+    assert_resource_visible(
+        ctx,
+        route,
+        not_found_message=f"ModelRoute with id '{id}' not found.",
+    )
     target_count, created_targets = await batch_handle_targets(
         session=session,
         route_id=route.id,
@@ -985,6 +1001,7 @@ async def get_model_route_targets(
 async def update_model_route_target(
     id: int,
     session: SessionDep,
+    ctx: TenantContextDep,
     input: ModelRouteTargetUpdate,
 ):
     existing = await ModelRouteTarget.one_by_id(
@@ -996,9 +1013,16 @@ async def update_model_route_target(
     # Resolve the owning route's tenant so validate_targets can enforce
     # tenant alignment — a target swap (e.g. pointing at a different
     # model) must still satisfy "route and target share an Org".
+    # ``assert_resource_visible`` collapses missing-row and not-visible
+    # into a single ``ModelRouteTarget not found`` 404, so the caller
+    # can't distinguish "parent route doesn't exist" from "parent route
+    # belongs to another Org".
     parent_route = await ModelRoute.one_by_id(session=session, id=existing.route_id)
-    if parent_route is None:
-        raise NotFoundException(f"ModelRoute with id '{existing.route_id}' not found.")
+    assert_resource_visible(
+        ctx,
+        parent_route,
+        not_found_message=f"ModelRouteTarget with id '{id}' not found.",
+    )
     route_owner_principal_id = parent_route.owner_principal_id
     # don't need to update fallback_status_codes here, handled in set-fallback target
     targets = [
@@ -1027,10 +1051,13 @@ async def update_model_route_target(
     return await ModelRouteTarget.one_by_id(session=session, id=id)
 
 
-@target_router.delete("/{id}")
+@target_router.delete(
+    "/{id}",
+)
 async def delete_model_route_target(
     id: int,
     session: SessionDep,
+    ctx: TenantContextDep,
 ):
     existing = await ModelRouteTarget.one_by_id(
         session=session,
@@ -1039,6 +1066,11 @@ async def delete_model_route_target(
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(f"ModelRouteTarget with id '{id}' not found.")
     route = existing.model_route
+    assert_resource_visible(
+        ctx,
+        route,
+        not_found_message=f"ModelRouteTarget with id '{id}' not found.",
+    )
     try:
         await existing.delete(session=session, auto_commit=False)
         if route:
@@ -1060,6 +1092,7 @@ async def delete_model_route_target(
 async def set_fallback_target(
     id: int,
     session: SessionDep,
+    ctx: TenantContextDep,
     input: SetFallbackTargetInput,
 ):
     existing = await ModelRouteTarget.one_by_id(
@@ -1068,6 +1101,11 @@ async def set_fallback_target(
     )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(f"ModelRouteTarget with id '{id}' not found.")
+    assert_resource_visible(
+        ctx,
+        existing.model_route,
+        not_found_message=f"ModelRouteTarget with id '{id}' not found.",
+    )
     if existing.fallback_status_codes == input.fallback_status_codes:
         return existing
     try:
@@ -1240,10 +1278,11 @@ async def _replace_route_principals(
 
 
 @router.get("/{id}/access", response_model=ModelAuthorizationList)
-async def get_model_authorization_list(session: SessionDep, id: int):
+async def get_model_authorization_list(
+    session: SessionDep, ctx: TenantContextDep, id: int
+):
     model: ModelRoute = await ModelRoute.one_by_id(session, id)
-    if not model:
-        raise NotFoundException(message="Model not found")
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
 
     return ModelAuthorizationList(
         items=await _list_route_users(session, id),
@@ -1252,13 +1291,18 @@ async def get_model_authorization_list(session: SessionDep, id: int):
     )
 
 
-@router.post("/{id}/access", response_model=ModelAuthorizationList)
+@router.post(
+    "/{id}/access",
+    response_model=ModelAuthorizationList,
+)
 async def add_model_authorization(
-    session: SessionDep, id: int, access_request: ModelAuthorizationUpdate
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    access_request: ModelAuthorizationUpdate,
 ):
     model = await ModelRoute.one_by_id(session, id)
-    if not model:
-        raise NotFoundException(message="Model not found")
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
 
     # Two mutually exclusive grant surfaces (else = "don't touch grants",
     # e.g. a plain policy switch):

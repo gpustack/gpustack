@@ -347,3 +347,45 @@ async def test_require_org_role_passes_for_matching_role():
     ctx.org_role = OrgRole.OWNER
     ctx.assert_org_role = _assert_role
     assert await dep(ctx) is ctx
+
+
+@pytest.mark.asyncio
+async def test_require_org_role_blocks_personal_scope():
+    """Personal-scope callers (regular user without ``X-Organization-Id``)
+    land here with ``current_principal_id == user.id`` and ``org_role=None``.
+    They must NOT reach the management surfaces gated by this dep, even
+    though they have a non-null principal context.
+    """
+    dep = require_org_role(OrgRole.OWNER)
+
+    def _assert_role(*allowed):
+        # Mirrors TenantContext.assert_org_role for org_role=None.
+        raise ForbiddenException(message="Insufficient organization role")
+
+    ctx = MagicMock()
+    ctx.user.kind = PrincipalType.USER
+    ctx.is_platform_admin = False
+    ctx.current_principal_id = 7  # user.id — personal scope
+    ctx.current_is_personal_scope = True
+    ctx.org_role = None
+    ctx.assert_org_role = _assert_role
+    with pytest.raises(ForbiddenException):
+        await dep(ctx)
+
+
+@pytest.mark.asyncio
+async def test_require_org_role_passes_system_principal():
+    """SYSTEM principals (worker / cluster callbacks reaching shared
+    routers like benchmark ``/metrics``) bypass the Org Owner gate via
+    ``bypass_tenant_filter`` — they aren't users and have no Org role.
+    """
+    dep = require_org_role(OrgRole.OWNER)
+    ctx = MagicMock()
+    ctx.user.kind = PrincipalType.SYSTEM
+    ctx.is_platform_admin = False
+    ctx.current_principal_id = None
+    ctx.org_role = None
+    ctx.assert_org_role = MagicMock(
+        side_effect=AssertionError("assert_org_role should not be reached for SYSTEM")
+    )
+    assert await dep(ctx) is ctx
