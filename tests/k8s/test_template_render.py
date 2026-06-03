@@ -417,3 +417,69 @@ def test_multi_vendor_volume_mounts_applied_only_to_owning_vendor():
         "gpustack-ascend-driver",
         "gpustack-ascend-toolkit",
     }
+
+
+# ---------------------------------------------------------------------------
+# GPUSTACK_CONTAINER_NAMESPACE — derived from the gpustack image, not the
+# operator image (the operator image may live in a different namespace).
+# ---------------------------------------------------------------------------
+
+
+def _config_with_image(image, **kwargs):
+    registration = ClusterRegistrationTokenPublic(
+        token="t",
+        server_url="http://server",
+        image=image,
+        env={"GPUSTACK_TOKEN": "t"},
+        args=[],
+    )
+    return TemplateConfig(
+        registration=registration,
+        cluster_owner_principal_identifier="alice",
+        **kwargs,
+    )
+
+
+def test_container_namespace_default_gpustack_is_suppressed():
+    # gpustack/gpustack:test → namespace "gpustack" is the built-in default,
+    # so the operator already knows it and the env var is omitted.
+    cfg = _config_with_image("gpustack/gpustack:test")
+    assert cfg.container_namespace is None
+
+
+def test_container_namespace_from_custom_gpustack_image():
+    cfg = _config_with_image("myorg/gpustack:test")
+    assert cfg.container_namespace == "myorg"
+
+
+def test_container_namespace_strips_registry_and_keeps_deep_namespace():
+    cfg = _config_with_image(
+        "reg.io/myorg/sub/gpustack:v1",
+        system_default_container_registry="reg.io",
+    )
+    assert cfg.container_namespace == "myorg/sub"
+
+
+def test_container_namespace_ignores_operator_image_namespace():
+    # The operator image lives in a different namespace than the gpustack
+    # image; the env var must follow the gpustack image so the operator
+    # composes sibling references against the right namespace.
+    cfg = _config_with_image(
+        "myorg/gpustack:test",
+        k8s_options=K8sOptions(operatorImage="otherns/gpustack-operator:test"),
+    )
+    assert cfg.container_namespace == "myorg"
+
+
+def test_container_namespace_strips_embedded_registry_from_image_override():
+    # image_name_override may carry a full reference with an embedded registry
+    # and no system_default_container_registry set. The registry (first segment
+    # with a ".") must not leak into the namespace; quay.io/gpustack/gpustack
+    # resolves to the default "gpustack" namespace → suppressed.
+    cfg = _config_with_image("quay.io/gpustack/gpustack:dev")
+    assert cfg.container_namespace is None
+
+
+def test_container_namespace_strips_embedded_registry_with_port():
+    cfg = _config_with_image("myreg:5000/org/gpustack:dev")
+    assert cfg.container_namespace == "org"
