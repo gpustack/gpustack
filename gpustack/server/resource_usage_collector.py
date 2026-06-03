@@ -21,6 +21,7 @@ only in memory.
 """
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -73,6 +74,18 @@ def _naive_utc(value: Optional[datetime]) -> Optional[datetime]:
     return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def _snapshot_dict(snap: Any) -> dict:
+    """Coerce a ``spec_snapshot`` to a dict. It's a JSON column (normally a
+    dict), but some drivers / bus replay paths can surface it as a raw JSON
+    string — parse defensively so window extraction never AttributeErrors."""
+    if isinstance(snap, str):
+        try:
+            snap = json.loads(snap)
+        except (ValueError, TypeError):
+            return {}
+    return snap if isinstance(snap, dict) else {}
+
+
 @dataclass
 class _OpenWindow:
     """In-memory snapshot needed to settle one instance's open window.
@@ -122,7 +135,7 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
     """Build an ``_OpenWindow`` from a ``phase_to_metered`` event row."""
     if evt.resource_id is None:
         return None
-    snap = evt.spec_snapshot or {}
+    snap = _snapshot_dict(evt.spec_snapshot)
     spec = snap.get("spec") or {}
     resources = spec.get("resources") or {}
     volume = spec.get("volume") or {}
@@ -343,12 +356,23 @@ class ResourceUsageCollector:
 
     async def _settle_locked(self, window: _OpenWindow, end_ts: datetime) -> None:
         """Settle ``[window_start, end_ts]`` into per-hour rollup rows, clamping
-        each hour-segment against the row's persisted ``settled_until``."""
+        each hour-segment against the row's persisted ``settled_until``.
+
+        All hour-segments of one settle share a single session/transaction —
+        a long backfill (e.g. restart after days down) is one commit, not one
+        per hour. The per-row ``settled_until`` clamp keeps it idempotent if
+        the transaction is retried."""
         start = window.window_start
         if window.settled_through is not None and window.settled_through > start:
             start = window.settled_through
-        for bucket_start, seg_start, seg_end in iter_utc_hour_segments(start, end_ts):
-            await self._upsert_bucket(window, bucket_start, seg_start, seg_end)
+        segments = iter_utc_hour_segments(start, end_ts)
+        if segments:
+            async with async_session() as session:
+                for bucket_start, seg_start, seg_end in segments:
+                    await self._upsert_bucket(
+                        session, window, bucket_start, seg_start, seg_end
+                    )
+                await session.commit()
         if (
             end_ts > (window.settled_through or end_ts)
             or window.settled_through is None
@@ -357,87 +381,85 @@ class ResourceUsageCollector:
 
     async def _upsert_bucket(
         self,
+        session,
         window: _OpenWindow,
         bucket_start: datetime,
         seg_start: datetime,
         seg_end: datetime,
     ) -> None:
-        async with async_session() as session:
-            row = (
-                await session.exec(
-                    select(MeteredUsage).where(
-                        MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
-                        MeteredUsage.resource_id == window.resource_id,
-                        MeteredUsage.bucket_start == bucket_start,
-                    )
-                )
-            ).first()
-
-            # Clamp to the row's high-water mark — only count time after what's
-            # already settled for this hour. Makes replay / overlap idempotent.
-            prior = _naive_utc(row.settled_until) if row is not None else None
-            add_seconds = _clamped_seconds(seg_start, seg_end, prior)
-
-            if row is not None:
-                # Sealed buckets are final — a late segment landing here would
-                # corrupt an already-metered row, so drop it (and surface it).
-                if row.sealed_at is not None:
-                    if add_seconds > 0:
-                        logger.warning(
-                            "resource_usage_collector: dropping %ss for sealed "
-                            "bucket resource_id=%s bucket_start=%s",
-                            add_seconds,
-                            window.resource_id,
-                            bucket_start,
-                        )
-                    return
-                if add_seconds > 0:
-                    row.quantity += add_seconds
-                    row.settled_until = seg_end
-                # Refresh display snapshots from the latest window so renames /
-                # spec changes show up without rewriting history.
-                row.resource_name = window.resource_name or row.resource_name
-                if window.resource_display_name is not None:
-                    row.resource_display_name = window.resource_display_name
-                if window.owner_name is not None:
-                    row.owner_name = window.owner_name
-                if window.consumer_name is not None:
-                    row.consumer_name = window.consumer_name
-                if window.creator_name is not None:
-                    row.creator_name = window.creator_name
-                if window.cluster_name is not None:
-                    row.cluster_name = window.cluster_name
-                row.sku = window.sku or row.sku
-                row.sku_count = window.gpu_count or 1
-                row.dimensions = window.dimensions
-                session.add(row)
-                await session.commit()
-                return
-
-            if add_seconds <= 0:
-                return
-            session.add(
-                MeteredUsage(
-                    owner_principal_id=window.owner_principal_id,
-                    owner_name=window.owner_name,
-                    consumer_principal_id=window.consumer_principal_id,
-                    consumer_name=window.consumer_name,
-                    creator_id=window.creator_id,
-                    creator_name=window.creator_name,
-                    cluster_id=window.cluster_id,
-                    cluster_name=window.cluster_name,
-                    meter_key=METER_INSTANCE_UPTIME,
-                    resource_type=window.resource_type,
-                    resource_id=window.resource_id,
-                    resource_name=window.resource_name or "",
-                    resource_display_name=window.resource_display_name,
-                    sku=window.sku,
-                    sku_count=window.gpu_count or 1,
-                    dimensions=window.dimensions,
-                    bucket_start=bucket_start,
-                    quantity=add_seconds,
-                    unit=UNIT_SECONDS,
-                    settled_until=seg_end,
+        row = (
+            await session.exec(
+                select(MeteredUsage).where(
+                    MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+                    MeteredUsage.resource_id == window.resource_id,
+                    MeteredUsage.bucket_start == bucket_start,
                 )
             )
-            await session.commit()
+        ).first()
+
+        # Clamp to the row's high-water mark — only count time after what's
+        # already settled for this hour. Makes replay / overlap idempotent.
+        prior = _naive_utc(row.settled_until) if row is not None else None
+        add_seconds = _clamped_seconds(seg_start, seg_end, prior)
+
+        if row is not None:
+            # Sealed buckets are final — a late segment landing here would
+            # corrupt an already-metered row, so drop it (and surface it).
+            if row.sealed_at is not None:
+                if add_seconds > 0:
+                    logger.warning(
+                        "resource_usage_collector: dropping %ss for sealed "
+                        "bucket resource_id=%s bucket_start=%s",
+                        add_seconds,
+                        window.resource_id,
+                        bucket_start,
+                    )
+                return
+            if add_seconds > 0:
+                row.quantity += add_seconds
+                row.settled_until = seg_end
+            # Refresh display snapshots from the latest window so renames /
+            # spec changes show up without rewriting history.
+            row.resource_name = window.resource_name or row.resource_name
+            if window.resource_display_name is not None:
+                row.resource_display_name = window.resource_display_name
+            if window.owner_name is not None:
+                row.owner_name = window.owner_name
+            if window.consumer_name is not None:
+                row.consumer_name = window.consumer_name
+            if window.creator_name is not None:
+                row.creator_name = window.creator_name
+            if window.cluster_name is not None:
+                row.cluster_name = window.cluster_name
+            row.sku = window.sku or row.sku
+            row.sku_count = window.gpu_count or 1
+            row.dimensions = window.dimensions
+            session.add(row)
+            return
+
+        if add_seconds <= 0:
+            return
+        session.add(
+            MeteredUsage(
+                owner_principal_id=window.owner_principal_id,
+                owner_name=window.owner_name,
+                consumer_principal_id=window.consumer_principal_id,
+                consumer_name=window.consumer_name,
+                creator_id=window.creator_id,
+                creator_name=window.creator_name,
+                cluster_id=window.cluster_id,
+                cluster_name=window.cluster_name,
+                meter_key=METER_INSTANCE_UPTIME,
+                resource_type=window.resource_type,
+                resource_id=window.resource_id,
+                resource_name=window.resource_name or "",
+                resource_display_name=window.resource_display_name,
+                sku=window.sku,
+                sku_count=window.gpu_count or 1,
+                dimensions=window.dimensions,
+                bucket_start=bucket_start,
+                quantity=add_seconds,
+                unit=UNIT_SECONDS,
+                settled_until=seg_end,
+            )
+        )

@@ -35,7 +35,11 @@ from gpustack.schemas.resource_events import (
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
-from gpustack.server.resource_usage_collector import _clamped_seconds, _naive_utc
+from gpustack.server.resource_usage_collector import (
+    _clamped_seconds,
+    _naive_utc,
+    _snapshot_dict,
+)
 from gpustack.utils.resource_usage import iter_utc_hour_segments, parse_quantity_to_mib
 
 logger = logging.getLogger(__name__)
@@ -65,7 +69,7 @@ class _OpenVolume:
 def _open_volume_from_event(evt: ResourceEvent) -> Optional[_OpenVolume]:
     if evt.resource_id is None:
         return None
-    snap = evt.spec_snapshot or {}
+    snap = _snapshot_dict(evt.spec_snapshot)
     spec = snap.get("spec") or {}
     return _OpenVolume(
         volume_id=evt.resource_id,
@@ -226,16 +230,25 @@ class StorageUsageCollector:
             logger.exception("storage_usage_collector: seal failed")
 
     async def _settle_locked(self, vol: _OpenVolume, end_ts: datetime) -> None:
+        # All hour-segments of one settle share a single session/transaction;
+        # the per-row settled_until clamp keeps it idempotent on retry.
         start = vol.window_start
         if vol.settled_through is not None and vol.settled_through > start:
             start = vol.settled_through
-        for bucket_start, seg_start, seg_end in iter_utc_hour_segments(start, end_ts):
-            await self._upsert_bucket(vol, bucket_start, seg_start, seg_end)
+        segments = iter_utc_hour_segments(start, end_ts)
+        if segments:
+            async with async_session() as session:
+                for bucket_start, seg_start, seg_end in segments:
+                    await self._upsert_bucket(
+                        session, vol, bucket_start, seg_start, seg_end
+                    )
+                await session.commit()
         if vol.settled_through is None or end_ts > vol.settled_through:
             vol.settled_through = end_ts
 
     async def _upsert_bucket(
         self,
+        session,
         vol: _OpenVolume,
         bucket_start: datetime,
         seg_start: datetime,
@@ -243,83 +256,80 @@ class StorageUsageCollector:
     ) -> None:
         if vol.capacity_mib <= 0:
             return
-        async with async_session() as session:
-            row = (
-                await session.exec(
-                    select(MeteredUsage).where(
-                        MeteredUsage.meter_key == METER_STORAGE_CAPACITY,
-                        MeteredUsage.resource_id == vol.volume_id,
-                        MeteredUsage.bucket_start == bucket_start,
-                    )
-                )
-            ).first()
-
-            prior = _naive_utc(row.settled_until) if row is not None else None
-            add_seconds = _clamped_seconds(seg_start, seg_end, prior)
-            delta_capacity = add_seconds * vol.capacity_mib
-
-            if row is not None:
-                # Sealed buckets are final — drop any late segment (see
-                # MeteredUsage.seal_due) rather than mutate a metered row.
-                if row.sealed_at is not None:
-                    if add_seconds > 0:
-                        logger.warning(
-                            "storage_usage_collector: dropping %ss for sealed "
-                            "bucket volume_id=%s bucket_start=%s",
-                            add_seconds,
-                            vol.volume_id,
-                            bucket_start,
-                        )
-                    return
-                if add_seconds > 0:
-                    row.quantity += delta_capacity
-                    row.settled_until = seg_end
-                row.resource_name = vol.volume_name or row.resource_name
-                if vol.volume_display_name is not None:
-                    row.resource_display_name = vol.volume_display_name
-                if vol.owner_name is not None:
-                    row.owner_name = vol.owner_name
-                if vol.consumer_name is not None:
-                    row.consumer_name = vol.consumer_name
-                if vol.creator_name is not None:
-                    row.creator_name = vol.creator_name
-                if vol.storage_type is not None:
-                    row.sku = vol.storage_type
-                row.dimensions = {
-                    "storage_type": vol.storage_type,
-                    "capacity_mib": vol.capacity_mib,
-                }
-                session.add(row)
-                await session.commit()
-                return
-
-            if add_seconds <= 0:
-                return
-            session.add(
-                MeteredUsage(
-                    owner_principal_id=vol.owner_principal_id,
-                    owner_name=vol.owner_name,
-                    consumer_principal_id=vol.consumer_principal_id,
-                    consumer_name=vol.consumer_name,
-                    creator_id=vol.creator_id,
-                    creator_name=vol.creator_name,
-                    cluster_id=None,
-                    cluster_name=None,
-                    meter_key=METER_STORAGE_CAPACITY,
-                    resource_type=RESOURCE_TYPE_PERSISTENT_VOLUME,
-                    resource_id=vol.volume_id,
-                    resource_name=vol.volume_name or "",
-                    resource_display_name=vol.volume_display_name,
-                    sku=vol.storage_type,
-                    sku_count=1,
-                    dimensions={
-                        "storage_type": vol.storage_type,
-                        "capacity_mib": vol.capacity_mib,
-                    },
-                    bucket_start=bucket_start,
-                    quantity=delta_capacity,
-                    unit=UNIT_MIB_SECONDS,
-                    settled_until=seg_end,
+        row = (
+            await session.exec(
+                select(MeteredUsage).where(
+                    MeteredUsage.meter_key == METER_STORAGE_CAPACITY,
+                    MeteredUsage.resource_id == vol.volume_id,
+                    MeteredUsage.bucket_start == bucket_start,
                 )
             )
-            await session.commit()
+        ).first()
+
+        prior = _naive_utc(row.settled_until) if row is not None else None
+        add_seconds = _clamped_seconds(seg_start, seg_end, prior)
+        delta_capacity = add_seconds * vol.capacity_mib
+
+        if row is not None:
+            # Sealed buckets are final — drop any late segment (see
+            # MeteredUsage.seal_due) rather than mutate a metered row.
+            if row.sealed_at is not None:
+                if add_seconds > 0:
+                    logger.warning(
+                        "storage_usage_collector: dropping %ss for sealed "
+                        "bucket volume_id=%s bucket_start=%s",
+                        add_seconds,
+                        vol.volume_id,
+                        bucket_start,
+                    )
+                return
+            if add_seconds > 0:
+                row.quantity += delta_capacity
+                row.settled_until = seg_end
+            row.resource_name = vol.volume_name or row.resource_name
+            if vol.volume_display_name is not None:
+                row.resource_display_name = vol.volume_display_name
+            if vol.owner_name is not None:
+                row.owner_name = vol.owner_name
+            if vol.consumer_name is not None:
+                row.consumer_name = vol.consumer_name
+            if vol.creator_name is not None:
+                row.creator_name = vol.creator_name
+            if vol.storage_type is not None:
+                row.sku = vol.storage_type
+            row.dimensions = {
+                "storage_type": vol.storage_type,
+                "capacity_mib": vol.capacity_mib,
+            }
+            session.add(row)
+            return
+
+        if add_seconds <= 0:
+            return
+        session.add(
+            MeteredUsage(
+                owner_principal_id=vol.owner_principal_id,
+                owner_name=vol.owner_name,
+                consumer_principal_id=vol.consumer_principal_id,
+                consumer_name=vol.consumer_name,
+                creator_id=vol.creator_id,
+                creator_name=vol.creator_name,
+                cluster_id=None,
+                cluster_name=None,
+                meter_key=METER_STORAGE_CAPACITY,
+                resource_type=RESOURCE_TYPE_PERSISTENT_VOLUME,
+                resource_id=vol.volume_id,
+                resource_name=vol.volume_name or "",
+                resource_display_name=vol.volume_display_name,
+                sku=vol.storage_type,
+                sku_count=1,
+                dimensions={
+                    "storage_type": vol.storage_type,
+                    "capacity_mib": vol.capacity_mib,
+                },
+                bucket_start=bucket_start,
+                quantity=delta_capacity,
+                unit=UNIT_MIB_SECONDS,
+                settled_until=seg_end,
+            )
+        )

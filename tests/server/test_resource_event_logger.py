@@ -50,59 +50,69 @@ async def _drive(logger, events):
     return types
 
 
+class _FakePrincipalResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakePrincipalSession:
+    """Minimal session stand-in for ``_resolve_principals``: counts ``exec``
+    calls and returns the seeded principals (name resolution then indexes by
+    id). Lets the test assert the bulk lookup is a single query."""
+
+    def __init__(self, principals):
+        self._principals = principals  # id -> obj(.id, .name)
+        self.exec_calls = 0
+
+    async def exec(self, _stmt):
+        self.exec_calls += 1
+        return _FakePrincipalResult(list(self._principals.values()))
+
+
 @pytest.mark.asyncio
 async def test_resolve_principals_derives_owner_from_cluster():
     # consumer 5 created an instance on cluster 1, owned by provider 3.
     principals = {
-        3: SimpleNamespace(name="provider-org"),
-        5: SimpleNamespace(name="acme-org"),
-        7: SimpleNamespace(name="bob"),
+        3: SimpleNamespace(id=3, name="provider-org"),
+        5: SimpleNamespace(id=5, name="acme-org"),
+        7: SimpleNamespace(id=7, name="bob"),
     }
     clusters = {1: SimpleNamespace(name="default", owner_principal_id=3)}
-    with (
-        patch(
-            "gpustack.server.resource_event_logger.Principal.one_by_id",
-            new=AsyncMock(side_effect=lambda _s, i: principals.get(i)),
-        ),
-        patch(
-            "gpustack.server.resource_event_logger.Cluster.one_by_id",
-            new=AsyncMock(side_effect=lambda _s, i: clusters.get(i)),
-        ),
+    session = _FakePrincipalSession(principals)
+    with patch(
+        "gpustack.server.resource_event_logger.Cluster.one_by_id",
+        new=AsyncMock(side_effect=lambda _s, i: clusters.get(i)),
     ):
-        out = await _resolve_principals(None, 5, 7, 1)
+        out = await _resolve_principals(session, 5, 7, 1)
     # (owner_principal_id, owner_name, consumer_name, creator_name, cluster_name)
     assert out == (3, "provider-org", "acme-org", "bob", "default")
 
 
 @pytest.mark.asyncio
 async def test_resolve_principals_no_cluster_owner_equals_consumer():
-    # No cluster (e.g. PV) → provider == consumer; one principal, looked up once.
-    pr = AsyncMock(side_effect=lambda _s, i: SimpleNamespace(name="alice"))
-    with (
-        patch("gpustack.server.resource_event_logger.Principal.one_by_id", new=pr),
-        patch(
-            "gpustack.server.resource_event_logger.Cluster.one_by_id",
-            new=AsyncMock(return_value=None),
-        ),
+    # No cluster (e.g. PV) → provider == consumer; all names in ONE query.
+    principals = {9: SimpleNamespace(id=9, name="alice")}
+    session = _FakePrincipalSession(principals)
+    with patch(
+        "gpustack.server.resource_event_logger.Cluster.one_by_id",
+        new=AsyncMock(return_value=None),
     ):
-        out = await _resolve_principals(None, 9, 9, None)
+        out = await _resolve_principals(session, 9, 9, None)
     assert out == (9, "alice", "alice", "alice", None)
-    assert pr.await_count == 1  # owner==consumer==creator cached → single query
+    assert session.exec_calls == 1  # owner==consumer==creator → single bulk query
 
 
 @pytest.mark.asyncio
 async def test_resolve_principals_missing_entity_yields_none():
-    with (
-        patch(
-            "gpustack.server.resource_event_logger.Principal.one_by_id",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "gpustack.server.resource_event_logger.Cluster.one_by_id",
-            new=AsyncMock(return_value=None),
-        ),
+    session = _FakePrincipalSession({})  # no principals exist
+    with patch(
+        "gpustack.server.resource_event_logger.Cluster.one_by_id",
+        new=AsyncMock(return_value=None),
     ):
-        out = await _resolve_principals(None, 404, 404, 404)
+        out = await _resolve_principals(session, 404, 404, 404)
     # cluster 404 missing → owner falls back to consumer id (404), name None
     assert out == (404, None, None, None, None)
 

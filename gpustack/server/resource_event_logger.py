@@ -112,20 +112,30 @@ async def _resolve_principals(
             cluster_name = c.name
             owner_principal_id = c.owner_principal_id
 
-    _cache: Dict[int, Optional[str]] = {}
+    # Resolve all three principal names in a single round-trip (they often
+    # overlap — owner==consumer when self-owned — and the set dedups).
+    pids = {
+        pid
+        for pid in (owner_principal_id, consumer_principal_id, creator_id)
+        if pid is not None
+    }
+    name_map: Dict[int, Optional[str]] = {}
+    if pids:
+        principals = (
+            await session.exec(select(Principal).where(Principal.id.in_(list(pids))))
+        ).all()
+        name_map = {p.id: p.name for p in principals}
 
-    async def name_of(pid: Optional[int]) -> Optional[str]:
-        if pid is None:
-            return None
-        if pid not in _cache:
-            p = await Principal.one_by_id(session, pid)
-            _cache[pid] = p.name if p else None
-        return _cache[pid]
+    def name_of(pid: Optional[int]) -> Optional[str]:
+        return name_map.get(pid) if pid is not None else None
 
-    owner_name = await name_of(owner_principal_id)
-    consumer_name = await name_of(consumer_principal_id)
-    creator_name = await name_of(creator_id)
-    return owner_principal_id, owner_name, consumer_name, creator_name, cluster_name
+    return (
+        owner_principal_id,
+        name_of(owner_principal_id),
+        name_of(consumer_principal_id),
+        name_of(creator_id),
+        cluster_name,
+    )
 
 
 def _model_dump_safe(obj: Any) -> Any:
