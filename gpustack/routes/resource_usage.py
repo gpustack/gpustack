@@ -17,7 +17,7 @@ from math import ceil
 from typing import Any, List, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import Date, and_, case, cast, desc, func, or_
 from sqlmodel import select
 
@@ -108,8 +108,10 @@ class ResourceBreakdownRequest(BaseModel):
     # receives the kind that matches its ``base_filter``.
     instance_ids: Optional[List[int]] = None
     volume_ids: Optional[List[int]] = None
-    page: int = 1
-    perPage: int = 20
+    page: int = Field(default=1, ge=1)
+    # Upper bound is generous (not 100) because the export path fetches the
+    # whole filtered set in one page (perPage=10000); cap only blocks abuse.
+    perPage: int = Field(default=20, ge=1, le=10000)
 
 
 def _parse_id_csv(value: Optional[str]) -> Optional[List[int]]:
