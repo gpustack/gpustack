@@ -18,7 +18,6 @@ from gpustack.api.tenant import (
     assert_cluster_resource_visible,
     cluster_resource_visibility_conditions,
 )
-from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.models import (
     Model,
     ModelInstance,
@@ -293,11 +292,11 @@ async def validate_and_mutate_benchmark_in(
         snapshot.gpus
     )
     mutated.worker_id = instance.worker_id
-    # Derive tenant scope from the benchmark's cluster.
-    if mutated.cluster_id is not None:
-        cluster = await Cluster.one_by_id(session, mutated.cluster_id)
-        if cluster is not None:
-            mutated.owner_principal_id = cluster.owner_principal_id
+    # Server-derive tenant scope from the target instance so client-supplied
+    # cluster_id can't smuggle a benchmark into another tenant, and so the
+    # row is visible to the owning Org via cluster_resource_visibility.
+    mutated.cluster_id = instance.cluster_id
+    mutated.owner_principal_id = instance.owner_principal_id
     return mutated
 
 

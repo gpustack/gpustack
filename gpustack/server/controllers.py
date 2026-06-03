@@ -5,7 +5,7 @@ import asyncio
 import yaml
 from importlib.resources import files
 from functools import partial
-from typing import Any, Dict, List, Tuple, Optional, Set
+from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -564,6 +564,7 @@ async def get_or_create_lora_model_files_for_instance(
         return []
     worker_ids = _get_worker_ids_for_file_download(instance)
     base_desc = model_base_descriptor(model)
+    worker_scopes = await _get_worker_tenant_scopes(session, worker_ids)
     out: List[ModelFile] = []
     seen_ids: Set[int] = set()
 
@@ -595,6 +596,9 @@ async def get_or_create_lora_model_files_for_instance(
                     out.append(hit)
                     seen_ids.add(hit.id)
             else:
+                cluster_id, owner_principal_id = worker_scopes.get(
+                    worker_id, (None, None)
+                )
                 nf = ModelFile(
                     source=lora_src.source,
                     huggingface_repo_id=lora_src.huggingface_repo_id,
@@ -607,6 +611,8 @@ async def get_or_create_lora_model_files_for_instance(
                     state=ModelFileStateEnum.DOWNLOADING,
                     worker_id=worker_id,
                     source_index=lora_src.model_source_index,
+                    cluster_id=cluster_id,
+                    owner_principal_id=owner_principal_id,
                 )
                 created = await ModelFile.create(session, nf, auto_commit=False)
                 mf = created or nf
@@ -715,8 +721,10 @@ async def get_or_create_model_files_for_instance(
     model_source = instance
     if is_draft_model:
         model_source = instance.draft_model_source
+    worker_scopes = await _get_worker_tenant_scopes(session, missing_worker_ids)
     # Create model files for the missing worker IDs.
     for worker_id in missing_worker_ids:
+        cluster_id, owner_principal_id = worker_scopes.get(worker_id, (None, None))
         model_file = ModelFile(
             source=model_source.source,
             huggingface_repo_id=model_source.huggingface_repo_id,
@@ -727,6 +735,8 @@ async def get_or_create_model_files_for_instance(
             state=ModelFileStateEnum.DOWNLOADING,
             worker_id=worker_id,
             source_index=model_source.model_source_index,
+            cluster_id=cluster_id,
+            owner_principal_id=owner_principal_id,
         )
         await ModelFile.create(session, model_file, auto_commit=False)
         logger.info(
@@ -2177,6 +2187,30 @@ def _get_worker_ids_for_file_download(
     return worker_ids
 
 
+async def _get_worker_tenant_scopes(
+    session: AsyncSession, worker_ids: Iterable[int]
+) -> Dict[int, Tuple[Optional[int], Optional[int]]]:
+    """Resolve ``(cluster_id, owner_principal_id)`` for each worker so newly
+    created ModelFiles inherit the same tenant scope as their host worker —
+    matching the route-side derivation in ``routes/model_files.create_model_file``.
+    Without this, ModelFiles created by the controller come back with NULL
+    tenant columns and are invisible to org principals."""
+    scopes: Dict[int, Tuple[Optional[int], Optional[int]]] = {}
+    unique_worker_ids = {wid for wid in worker_ids if wid is not None}
+    if not unique_worker_ids:
+        return scopes
+    workers = await Worker.all_by_fields(
+        session,
+        extra_conditions=[Worker.id.in_(unique_worker_ids)],
+    )
+    for worker in workers:
+        scopes[worker.id] = (
+            worker.cluster_id,
+            getattr(worker, "owner_principal_id", None),
+        )
+    return scopes
+
+
 async def new_workers_from_pool(
     session: AsyncSession, pool: WorkerPool
 ) -> List[Worker]:
@@ -2212,6 +2246,10 @@ async def new_workers_from_pool(
             cluster=pool.cluster,
             worker_pool=pool,
             provider=pool.cluster.provider,
+            # Denormalize from cluster so cluster_resource_visibility_conditions
+            # can match without joining clusters. Mirrors the worker registration
+            # path in routes/workers.update_worker_data.
+            owner_principal_id=pool.cluster.owner_principal_id,
             name=f"pool-{pool.id}-"
             + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8)),
             labels={
