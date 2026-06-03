@@ -185,6 +185,49 @@ USAGE_DETAILS_BUFFER_MAX_SIZE = int(
     os.getenv("GPUSTACK_USAGE_DETAILS_BUFFER_MAX_SIZE", 100000)
 )
 
+# ``resource_events`` hot/cold archival — same shape as the model_usage_details
+# pair above. The events table grows much slower (lifecycle events, not per
+# request), so the defaults are conservative.
+USAGE_EVENTS_RETENTION_MONTHS = int(
+    os.getenv("GPUSTACK_USAGE_EVENTS_RETENTION_MONTHS", 13)
+)
+USAGE_EVENTS_ARCHIVE_CRON = os.getenv(
+    "GPUSTACK_USAGE_EVENTS_ARCHIVE_CRON", "30 3 * * *"
+)
+USAGE_EVENTS_ARCHIVE_BATCH_SIZE = int(
+    os.getenv("GPUSTACK_USAGE_EVENTS_ARCHIVE_BATCH_SIZE", 5000)
+)
+
+# ``metered_usage`` hot/cold archival — hourly rollup rows older than the
+# retention window move to ``metered_usage_archive``. Retention must stay far
+# larger than the collector's settlement horizon (hours) so a still-being-
+# written bucket is never archived; 13 months is safe by orders of magnitude.
+METERED_USAGE_RETENTION_MONTHS = int(
+    os.getenv("GPUSTACK_METERED_USAGE_RETENTION_MONTHS", 13)
+)
+METERED_USAGE_ARCHIVE_CRON = os.getenv(
+    "GPUSTACK_METERED_USAGE_ARCHIVE_CRON", "0 4 * * *"
+)
+METERED_USAGE_ARCHIVE_BATCH_SIZE = int(
+    os.getenv("GPUSTACK_METERED_USAGE_ARCHIVE_BATCH_SIZE", 5000)
+)
+
+# metered_usage collector tick — periodic safety net that flushes accumulated
+# seconds for long-running metered resources that haven't had a lifecycle
+# event since the last tick.
+RESOURCE_USAGE_TICK_SECONDS = int(
+    os.getenv("GPUSTACK_RESOURCE_USAGE_TICK_SECONDS", 300)
+)
+STORAGE_USAGE_TICK_SECONDS = int(os.getenv("GPUSTACK_STORAGE_USAGE_TICK_SECONDS", 300))
+
+# Grace window before an elapsed hour-bucket is sealed (finalized for billing).
+# A bucket is sealed once now >= bucket_end + grace, so this absorbs late events
+# / clock skew; keep it comfortably larger than the tick interval. After sealing
+# a bucket is immutable — late segments for it are dropped (and logged).
+METERED_USAGE_SEAL_GRACE_SECONDS = int(
+    os.getenv("GPUSTACK_METERED_USAGE_SEAL_GRACE_SECONDS", 900)
+)
+
 DEFAULT_CLUSTER_KUBERNETES = (
     os.getenv("GPUSTACK_DEFAULT_CLUSTER_KUBERNETES", "false").lower() == "true"
 )
