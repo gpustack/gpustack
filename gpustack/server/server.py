@@ -75,6 +75,13 @@ from gpustack.server.update_check import UpdateChecker
 from gpustack.server.worker_status_buffer import flush_worker_status_to_db
 from gpustack.server.metrics_collector import flush_gateway_metrics_to_db
 from gpustack.server.usage_details_archiver import UsageDetailsArchiver
+from gpustack.server.resource_event_logger import ResourceEventLogger
+from gpustack.server.resource_usage_collector import ResourceUsageCollector
+from gpustack.server.storage_usage_collector import StorageUsageCollector
+from gpustack import envs
+from gpustack.server.usage_archiver import TableArchiver
+from gpustack.schemas.metered_usage import MeteredUsage, MeteredUsageArchive
+from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.utils.process import add_signal_handlers_in_loop
@@ -476,6 +483,62 @@ class Server:
         self._create_async_task(archiver.start())
 
         logger.debug("Usage details archiver started.")
+
+    def _start_resource_usage(self):
+        """Start the resource-metering pipeline: event logger → collectors →
+        events archiver. Leader-only — the logger writes one resource_events row
+        per lifecycle transition, so concurrent loggers would double-write.
+
+        The events archiver construction can fail on schema drift / bad cron;
+        surface that and skip just the archiver, keeping the logger + collectors
+        (and the rest of the leader tasks) running.
+        """
+        self._create_async_task(ResourceEventLogger().start())
+        self._create_async_task(ResourceUsageCollector().start())
+        self._create_async_task(StorageUsageCollector().start())
+
+        # Hot/cold archivers for metered_usage + resource_events. Construction can
+        # fail on schema drift / bad cron; surface that and skip just the failed
+        # archiver, keeping the logger + collectors (and other leader tasks).
+        for archiver_factory, name in (
+            (
+                lambda: TableArchiver(
+                    MeteredUsage,
+                    MeteredUsageArchive,
+                    anchor_col="bucket_start",
+                    retention_months=envs.METERED_USAGE_RETENTION_MONTHS,
+                    cron=envs.METERED_USAGE_ARCHIVE_CRON,
+                    batch_size=envs.METERED_USAGE_ARCHIVE_BATCH_SIZE,
+                    label="metered_usage",
+                ),
+                "metered_usage",
+            ),
+            (
+                lambda: TableArchiver(
+                    ResourceEvent,
+                    ResourceEventArchive,
+                    anchor_col="occurred_at",
+                    retention_months=envs.USAGE_EVENTS_RETENTION_MONTHS,
+                    cron=envs.USAGE_EVENTS_ARCHIVE_CRON,
+                    batch_size=envs.USAGE_EVENTS_ARCHIVE_BATCH_SIZE,
+                    label="resource_events",
+                ),
+                "resource_events",
+            ),
+        ):
+            try:
+                archiver = archiver_factory()
+            except Exception:
+                logger.critical(
+                    "%s archiver failed to initialize — archival is DISABLED; "
+                    "the hot table will grow unbounded until resolved.",
+                    name,
+                    exc_info=True,
+                )
+            else:
+                self._create_async_task(archiver.start())
+
+        logger.debug("Resource usage metering started.")
 
     def _start_update_checker(self):
         """Start update checker."""
@@ -1217,6 +1280,9 @@ class Server:
 
         # Usage Details Archiver (move aged rows to archive table)
         self._start_usage_details_archiver()
+
+        # Resource usage metering (event logger → collectors → archiver)
+        self._start_resource_usage()
 
         # Worker Syncer (checks worker reachability and updates states)
         self._start_worker_syncer(self._app)
