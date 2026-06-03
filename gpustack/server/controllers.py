@@ -74,6 +74,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceCreate,
     ModelInstanceStateEnum,
+    ModelInstanceSubordinateWorker,
     SourceEnum,
     get_backend,
 )
@@ -1856,12 +1857,13 @@ def _aggregate_instance_download_progress(
     override_state: Optional[ModelFileStateEnum] = None,
 ) -> Optional[float]:
     """
-    Average download_progress over not-yet-READY ModelFile rows so the bar
-    tracks active downloads (e.g. just the new LoRA when base is already cached).
-    Returns 100.0 if all files are READY, None if no files. `override_progress`
-    / `override_state` represent a transition not yet persisted to the DB row.
+    Average progress over the main worker's not-yet-READY files. Subordinate
+    files are excluded: instance.download_progress is the main worker's bar (the
+    UI shows subordinate progress separately). 100.0 if all READY, None if none.
+    override_* = a transition not yet persisted to the DB row.
     """
-    files = list(instance.model_files or [])
+    # Main worker only; subordinate progress is tracked per-worker elsewhere.
+    files = [f for f in instance.model_files or [] if f.worker_id == instance.worker_id]
     if not files:
         return None
     active_values: List[float] = []
@@ -1884,30 +1886,129 @@ def _aggregate_instance_download_progress(
     return sum(active_values) / len(active_values)
 
 
-async def sync_main_worker_model_file_state(  # noqa: C901
+def _refresh_instance_download_progress(
+    instance: ModelInstance, file: ModelFile, *, file_ready: bool = False
+) -> bool:
+    """Re-aggregate per-file progress into instance.download_progress (the
+    overall bar). `file_ready` treats `file` as 100%/READY so it drops out of
+    the active set and the bar can reach 100. Returns True if it changed."""
+    if instance.download_progress == 100:
+        return False
+    if file_ready:
+        aggregate = _aggregate_instance_download_progress(
+            instance,
+            file,
+            override_progress=100.0,
+            override_state=ModelFileStateEnum.READY,
+        )
+    else:
+        aggregate = _aggregate_instance_download_progress(instance, file)
+    if aggregate is not None and aggregate != instance.download_progress:
+        instance.download_progress = aggregate
+        return True
+    return False
+
+
+async def _promote_to_starting_if_complete(
+    session: AsyncSession, instance: ModelInstance
+) -> bool:
+    """When all files are ready, attach the LoRA
+    mount list and move to STARTING. Returns True if promoted."""
+    if not await model_instance_download_completed(session, instance):
+        return False
+    mounted, lora_skipped = await _build_mounted_loras_payload(session, instance)
+    if mounted is not None:
+        instance.mounted_loras = mounted
+    instance.state = ModelInstanceStateEnum.STARTING
+    instance.state_message = "; ".join(lora_skipped) if lora_skipped else ""
+    return True
+
+
+def _sync_main_worker_downloading(
+    instance: ModelInstance, file: ModelFile, is_draft_model: bool
+) -> bool:
+    """Handle a main-worker file's DOWNLOADING event. Returns need_update."""
+    # First file to start: flip to DOWNLOADING and seed the bar. Draft seeds 0
+    # (tracked separately); primary/LoRA seeds the active-file aggregate.
+    if instance.state == ModelInstanceStateEnum.INITIALIZING:
+        instance.state = ModelInstanceStateEnum.DOWNLOADING
+        instance.state_message = ""
+        if is_draft_model:
+            instance.download_progress = 0
+        else:
+            aggregate = _aggregate_instance_download_progress(instance, file)
+            instance.download_progress = aggregate if aggregate is not None else 0
+        return True
+
+    if instance.state != ModelInstanceStateEnum.DOWNLOADING:
+        return False
+
+    if is_draft_model:
+        if (
+            file.download_progress != instance.draft_model_download_progress
+            and instance.draft_model_download_progress != 100
+        ):
+            instance.draft_model_download_progress = file.download_progress
+            return True
+        return False
+
+    # Primary/LoRA file: feed the aggregate bar.
+    return _refresh_instance_download_progress(instance, file)
+
+
+async def _sync_main_worker_ready(
+    session: AsyncSession,
+    instance: ModelInstance,
+    file: ModelFile,
+    is_draft_model: bool,
+) -> bool:
+    """Handle a main-worker file's READY event. Returns need_update."""
+    need_update = False
+
+    if is_draft_model:
+        if (
+            instance.draft_model_download_progress != 100
+            or not instance.draft_model_resolved_path
+        ):
+            instance.draft_model_download_progress = 100
+            if file.resolved_paths:
+                instance.draft_model_resolved_path = file.resolved_paths[0]
+            need_update = True
+    else:
+        # Only the primary file owns resolved_path; LoRA files use mounted_loras.
+        if (
+            _is_primary_instance_model_file(file, instance, is_draft_model)
+            and not instance.resolved_path
+        ):
+            if file.resolved_paths:
+                instance.resolved_path = file.resolved_paths[0]
+            need_update = True
+        if _refresh_instance_download_progress(instance, file, file_ready=True):
+            need_update = True
+
+    if await _promote_to_starting_if_complete(session, instance):
+        need_update = True
+    elif instance.state == ModelInstanceStateEnum.INITIALIZING:
+        # Some but not all files done.
+        instance.state = ModelInstanceStateEnum.DOWNLOADING
+        instance.state_message = ""
+        need_update = True
+
+    return need_update
+
+
+async def sync_main_worker_model_file_state(
     session: AsyncSession,
     file: ModelFile,
     instance: ModelInstance,
     is_draft_model: bool = False,
 ):
-    """
-    Sync the model file state to the related model instance.
-    """
+    """Sync a main-worker model file's state onto its model instance."""
 
-    # Re-load instance into this session to avoid identity map conflicts.
-    # The caller (ModelFileController._reconcile) may pass a detached instance
-    # from a closed session.  Later helpers like model_instance_download_completed
-    # load the same row via get_by_id_with_model_files, creating a *different*
-    # persistent object in this session.  session.add(detached_obj) then fails
-    # with InvalidRequestError because the identity map already holds another
-    # object with the same primary key.
-    # Eager-load model_files so progress aggregation can read sibling rows
-    # (base + every LoRA adapter) without an extra round-trip.
+    # Re-load (with model_files) to avoid identity-map conflicts with a detached
+    # instance from the caller, and to let progress aggregation read sibling rows.
     instance = await ModelInstance.one_by_id_with_model_files(session, instance.id)
-    if not instance:
-        return
-
-    if instance.state == ModelInstanceStateEnum.ERROR:
+    if not instance or instance.state == ModelInstanceStateEnum.ERROR:
         return
 
     logger.trace(
@@ -1916,97 +2017,15 @@ async def sync_main_worker_model_file_state(  # noqa: C901
     )
 
     need_update = False
-
-    # Downloading
     if file.state == ModelFileStateEnum.DOWNLOADING:
-        if instance.state == ModelInstanceStateEnum.INITIALIZING:
-            # Download started. Seed instance.download_progress from the
-            # aggregate over the *active* (not-yet-READY) files. When the user
-            # added a new LoRA to a model whose base is already cached, the
-            # active set is just the LoRA, so the bar honestly starts at the
-            # LoRA's current progress (typically 0) rather than reporting a
-            # misleading "50%" from averaging in an already-completed base.
-            instance.state = ModelInstanceStateEnum.DOWNLOADING
-            if is_draft_model:
-                instance.download_progress = 0
-            else:
-                aggregate = _aggregate_instance_download_progress(instance, file)
-                instance.download_progress = aggregate if aggregate is not None else 0
-            instance.state_message = ""
-            need_update = True
-        elif instance.state == ModelInstanceStateEnum.DOWNLOADING:
-            # Update download progress
-            if (
-                is_draft_model
-                and file.download_progress != instance.draft_model_download_progress
-                and instance.draft_model_download_progress != 100
-            ):
-                # For the draft model file
-                instance.draft_model_download_progress = file.download_progress
-                need_update = True
-            elif not is_draft_model and instance.download_progress != 100:
-                # For the primary model file or any LoRA adapter file: aggregate
-                # the per-file progress into a single instance-level percentage.
-                aggregate = _aggregate_instance_download_progress(instance, file)
-                if aggregate is not None and aggregate != instance.download_progress:
-                    instance.download_progress = aggregate
-                    need_update = True
-
-    # Download completed
-    elif file.state == ModelFileStateEnum.READY and (
-        instance.state == ModelInstanceStateEnum.DOWNLOADING
-        or instance.state == ModelInstanceStateEnum.INITIALIZING
+        need_update = _sync_main_worker_downloading(instance, file, is_draft_model)
+    elif file.state == ModelFileStateEnum.READY and instance.state in (
+        ModelInstanceStateEnum.DOWNLOADING,
+        ModelInstanceStateEnum.INITIALIZING,
     ):
-        if is_draft_model and (
-            instance.draft_model_download_progress != 100
-            or not instance.draft_model_resolved_path
-        ):
-            # Download completed for the draft model file
-            instance.draft_model_download_progress = 100
-            instance.draft_model_resolved_path = file.resolved_paths[0]
-            need_update = True
-        elif not is_draft_model:
-            # Only the base (primary) ModelFile owns instance.resolved_path; LoRA
-            # files are surfaced via mounted_loras instead.
-            if (
-                _is_primary_instance_model_file(file, instance, is_draft_model)
-                and not instance.resolved_path
-            ):
-                instance.resolved_path = file.resolved_paths[0]
-                need_update = True
-            # Re-aggregate progress, treating the just-completed file as 100%
-            # AND as READY, so it is excluded from the "still active" set.
-            # Without this, a LoRA finishing as the last download would leave
-            # the bar parked at its previous value instead of advancing to 100.
-            if instance.download_progress != 100:
-                aggregate = _aggregate_instance_download_progress(
-                    instance,
-                    file,
-                    override_progress=100.0,
-                    override_state=ModelFileStateEnum.READY,
-                )
-                if aggregate is not None and aggregate != instance.download_progress:
-                    instance.download_progress = aggregate
-                    need_update = True
-
-        if await model_instance_download_completed(session, instance):
-            # Every linked ModelFile is READY: compute LoRA paths for vLLM before STARTING.
-            # Workers read mounted_loras from the model_instance event payload when state becomes STARTING.
-            mounted, lora_skipped = await _build_mounted_loras_payload(
-                session, instance
-            )
-            if mounted is not None:
-                instance.mounted_loras = mounted
-            instance.state = ModelInstanceStateEnum.STARTING
-            instance.state_message = "; ".join(lora_skipped) if lora_skipped else ""
-            need_update = True
-        elif instance.state == ModelInstanceStateEnum.INITIALIZING:
-            # one but not all files downloaded, turn to DOWNLOADING state
-            instance.state = ModelInstanceStateEnum.DOWNLOADING
-            instance.state_message = ""
-            need_update = True
-
-    # Download error
+        need_update = await _sync_main_worker_ready(
+            session, instance, file, is_draft_model
+        )
     elif file.state == ModelFileStateEnum.ERROR:
         instance.state = ModelInstanceStateEnum.ERROR
         instance.state_message = file.state_message
@@ -2016,20 +2035,53 @@ async def sync_main_worker_model_file_state(  # noqa: C901
         await ModelInstanceService(session).update(instance)
 
 
-async def sync_distributed_model_file_state(  # noqa: C901
+async def _sync_subordinate_worker(
+    session: AsyncSession,
+    instance: ModelInstance,
+    subordinate: ModelInstanceSubordinateWorker,
+    file: ModelFile,
+) -> bool:
+    """
+    Sync one subordinate worker's file state. subordinate.download_progress is
+    display-only (completion is decided by ModelFile state, not this field).
+    Returns need_update.
+    """
+    if file.state == ModelFileStateEnum.DOWNLOADING:
+        if file.download_progress == subordinate.download_progress:
+            return False
+        subordinate.download_progress = file.download_progress
+        return True
+
+    if file.state == ModelFileStateEnum.READY:
+        # progress may already be 100 from the final DOWNLOADING report, so a
+        # READY event must still re-check completion — gating on the progress
+        # value would skip the STARTING transition and stick at 100%.
+        need_update = subordinate.download_progress != 100
+        subordinate.download_progress = 100
+        if instance.state in (
+            ModelInstanceStateEnum.DOWNLOADING,
+            ModelInstanceStateEnum.INITIALIZING,
+        ):
+            if await _promote_to_starting_if_complete(session, instance):
+                need_update = True
+        return need_update
+
+    if file.state == ModelFileStateEnum.ERROR:
+        instance.state = ModelInstanceStateEnum.ERROR
+        instance.state_message = file.state_message
+        return True
+
+    return False
+
+
+async def sync_distributed_model_file_state(
     session: AsyncSession, file: ModelFile, instance: ModelInstance
 ):
-    """
-    Sync the model file state to the related model instance.
-    """
+    """Sync a subordinate-worker model file's state onto its model instance."""
 
-    # Re-load instance to avoid identity map conflicts (same reason as
-    # sync_main_worker_model_file_state).
+    # Re-load to avoid identity-map conflicts with a detached caller instance.
     instance = await ModelInstance.one_by_id(session, instance.id)
-    if not instance:
-        return
-
-    if instance.state == ModelInstanceStateEnum.ERROR:
+    if not instance or instance.state == ModelInstanceStateEnum.ERROR:
         return
 
     if (
@@ -2038,43 +2090,23 @@ async def sync_distributed_model_file_state(  # noqa: C901
     ):
         return
 
+    subordinate = next(
+        (
+            item
+            for item in instance.distributed_servers.subordinate_workers or []
+            if item.worker_id == file.worker_id
+        ),
+        None,
+    )
+    if subordinate is None:
+        return
+
     logger.trace(
         f"Syncing distributed model file {file.id} with model instance {instance.name}, file state: {file.state}, "
         f"progress: {file.download_progress}, message: {file.state_message}, instance state: {instance.state}"
     )
 
-    need_update = False
-
-    for item in instance.distributed_servers.subordinate_workers or []:
-        if item.worker_id == file.worker_id:
-            if (
-                file.state == ModelFileStateEnum.DOWNLOADING
-                and file.download_progress != item.download_progress
-            ):
-                item.download_progress = file.download_progress
-                need_update = True
-            elif (
-                file.state == ModelFileStateEnum.READY and item.download_progress != 100
-            ):
-                item.download_progress = 100
-                if await model_instance_download_completed(session, instance):
-                    # Mirror non-distributed path: attach LoRA mount list then move to STARTING.
-                    mounted, lora_skipped = await _build_mounted_loras_payload(
-                        session, instance
-                    )
-                    if mounted is not None:
-                        instance.mounted_loras = mounted
-                    instance.state = ModelInstanceStateEnum.STARTING
-                    instance.state_message = (
-                        "; ".join(lora_skipped) if lora_skipped else ""
-                    )
-                need_update = True
-            elif file.state == ModelFileStateEnum.ERROR:
-                instance.state = ModelInstanceStateEnum.ERROR
-                instance.state_message = file.state_message
-                need_update = True
-
-    if need_update:
+    if await _sync_subordinate_worker(session, instance, subordinate, file):
         flag_modified(instance, "distributed_servers")
         await ModelInstanceService(session).update(instance)
 
@@ -2095,7 +2127,7 @@ async def _build_mounted_loras_payload(
         return None, []
     entries = normalized_lora_list(model)
     if not entries:
-        return None, []
+        return [], []
     inst = await ModelInstance.one_by_id_with_model_files(session, instance.id)
     if not inst:
         return None, []
@@ -2129,7 +2161,7 @@ async def _build_mounted_loras_payload(
                 )
             )
             break
-    return (out or None), skipped
+    return out, skipped
 
 
 async def model_instance_download_completed(
@@ -2154,12 +2186,9 @@ async def model_instance_download_completed(
             if f.state != ModelFileStateEnum.READY:
                 return False
 
-    # Distributed worker progress check (restored from pre-refactor).
-    if inst.distributed_servers and inst.distributed_servers.download_model_files:
-        for subworker in inst.distributed_servers.subordinate_workers or []:
-            if subworker.download_progress != 100:
-                return False
-
+    # Subordinate files are in inst.model_files (checked above) — the single
+    # source of truth. The old subordinate_workers progress check raced with the
+    # distributed sync path and could stick at DOWNLOADING after all hit 100%.
     return True
 
 
