@@ -18,6 +18,7 @@ import asyncio
 import calendar
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import delete, insert, select
@@ -69,15 +70,23 @@ class TableArchiver:
         self._mirror_columns = [c.name for c in archive_model.__table__.columns]
 
     def _assert_shape_aligned(self) -> None:
-        hot_cols = {c.name for c in self._hot.__table__.columns}
-        archive_cols = {c.name for c in self._archive.__table__.columns}
-        if hot_cols != archive_cols:
-            only_hot = hot_cols - archive_cols
-            only_archive = archive_cols - hot_cols
+        # Compare (name, type) — not just names — so a column *widening* on one
+        # side (e.g. String(64) → String(128)) is caught here at startup rather
+        # than surfacing as a cryptic INSERT ... SELECT error at archive time.
+        def shape(model) -> dict:
+            return {c.name: str(c.type) for c in model.__table__.columns}
+
+        hot = shape(self._hot)
+        archive = shape(self._archive)
+        if hot != archive:
+            mismatches = sorted(
+                f"{name}: hot={hot.get(name, '∅')} / archive={archive.get(name, '∅')}"
+                for name in set(hot) | set(archive)
+                if hot.get(name) != archive.get(name)
+            )
             raise RuntimeError(
                 f"{self._label}: hot ↔ archive column mismatch — bulk archival "
-                f"requires identical column lists. Only on hot: {sorted(only_hot)}; "
-                f"only on archive: {sorted(only_archive)}."
+                f"requires identical (name, type) columns. Mismatches: {mismatches}."
             )
 
     async def start(self) -> None:
@@ -100,7 +109,7 @@ class TableArchiver:
             except Exception as e:
                 logger.error(f"{self._label} archival failed: {e}")
 
-    def _seconds_until_next_fire(self) -> float | None:
+    def _seconds_until_next_fire(self) -> Optional[float]:
         now = datetime.now(timezone.utc)
         next_fire = self._trigger.get_next_fire_time(None, now)
         if next_fire is None:

@@ -14,7 +14,7 @@ unchanged; this module only serves the time-based resources.
 
 from datetime import date, datetime, timedelta
 from math import ceil
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -67,7 +67,7 @@ def _sum_case(condition, value) -> Any:
     return func.coalesce(func.sum(case((condition, value), else_=0)), 0)
 
 
-def _metric_columns() -> dict:
+def _metric_columns() -> Dict[str, Any]:
     q = MeteredUsage.quantity
     return {
         # instance.uptime seconds → hours
@@ -135,7 +135,9 @@ def _parse_id_csv(value: Optional[str]) -> Optional[List[int]]:
 
 
 # group_by token → (label column expr factory). resource/user/sku/date.
-def _group_columns(group_by: str, session, granularity: str = USAGE_GRANULARITY_DAY):
+def _group_columns(
+    group_by: str, session, granularity: str = USAGE_GRANULARITY_DAY
+) -> Tuple[List, List]:
     if group_by == "resource_type":
         return [MeteredUsage.resource_type.label("group_key")], [
             MeteredUsage.resource_type
@@ -233,6 +235,8 @@ async def _run_breakdown(
     request: ResourceBreakdownRequest,
     base_filter,
     metric_keys: List[str],
+    join_instances: bool = True,
+    join_volumes: bool = True,
 ):
     effective_scope = _resolve_effective_scope(user, ctx, request.scope)
     metrics = _metric_columns()
@@ -257,31 +261,36 @@ async def _run_breakdown(
     # resource_id — type-qualified so the instance/volume id spaces don't cross —
     # and count only ids that still resolve. Usage metrics (gpu_hours, …) keep
     # summing every row, deleted or not. The 1:1 join (id PK) doesn't fan rows.
-    base = base.join(
-        GPUInstance,
-        and_(
-            GPUInstance.id == MeteredUsage.resource_id,
-            MeteredUsage.resource_type.in_(
-                [RESOURCE_TYPE_GPU_INSTANCE, RESOURCE_TYPE_CPU_INSTANCE]
+    #
+    # Only join the table(s) the endpoint can actually return: the GPU tab never
+    # has PV rows and vice versa, so a single-resource endpoint skips the dead
+    # join (the resource breakdown spans both and keeps both). Avoids a join the
+    # planner may not always elide.
+    live_conds = []
+    if join_instances:
+        base = base.join(
+            GPUInstance,
+            and_(
+                GPUInstance.id == MeteredUsage.resource_id,
+                MeteredUsage.resource_type.in_(
+                    [RESOURCE_TYPE_GPU_INSTANCE, RESOURCE_TYPE_CPU_INSTANCE]
+                ),
             ),
-        ),
-        isouter=True,
-    ).join(
-        GPUInstancePersistentVolume,
-        and_(
-            GPUInstancePersistentVolume.id == MeteredUsage.resource_id,
-            MeteredUsage.resource_type == RESOURCE_TYPE_PERSISTENT_VOLUME,
-        ),
-        isouter=True,
-    )
+            isouter=True,
+        )
+        live_conds.append(GPUInstance.id.isnot(None))
+    if join_volumes:
+        base = base.join(
+            GPUInstancePersistentVolume,
+            and_(
+                GPUInstancePersistentVolume.id == MeteredUsage.resource_id,
+                MeteredUsage.resource_type == RESOURCE_TYPE_PERSISTENT_VOLUME,
+            ),
+            isouter=True,
+        )
+        live_conds.append(GPUInstancePersistentVolume.id.isnot(None))
     active_resource_id = case(
-        (
-            or_(
-                GPUInstance.id.isnot(None),
-                GPUInstancePersistentVolume.id.isnot(None),
-            ),
-            MeteredUsage.resource_id,
-        ),
+        (or_(*live_conds), MeteredUsage.resource_id),
         else_=None,
     )
 
@@ -322,7 +331,7 @@ async def _run_breakdown(
     )
     rows = (await session.exec(items_stmt)).all()
 
-    def metrics_of(row) -> dict:
+    def metrics_of(row) -> Dict[str, Any]:
         out = {k: round(float(getattr(row, k, 0) or 0), 2) for k in metric_keys}
         out["resources"] = int(getattr(row, "resources", 0) or 0)
         out["active_users"] = int(getattr(row, "active_users", 0) or 0)
@@ -436,6 +445,7 @@ async def gpu_instances_breakdown(
             MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
         ),
         metric_keys=["gpu_hours", "instance_hours"],
+        join_volumes=False,  # GPU rows never resolve against the PV table
     )
 
 
@@ -455,6 +465,7 @@ async def storage_breakdown(
         request=request,
         base_filter=(MeteredUsage.meter_key == METER_STORAGE_CAPACITY),
         metric_keys=["gb_days", "gb_hours"],
+        join_instances=False,  # PV rows never resolve against the instance table
     )
 
 
@@ -631,7 +642,7 @@ async def resource_meta(
             stmt = stmt.where(scope_col == org_id)
         return stmt
 
-    async def _distinct_creators(creator_col, scope_col) -> set:
+    async def _distinct_creators(creator_col, scope_col) -> Set[Optional[int]]:
         stmt = _scoped(
             select(creator_col).where(creator_col.isnot(None)).distinct(),
             creator_col,
@@ -660,7 +671,7 @@ async def resource_meta(
 
     # Distinct resources of one type — id + latest snapshot name. metered_usage
     # snapshots the name, so deleted resources still resolve a label.
-    async def _resources(resource_type: str) -> list:
+    async def _resources(resource_type: str) -> List[Dict[str, Any]]:
         stmt = _scoped(
             select(
                 MeteredUsage.resource_id,

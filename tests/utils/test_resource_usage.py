@@ -142,3 +142,20 @@ def test_iter_utc_hour_segments_bounds():
         datetime(2026, 5, 26, 10, 0, 0), datetime(2026, 5, 26, 10, 30, 0)
     )
     assert len(one) == 1 and one[0][0] == datetime(2026, 5, 26, 10, 0, 0)
+
+
+def test_local_resource_type_constants_match_schema():
+    """The utils keep private copies of the resource-type constants to stay
+    import-light (no schema dependency). Lock them to the schema's so a future
+    rename on one side can't silently drift the two apart."""
+    from gpustack.schemas.metered_usage import (
+        RESOURCE_TYPE_CPU_INSTANCE,
+        RESOURCE_TYPE_GPU_INSTANCE,
+    )
+    from gpustack.utils.resource_usage import (
+        _RESOURCE_TYPE_CPU_INSTANCE,
+        _RESOURCE_TYPE_GPU_INSTANCE,
+    )
+
+    assert _RESOURCE_TYPE_GPU_INSTANCE == RESOURCE_TYPE_GPU_INSTANCE
+    assert _RESOURCE_TYPE_CPU_INSTANCE == RESOURCE_TYPE_CPU_INSTANCE

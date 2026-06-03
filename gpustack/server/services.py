@@ -458,6 +458,29 @@ class ClusterService:
         return result
 
 
+class PrincipalService:
+    """Cached principal (user / org / group) lookups by id.
+
+    Mirrors ``ClusterService`` — an in-memory, TTL'd, coordinator-invalidated
+    cache shared across sessions (the result is expunged so it's detached and
+    safe to hold). Intended for hot paths that only need a principal's ``name``,
+    e.g. the resource-event logger resolving owner / consumer / creator names on
+    every event. Rename staleness is bounded by the cache TTL, which is fine for
+    display / audit names.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    @locked_cached()
+    async def get_by_id(self, principal_id: int) -> Optional[Principal]:
+        result = await Principal.one_by_id(self.session, principal_id)
+        if result is None:
+            return None
+        self.session.expunge(result)
+        return result
+
+
 class WorkerService:
     def __init__(self, session: AsyncSession):
         self.session = session
