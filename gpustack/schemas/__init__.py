@@ -74,6 +74,14 @@ from gpustack.schemas.model_usage_details import (
     ModelUsageDetails,
     ModelUsageDetailsArchive,
 )
+from gpustack.schemas.metered_usage import (  # noqa: F401  table registration
+    MeteredUsage,
+    MeteredUsageArchive,
+)
+from gpustack.schemas.resource_events import (  # noqa: F401  table registration
+    ResourceEvent,
+    ResourceEventArchive,
+)
 from gpustack.schemas.common import PaginatedList
 from gpustack.schemas.benchmark import (
     ModelInstanceRuntimeInfo,
@@ -227,6 +235,10 @@ __all__ = [
     "MemoryInfo",
     "SystemLoad",
     "ModelUsage",
+    "MeteredUsage",
+    "MeteredUsageArchive",
+    "ResourceEvent",
+    "ResourceEventArchive",
     "ModelFile",
     "ModelFileCreate",
     "ModelFileUpdate",
