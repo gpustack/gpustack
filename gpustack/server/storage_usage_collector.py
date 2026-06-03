@@ -105,6 +105,9 @@ class StorageUsageCollector:
         whose latest lifecycle event is ``created`` (no later ``deleted``) is
         still metering. Per-row ``settled_until`` keeps re-settle idempotent."""
         try:
+            # One session for the whole rebuild — the seeding shares it (a
+            # closed-session seed would raise, get swallowed below, and
+            # silently skip the high-water resume it exists to provide).
             async with async_session() as session:
                 events = (
                     await session.exec(
@@ -118,21 +121,22 @@ class StorageUsageCollector:
                         .order_by(ResourceEvent.resource_id, ResourceEvent.occurred_at)
                     )
                 ).all()
-            latest: Dict[int, ResourceEvent] = {}
-            for e in events:
-                if e.resource_id is not None:
-                    latest[e.resource_id] = e
-            for rid, e in latest.items():
-                if e.event_type == EVENT_TYPE_CREATED:
-                    vol = _open_volume_from_event(e)
-                    if vol is not None and vol.capacity_mib > 0:
-                        self._open[rid] = vol
-            if self._open:
-                await self._seed_settled_through(session)
-                logger.info(
-                    "storage_usage_collector: reconciled %d open volume(s) on startup",
-                    len(self._open),
-                )
+                latest: Dict[int, ResourceEvent] = {}
+                for e in events:
+                    if e.resource_id is not None:
+                        latest[e.resource_id] = e
+                for rid, e in latest.items():
+                    if e.event_type == EVENT_TYPE_CREATED:
+                        vol = _open_volume_from_event(e)
+                        if vol is not None and vol.capacity_mib > 0:
+                            self._open[rid] = vol
+                if self._open:
+                    await self._seed_settled_through(session)
+                    logger.info(
+                        "storage_usage_collector: reconciled %d open volume(s) "
+                        "on startup",
+                        len(self._open),
+                    )
         except Exception:
             logger.exception("storage_usage_collector: startup reconcile failed")
 

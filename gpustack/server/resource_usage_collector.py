@@ -203,6 +203,10 @@ class ResourceUsageCollector:
         is open. Per-row ``settled_until`` keeps the subsequent settle idempotent.
         """
         try:
+            # One session for the whole rebuild: the events query AND the
+            # settled_through seeding share it (seeding on a closed session
+            # would raise, get swallowed below, and silently skip the
+            # high-water resume — the very thing it exists to do).
             async with async_session() as session:
                 events = (
                     await session.exec(
@@ -222,21 +226,22 @@ class ResourceUsageCollector:
                         .order_by(ResourceEvent.resource_id, ResourceEvent.occurred_at)
                     )
                 ).all()
-            latest: Dict[int, ResourceEvent] = {}
-            for e in events:
-                if e.resource_id is not None:
-                    latest[e.resource_id] = e  # ordered → last is most recent
-            for rid, e in latest.items():
-                if e.event_type == EVENT_TYPE_PHASE_TO_METERED:
-                    window = _open_window_from_event(e)
-                    if window is not None:
-                        self._open[rid] = window
-            if self._open:
-                await self._seed_settled_through(session)
-                logger.info(
-                    "resource_usage_collector: reconciled %d open window(s) on startup",
-                    len(self._open),
-                )
+                latest: Dict[int, ResourceEvent] = {}
+                for e in events:
+                    if e.resource_id is not None:
+                        latest[e.resource_id] = e  # ordered → last is most recent
+                for rid, e in latest.items():
+                    if e.event_type == EVENT_TYPE_PHASE_TO_METERED:
+                        window = _open_window_from_event(e)
+                        if window is not None:
+                            self._open[rid] = window
+                if self._open:
+                    await self._seed_settled_through(session)
+                    logger.info(
+                        "resource_usage_collector: reconciled %d open window(s) "
+                        "on startup",
+                        len(self._open),
+                    )
         except Exception:
             logger.exception("resource_usage_collector: startup reconcile failed")
 

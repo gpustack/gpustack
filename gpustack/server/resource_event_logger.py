@@ -30,10 +30,8 @@ from typing import Any, Dict, Optional, Set, Tuple
 
 from sqlmodel import select
 
-from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.gpu_instance_persistent_volumes import GPUInstancePersistentVolume
 from gpustack.schemas.gpu_instances import GPUInstance
-from gpustack.schemas.principals import Principal
 from gpustack.schemas.resource_events import (
     EVENT_TYPE_CREATED,
     EVENT_TYPE_DELETED,
@@ -44,6 +42,7 @@ from gpustack.schemas.resource_events import (
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
+from gpustack.server.services import ClusterService, PrincipalService
 from gpustack.utils.resource_usage import (
     instance_resource_type,
     is_metered_phase,
@@ -103,37 +102,38 @@ async def _resolve_principals(
     entities) so the names ride ``resource_events`` into ``metered_usage``
     without re-resolving. ids that no longer resolve (delete race) yield
     ``None`` — the id is still preserved for audit.
+
+    Cluster and principal lookups go through the cached ``ClusterService`` /
+    ``PrincipalService`` so a reconciler storm of events for the same tenant /
+    cluster hits the in-memory cache instead of the DB. Names are slowly
+    changing, so cache-TTL staleness here is acceptable.
     """
     cluster_name = None
     owner_principal_id = consumer_principal_id  # default: self-owned (no cluster)
     if cluster_id is not None:
-        c = await Cluster.one_by_id(session, cluster_id)
+        c = await ClusterService(session).get_by_id(cluster_id)
         if c is not None:
             cluster_name = c.name
             owner_principal_id = c.owner_principal_id
 
-    # Resolve all three principal names in a single round-trip (they often
-    # overlap — owner==consumer when self-owned — and the set dedups).
-    pids = {
-        pid
-        for pid in (owner_principal_id, consumer_principal_id, creator_id)
-        if pid is not None
-    }
-    name_map: Dict[int, Optional[str]] = {}
-    if pids:
-        principals = (
-            await session.exec(select(Principal).where(Principal.id.in_(list(pids))))
-        ).all()
-        name_map = {p.id: p.name for p in principals}
+    principals = PrincipalService(session)
+    # Per-call memo so owner == consumer (self-owned) resolves once even on a
+    # cold cache; the service cache then makes it cheap across events.
+    name_cache: Dict[int, Optional[str]] = {}
 
-    def name_of(pid: Optional[int]) -> Optional[str]:
-        return name_map.get(pid) if pid is not None else None
+    async def name_of(pid: Optional[int]) -> Optional[str]:
+        if pid is None:
+            return None
+        if pid not in name_cache:
+            p = await principals.get_by_id(pid)
+            name_cache[pid] = p.name if p else None
+        return name_cache[pid]
 
     return (
         owner_principal_id,
-        name_of(owner_principal_id),
-        name_of(consumer_principal_id),
-        name_of(creator_id),
+        await name_of(owner_principal_id),
+        await name_of(consumer_principal_id),
+        await name_of(creator_id),
         cluster_name,
     )
 

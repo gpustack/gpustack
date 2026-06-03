@@ -377,7 +377,10 @@ async def test_reconcile_seeds_settled_through_from_high_water_mark(
     await s.commit()
 
     c = ResourceUsageCollector()
-    with patch.object(rc, "async_session", lambda: _yield(s)):
+    # Use a *closing* session CM: if the seeding ever escapes the reconcile's
+    # `async with` block again, it would hit a closed session and the resume
+    # below would silently regress to None — caught here, not swallowed.
+    with patch.object(rc, "async_session", lambda: _closing_yield(s)):
         await c._reconcile_open_windows()
 
     assert 1 in c._open
@@ -390,6 +393,17 @@ async def test_reconcile_seeds_settled_through_from_high_water_mark(
 @asynccontextmanager
 async def _yield(session):
     yield session
+
+
+@asynccontextmanager
+async def _closing_yield(session):
+    """Like ``_yield`` but closes the session on exit — mirrors the real
+    ``async_session`` so a seed/query that escaped the ``async with`` block
+    (using a closed session) is caught by the test, not silently swallowed."""
+    try:
+        yield session
+    finally:
+        await session.close()
 
 
 # ---------------------------------------------------------------------------
