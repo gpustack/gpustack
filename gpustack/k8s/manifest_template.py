@@ -13,7 +13,7 @@ from gpustack_runtime.detector import ManufacturerEnum
 
 
 _DEFAULT_OPERATOR_IMAGE = f"gpustack/gpustack-operator:{__operator_version__}"
-_DEFAULT_OPERATOR_NAMESPACE = "gpustack"
+_DEFAULT_CONTAINER_NAMESPACE = "gpustack"
 _DEFAULT_CLUSTER_NAMESPACE = "gpustack-system"
 
 
@@ -145,24 +145,35 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
 
     @computed_field
     @property
-    def operator_container_namespace(self) -> Optional[str]:
+    def container_namespace(self) -> Optional[str]:
         """
-        Namespace segment inferred from the resolved operator image — used by
+        Namespace segment inferred from the resolved gpustack image — used by
         the operator runtime (``GPUSTACK_CONTAINER_NAMESPACE``) to compose
-        sibling image references. Strip the cluster registry prefix first so
-        the leading segment isn't mistaken for a namespace, then take
-        everything up to the final ``/``. Suppressed when the namespace is
-        the built-in ``gpustack`` default since the operator already knows
-        that one.
+        sibling image references. The operator image may live elsewhere, so the
+        namespace must come from the gpustack image (``self.image``) instead.
+
+        Strip the registry prefix first so the leading segment isn't mistaken
+        for a namespace, then take everything up to the final ``/`` (the
+        trailing ``<name>:<tag>`` segment is discarded). The registry can be
+        either the configured ``system_default_container_registry`` or one
+        embedded directly in the reference (e.g. via an ``image_name_override``
+        like ``quay.io/gpustack/gpustack:dev``); the latter is detected with
+        the same heuristic as ``apply_registry_override_to_image`` — the first
+        path segment is a registry when it contains ``.`` or ``:`` or equals
+        ``localhost``. Suppressed when the namespace is the built-in
+        ``gpustack`` default since the operator already knows that one.
         """
-        image = self.operator_image
+        image = self.image
         registry = (self.system_default_container_registry or "").strip().rstrip("/")
         if registry and image.startswith(registry + "/"):
             image = image[len(registry) + 1 :]
+        first, sep, rest = image.partition("/")
+        if sep and ("." in first or ":" in first or first == "localhost"):
+            image = rest
         if "/" not in image:
             return None
         namespace = image.rsplit("/", 1)[0]
-        if namespace == _DEFAULT_OPERATOR_NAMESPACE:
+        if namespace == _DEFAULT_CONTAINER_NAMESPACE:
             return None
         return namespace
 

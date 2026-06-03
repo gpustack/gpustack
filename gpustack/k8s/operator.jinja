@@ -193,9 +193,9 @@ data:
                 - name: GPUSTACK_CONTAINER_REGISTRY
                   value: {{ config.system_default_container_registry }}
                 {%- endif %}
-                {%- if config.operator_container_namespace %}
+                {%- if config.container_namespace %}
                 - name: GPUSTACK_CONTAINER_NAMESPACE
-                  value: {{ config.operator_container_namespace }}
+                  value: {{ config.container_namespace }}
                 {%- endif %}
                 {%- if config.image_pull_secrets %}
                 - name: GPUSTACK_IMAGE_PULL_SECRETS
