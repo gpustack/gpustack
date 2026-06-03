@@ -875,6 +875,120 @@ def upgrade() -> None:
                 sa.Column('cluster_id', sa.Integer(), nullable=True)
             )
 
+    # Backfill the cluster-derived tenant columns just added above. The
+    # ADD COLUMN step leaves every legacy row with NULL ``cluster_id`` /
+    # ``owner_principal_id``, which makes them invisible to non-bypass
+    # principals (cluster_access filter requires one to match). Derive
+    # the scope from the row's worker → cluster, same way the runtime
+    # paths (``routes/model_files.create_model_file`` /
+    # ``controllers._get_worker_tenant_scopes``) stamp new rows.
+    #
+    # Order matters: workers.owner_principal_id is sourced from
+    # clusters.owner_principal_id (already backfilled in section 10),
+    # and model_files / benchmarks read back through workers — so
+    # workers first, dependents second.
+    if dialect == 'mysql':
+        op.execute(
+            sa.text(
+                """
+                UPDATE workers w
+                JOIN clusters c ON c.id = w.cluster_id
+                SET w.owner_principal_id = c.owner_principal_id
+                WHERE w.owner_principal_id IS NULL
+                """
+            )
+        )
+        op.execute(
+            sa.text(
+                """
+                UPDATE model_files mf
+                JOIN workers w ON w.id = mf.worker_id
+                SET mf.cluster_id = w.cluster_id,
+                    mf.owner_principal_id = w.owner_principal_id
+                WHERE mf.worker_id IS NOT NULL
+                  AND (mf.cluster_id IS NULL OR mf.owner_principal_id IS NULL)
+                """
+            )
+        )
+        op.execute(
+            sa.text(
+                """
+                UPDATE benchmarks b
+                JOIN workers w ON w.id = b.worker_id
+                SET b.cluster_id = w.cluster_id,
+                    b.owner_principal_id = w.owner_principal_id
+                WHERE b.worker_id IS NOT NULL
+                  AND (b.cluster_id IS NULL OR b.owner_principal_id IS NULL)
+                """
+            )
+        )
+    else:
+        op.execute(
+            sa.text(
+                """
+                UPDATE workers
+                SET owner_principal_id = (
+                    SELECT clusters.owner_principal_id
+                    FROM clusters
+                    WHERE clusters.id = workers.cluster_id
+                )
+                WHERE owner_principal_id IS NULL
+                  AND EXISTS (
+                    SELECT 1 FROM clusters
+                    WHERE clusters.id = workers.cluster_id
+                  )
+                """
+            )
+        )
+        op.execute(
+            sa.text(
+                """
+                UPDATE model_files
+                SET cluster_id = (
+                    SELECT workers.cluster_id
+                    FROM workers
+                    WHERE workers.id = model_files.worker_id
+                ),
+                owner_principal_id = (
+                    SELECT workers.owner_principal_id
+                    FROM workers
+                    WHERE workers.id = model_files.worker_id
+                )
+                WHERE model_files.worker_id IS NOT NULL
+                  AND (model_files.cluster_id IS NULL
+                       OR model_files.owner_principal_id IS NULL)
+                  AND EXISTS (
+                    SELECT 1 FROM workers
+                    WHERE workers.id = model_files.worker_id
+                  )
+                """
+            )
+        )
+        op.execute(
+            sa.text(
+                """
+                UPDATE benchmarks
+                SET cluster_id = (
+                    SELECT workers.cluster_id
+                    FROM workers
+                    WHERE workers.id = benchmarks.worker_id
+                ),
+                owner_principal_id = (
+                    SELECT workers.owner_principal_id
+                    FROM workers
+                    WHERE workers.id = benchmarks.worker_id
+                )
+                WHERE benchmarks.worker_id IS NOT NULL
+                  AND (benchmarks.cluster_id IS NULL
+                       OR benchmarks.owner_principal_id IS NULL)
+                  AND EXISTS (
+                    SELECT 1 FROM workers
+                    WHERE workers.id = benchmarks.worker_id
+                  )
+                """
+            )
+        )
+
     # ------------------------------------------------------------------
     # 12. Inference backends Hybrid.
     # ------------------------------------------------------------------
