@@ -49,6 +49,7 @@ from gpustack.utils.resource_usage import (
     instance_sku,
     iter_utc_hour_segments,
     parse_accelerator_count,
+    parse_gpu_descriptor,
     parse_gpu_type,
     parse_gpu_vram_mib,
     parse_quantity_to_mib,
@@ -150,6 +151,24 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
     ephemeral_mib = parse_quantity_to_mib(ephemeral.get("capacity"))
     # Per-card VRAM lives in the device descriptor blob, not the instance spec.
     vram_mib = parse_gpu_vram_mib(snap.get("description"))
+    # Pretty product name + per-card cpu/mem for the "Instance Type" display
+    # (so Usage matches the GPU Instances list instead of the raw flavor slug).
+    descriptor = parse_gpu_descriptor(snap.get("description"))
+
+    dimensions = {
+        "gpu_type": gpu_type,
+        "gpu_count": gpu_count,
+        "vram_mib": vram_mib,
+        "cpu_milli": cpu_milli,
+        "memory_mib": mem_mib,
+        "ephemeral_mib": ephemeral_mib,
+    }
+    if descriptor.get("product"):
+        dimensions["product"] = descriptor["product"]
+    if descriptor.get("unit_cpu_milli"):
+        dimensions["unit_cpu_milli"] = descriptor["unit_cpu_milli"]
+    if descriptor.get("unit_memory_mib"):
+        dimensions["unit_memory_mib"] = descriptor["unit_memory_mib"]
 
     return _OpenWindow(
         resource_id=evt.resource_id,
@@ -167,14 +186,7 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         window_start=_naive_utc(evt.occurred_at),
         sku=instance_sku(gpu_type, gpu_count, cpu_milli, mem_mib),
         gpu_count=gpu_count,
-        dimensions={
-            "gpu_type": gpu_type,
-            "gpu_count": gpu_count,
-            "vram_mib": vram_mib,
-            "cpu_milli": cpu_milli,
-            "memory_mib": mem_mib,
-            "ephemeral_mib": ephemeral_mib,
-        },
+        dimensions=dimensions,
     )
 
 

@@ -106,6 +106,51 @@ def parse_gpu_vram_mib(description: Any) -> int:
     return parse_quantity_to_mib(spec.get("memory"))
 
 
+def parse_gpu_descriptor(description: Any) -> dict:
+    """Display-flavor fields parsed from a GPUInstance ``description`` blob:
+    ``{"spec": {"product": "NVIDIA-GeForce-RTX-5090-D", "memory": "32607Mi",
+    "unitResourcesParsed": {"cpu": {"cores": 18}, "ram": {"value": 54,
+    "unit": "Gi"}}}}``.
+
+    Returns whichever of ``product`` / ``vram_mib`` / ``unit_cpu_milli`` /
+    ``unit_memory_mib`` could be parsed (per-card specs) — used to enrich
+    ``metered_usage.dimensions`` so the Usage "Instance Type" view can render the
+    pretty product name + per-card specs, matching the GPU Instances list.
+    Missing / unparseable keys are omitted (CPU instances → ``{}``).
+    """
+    data = description
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (ValueError, TypeError):
+            return {}
+    if not isinstance(data, dict):
+        return {}
+    spec = data.get("spec")
+    if not isinstance(spec, dict):
+        return {}
+    out: dict = {}
+    if spec.get("product"):
+        out["product"] = spec["product"]
+    vram = parse_quantity_to_mib(spec.get("memory"))
+    if vram:
+        out["vram_mib"] = vram
+    unit = spec.get("unitResourcesParsed")
+    if isinstance(unit, dict):
+        cpu = unit.get("cpu")
+        if isinstance(cpu, dict) and cpu.get("cores"):
+            try:
+                out["unit_cpu_milli"] = int(float(cpu["cores"]) * 1000)
+            except (ValueError, TypeError):
+                pass
+        ram = unit.get("ram")
+        if isinstance(ram, dict) and ram.get("value") is not None:
+            mib = parse_quantity_to_mib(f"{ram.get('value')}{ram.get('unit', '')}")
+            if mib:
+                out["unit_memory_mib"] = mib
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Kubernetes quantity parser
 # ---------------------------------------------------------------------------
