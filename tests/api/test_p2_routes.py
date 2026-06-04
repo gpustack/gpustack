@@ -300,6 +300,79 @@ async def test_has_other_owner_rejects_empty_group_owner():
     )
 
 
+@pytest.mark.asyncio
+async def test_remove_user_member_invalidates_access_cache(monkeypatch):
+    """Removing a USER from an Org must bust that user's
+    ``get_user_accessible_model_names`` cache; otherwise an existing
+    session keeps hitting the cached set (which still includes the Org's
+    routes) until TTL expiry.
+    """
+    org = _principal(id=10, display_name="Acme", name="acme")
+    member = _principal(
+        id=200, kind=PrincipalType.USER, display_name="user-2", name="user-2"
+    )
+    membership = MagicMock(spec=PrincipalMembership)
+    membership.parent_principal_id = 10
+    membership.member_principal_id = 200
+    membership.role = OrgRole.MEMBER
+    membership.deleted_at = None
+    membership.delete = AsyncMock()
+    _patch_org_and_member(monkeypatch, org, member)
+    monkeypatch.setattr(
+        organization_members,
+        "_find_membership",
+        AsyncMock(return_value=membership),
+    )
+    invalidated = AsyncMock()
+    monkeypatch.setattr(
+        organization_members, "delete_accessible_model_cache", invalidated
+    )
+    ctx = _ctx(is_admin=True)
+    await organization_members.remove_org_member(
+        session=MagicMock(), ctx=ctx, org_id=10, principal_id=200
+    )
+    membership.delete.assert_awaited_once()
+    invalidated.assert_awaited_once_with(200)
+
+
+@pytest.mark.asyncio
+async def test_remove_group_member_invalidates_each_user(monkeypatch):
+    """Removing a GROUP from an Org fans cache invalidation out to every
+    active user in the group — they lose Org-mediated access via the
+    transitive branch of ``principal_users`` and any cached
+    accessible-model set must be cleared per user.
+    """
+    org = _principal(id=10, display_name="Acme", name="acme")
+    group = _principal(
+        id=300, kind=PrincipalType.GROUP, display_name=None, name="gpu-admins"
+    )
+    membership = MagicMock(spec=PrincipalMembership)
+    membership.parent_principal_id = 10
+    membership.member_principal_id = 300
+    membership.role = OrgRole.MEMBER
+    membership.deleted_at = None
+    membership.delete = AsyncMock()
+    _patch_org_and_member(monkeypatch, org, group)
+    monkeypatch.setattr(
+        organization_members,
+        "_find_membership",
+        AsyncMock(return_value=membership),
+    )
+    # _affected_user_ids issues one session.exec() to expand the group into
+    # its active user-principal ids.
+    session = _session_returning([501, 502])
+    invalidated = AsyncMock()
+    monkeypatch.setattr(
+        organization_members, "delete_accessible_model_cache", invalidated
+    )
+    ctx = _ctx(is_admin=True)
+    await organization_members.remove_org_member(
+        session=session, ctx=ctx, org_id=10, principal_id=300
+    )
+    invalidated.assert_awaited_once()
+    assert set(invalidated.await_args.args) == {501, 502}
+
+
 # ---- cluster_access route --------------------------------------------------
 
 
