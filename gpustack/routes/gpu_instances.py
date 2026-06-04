@@ -173,29 +173,62 @@ async def delete_gpu_instance(
     confirms the cluster-side instance is gone (graceful deletion); clients
     can poll GET to observe the phase transition and eventual disappearance.
     """
-    ret = ensure_writable(
-        await GPUInstance.one_by_id(
-            session=session,
-            id=id,
-        ),
+    return await _transition_to_phase(
+        session,
         ctx,
+        id,
+        action="delete",
+        target_phase=GPUInstancePhase.DELETING,
+        fail_message="Failed to delete GPU instance",
     )
 
-    if ret.status and ret.status.phase == GPUInstancePhase.DELETING:
-        raise InvalidException(
-            message="GPU instance is already being deleted",
-        )
 
-    source = _build_delete_source(ret)
+@router.put("/{id}/stop", status_code=202, response_model=GPUInstancePublic)
+async def stop_gpu_instance(
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+):
+    """Mark the GPU instance for stopping.
 
-    async with handle_error(
-        message="Failed to delete GPU instance",
-    ):
-        await ret.update(
-            session=session,
-            source=source,
-        )
-        return ret
+    Stamps ``phase=Stopping`` on the row and returns 202 Accepted with the
+    updated resource. The DB row stays in place until the controller
+    confirms the cluster-side instance is deleted and transitions the row
+    to the terminal ``Stopped`` phase; clients can poll GET to observe the
+    transition.
+    """
+    return await _transition_to_phase(
+        session,
+        ctx,
+        id,
+        action="stop",
+        target_phase=GPUInstancePhase.STOPPING,
+        fail_message="Failed to stop GPU instance",
+    )
+
+
+@router.put("/{id}/start", status_code=202, response_model=GPUInstancePublic)
+async def start_gpu_instance(
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+):
+    """Mark the GPU instance for starting.
+
+    Stamps ``phase=Starting`` on the row and returns 202 Accepted with the
+    updated resource. The controller (re)creates the worker-side instance
+    on the next reconcile, then the cluster's reported phase (Pending →
+    Running → Ready) flows back via ``read_instance``. Only legal from the
+    terminal ``Stopped`` or ``*CreateFailed`` source phases.
+    """
+    return await _transition_to_phase(
+        session,
+        ctx,
+        id,
+        action="start",
+        target_phase=GPUInstancePhase.STARTING,
+        fail_message="Failed to start GPU instance",
+    )
 
 
 def ensure_visible(obj, ctx: TenantContext):
@@ -397,21 +430,110 @@ def _build_update_source(
     return source
 
 
-def _build_delete_source(existing_obj: GPUInstance) -> dict:
-    """Stamp ``phase=Deleting`` onto the row's status.
+def _build_update_phase_source(existing_obj: GPUInstance, phase: str) -> dict:
+    """Stamp ``phase=<phase>`` onto the row's status, preserving other fields.
 
     ``count`` and ``phase_message`` are reset so the controller's backoff
     starts from zero and stale messages (e.g. ``Ready``, prior
-    ``*CreateFailed`` reasons) don't leak into the deleting phase before
+    ``*CreateFailed`` reasons) don't leak into the new phase before
     the first reconcile overwrites them.
     """
     base = existing_obj.status or GPUInstanceStatus()
     return {
         "status": base.model_copy(
             update={
-                "phase": GPUInstancePhase.DELETING,
+                "phase": phase,
                 "phase_message": None,
                 "count": 0,
             },
         ),
     }
+
+
+# Per-action lifecycle gates. Phase transitions are described by the *source*
+# phase a row must NOT be in (``delete``) or MUST be in (``stop`` / ``start``)
+# for the action to be legal. Keeping these as module-level constants makes
+# the state machine readable in one place and easy to extend (e.g., adding a
+# ``restart`` action later).
+_FAILED_PHASES = frozenset(
+    {
+        GPUInstancePhase.INSTANCE_CREATE_FAILED,
+        GPUInstancePhase.SSH_KEY_CREATE_FAILED,
+        GPUInstancePhase.PV_TYPE_CREATE_FAILED,
+        GPUInstancePhase.PV_CREATE_FAILED,
+    }
+)
+
+# /stop: only legal from a "running-ish" phase. Reject in-flight transitions
+# (Deleting/Stopping/Starting), the terminal Stopped, and *CreateFailed (the
+# instance never came up).
+_STOP_DISALLOWED_FROM = (
+    frozenset(
+        {
+            GPUInstancePhase.DELETING,
+            GPUInstancePhase.STOPPING,
+            GPUInstancePhase.STOPPED,
+            GPUInstancePhase.STARTING,
+        }
+    )
+    | _FAILED_PHASES
+)
+
+# /start: only legal from terminal Stopped or *CreateFailed (retry). Reject
+# the rest — Ready means it's already up, Starting/Stopping/Deleting are
+# in-flight, ``None`` means the controller is still doing the initial create.
+_START_ALLOWED_FROM = frozenset({GPUInstancePhase.STOPPED}) | _FAILED_PHASES
+
+
+async def _transition_to_phase(
+    session: AsyncSession,
+    ctx: TenantContext,
+    id: int,
+    *,
+    action: str,
+    target_phase: str,
+    fail_message: str,
+) -> GPUInstance:
+    """Shared scaffolding for the three lifecycle endpoints (delete / stop / start).
+
+    Loads + ownership-checks the row, gates the phase transition via
+    :func:`_validate_phase_transition`, stamps the new phase via
+    :func:`_build_update_phase_source`, and persists it inside
+    :func:`handle_error` so DB failures surface as 500. The updated row is
+    returned to the caller for the 202 response body.
+    """
+    ret = ensure_writable(
+        await GPUInstance.one_by_id(
+            session=session,
+            id=id,
+        ),
+        ctx,
+    )
+
+    # Validate the phase transition before doing any work.
+    current_phase = ret.status.phase if ret.status else None
+    if action == "stop":
+        if current_phase is None or current_phase in _STOP_DISALLOWED_FROM:
+            raise InvalidException(
+                message=(
+                    f"GPU instance cannot be stopped from "
+                    f"{current_phase or 'pending creation'} phase"
+                ),
+            )
+    elif action == "start":
+        if current_phase not in _START_ALLOWED_FROM:
+            raise InvalidException(
+                message=(
+                    f"GPU instance cannot be started from "
+                    f"{current_phase or 'pending creation'} phase"
+                ),
+            )
+
+    source = _build_update_phase_source(ret, target_phase)
+
+    async with handle_error(message=fail_message):
+        await ret.update(
+            session=session,
+            source=source,
+        )
+        return ret
