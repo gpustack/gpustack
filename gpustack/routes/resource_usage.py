@@ -573,6 +573,18 @@ async def usage_summary(
     }
 
 
+def _phase_message_of(spec_snapshot) -> Optional[str]:
+    """``status.phaseMessage`` from the event's spec snapshot — the detail behind
+    a failure phase (the UI shows it as the event's error message). Reads both
+    the snake / camel key since serialization differs by path."""
+    if not isinstance(spec_snapshot, dict):
+        return None
+    status = spec_snapshot.get("status")
+    if not isinstance(status, dict):
+        return None
+    return status.get("phase_message") or status.get("phaseMessage")
+
+
 @router.get("/resource-events")
 async def resource_events(
     session: SessionDep,
@@ -633,6 +645,7 @@ async def resource_events(
                 "event_type": r.event_type,
                 "event_message": r.event_message,
                 "phase": r.phase,
+                "phase_message": _phase_message_of(r.spec_snapshot),
                 "creator_id": r.creator_id,
                 "creator_name": r.creator_name,
             }
