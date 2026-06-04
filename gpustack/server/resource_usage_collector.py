@@ -30,6 +30,9 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from gpustack import envs
+from gpustack.schemas.gpu_instance_persistent_volumes import (
+    GPUInstancePersistentVolume,
+)
 from gpustack.schemas.metered_usage import (
     METER_INSTANCE_UPTIME,
     UNIT_SECONDS,
@@ -141,6 +144,7 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
     resources = spec.get("resources") or {}
     volume = spec.get("volume") or {}
     ephemeral = volume.get("ephemeral") or {}
+    persistent = volume.get("persistent") or {}
 
     # model_dump may serialize the field by name (``type_``) or alias
     # (``type``) depending on by_alias — read both for robustness.
@@ -170,6 +174,11 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         "ephemeral_mib": ephemeral_mib,
         "local_storage_mib": local_storage_mib,
     }
+    # Persistent data disk is a reference to a separate PV resource (only its
+    # name is in the instance spec) — store the name so the breakdown can
+    # resolve its provisioned capacity for the Disk → Persistent row.
+    if persistent.get("name"):
+        dimensions["persistent_name"] = persistent["name"]
     if descriptor.get("product"):
         dimensions["product"] = descriptor["product"]
     if descriptor.get("unit_cpu_milli"):
@@ -195,6 +204,37 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         gpu_count=gpu_count,
         dimensions=dimensions,
     )
+
+
+async def _resolve_persistent_mib(session, window: "_OpenWindow") -> None:
+    """Resolve the referenced persistent volume's capacity into the window's
+    dimensions (``persistent_mib``), once, at metering time.
+
+    The instance spec only references the PV by name; its size lives on the
+    separate PV resource. Resolving it here — while the PV is guaranteed to
+    exist — and snapshotting it onto the metered rows means the Usage breakdown
+    keeps showing the size even after the PV is later deleted (unlike resolving
+    lazily at read time). PV names are unique per principal, so match on owner.
+    """
+    name = window.dimensions.get("persistent_name")
+    if not name or window.owner_principal_id is None:
+        return
+    pv = (
+        await session.exec(
+            select(GPUInstancePersistentVolume).where(
+                GPUInstancePersistentVolume.owner_principal_id
+                == window.owner_principal_id,
+                GPUInstancePersistentVolume.name == name,
+            )
+        )
+    ).first()
+    spec = getattr(pv, "spec", None) if pv else None
+    cap = getattr(spec, "capacity", None)
+    if cap is None and isinstance(spec, dict):
+        cap = spec.get("capacity")
+    mib = parse_quantity_to_mib(cap) if cap else 0
+    if mib:
+        window.dimensions["persistent_mib"] = mib
 
 
 class ResourceUsageCollector:
@@ -258,6 +298,7 @@ class ResourceUsageCollector:
                     if e.event_type == EVENT_TYPE_PHASE_TO_METERED:
                         window = _open_window_from_event(e)
                         if window is not None:
+                            await _resolve_persistent_mib(session, window)
                             self._open[rid] = window
                 if self._open:
                     await self._seed_settled_through(session)
@@ -326,6 +367,11 @@ class ResourceUsageCollector:
             if evt.event_type == EVENT_TYPE_PHASE_TO_METERED:
                 window = _open_window_from_event(evt)
                 if window is not None:
+                    # Snapshot the persistent-volume size while the PV still
+                    # exists (only for instances that reference one).
+                    if window.dimensions.get("persistent_name"):
+                        async with async_session() as session:
+                            await _resolve_persistent_mib(session, window)
                     # Replace any stale window (missed close during a crash);
                     # the per-row settled_until absorbs the older time safely.
                     self._open[window.resource_id] = window
