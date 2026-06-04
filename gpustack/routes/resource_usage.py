@@ -330,6 +330,7 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
                 "vram_mib": d.get("vram_mib"),
                 "gpu_count": d.get("gpu_count"),
                 "ephemeral_mib": d.get("ephemeral_mib"),
+                "local_storage_mib": d.get("local_storage_mib"),
             }
     elif gb == "volume":
         # Per-volume storage type + provisioned capacity (constant per volume),

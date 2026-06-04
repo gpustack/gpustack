@@ -149,6 +149,12 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
     cpu_milli = parse_quantity_to_millicores(resources.get("cpu"))
     mem_mib = parse_quantity_to_mib(resources.get("ram"))
     ephemeral_mib = parse_quantity_to_mib(ephemeral.get("capacity"))
+    # System (OS) disk — the GPU Instances list shows it under Disk → System.
+    # The snapshot is model_dump(mode="json") (by field name), so read the
+    # snake_case field; fall back to the camelCase alias for robustness.
+    local_storage_mib = parse_quantity_to_mib(
+        resources.get("local_storage") or resources.get("localStorage")
+    )
     # Per-card VRAM lives in the device descriptor blob, not the instance spec.
     vram_mib = parse_gpu_vram_mib(snap.get("description"))
     # Pretty product name + per-card cpu/mem for the "Instance Type" display
@@ -162,6 +168,7 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         "cpu_milli": cpu_milli,
         "memory_mib": mem_mib,
         "ephemeral_mib": ephemeral_mib,
+        "local_storage_mib": local_storage_mib,
     }
     if descriptor.get("product"):
         dimensions["product"] = descriptor["product"]
