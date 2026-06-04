@@ -264,55 +264,84 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:
                 i["key"] = names[rid]
             i["deleted"] = rid not in existing
 
-    if gb in ("instance_type", "instance"):
-        skus = [i.get("sku") for i in items if i.get("sku")]
-        dims_by_sku: dict = {}
-        if skus:
-            rep_ids = (
-                select(func.max(MeteredUsage.id))
-                .where(_UPTIME)
-                .where(MeteredUsage.sku.in_(skus))
-                .group_by(MeteredUsage.sku)
+    await _attach_dimensions(session, gb, items)
+
+
+async def _dims_by_representative(session, *, group_col, keys, extra_filter):
+    """``{group value: dimensions}`` from the latest row per group.
+
+    Picks MAX(id) per ``group_col`` among rows matching ``extra_filter`` (e.g.
+    uptime / storage-capacity meter) and returns that representative row's
+    ``dimensions`` blob — dimensions are constant per group so any row will do.
+    """
+    if not keys:
+        return {}
+    rep_ids = (
+        select(func.max(MeteredUsage.id))
+        .where(extra_filter)
+        .where(group_col.in_(keys))
+        .group_by(group_col)
+    )
+    rows = (
+        await session.exec(
+            select(group_col, MeteredUsage.dimensions).where(
+                MeteredUsage.id.in_(rep_ids)
             )
-            rows = (
-                await session.exec(
-                    select(MeteredUsage.sku, MeteredUsage.dimensions).where(
-                        MeteredUsage.id.in_(rep_ids)
-                    )
-                )
-            ).all()
-            dims_by_sku = {r[0]: (r[1] or {}) for r in rows}
+        )
+    ).all()
+    return {r[0]: (r[1] or {}) for r in rows}
+
+
+async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
+    """Attach the ``dimensions`` the UI needs per grouping (in place)."""
+    if gb == "instance_type":
+        # Flavor-constant specs per sku → pretty product name + per-card specs.
+        dims = await _dims_by_representative(
+            session,
+            group_col=MeteredUsage.sku,
+            keys=[i.get("sku") for i in items if i.get("sku")],
+            extra_filter=_UPTIME,
+        )
         for i in items:
-            d = dims_by_sku.get(i.get("sku")) or {}
+            d = dims.get(i.get("sku")) or {}
             i["dimensions"] = {
                 "product": d.get("product"),
                 "unit_cpu_milli": d.get("unit_cpu_milli"),
                 "unit_memory_mib": d.get("unit_memory_mib"),
                 "vram_mib": d.get("vram_mib"),
             }
-
-    if gb == "volume":
+    elif gb == "instance":
+        # Per-instance dims: gpu_count varies per instance (unlike the flavor),
+        # so the Instances table renders "<product> x <count>" plus the spec
+        # popover like the GPU Instances list. Keyed by resource_id since the
+        # sku is count-independent.
+        dims = await _dims_by_representative(
+            session,
+            group_col=MeteredUsage.resource_id,
+            keys=[i.get("id") for i in items if i.get("id") is not None],
+            extra_filter=_UPTIME,
+        )
+        for i in items:
+            d = dims.get(i.get("id")) or {}
+            i["dimensions"] = {
+                "product": d.get("product"),
+                "unit_cpu_milli": d.get("unit_cpu_milli"),
+                "unit_memory_mib": d.get("unit_memory_mib"),
+                "vram_mib": d.get("vram_mib"),
+                "gpu_count": d.get("gpu_count"),
+                "ephemeral_mib": d.get("ephemeral_mib"),
+            }
+    elif gb == "volume":
         # Per-volume storage type + provisioned capacity (constant per volume),
         # for the Storage tab's Type / Capacity columns.
-        ids = [i.get("id") for i in items if i.get("id") is not None]
-        dims_by_id: dict = {}
-        if ids:
-            rep_ids = (
-                select(func.max(MeteredUsage.id))
-                .where(MeteredUsage.meter_key == METER_STORAGE_CAPACITY)
-                .where(MeteredUsage.resource_id.in_(ids))
-                .group_by(MeteredUsage.resource_id)
-            )
-            rows = (
-                await session.exec(
-                    select(MeteredUsage.resource_id, MeteredUsage.dimensions).where(
-                        MeteredUsage.id.in_(rep_ids)
-                    )
-                )
-            ).all()
-            dims_by_id = {r[0]: (r[1] or {}) for r in rows}
+        dims = await _dims_by_representative(
+            session,
+            group_col=MeteredUsage.resource_id,
+            keys=[i.get("id") for i in items if i.get("id") is not None],
+            extra_filter=MeteredUsage.meter_key == METER_STORAGE_CAPACITY,
+        )
         for i in items:
-            d = dims_by_id.get(i.get("id")) or {}
+            d = dims.get(i.get("id")) or {}
             i["dimensions"] = {
                 "storage_type": d.get("storage_type"),
                 "capacity_mib": d.get("capacity_mib"),
