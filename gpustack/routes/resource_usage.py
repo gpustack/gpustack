@@ -291,6 +291,33 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:
                 "vram_mib": d.get("vram_mib"),
             }
 
+    if gb == "volume":
+        # Per-volume storage type + provisioned capacity (constant per volume),
+        # for the Storage tab's Type / Capacity columns.
+        ids = [i.get("id") for i in items if i.get("id") is not None]
+        dims_by_id: dict = {}
+        if ids:
+            rep_ids = (
+                select(func.max(MeteredUsage.id))
+                .where(MeteredUsage.meter_key == METER_STORAGE_CAPACITY)
+                .where(MeteredUsage.resource_id.in_(ids))
+                .group_by(MeteredUsage.resource_id)
+            )
+            rows = (
+                await session.exec(
+                    select(MeteredUsage.resource_id, MeteredUsage.dimensions).where(
+                        MeteredUsage.id.in_(rep_ids)
+                    )
+                )
+            ).all()
+            dims_by_id = {r[0]: (r[1] or {}) for r in rows}
+        for i in items:
+            d = dims_by_id.get(i.get("id")) or {}
+            i["dimensions"] = {
+                "storage_type": d.get("storage_type"),
+                "capacity_mib": d.get("capacity_mib"),
+            }
+
 
 async def _run_breakdown(
     session,
