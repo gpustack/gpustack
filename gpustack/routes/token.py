@@ -134,7 +134,7 @@ async def server_auth(
             api_key=api_key,
         ):
             raise ForbiddenException(
-                message=f"Api key not allowed to access model {model_name}"
+                message=f"Not allowed to access model {model_name}"
             )
     cache_token = jwt_manager.create_token(
         {"consumer": consumer, "token": registration_token, "model": model_name},

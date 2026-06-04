@@ -39,6 +39,7 @@ from gpustack.schemas.principals import (
     PrincipalType,
 )
 from gpustack.server.deps import SessionDep, TenantContextDep
+from gpustack.server.services import delete_accessible_model_cache
 
 router = APIRouter()
 
@@ -153,6 +154,38 @@ async def _has_other_owner(
         .limit(1)
     )
     return (await session.exec(stmt)).first() is not None
+
+
+async def _affected_user_ids(session, members: List[Principal]) -> set[int]:
+    """User ids whose ``get_user_accessible_model_names`` cache must be
+    invalidated when these Org memberships change.
+
+    USER members map to themselves. GROUP members fan out to every
+    active user currently in the group — removing a Group from an Org
+    revokes Org-mediated route access for each of those users via the
+    transitive branch of ``principal_users``. Soft-deleted users are
+    skipped: they can't authenticate, so no stale cache to clear.
+    """
+    user_ids: set[int] = set()
+    group_ids: set[int] = set()
+    for p in members:
+        if p.kind == PrincipalType.USER:
+            user_ids.add(p.id)
+        elif p.kind == PrincipalType.GROUP:
+            group_ids.add(p.id)
+    if group_ids:
+        stmt = (
+            select(PrincipalMembership.member_principal_id)
+            .join(Principal, Principal.id == PrincipalMembership.member_principal_id)
+            .where(
+                PrincipalMembership.parent_principal_id.in_(group_ids),
+                PrincipalMembership.deleted_at.is_(None),
+                Principal.kind == PrincipalType.USER,
+                Principal.deleted_at.is_(None),
+            )
+        )
+        user_ids.update((await session.exec(stmt)).all())
+    return user_ids
 
 
 async def _enrich_with_labels(
@@ -325,6 +358,11 @@ async def add_org_members(
         await session.rollback()
         raise InvalidException(message=f"Failed to add members: {e}")
 
+    # Bust each affected user's accessible-models cache so a session that
+    # queried before being added doesn't see a stale empty set.
+    affected = await _affected_user_ids(session, [p for p, _ in stored])
+    await delete_accessible_model_cache(*affected)
+
     return [_to_public(p, row.role, row.created_at, org.id) for p, row in stored]
 
 
@@ -398,8 +436,20 @@ async def remove_org_member(
                 message="Cannot remove the only owner of this organization"
             )
 
+    # Snapshot the affected users BEFORE the soft-delete: for a GROUP
+    # member, the per-user fan-out reads ``principal_memberships`` rows
+    # that are still active here, but the Org→Group row we're about to
+    # delete doesn't affect that lookup (we expand the Group's own
+    # members, not its Org bindings).
+    affected = await _affected_user_ids(session, [p])
+
     try:
         await membership.delete(session, soft=True)
     except Exception as e:
         await session.rollback()
         raise InvalidException(message=f"Failed to remove member: {e}")
+
+    # Existing sessions for these users would otherwise keep hitting the
+    # cached accessible-model set until TTL expiry and continue
+    # resolving the just-removed Org's routes.
+    await delete_accessible_model_cache(*affected)
