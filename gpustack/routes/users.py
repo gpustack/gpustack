@@ -4,6 +4,7 @@ from typing import List
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import aliased
 from sqlmodel import select
 
 from gpustack.api.exceptions import (
@@ -345,16 +346,30 @@ async def list_user_directory(
     page: int = 1,
     perPage: int = 30,
     search: str = None,
+    # ``scope=current_org`` narrows results to USER principals that are
+    # members of the request's current Org (directly or via a Group
+    # joined to that Org). Used by pickers whose surrounding list is
+    # already Org-scoped (e.g. the API keys "Filter by creator" select)
+    # so the picker options match the rows the user can actually see.
+    # Silently ignored when the request has no Org context — platform
+    # admins in "All orgs" mode keep getting the full directory.
+    scope: str = None,
 ):
     if not ctx.is_platform_admin and ctx.org_role != OrgRole.OWNER:
         raise ForbiddenException(message="Insufficient permission")
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search, "display_name": search}
+    extra_conditions = []
+    if scope == "current_org" and ctx.has_org_context:
+        extra_conditions.append(
+            User.id.in_(_org_member_user_ids_subquery(ctx.current_principal_id))
+        )
     async with async_session() as session:
         result = await User.paginated_by_query(
             session=session,
             fuzzy_fields=fuzzy_fields,
+            extra_conditions=extra_conditions or None,
             page=page,
             per_page=perPage,
             fields={
@@ -363,3 +378,41 @@ async def list_user_directory(
             },
         )
         return await _to_users_public(session, result)
+
+
+def _org_member_user_ids_subquery(org_principal_id: int):
+    """USER principal ids reachable as members of an Org.
+
+    Mirrors the two membership paths in
+    :func:`gpustack.api.tenant._resolve_effective_org_role`: a direct
+    ``(parent=org, member=user)`` row, or via a Group that is itself
+    a member of the Org. Soft-deleted rows on either hop are excluded.
+    """
+    direct = (
+        select(PrincipalMembership.member_principal_id)
+        .join(
+            Principal,
+            Principal.id == PrincipalMembership.member_principal_id,
+        )
+        .where(
+            PrincipalMembership.parent_principal_id == org_principal_id,
+            PrincipalMembership.deleted_at.is_(None),
+            Principal.kind == PrincipalType.USER,
+            Principal.deleted_at.is_(None),
+        )
+    )
+    org_pm = aliased(PrincipalMembership)
+    group_pm = aliased(PrincipalMembership)
+    via_group = (
+        select(group_pm.member_principal_id)
+        .join(org_pm, org_pm.member_principal_id == group_pm.parent_principal_id)
+        .join(Principal, Principal.id == group_pm.parent_principal_id)
+        .where(
+            org_pm.parent_principal_id == org_principal_id,
+            org_pm.deleted_at.is_(None),
+            group_pm.deleted_at.is_(None),
+            Principal.kind == PrincipalType.GROUP,
+            Principal.deleted_at.is_(None),
+        )
+    )
+    return direct.union_all(via_group)
