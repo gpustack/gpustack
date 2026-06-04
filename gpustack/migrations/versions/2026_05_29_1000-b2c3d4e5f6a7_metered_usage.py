@@ -94,6 +94,12 @@ def _create_metered_usage_indexes(table_name: str) -> None:
                     table_name, ['resource_type', 'meter_key', 'bucket_start'], unique=False)
     op.create_index(f'ix_{table_name}_sku_bucket',
                     table_name, ['sku', 'bucket_start'], unique=False)
+    # Serves the breakdown's representative-row lookup
+    # (MAX(id) WHERE meter_key=? AND sku IN (...) GROUP BY sku): leading
+    # meter_key+sku seeks the group, trailing id makes the per-group MAX(id)
+    # an index-only rightmost read.
+    op.create_index(f'ix_{table_name}_meter_sku_id',
+                    table_name, ['meter_key', 'sku', 'id'], unique=False)
     op.create_index(f'ix_{table_name}_creator_id_bucket',
                     table_name, ['creator_id', 'bucket_start'], unique=False)
 
@@ -203,6 +209,7 @@ def downgrade() -> None:
 
     for t in ('metered_usage_archive', 'metered_usage'):
         op.drop_index(f'ix_{t}_creator_id_bucket', table_name=t)
+        op.drop_index(f'ix_{t}_meter_sku_id', table_name=t)
         op.drop_index(f'ix_{t}_sku_bucket', table_name=t)
         op.drop_index(f'ix_{t}_resource_type_meter_bucket', table_name=t)
         op.drop_index(f'ix_{t}_consumer_principal_id_bucket', table_name=t)
