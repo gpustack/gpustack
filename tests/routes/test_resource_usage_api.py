@@ -11,6 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.routes.resource_usage import (
     ResourceBreakdownRequest,
+    _phase_message_of,
     _run_breakdown,
     usage_summary,
 )
@@ -411,3 +412,16 @@ async def test_summary_unions_tokens_and_metered(session):
     assert out["storage_gb_days"] == pytest.approx(
         204800 * 25200 / 1024 / 86400, abs=0.01
     )
+
+
+def test_phase_message_of():
+    # camelCase (model_dump by alias) and snake_case (by field name) both read
+    assert _phase_message_of({"status": {"phaseMessage": "boom"}}) == "boom"
+    assert _phase_message_of({"status": {"phase_message": "kaboom"}}) == "kaboom"
+    # raw JSON string (some drivers / replay paths) is parsed defensively
+    assert _phase_message_of('{"status": {"phaseMessage": "oops"}}') == "oops"
+    # missing / malformed → None (no crash)
+    assert _phase_message_of({"status": {}}) is None
+    assert _phase_message_of({"status": "not-a-dict"}) is None
+    assert _phase_message_of(None) is None
+    assert _phase_message_of("not json") is None
