@@ -175,6 +175,22 @@ def test_parse_gpu_descriptor():
     assert out["unit_memory_mib"] == 54 * 1024
     assert out["vram_mib"] == 32607  # per-card VRAM from spec.memory
 
+    # Raw ``unitResources`` strings are preferred (unambiguous k8s quantities).
+    raw = parse_gpu_descriptor(
+        '{"spec":{"unitResources":{"cpu":"8000m","ram":"24576Mi"}}}'
+    )
+    assert raw["unit_cpu_milli"] == 8000
+    assert raw["unit_memory_mib"] == 24576
+
+    # Inconsistent ``unitResourcesParsed.ram`` (value/unit disagree with num,
+    # e.g. value=24 + unit="Mi" for a 24Gi card) — trust ``num`` over ``value``.
+    inconsistent = parse_gpu_descriptor(
+        '{"spec":{"unitResourcesParsed":'
+        '{"cpu":{"cores":8},"ram":{"value":24,"unit":"Mi","num":24576}}}}'
+    )
+    assert inconsistent["unit_cpu_milli"] == 8000
+    assert inconsistent["unit_memory_mib"] == 24576
+
     # accepts an already-parsed dict too
     assert parse_gpu_descriptor({"spec": {"product": "X"}}) == {"product": "X"}
     # missing / unparseable → empty (e.g. CPU instances with no descriptor)
