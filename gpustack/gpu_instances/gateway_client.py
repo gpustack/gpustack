@@ -128,7 +128,6 @@ async def subscribe_worker(
     if gvk is None:
         gvk = [
             ("worker.gpustack.ai", "v1", "InstanceType"),
-            ("worker.gpustack.ai", "v1", "Instance"),
         ]
     async with _session() as session:
         params = _query(clusters=[cluster], token=token, force=force)
