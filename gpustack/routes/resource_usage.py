@@ -12,9 +12,10 @@ The token tabs keep using ``gpustack/routes/usage.py`` (``model_usages``)
 unchanged; this module only serves the time-based resources.
 """
 
+import json
 from datetime import date, datetime, timedelta
 from math import ceil
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -238,10 +239,12 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:
       the GPU Instances list instead of the raw flavor slug. Dimensions are
       flavor-constant per sku, so one representative row per sku is enough.
     """
+    if not items:
+        return
     if gb in ("user", "instance", "volume"):
         ids = [i["id"] for i in items if i.get("id") is not None]
-        existing: set = set()
-        names: dict = {}
+        existing: set[int] = set()
+        names: dict[int, str] = {}
         if ids:
             if gb == "user":
                 principals = (
@@ -293,7 +296,12 @@ async def _dims_by_representative(session, *, group_col, keys, extra_filter):
 
 
 async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
-    """Attach the ``dimensions`` the UI needs per grouping (in place)."""
+    """Attach the ``dimensions`` the UI needs per grouping (in place).
+
+    Only the ``instance_type`` / ``instance`` / ``volume`` groupings carry
+    dimensions; for any other grouping (e.g. ``user`` / ``date``) this is a
+    no-op.
+    """
     if gb == "instance_type":
         # Flavor-constant specs per sku → pretty product name + per-card specs.
         dims = await _dims_by_representative(
@@ -636,6 +644,12 @@ def _phase_message_of(spec_snapshot) -> Optional[str]:
     """``status.phaseMessage`` from the event's spec snapshot — the detail behind
     a failure phase (the UI shows it as the event's error message). Reads both
     the snake / camel key since serialization differs by path."""
+    if isinstance(spec_snapshot, str):
+        # Some drivers / replay paths hand back the JSON column as a raw string.
+        try:
+            spec_snapshot = json.loads(spec_snapshot)
+        except (ValueError, TypeError):
+            return None
     if not isinstance(spec_snapshot, dict):
         return None
     status = spec_snapshot.get("status")
@@ -777,7 +791,10 @@ async def resource_meta(
     # Distinct resources of one type — id + latest snapshot name. metered_usage
     # snapshots the name, so deleted resources still resolve a label; flag the
     # ones no longer live (not in the source table) so the filter can tag them.
-    async def _resources(resource_type: str, model) -> List[Dict[str, Any]]:
+    async def _resources(
+        resource_type: str,
+        model: Type[Union[GPUInstance, GPUInstancePersistentVolume]],
+    ) -> List[Dict[str, Any]]:
         stmt = _scoped(
             select(
                 MeteredUsage.resource_id,
@@ -791,7 +808,7 @@ async def resource_meta(
         )
         rows = (await session.exec(stmt)).all()
         rids = [r.resource_id for r in rows]
-        live: set = set()
+        live: set[int] = set()
         if rids:
             live = set(
                 (await session.exec(select(model.id).where(model.id.in_(rids)))).all()

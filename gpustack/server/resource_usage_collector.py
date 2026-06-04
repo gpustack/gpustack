@@ -54,7 +54,6 @@ from gpustack.utils.resource_usage import (
     parse_accelerator_count,
     parse_gpu_descriptor,
     parse_gpu_type,
-    parse_gpu_vram_mib,
     parse_quantity_to_mib,
     parse_quantity_to_millicores,
 )
@@ -159,11 +158,12 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
     local_storage_mib = parse_quantity_to_mib(
         resources.get("local_storage") or resources.get("localStorage")
     )
-    # Per-card VRAM lives in the device descriptor blob, not the instance spec.
-    vram_mib = parse_gpu_vram_mib(snap.get("description"))
-    # Pretty product name + per-card cpu/mem for the "Instance Type" display
+    # Pretty product name + per-card cpu/mem/vram for the "Instance Type" display
     # (so Usage matches the GPU Instances list instead of the raw flavor slug).
+    # Per-card VRAM rides in the same descriptor blob, so read it from there
+    # rather than parsing spec.memory a second time.
     descriptor = parse_gpu_descriptor(snap.get("description"))
+    vram_mib = descriptor.get("vram_mib", 0)
 
     dimensions = {
         "gpu_type": gpu_type,
@@ -215,8 +215,11 @@ async def _resolve_persistent_mib(session, window: "_OpenWindow") -> None:
     exist — and snapshotting it onto the metered rows means the Usage breakdown
     keeps showing the size even after the PV is later deleted (unlike resolving
     lazily at read time). PV names are unique per principal, so match on owner.
+
+    ``persistent_name`` is consumed (popped) here — it's only an internal lookup
+    key, so it shouldn't bloat every persisted metered row.
     """
-    name = window.dimensions.get("persistent_name")
+    name = window.dimensions.pop("persistent_name", None)
     if not name or window.owner_principal_id is None:
         return
     pv = (

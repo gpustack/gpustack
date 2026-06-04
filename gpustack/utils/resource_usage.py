@@ -171,9 +171,10 @@ def _parse_unit_resources(spec: dict) -> tuple:
         if isinstance(ram, dict):
             amount = ram["num"] if ram.get("num") is not None else ram.get("value")
             if amount is not None:
-                mem_mib = (
-                    parse_quantity_to_mib(f"{amount}{ram.get('unit', '')}") or None
-                )
+                # ``or ""`` (not a get-default) so an explicit ``unit: None``
+                # doesn't stringify into "<amount>None" and fail to parse.
+                unit = ram.get("unit") or ""
+                mem_mib = parse_quantity_to_mib(f"{amount}{unit}") or None
     return cpu_milli, mem_mib
 
 
