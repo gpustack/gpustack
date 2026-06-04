@@ -410,6 +410,9 @@ class GPUInstancePhase:
     PV_TYPE_CREATE_FAILED = "PersistentVolumeTypeCreateFailed"
     PV_CREATE_FAILED = "PersistentVolumeCreateFailed"
     DELETING = "Deleting"
+    STOPPING = "Stopping"
+    STOPPED = "Stopped"
+    STARTING = "Starting"
     READY = "Ready"
 
 
