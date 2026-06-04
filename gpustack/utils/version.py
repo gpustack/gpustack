@@ -42,6 +42,12 @@ def is_worker_version_compatible(
     """
     Check if worker and server versions are compatible.
 
+    Worker and server are built from the same release tag, so their
+    version strings are byte-equal in practice. A plain string compare
+    is therefore sufficient — and avoids PEP 440 parsing, which would
+    reject otherwise valid release-tag forms (e.g. a trailing build
+    suffix) and surface a spurious "incompatible" warning.
+
     Args:
         worker_version: The version string of the worker.
         server_version: The version string of the server.
@@ -53,10 +59,13 @@ def is_worker_version_compatible(
     if worker_version == "0.0.0" or server_version == "0.0.0":
         return True
 
-    try:
-        worker_ver = version.parse(worker_version)
-        server_ver = version.parse(server_version)
-    except Exception:
+    # An unresolved version on either side can't be confirmed as
+    # compatible — surface a warning instead of silently matching two
+    # empty / placeholder strings (e.g. when the /version response is
+    # missing the field, worker_manager defaults it to "unknown").
+    if not worker_version or worker_version == "unknown":
+        return False
+    if not server_version or server_version == "unknown":
         return False
 
-    return worker_ver == server_ver
+    return worker_version == server_version
