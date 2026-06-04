@@ -27,6 +27,7 @@ from gpustack.gpu_instances.cluster_apis_util import (
 )
 from gpustack.schemas.gpu_instances import (
     GPUInstance,
+    GPUInstancePhase,
     GPUInstanceStatus,
 )
 from gpustack.schemas.gpu_instance_persistent_volumes import (
@@ -3204,11 +3205,12 @@ class GPUInstanceController:
     instance and handled inline here.
     """
 
-    PHASE_INSTANCE_CREATE_FAILED = "CreateFailed"
-    PHASE_SSH_KEY_CREATE_FAILED = "SSHPublicKeyCreateFailed"
-    PHASE_PV_TYPE_CREATE_FAILED = "PersistentVolumeTypeCreateFailed"
-    PHASE_PV_CREATE_FAILED = "PersistentVolumeCreateFailed"
-    PHASE_READY = "Ready"
+    PHASE_INSTANCE_CREATE_FAILED = GPUInstancePhase.INSTANCE_CREATE_FAILED
+    PHASE_SSH_KEY_CREATE_FAILED = GPUInstancePhase.SSH_KEY_CREATE_FAILED
+    PHASE_PV_TYPE_CREATE_FAILED = GPUInstancePhase.PV_TYPE_CREATE_FAILED
+    PHASE_PV_CREATE_FAILED = GPUInstancePhase.PV_CREATE_FAILED
+    PHASE_DELETING = GPUInstancePhase.DELETING
+    PHASE_READY = GPUInstancePhase.READY
 
     def __init__(self, cfg: Config):
         self._config = cfg
@@ -3479,9 +3481,9 @@ class GPUInstanceController:
                 # back the real cluster status without a bus round-trip.
                 self._enqueue(Event(type=EventType.UPDATED, data=fresh))
 
-    async def _reconcile_updated(
+    async def _reconcile_updated(  # noqa: C901
         self, instance: GPUInstance, changed_fields: Dict[str, Tuple[Any, Any]]
-    ):  # noqa: C901
+    ):
         async with async_session() as session:
             fresh = await GPUInstance.one_by_id(session, instance.id)
             if fresh is None or fresh.deleted_at is not None:
@@ -3504,42 +3506,99 @@ class GPUInstanceController:
                         logger.exception(
                             f"Failed to sync worker-side ssh public key for {fresh.name}"
                         )
-
-                if (phase := (fresh.status or GPUInstanceStatus()).phase) is not None:
-                    if phase.endswith("CreateFailed"):
+                phase = (fresh.status or GPUInstanceStatus()).phase
+                if phase is not None:
+                    if phase == self.PHASE_DELETING:
+                        # DELETING: issue the cluster-side delete and fall
+                        # through to the read_instance block, which observes
+                        # whether the resource is gone and drives the DB
+                        # cleanup. Don't test CreateFailed/Ready below — they
+                        # can't match for DELETING anyway.
+                        logger.debug(
+                            f"GPUInstance {fresh.name} is in {phase} phase, try deleting worker-side instance if exists"
+                        )
+                        try:
+                            await ops.delete_instance(fresh.name)
+                        except Exception as e:
+                            # Keep the row in DELETING and write the failure as
+                            # phase_message; _set_status will commit a new
+                            # status row, which emits an UPDATED event and
+                            # bounces the iid back into this reconcile path
+                            # (with count++/backoff baked into _set_status).
+                            logger.exception(
+                                f"Failed to delete worker-side instance for {fresh.name}"
+                            )
+                            await self._set_status(
+                                session,
+                                fresh,
+                                GPUInstanceStatus(
+                                    phase=self.PHASE_DELETING,
+                                    phase_message=f"Failed to delete worker-side instance, will retry: {e}",
+                                    namespace=ops.org_namespace,
+                                ),
+                            )
+                            return
+                    elif phase.endswith("CreateFailed"):
                         logger.warning(
                             f"GPUInstance {fresh.name} is in {phase} phase, skip updating"
                         )
                         return
-                    if self._is_all_ready(fresh):
+                    elif self._is_all_ready(fresh):
                         logger.debug(
-                            f"GPUInstance {fresh.name} is already in Ready phase, skip updating"
+                            f"GPUInstance {fresh.name} is already in {phase} phase, skip updating"
                         )
                         return
-                    logger.debug(
-                        f"GPUInstance {fresh.name} is not all ready, try updating and reconciling"
-                    )
+                    else:
+                        logger.debug(
+                            f"GPUInstance {fresh.name} is in {phase} phase, try updating and reconciling"
+                        )
 
                 # Read the instance to get the latest status.
                 try:
                     read = await ops.read_instance(fresh.name)
                     if read is None:
+                        if phase == self.PHASE_DELETING:
+                            # Cluster-side instance is gone — hard-delete the
+                            # DB row. The DELETED event drives _reconcile_deleted
+                            # for SSH key / PV cleanup, so we must return here
+                            # to avoid touching ``fresh`` again (the row no
+                            # longer exists and ``read`` is None).
+                            await fresh.delete(session)
+                            return
                         read = {
                             "status": {
                                 "phase": "Unknown",
                                 "phaseMessage": "Not found in cluster",
                             }
                         }
+                    else:
+                        if phase == self.PHASE_DELETING:
+                            read = {
+                                "status": {
+                                    "phase": self.PHASE_DELETING,
+                                    "phaseMessage": "Deleting from cluster",
+                                },
+                            }
                 except Exception:
                     logger.exception(
                         f"Failed to read worker-side instance for {fresh.name}"
                     )
-                    read = {
-                        "status": {
-                            "phase": "Unknown",
-                            "phaseMessage": "Failed to read from cluster",
+                    if phase == self.PHASE_DELETING:
+                        # If the instance is marked as Deleting but failed to read from cluster,
+                        # we should return and keep the instance in DB, and let the next reconcile to confirm.
+                        read = {
+                            "status": {
+                                "phase": self.PHASE_DELETING,
+                                "phaseMessage": "Failed to read from cluster, will retry",
+                            },
                         }
-                    }
+                    else:
+                        read = {
+                            "status": {
+                                "phase": "Unknown",
+                                "phaseMessage": "Failed to read from cluster",
+                            }
+                        }
 
                 await self._set_status(
                     session,
@@ -3557,14 +3616,25 @@ class GPUInstanceController:
                 return
             ops, principal_identifier = built
 
+            # When the row went through the DELETING phase, _reconcile_updated
+            # already issued the cluster-side delete and only hard-deleted the
+            # row after read_instance confirmed it was gone — so the cluster
+            # instance is already absent and we can skip the redundant call.
+            # Hard-deleted rows that never transitioned through DELETING (e.g.
+            # direct DB cleanup) still need the cluster-side delete here.
+            already_deleted_in_cluster = (
+                instance.status or GPUInstanceStatus()
+            ).phase == self.PHASE_DELETING
+
             async with ops:
                 # Delete Instance.
-                try:
-                    await ops.delete_instance(instance.name)
-                except Exception:
-                    logger.exception(
-                        f"Failed to delete worker-side instance for {instance.name}"
-                    )
+                if not already_deleted_in_cluster:
+                    try:
+                        await ops.delete_instance(instance.name)
+                    except Exception:
+                        logger.exception(
+                            f"Failed to delete worker-side instance for {instance.name}"
+                        )
 
                 # Delete referenced SSH public key.
                 try:

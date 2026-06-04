@@ -28,6 +28,7 @@ from gpustack.schemas import (
     GPUInstancesPublic,
     GPUInstanceCreate,
 )
+from gpustack.schemas.gpu_instances import GPUInstancePhase, GPUInstanceStatus
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
@@ -159,12 +160,19 @@ async def update_gpu_instance(
         return ret
 
 
-@router.delete("/{id}")
+@router.delete("/{id}", status_code=202, response_model=GPUInstancePublic)
 async def delete_gpu_instance(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
 ):
+    """Mark the GPU instance for deletion.
+
+    Stamps ``phase=Deleting`` on the row and returns 202 Accepted with the
+    updated resource. The DB row stays in place until the controller
+    confirms the cluster-side instance is gone (graceful deletion); clients
+    can poll GET to observe the phase transition and eventual disappearance.
+    """
     ret = ensure_writable(
         await GPUInstance.one_by_id(
             session=session,
@@ -173,12 +181,21 @@ async def delete_gpu_instance(
         ctx,
     )
 
+    if ret.status and ret.status.phase == GPUInstancePhase.DELETING:
+        raise InvalidException(
+            message="GPU instance is already being deleted",
+        )
+
+    source = _build_delete_source(ret)
+
     async with handle_error(
         message="Failed to delete GPU instance",
     ):
-        await ret.delete(
+        await ret.update(
             session=session,
+            source=source,
         )
+        return ret
 
 
 def ensure_visible(obj, ctx: TenantContext):
@@ -378,3 +395,23 @@ def _build_update_source(
         source["spec"] = merged_spec
 
     return source
+
+
+def _build_delete_source(existing_obj: GPUInstance) -> dict:
+    """Stamp ``phase=Deleting`` onto the row's status.
+
+    ``count`` and ``phase_message`` are reset so the controller's backoff
+    starts from zero and stale messages (e.g. ``Ready``, prior
+    ``*CreateFailed`` reasons) don't leak into the deleting phase before
+    the first reconcile overwrites them.
+    """
+    base = existing_obj.status or GPUInstanceStatus()
+    return {
+        "status": base.model_copy(
+            update={
+                "phase": GPUInstancePhase.DELETING,
+                "phase_message": None,
+                "count": 0,
+            },
+        ),
+    }
