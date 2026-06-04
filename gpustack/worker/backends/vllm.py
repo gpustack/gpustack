@@ -479,7 +479,11 @@ class VLLMServer(InferenceServer):
             if shape in ("dp_only", "nested"):
                 env["VLLM_DP_MASTER_PORT"] = str(self._model_instance.ports[-1])
         else:
-            env["VLLM_PORT"] = str(self._model_instance.ports[-1])
+            # vLLM >= 0.18 (RayExecutorV2) reuses VLLM_PORT for the TCPStore
+            # master, which then collides with the EngineCore handshake socket
+            # (EADDRINUSE). Keep the pin only for older RayDistributedExecutor.
+            if compare_versions(self._model.backend_version, "0.18.0") < 0:
+                env["VLLM_PORT"] = str(self._model_instance.ports[-1])
             env["RAY_LOG_TO_STDERR"] = env.pop("RAY_LOG_TO_STDERR", "0")
             env["RAY_BACKEND_LOG_LEVEL"] = env.pop("RAY_BACKEND_LOG_LEVEL", "warning")
 
