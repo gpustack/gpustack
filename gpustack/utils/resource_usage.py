@@ -135,20 +135,46 @@ def parse_gpu_descriptor(description: Any) -> dict:
     vram = parse_quantity_to_mib(spec.get("memory"))
     if vram:
         out["vram_mib"] = vram
-    unit = spec.get("unitResourcesParsed")
-    if isinstance(unit, dict):
-        cpu = unit.get("cpu")
+    cpu_milli, mem_mib = _parse_unit_resources(spec)
+    if cpu_milli:
+        out["unit_cpu_milli"] = cpu_milli
+    if mem_mib:
+        out["unit_memory_mib"] = mem_mib
+    return out
+
+
+def _parse_unit_resources(spec: dict) -> tuple:
+    """Per-card ``(cpu_milli, mem_mib)`` from a descriptor spec.
+
+    Prefers the raw ``unitResources`` quantity strings (e.g. ``"8000m"`` /
+    ``"24576Mi"``) — unambiguous k8s quantities. Falls back to
+    ``unitResourcesParsed``, whose ram ``value``/``unit`` can be inconsistent
+    (observed ``{"value": 24, "unit": "Mi", "num": 24576}`` for a 24Gi card),
+    so its ``num`` (the real amount in ``unit``) is trusted over ``value``.
+    """
+    raw = spec.get("unitResources")
+    parsed = spec.get("unitResourcesParsed")
+    cpu_milli = None
+    mem_mib = None
+    if isinstance(raw, dict):
+        cpu_milli = parse_quantity_to_millicores(raw.get("cpu")) or None
+        mem_mib = parse_quantity_to_mib(raw.get("ram")) or None
+    if cpu_milli is None and isinstance(parsed, dict):
+        cpu = parsed.get("cpu")
         if isinstance(cpu, dict) and cpu.get("cores"):
             try:
-                out["unit_cpu_milli"] = int(float(cpu["cores"]) * 1000)
+                cpu_milli = int(float(cpu["cores"]) * 1000)
             except (ValueError, TypeError):
-                pass
-        ram = unit.get("ram")
-        if isinstance(ram, dict) and ram.get("value") is not None:
-            mib = parse_quantity_to_mib(f"{ram.get('value')}{ram.get('unit', '')}")
-            if mib:
-                out["unit_memory_mib"] = mib
-    return out
+                cpu_milli = None
+    if mem_mib is None and isinstance(parsed, dict):
+        ram = parsed.get("ram")
+        if isinstance(ram, dict):
+            amount = ram["num"] if ram.get("num") is not None else ram.get("value")
+            if amount is not None:
+                mem_mib = (
+                    parse_quantity_to_mib(f"{amount}{ram.get('unit', '')}") or None
+                )
+    return cpu_milli, mem_mib
 
 
 # ---------------------------------------------------------------------------
