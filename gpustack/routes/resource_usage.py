@@ -314,7 +314,8 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
         # Per-instance dims: gpu_count varies per instance (unlike the flavor),
         # so the Instances table renders "<product> x <count>" plus the spec
         # popover like the GPU Instances list. Keyed by resource_id since the
-        # sku is count-independent.
+        # sku is count-independent. ``persistent_mib`` was snapshotted at
+        # metering time, so it survives the PV being deleted later.
         dims = await _dims_by_representative(
             session,
             group_col=MeteredUsage.resource_id,
@@ -331,6 +332,7 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
                 "gpu_count": d.get("gpu_count"),
                 "ephemeral_mib": d.get("ephemeral_mib"),
                 "local_storage_mib": d.get("local_storage_mib"),
+                "persistent_mib": d.get("persistent_mib"),
             }
     elif gb == "volume":
         # Per-volume storage type + provisioned capacity (constant per volume),
