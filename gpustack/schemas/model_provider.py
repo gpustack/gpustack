@@ -20,6 +20,7 @@ from pydantic import (
     model_validator,
     Field as PydanticField,
 )
+from sqlalchemy import UniqueConstraint
 from sqlmodel import (
     Field,
     Column,
@@ -496,7 +497,7 @@ class MaskedAPIToken(BaseModel):
 
 
 class ModelProviderBase(SQLModel):
-    name: str = Field(index=True, nullable=False, unique=True)
+    name: str = Field(index=True, nullable=False)
     description: Optional[str] = Field(default=None, nullable=True)
     timeout: int = Field(default=120, nullable=False)
     config: ProviderConfigType = Field(
@@ -550,12 +551,22 @@ class ModelProviderCreate(ModelProviderUpdate):
 
 class ModelProvider(ModelProviderBase, BaseModelMixin, table=True):
     __tablename__ = "model_providers"
+    __table_args__ = (
+        # Provider names are unique within their owning Org — two Orgs
+        # can each have an "openai" provider without colliding.
+        UniqueConstraint(
+            'owner_principal_id', 'name', name='uix_model_providers_name_per_owner'
+        ),
+    )
     id: Optional[int] = Field(default=None, primary_key=True)
-    # Tenant scope. NULL = global (admin-managed). Org-owned
-    # providers carry the owning Org id.
+    # Every provider belongs to one Org. The route layer fills this
+    # with ctx.current_principal_id, falling back to platform_principal_id
+    # for admin in "All" mode (Global providers are not a thing — only
+    # instance templates and inference backends carry a NULL-owner
+    # Global notion).
     owner_principal_id: Optional[int] = Field(
         default=None,
-        sa_column=Column(Integer, ForeignKey("principals.id"), nullable=True),
+        sa_column=Column(Integer, ForeignKey("principals.id"), nullable=False),
     )
     api_tokens: List[str] = Field(
         sa_column=Column(JSON, nullable=False),

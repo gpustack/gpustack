@@ -527,17 +527,29 @@ async def validate_distributed_vllm_limit_per_worker(
 async def create_model(
     session: SessionDep, ctx: TenantContextDep, model_in: ModelCreate
 ):
+    # Resolve the owning Org first — admin in "All" mode (no current
+    # principal) inherits the chosen cluster's Org, or falls back to
+    # the platform Org. The same value drives both the uniqueness
+    # pre-check below and the row we stamp on insert; resolving it up
+    # front keeps them in sync so the pre-check actually catches a
+    # collision in the Org the model will land in.
+    target_org_id = ctx.current_principal_id
+    if target_org_id is None and model_in.cluster_id is not None:
+        cluster = await Cluster.one_by_id(session, model_in.cluster_id)
+        if cluster is not None:
+            target_org_id = cluster.owner_principal_id
+    if target_org_id is None:
+        target_org_id = platform_principal_id()
+
     # Model & ModelRoute names are unique within their Org. Two Orgs
     # can each have a "llama3" without colliding.
-    org_scope = ctx.current_principal_id
     existing = await Model.one_by_fields(
         session,
-        {"name": model_in.name, "owner_principal_id": org_scope},
+        {"name": model_in.name, "owner_principal_id": target_org_id},
     )
     if existing:
         raise AlreadyExistsException(
-            message=f"Model '{model_in.name}' already exists. "
-            "Please choose a different name or check the existing model."
+            message=f"Model with name '{model_in.name}' already exists."
         )
     should_create_route = (
         model_in.enable_model_route is not None and model_in.enable_model_route
@@ -545,12 +557,11 @@ async def create_model(
     if should_create_route:
         existing_route = await ModelRoute.one_by_fields(
             session,
-            {"name": model_in.name, "owner_principal_id": org_scope},
+            {"name": model_in.name, "owner_principal_id": target_org_id},
         )
         if existing_route:
             raise AlreadyExistsException(
-                message=f"Model route '{model_in.name}' already exists. "
-                "Please choose a different name or check the existing model route."
+                message=f"Model route with name '{model_in.name}' already exists."
             )
     await validate_model_in(session, model_in)
     model_in_dict = model_in.model_dump(exclude={"enable_model_route"})
@@ -558,19 +569,9 @@ async def create_model(
     # Stamp tenant scope. ModelBase has owner_principal_id defaulted to
     # PLATFORM_PRINCIPAL_ID, so `model_dump()` always emits the key —
     # `setdefault` would silently leave it at 1 even when the caller is
-    # acting under a different Org. Override directly:
-    #   - Caller has a current Org context → that Org wins
-    #   - Caller is admin in "All" mode → fall back to the chosen
-    #     cluster's owner Org so the model lives where it actually runs
-    #     (otherwise it'd land in Platform/Default and the cluster's Org
-    #     couldn't see / manage it)
-    target_org_id = ctx.current_principal_id
-    if target_org_id is None and model_in.cluster_id is not None:
-        cluster = await Cluster.one_by_id(session, model_in.cluster_id)
-        if cluster is not None:
-            target_org_id = cluster.owner_principal_id
-    if target_org_id is not None:
-        model_in_dict["owner_principal_id"] = target_org_id
+    # acting under a different Org. Override directly with the value we
+    # resolved above.
+    model_in_dict["owner_principal_id"] = target_org_id
 
     # Multi-tenant default: a non-platform Org's new model (and the
     # route(s) it spawns) is scoped to that Org via ALLOWED_PRINCIPALS

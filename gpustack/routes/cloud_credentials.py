@@ -101,7 +101,7 @@ async def create(
     )
     if existing:
         raise AlreadyExistsException(
-            message=f"cloud credential {input.name} already exists"
+            message=f"Cloud credential with name '{input.name}' already exists."
         )
 
     try:

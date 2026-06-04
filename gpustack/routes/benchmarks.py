@@ -310,8 +310,7 @@ async def create_benchmark(
     existing = await Benchmark.one_by_field(session, "name", benchmark_in.name)
     if existing:
         raise AlreadyExistsException(
-            message=f"Benchmark '{benchmark_in.name}' already exists. "
-            "Please choose a different name or check the existing benchmark."
+            message=f"Benchmark with name '{benchmark_in.name}' already exists."
         )
 
     mutated = await validate_and_mutate_benchmark_in(session, benchmark_in)

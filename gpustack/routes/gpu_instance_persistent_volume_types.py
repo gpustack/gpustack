@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
+    AlreadyExistsException,
     ConflictException,
     InternalServerErrorException,
     NotFoundException,
@@ -134,6 +135,18 @@ async def create_gpu_instance_persistent_volume_type(
     )
 
     _validate_create_obj(create_obj)
+
+    existed = await GPUInstancePersistentVolumeType.exist_by_fields(
+        session=session,
+        fields={
+            "owner_principal_id": create_obj.owner_principal_id,
+            "name": create_obj.name,
+        },
+    )
+    if existed:
+        raise AlreadyExistsException(
+            message=(f"Storage type with name '{create_obj.name}' already exists."),
+        )
 
     async with handle_error(
         message="Failed to create GPU instance persistent volume type",

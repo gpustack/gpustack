@@ -157,7 +157,9 @@ async def create_user(session: SessionDep, user_in: UserCreate):
         )
     ).first()
     if existing:
-        raise AlreadyExistsException(message=f"User {user_in.username} already exists")
+        raise AlreadyExistsException(
+            message=f"User with name '{user_in.username}' already exists."
+        )
 
     try:
         to_create = User(

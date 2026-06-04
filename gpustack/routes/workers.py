@@ -340,7 +340,10 @@ def get_existing_worker(
         if existing_worker is not None:
             if existing_worker.cluster_id != cluster_id:
                 raise AlreadyExistsException(
-                    message=f"worker with name {worker_in.name} already exists in another cluster"
+                    message=(
+                        f"Worker with name '{worker_in.name}' already exists "
+                        "in another cluster."
+                    )
                 )
             return existing_worker
 
@@ -360,7 +363,9 @@ def check_worker_name_conflict(
         iter(filter_workers_by_fields(workers, name_conflict_fields)), None
     )
     if name_conflict_worker is not None:
-        raise AlreadyExistsException(message=f"worker with name {name} already exists")
+        raise AlreadyExistsException(
+            message=f"Worker with name '{name}' already exists."
+        )
 
 
 def find_available_worker_name(

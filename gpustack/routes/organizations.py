@@ -107,7 +107,7 @@ async def create_organization(session: SessionDep, org_in: OrganizationCreate):
     ).first()
     if existing:
         raise AlreadyExistsException(
-            message=f"Organization with name '{org_in.name}' already exists"
+            message=f"Organization with name '{org_in.name}' already exists."
         )
 
     try:
