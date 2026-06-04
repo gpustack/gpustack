@@ -370,7 +370,9 @@ async def create_cluster(
         },
     )
     if existing:
-        raise AlreadyExistsException(message=f"cluster {input.name} already exists")
+        raise AlreadyExistsException(
+            message=f"Cluster with name '{input.name}' already exists."
+        )
 
     create_update_check(input.provider, input)
     if input.provider == ClusterProvider.Kubernetes:

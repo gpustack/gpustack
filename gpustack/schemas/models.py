@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, field_serializer, model_validator
-from sqlalchemy import JSON, Column, ForeignKey, Integer
+from sqlalchemy import JSON, Column, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy.orm import selectinload
 from sqlmodel import Field, Relationship, SQLModel, Text, select
 
@@ -216,7 +216,7 @@ class SpeculativeConfig(BaseModel):
 
 
 class ModelSpecBase(SQLModel, ModelSource):
-    name: str = Field(index=True, unique=True)
+    name: str = Field(index=True)
     description: Optional[str] = Field(
         sa_type=Text,
         nullable=True,
@@ -292,6 +292,13 @@ class ModelBase(ModelSpecBase):
 
 class Model(ModelBase, BaseModelMixin, table=True):
     __tablename__ = 'models'
+    __table_args__ = (
+        # Model names are unique within their owning Org — two Orgs
+        # can each have a "qwen3-0.6b" without colliding.
+        UniqueConstraint(
+            'owner_principal_id', 'name', name='uix_models_name_per_owner'
+        ),
+    )
     id: Optional[int] = Field(default=None, primary_key=True)
 
     instances: list["ModelInstance"] = Relationship(

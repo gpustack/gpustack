@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
+    AlreadyExistsException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
@@ -106,6 +107,18 @@ async def create_gpu_instance(
     )
 
     persistent_volume_id = await _validate_create_obj(session, ctx, create_obj)
+
+    existed = await GPUInstance.exist_by_fields(
+        session=session,
+        fields={
+            "owner_principal_id": create_obj.owner_principal_id,
+            "name": create_obj.name,
+        },
+    )
+    if existed:
+        raise AlreadyExistsException(
+            message=(f"GPU instance with name '{create_obj.name}' already exists."),
+        )
 
     source = _build_create_source(create_obj, ctx.user.id, persistent_volume_id)
     async with handle_error(

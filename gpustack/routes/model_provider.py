@@ -34,6 +34,7 @@ from gpustack.api.tenant import (
     assert_resource_visible,
     tenant_list_conditions,
 )
+from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from openai.types import Model as OAIModel
@@ -142,18 +143,25 @@ def parse_api_tokens(
 async def create_model_provider(
     session: SessionDep, ctx: TenantContextDep, input: ModelProviderCreate
 ):
-    # Provider names are unique per Org (admin's Global providers
-    # — owner_principal_id=NULL — form their own namespace).
+    # Every provider belongs to one Org. Admin in "All" mode (no
+    # current principal) falls back to the platform Org so the row has
+    # a concrete owner — provider does not carry a NULL-owner Global
+    # notion (unlike Instance Template / Inference Backend).
+    target_org_id = ctx.current_principal_id or platform_principal_id()
+
+    # Provider names are unique within their owning Org.
     existing = await ModelProvider.one_by_fields(
         session,
         {
             'deleted_at': None,
             "name": input.name,
-            "owner_principal_id": ctx.current_principal_id,
+            "owner_principal_id": target_org_id,
         },
     )
     if existing:
-        raise AlreadyExistsException(message=f"provider {input.name} already exists")
+        raise AlreadyExistsException(
+            message=f"Model provider with name '{input.name}' already exists."
+        )
     validate_provider(input)
     input_dict = input.model_dump(exclude={"api_tokens", "clone_from_id"})
     existing_tokens = []
@@ -170,9 +178,7 @@ async def create_model_provider(
     input_dict["api_tokens"] = parse_api_tokens(
         existing_tokens=existing_tokens, api_tokens=input.api_tokens
     )
-    # Tenant scope: bind to caller's current Org. Platform admin in
-    # "All" mode (no current_principal_id) creates global (NULL).
-    input_dict["owner_principal_id"] = ctx.current_principal_id
+    input_dict["owner_principal_id"] = target_org_id
     try:
         created = await ModelProvider.create(session=session, source=input_dict)
         return ModelProvider._convert_to_public_class(created)
@@ -224,6 +230,23 @@ async def update_model_provider(
         not_found_message=f"provider {id} not found",
     )
     validate_provider(input)
+    # Rename check: if the caller is changing ``name``, make sure the
+    # new name doesn't collide with another provider under the same
+    # owner. The composite UNIQUE on the table would catch this at
+    # commit time, but we surface a friendly 409 first.
+    if input.name != provider.name:
+        clash = await ModelProvider.one_by_fields(
+            session,
+            {
+                'deleted_at': None,
+                "name": input.name,
+                "owner_principal_id": provider.owner_principal_id,
+            },
+        )
+        if clash and clash.id != provider.id:
+            raise AlreadyExistsException(
+                message=f"Model provider with name '{input.name}' already exists."
+            )
     deleted_models = deleted_model_names(provider.models or [], input.models or [])
     try:
         input_dict = input.model_dump(exclude={"api_tokens"})

@@ -486,7 +486,7 @@ async def create_model_route(
     )
     if existing:
         raise AlreadyExistsException(
-            f"ModelRoute with name '{input.name}' already exists."
+            message=f"Model route with name '{input.name}' already exists."
         )
     source = input.model_dump(exclude={"targets"})
     targets = input.targets or []
@@ -580,7 +580,7 @@ async def update_model_route(
     )
     if duplicated_name and duplicated_name.id != id:
         raise AlreadyExistsException(
-            f"ModelRoute with name '{input.name}' already exists."
+            message=f"Model route with name '{input.name}' already exists."
         )
     existing_name = existing.name
     input_name = input.name

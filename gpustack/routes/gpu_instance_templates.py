@@ -136,7 +136,10 @@ async def create_gpu_instance_template(
     )
     if existed:
         raise AlreadyExistsException(
-            message="GPU instance template already exists",
+            message=(
+                f"GPU instance template with name '{create_obj.name}' "
+                "already exists."
+            ),
         )
 
     async with handle_error(

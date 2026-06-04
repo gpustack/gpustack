@@ -174,7 +174,9 @@ async def create_api_key(
     }
     existing = await ApiKey.one_by_fields(session, fields)
     if existing:
-        raise AlreadyExistsException(message=f"Api key {key_in.name} already exists")
+        raise AlreadyExistsException(
+            message=f"API key with name '{key_in.name}' already exists."
+        )
 
     if key_in.custom is None:
         access_key, secret_key = secrets.token_hex(8), secrets.token_hex(16)

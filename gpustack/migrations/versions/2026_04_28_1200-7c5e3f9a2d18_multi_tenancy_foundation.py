@@ -783,16 +783,18 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 11. Cluster-derived denormalized owner_principal_id columns.
     # ------------------------------------------------------------------
-    # Workers, model_files, benchmarks, model_providers, model_usages
-    # all need an owner pointer for per-row filtering. Nullable
-    # (NULL = on a global cluster, admin-managed); ON DELETE SET NULL
-    # keeps rows alive when the owner principal is deleted (principal
-    # delete cascades clusters, which cascade their workers anyway).
+    # Workers, model_files, benchmarks, model_usages all need an owner
+    # pointer for per-row filtering. Nullable (NULL = on a global
+    # cluster, admin-managed); ON DELETE SET NULL keeps rows alive
+    # when the owner principal is deleted (principal delete cascades
+    # clusters, which cascade their workers anyway).
+    #
+    # ``model_providers`` was originally in this group but later moved
+    # to the always-owned tier — see step 11b below.
     for tbl in (
         'workers',
         'model_files',
         'benchmarks',
-        'model_providers',
         'model_usages',
     ):
         if not column_exists(tbl, 'owner_principal_id'):
@@ -988,6 +990,112 @@ def upgrade() -> None:
                 """
             )
         )
+
+    # ------------------------------------------------------------------
+    # 11b. ``model_providers``: always-owned (no Global notion).
+    # ------------------------------------------------------------------
+    # Only ``gpu_instance_templates`` and ``inference_backends`` carry a
+    # NULL-owner Global notion. Providers always belong to an Org —
+    # admin in "All" mode creates them under the platform Org. Mirrors
+    # the ``models`` block in step 9: add nullable so the DDL accepts
+    # pre-existing rows, backfill to the platform Org, then lock to
+    # NOT NULL with a CASCADE FK.
+    if table_exists('model_providers') and not column_exists(
+        'model_providers', 'owner_principal_id'
+    ):
+        with op.batch_alter_table('model_providers', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column('owner_principal_id', sa.Integer(), nullable=True)
+            )
+
+        op.execute(
+            sa.text(
+                "UPDATE model_providers SET owner_principal_id = :pid "
+                "WHERE owner_principal_id IS NULL"
+            ).bindparams(pid=platform_id)
+        )
+
+        with op.batch_alter_table('model_providers', schema=None) as batch_op:
+            batch_op.alter_column(
+                'owner_principal_id',
+                existing_type=sa.Integer(),
+                nullable=False,
+            )
+            batch_op.create_foreign_key(
+                'fk_model_providers_owner_principal_id_principals',
+                'principals',
+                ['owner_principal_id'],
+                ['id'],
+                ondelete='CASCADE',
+            )
+
+    # ------------------------------------------------------------------
+    # 11c. Convert global UNIQUE on ``name`` to per-owner composite for
+    # ``models`` and ``model_providers``.
+    # ------------------------------------------------------------------
+    # Both tables used to enforce ``name`` as globally unique. With
+    # multi-tenancy each row carries an ``owner_principal_id``, so two
+    # Orgs can independently define a "qwen3-0.6b" model / "openai"
+    # provider. Drop the legacy global UNIQUE and replace it with a
+    # composite UNIQUE on ``(owner_principal_id, name)``.
+    #
+    # The drop dance mirrors step 12 (inference_backends): MySQL /
+    # OceanBase reflect unique-only indexes via information_schema;
+    # Postgres / openGauss go through ``pg_constraint`` + a fallback
+    # ``DROP INDEX`` for the index Alembic emitted on column-level
+    # ``unique=True``. We avoid ``batch_alter_table`` for the drops so
+    # an idempotent re-run doesn't trip on an already-removed
+    # constraint.
+    for tbl, idx_name, uq_name in (
+        ('models', 'ix_models_name', 'uix_models_name_per_owner'),
+        (
+            'model_providers',
+            'ix_model_providers_name',
+            'uix_model_providers_name_per_owner',
+        ),
+    ):
+        if not table_exists(tbl):
+            continue
+        if dialect == 'postgresql':
+            for name_row in bind.execute(
+                sa.text(
+                    "SELECT c.conname FROM pg_constraint c "
+                    "JOIN pg_class t ON t.oid = c.conrelid "
+                    "WHERE t.relname = :tbl "
+                    "AND c.contype = 'u' "
+                    "AND array_length(c.conkey, 1) = 1 "
+                    "AND (SELECT a.attname FROM pg_attribute a "
+                    "     WHERE a.attrelid = c.conrelid "
+                    "     AND a.attnum = c.conkey[1]) = 'name'"
+                ).bindparams(tbl=tbl)
+            ):
+                op.execute(
+                    f'ALTER TABLE {tbl} '
+                    f'DROP CONSTRAINT IF EXISTS "{name_row[0]}"'
+                )
+            op.execute(f'DROP INDEX IF EXISTS {idx_name}')
+        else:
+            unique_idx_names = [
+                row[0]
+                for row in bind.execute(
+                    sa.text(
+                        "SELECT DISTINCT INDEX_NAME FROM "
+                        "information_schema.STATISTICS "
+                        "WHERE TABLE_SCHEMA = DATABASE() "
+                        "AND TABLE_NAME = :tbl "
+                        "AND COLUMN_NAME = 'name' "
+                        "AND NON_UNIQUE = 0 "
+                        "AND INDEX_NAME <> 'PRIMARY'"
+                    ).bindparams(tbl=tbl)
+                )
+            ]
+            for name in unique_idx_names:
+                op.execute(f"ALTER TABLE {tbl} DROP INDEX `{name}`")
+
+        with op.batch_alter_table(tbl, schema=None) as batch_op:
+            batch_op.create_unique_constraint(
+                uq_name, ['owner_principal_id', 'name']
+            )
 
     # ------------------------------------------------------------------
     # 12. Inference backends Hybrid.

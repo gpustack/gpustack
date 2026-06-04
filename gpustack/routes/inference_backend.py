@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
+    AlreadyExistsException,
     InternalServerErrorException,
     NotFoundException,
     BadRequestException,
@@ -1057,8 +1058,8 @@ async def create_inference_backend(
         },
     )
     if existing:
-        raise BadRequestException(
-            message=f"Inference backend with name '{backend_in.backend_name}' already exists",
+        raise AlreadyExistsException(
+            message=f"Inference backend with name '{backend_in.backend_name}' already exists.",
         )
 
     # Validate version names for custom backends before creating
@@ -1338,8 +1339,8 @@ async def create_inference_backend_from_yaml(  # noqa: C901
             },
         )
         if existing:
-            raise BadRequestException(
-                message=f"Inference backend with name '{req_yaml_data['backend_name']}' already exists",
+            raise AlreadyExistsException(
+                message=f"Inference backend with name '{req_yaml_data['backend_name']}' already exists.",
             )
 
         allowed_keys = [
