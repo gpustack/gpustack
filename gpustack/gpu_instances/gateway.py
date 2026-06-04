@@ -35,12 +35,16 @@ async def _reconcile(event: Event):
     k8s_options = cluster.k8s_options
     if isinstance(k8s_options, dict):
         k8s_options = K8sOptions.model_validate(k8s_options)
-    if k8s_options is None or k8s_options.gpu_instance_options is None:
-        return
-    if event.type == EventType.DELETED:
+
+    if (
+        k8s_options is None
+        or k8s_options.gpu_instance_options is None
+        or event.type == EventType.DELETED
+    ):
         await gateway_client.unsubscribe_worker(str(cluster.id))
-    else:
-        await gateway_client.subscribe_worker(
-            str(cluster.id),
-            cluster.registration_token,
-        )
+        return
+
+    await gateway_client.subscribe_worker(
+        str(cluster.id),
+        cluster.registration_token,
+    )
