@@ -141,12 +141,12 @@ async def _get_benchmarks(
     if profile:
         fuzzy_fields["profile"] = profile
 
+    if model_name:
+        fuzzy_fields["model_name"] = model_name
+
     fields = {}
     if state:
         fields["state"] = state
-
-    if model_name:
-        fields["model_name"] = model_name
 
     if dataset_name:
         fields["dataset_name"] = dataset_name
@@ -154,7 +154,7 @@ async def _get_benchmarks(
     extra_conditions = list(cluster_resource_visibility_conditions(ctx, Benchmark))
     if gpu_summary:
         extra_conditions.append(
-            func.lower(Benchmark.gpu_summary).like(f"%{gpu_summary}%")
+            func.lower(Benchmark.gpu_summary).like(f"%{gpu_summary.lower()}%")
         )
 
     def _benchmark_visible(b: Benchmark) -> bool:
