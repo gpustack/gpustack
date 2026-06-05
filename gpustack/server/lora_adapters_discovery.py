@@ -189,22 +189,31 @@ async def list_huggingface_adapter_repos(
     return out
 
 
-def _parse_modelscope_lineage_adapter_names(data: Any) -> List[str]:
+def _parse_modelscope_lineage_adapter_repo_ids(data: Any) -> List[str]:
     if not isinstance(data, dict):
         return []
-    ml = data.get("ModelLineageList")
-    if not isinstance(ml, list):
+    model_lineage_list = data.get("ModelLineageList")
+    if not isinstance(model_lineage_list, list):
         return []
-    names: List[str] = []
-    for block in ml:
+    repo_ids: List[str] = []
+    for block in model_lineage_list:
         if not isinstance(block, dict):
             continue
         if block.get("LineAgeType") != "Adapter":
             continue
-        for m in block.get("ModelInfoList") or []:
-            if isinstance(m, dict) and m.get("Name"):
-                names.append(str(m["Name"]))
-    return names
+        for model_info in block.get("ModelInfoList") or []:
+            if not isinstance(model_info, dict):
+                continue
+            # ModelScope repo id is "namespace/name": Path is the namespace/owner,
+            # Name is the model name. Both are required to form a usable id.
+            namespace = model_info.get("Path")
+            name = model_info.get("Name")
+            if isinstance(namespace, str) and isinstance(name, str):
+                namespace = namespace.strip()
+                name = name.strip()
+                if namespace and name:
+                    repo_ids.append(f"{namespace}/{name}")
+    return repo_ids
 
 
 async def _modelscope_lineage_put(
@@ -289,23 +298,25 @@ async def list_modelscope_adapter_repos(
         if data is None:
             return out
 
-        new_names = [
-            n for n in _parse_modelscope_lineage_adapter_names(data) if n not in seen
+        new_repo_ids = [
+            repo_id
+            for repo_id in _parse_modelscope_lineage_adapter_repo_ids(data)
+            if repo_id not in seen
         ]
-        if not new_names:
+        if not new_repo_ids:
             break
-        for name in new_names:
+        for repo_id in new_repo_ids:
             if len(out) >= limit:
                 break
-            seen.add(name)
+            seen.add(repo_id)
             out.append(
                 {
-                    "lora_repo_name": name,
+                    "lora_repo_name": repo_id,
                     "source": SourceEnum.MODEL_SCOPE.value,
                     "is_local": False,
                 }
             )
-        if len(new_names) < page_size:
+        if len(new_repo_ids) < page_size:
             break
         page_number += 1
 
