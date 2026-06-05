@@ -10,6 +10,7 @@ source "${ROOT_DIR}/hack/lib/init.sh"
 function ci() {
   make install "$@"
   make deps "$@"
+  "${ROOT_DIR}/hack/check-vllm-version.sh"
   make lint "$@"
   make test "$@"
   make build "$@"
