@@ -92,6 +92,23 @@ dev = [
     "mkdocs-minify-plugin>=0.8.0",
 ]
 
+[project.optional-dependencies]
+vllm = [
+    "vllm==0.22.1",
+    "mistral_common[opencv]>=1.4.3",
+    "bitsandbytes>=0.45.2",
+    "timm>=1.0.15",
+]
+audio = [
+    "numba>=0.56.0",
+]
+all = [
+    "vllm==0.22.1",
+    "mistral_common[opencv]>=1.4.3",
+    "bitsandbytes>=0.45.2",
+    "timm>=1.0.15",
+]
+
 [project.scripts]
 gpustack = "gpustack.main:main"
 
