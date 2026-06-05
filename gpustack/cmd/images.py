@@ -17,7 +17,7 @@ from gpustack.extension import iter_plugin_classes, Plugin
 higress_version = "2.1.9"
 
 ssh_server_version = "v1.1.0"
-kueue_version = "v0.17.2"
+kueue_version = "v0.18.0"
 node_feature_discovery_version = "v0.18.3"
 csi_nfs_driver_version = "v4.13.0"
 csi_s3_driver_version = "v0.43.7"
