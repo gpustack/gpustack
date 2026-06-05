@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 # Extract vllm version from model_registry.py sync comment
 # Expected format: # Synced with https://github.com/vllm-project/vllm/blob/v0.X.Y/vllm/model_executor/models/registry.py
-REGISTRY_VERSION=$(grep -oP 'vllm/blob/v\K[0-9]+\.[0-9]+\.[0-9]+' "${ROOT_DIR}/gpustack/scheduler/model_registry.py" | head -1)
+REGISTRY_VERSION=$(sed -n 's/.*vllm\/blob\/v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\/.*/\1/p' "${ROOT_DIR}/gpustack/scheduler/model_registry.py" | head -1)
 
 if [ -z "${REGISTRY_VERSION}" ]; then
   echo "ERROR: Could not extract vllm version from model_registry.py sync comment"
@@ -16,7 +16,7 @@ if [ -z "${REGISTRY_VERSION}" ]; then
 fi
 
 # Extract vllm version from pyproject.toml optional-dependencies
-PYPROJECT_VERSION=$(grep -oP 'vllm==\K[0-9]+\.[0-9]+\.[0-9]+' "${ROOT_DIR}/pyproject.toml" | head -1)
+PYPROJECT_VERSION=$(sed -n 's/.*vllm==\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "${ROOT_DIR}/pyproject.toml" | head -1)
 
 if [ -z "${PYPROJECT_VERSION}" ]; then
   echo "ERROR: Could not extract vllm version from pyproject.toml"
