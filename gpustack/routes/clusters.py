@@ -123,6 +123,29 @@ def _cluster_manageable_conditions(ctx: TenantContext) -> List[Any]:
     return [Cluster.owner_principal_id == ctx.current_principal_id]
 
 
+def _cluster_has_gpu_instance_options(cluster: Cluster) -> bool:
+    """Whether the cluster opts in to GPU-instance handling.
+
+    Mirrors the gateway-side check (``gpu_instances/gateway.py``):
+    ``k8s_options.gpu_instance_options`` being set is the signal. Runs
+    once per cluster on every list/watch tick, so we look at the raw
+    shape instead of re-running ``K8sOptions.model_validate`` — a full
+    nested parse on the hot path would also propagate any future
+    schema drift as a request-level ``ValidationError``. The dict
+    branch tolerates both serialized key forms (snake from
+    ``model_dump``, camel from API/UI submissions).
+    """
+    k8s_options = cluster.k8s_options
+    if isinstance(k8s_options, K8sOptions):
+        return k8s_options.gpu_instance_options is not None
+    if isinstance(k8s_options, dict):
+        return (
+            k8s_options.get("gpu_instance_options") is not None
+            or k8s_options.get("gpuInstanceOptions") is not None
+        )
+    return False
+
+
 @router.get("", response_model=ClustersPublic, response_model_exclude_none=True)
 async def get_clusters(
     session: SessionDep,
@@ -131,17 +154,30 @@ async def get_clusters(
     name: str = None,
     search: str = None,
     mine: bool = False,
+    gpu_instance_enabled: Optional[bool] = Query(
+        None,
+        description=(
+            "Filter by GPU-instance enablement (presence of "
+            "``k8s_options.gpu_instance_options``). ``true`` keeps only "
+            "GPU-service clusters (GPU-instance picker); ``false`` keeps "
+            "only model-deployment clusters (deploy picker). Unset returns "
+            "every visible cluster."
+        ),
+    ),
 ):
     """List clusters.
 
     Default visibility is "everything the caller can use" — own-Org
-    clusters plus clusters granted via ``cluster_access``. Pickers
-    (e.g. GPU-instance create) use this default.
+    clusters plus clusters granted via ``cluster_access``.
 
     ``mine=true`` restricts to clusters owned by the caller's current
     principal — drops grants from other Orgs, so management pages
     don't surface read-only rows the caller can't actually edit.
     Platform admin still sees everything (bypass).
+
+    ``gpu_instance_enabled`` partitions visible clusters by purpose so
+    the deploy picker and the GPU-instance picker each see only the
+    clusters they can actually target.
     """
     fuzzy_fields = {}
     if search:
@@ -157,8 +193,13 @@ async def get_clusters(
         else cluster_visibility_conditions(ctx, Cluster)
     )
 
+    def _matches_gpu_filter(c: Cluster) -> bool:
+        if gpu_instance_enabled is None:
+            return True
+        return _cluster_has_gpu_instance_options(c) == gpu_instance_enabled
+
     if params.watch:
-        filter_func = (
+        visibility_check = (
             (lambda c: _is_cluster_manageable(c, ctx))
             if mine
             else (lambda c: _is_cluster_visible(c, ctx))
@@ -168,7 +209,7 @@ async def get_clusters(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 options=CLUSTER_LOAD_OPTIONS,
-                filter_func=filter_func,
+                filter_func=lambda c: visibility_check(c) and _matches_gpu_filter(c),
             ),
             media_type="text/event-stream",
         )
@@ -184,6 +225,9 @@ async def get_clusters(
             options=CLUSTER_LOAD_OPTIONS,
             extra_conditions=extra_conditions,
         )
+
+        if gpu_instance_enabled is not None:
+            items = [c for c in items if _matches_gpu_filter(c)]
 
         if not items:
             return PaginatedList[ClusterPublic](
