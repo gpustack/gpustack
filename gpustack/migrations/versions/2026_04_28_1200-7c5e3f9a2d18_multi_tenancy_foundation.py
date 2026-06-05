@@ -1031,13 +1031,13 @@ def upgrade() -> None:
 
     # ------------------------------------------------------------------
     # 11c. Convert global UNIQUE on ``name`` to per-owner composite for
-    # ``models`` and ``model_providers``.
+    # ``models``, ``model_providers``, and ``model_routes``.
     # ------------------------------------------------------------------
-    # Both tables used to enforce ``name`` as globally unique. With
+    # These tables used to enforce ``name`` as globally unique. With
     # multi-tenancy each row carries an ``owner_principal_id``, so two
-    # Orgs can independently define a "qwen3-0.6b" model / "openai"
-    # provider. Drop the legacy global UNIQUE and replace it with a
-    # composite UNIQUE on ``(owner_principal_id, name)``.
+    # Orgs can independently define a "qwen3-0.6b" model / route /
+    # "openai" provider. Drop the legacy global UNIQUE and replace it
+    # with a composite UNIQUE on ``(owner_principal_id, name)``.
     #
     # The drop dance mirrors step 12 (inference_backends): MySQL /
     # OceanBase reflect unique-only indexes via information_schema;
@@ -1052,6 +1052,11 @@ def upgrade() -> None:
             'model_providers',
             'ix_model_providers_name',
             'uix_model_providers_name_per_owner',
+        ),
+        (
+            'model_routes',
+            'ix_model_routes_name',
+            'uix_model_routes_name_per_owner',
         ),
     ):
         if not table_exists(tbl):
