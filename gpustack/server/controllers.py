@@ -1909,13 +1909,38 @@ def _refresh_instance_download_progress(
     return False
 
 
+def _first_resolved_path(
+    files: Optional[List[ModelFile]], *, exclude_lora: bool = False
+) -> Optional[str]:
+    """Return the first resolved path among `files`, skipping LoRA files when
+    `exclude_lora` is set. None if no file carries a resolved path."""
+    for file in files or []:
+        if exclude_lora and file.is_lora:
+            continue
+        if file.resolved_paths:
+            return file.resolved_paths[0]
+    return None
+
+
 async def _promote_to_starting_if_complete(
     session: AsyncSession, instance: ModelInstance
 ) -> bool:
-    """When all files are ready, attach the LoRA
-    mount list and move to STARTING. Returns True if promoted."""
-    if not await model_instance_download_completed(session, instance):
+    """When all files are ready, attach the LoRA mount list, backfill the
+    resolved paths, and move to STARTING. Returns True if promoted."""
+    loaded = await ModelInstance.one_by_id_with_model_files(session, instance.id)
+    if not _download_completed(loaded):
         return False
+    # Promotion is the single choke point into STARTING, so backfill the paths
+    # here: the subordinate path never sets them and concurrent events may carry
+    # a None snapshot, which crashes the worker on Path(None).
+    if not instance.resolved_path:
+        instance.resolved_path = _first_resolved_path(
+            loaded.model_files, exclude_lora=True
+        )
+    if instance.draft_model_source and not instance.draft_model_resolved_path:
+        instance.draft_model_resolved_path = _first_resolved_path(
+            loaded.draft_model_files
+        )
     mounted, lora_skipped = await _build_mounted_loras_payload(session, instance)
     if mounted is not None:
         instance.mounted_loras = mounted
@@ -2164,29 +2189,28 @@ async def _build_mounted_loras_payload(
     return out, skipped
 
 
-async def model_instance_download_completed(
-    session: AsyncSession, instance: ModelInstance
-) -> bool:
-    inst = await ModelInstance.one_by_id_with_model_files(session, instance.id)
-    if inst is None:
+def _download_completed(instance: Optional[ModelInstance]) -> bool:
+    """True when every ModelFile (primary, LoRA, draft) is READY. Pure check over
+    an already-loaded instance — the caller owns the single eager load."""
+    if instance is None:
         return False
 
-    if not inst.model_files and not inst.draft_model_source:
+    if not instance.model_files and not instance.draft_model_source:
         return False
 
-    for f in inst.model_files or []:
-        if f.state != ModelFileStateEnum.READY:
+    for model_file in instance.model_files or []:
+        if model_file.state != ModelFileStateEnum.READY:
             return False
 
-    if inst.draft_model_source:
-        draft_files = inst.draft_model_files or []
+    if instance.draft_model_source:
+        draft_files = instance.draft_model_files or []
         if not draft_files:
             return False
-        for f in draft_files:
-            if f.state != ModelFileStateEnum.READY:
+        for draft_file in draft_files:
+            if draft_file.state != ModelFileStateEnum.READY:
                 return False
 
-    # Subordinate files are in inst.model_files (checked above) — the single
+    # Subordinate files are in instance.model_files (checked above) — the single
     # source of truth. The old subordinate_workers progress check raced with the
     # distributed sync path and could stick at DOWNLOADING after all hit 100%.
     return True

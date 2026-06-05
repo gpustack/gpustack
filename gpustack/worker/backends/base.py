@@ -226,7 +226,12 @@ class InferenceServer(ABC):
         if event.data["state"] == ModelInstanceStateEnum.ERROR:
             raise ModelInstanceStateError()
         elif event.data["state"] == ModelInstanceStateEnum.STARTING:
-            self._model_path = str(Path(event.data["resolved_path"]).absolute())
+            resolved_path = event.data["resolved_path"]
+            if not resolved_path:
+                raise ValueError(
+                    "Model instance reached STARTING without a resolved model path"
+                )
+            self._model_path = str(Path(resolved_path).absolute())
             if event.data["draft_model_resolved_path"]:
                 self._draft_model_path = str(
                     Path(event.data["draft_model_resolved_path"]).absolute()

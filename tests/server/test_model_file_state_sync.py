@@ -76,7 +76,7 @@ def _distributed_instance(sub_download_progress: float) -> ModelInstance:
 @contextlib.contextmanager
 def _patched(instance: ModelInstance):
     """Patch every DB touchpoint so the sync runs in-memory, while letting
-    model_instance_download_completed execute for real against instance.model_files."""
+    _download_completed execute for real against instance.model_files."""
     service = MagicMock()
     service.return_value.update = AsyncMock()
     patches = [
@@ -128,3 +128,21 @@ async def test_subordinate_ready_promotes_when_progress_already_100():
         await sync_distributed_model_file_state(MagicMock(), sub_file, instance)
 
     assert instance.state == ModelInstanceStateEnum.STARTING
+
+
+@pytest.mark.asyncio
+async def test_promotion_backfills_resolved_path_from_ready_primary_file():
+    """Reaching STARTING must always carry a resolved_path, otherwise the worker
+    crashes with Path(None) ("expected str, bytes or os.PathLike object, not
+    NoneType"). The subordinate READY path promotes without setting resolved_path,
+    and a concurrent main-worker event may promote off a snapshot where it is
+    still None. Promotion must backfill it from the READY primary ModelFile."""
+    instance = _distributed_instance(sub_download_progress=100)
+    instance.resolved_path = None
+    sub_file = instance.model_files[1]  # subordinate file, never owns resolved_path
+
+    with _patched(instance):
+        await sync_distributed_model_file_state(MagicMock(), sub_file, instance)
+
+    assert instance.state == ModelInstanceStateEnum.STARTING
+    assert instance.resolved_path == "/cache/main"
