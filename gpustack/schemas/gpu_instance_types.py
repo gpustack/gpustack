@@ -200,6 +200,11 @@ class GPUAggregatedInstanceTypeOnceMaxRequestTier(BaseModel):
     The once max request overview resources of this accelerator tier.
     """
 
+    remaining: Optional[GPUAggregatedInstanceTypeOverviewResource] = None
+    """
+    The remaining overview resources of this accelerator tier.
+    """
+
     candidates: Optional[List[GPUAggregatedInstanceTypeOnceMaxRequestCandidate]] = None
     """
     Candidate GPU instance types for this once max request tier.
@@ -221,11 +226,16 @@ class GPUAggregatedInstanceTypeStatus(BaseModel):
     The once max request overview resources of the GPU instance type.
     """
 
-    accelerator_tiers: Optional[List[GPUAggregatedInstanceTypeOnceMaxRequestTier]] = (
-        None
-    )
+    remaining: Optional[GPUAggregatedInstanceTypeOverviewResource] = None
     """
-    The accelerator tiers for selecting GPU instance types.
+    The remaining overview resources of the GPU instance type.
+    """
+
+    tiers: Optional[List[GPUAggregatedInstanceTypeOnceMaxRequestTier]] = None
+    """
+    The tiers for selecting GPU instance types.
+    If the spec.acceleratable is true, the dimension is accelerator, and the once max request tiers are grouped by accelerator resource.
+    If the spec.acceleratable is false, the dimension is cpu, and the once max request tiers are grouped by cpu resource.
     """
 
 
