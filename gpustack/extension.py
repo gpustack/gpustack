@@ -104,3 +104,15 @@ class Plugin:
         must be a classmethod and must not depend on instance state.
         """
         return []
+
+    @classmethod
+    def get_version_info(cls) -> Optional[Tuple[str, str]]:
+        """Override the version reported by ``gpustack version`` and the
+        ``/version`` endpoint.
+
+        Return ``(version, git_commit)`` to override the core values, or
+        ``None`` to defer to core. Called at CLI-parse time, so this must
+        be a classmethod and must not depend on instance state. If multiple
+        plugins return a value, the first non-None wins.
+        """
+        return None
