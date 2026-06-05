@@ -15,6 +15,7 @@ from gpustack.schemas.common import ListParams, PaginatedList
 from gpustack.schemas.principals import (
     Principal,
     PrincipalType,
+    platform_principal_id,
 )
 
 
@@ -109,6 +110,10 @@ class OrganizationPublic(SQLModel):
     # me/orgs etc.). The Org listing endpoint filters to ORG kind, so
     # this defaults to False there.
     is_personal: bool = False
+    # True for the platform Org (the principal id surfaced via
+    # ``platform_principal_id()``). Derived, not stored. Lets the UI
+    # tag the row and treat it as the default pick where useful.
+    is_platform: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -123,12 +128,14 @@ class OrganizationPublic(SQLModel):
         label instead of the user's own ``display_name``.
         """
         is_personal = p.kind == PrincipalType.USER
+        is_platform = p.kind == PrincipalType.ORG and p.id == platform_principal_id()
         return cls(
             id=p.id,
             name=p.name,
             display_name=p.display_name,
             description=p.description,
             is_personal=is_personal,
+            is_platform=is_platform,
             created_at=p.created_at,
             updated_at=p.updated_at,
         )
