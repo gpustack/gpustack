@@ -327,12 +327,56 @@ async def test_remove_user_member_invalidates_access_cache(monkeypatch):
     monkeypatch.setattr(
         organization_members, "delete_accessible_model_cache", invalidated
     )
+    # USER member: _affected_user_ids skips session.exec (no groups to
+    # expand), so the only call is the API-key precheck — empty result
+    # means no live keys block the removal.
+    session = _session_returning([])
     ctx = _ctx(is_admin=True)
     await organization_members.remove_org_member(
-        session=MagicMock(), ctx=ctx, org_id=10, principal_id=200
+        session=session, ctx=ctx, org_id=10, principal_id=200
     )
     membership.delete.assert_awaited_once()
     invalidated.assert_awaited_once_with(200)
+
+
+@pytest.mark.asyncio
+async def test_remove_user_member_blocked_when_api_keys_exist(monkeypatch):
+    """API-key auth resolves the Org from ``owner_principal_id``, not
+    the caller's membership, so a key keeps working after its creator
+    is removed from the Org. The removal must be refused until those
+    keys are deleted.
+    """
+    org = _principal(id=10, display_name="Acme", name="acme")
+    member = _principal(
+        id=200, kind=PrincipalType.USER, display_name="user-2", name="user-2"
+    )
+    membership = MagicMock(spec=PrincipalMembership)
+    membership.parent_principal_id = 10
+    membership.member_principal_id = 200
+    membership.role = OrgRole.MEMBER
+    membership.deleted_at = None
+    membership.delete = AsyncMock()
+    _patch_org_and_member(monkeypatch, org, member)
+    monkeypatch.setattr(
+        organization_members,
+        "_find_membership",
+        AsyncMock(return_value=membership),
+    )
+    invalidated = AsyncMock()
+    monkeypatch.setattr(
+        organization_members, "delete_accessible_model_cache", invalidated
+    )
+    # Single session.exec(): API-key precheck returns two live keys.
+    session = _session_returning(["prod-key", "ci-key"])
+    ctx = _ctx(is_admin=True)
+    with pytest.raises(ConflictException) as excinfo:
+        await organization_members.remove_org_member(
+            session=session, ctx=ctx, org_id=10, principal_id=200
+        )
+    assert "prod-key" in excinfo.value.message
+    assert "ci-key" in excinfo.value.message
+    membership.delete.assert_not_awaited()
+    invalidated.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -358,9 +402,10 @@ async def test_remove_group_member_invalidates_each_user(monkeypatch):
         "_find_membership",
         AsyncMock(return_value=membership),
     )
-    # _affected_user_ids issues one session.exec() to expand the group into
-    # its active user-principal ids.
-    session = _session_returning([501, 502])
+    # First session.exec(): _affected_user_ids expands the group into
+    # its active user-principal ids. Second: the API-key precheck —
+    # empty result means no live keys block the removal.
+    session = _session_returning([501, 502], [])
     invalidated = AsyncMock()
     monkeypatch.setattr(
         organization_members, "delete_accessible_model_cache", invalidated

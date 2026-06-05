@@ -31,6 +31,7 @@ from gpustack.api.exceptions import (
     InvalidException,
     NotFoundException,
 )
+from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.organizations import OrganizationMembershipPublic
 from gpustack.schemas.principals import (
     OrgRole,
@@ -442,6 +443,32 @@ async def remove_org_member(
     # delete doesn't affect that lookup (we expand the Group's own
     # members, not its Org bindings).
     affected = await _affected_user_ids(session, [p])
+
+    # Refuse removal while the member still has live API keys scoped to
+    # this Org: API-key auth resolves the Org from ``owner_principal_id``,
+    # not the (now-revoked) membership, so the key would keep working
+    # after removal. We don't auto-revoke — the Owner must clean up the
+    # keys (or disable them, once that's supported) first.
+    if affected:
+        preview_limit = 3
+        stmt = select(ApiKey.name).where(
+            ApiKey.user_id.in_(affected),
+            ApiKey.owner_principal_id == org_id,
+            ApiKey.deleted_at.is_(None),
+        )
+        names = (await session.exec(stmt)).all()
+        if names:
+            shown = ', '.join(f"'{n}'" for n in names[:preview_limit])
+            extra = len(names) - preview_limit
+            if extra > 0:
+                shown = f"{shown} (and {extra} more)"
+            raise ConflictException(
+                message=(
+                    "Cannot remove member because API keys they created "
+                    f"in this organization still exist: {shown}. "
+                    "Delete those API keys first, then retry."
+                )
+            )
 
     try:
         await membership.delete(session, soft=True)
