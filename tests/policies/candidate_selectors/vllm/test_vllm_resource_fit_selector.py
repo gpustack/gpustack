@@ -12,6 +12,9 @@ from tests.utils.model import make_model, new_model, new_model_instance
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.scheduler import scheduler
+from gpustack.scheduler.calculator import (
+    get_pretrained_config_with_workers as _orig_get_pretrained_config_with_workers,
+)
 from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
@@ -64,6 +67,108 @@ def expected_candidate(
     if ram is not None:
         candidate["ram"] = ram
     return candidate
+
+
+# Mocks for DeepSeek model configs. The real download is large (config.json +
+# configuration_deepseek.py + modeling_deepseek.py) and occasionally exceeds the
+# 15s timeout in get_pretrained_config_with_workers, causing CI flakes. Values
+# mirror the HuggingFace config.json of each repo so VRAM estimates are stable.
+_MOCK_PRETRAINED_DEEPSEEK_R1 = SimpleNamespace(
+    architectures=["DeepseekV3ForCausalLM"],
+    num_hidden_layers=61,
+    hidden_size=7168,
+    vocab_size=129280,
+    num_attention_heads=128,
+    num_key_value_heads=128,
+    n_group=8,
+    q_lora_rank=1536,
+    kv_lora_rank=512,
+    qk_rope_head_dim=64,
+    qk_nope_head_dim=128,
+    v_head_dim=128,
+    torch_dtype="bfloat16",
+    quantization_config={
+        "activation_scheme": "dynamic",
+        "fmt": "e4m3",
+        "quant_method": "fp8",
+        "weight_block_size": [128, 128],
+    },
+    moe_intermediate_size=2048,
+    n_routed_experts=256,
+    n_shared_experts=1,
+    max_position_embeddings=163840,
+    rope_scaling={
+        "beta_fast": 32,
+        "beta_slow": 1,
+        "factor": 40,
+        "mscale": 1.0,
+        "mscale_all_dim": 1.0,
+        "original_max_position_embeddings": 4096,
+        "type": "yarn",
+    },
+)
+
+_MOCK_PRETRAINED_DEEPSEEK_V32 = SimpleNamespace(
+    architectures=["DeepseekV32ForCausalLM"],
+    num_hidden_layers=61,
+    hidden_size=7168,
+    vocab_size=129280,
+    num_attention_heads=128,
+    num_key_value_heads=128,
+    n_group=8,
+    q_lora_rank=1536,
+    kv_lora_rank=512,
+    qk_rope_head_dim=64,
+    qk_nope_head_dim=128,
+    v_head_dim=128,
+    torch_dtype="bfloat16",
+    quantization_config={
+        "activation_scheme": "dynamic",
+        "fmt": "e4m3",
+        "quant_method": "fp8",
+        "scale_fmt": "ue8m0",
+        "weight_block_size": [128, 128],
+    },
+    moe_intermediate_size=2048,
+    n_routed_experts=256,
+    n_shared_experts=1,
+    max_position_embeddings=163840,
+    rope_scaling={
+        "beta_fast": 32,
+        "beta_slow": 1,
+        "factor": 40,
+        "mscale": 1.0,
+        "mscale_all_dim": 1.0,
+        "original_max_position_embeddings": 4096,
+        "type": "yarn",
+    },
+)
+
+_MOCK_PRETRAINED_BY_REPO_ID = {
+    "deepseek-ai/DeepSeek-R1": _MOCK_PRETRAINED_DEEPSEEK_R1,
+    "deepseek-ai/DeepSeek-V3.2": _MOCK_PRETRAINED_DEEPSEEK_V32,
+}
+
+
+async def _mock_or_real_get_pretrained_config_with_workers(
+    model, workers=None, trust_remote_code=False
+):
+    repo_id = model.huggingface_repo_id or model.model_scope_model_id
+    mocked = _MOCK_PRETRAINED_BY_REPO_ID.get(repo_id)
+    if mocked is not None:
+        return mocked
+    return await _orig_get_pretrained_config_with_workers(
+        model, workers, trust_remote_code=trust_remote_code
+    )
+
+
+@pytest.fixture(autouse=True)
+def _mock_deepseek_pretrained_configs():
+    with patch(
+        "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+        new=_mock_or_real_get_pretrained_config_with_workers,
+    ):
+        yield
 
 
 @pytest.mark.parametrize(
