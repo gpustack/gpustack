@@ -457,11 +457,24 @@ def _build_update_phase_source(existing_obj: GPUInstance, phase: str) -> dict:
 # ``restart`` action later).
 _FAILED_PHASES = frozenset(
     {
-        GPUInstancePhase.INSTANCE_CREATE_FAILED,
+        GPUInstancePhase.CREATE_FAILED,
         GPUInstancePhase.SSH_KEY_CREATE_FAILED,
         GPUInstancePhase.PV_TYPE_CREATE_FAILED,
         GPUInstancePhase.PV_CREATE_FAILED,
     }
+)
+
+# /delete: legal from any non-Deleting phase.
+_DELETE_ALLOWED_FROM = (
+    frozenset(
+        {
+            GPUInstancePhase.DELETING,
+            GPUInstancePhase.UNKNOWN,
+            GPUInstancePhase.INITIALIZE_FAILED,
+            GPUInstancePhase.READY,
+        }
+    )
+    | _FAILED_PHASES
 )
 
 # /stop: only legal from a "running-ish" phase. Reject in-flight transitions
@@ -512,7 +525,15 @@ async def _transition_to_phase(
 
     # Validate the phase transition before doing any work.
     current_phase = ret.status.phase if ret.status else None
-    if action == "stop":
+    if action == "delete":
+        if current_phase is None or current_phase not in _DELETE_ALLOWED_FROM:
+            raise InvalidException(
+                message=(
+                    f"GPU instance cannot be deleted from "
+                    f"{current_phase or 'pending creation'} phase"
+                ),
+            )
+    elif action == "stop":
         if current_phase is None or current_phase in _STOP_DISALLOWED_FROM:
             raise InvalidException(
                 message=(
