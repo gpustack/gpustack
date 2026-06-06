@@ -3205,7 +3205,7 @@ class GPUInstanceController:
     instance and handled inline here.
     """
 
-    PHASE_INSTANCE_CREATE_FAILED = GPUInstancePhase.INSTANCE_CREATE_FAILED
+    PHASE_CREATE_FAILED = GPUInstancePhase.CREATE_FAILED
     PHASE_SSH_KEY_CREATE_FAILED = GPUInstancePhase.SSH_KEY_CREATE_FAILED
     PHASE_PV_TYPE_CREATE_FAILED = GPUInstancePhase.PV_TYPE_CREATE_FAILED
     PHASE_PV_CREATE_FAILED = GPUInstancePhase.PV_CREATE_FAILED
@@ -3213,6 +3213,7 @@ class GPUInstanceController:
     PHASE_STOPPING = GPUInstancePhase.STOPPING
     PHASE_STOPPED = GPUInstancePhase.STOPPED
     PHASE_STARTING = GPUInstancePhase.STARTING
+    PHASE_UNKNOWN = GPUInstancePhase.UNKNOWN
     PHASE_READY = GPUInstancePhase.READY
 
     def __init__(self, cfg: Config):
@@ -3237,9 +3238,9 @@ class GPUInstanceController:
                     instance: GPUInstance = event.data
                     phase = (instance.status or GPUInstanceStatus()).phase
                     if phase is not None:
-                        # Terminal *CreateFailed / STOPPED / fully Ready: nothing to reconcile.
+                        # Terminal *Failed / STOPPED / fully Ready: nothing to reconcile.
                         if (
-                            phase.endswith("CreateFailed")
+                            phase.endswith("Failed")
                             or phase == self.PHASE_STOPPED
                             or self._is_all_ready(instance)
                         ):
@@ -3321,7 +3322,7 @@ class GPUInstanceController:
             # the bus.
             if (phase := (fresh.status or GPUInstanceStatus()).phase) is not None:
                 if (
-                    phase.endswith("CreateFailed")
+                    phase.endswith("Failed")
                     or phase == self.PHASE_STOPPED
                     or self._is_all_ready(fresh)
                 ):
@@ -3478,7 +3479,7 @@ class GPUInstanceController:
                         session,
                         fresh,
                         GPUInstanceStatus(
-                            phase=self.PHASE_INSTANCE_CREATE_FAILED,
+                            phase=self.PHASE_CREATE_FAILED,
                             phase_message=f"Failed to create worker-side instance: {e}",
                             namespace=ops.org_namespace,
                         ),
@@ -3522,7 +3523,7 @@ class GPUInstanceController:
                         # through to the read_instance block, which observes
                         # whether the resource is gone and drives the DB
                         # cleanup if needed.
-                        # Don't test CreateFailed/Ready below — they
+                        # Don't test *Failed/Ready below — they
                         # can't match for DELETING|STOPPING anyway.
                         logger.debug(
                             f"GPUInstance {fresh.name} is in {phase} phase, try deleting worker-side instance"
@@ -3581,7 +3582,7 @@ class GPUInstanceController:
                                 ),
                             )
                             return
-                    elif phase.endswith("CreateFailed"):
+                    elif phase.endswith("Failed"):
                         logger.warning(
                             f"GPUInstance {fresh.name} is in {phase} phase, skip updating"
                         )
@@ -3596,6 +3597,13 @@ class GPUInstanceController:
                             f"GPUInstance {fresh.name} is in {phase} phase, skip updating"
                         )
                         return
+                    elif phase == self.PHASE_UNKNOWN:
+                        count = (fresh.status or GPUInstanceStatus()).count
+                        if count > 5:
+                            logger.warning(
+                                f"GPUInstance {fresh.name} has been in {phase} phase for {count} updates, skip updating"
+                            )
+                            return
                     elif self._is_all_ready(fresh):
                         logger.debug(
                             f"GPUInstance {fresh.name} is already in {phase} phase, skip updating"
@@ -3642,7 +3650,7 @@ class GPUInstanceController:
                             return
                         read = {
                             "status": {
-                                "phase": "Unknown",
+                                "phase": self.PHASE_UNKNOWN,
                                 "phaseMessage": "Not found in cluster",
                             }
                         }
@@ -3689,7 +3697,7 @@ class GPUInstanceController:
                     else:
                         read = {
                             "status": {
-                                "phase": "Unknown",
+                                "phase": self.PHASE_UNKNOWN,
                                 "phaseMessage": "Failed to confirm from cluster",
                             }
                         }

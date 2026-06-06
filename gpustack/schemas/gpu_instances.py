@@ -405,7 +405,9 @@ class GPUInstancePhase:
     dependency.
     """
 
-    INSTANCE_CREATE_FAILED = "CreateFailed"
+    # GPUStack-specific phases:
+
+    CREATE_FAILED = "CreateFailed"
     SSH_KEY_CREATE_FAILED = "SSHPublicKeyCreateFailed"
     PV_TYPE_CREATE_FAILED = "PersistentVolumeTypeCreateFailed"
     PV_CREATE_FAILED = "PersistentVolumeCreateFailed"
@@ -413,6 +415,12 @@ class GPUInstancePhase:
     STOPPING = "Stopping"
     STOPPED = "Stopped"
     STARTING = "Starting"
+    UNKNOWN = "Unknown"
+
+    # Kubernetes-specific phases:
+
+    INITIALIZE_FAILED = "InitializeFailed"
+    NOT_READY = "NotReady"
     READY = "Ready"
 
 
