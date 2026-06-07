@@ -29,6 +29,7 @@ from gpustack.schemas.model_routes import (
     ModelUserAccessExtended,
     MyModel,
     TargetStateEnum,
+    effective_route_name,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.principals import platform_principal_id
@@ -341,7 +342,7 @@ async def _get_model_routes(
             conditions = build_category_conditions(session, target_class, categories)
             extra_conditions.append(or_(*conditions))
 
-        return await target_class.paginated_by_query(
+        result = await target_class.paginated_by_query(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
@@ -349,6 +350,57 @@ async def _get_model_routes(
             per_page=params.perPage,
             order_by=params.order_by,
             extra_conditions=extra_conditions,
+        )
+        await _apply_effective_name_to_my_models(session, target_class, result.items)
+        return result
+
+
+async def _apply_effective_name_to_my_models(
+    session: AsyncSession, target_class, items: List[MyModel]
+) -> None:
+    """Overwrite ``item.name`` with the OpenAI-style effective name —
+    bare for the platform Org, ``<owner-name>/<name>`` otherwise — so
+    the My Models consumption surface (card, Open-in-Playground) uses
+    the same id ``/v1/models`` reports. Cross-Org grants surface under
+    their owning Org's prefix instead of the caller's current Org,
+    which is the gap a frontend cache lookup can't close (the granting
+    Org isn't in the caller's member list).
+
+    Search/filter remain against the raw ``name`` column on the DB
+    side. Writes go through ``__dict__`` rather than the attribute
+    setter so SQLAlchemy's instrumentation doesn't mark the instance
+    dirty — otherwise a later autoflush (or any caller that adds a
+    commit downstream) would attempt to ``UPDATE`` the
+    ``non_admin_user_models`` view and error. Pydantic's
+    ``from_attributes`` reads via ``getattr``, which still resolves
+    through ``__dict__``, so the response picks up the rewritten value.
+
+    Accepts ``target_class`` so callers can invoke unconditionally —
+    the helper short-circuits for ``ModelRoute``. Keeps the surrounding
+    ``_get_model_routes`` / ``_get_model_route`` branches flat (their
+    cyclomatic complexity is already at the limit).
+    """
+    if target_class is not MyModel:
+        return
+    if not items:
+        return
+    owner_ids = {
+        item.owner_principal_id for item in items if item.owner_principal_id is not None
+    }
+    if not owner_ids:
+        return
+    stmt = select(Principal.id, Principal.name).where(
+        col(Principal.id).in_(owner_ids),
+        Principal.kind == PrincipalType.ORG,
+    )
+    owner_names: Dict[int, Optional[str]] = dict((await session.exec(stmt)).all())
+    platform_id = platform_principal_id()
+    for item in items:
+        owner_id = item.owner_principal_id
+        item.__dict__['name'] = effective_route_name(
+            route_name=item.name,
+            owner_name=owner_names.get(owner_id) if owner_id is not None else None,
+            is_platform_org=owner_id == platform_id,
         )
 
 
@@ -453,6 +505,7 @@ async def _get_model_route(
                 existing,
                 not_found_message=f"ModelAccess with id '{id}' not found.",
             )
+    await _apply_effective_name_to_my_models(session, target_class, [existing])
     return existing
 
 

@@ -86,6 +86,60 @@ async def test_get_model_routes_filters_categories_on_target_class(monkeypatch):
     assert captured["extra_conditions"]
 
 
+@pytest.mark.asyncio
+async def test_apply_effective_name_to_my_models_prefixes_by_owner(monkeypatch):
+    """Items get rewritten in place: platform Org's route stays bare,
+    non-platform Orgs prefix with the owner's ``name``. This is what
+    lets the My Models page render and Open-in-Playground submit the
+    OpenAI-style id even for cross-Org grants (granting Org isn't in
+    the caller's client-side cache, but the server has it)."""
+    monkeypatch.setattr(model_routes, "platform_principal_id", lambda: 1)
+
+    items = [
+        SimpleNamespace(name="qwen3-0.6b", owner_principal_id=1),
+        SimpleNamespace(name="qwen3-0.6b", owner_principal_id=2),
+        SimpleNamespace(name="bge-m3", owner_principal_id=3),
+    ]
+
+    session = SimpleNamespace()
+    exec_result = MagicMock()
+    exec_result.all.return_value = [(2, "alpha"), (3, "beta")]
+    session.exec = AsyncMock(return_value=exec_result)
+
+    await model_routes._apply_effective_name_to_my_models(session, MyModel, items)
+
+    assert items[0].name == "qwen3-0.6b"  # platform Org → no prefix
+    assert items[1].name == "alpha/qwen3-0.6b"
+    assert items[2].name == "beta/bge-m3"
+
+
+@pytest.mark.asyncio
+async def test_apply_effective_name_to_my_models_skips_model_route():
+    """``ModelRoute`` callers (the management surface) reuse the same
+    code path but must skip the rewrite — Routes always belong to the
+    caller's own Org, the frontend already has it cached, and the page
+    expects raw ``name``."""
+    session = SimpleNamespace(exec=AsyncMock())
+    item = SimpleNamespace(name="qwen3-0.6b", owner_principal_id=2)
+
+    await model_routes._apply_effective_name_to_my_models(session, ModelRoute, [item])
+
+    session.exec.assert_not_called()
+    assert item.name == "qwen3-0.6b"
+
+
+@pytest.mark.asyncio
+async def test_apply_effective_name_to_my_models_empty_is_noop():
+    """Empty input must short-circuit before any session query — the
+    helper runs on every MyModel list (including 0-result pages) and a
+    spurious round-trip per page would be a regression."""
+    session = SimpleNamespace(exec=AsyncMock())
+
+    await model_routes._apply_effective_name_to_my_models(session, MyModel, [])
+
+    session.exec.assert_not_called()
+
+
 def test_assert_target_tenant_aligned_same_org():
     # Same Org is always allowed.
     model_routes._assert_target_tenant_aligned(
