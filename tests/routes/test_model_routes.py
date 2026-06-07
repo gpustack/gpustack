@@ -1,6 +1,7 @@
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,7 +15,9 @@ from gpustack.schemas.common import Pagination
 from gpustack.schemas.model_routes import (
     AccessPolicyEnum,
     ModelRoute,
+    ModelRouteCreate,
     ModelRouteListParams,
+    ModelRoutePublic,
     ModelRoutesPublic,
     MyModel,
 )
@@ -126,6 +129,33 @@ async def test_apply_effective_name_to_my_models_skips_model_route():
 
     session.exec.assert_not_called()
     assert item.name == "qwen3-0.6b"
+
+
+def test_model_route_create_rejects_slashed_name():
+    """The no-slash rule must still gate user input on the write path —
+    otherwise a hand-typed ``foo/bar`` would collide with the
+    ``<owner>/<name>`` shape the read path synthesizes."""
+    with pytest.raises(ValueError, match="must start with a letter"):
+        ModelRouteCreate(name="org1/qwen3-0.6b", targets=[])
+
+
+def test_model_route_public_accepts_enriched_slashed_name():
+    """Regression: the My Models response serializes through
+    ``ModelRoutePublic``; once ``_apply_effective_name_to_my_models``
+    rewrites ``name`` to ``<owner>/<name>``, response validation must
+    accept it (the prior inherited validator rejected it with
+    ``Unexpected error occurred: 1 validation error``)."""
+    now = datetime(2026, 6, 7, tzinfo=timezone.utc)
+    public = ModelRoutePublic.model_validate(
+        {
+            "id": 1,
+            "name": "org1/qwen3-0.6b",
+            "owner_principal_id": 6,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    assert public.name == "org1/qwen3-0.6b"
 
 
 @pytest.mark.asyncio

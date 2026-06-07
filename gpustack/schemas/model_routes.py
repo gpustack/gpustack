@@ -317,6 +317,18 @@ class ModelRouteUpdateBase(SQLModel):
                 raise ValueError(f"Invalid category: {category}")
         return v
 
+
+class ModelRouteUpdate(ModelRouteUpdateBase):
+    targets: Optional[List[ModelRouteTargetUpdateItem]] = Field(
+        default=None, nullable=True
+    )
+
+    # Name validation lives on the write path only. Read-side classes
+    # (``ModelRouteBase`` and descendants — ``ModelRoute``, ``MyModel``,
+    # ``ModelRoutePublic``) skip it so the server-side enrichment in
+    # ``_apply_effective_name_to_my_models`` can surface
+    # ``<owner-name>/<name>`` without tripping the no-slash rule that
+    # only ever applied to user-supplied input.
     @model_validator(mode="after")
     def validate_name(self):
         name = self.name
@@ -328,12 +340,6 @@ class ModelRouteUpdateBase(SQLModel):
                 "underscores, or dots, and not end with hyphen or underscore"
             )
         return self
-
-
-class ModelRouteUpdate(ModelRouteUpdateBase):
-    targets: Optional[List[ModelRouteTargetUpdateItem]] = Field(
-        default=None, nullable=True
-    )
 
 
 class ModelRouteCreate(ModelRouteUpdate):
