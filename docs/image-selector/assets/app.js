@@ -651,23 +651,26 @@ function generateImageList() {
             }
             rCmds.push(`docker pull${plat} ${getFullImageName('runner', tag, state.selectedRegistry)}`);
         });
-        if (rCmds.length) { 
+        if (rCmds.length) {
             const comment = t.comments.runner;
-            cmds.push(`# ${comment}`); 
+            cmds.push('');
+            cmds.push(`# ${comment}`);
             cmds.push(...rCmds); 
         }
         
         const pause = state.images.find(i => i.includes('runtime:pause'));
-        if (pause) { 
+        if (pause) {
             const comment = t.comments.pause;
-            cmds.push(`# ${comment}`); 
+            cmds.push('');
+            cmds.push(`# ${comment}`);
             cmds.push(`docker pull${plat} ${getFullImageName('runtime', pause.split(':')[1], state.selectedRegistry)}`); 
         }
         
         const bm = state.images.find(i => i.includes('benchmark-runner'));
-        if (bm) { 
+        if (bm) {
             const comment = t.comments.benchmark;
-            cmds.push(`# ${comment}`); 
+            cmds.push('');
+            cmds.push(`# ${comment}`);
             cmds.push(`docker pull${plat} ${getFullImageName('benchmark-runner', bm.split(':')[1], state.selectedRegistry)}`); 
         }
     }
@@ -675,13 +678,15 @@ function generateImageList() {
     if (isServer) {
         if (state.optionalImages['postgres']) {
             const pgs = state.images.filter(i => i.startsWith('postgres:'));
-            if (pgs.length) { 
+            if (pgs.length) {
                 const comment = t.comments.postgres;
-                cmds.push(`# ${comment}`); 
+                cmds.push('');
+                cmds.push(`# ${comment}`);
                 pgs.forEach(i => cmds.push(`docker pull${plat} ${getFullImageName('postgres', i.split(':')[1], state.selectedRegistry)}`)); 
             }
         }
         if (state.optionalImages['monitoring']) {
+            cmds.push('');
             const comment = t.comments.monitoring;
             cmds.push(`# ${comment}`);
             state.images.filter(i => i.includes('prometheus')).forEach(i => cmds.push(`docker pull${plat} ${getFullImageName('prometheus', i.split(':')[1], state.selectedRegistry)}`));
