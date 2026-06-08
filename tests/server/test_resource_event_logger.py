@@ -120,6 +120,29 @@ async def test_metered_recorded_once_across_status_storm():
 
 
 @pytest.mark.asyncio
+async def test_stop_then_start_closes_and_reopens_metering():
+    logger = ResourceEventLogger()
+    # run → stop → start: Stopped releases the GPU (metering closes), Starting
+    # reacquires it (metering reopens). Mirrors POST /gpu-instances/{id}/stop.
+    types = await _drive(
+        logger,
+        [
+            _evt(EventType.CREATED, None),
+            _evt(EventType.UPDATED, "Ready"),  # metering starts
+            _evt(EventType.UPDATED, "Stopped"),  # stopped → metering stops
+            _evt(EventType.UPDATED, "Starting"),  # start → metering resumes
+            _evt(EventType.UPDATED, "Ready"),
+        ],
+    )
+    assert types == [
+        EVENT_TYPE_CREATED,
+        EVENT_TYPE_PHASE_TO_METERED,
+        EVENT_TYPE_PHASE_LEFT_METERED,
+        EVENT_TYPE_PHASE_TO_METERED,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_created_already_metered_opens_once():
     logger = ResourceEventLogger()
     types = await _drive(

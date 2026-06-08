@@ -19,12 +19,38 @@ from gpustack.utils.resource_usage import (
 
 
 def test_is_metered_phase():
+    # Up / coming up / degraded / unknown → metered (reservation held).
     assert is_metered_phase("Pending")
     assert is_metered_phase("Ready")
+    assert is_metered_phase("NotReady")
+    assert is_metered_phase("Starting")  # reacquiring the GPU after a stop
+    assert is_metered_phase("Unknown")
     assert is_metered_phase("Updating")
+    # Brand-new (reconciler hasn't run) and failures → not metered.
     assert not is_metered_phase(None)
     assert not is_metered_phase("CreateFailed")
     assert not is_metered_phase("PersistentVolumeCreateFailed")
+    assert not is_metered_phase("InitializeFailed")
+    # Stop / delete lifecycle → not metered (accelerator released; the user is
+    # not charged while stopped).
+    assert not is_metered_phase("Stopping")
+    assert not is_metered_phase("Stopped")
+    assert not is_metered_phase("Deleting")
+
+
+def test_non_metered_phases_match_schema():
+    """The non-metered phase literals are copies of GPUInstancePhase values
+    (kept literal to keep utils import-light). Lock them so a rename on the
+    schema side can't silently drift the metering predicate."""
+    from gpustack.schemas.gpu_instances import GPUInstancePhase
+    from gpustack.utils.resource_usage import _NON_METERED_PHASES
+
+    valid = {
+        v
+        for k, v in vars(GPUInstancePhase).items()
+        if not k.startswith("_") and isinstance(v, str)
+    }
+    assert _NON_METERED_PHASES <= valid, _NON_METERED_PHASES - valid
 
 
 def test_parse_gpu_vram_mib():
