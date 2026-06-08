@@ -230,6 +230,7 @@ async function init() {
     initElements();
     bindEvents();
     updateLanguage();
+    if (state.currentLang === 'zh') selectRegistry('china');
     await loadData();
     // Show content after initialization
     document.body.classList.add('i18n-ready');
@@ -297,9 +298,11 @@ function setLanguage(lang) {
     state.currentLang = lang;
     localStorage.setItem('lang', lang);
     updateLanguage();
-    // Auto-switch to Docker Hub if China Mirror is selected but language is English
+    // Auto-switch registry when language changes
     if (state.currentLang === 'en' && state.selectedRegistry === 'china') {
         selectRegistry('docker-hub');
+    } else if (state.currentLang === 'zh') {
+        selectRegistry('china');
     }
     renderCardSelector();
     generateImageList();
