@@ -502,7 +502,7 @@ def mutate_request(
     ):
         apply_qwen3_reranker_templates(body_json)
 
-    if body_json and (path == "/v1/responses" or path.endswith("/responses")):
+    if body_json and path.endswith("/responses"):
         _normalize_responses_input(body_json)
 
     override = getattr(request.state, "overridden_model_name", None) or model.name
@@ -540,10 +540,13 @@ def _normalize_responses_input(body_json: dict):
         if not isinstance(content, list):
             continue
         # Flatten output_text content items into a single plain-text string.
-        text_parts = []
-        for content_item in content:
-            if isinstance(content_item, dict) and "text" in content_item:
-                text_parts.append(str(content_item["text"]))
+        text_parts = [
+            str(text)
+            for content_item in content
+            if isinstance(content_item, dict)
+            and "text" in content_item
+            and (text := content_item["text"]) is not None
+        ]
         if text_parts:
             item["content"] = "\n".join(text_parts)
 
