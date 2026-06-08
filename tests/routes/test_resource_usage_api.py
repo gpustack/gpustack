@@ -425,3 +425,66 @@ def test_phase_message_of():
     assert _phase_message_of({"status": "not-a-dict"}) is None
     assert _phase_message_of(None) is None
     assert _phase_message_of("not json") is None
+
+
+@pytest.mark.asyncio
+async def test_resource_events_filters_by_event_type_and_name(session):
+    from datetime import datetime
+    from gpustack.routes.resource_usage import resource_events
+    from gpustack.schemas.resource_events import (
+        EVENT_TYPE_PHASE_LEFT_METERED,
+        EVENT_TYPE_PHASE_TO_METERED,
+        ResourceEvent,
+    )
+
+    at = datetime(2026, 5, 26, 10, 0, 0)
+    session.add_all(
+        [
+            ResourceEvent(
+                occurred_at=at,
+                resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+                resource_id=701,
+                resource_name="michelia-gpu",
+                event_type=EVENT_TYPE_PHASE_TO_METERED,
+                creator_id=7,
+            ),
+            ResourceEvent(
+                occurred_at=at,
+                resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+                resource_id=701,
+                resource_name="michelia-gpu",
+                event_type=EVENT_TYPE_PHASE_LEFT_METERED,
+                creator_id=7,
+            ),
+            ResourceEvent(
+                occurred_at=at,
+                resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+                resource_id=702,
+                resource_name="other-box",
+                event_type=EVENT_TYPE_PHASE_TO_METERED,
+                creator_id=7,
+            ),
+        ]
+    )
+    await session.commit()
+
+    # event_types (CSV) → only the Stopped (phase_left_metered) row.
+    out = await resource_events(
+        session,
+        USER,
+        CTX,
+        scope="all",
+        event_types=EVENT_TYPE_PHASE_LEFT_METERED,
+    )
+    assert [e["event_type"] for e in out["items"]] == [EVENT_TYPE_PHASE_LEFT_METERED]
+
+    # resource_name → case-insensitive substring (fuzzy) match.
+    out = await resource_events(
+        session,
+        USER,
+        CTX,
+        scope="all",
+        resource_name="MICHELIA",
+    )
+    assert {e["resource_name"] for e in out["items"]} == {"michelia-gpu"}
+    assert len(out["items"]) == 2
