@@ -96,7 +96,10 @@ class ResourceBreakdownRequest(BaseModel):
     scope: str = USAGE_SCOPE_ALL
     start_date: date
     end_date: date
-    group_by: str = "resource_type"
+    # One or more grouping dimensions, combined left-to-right (mirrors the token
+    # usage API's ``group_by: ["date", "user"]``). A trend splits a bucketed
+    # series via ["date", "<dim>"]; a table uses a single ["<dim>"].
+    group_by: List[str] = Field(default_factory=lambda: ["resource_type"])
     granularity: str = USAGE_GRANULARITY_DAY
     order_by: Optional[str] = None  # a metric key; default = first metric
     descending: bool = True
@@ -434,9 +437,16 @@ async def _run_breakdown(
     ]
     summary_row = (await session.exec(base.with_only_columns(*summary_cols))).first()
 
-    select_cols, group_cols = _group_columns(
-        request.group_by, session, request.granularity
-    )
+    # Combine each grouping dimension left-to-right (e.g. ["date",
+    # "instance_type"] → one (date, sku) row per bucket per group). Only "date"
+    # is ever paired with another dimension, so the labels (group_date vs
+    # group_key/group_id) don't clash.
+    select_cols: List[Any] = []
+    group_cols: List[Any] = []
+    for gb in request.group_by:
+        sc, gc = _group_columns(gb, session, request.granularity)
+        select_cols.extend(sc)
+        group_cols.extend(gc)
     agg_cols = [metrics[k].label(k) for k in metric_keys]
     agg_cols += [
         func.count(func.distinct(active_resource_id)).label("resources"),
@@ -472,17 +482,23 @@ async def _run_breakdown(
     items = []
     for row in rows:
         item = {"metrics": metrics_of(row)}
-        if request.group_by == "date":
+        # Carry whichever grouping columns this query selected — a compound
+        # (date + dimension) trend row has both ``group_date`` and ``group_key``.
+        if hasattr(row, "group_date"):
             item["date"] = getattr(row, "group_date", None)
-        else:
+        if hasattr(row, "group_key"):
             item["key"] = getattr(row, "group_key", None)
-            if hasattr(row, "group_id"):
-                item["id"] = getattr(row, "group_id", None)
+        if hasattr(row, "group_id"):
+            item["id"] = getattr(row, "group_id", None)
         item["sku"] = getattr(row, "sku", None)
         item["metrics"]["last_active"] = getattr(row, "last_active", None)
         items.append(item)
 
-    await _enrich_items(session, request.group_by, items)
+    # Per-row display dims matter only for single-dimension table groupings; a
+    # date-bucketed trend (["date", <dim>]) doesn't need them.
+    dims = [g for g in request.group_by if g != "date"]
+    if dims and "date" not in request.group_by:
+        await _enrich_items(session, dims[0], items)
 
     return {
         "summary": metrics_of(summary_row) if summary_row is not None else {},
@@ -526,8 +542,10 @@ async def gpu_instances_breakdown(
     ctx: TenantContextDep,
     request: ResourceBreakdownRequest,
 ):
-    if request.group_by not in ("instance_type", "instance", "user", "date"):
-        request.group_by = "instance_type"
+    allowed = {"instance_type", "instance", "user", "date"}
+    request.group_by = [g for g in request.group_by if g in allowed] or [
+        "instance_type"
+    ]
     return await _run_breakdown(
         session,
         user=user,
@@ -549,8 +567,8 @@ async def storage_breakdown(
     ctx: TenantContextDep,
     request: ResourceBreakdownRequest,
 ):
-    if request.group_by not in ("type", "volume", "user", "date"):
-        request.group_by = "type"
+    allowed = {"type", "volume", "user", "date"}
+    request.group_by = [g for g in request.group_by if g in allowed] or ["type"]
     return await _run_breakdown(
         session,
         user=user,
