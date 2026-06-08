@@ -666,6 +666,8 @@ async def resource_events(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     resource_type: Optional[str] = None,
+    resource_name: Optional[str] = None,
+    event_types: Optional[str] = None,
     scope: str = USAGE_SCOPE_ALL,
     creator_ids: Optional[str] = None,
     page: int = 1,
@@ -674,6 +676,13 @@ async def resource_events(
     effective_scope = _resolve_effective_scope(user, ctx, scope)
     org_id = ctx.current_principal_id if ctx is not None else None
     creator_id_list = _parse_id_csv(creator_ids)
+    # Comma-separated event types (e.g. "created,deleted"); the only emitted
+    # types are created / deleted / phase_to_metered / phase_left_metered.
+    event_type_list = (
+        [e.strip() for e in event_types.split(",") if e.strip()]
+        if event_types
+        else None
+    )
 
     stmt = select(ResourceEvent)
     if effective_scope == USAGE_SCOPE_SELF:
@@ -685,6 +694,13 @@ async def resource_events(
         stmt = stmt.where(ResourceEvent.creator_id.in_(creator_id_list))
     if resource_type:
         stmt = stmt.where(ResourceEvent.resource_type == resource_type)
+    if event_type_list:
+        stmt = stmt.where(ResourceEvent.event_type.in_(event_type_list))
+    if resource_name and resource_name.strip():
+        # Case-insensitive substring ("fuzzy") match on the resource name —
+        # func.lower(...) LIKE keeps it portable across PostgreSQL and MySQL.
+        needle = f"%{resource_name.strip().lower()}%"
+        stmt = stmt.where(func.lower(ResourceEvent.resource_name).like(needle))
     if start_date is not None:
         stmt = stmt.where(cast(ResourceEvent.occurred_at, Date) >= start_date)
     if end_date is not None:
