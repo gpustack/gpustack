@@ -623,23 +623,24 @@ def _collapse_by_backend_name(
         # `existing` is the public copy of whatever we saw first; `backend`
         # is the new ORM row. Decide which side is the Org row and merge.
         if backend.owner_principal_id is not None:
-            org_versions = backend.version_configs
-            other_versions = existing.version_configs
-            org_enabled = bool(backend.enabled)
-            other_enabled = bool(existing.enabled)
-            target = InferenceBackendPublic(**backend.model_dump())
+            org_row = backend
+            platform_row = existing
+            target = InferenceBackendPublic(**org_row.model_dump())
         else:
-            org_versions = existing.version_configs
-            other_versions = backend.version_configs
-            org_enabled = bool(existing.enabled)
-            other_enabled = bool(backend.enabled)
-            target = existing
+            org_row = existing
+            platform_row = backend
+            target = org_row
         merged_versions = {
-            **(other_versions.root if other_versions else {}),
-            **(org_versions.root if org_versions else {}),
+            **(
+                platform_row.version_configs.root
+                if platform_row.version_configs
+                else {}
+            ),
+            **(org_row.version_configs.root if org_row.version_configs else {}),
         }
         target.version_configs = VersionConfigDict(root=merged_versions)
-        target.enabled = org_enabled or other_enabled
+        target.enabled = bool(org_row.enabled) or bool(platform_row.enabled)
+        target.icon = platform_row.icon
         by_name[backend.backend_name] = target
     return list(by_name.values())
 
@@ -1142,6 +1143,7 @@ async def _redirect_global_edit_to_org_row(
         backend_source=backend.backend_source,
         parameter_format=backend_in.parameter_format,
         common_parameters=backend_in.common_parameters,
+        icon=backend.icon,
         owner_principal_id=ctx.current_principal_id,
     )
     return await InferenceBackend.create(session, new_row)
