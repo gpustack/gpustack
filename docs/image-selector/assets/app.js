@@ -108,6 +108,7 @@ const CONFIG = {
                 'benchmark': 'Benchmark 镜像 - 用于运行模型性能基准测试',
                 'postgres': 'PostgreSQL - 用于独立部署外置数据库（可选组件）',
                 'monitoring': '监控套件 - 包含 Prometheus 和 Grafana（可选组件）',
+                'gateway': '网关镜像 - 仅在 Kubernetes 环境下需要',
                 'k8s': 'GPU 服务镜像 - 仅在 Kubernetes 环境下需要'
             },
             'cards': {
@@ -199,6 +200,7 @@ const CONFIG = {
                 'benchmark': 'Benchmark Image - Used for running model performance benchmarks',
                 'postgres': 'PostgreSQL - Used for independent deployment of external database (optional component)',
                 'monitoring': 'Monitoring Suite - Includes Prometheus and Grafana (optional components)',
+                'gateway': 'Gateway Images - Required for Kubernetes deployment only',
                 'k8s': 'GPU Service Images - Required for Kubernetes deployment only'
             },
             'cards': {
@@ -339,7 +341,7 @@ function getCurrentImages(component) {
             state.images.filter(i => i.includes('prometheus')).forEach(i => imgs.push(getFullImageName('prometheus', i.split(':')[1], state.selectedRegistry)));
             state.images.filter(i => i.includes('grafana')).forEach(i => imgs.push(getFullImageName('grafana', i.split(':')[1], state.selectedRegistry)));
         }
-        // K8s cluster images - only required for Kubernetes deployments
+        // Gateway and GPU service images - only required for Kubernetes deployments
         state.images.filter(img => {
             const name = img.split(':')[0];
             return name.startsWith('gpustack/mirrored-') || ['gpustack/higress-plugins', 'gpustack/gpustack-operator', 'gpustack/ssh-server'].includes(name);
@@ -692,15 +694,29 @@ function generateImageList() {
             state.images.filter(i => i.includes('prometheus')).forEach(i => cmds.push(`docker pull${plat} ${getFullImageName('prometheus', i.split(':')[1], state.selectedRegistry)}`));
             state.images.filter(i => i.includes('grafana')).forEach(i => cmds.push(`docker pull${plat} ${getFullImageName('grafana', i.split(':')[1], state.selectedRegistry)}`));
         }
-        // K8s cluster images - only required for Kubernetes deployments
-        const k8sImgs = state.images.filter(img => {
+        // Gateway images - only required for Kubernetes deployments
+        const gatewayImgs = state.images.filter(img => {
             const name = img.split(':')[0];
-            return name.startsWith('gpustack/mirrored-') || ['gpustack/higress-plugins', 'gpustack/gpustack-operator', 'gpustack/ssh-server'].includes(name);
+            return name.startsWith('gpustack/mirrored-higress-') || name === 'gpustack/higress-plugins';
         });
-        if (k8sImgs.length) {
+        if (gatewayImgs.length) {
+            cmds.push('');
+            cmds.push(`# ${t.comments.gateway}`);
+            gatewayImgs.forEach(img => {
+                const [fullName, tag] = img.split(':');
+                cmds.push(`docker pull${plat} ${getFullImageName(fullName.split('/').pop(), tag, state.selectedRegistry)}`);
+            });
+        }
+        // GPU service images - only required for Kubernetes deployments
+        const gpuServiceImgs = state.images.filter(img => {
+            const name = img.split(':')[0];
+            return ['gpustack/gpustack-operator', 'gpustack/ssh-server'].includes(name) ||
+                   (name.startsWith('gpustack/mirrored-') && !name.startsWith('gpustack/mirrored-higress-'));
+        });
+        if (gpuServiceImgs.length) {
             cmds.push('');
             cmds.push(`# ${t.comments.k8s}`);
-            k8sImgs.forEach(img => {
+            gpuServiceImgs.forEach(img => {
                 const [fullName, tag] = img.split(':');
                 cmds.push(`docker pull${plat} ${getFullImageName(fullName.split('/').pop(), tag, state.selectedRegistry)}`);
             });
