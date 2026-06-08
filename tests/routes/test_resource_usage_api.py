@@ -129,7 +129,7 @@ async def session():
 
 def _req(group_by):
     return ResourceBreakdownRequest(
-        scope="self", start_date=D, end_date=D, group_by=group_by
+        scope="self", start_date=D, end_date=D, group_by=[group_by]
     )
 
 
@@ -271,7 +271,7 @@ async def test_breakdown_filters_by_creator_ids(session):
         scope="all",
         start_date=D,
         end_date=D,
-        group_by="resource_type",
+        group_by=["resource_type"],
         creator_ids=[7],
     )
     out = await _run_breakdown(
@@ -331,7 +331,7 @@ async def test_breakdown_tenant_scope_follows_consumer_not_owner(session):
         user=USER,
         ctx=ctx_org1,
         request=ResourceBreakdownRequest(
-            scope="all", start_date=D, end_date=D, group_by="instance"
+            scope="all", start_date=D, end_date=D, group_by=["instance"]
         ),
         base_filter=(MeteredUsage.meter_key == METER_INSTANCE_UPTIME),
         metric_keys=["gpu_hours"],
@@ -352,7 +352,7 @@ async def test_breakdown_filters_by_instance_ids(session):
         scope="all",
         start_date=D,
         end_date=D,
-        group_by="instance",
+        group_by=["instance"],
         instance_ids=[501],
     )
     out = await _run_breakdown(
@@ -488,3 +488,36 @@ async def test_resource_events_filters_by_event_type_and_name(session):
     )
     assert {e["resource_name"] for e in out["items"]} == {"michelia-gpu"}
     assert len(out["items"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_breakdown_date_sub_group_splits_series(session):
+    # group_by="date" + sub_group_by="instance_type" → one (date, sku) row per
+    # bucket per group, so the trend chart can build one series per instance type.
+    from sqlalchemy import and_
+
+    req = ResourceBreakdownRequest(
+        scope="all",
+        start_date=D,
+        end_date=D,
+        group_by=["date", "instance_type"],
+    )
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=req,
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["gpu_hours"],
+    )
+    # every compound row carries BOTH the date bucket and the group key
+    assert out["items"]
+    assert all(
+        i.get("date") is not None and i.get("key") is not None for i in out["items"]
+    )
+    by_sku = {i["key"]: i["metrics"]["gpu_hours"] for i in out["items"]}
+    assert by_sku["h100x2"] == pytest.approx(49795 * 2 / 3600, abs=0.01)
+    assert by_sku["a100x1"] == pytest.approx(3600 / 3600, abs=0.01)
