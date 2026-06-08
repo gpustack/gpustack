@@ -15,16 +15,27 @@ from typing import Any, List, Optional, Tuple
 # Metered phase predicate
 # ---------------------------------------------------------------------------
 
-# Terminal failure phases from
-# ``gpustack.server.controllers.GPUInstanceController.PHASE_*_FAILED``.
-# Kept here as a literal set to avoid pulling the server module (and the
-# whole reconcile graph) into the usage layer at import time.
-_FAILED_PHASES = frozenset(
+# Phases where the instance is NOT holding an accelerator, so metering must be
+# off. Two groups (literal copies of ``schemas.gpu_instances.GPUInstancePhase``
+# values — kept as literals to keep this layer import-light, no schema/server
+# dependency; see test_non_metered_phases_match_schema):
+#   * terminal create failures — the accelerator never came up / was released;
+#   * the stop / delete lifecycle (Stopping/Stopped from an explicit stop,
+#     Deleting on the way out) — the accelerator is released, so the user is
+#     not charged while stopped.
+# Everything else non-empty IS metered: Ready / NotReady (up, maybe degraded),
+# Starting (coming up — reacquiring the reservation, like the initial bring-up),
+# and Unknown (status unreadable → assume still allocated, conservative).
+_NON_METERED_PHASES = frozenset(
     {
         "CreateFailed",
+        "InitializeFailed",
         "SSHPublicKeyCreateFailed",
         "PersistentVolumeCreateFailed",
         "PersistentVolumeTypeCreateFailed",
+        "Stopping",
+        "Stopped",
+        "Deleting",
     }
 )
 
@@ -32,12 +43,12 @@ _FAILED_PHASES = frozenset(
 def is_metered_phase(phase: Optional[str]) -> bool:
     """Return True if ``phase`` represents a state that consumes GPU.
 
-    The plan's "kueue admits → resource is reserved" model: any non-empty,
-    non-failure phase is metered. ``None`` covers brand-new rows whose
-    reconciler hasn't run yet; failure phases cover terminal states where the
-    accelerator has already been released.
+    The plan's "kueue admits → resource is reserved" model: any non-empty phase
+    is metered unless it's in :data:`_NON_METERED_PHASES`. ``None`` covers
+    brand-new rows whose reconciler hasn't run yet; the non-metered set covers
+    failures and the stop/delete lifecycle, where the accelerator is released.
     """
-    return phase is not None and phase not in _FAILED_PHASES
+    return phase is not None and phase not in _NON_METERED_PHASES
 
 
 # ---------------------------------------------------------------------------
