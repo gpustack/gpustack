@@ -107,7 +107,8 @@ const CONFIG = {
                 'pause': 'Pause 镜像 - 提供模型实例容器的共享网络和 IPC 环境，仅 Docker 环境需要',
                 'benchmark': 'Benchmark 镜像 - 用于运行模型性能基准测试',
                 'postgres': 'PostgreSQL - 用于独立部署外置数据库（可选组件）',
-                'monitoring': '监控套件 - 包含 Prometheus 和 Grafana（可选组件）'
+                'monitoring': '监控套件 - 包含 Prometheus 和 Grafana（可选组件）',
+                'k8s': 'GPU 服务镜像 - 仅在 Kubernetes 环境下需要'
             },
             'cards': {
                 'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': '昇腾', 'hygon': '海光',
@@ -197,7 +198,8 @@ const CONFIG = {
                 'pause': 'Pause Image - Provides shared network and IPC environment for model instance containers, required for Docker environment only',
                 'benchmark': 'Benchmark Image - Used for running model performance benchmarks',
                 'postgres': 'PostgreSQL - Used for independent deployment of external database (optional component)',
-                'monitoring': 'Monitoring Suite - Includes Prometheus and Grafana (optional components)'
+                'monitoring': 'Monitoring Suite - Includes Prometheus and Grafana (optional components)',
+                'k8s': 'GPU Service Images - Required for Kubernetes deployment only'
             },
             'cards': {
                 'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': 'Ascend', 'hygon': 'Hygon',
@@ -337,6 +339,14 @@ function getCurrentImages(component) {
             state.images.filter(i => i.includes('prometheus')).forEach(i => imgs.push(getFullImageName('prometheus', i.split(':')[1], state.selectedRegistry)));
             state.images.filter(i => i.includes('grafana')).forEach(i => imgs.push(getFullImageName('grafana', i.split(':')[1], state.selectedRegistry)));
         }
+        // K8s cluster images - only required for Kubernetes deployments
+        state.images.filter(img => {
+            const name = img.split(':')[0];
+            return name.startsWith('gpustack/mirrored-') || ['gpustack/higress-plugins', 'gpustack/gpustack-operator', 'gpustack/ssh-server'].includes(name);
+        }).forEach(img => {
+            const [fullName, tag] = img.split(':');
+            imgs.push(getFullImageName(fullName.split('/').pop(), tag, state.selectedRegistry));
+        });
     }
     return imgs;
 }
@@ -603,7 +613,7 @@ function getFullImageName(baseName, tag, registryKey) {
 
 // Main logic to generate the list of docker pull commands
 function generateImageList() {
-    const plat = `--platform linux/${state.selectedArch}`;
+    const plat = state.selectedArch === 'auto' ? '' : ` --platform linux/${state.selectedArch}`;
     const cmds = [];
     const isServer = state.selectedComponent === 'server' || state.selectedComponent === 'all';
     const isWorker = state.selectedComponent === 'worker' || state.selectedComponent === 'all';
@@ -611,7 +621,7 @@ function generateImageList() {
     
     if (state.selectedGpuStackVersion) {
         cmds.push(`# ${t.comments.main}`);
-        cmds.push(`docker pull ${plat} ${getFullImageName('gpustack', state.selectedGpuStackVersion, state.selectedRegistry)}`);
+        cmds.push(`docker pull${plat} ${getFullImageName('gpustack', state.selectedGpuStackVersion, state.selectedRegistry)}`);
     }
 
     if (!state.selectedCard || !state.selectedFrameworkVersion) {
@@ -639,7 +649,7 @@ function generateImageList() {
                 const m = bPart?.match(/^([a-z]+)([\d.]+(?:rc\d+)?(?:post\d+)?)?$/i);
                 if (!m || !state.selectedBackends.includes(`${m[1].toLowerCase()}-${m[2]}`)) return;
             }
-            rCmds.push(`docker pull ${plat} ${getFullImageName('runner', tag, state.selectedRegistry)}`);
+            rCmds.push(`docker pull${plat} ${getFullImageName('runner', tag, state.selectedRegistry)}`);
         });
         if (rCmds.length) { 
             const comment = t.comments.runner;
@@ -651,14 +661,14 @@ function generateImageList() {
         if (pause) { 
             const comment = t.comments.pause;
             cmds.push(`# ${comment}`); 
-            cmds.push(`docker pull ${plat} ${getFullImageName('runtime', pause.split(':')[1], state.selectedRegistry)}`); 
+            cmds.push(`docker pull${plat} ${getFullImageName('runtime', pause.split(':')[1], state.selectedRegistry)}`); 
         }
         
         const bm = state.images.find(i => i.includes('benchmark-runner'));
         if (bm) { 
             const comment = t.comments.benchmark;
             cmds.push(`# ${comment}`); 
-            cmds.push(`docker pull ${plat} ${getFullImageName('benchmark-runner', bm.split(':')[1], state.selectedRegistry)}`); 
+            cmds.push(`docker pull${plat} ${getFullImageName('benchmark-runner', bm.split(':')[1], state.selectedRegistry)}`); 
         }
     }
 
@@ -668,14 +678,27 @@ function generateImageList() {
             if (pgs.length) { 
                 const comment = t.comments.postgres;
                 cmds.push(`# ${comment}`); 
-                pgs.forEach(i => cmds.push(`docker pull ${plat} ${getFullImageName('postgres', i.split(':')[1], state.selectedRegistry)}`)); 
+                pgs.forEach(i => cmds.push(`docker pull${plat} ${getFullImageName('postgres', i.split(':')[1], state.selectedRegistry)}`)); 
             }
         }
         if (state.optionalImages['monitoring']) {
             const comment = t.comments.monitoring;
             cmds.push(`# ${comment}`);
-            state.images.filter(i => i.includes('prometheus')).forEach(i => cmds.push(`docker pull ${plat} ${getFullImageName('prometheus', i.split(':')[1], state.selectedRegistry)}`));
-            state.images.filter(i => i.includes('grafana')).forEach(i => cmds.push(`docker pull ${plat} ${getFullImageName('grafana', i.split(':')[1], state.selectedRegistry)}`));
+            state.images.filter(i => i.includes('prometheus')).forEach(i => cmds.push(`docker pull${plat} ${getFullImageName('prometheus', i.split(':')[1], state.selectedRegistry)}`));
+            state.images.filter(i => i.includes('grafana')).forEach(i => cmds.push(`docker pull${plat} ${getFullImageName('grafana', i.split(':')[1], state.selectedRegistry)}`));
+        }
+        // K8s cluster images - only required for Kubernetes deployments
+        const k8sImgs = state.images.filter(img => {
+            const name = img.split(':')[0];
+            return name.startsWith('gpustack/mirrored-') || ['gpustack/higress-plugins', 'gpustack/gpustack-operator', 'gpustack/ssh-server'].includes(name);
+        });
+        if (k8sImgs.length) {
+            cmds.push('');
+            cmds.push(`# ${t.comments.k8s}`);
+            k8sImgs.forEach(img => {
+                const [fullName, tag] = img.split(':');
+                cmds.push(`docker pull${plat} ${getFullImageName(fullName.split('/').pop(), tag, state.selectedRegistry)}`);
+            });
         }
     }
     renderImageList(cmds);
