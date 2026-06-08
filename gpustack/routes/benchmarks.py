@@ -114,14 +114,17 @@ async def get_benchmarks(
     )
 
 
-def gpu_summary_filter(data: Benchmark, gpu_summary: Optional[str]) -> bool:
-    if (
-        gpu_summary
-        and data.gpu_summary
-        and gpu_summary.lower() not in data.gpu_summary.lower()
-    ):
+def _fuzzy_contains(value: Optional[str], target: Optional[str]) -> bool:
+    """Return False only when the filter value is set but not contained in target."""
+    if not value:
+        return True
+    if not target:
         return False
-    return True
+    return value.lower() in target.lower()
+
+
+def gpu_summary_filter(data: Benchmark, gpu_summary: Optional[str]) -> bool:
+    return _fuzzy_contains(gpu_summary, data.gpu_summary)
 
 
 async def _get_benchmarks(
@@ -138,12 +141,6 @@ async def _get_benchmarks(
     if search:
         fuzzy_fields["name"] = search
 
-    if profile:
-        fuzzy_fields["profile"] = profile
-
-    if model_name:
-        fuzzy_fields["model_name"] = model_name
-
     fields = {}
     if state:
         fields["state"] = state
@@ -155,6 +152,14 @@ async def _get_benchmarks(
     if gpu_summary:
         extra_conditions.append(
             func.lower(Benchmark.gpu_summary).like(f"%{gpu_summary.lower()}%")
+        )
+    if profile:
+        extra_conditions.append(
+            func.lower(Benchmark.profile).like(f"%{profile.lower()}%")
+        )
+    if model_name:
+        extra_conditions.append(
+            func.lower(Benchmark.model_name).like(f"%{model_name.lower()}%")
         )
 
     def _benchmark_visible(b: Benchmark) -> bool:
@@ -177,7 +182,9 @@ async def _get_benchmarks(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=lambda data: _benchmark_visible(data)
-                and gpu_summary_filter(data, gpu_summary),
+                and gpu_summary_filter(data, gpu_summary)
+                and _fuzzy_contains(profile, data.profile)
+                and _fuzzy_contains(model_name, data.model_name),
             ),
             media_type="text/event-stream",
         )
