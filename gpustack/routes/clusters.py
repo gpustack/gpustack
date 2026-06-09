@@ -155,7 +155,6 @@ def _cluster_has_gpu_instance_options(cluster: Cluster) -> bool:
 
 @router.get("", response_model=ClustersPublic, response_model_exclude_none=True)
 async def get_clusters(
-    session: SessionDep,
     ctx: TenantContextDep,
     params: ClusterListParams = Depends(),
     name: str = None,
@@ -838,7 +837,6 @@ _CLUSTER_PROXY_REQUEST_HEADER_SKIP = {
 )
 async def cluster_apiserver_proxy(
     request: Request,
-    session: SessionDep,
     id: int,
     path: str,
 ):
@@ -846,28 +844,34 @@ async def cluster_apiserver_proxy(
     Proxy a request to the Kubernetes API server of a Kubernetes-provider
     cluster, by forwarding it through one of the cluster's worker pods. The
     worker uses its in-pod ServiceAccount credentials to call the API server.
-    """
-    cluster = await Cluster.one_by_id(session, id)
-    if not cluster or cluster.deleted_at is not None:
-        raise NotFoundException(message=f"cluster {id} not found")
-    if cluster.provider != ClusterProvider.Kubernetes:
-        raise InvalidException(
-            message=(
-                f"cluster {cluster.name}(id: {id}) provider is "
-                f"{cluster.provider.value}; API server proxy is only supported "
-                "for Kubernetes-provider clusters."
-            )
-        )
 
-    workers = await Worker.all_by_fields(
-        session,
-        fields={"cluster_id": id, "state": WorkerStateEnum.READY},
-    )
-    if not workers:
-        raise ServiceUnavailableException(
-            message=f"No reachable workers in cluster {cluster.name}(id: {id})"
+    Uses an inline session instead of SessionDep so the session is released
+    immediately after the initial lookup, preventing long-lived Kubernetes
+    watch/log streams from holding a database connection.
+    """
+    async with async_session() as session:
+        cluster = await Cluster.one_by_id(session, id)
+        if not cluster or cluster.deleted_at is not None:
+            raise NotFoundException(message=f"cluster {id} not found")
+        if cluster.provider != ClusterProvider.Kubernetes:
+            raise InvalidException(
+                message=(
+                    f"cluster {cluster.name}(id: {id}) provider is "
+                    f"{cluster.provider.value}; API server proxy is only supported "
+                    "for Kubernetes-provider clusters."
+                )
+            )
+
+        workers = await Worker.all_by_fields(
+            session,
+            fields={"cluster_id": id, "state": WorkerStateEnum.READY},
         )
-    worker = random.choice(workers)
+        if not workers:
+            raise ServiceUnavailableException(
+                message=f"No reachable workers in cluster {cluster.name}(id: {id})"
+            )
+        worker = random.choice(workers)
+        session.expunge(worker)
 
     headers = {
         k: v

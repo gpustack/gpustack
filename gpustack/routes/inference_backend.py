@@ -774,7 +774,6 @@ def _filter_community_backends(
 
 @router.get("", response_model=InferenceBackendsPublic)
 async def get_inference_backends(  # noqa: C901
-    session: SessionDep,
     ctx: TenantContextDep,
     params: ListParamsDep,
     search: str = None,
@@ -786,7 +785,6 @@ async def get_inference_backends(  # noqa: C901
     Get paginated list of inference backends with optional search and filters.
 
     Args:
-        session: Database session
         params: List parameters (page, perPage, watch, sort_by)
         search: Search keyword for backend_name and description
         include_deprecated: Include deprecated versions
