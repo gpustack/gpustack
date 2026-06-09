@@ -195,6 +195,23 @@ class GpuInstanceOptions(BaseModel):
     )
 
 
+class OperatorOptions(BaseModel):
+    """
+    Operator-specific deployment options. Nested under ``k8s_options.operator``
+    so operator concerns are isolated from worker process configuration.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    env: Optional[Dict[str, str]] = PydanticField(
+        default=None,
+        alias="env",
+        description=(
+            "Additional environment variables injected into the operator "
+            "container. Keys are env var names, values are literal strings."
+        ),
+    )
+
+
 class K8sOptions(BaseModel):
     """
     All Kubernetes-side deployment knobs for a cluster's worker DaemonSets:
@@ -254,6 +271,11 @@ class K8sOptions(BaseModel):
             "Kubernetes namespace this cluster's manifests render into. "
             "Falls back to ``gpustack-system`` at render time when unset."
         ),
+    )
+    operator: Optional[OperatorOptions] = PydanticField(
+        default=None,
+        alias="operator",
+        description="Operator-specific deployment options for the cluster.",
     )
 
 

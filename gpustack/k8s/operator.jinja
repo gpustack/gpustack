@@ -205,6 +205,12 @@ data:
                 - name: GPUSTACK_INSTANCE_ACCESS_STATIC_ADDRESS
                   value: {{ config.operator_instance_access_static_address }}
                 {%- endif %}
+                {%- if config.operator_env %}
+                {%- for k, v in config.operator_env.items() %}
+                - name: {{ k }}
+                  value: {{ v | tojson }}
+                {%- endfor %}
+                {%- endif %}
               ports:
                 - name: https
                   containerPort: 31443

@@ -49,10 +49,10 @@ global.nodeSelector is used. Empty/null on both yields no output.
 {{- end -}}
 
 {{/*
-Effective BASE nodeSelector for worker DaemonSets (before vendor merging).
+Effective BASE nodeSelector for worker DaemonSets (before PCI merging).
 worker.nodeSelector REPLACES global.nodeSelector when non-empty. Returns
-the map itself (not YAML) via JSON round-trip so callers can merge with a
-vendor override.
+the map itself (not YAML) via JSON round-trip so callers can merge with
+PCI labels.
 */}}
 {{- define "gpustack.workerBaseNodeSelectorJson" -}}
 {{- if .Values.worker.nodeSelector -}}
@@ -65,64 +65,37 @@ vendor override.
 {{- end -}}
 
 {{/*
-Multi-vendor mode invariants. Mirrors the cluster route layer:
-  - every configured vendor must declare a non-empty
-    gpuVendorOverrides[<vendor>].nodeSelector;
-  - no two vendors may share an identical nodeSelector;
-  - no base nodeSelector key may appear in any vendor override.
-Single-vendor or zero-vendor mode skips all of these checks.
+PCI vendor ID per GPU manufacturer. Mirrors _MANUFACTURER_PCI_ID in
+gpustack/k8s/manifest_template.py. Used to derive deterministic
+nodeSelector labels for each vendor DaemonSet.
 */}}
-{{- define "gpustack.validateMultiVendor" -}}
-{{- $vendors := include "gpustack.workerVendors" . | fromJsonArray -}}
-{{- if gt (len $vendors) 1 -}}
-{{- $overrides := .Values.worker.gpuVendorOverrides | default dict -}}
-{{- $base := include "gpustack.workerBaseNodeSelectorJson" . | fromJson -}}
-{{- $seenSelectors := dict -}}
-{{- range $vendor := $vendors -}}
-  {{- $sel := dict -}}
-  {{- with index $overrides $vendor -}}
-    {{- with .nodeSelector -}}{{- $sel = . -}}{{- end -}}
-  {{- end -}}
-  {{- if not $sel -}}
-    {{- fail (printf "worker.gpuVendorOverrides.%s.nodeSelector is required in multi-vendor mode" $vendor) -}}
-  {{- end -}}
-  {{- range $k, $_ := $sel -}}
-    {{- if hasKey $base $k -}}
-      {{- fail (printf "worker.gpuVendorOverrides.%s.nodeSelector key %q also appears in the worker/global base nodeSelector; the CPU DaemonSet would simultaneously require and forbid it" $vendor $k) -}}
-    {{- end -}}
-  {{- end -}}
-  {{- $sig := $sel | toJson -}}
-  {{- if hasKey $seenSelectors $sig -}}
-    {{- fail (printf "worker.gpuVendorOverrides.%s.nodeSelector is identical to %s — vendor DaemonSets would target the same nodes and podAntiAffinity would leave one Pending forever" $vendor (index $seenSelectors $sig)) -}}
-  {{- end -}}
-  {{- $_ := set $seenSelectors $sig $vendor -}}
-{{- end -}}
-{{- end -}}
+{{- define "gpustack.pciVendorIds" -}}
+{"amd":"1002","ascend":"19e5","cambricon":"cabc","hygon":"1d94","iluvatar":"1e3e","metax":"9999","mthreads":"1ed5","nvidia":"10de","thead":"1ded"}
 {{- end -}}
 
 {{/*
-Union of label keys across every configured vendor's nodeSelector override.
-Consumed by the CPU DaemonSet as `DoesNotExist` matchExpressions so it
-avoids nodes belonging to any GPU vendor. Returns a JSON-encoded list.
+Canonical vendor ordering (mirrors _RUNTIME_ORDER in manifest_template.py).
+Controls which vendor owns the legacy DaemonSet name in multi-vendor mode.
+Returns a JSON-encoded list.
 */}}
-{{- define "gpustack.cpuExclusionKeysJson" -}}
+{{- define "gpustack.canonicalVendorOrder" -}}
+["amd","ascend","cambricon","hygon","iluvatar","metax","mthreads","nvidia","thead"]
+{{- end -}}
+
+{{/*
+Sort the configured vendors into canonical order and return as JSON list.
+The first vendor in canonical order keeps the legacy DaemonSet name.
+*/}}
+{{- define "gpustack.sortedVendors" -}}
 {{- $vendors := include "gpustack.workerVendors" . | fromJsonArray -}}
-{{- $overrides := .Values.worker.gpuVendorOverrides | default dict -}}
-{{- $keys := list -}}
-{{- $seen := dict -}}
-{{- range $vendor := $vendors -}}
-  {{- with index $overrides $vendor -}}
-    {{- with .nodeSelector -}}
-      {{- range $k, $_ := . -}}
-        {{- if not (hasKey $seen $k) -}}
-          {{- $_ := set $seen $k true -}}
-          {{- $keys = append $keys $k -}}
-        {{- end -}}
-      {{- end -}}
-    {{- end -}}
+{{- $canonical := include "gpustack.canonicalVendorOrder" . | fromJsonArray -}}
+{{- $sorted := list -}}
+{{- range $canonical -}}
+  {{- if has . $vendors -}}
+    {{- $sorted = append $sorted . -}}
   {{- end -}}
 {{- end -}}
-{{- $keys | sortAlpha | toJson -}}
+{{- $sorted | toJson -}}
 {{- end -}}
 
 
@@ -218,4 +191,36 @@ tls:
 imagePullSecrets:
 {{- toYaml . | nindent 2 }}
 {{- end }}
+{{- end -}}
+
+
+{{/*
+Operator image tag. Requires operator.image.tag to be set (patched
+automatically by CI from gpustack/__init__.py __operator_version__).
+Fails explicitly when the tag is unset instead of falling back to a
+stale default.
+*/}}
+{{- define "gpustack.operatorImageTag" -}}
+{{- required "operator.image.tag is required (set it explicitly or rely on CI patching)" .Values.operator.image.tag -}}
+{{- end -}}
+
+
+{{/*
+Full operator image reference: {global.hub}/{operator.image.repository}:{tag}
+*/}}
+{{- define "gpustack.operatorImage" -}}
+{{ printf "%s/%s:%s" (include "gpustack.hub" .) .Values.operator.image.repository (include "gpustack.operatorImageTag" .) -}}
+{{- end -}}
+
+
+{{/*
+Effective nodeSelector for the operator pod.
+operator.nodeSelector REPLACES global.nodeSelector when non-empty.
+*/}}
+{{- define "gpustack.operatorNodeSelector" -}}
+{{- if .Values.operator.nodeSelector -}}
+{{ toYaml .Values.operator.nodeSelector }}
+{{- else if .Values.global.nodeSelector -}}
+{{ toYaml .Values.global.nodeSelector }}
+{{- end -}}
 {{- end -}}

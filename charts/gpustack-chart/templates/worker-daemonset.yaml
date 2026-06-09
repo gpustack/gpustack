@@ -1,41 +1,31 @@
 {{- if .Values.worker.enabled }}
-{{- include "gpustack.validateMultiVendor" . }}
-{{- $vendors := include "gpustack.workerVendors" . | fromJsonArray }}
+{{- $vendors := include "gpustack.sortedVendors" . | fromJsonArray }}
 {{- $multiVendor := gt (len $vendors) 1 }}
 {{- $base := include "gpustack.workerBaseNodeSelectorJson" . | fromJson }}
-{{- $cpuExclusionKeys := include "gpustack.cpuExclusionKeysJson" . | fromJsonArray }}
-{{- $overrides := .Values.worker.gpuVendorOverrides | default dict }}
+{{- $pciIds := include "gpustack.pciVendorIds" . | fromJson }}
+{{- $dsBasename := printf "%s-worker" .Release.Name }}
 
 {{- /*
 Build the list of DaemonSets to render. Each entry carries:
   name          - logical name used in app labels and runtime tag
   dsName        - actual DaemonSet metadata.name
-  runtime       - jinja-equivalent runtime tag for per-vendor blocks ("" for CPU)
-  isCPU         - true if this is the legacy/CPU fallback DS
-  nodeSelector  - effective nodeSelector for this DS (base merged with vendor override)
+  runtime       - vendor runtime tag for per-vendor blocks
+  nodeSelector  - effective nodeSelector (base merged with PCI label)
 */}}
 {{- $workers := list }}
-{{- if $multiVendor }}
-  {{- range $vendor := $vendors }}
-    {{- $vendorSel := dict }}
-    {{- with index $overrides $vendor }}
-      {{- with .nodeSelector }}{{- $vendorSel = . }}{{- end }}
-    {{- end }}
-    {{- $merged := mergeOverwrite (deepCopy $base) $vendorSel }}
-    {{- $workers = append $workers (dict "name" $vendor "dsName" (printf "%s-worker-%s" $.Release.Name $vendor) "runtime" $vendor "isCPU" false "nodeSelector" $merged) }}
-  {{- end }}
-  {{- $workers = append $workers (dict "name" "cpu" "dsName" (printf "%s-worker" $.Release.Name) "runtime" "" "isCPU" true "nodeSelector" $base) }}
-{{- else }}
-  {{- $runtime := "" }}
-  {{- if eq (len $vendors) 1 }}{{- $runtime = (index $vendors 0) }}{{- end }}
+{{- range $idx, $vendor := $vendors }}
+  {{- $pciId := index $pciIds $vendor }}
   {{- $vendorSel := dict }}
-  {{- if ne $runtime "" }}
-    {{- with index $overrides $runtime }}
-      {{- with .nodeSelector }}{{- $vendorSel = . }}{{- end }}
-    {{- end }}
+  {{- if $pciId }}
+    {{- $pciLabel := printf "feature.node.kubernetes.io/pci-%s.present" $pciId }}
+    {{- $vendorSel = dict $pciLabel "true" }}
   {{- end }}
   {{- $merged := mergeOverwrite (deepCopy $base) $vendorSel }}
-  {{- $workers = append $workers (dict "name" (default "cpu" $runtime) "dsName" (printf "%s-worker" $.Release.Name) "runtime" $runtime "isCPU" (eq $runtime "") "nodeSelector" $merged) }}
+  {{- if eq $idx 0 }}
+    {{- $workers = append $workers (dict "name" $vendor "dsName" $dsBasename "runtime" $vendor "nodeSelector" $merged) }}
+  {{- else }}
+    {{- $workers = append $workers (dict "name" $vendor "dsName" (printf "%s-%s" $dsBasename $vendor) "runtime" $vendor "nodeSelector" $merged) }}
+  {{- end }}
 {{- end }}
 
 {{- range $idx, $w := $workers }}
@@ -279,9 +269,8 @@ spec:
         {{- with $.Values.worker.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if or $multiVendor (and $w.isCPU $cpuExclusionKeys) }}
+      {{- if $multiVendor }}
       affinity:
-        {{- if $multiVendor }}
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             - topologyKey: kubernetes.io/hostname
@@ -289,17 +278,6 @@ spec:
                 matchLabels:
                   app.kubernetes.io/component: worker
               namespaceSelector: {}
-        {{- end }}
-        {{- if and $w.isCPU $cpuExclusionKeys }}
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                {{- range $key := $cpuExclusionKeys }}
-                  - key: {{ $key }}
-                    operator: DoesNotExist
-                {{- end }}
-        {{- end }}
       {{- end }}
       {{- if $w.nodeSelector }}
       nodeSelector:
