@@ -3274,10 +3274,22 @@ class GPUInstanceController:
         if iid is None:
             return
         existing = self._pending.get(iid)
-        # DELETED has the highest priority — never let it be overwritten by a
-        # later UPDATED for the same iid.
-        if existing is not None and existing.type == EventType.DELETED:
-            return
+        if existing is not None:
+            # DELETED is terminal — nothing supersedes it.
+            if existing.type == EventType.DELETED:
+                return
+            # An in-flight UPDATED whose snapshot already reads DELETING is
+            # terminal-bound: a later UPDATED can only carry equal-or-stale
+            # data, so don't let it replace the slot. DELETED is still
+            # allowed through (terminal upgrade).
+            if (
+                existing.type == EventType.UPDATED
+                and event.type == EventType.UPDATED
+                and existing.data is not None
+                and (existing.data.status or GPUInstanceStatus()).phase
+                == self.PHASE_DELETING
+            ):
+                return
         self._pending[iid] = event
         if iid not in self._workers:
             self._workers[iid] = asyncio.create_task(self._worker(iid))
@@ -3516,26 +3528,20 @@ class GPUInstanceController:
                         logger.exception(
                             f"Failed to sync worker-side ssh public key for {fresh.name}"
                         )
+
+                # Phase-specific handling.
                 phase = (fresh.status or GPUInstanceStatus()).phase
                 if phase is not None:
-                    if phase in (self.PHASE_DELETING, self.PHASE_STOPPING):
-                        # DELETING|STOPPING: issue the worker-side delete and fall
-                        # through to the read_instance block, which observes
-                        # whether the resource is gone and drives the DB
-                        # cleanup if needed.
-                        # Don't test *Failed/Ready below — they
-                        # can't match for DELETING|STOPPING anyway.
+                    if phase == self.PHASE_DELETING:
+                        # Delete the worker-side CR and fall through to
+                        # read_instance, which drives the DB cleanup when
+                        # the CR is gone.
                         logger.debug(
                             f"GPUInstance {fresh.name} is in {phase} phase, try deleting worker-side instance"
                         )
                         try:
                             await ops.delete_instance(fresh.name)
                         except Exception as e:
-                            # Keep the row in DELETING|STOPPING and write the failure as
-                            # phase_message; _set_status will commit a new
-                            # status row, which emits an UPDATED event and
-                            # bounces the iid back into this reconcile path
-                            # (with count++/backoff baked into _set_status).
                             logger.exception(
                                 f"Failed to delete worker-side instance for {fresh.name}"
                             )
@@ -3551,34 +3557,59 @@ class GPUInstanceController:
                                 ),
                             )
                             return
-                    elif phase == self.PHASE_STARTING:
-                        # STARTING: re-create the worker-side instance and fall
-                        # through to the read_instance block. The cluster API
-                        # is idempotent (ignore_existed=True), so a still-
-                        # present instance is a no-op. read_instance then
-                        # reports the cluster's real phase (Pending → ... →
-                        # Ready), which overwrites STARTING on the next
-                        # status write. SSH key / PV survive STOPPING, so
-                        # no re-upsert needed here.
+                    elif phase == self.PHASE_STOPPING:
+                        # Patch ``spec.stop=true``; the worker operator
+                        # tears the workload down and eventually reports
+                        # ``status.phase=Stopped``, at which point the
+                        # read_instance block flips the row to STOPPED.
                         logger.debug(
-                            f"GPUInstance {fresh.name} is in {phase} phase, try creating worker-side instance"
+                            f"GPUInstance {fresh.name} is in {phase} phase, try stopping worker-side instance"
                         )
                         try:
-                            await ops.create_instance(
-                                name=fresh.name,
-                                spec=spec_instance(fresh),
-                            )
+                            await ops.stop_instance(fresh.name)
                         except Exception as e:
                             logger.exception(
-                                f"Failed to create worker-side instance for {fresh.name}"
+                                f"Failed to stop worker-side instance for {fresh.name}"
                             )
                             await self._set_status(
                                 session,
                                 fresh,
-                                GPUInstanceStatus(
-                                    phase=self.PHASE_STARTING,
-                                    phase_message=f"Failed to create worker-side instance, will retry: {e}",
-                                    namespace=ops.org_namespace,
+                                (fresh.status or GPUInstanceStatus()).model_copy(
+                                    update={
+                                        "phase_message": f"Failed to stop worker-side instance, will retry: {e}",
+                                        "namespace": ops.org_namespace,
+                                    }
+                                ),
+                            )
+                            return
+                    elif phase == self.PHASE_STARTING:
+                        # Patch ``spec.stop`` off (merge-patch null). When
+                        # the CR is missing (legacy STOPPED row whose CR
+                        # was deleted, or retry from *CreateFailed before
+                        # the initial create succeeded), bootstrap the CR
+                        # from scratch so /start works uniformly.
+                        logger.debug(
+                            f"GPUInstance {fresh.name} is in {phase} phase, try starting worker-side instance"
+                        )
+                        try:
+                            patched = await ops.start_instance(fresh.name)
+                            if patched is None:
+                                await ops.create_instance(
+                                    name=fresh.name,
+                                    spec=spec_instance(fresh),
+                                )
+                        except Exception as e:
+                            logger.exception(
+                                f"Failed to start worker-side instance for {fresh.name}"
+                            )
+                            await self._set_status(
+                                session,
+                                fresh,
+                                (fresh.status or GPUInstanceStatus()).model_copy(
+                                    update={
+                                        "phase_message": f"Failed to start worker-side instance, will retry: {e}",
+                                        "namespace": ops.org_namespace,
+                                    }
                                 ),
                             )
                             return
@@ -3619,31 +3650,20 @@ class GPUInstanceController:
                     read = await ops.read_instance(fresh.name)
                     if read is None:
                         if phase == self.PHASE_DELETING:
-                            # Worker-side instance is gone — hard-delete the
-                            # DB row. The DELETED event drives _reconcile_deleted
-                            # for SSH key / PV cleanup, so we must return here
-                            # to avoid touching ``fresh`` again (the row no
-                            # longer exists and ``read`` is None).
+                            # CR gone — hard-delete the DB row. The DELETED
+                            # event drives _reconcile_deleted for SSH key /
+                            # PV cleanup; return so we don't touch ``fresh``
+                            # again.
                             await fresh.delete(session)
                             return
                         elif phase == self.PHASE_STOPPING:
-                            # Worker-side instance is gone — transition the
-                            # row from STOPPING to the terminal STOPPED phase
-                            # so subsequent reconciles short-circuit and the
-                            # /start route has a clear allowed source phase.
-                            # ``_set_status`` dumps with ``exclude_none=True``
-                            # and reassigns the column via
-                            # ``pydantic_column_type``, which rebuilds the
-                            # status row from the dump — runtime fields
-                            # (host_ips/pod_ips/access_addresses/ports/
-                            # allocations/node_name) that no longer apply
-                            # fall back to their defaults.
+                            # CR vanished while stopping — treat as stopped.
                             await self._set_status(
                                 session,
                                 fresh,
                                 GPUInstanceStatus(
                                     phase=self.PHASE_STOPPED,
-                                    phase_message="Worker-side instance has been stopped",
+                                    phase_message="Worker-side instance not found",
                                     namespace=ops.org_namespace,
                                 ),
                             )
@@ -3654,56 +3674,52 @@ class GPUInstanceController:
                                 "phaseMessage": "Not found in cluster",
                             }
                         }
-                    else:
-                        if phase in (self.PHASE_DELETING, self.PHASE_STOPPING):
-                            # In-flight transition: cluster instance is still
-                            # being torn down. Preserve the row's existing
-                            # runtime fields (host_ips/pod_ips/access_addresses/
-                            # ports/allocations/node_name) by dumping a
-                            # ``model_copy`` so clients polling GET keep
-                            # seeing meaningful state until the cluster
-                            # finishes removing the instance. Only phase /
-                            # phase_message reflect the in-progress step.
-                            read = {
-                                "status": (fresh.status or GPUInstanceStatus())
-                                .model_copy(
-                                    update={
-                                        "phase": phase,
-                                        "phase_message": "Waiting for worker-side instance to be removed",
-                                    }
-                                )
-                                .model_dump(by_alias=True, exclude_none=True),
-                            }
+                    # else: the normal path — read back the real status to sync the DB
                 except Exception:
                     logger.exception(
                         f"Failed to read worker-side instance for {fresh.name}"
                     )
-                    if phase in (self.PHASE_DELETING, self.PHASE_STOPPING):
-                        # Couldn't confirm from cluster — keep the row in its
-                        # in-flight phase and preserve runtime fields (same
-                        # rationale as the success-with-instance branch
-                        # above) so the next reconcile picks up where we
-                        # left off without flashing access info to None.
-                        read = {
-                            "status": (fresh.status or GPUInstanceStatus())
-                            .model_copy(
-                                update={
-                                    "phase": phase,
-                                    "phase_message": "Failed to confirm from cluster, will retry",
-                                }
-                            )
-                            .model_dump(by_alias=True, exclude_none=True),
-                        }
-                    else:
-                        read = {
-                            "status": {
-                                "phase": self.PHASE_UNKNOWN,
-                                "phaseMessage": "Failed to confirm from cluster",
+
+                    # If reading fails, keep the in-flight phase.
+                    if phase not in (
+                        self.PHASE_DELETING,
+                        self.PHASE_STOPPING,
+                        self.PHASE_STARTING,
+                    ):
+                        phase = self.PHASE_UNKNOWN
+
+                    read = {
+                        "status": (fresh.status or GPUInstanceStatus())
+                        .model_copy(
+                            update={
+                                "phase": phase,
+                                "phase_message": "Failed to confirm from cluster, will retry",
                             }
-                        }
+                        )
+                        .model_dump(by_alias=True, exclude_none=True),
+                    }
 
                 status_payload = dict(read.get("status") or {})
                 status_payload.pop("namespace", None)
+
+                # Hold the in-flight phase until the worker operator has
+                # actually moved: spec.stop was just patched, so the CR's
+                # status.phase typically still reads the pre-patch value
+                # for one reconcile tick. Letting it through would flicker
+                # the row (Stopping→Ready, Starting→Stopped).
+                worker_phase = status_payload.get("phase")
+                if (
+                    (phase == self.PHASE_DELETING)
+                    or (
+                        phase == self.PHASE_STOPPING
+                        and worker_phase != self.PHASE_STOPPED
+                    )
+                    or (
+                        phase == self.PHASE_STARTING
+                        and worker_phase == self.PHASE_STOPPED
+                    )
+                ):
+                    status_payload["phase"] = phase
 
                 await self._set_status(
                     session,
@@ -3721,15 +3737,13 @@ class GPUInstanceController:
                 return
             ops, principal_identifier = built
 
-            # When the row went through DELETING (or STOPPING → STOPPED, then
-            # /delete), _reconcile_updated already confirmed the cluster
-            # instance was gone before the row was hard-deleted, so we can
-            # skip the redundant cluster delete. Hard-deleted rows that
-            # never transitioned through either path (e.g. direct DB
-            # cleanup) still need the worker-side delete here.
+            # When the row went through DELETING, _reconcile_updated
+            # already confirmed the CR was gone before hard-deleting the
+            # row, so skip the redundant cluster delete. STOPPED rows
+            # still have a live (stopped) CR — those need the delete.
             already_deleted_in_cluster = (
                 instance.status or GPUInstanceStatus()
-            ).phase in (self.PHASE_DELETING, self.PHASE_STOPPED)
+            ).phase == self.PHASE_DELETING
 
             async with ops:
                 # Delete Instance.
@@ -3921,11 +3935,35 @@ class GPUInstanceController:
         instance: GPUInstance,
         expected: GPUInstanceStatus,
     ):
-        """Update the status of the instance with the expected status."""
+        """Persist ``expected`` onto the row's status.
+
+        DELETING is sticky: if /delete landed on the row mid-reconcile,
+        the DB now reads DELETING and we drop the write so a stale
+        Stopping/Starting/etc. from this reconcile cannot resurrect a
+        non-DELETING phase. ``session.refresh`` reloads the column
+        values from the DB to close the cross-session race.
+        """
+        await session.refresh(instance)
         current = instance.status or GPUInstanceStatus()
+        if (
+            current.phase == GPUInstancePhase.DELETING
+            and expected.phase != GPUInstancePhase.DELETING
+        ):
+            return
         if current.phase == expected.phase:
             expected.count = current.count + 1
             await asyncio.sleep(expected.count % 15)
+            # The sleep above yields the event loop, so a concurrent
+            # /delete can land DELETING on the row between the guard
+            # check and the write below. Re-read and re-check before
+            # committing the stale expected status.
+            await session.refresh(instance)
+            current = instance.status or GPUInstanceStatus()
+            if (
+                current.phase == GPUInstancePhase.DELETING
+                and expected.phase != GPUInstancePhase.DELETING
+            ):
+                return
         expected_dump = expected.model_dump(by_alias=True, exclude_none=True)
         await instance.update(session, source={"status": expected_dump})
 
