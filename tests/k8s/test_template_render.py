@@ -11,6 +11,7 @@ from gpustack.schemas.clusters import (
     ImageCredential,
     K8sOptions,
     K8sVolumeMount,
+    OperatorOptions,
     VolumeSource,
 )
 
@@ -483,3 +484,48 @@ def test_container_namespace_strips_embedded_registry_from_image_override():
 def test_container_namespace_strips_embedded_registry_with_port():
     cfg = _config_with_image("myreg:5000/org/gpustack:dev")
     assert cfg.container_namespace == "org"
+
+
+# ---------------------------------------------------------------------------
+# Operator env vars from k8s_options.operator.env
+# ---------------------------------------------------------------------------
+
+
+def _operator_deployment_env(docs):
+    """Extract the operator Deployment container env list from the embedded
+    ConfigMap's template.yaml data (ytt-processed)."""
+    cm = next(
+        d
+        for d in docs
+        if d.get("kind") == "ConfigMap"
+        and d["metadata"]["name"] == "gpustack-operator-worker-deployment"
+    )
+    template_yaml = cm["data"]["template.yaml"]
+    # The template.yaml is ytt-templated, but the Deployment portion is plain
+    # YAML after the last ytt directive. Parse all YAML docs and find the
+    # Deployment.
+    inner_docs = [d for d in yaml.safe_load_all(template_yaml) if d]
+    deploy = next(d for d in inner_docs if d.get("kind") == "Deployment")
+    return deploy["spec"]["template"]["spec"]["containers"][0].get("env") or []
+
+
+def test_operator_env_vars_rendered_in_deployment():
+    """Extra env vars from k8s_options.operator.env appear in the operator
+    Deployment container."""
+    values = K8sOptions(
+        operator=OperatorOptions(env={"MY_VAR": "my_value", "OTHER_VAR": "other"}),
+    )
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA], k8s_options=values)
+    env = _operator_deployment_env(docs)
+    env_map = {e["name"]: e.get("value") for e in env if "value" in e}
+    assert env_map.get("MY_VAR") == "my_value"
+    assert env_map.get("OTHER_VAR") == "other"
+
+
+def test_operator_env_vars_absent_when_not_set():
+    """No extra env vars when k8s_options.operator is unset."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    env = _operator_deployment_env(docs)
+    env_names = {e["name"] for e in env}
+    assert "MY_VAR" not in env_names
+    assert "OTHER_VAR" not in env_names

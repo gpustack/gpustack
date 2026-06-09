@@ -1,0 +1,27 @@
+{{- if .Values.worker.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ .Release.Name }}-operator
+  labels:
+    app.kubernetes.io/part-of: gpustack-operator
+{{ include "chart_labels" . | indent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-operator
+  labels:
+    app.kubernetes.io/part-of: gpustack-operator
+{{ include "chart_labels" . | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-operator
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

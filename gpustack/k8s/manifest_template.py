@@ -190,6 +190,22 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
             )
         return None
 
+    @computed_field
+    @property
+    def operator_env(self) -> Optional[Dict[str, str]]:
+        """
+        Extra env vars for the operator container, sourced from
+        ``k8s_options.operator.env``. Returns None when no extra env vars
+        are configured.
+        """
+        if (
+            self.k8s_options
+            and self.k8s_options.operator
+            and self.k8s_options.operator.env
+        ):
+            return self.k8s_options.operator.env
+        return None
+
     def render(self) -> str:
         def b64encode(value):
             return base64.b64encode(value.encode("utf-8")).decode("utf-8")

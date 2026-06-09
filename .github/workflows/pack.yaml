@@ -353,16 +353,27 @@ jobs:
             exit 1
           fi
           export PLUGINS_VERSION
+          # Resolve operator version from gpustack/__init__.py so the chart
+          # always ships an image tag that matches the built-in default.
+          OPERATOR_VERSION=$(python3 -c "from gpustack import __operator_version__; print(__operator_version__)")
+          if [[ -z "${OPERATOR_VERSION}" ]]; then
+            echo "Failed to resolve __operator_version__ from gpustack/__init__.py" >&2
+            exit 1
+          fi
+          export OPERATOR_VERSION
           yq -i '.version    = strenv(VERSION)'                       charts/gpustack-chart/Chart.yaml
           yq -i '.appVersion = strenv(APP_VERSION)'                   charts/gpustack-chart/Chart.yaml
           yq -i '.image.tag  = strenv(IMAGE_TAG)'                     charts/gpustack-chart/values.yaml
           yq -i '.higressPlugins.image.tag = strenv(PLUGINS_VERSION)' charts/gpustack-chart/values.yaml
+          yq -i '.operator.image.tag = strenv(OPERATOR_VERSION)'      charts/gpustack-chart/values.yaml
           echo "--- Chart.yaml ---"
           cat charts/gpustack-chart/Chart.yaml
           echo "--- values.yaml image stanza ---"
           yq '.image' charts/gpustack-chart/values.yaml
           echo "--- values.yaml higressPlugins.image stanza ---"
           yq '.higressPlugins.image' charts/gpustack-chart/values.yaml
+          echo "--- values.yaml operator.image stanza ---"
+          yq '.operator.image' charts/gpustack-chart/values.yaml
 
       - name: Helm lint
         run: helm lint charts/gpustack-chart

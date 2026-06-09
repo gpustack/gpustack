@@ -31,8 +31,7 @@ global:
   # Default nodeSelector applied to every GPUStack component (server + worker)
   # when no component-level nodeSelector is provided. Component-level
   # `server.nodeSelector` / `worker.nodeSelector`, when non-empty, REPLACE
-  # this value entirely (no merging). For per-vendor worker scheduling, see
-  # `worker.gpuVendorOverrides` below.
+  # this value entirely (no merging).
   nodeSelector: {}
 
 # Auto-creation of the canonical `gpustack-image-pull-secret` docker-registry
@@ -157,48 +156,29 @@ worker:
   # Rendering modes:
   #   - 0 or 1 entry: single DaemonSet `<release>-worker`, no vendor labels,
   #     no anti-affinity (byte-compatible with the v1 chart layout).
-  #   - 2+ entries: per-vendor DaemonSet `<release>-worker-<vendor>` plus a
-  #     CPU fallback DaemonSet `<release>-worker`. The CPU DS gets a
-  #     `DoesNotExist` nodeAffinity for every label key declared in
-  #     `gpuVendorOverrides[*].nodeSelector` so it never competes for the
-  #     same nodes. All worker pods get a required podAntiAffinity
-  #     (topologyKey=hostname, namespaceSelector={}) so two GPUStack worker
-  #     pods cannot share a node even across namespaces — protects the
-  #     `hostNetwork: true` ports from collision.
+  #   - 2+ entries: per-vendor DaemonSet. The first vendor in canonical
+  #     order (amd, ascend, cambricon, hygon, iluvatar, metax, mthreads,
+  #     nvidia, thead) keeps the legacy `<release>-worker` name; every other
+  #     vendor gets `<release>-worker-<vendor>`. All worker pods get a
+  #     required podAntiAffinity (topologyKey=hostname, namespaceSelector={})
+  #     so two GPUStack worker pods cannot share a node even across namespaces
+  #     — protects the `hostNetwork: true` ports from collision.
   #
-  # Set to [] for a CPU-only worker.
+  # Each DaemonSet automatically receives a PCI-presence nodeSelector label
+  # (e.g. `feature.node.kubernetes.io/pci-10de.present: "true"` for NVIDIA)
+  # based on the vendor's PCI ID. These labels are advertised by Node Feature
+  # Discovery (NFD); NFD must be installed in the cluster for workers to
+  # schedule onto GPU nodes.
+  #
+  # Set to [] to disable the worker DaemonSet.
   gpuVendors:
     - nvidia
   # Base nodeSelector for ALL worker DaemonSets. When non-empty, REPLACES
   # `global.nodeSelector` entirely (no merging with global). Leave empty
-  # to fall back to `global.nodeSelector`. Per-vendor DaemonSets merge
-  # their override on top of this base (override keys win).
+  # to fall back to `global.nodeSelector`. Each DaemonSet additionally
+  # receives its vendor PCI-presence label merged on top (PCI label wins
+  # on conflict).
   nodeSelector: {}
-  # Per-vendor scheduling overrides. The vendor DaemonSet's effective
-  # nodeSelector is `worker.nodeSelector` (or `global.nodeSelector` when
-  # the worker value is empty) merged with the vendor's nodeSelector below
-  # — vendor keys win on conflict.
-  #
-  # REQUIRED in multi-vendor mode (`gpuVendors` length >= 2). The chart
-  # rejects the install when any of the following holds, mirroring the
-  # invariants enforced by the cluster route layer:
-  #   - a configured vendor has no `nodeSelector` block (the CPU DS and
-  #     that vendor DS would compete for the same nodes);
-  #   - two vendors share an IDENTICAL nodeSelector (their DaemonSets
-  #     would target the same node set and podAntiAffinity would leave
-  #     one Pending forever — typical copy-paste mistake);
-  #   - any base nodeSelector key also appears in a vendor override (the
-  #     CPU DS would simultaneously require and forbid that key and
-  #     never schedule).
-  gpuVendorOverrides: {}
-  # Example:
-  # gpuVendorOverrides:
-  #   nvidia:
-  #     nodeSelector:
-  #       nvidia.com/gpu.present: "true"
-  #   amd:
-  #     nodeSelector:
-  #       amd.com/gpu.present: "true"
   port: 10150
   metricsPort: 10151
   environmentConfig: {}
@@ -213,3 +193,32 @@ worker:
   #   hostPath:
   #     path: /opt/custom/lib
   #     type: DirectoryOrCreate
+operator:
+  # Operator manages worker DaemonSet lifecycle. Automatically enabled with
+  # worker.enabled=true — setting this manually is not needed in most cases.
+  image:
+    # Operator image repository including namespace (no registry).
+    # Final reference: {global.hub}/{operator.image.repository}:{operator.image.tag}
+    # Default tag is v0.2.1 — automatically patched by CI from __operator_version__
+    # in gpustack/__init__.py at build time.
+    repository: gpustack/gpustack-operator
+    tag: null
+    pullPolicy: IfNotPresent
+  # Additional environment variables for the operator container.
+  environmentConfig: {}
+  # Node selector for the operator pod. When non-empty, REPLACES
+  # global.nodeSelector entirely (no merging). Leave empty/null to fall
+  # back to global.nodeSelector.
+  nodeSelector: {}
+  # Operator container resource limits/requests.
+  resources:
+    limits:
+      cpu: "4"
+      memory: 8Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  # Cert-manager TLS is auto-detected at runtime by the operator bootstrap Job
+  # (mirrors the Jinja template's apply.sh behavior). When cert-manager CRD
+  # `certificates.cert-manager.io` is found in the cluster, an Issuer and
+  # Certificate are created automatically. No user configuration needed.
