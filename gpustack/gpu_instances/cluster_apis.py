@@ -284,6 +284,48 @@ class ClusterOps:
                     return existing
             raise
 
+    async def _patch_spec(
+        self, spec: _CRDSpec, name: str, body_spec: dict
+    ) -> Optional[dict]:
+        """Merge-patch the spec of a CRD object. Return None when absent.
+
+        Keys set to ``None`` in ``body_spec`` are removed from the live
+        spec by merge-patch semantics.
+        """
+        crd = self._crd()
+        body = {"spec": body_spec}
+        try:
+            if spec.namespaced:
+                patched = await crd.patch_namespaced_custom_object(
+                    group=_GROUP,
+                    version=_VERSION,
+                    plural=spec.plural,
+                    namespace=self.org_namespace,
+                    name=name,
+                    body=body,
+                    _content_type="application/merge-patch+json",
+                )
+            else:
+                patched = await crd.patch_cluster_custom_object(
+                    group=_GROUP,
+                    version=_VERSION,
+                    plural=spec.plural,
+                    name=name,
+                    body=body,
+                    _content_type="application/merge-patch+json",
+                )
+            logger.info(
+                "Patched %s %s spec in cluster %s",
+                spec.kind,
+                name,
+                self.cluster_id,
+            )
+            return patched
+        except client.exceptions.ApiException as e:
+            if e.status == http.HTTPStatus.NOT_FOUND:
+                return None
+            raise
+
     async def _delete(self, spec: _CRDSpec, name: str) -> None:
         crd = self._crd()
         try:
@@ -479,6 +521,22 @@ class ClusterOps:
         ``ignore_existed`` is true and the resource already exists.
         """
         return await self._create(_INSTANCE, name, spec, ignore_existed)
+
+    async def stop_instance(self, name: str) -> Optional[dict]:
+        """Stop the instance by patching ``spec.stop=true``.
+
+        Returns the server-acknowledged object, or ``None`` if the
+        instance is gone.
+        """
+        return await self._patch_spec(_INSTANCE, name, {"stop": True})
+
+    async def start_instance(self, name: str) -> Optional[dict]:
+        """Resume the instance by removing ``spec.stop`` via merge-patch null.
+
+        Returns the server-acknowledged object, or ``None`` if the
+        instance is gone.
+        """
+        return await self._patch_spec(_INSTANCE, name, {"stop": None})
 
     async def delete_instance(self, name: str):
         """

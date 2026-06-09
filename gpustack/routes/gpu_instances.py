@@ -1,3 +1,35 @@
+"""GPU instance HTTP routes.
+
+``status.phase`` is the source of truth; the controller reconciles it
+against the worker-side ``Instance`` CR. State machine:
+
+    None ──► Pending ──► NotReady ──► Ready
+                                       │
+                              /stop ───┤
+                                       ▼
+            Stopping ─(operator reports phase=Stopped)─► Stopped
+                                                          │
+                                                    /start│
+                                                          ▼
+                                                       Starting
+                                                          │
+                                          ────────────────┘
+                                          ▼ (re-enters Pending → … → Ready)
+
+    *Failed (initial-create failures; terminal until):
+        - /delete ─► Deleting (cleanup)
+
+    /delete works from **any** phase and is sticky: the controller's
+    ``_set_status`` refuses to overwrite a row that already reads
+    Deleting, so an in-flight Stopping/Starting reconcile cannot
+    resurrect it.
+
+Route → target phase:
+    DELETE /{id}        → Deleting   (any phase)
+    PUT    /{id}/stop   → Stopping   (rejected from in-flight / terminal phases)
+    PUT    /{id}/start  → Starting   (only from Stopped)
+"""
+
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -166,13 +198,7 @@ async def delete_gpu_instance(
     ctx: TenantContextDep,
     id: int,
 ):
-    """Mark the GPU instance for deletion.
-
-    Stamps ``phase=Deleting`` on the row and returns 202 Accepted with the
-    updated resource. The DB row stays in place until the controller
-    confirms the cluster-side instance is gone (graceful deletion); clients
-    can poll GET to observe the phase transition and eventual disappearance.
-    """
+    """Mark the instance for deletion (allowed from any phase)."""
     return await _transition_to_phase(
         session,
         ctx,
@@ -189,14 +215,7 @@ async def stop_gpu_instance(
     ctx: TenantContextDep,
     id: int,
 ):
-    """Mark the GPU instance for stopping.
-
-    Stamps ``phase=Stopping`` on the row and returns 202 Accepted with the
-    updated resource. The DB row stays in place until the controller
-    confirms the cluster-side instance is deleted and transitions the row
-    to the terminal ``Stopped`` phase; clients can poll GET to observe the
-    transition.
-    """
+    """Mark the instance for stopping."""
     return await _transition_to_phase(
         session,
         ctx,
@@ -213,14 +232,7 @@ async def start_gpu_instance(
     ctx: TenantContextDep,
     id: int,
 ):
-    """Mark the GPU instance for starting.
-
-    Stamps ``phase=Starting`` on the row and returns 202 Accepted with the
-    updated resource. The controller (re)creates the worker-side instance
-    on the next reconcile, then the cluster's reported phase (Pending →
-    Running → Ready) flows back via ``read_instance``. Only legal from the
-    terminal ``Stopped`` or ``*CreateFailed`` source phases.
-    """
+    """Mark the instance for starting."""
     return await _transition_to_phase(
         session,
         ctx,
@@ -431,13 +443,8 @@ def _build_update_source(
 
 
 def _build_update_phase_source(existing_obj: GPUInstance, phase: str) -> dict:
-    """Stamp ``phase=<phase>`` onto the row's status, preserving other fields.
-
-    ``count`` and ``phase_message`` are reset so the controller's backoff
-    starts from zero and stale messages (e.g. ``Ready``, prior
-    ``*CreateFailed`` reasons) don't leak into the new phase before
-    the first reconcile overwrites them.
-    """
+    """Stamp ``phase`` onto status, resetting ``count`` and ``phase_message``
+    so the controller restarts its backoff from zero on the new phase."""
     base = existing_obj.status or GPUInstanceStatus()
     return {
         "status": base.model_copy(
@@ -450,36 +457,17 @@ def _build_update_phase_source(existing_obj: GPUInstance, phase: str) -> dict:
     }
 
 
-# Per-action lifecycle gates. Phase transitions are described by the *source*
-# phase a row must NOT be in (``delete``) or MUST be in (``stop`` / ``start``)
-# for the action to be legal. Keeping these as module-level constants makes
-# the state machine readable in one place and easy to extend (e.g., adding a
-# ``restart`` action later).
+# Source-phase gates for each lifecycle action. /delete has no gate
+# (allowed from any phase, including ``None`` pre-create).
 _FAILED_PHASES = frozenset(
     {
         GPUInstancePhase.CREATE_FAILED,
         GPUInstancePhase.SSH_KEY_CREATE_FAILED,
         GPUInstancePhase.PV_TYPE_CREATE_FAILED,
         GPUInstancePhase.PV_CREATE_FAILED,
+        GPUInstancePhase.INITIALIZE_FAILED,
     }
 )
-
-# /delete: legal from any non-Deleting phase.
-_DELETE_ALLOWED_FROM = (
-    frozenset(
-        {
-            GPUInstancePhase.DELETING,
-            GPUInstancePhase.UNKNOWN,
-            GPUInstancePhase.INITIALIZE_FAILED,
-            GPUInstancePhase.READY,
-        }
-    )
-    | _FAILED_PHASES
-)
-
-# /stop: only legal from a "running-ish" phase. Reject in-flight transitions
-# (Deleting/Stopping/Starting), the terminal Stopped, and *CreateFailed (the
-# instance never came up).
 _STOP_DISALLOWED_FROM = (
     frozenset(
         {
@@ -487,15 +475,12 @@ _STOP_DISALLOWED_FROM = (
             GPUInstancePhase.STOPPING,
             GPUInstancePhase.STOPPED,
             GPUInstancePhase.STARTING,
+            GPUInstancePhase.NOT_READY,
         }
     )
     | _FAILED_PHASES
 )
-
-# /start: only legal from terminal Stopped or *CreateFailed (retry). Reject
-# the rest — Ready means it's already up, Starting/Stopping/Deleting are
-# in-flight, ``None`` means the controller is still doing the initial create.
-_START_ALLOWED_FROM = frozenset({GPUInstancePhase.STOPPED}) | _FAILED_PHASES
+_START_ALLOWED_FROM = frozenset({GPUInstancePhase.STOPPED})
 
 
 async def _transition_to_phase(
@@ -507,14 +492,8 @@ async def _transition_to_phase(
     target_phase: str,
     fail_message: str,
 ) -> GPUInstance:
-    """Shared scaffolding for the three lifecycle endpoints (delete / stop / start).
-
-    Loads + ownership-checks the row, gates the phase transition via
-    :func:`_validate_phase_transition`, stamps the new phase via
-    :func:`_build_update_phase_source`, and persists it inside
-    :func:`handle_error` so DB failures surface as 500. The updated row is
-    returned to the caller for the 202 response body.
-    """
+    """Load + ownership-check the row, gate the transition by ``action``,
+    stamp the target phase, and persist. Returns the updated row."""
     ret = ensure_writable(
         await GPUInstance.one_by_id(
             session=session,
@@ -523,17 +502,8 @@ async def _transition_to_phase(
         ctx,
     )
 
-    # Validate the phase transition before doing any work.
     current_phase = ret.status.phase if ret.status else None
-    if action == "delete":
-        if current_phase is None or current_phase not in _DELETE_ALLOWED_FROM:
-            raise InvalidException(
-                message=(
-                    f"GPU instance cannot be deleted from "
-                    f"{current_phase or 'pending creation'} phase"
-                ),
-            )
-    elif action == "stop":
+    if action == "stop":
         if current_phase is None or current_phase in _STOP_DISALLOWED_FROM:
             raise InvalidException(
                 message=(
