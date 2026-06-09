@@ -101,6 +101,14 @@ class ApiKeyPublic(ApiKeyBase):
     value: Optional[str] = None  # only available when creating
     masked_value: Optional[str] = None  # partial characters for identification
     is_custom: bool
+    # The owning Org. Server-set on create from the caller's tenant
+    # context (the DB column is NOT NULL — every key lives in exactly
+    # one Org), so it intentionally stays out of ApiKeyCreate / Update
+    # — but readers (list / get responses) need it to render which Org
+    # owns the key, hence the explicit declaration here. Typed as a
+    # plain `int` so the generated OpenAPI / TS clients treat it as
+    # required and non-nullable.
+    owner_principal_id: int
     created_at: datetime
     updated_at: datetime
     expires_at: Optional[datetime] = None
