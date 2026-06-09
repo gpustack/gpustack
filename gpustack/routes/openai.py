@@ -35,6 +35,7 @@ from gpustack.schemas.model_routes import (
 from gpustack.schemas.principals import Principal, platform_principal_id
 from gpustack.schemas.workers import Worker
 from gpustack.routes.model_routes import _my_model_visibility_sql
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, CurrentUserDep, TenantContextDep
 from gpustack.server.services import (
     ModelInstanceService,
@@ -174,66 +175,73 @@ async def _prefetch_owner_principals(
 async def proxy_request_by_model(
     request: Request,
     user: CurrentUserDep,
-    session: SessionDep,
 ):
     """
     Proxy the request to the model instance that is running the model specified in the
     request body.
+
+    Uses an inline session instead of SessionDep so the session is released
+    after the initial lookups, preventing long-lived streaming inference
+    responses from holding a database connection.
     """
     endpoint = re.sub(r"^/(v1|v1-openai)/", "", request.url.path)
     model_name, stream, body_json, form_data = await parse_request_body(request)
-    if not await UserService(session).model_allowed_for_user(
-        model_name=model_name,
-        user_id=user.id,
-        api_key=getattr(request.state, "api_key", None),
-    ):
-        raise NotFoundException(
-            message="Model not found",
-            is_openai_exception=True,
-        )
-    model_route_service = ModelRouteService(session)
-    route_targets: List[RouteTargetResolution] = (
-        await model_route_service.resolve_route_targets(model_name)
-    )
-    if not route_targets:
-        raise NotFoundException(
-            message="Model not found or no running instances available",
-            is_openai_exception=True,
-        )
-    request.state.stream = stream
-    # Weighted target selection mirrors the Higress gateway path (ModelRouteTarget.weight).
-    # random.choices raises on an all-zero weight vector, so fall back to uniform there.
-    target_weights = [t.weight for t in route_targets]
-    if sum(target_weights) > 0:
-        target = random.choices(route_targets, weights=target_weights, k=1)[0]
-    else:
-        target = random.choice(route_targets)
-    model = await ModelService(session).get_by_id(target.model_id)
-    if not model:
-        raise NotFoundException(
-            message="Model not found",
-            is_openai_exception=True,
-        )
-    request.state.model = model
-    request.state.overridden_model_name = target.overridden_model_name
 
-    # Resolve the route id so downstream middleware (usage recording) can
-    # attribute the request to the route it entered through. The lookup
-    # is @locked_cached so repeat hits within the same session are cheap.
-    model_route = await model_route_service.get_by_name(model_name)
-    request.state.model_route_id = model_route.id if model_route else None
-
-    mutate_request(request, model_name, body_json, form_data)
-
-    instance = await get_running_instance(
-        session, model.id, target.overridden_model_name
-    )
-    worker: Worker = await WorkerService(session).get_by_id(instance.worker_id)
-    if not worker:
-        raise InternalServerErrorException(
-            message=f"Worker with ID {instance.worker_id} not found",
-            is_openai_exception=True,
+    async with async_session() as session:
+        if not await UserService(session).model_allowed_for_user(
+            model_name=model_name,
+            user_id=user.id,
+            api_key=getattr(request.state, "api_key", None),
+        ):
+            raise NotFoundException(
+                message="Model not found",
+                is_openai_exception=True,
+            )
+        model_route_service = ModelRouteService(session)
+        route_targets: List[RouteTargetResolution] = (
+            await model_route_service.resolve_route_targets(model_name)
         )
+        if not route_targets:
+            raise NotFoundException(
+                message="Model not found or no running instances available",
+                is_openai_exception=True,
+            )
+        request.state.stream = stream
+        # Weighted target selection mirrors the Higress gateway path (ModelRouteTarget.weight).
+        # random.choices raises on an all-zero weight vector, so fall back to uniform there.
+        target_weights = [t.weight for t in route_targets]
+        if sum(target_weights) > 0:
+            target = random.choices(route_targets, weights=target_weights, k=1)[0]
+        else:
+            target = random.choice(route_targets)
+        model = await ModelService(session).get_by_id(target.model_id)
+        if not model:
+            raise NotFoundException(
+                message="Model not found",
+                is_openai_exception=True,
+            )
+        request.state.model = model
+        request.state.overridden_model_name = target.overridden_model_name
+
+        # Resolve the route id so downstream middleware (usage recording) can
+        # attribute the request to the route it entered through. The lookup
+        # is @locked_cached so repeat hits within the same session are cheap.
+        model_route = await model_route_service.get_by_name(model_name)
+        request.state.model_route_id = model_route.id if model_route else None
+
+        mutate_request(request, model_name, body_json, form_data)
+
+        instance = await get_running_instance(
+            session, model.id, target.overridden_model_name
+        )
+        worker: Worker = await WorkerService(session).get_by_id(instance.worker_id)
+        if not worker:
+            raise InternalServerErrorException(
+                message=f"Worker with ID {instance.worker_id} not found",
+                is_openai_exception=True,
+            )
+        session.expunge(instance)
+        session.expunge(worker)
     extra_headers = {
         router_header_key: f"{model_instance_prefix(instance)}.static",
     }
