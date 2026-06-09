@@ -4,7 +4,7 @@ import base64
 import uuid
 import logging
 import asyncio
-from typing import Optional, List, Dict, Any, Set
+from typing import Optional, List, Dict, Any, Set, Tuple
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -49,6 +49,8 @@ from gpustack.schemas.workers import (
     WorkerStatusStored,
     WorkerStateEnum,
 )
+from gpustack.server.bus import Event, EventType
+from gpustack.server.worker_allocated_cache import get_worker_allocated
 from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.api_keys import ApiKey
@@ -71,12 +73,80 @@ logger = logging.getLogger(__name__)
 create_worker_semaphore = asyncio.Semaphore(10)
 
 
-def to_worker_public(input: Worker, me: bool) -> WorkerPublic:
+def to_worker_public(
+    input: Worker,
+    me: bool,
+    allocated: Tuple[int, Dict[int, int]] = (0, {}),
+) -> WorkerPublic:
     data = input.model_dump()
     if me:
         data['me'] = me
 
+    _inject_allocated_into_status(data.get('status'), allocated)
+
     return WorkerPublic.model_validate(data)
+
+
+def _inject_allocated_into_status(
+    status: Optional[dict],
+    allocated: Tuple[int, Dict[int, int]],
+):
+    """Override status.memory.allocated and gpu_devices[*].memory.allocated
+    with values aggregated server-side from current ModelInstance assignments.
+
+    The worker's self-reported values are ignored: they can lag arbitrarily
+    when the worker is offline or its cache is stale. Following the K8s
+    Node.Allocated pattern, the orchestrator's view of "what's scheduled
+    here" is what the UI shows.
+    """
+    if status is None:
+        return
+    ram, vram = allocated
+    memory = status.get('memory')
+    if memory is not None:
+        memory['allocated'] = ram
+    for device in status.get('gpu_devices') or []:
+        device_memory = device.get('memory')
+        if device_memory is None:
+            continue
+        idx = device.get('index')
+        device_memory['allocated'] = vram.get(idx, 0) if idx is not None else 0
+
+
+async def _lookup_allocated(worker_id: int) -> Tuple[int, Dict[int, int]]:
+    """Cache-backed (ram, vram) lookup for a worker. Per-worker cache key
+    invalidated by ModelInstanceService on writes that touch this worker
+    (see server.worker_allocated_cache)."""
+    allocated = await get_worker_allocated(worker_id)
+    return (allocated.ram, allocated.vram)
+
+
+async def _inject_allocated_into_event(event: Event):
+    """Mutate a Worker watch event so its WorkerPublic carries the same
+    server-computed allocated as the REST response. The persisted
+    worker.status.*.allocated is None (workers don't report it anymore),
+    so without this the UI would receive the watch event and flash to 0
+    right after the REST fetch showed the correct value.
+    """
+    # DELETED events arrive with data={"id": N} (ID-only) — nothing to mutate.
+    if event.type == EventType.DELETED:
+        return
+    worker = event.data
+    if (
+        not isinstance(worker, WorkerPublic)
+        or worker.id is None
+        or worker.status is None
+    ):
+        return
+
+    ram, vram = await _lookup_allocated(worker.id)
+    if worker.status.memory is not None:
+        worker.status.memory.allocated = ram
+    for device in worker.status.gpu_devices or []:
+        if device.memory is None:
+            continue
+        idx = device.index
+        device.memory.allocated = vram.get(idx, 0) if idx is not None else 0
 
 
 def _make_worker_visibility_filter(ctx):
@@ -147,7 +217,10 @@ async def get_workers(
     if params.watch:
         return StreamingResponse(
             Worker.streaming(
-                fields=fields, fuzzy_fields=fuzzy_fields, filter_func=visible
+                fields=fields,
+                fuzzy_fields=fuzzy_fields,
+                filter_func=visible,
+                event_transform=_inject_allocated_into_event,
             ),
             media_type="text/event-stream",
         )
@@ -166,10 +239,13 @@ async def get_workers(
             per_page=params.perPage,
             order_by=_normalize_worker_order_by(params.order_by),
         )
-        if not user.worker:
-            return worker_list
+        me_id = user.worker.id if user.worker else None
         public_list = [
-            to_worker_public(worker, user.worker.id == worker.id)
+            to_worker_public(
+                worker,
+                me_id == worker.id,
+                await _lookup_allocated(worker.id),
+            )
             for worker in worker_list.items
         ]
         return WorkersPublic(items=public_list, pagination=worker_list.pagination)
@@ -184,9 +260,8 @@ async def get_worker(
 ):
     worker = await Worker.one_by_id(session, id)
     assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
-    if user.worker is not None and user.worker.id == worker.id:
-        return to_worker_public(worker, True)
-    return worker
+    me = user.worker is not None and user.worker.id == worker.id
+    return to_worker_public(worker, me, await _lookup_allocated(worker.id))
 
 
 @router.get("/{id}/dashboard")

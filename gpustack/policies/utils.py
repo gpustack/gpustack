@@ -42,7 +42,53 @@ class WorkerGPUInfo(BaseModel):
     allocatable_vram: int  # in bytes
 
 
-def get_worker_allocatable_resource(  # noqa: C901
+def compute_worker_allocated(
+    all_model_instances: List[ModelInstance],
+    worker_id: int,
+    gpu_type: Optional[str] = None,
+) -> Allocated:
+    """Aggregate (ram, {gpu_index: vram}) for ``worker_id`` from current
+    ModelInstance assignments — main worker + distributed subordinates.
+
+    The single source of truth for "what's scheduled on this worker", used
+    by the scheduler (via :func:`get_worker_allocatable_resource`), the
+    workers REST API, and the worker-side collector. Mirrors the K8s
+    scheduler pattern of deriving Allocated from current workload→node
+    bindings rather than from anything the node self-reports.
+
+    For the main worker, both ram and per-GPU vram are counted. For
+    distributed subordinate workers, only vram is counted — the rpc-server
+    side doesn't consume the model's RAM.
+    """
+    allocated = Allocated(ram=0, vram={})
+
+    def add_vram(claim):
+        for gpu_index, vram in (claim.vram or {}).items():
+            allocated.vram[gpu_index] = allocated.vram.get(gpu_index, 0) + vram
+
+    for mi in all_model_instances:
+        if mi.worker_id == worker_id and (
+            gpu_type is None or mi.gpu_type is None or mi.gpu_type == gpu_type
+        ):
+            claim = mi.computed_resource_claim
+            if claim is not None:
+                allocated.ram += claim.ram or 0
+                if mi.gpu_indexes:
+                    add_vram(claim)
+
+        if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
+            for sw in mi.distributed_servers.subordinate_workers:
+                if sw.worker_id != worker_id:
+                    continue
+                if sw.computed_resource_claim and (
+                    gpu_type is None or mi.gpu_type == gpu_type
+                ):
+                    add_vram(sw.computed_resource_claim)
+
+    return allocated
+
+
+def get_worker_allocatable_resource(
     all_model_instances: List[ModelInstance],
     worker: Worker,
     gpu_type: Optional[str] = None,
@@ -51,43 +97,9 @@ def get_worker_allocatable_resource(  # noqa: C901
     Get the worker with the latest allocatable resources, if gpu_type is provided, only consider the GPUs of that type.
     """
 
-    def update_allocated_vram(allocated, resource_claim):
-        for gpu_index, vram in resource_claim.vram.items():
-            allocated.vram[gpu_index] = allocated.vram.get(gpu_index, 0) + vram
-
     is_unified_memory = worker.status.memory.is_unified_memory
     model_instances = get_worker_model_instances(all_model_instances, worker)
-    allocated = Allocated(ram=0, vram={})
-
-    for model_instance in model_instances:
-        # Handle resource allocation for main worker
-        if model_instance.worker_id == worker.id and (
-            gpu_type is None
-            or model_instance.gpu_type is None
-            or model_instance.gpu_type == gpu_type
-        ):
-            allocated.ram += model_instance.computed_resource_claim.ram or 0
-            if model_instance.gpu_indexes:
-                update_allocated_vram(allocated, model_instance.computed_resource_claim)
-
-        # Handle resource allocation for subordinate workers
-        if (
-            model_instance.distributed_servers
-            and model_instance.distributed_servers.subordinate_workers
-        ):
-            for (
-                subordinate_worker
-            ) in model_instance.distributed_servers.subordinate_workers:
-                if subordinate_worker.worker_id != worker.id:
-                    continue
-
-                if subordinate_worker.computed_resource_claim and (
-                    gpu_type is None or model_instance.gpu_type == gpu_type
-                ):
-                    # rpc server only consider the vram
-                    update_allocated_vram(
-                        allocated, subordinate_worker.computed_resource_claim
-                    )
+    allocated = compute_worker_allocated(model_instances, worker.id, gpu_type)
 
     allocatable = Allocatable(ram=0, vram={})
     if worker.status.gpu_devices:

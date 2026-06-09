@@ -39,6 +39,7 @@ from gpustack.server.cache import (
     delete_cache_by_key,
     locked_cached,
 )
+from gpustack.server.worker_allocated_cache import invalidate_workers_allocated
 from gpustack.utils.usage_snapshots import propagate_user_rename
 
 
@@ -869,6 +870,7 @@ class ModelInstanceService:
     async def create(self, model_instance):
         result = await ModelInstance.create(self.session, model_instance)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
+        await invalidate_workers_allocated([model_instance])
         return result
 
     async def update(
@@ -877,12 +879,14 @@ class ModelInstanceService:
         result = await model_instance.update(self.session, source)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
         await delete_cache_by_key(self.get_by_id, model_instance.id)
+        await invalidate_workers_allocated([model_instance])
         return result
 
     async def delete(self, model_instance: ModelInstance):
         result = await model_instance.delete(self.session)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
         await delete_cache_by_key(self.get_by_id, model_instance.id)
+        await invalidate_workers_allocated([model_instance])
         return result
 
     async def batch_delete(self, model_instances: List[ModelInstance]):
@@ -899,6 +903,7 @@ class ModelInstanceService:
 
             for id in ids:
                 await delete_cache_by_key(self.get_running_instances, id)
+            await invalidate_workers_allocated(model_instances)
 
             return names
         except Exception as e:
@@ -922,6 +927,7 @@ class ModelInstanceService:
 
             for id in ids:
                 await delete_cache_by_key(self.get_running_instances, id)
+            await invalidate_workers_allocated(model_instances)
 
             return names
         except Exception as e:

@@ -4,7 +4,17 @@ import importlib
 import json
 import logging
 import math
-from typing import Any, AsyncGenerator, Callable, Iterable, List, Optional, Union, Tuple
+from typing import (
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Iterable,
+    List,
+    Optional,
+    Union,
+    Tuple,
+)
 
 import anyio
 from fastapi.encoders import jsonable_encoder
@@ -831,6 +841,7 @@ class ActiveRecordMixin:
         fuzzy_fields: Optional[dict] = None,
         filter_func: Optional[Callable[[Any], bool]] = None,
         options: Optional[List] = None,
+        event_transform: Optional[Callable[[Event], Awaitable[None]]] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream events matching the given criteria as JSON strings.
 
@@ -839,6 +850,12 @@ class ActiveRecordMixin:
             fuzzy_fields: Fuzzy match filters
             filter_func: Optional filter function to apply to event data
             options: SQLAlchemy options for eager loading relationships (e.g., selectinload)
+            event_transform: Optional async hook called with the public Event
+                right before serialization. May mutate ``event.data`` in
+                place to inject fields derived from outside the raw
+                subscribe payload — used e.g. by /v2/workers to inject
+                allocated computed from current ModelInstance bindings so
+                the watch stream matches the REST response.
         """
         try:
             async for event in cls.subscribe(source="streaming", options=options):
@@ -861,6 +878,14 @@ class ActiveRecordMixin:
                     changed_fields=event.changed_fields,
                     id=event.id,
                 )
+                if event_transform is not None:
+                    try:
+                        await event_transform(public_event)
+                    except Exception as e:
+                        logger.error(
+                            f"event_transform failed for {cls.__name__} "
+                            f"event {event.id}: {e}"
+                        )
                 formatted = cls._format_event(public_event)
                 if formatted is not None:
                     yield formatted

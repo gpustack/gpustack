@@ -13,6 +13,7 @@ from prometheus_client.core import (
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
+from gpustack.policies.utils import compute_worker_allocated
 from gpustack.utils.name import metric_name
 from gpustack.worker.collector import WorkerStatusCollector
 import uvicorn
@@ -237,6 +238,23 @@ class MetricExporter(Collector):
                 )
 
         # gpu
+        # Compute per-GPU allocated locally for the gram_allocated metric.
+        # The collector no longer writes allocated into status — the
+        # authoritative view is the server-side aggregation in /v2/workers
+        # (compute_worker_allocated against the ModelInstance table). We
+        # recompute here purely to keep the Prometheus metric working,
+        # using the same helper to guarantee identical math.
+        allocated_vram: dict[int, int] = {}
+        try:
+            clientset = self._clientset_getter()
+            if clientset is not None:
+                model_instances = clientset.model_instances.list()
+                allocated_vram = compute_worker_allocated(
+                    model_instances.items, self._worker_id_getter()
+                ).vram
+        except Exception as e:
+            logger.error(f"Failed to compute allocated GPU memory for metrics: {e}")
+
         if status.gpu_devices is not None:
             for i, d in enumerate(status.gpu_devices):
                 gpu_chip_index = "0"  # TODO(michelia): Placeholder, replace with actual chip index if available
@@ -268,7 +286,11 @@ class MetricExporter(Collector):
 
                 if d.memory is not None:
                     _add_metric(gram_total, gpu_label_values, d.memory.total)
-                    _add_metric(gram_allocated, gpu_label_values, d.memory.allocated)
+                    _add_metric(
+                        gram_allocated,
+                        gpu_label_values,
+                        allocated_vram.get(d.index) if d.index is not None else None,
+                    )
                     _add_metric(gram_used, gpu_label_values, d.memory.used)
 
                     if (
