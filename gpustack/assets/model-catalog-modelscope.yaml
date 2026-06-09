@@ -1767,6 +1767,105 @@ model_sets:
         - --load-format=mistral
         - --tool-call-parser=mistral
         - --enable-auto-tool-choice
+- name: Mellum2-12B-A2.5B-Instruct
+  description: Mellum2 is JetBrains' Mixture-of-Experts code model with 12B total and 2.5B activated parameters (64 experts, top-8). The Instruct variant is RL-tuned for instruction following, code completion, and tool use in IDE workflows.
+  home: https://huggingface.co/JetBrains
+  icon: /static/catalog_icons/jetbrains.png
+  size: 12
+  activated_size: 2.5
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-05-26"
+  specs:
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+      source: model_scope
+      model_scope_model_id: JetBrains/Mellum2-12B-A2.5B-Instruct
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=131072
+        - --enable-auto-tool-choice
+        - --tool-call-parser=hermes
+- name: Mellum2-12B-A2.5B-Thinking
+  description: Mellum2 is JetBrains' Mixture-of-Experts code model with 12B total and 2.5B activated parameters (64 experts, top-8). The Thinking variant is RL-tuned (RLVR) for step-by-step reasoning, emitting <think> blocks before the final answer.
+  home: https://huggingface.co/JetBrains
+  icon: /static/catalog_icons/jetbrains.png
+  size: 12
+  activated_size: 2.5
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - tools
+    - reasoning
+  licenses:
+    - apache-2.0
+  release_date: "2026-05-26"
+  specs:
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+      source: model_scope
+      model_scope_model_id: JetBrains/Mellum2-12B-A2.5B-Thinking
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=131072
+        - --reasoning-parser=qwen3
+        - --enable-auto-tool-choice
+        - --tool-call-parser=hermes
+- name: MiniCPM5-1B
+  description: MiniCPM5-1B is the first checkpoint in OpenBMB's MiniCPM5 series, a compact on-device LLM with native long-context support, agentic tool use, code generation, and Think/No-Think reasoning modes.
+  home: https://github.com/OpenBMB/MiniCPM
+  icon: /static/catalog_icons/OpenBMB.png
+  size: 1
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+  licenses:
+    - apache-2.0
+  release_date: "2026-05-21"
+  specs:
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+      source: model_scope
+      model_scope_model_id: OpenBMB/MiniCPM5-1B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=131072
+- name: LFM2.5-8B-A1B
+  description: LFM2.5-8B-A1B is Liquid AI's on-device hybrid Mixture-of-Experts model with 8.3B total and ~1.5B activated parameters, built on the LFM2 architecture combining gated convolution and attention layers.
+  home: https://www.liquid.ai
+  icon: /static/catalog_icons/liquidai.png
+  size: 8
+  activated_size: 1.5
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+  licenses:
+    - lfm1.0
+  release_date: "2026-05-28"
+  specs:
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+      source: model_scope
+      model_scope_model_id: LiquidAI/LFM2.5-8B-A1B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=128000
 # Embedding models
 - name: Qwen3-Embedding-0.6B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
