@@ -597,7 +597,14 @@ class ModelProvider(ModelProviderBase, BaseModelMixin, table=True):
 
 
 class ModelProviderPublic(ModelProviderUpdate, PublicFields):
-    pass
+    # The owning Org. Server-set on create from the caller's tenant
+    # context (the DB column is NOT NULL — providers have no "Global"
+    # notion, unlike instance templates / inference backends). Kept
+    # out of ModelProviderBase / Update so clients can't smuggle their
+    # own tenant override; surfaced here for list / get responses.
+    # Typed as a plain `int` so the generated OpenAPI / TS clients
+    # treat it as required and non-nullable.
+    owner_principal_id: int
 
 
 ModelProvidersPublic = PaginatedList[ModelProviderPublic]

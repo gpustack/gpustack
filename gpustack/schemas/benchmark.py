@@ -320,6 +320,10 @@ class BenchmarkFullPublic(
     BenchmarkMetrics,
 ):
     id: int
+    # The owning Org. Server-derived from the cluster on create and
+    # therefore kept out of BenchmarkBase / Create — declared on the
+    # Public schemas so readers can render the owning Org.
+    owner_principal_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -336,6 +340,7 @@ class BenchmarkPublic(
     BenchmarkMetricsLite,
 ):
     id: int
+    owner_principal_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 

@@ -96,6 +96,12 @@ class ModelFilePublic(
     ModelFileBase,
 ):
     id: int
+    # The owning Org, denormalized from worker → cluster on create.
+    # Lives on the row but is intentionally absent from ModelFileBase
+    # (and therefore from Create / Update payloads) since clients
+    # must not smuggle their own tenant override. Surfaced here so
+    # list / get responses can render which Org owns the file.
+    owner_principal_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
