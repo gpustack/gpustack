@@ -1,14 +1,12 @@
 import socket
 import logging
-from typing import Optional, Callable
+from typing import Callable
 from gpustack.config.config import Config
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.detectors.base import GPUDetectExepction
 from gpustack.detectors.custom.custom import Custom
 from gpustack.detectors.detector_factory import DetectorFactory
 from gpustack.envs import WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS
-from gpustack.policies.base import Allocated
-from gpustack.schemas.models import ComputedResourceClaim
 from gpustack.schemas.workers import (
     MountPoint,
     WorkerStatusPublic,
@@ -101,7 +99,6 @@ class WorkerStatusCollector:
                 logger.error(f"Failed to detect GPU devices: {e}")
         self._inject_unified_memory(status)
         self._inject_computed_filesystem_usage(status)
-        self._inject_allocated_resource(clientset, status)
 
         # If disable_worker_metrics is set, set metrics_port to -1
         metrics_port = self._cfg.worker_metrics_port
@@ -157,64 +154,3 @@ class WorkerStatusCollector:
             status.filesystem.append(computed)
         except Exception as e:
             logger.error(f"Failed to inject filesystem usage: {e}")
-
-    def _inject_allocated_resource(  # noqa: C901
-        self, clientset: ClientSet, status: WorkerStatus
-    ):
-        if clientset is None:
-            return
-        worker_id = self._worker_id_getter()
-        allocated = Allocated(ram=0, vram={})
-        try:
-            # TODO avoid listing model_instances with clientset.
-            # The calculation might not be needed here.
-            model_instances = clientset.model_instances.list()
-            for model_instance in model_instances.items:
-                if (
-                    model_instance.distributed_servers
-                    and model_instance.distributed_servers.subordinate_workers
-                ):
-                    for (
-                        subworker
-                    ) in model_instance.distributed_servers.subordinate_workers:
-                        if subworker.worker_id != worker_id:
-                            continue
-
-                        aggregate_computed_resource_claim_allocated(
-                            allocated, subworker.computed_resource_claim
-                        )
-
-                if model_instance.worker_id != worker_id:
-                    continue
-
-                aggregate_computed_resource_claim_allocated(
-                    allocated, model_instance.computed_resource_claim
-                )
-
-            # inject allocated resources
-            if status.memory is not None:
-                status.memory.allocated = allocated.ram
-            if status.gpu_devices is not None:
-                for i, device in enumerate(status.gpu_devices):
-                    if device.index in allocated.vram:
-                        status.gpu_devices[i].memory.allocated = allocated.vram[
-                            device.index
-                        ]
-                    else:
-                        status.gpu_devices[i].memory.allocated = 0
-        except Exception as e:
-            logger.error(f"Failed to inject allocated resources: {e}")
-
-
-def aggregate_computed_resource_claim_allocated(
-    allocated: Allocated, computed_resource_claim: Optional[ComputedResourceClaim]
-):
-    """Aggregate allocated resources from a ComputedResourceClaim into Allocated."""
-    if computed_resource_claim is None:
-        return
-
-    if computed_resource_claim.ram:
-        allocated.ram += computed_resource_claim.ram
-
-    for gpu_index, vram in (computed_resource_claim.vram or {}).items():
-        allocated.vram[gpu_index] = (allocated.vram.get(gpu_index) or 0) + vram

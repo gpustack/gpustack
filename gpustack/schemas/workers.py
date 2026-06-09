@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from enum import Enum
 from typing import ClassVar, Dict, Optional, Any, TYPE_CHECKING
+from typing_extensions import Annotated, deprecated
 from pydantic import ConfigDict, BaseModel, field_validator
 from urllib.parse import urlparse
 from sqlmodel import (
@@ -46,7 +47,19 @@ class UtilizationInfo(BaseModel):
 class MemoryInfo(UtilizationInfo):
     is_unified_memory: bool = Field(default=False)
     used: Optional[int] = Field(default=None)
-    allocated: Optional[int] = Field(default=None)
+    # Not written by workers anymore — they neither know nor need to track
+    # what's scheduled on them. Persisted DB values stay None going forward.
+    # On the /v2/workers response this is populated server-side from current
+    # ModelInstance bindings; see policies.utils.compute_worker_allocated.
+    allocated: Annotated[
+        Optional[int],
+        deprecated(
+            "Allocated is computed server-side on each /v2/workers query "
+            "from the current set of ModelInstance bindings; this field "
+            "on the worker-reported status is no longer populated and "
+            "should not be read directly."
+        ),
+    ] = Field(default=None)
 
 
 class CPUInfo(UtilizationInfo):
