@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Request, Response, Query
 from fastapi.responses import RedirectResponse, StreamingResponse
 from enum import Enum
 from sqlalchemy.orm import selectinload
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -52,6 +53,8 @@ from gpustack.schemas.clusters import (
     K8sOptions,
 )
 from gpustack.schemas.cluster_access import ClusterAccess
+from gpustack.schemas.gpu_instances import GPUInstance
+from gpustack.schemas.models import Model
 from gpustack.schemas.principals import (
     PrincipalType,
     get_authenticated_principal_id,
@@ -123,8 +126,8 @@ def _cluster_manageable_conditions(ctx: TenantContext) -> List[Any]:
     return [Cluster.owner_principal_id == ctx.current_principal_id]
 
 
-def _cluster_has_gpu_instance_options(cluster: Cluster) -> bool:
-    """Whether the cluster opts in to GPU-instance handling.
+def _k8s_options_has_gpu_instance_options(k8s_options: Any) -> bool:
+    """Whether a ``k8s_options`` value opts in to GPU-instance handling.
 
     Mirrors the gateway-side check (``gpu_instances/gateway.py``):
     ``k8s_options.gpu_instance_options`` being set is the signal. Runs
@@ -135,7 +138,6 @@ def _cluster_has_gpu_instance_options(cluster: Cluster) -> bool:
     branch tolerates both serialized key forms (snake from
     ``model_dump``, camel from API/UI submissions).
     """
-    k8s_options = cluster.k8s_options
     if isinstance(k8s_options, K8sOptions):
         return k8s_options.gpu_instance_options is not None
     if isinstance(k8s_options, dict):
@@ -144,6 +146,11 @@ def _cluster_has_gpu_instance_options(cluster: Cluster) -> bool:
             or k8s_options.get("gpuInstanceOptions") is not None
         )
     return False
+
+
+def _cluster_has_gpu_instance_options(cluster: Cluster) -> bool:
+    """Whether the cluster opts in to GPU-instance handling."""
+    return _k8s_options_has_gpu_instance_options(cluster.k8s_options)
 
 
 @router.get("", response_model=ClustersPublic, response_model_exclude_none=True)
@@ -377,6 +384,53 @@ def hoist_system_default_container_registry(
     input.worker_config.system_default_container_registry = None
 
 
+async def check_cluster_purpose_switch(
+    session: AsyncSession, cluster: Cluster, input: ClusterUpdate
+) -> None:
+    """Block flipping a cluster's purpose while it still holds
+    incompatible resources.
+
+    ``k8s_options.gpu_instance_options`` being set means the cluster is
+    used for GPU service; unset means it's used for model service. A
+    cluster with models can't be flipped to GPU service; a cluster with
+    GPU instances can't be flipped to model service.
+    """
+    if "k8s_options" not in input.model_fields_set:
+        return
+    existing_enabled = _cluster_has_gpu_instance_options(cluster)
+    new_enabled = _k8s_options_has_gpu_instance_options(input.k8s_options)
+    if existing_enabled == new_enabled:
+        return
+    if new_enabled:
+        model_count = await Model.count_by_fields(
+            session, {"cluster_id": cluster.id, "deleted_at": None}
+        )
+        if model_count > 0:
+            noun = "model" if model_count == 1 else "models"
+            verb = "exists" if model_count == 1 else "exist"
+            raise ConflictException(
+                message=(
+                    f"Cannot switch cluster '{cluster.name}' to GPU service: "
+                    f"{model_count} {noun} still {verb}. "
+                    f"Delete all models first."
+                )
+            )
+    else:
+        instance_count = await GPUInstance.count_by_fields(
+            session, {"cluster_id": cluster.id, "deleted_at": None}
+        )
+        if instance_count > 0:
+            noun = "GPU instance" if instance_count == 1 else "GPU instances"
+            verb = "exists" if instance_count == 1 else "exist"
+            raise ConflictException(
+                message=(
+                    f"Cannot switch cluster '{cluster.name}' to model service: "
+                    f"{instance_count} {noun} still {verb}. "
+                    f"Delete all GPU instances first."
+                )
+            )
+
+
 def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
     """
     Assuming the first item of k8s_options.volume_mounts is for gpustack data dir,
@@ -518,6 +572,7 @@ async def update_cluster(
     create_update_check(cluster.provider, input)
     if cluster.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
+        await check_cluster_purpose_switch(session, cluster, input)
     hoist_system_default_container_registry(input)
 
     try:
