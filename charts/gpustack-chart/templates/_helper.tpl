@@ -28,11 +28,13 @@ entries. Returns a JSON-encoded list so callers can `fromJsonArray` it.
 {{- end -}}
 
 {{/*
-True when the chart should render in multi-vendor mode (2+ distinct vendors).
+True when the chart should render in multi-vendor mode (CPU DS + at least one
+GPU vendor DS, meaning 2+ DaemonSets total). Controls anti-affinity, component
+labels, and service selector.
 */}}
 {{- define "gpustack.multiVendorMode" -}}
 {{- $vendors := include "gpustack.workerVendors" . | fromJsonArray -}}
-{{- if gt (len $vendors) 1 -}}true{{- end -}}
+{{- if gt (len $vendors) 0 -}}true{{- end -}}
 {{- end -}}
 
 {{/*
@@ -75,8 +77,8 @@ nodeSelector labels for each vendor DaemonSet.
 
 {{/*
 Canonical vendor ordering (mirrors _RUNTIME_ORDER in manifest_template.py).
-Controls which vendor owns the legacy DaemonSet name in multi-vendor mode.
-Returns a JSON-encoded list.
+Used for deterministic output ordering of GPU vendor DaemonSets regardless
+of the order they were listed in values.yaml. Returns a JSON-encoded list.
 */}}
 {{- define "gpustack.canonicalVendorOrder" -}}
 ["amd","ascend","cambricon","hygon","iluvatar","metax","mthreads","nvidia","thead"]
@@ -84,7 +86,8 @@ Returns a JSON-encoded list.
 
 {{/*
 Sort the configured vendors into canonical order and return as JSON list.
-The first vendor in canonical order keeps the legacy DaemonSet name.
+All GPU vendors get suffixed DaemonSet names; ordering is for deterministic
+output only.
 */}}
 {{- define "gpustack.sortedVendors" -}}
 {{- $vendors := include "gpustack.workerVendors" . | fromJsonArray -}}
