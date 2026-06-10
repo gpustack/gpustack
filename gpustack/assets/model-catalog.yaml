@@ -2674,6 +2674,8 @@ model_sets:
   release_date: "2026-04-07"
   specs:
     - mode: standard
+      gpu_filters:
+        vendor: nvidia
       quantization: BF16
       source: huggingface
       huggingface_repo_id: baidu/ERNIE-Image
@@ -2999,6 +3001,8 @@ model_sets:
   release_date: "2026-05-11"
   specs:
     - mode: standard
+      gpu_filters:
+        vendor: nvidia
       quantization: BF16
       source: huggingface
       huggingface_repo_id: openbmb/MiniCPM-V-4.6
@@ -3007,15 +3011,6 @@ model_sets:
         - --context-length=32768
         - --dtype=bfloat16
         - --sampling-defaults=openai
-        - --trust-remote-code
-    - mode: standard
-      gpu_filters:
-        vendor: ascend
-      quantization: BF16
-      source: huggingface
-      huggingface_repo_id: openbmb/MiniCPM-V-4.6
-      backend: vLLM
-      backend_parameters:
         - --trust-remote-code
 # Audio models
 - name: CosyVoice2-0.5B
