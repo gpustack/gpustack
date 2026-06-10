@@ -3,7 +3,6 @@ import logging
 import time
 from datetime import date, datetime, timezone, tzinfo
 from typing import Dict, List, Optional, Set, Tuple
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel
 from sqlmodel import or_
@@ -19,6 +18,7 @@ from gpustack.schemas.model_usage_details import ModelUsageDetails
 from gpustack.schemas.models import Model, is_embedding_model, is_reranker_model
 from gpustack.schemas.principals import Principal
 from gpustack.server.db import async_session
+from gpustack.utils.rollup_tz import resolve_rollup_tz
 from gpustack.utils.usage_snapshots import build_model_usage_snapshot
 
 logger = logging.getLogger(__name__)
@@ -35,8 +35,8 @@ FLUSH_INTERVAL_SECONDS = 10
 # ``operation`` and ``date`` are part of the key so per-operation rollups
 # stay separate and a stream that crosses midnight lands in the period
 # it ends in (anchored on completed_at). ``date`` is computed in the
-# configured rollup timezone (see ``_resolve_rollup_tz``), not UTC, so
-# midnight here means local-calendar midnight.
+# configured rollup timezone (see ``_ROLLUP_TZ``), not UTC, so midnight here
+# means local-calendar midnight.
 gateway_metrics_buffer: Dict[str, "ModelUsageMetrics"] = {}
 # Raw per-report metrics retained for ``model_usage_details`` audit rows.
 # Unlike ``gateway_metrics_buffer``, entries are not aggregated.
@@ -107,31 +107,11 @@ def _unixmilli_to_naive_utc(ms: Optional[int]) -> Optional[datetime]:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).replace(tzinfo=None)
 
 
-def _resolve_rollup_tz() -> tzinfo:
-    """Resolve the timezone used to bucket the daily ``model_usages.date`` rollup.
-
-    Priority:
-      1. ``GPUSTACK_USAGE_ROLLUP_TIMEZONE`` env (IANA name, e.g. ``Asia/Shanghai``).
-      2. Operating system local timezone (``TZ`` env / ``/etc/localtime``).
-    Falls back to UTC if the OS lookup somehow yields no tzinfo.
-    """
-    tz_name = envs.USAGE_ROLLUP_TIMEZONE
-    if tz_name:
-        try:
-            return ZoneInfo(tz_name)
-        except (ZoneInfoNotFoundError, ValueError):
-            # ``ValueError`` covers malformed keys (absolute paths, ``..``
-            # segments) that ``ZoneInfo`` rejects before lookup.
-            logger.warning(
-                "Invalid GPUSTACK_USAGE_ROLLUP_TIMEZONE=%r, falling back to OS local tz",
-                tz_name,
-            )
-    return datetime.now(timezone.utc).astimezone().tzinfo or timezone.utc
-
-
-# Resolved once at import time. Tests can monkeypatch this attribute to pin
-# a deterministic timezone independent of the host's ``TZ``.
-_ROLLUP_TZ: tzinfo = _resolve_rollup_tz()
+# Shared with the metered_usage read API so the daily token rollup and the
+# GPU/storage views share one timezone (see ``gpustack.utils.rollup_tz``).
+# Resolved once at import time; tests monkeypatch this attribute to pin a
+# deterministic timezone independent of the host's ``TZ``.
+_ROLLUP_TZ: tzinfo = resolve_rollup_tz()
 
 
 def _resolve_metric_datetime(

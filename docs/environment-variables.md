@@ -84,7 +84,7 @@ The **Applies to** column indicates where the environment variable should be set
 
 | Variable                                           | Description                                                                                                                                                                                                                                        | Default      | Applies to |
 | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ---------- |
-| `GPUSTACK_USAGE_ROLLUP_TIMEZONE`                   | IANA timezone (e.g. `Asia/Shanghai`) for bucketing the daily `model_usages` rollup. Empty ⇒ use OS local timezone (`TZ` / `/etc/localtime`).                                                                                                       | (empty)      | Server     |
+| `GPUSTACK_USAGE_ROLLUP_TIMEZONE`                   | IANA timezone (e.g. `Asia/Shanghai`) for bucketing all usage views and rendering Last Active / event times (see note below). Empty ⇒ use OS local timezone (`TZ` / `/etc/localtime`).                                                              | (empty)      | Server     |
 | `GPUSTACK_USAGE_ESTIMATED_BYTES_PER_INPUT_TOKEN`   | Bytes-per-token divisor used to estimate prompt tokens when a gateway report arrives with `completed=false` and `input_token` is blank. Defaults target English-leaning GPT-style tokenizers; lower it (e.g. `2`) for CJK-heavy workloads.         | `4`          | Server     |
 | `GPUSTACK_USAGE_ESTIMATED_TOKENS_PER_OUTPUT_CHUNK` | Tokens-per-chunk multiplier used to estimate completion tokens for incomplete streams when `output_token` is blank.                                                                                                                                | `1`          | Server     |
 | `GPUSTACK_USAGE_DETAILS_RETENTION_MONTHS`          | Retention window for `model_usage_details` (the per-request audit table). Rows older than this (anchored on `COALESCE(completed_at, created_at)`) are moved to `model_usage_details_archive` by the leader-only archiver.                          | `13`         | Server     |
@@ -100,6 +100,16 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_USAGE_EVENTS_RETENTION_MONTHS`           | Retention window for `resource_events` (the resource lifecycle / audit log). Rows older than this are moved to `resource_events_archive` by the leader-only archiver.                                                                              | `13`         | Server     |
 | `GPUSTACK_USAGE_EVENTS_ARCHIVE_CRON`               | Cron expression (UTC) for the resource-events archiver's recurring sweep. The archiver also runs once on server startup regardless of this schedule.                                                                                               | `30 3 * * *` | Server     |
 | `GPUSTACK_USAGE_EVENTS_ARCHIVE_BATCH_SIZE`         | Per-batch row count for resource-events archival moves.                                                                                                                                                                                            | `5000`       | Server     |
+
+> **Note — `GPUSTACK_USAGE_ROLLUP_TIMEZONE` scope & DST.** This one timezone
+> governs every usage view: the daily `model_usages` token rollup, the
+> GPU/storage time buckets, and the displayed Last Active and resource-event
+> times. For a zone that observes **DST**
+> this has two consequences worth knowing: (a) near a DST transition an event's
+> displayed clock time can fall on a different calendar day than the bucket it is
+> counted in; and (b) re-running the same historical query after a DST switch can
+> re-bucket older rows by an hour, so the result drifts over time. Non-DST zones
+> (UTC, `Asia/Shanghai`, …) are exact and unaffected.
 
 ### Cluster Configuration
 
