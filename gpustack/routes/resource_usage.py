@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
-from sqlalchemy import Date, and_, case, cast, desc, func, or_
+from sqlalchemy import and_, case, desc, func, literal_column, or_
 from sqlmodel import select
 
 from gpustack.api.exceptions import InvalidException
@@ -48,6 +48,12 @@ from gpustack.schemas.usage import (
 )
 from gpustack.schemas.resource_events import ResourceEvent
 from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
+from gpustack.utils.rollup_tz import (
+    resolve_rollup_tz,
+    rollup_fixed_tz,
+    rollup_offset_minutes,
+    to_rollup_aware,
+)
 
 router = APIRouter()
 
@@ -170,21 +176,48 @@ def _group_columns(
     raise InvalidException(message=f"Unsupported group_by: {group_by}")
 
 
+def _rollup_shift(col, dialect: str, offset_min: int):
+    """Add the rollup-tz UTC offset (minutes) to a UTC timestamp column so SQL
+    date bucketing groups by the rollup-tz calendar. A plain interval add →
+    portable across PostgreSQL / MySQL with no tz tables (fixed offset, so
+    DST-naive)."""
+    if offset_min == 0:
+        return col
+    if dialect == "postgresql":
+        return col + literal_column(f"interval '{offset_min} minutes'")
+    if dialect == "mysql":
+        return func.date_add(col, literal_column(f"interval {offset_min} minute"))
+    # Fallback for the in-memory sqlite test engine / any other backend.
+    sign = "+" if offset_min >= 0 else "-"
+    return func.datetime(col, f"{sign}{abs(offset_min)} minutes")
+
+
 def _bucket_expr(session, granularity: str):
     """Time-bucket expression over ``bucket_start`` for the requested
-    granularity. Rows are stored at hourly granularity; coarser buckets are
-    derived via date_trunc (PostgreSQL) / date functions (MySQL)."""
-    col = MeteredUsage.bucket_start
-    if granularity == USAGE_GRANULARITY_HOUR:
-        return col  # already hour-truncated by the collector
+    granularity. Rows are stored at hourly UTC granularity; we shift to the
+    rollup timezone (so buckets follow the operator's calendar, consistent with
+    the token rollup) then truncate via date_trunc (PostgreSQL) / date functions
+    (MySQL).
+
+    For a half-hour-offset rollup tz (e.g. ``+05:30``) the hour labels land on
+    the UTC ``:30`` boundary, so one stored UTC hour straddles two displayed
+    hours. Harmless for aggregation (totals are unchanged) — only the hour-axis
+    labels look offset by 30 minutes."""
     dialect = session.get_bind().dialect.name
+    col = _rollup_shift(MeteredUsage.bucket_start, dialect, rollup_offset_minutes())
+    if granularity == USAGE_GRANULARITY_HOUR:
+        if dialect == "postgresql":
+            return func.date_trunc("hour", col)
+        if dialect == "mysql":
+            return func.date_format(col, "%Y-%m-%d %H:00:00")
+        return func.strftime("%Y-%m-%d %H:00:00", col)  # sqlite test engine
     if dialect == "postgresql":
         unit = {
             USAGE_GRANULARITY_WEEK: "week",
             USAGE_GRANULARITY_MONTH: "month",
         }.get(granularity, "day")
         return func.date_trunc(unit, col)
-    # MySQL
+    # MySQL (and the sqlite test engine)
     if granularity == USAGE_GRANULARITY_MONTH:
         return func.date_format(col, "%Y-%m-01")
     if granularity == USAGE_GRANULARITY_WEEK:
@@ -193,11 +226,56 @@ def _bucket_expr(session, granularity: str):
     return func.date(col)  # day
 
 
+def _localize_bucket(value: Any, granularity: str, fixed_tz=None) -> Any:
+    """Label an hour bucket with the rollup offset so it serializes
+    self-describing (e.g. ``2026-06-10T14:00:00+08:00``).
+
+    ``_bucket_expr`` already shifted ``bucket_start`` into the rollup wall clock;
+    this just attaches the matching fixed offset. The SQL value is a naive
+    datetime (PostgreSQL ``date_trunc``) or an ``"YYYY-MM-DD HH:00:00"`` string
+    (MySQL ``date_format``). Day/week/month buckets are calendar dates with no
+    time-of-day, so they carry no offset and pass through unchanged.
+
+    Pass ``fixed_tz`` to reuse one resolved per request (avoids re-reading the
+    env for every row); defaults to resolving it."""
+    if granularity != USAGE_GRANULARITY_HOUR or value is None:
+        return value
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=fixed_tz or rollup_fixed_tz())
+    return value
+
+
+def _rollup_day_window(
+    start_date: Optional[date], end_date: Optional[date]
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """Map an inclusive rollup-tz day range to a half-open UTC ``[start, end)``
+    datetime window. Both ends are shifted back by the rollup offset, so a stored
+    UTC timestamp compares against the rollup calendar day the UI selected — the
+    same shift ``_bucket_expr`` applies to the displayed buckets. Half-open +
+    naive datetimes keep the bucket_start / occurred_at index usable (no
+    per-row ``cast(..., Date)``). A ``None`` bound yields ``None`` (skip it)."""
+    offset = timedelta(minutes=rollup_offset_minutes())
+    start_dt = (
+        datetime(start_date.year, start_date.month, start_date.day) - offset
+        if start_date is not None
+        else None
+    )
+    end_dt = (
+        datetime(end_date.year, end_date.month, end_date.day)
+        + timedelta(days=1)
+        - offset
+        if end_date is not None
+        else None
+    )
+    return start_dt, end_dt
+
+
 def _bucket_in_range(statement, start_date: date, end_date: date):
-    """Filter ``bucket_start`` (datetime) to the inclusive [start_date, end_date]
-    day range, as half-open datetime bounds so the index is usable."""
-    start_dt = datetime(start_date.year, start_date.month, start_date.day)
-    end_dt = datetime(end_date.year, end_date.month, end_date.day) + timedelta(days=1)
+    """Filter ``MeteredUsage.bucket_start`` to the inclusive rollup-tz day range
+    [start_date, end_date] (see :func:`_rollup_day_window`)."""
+    start_dt, end_dt = _rollup_day_window(start_date, end_date)
     return statement.where(MeteredUsage.bucket_start >= start_dt).where(
         MeteredUsage.bucket_start < end_dt
     )
@@ -479,19 +557,30 @@ async def _run_breakdown(
         out["active_users"] = int(getattr(row, "active_users", 0) or 0)
         return out
 
+    # Resolve the rollup tz once per request (not per row): the DST-correct tz
+    # for instants, plus the fixed-offset tz that labels the SQL-shifted buckets.
+    aware_tz = resolve_rollup_tz()
+    fixed_tz = rollup_fixed_tz()
     items = []
     for row in rows:
         item = {"metrics": metrics_of(row)}
         # Carry whichever grouping columns this query selected — a compound
         # (date + dimension) trend row has both ``group_date`` and ``group_key``.
         if hasattr(row, "group_date"):
-            item["date"] = getattr(row, "group_date", None)
+            item["date"] = _localize_bucket(
+                getattr(row, "group_date", None), request.granularity, fixed_tz
+            )
         if hasattr(row, "group_key"):
             item["key"] = getattr(row, "group_key", None)
         if hasattr(row, "group_id"):
             item["id"] = getattr(row, "group_id", None)
         item["sku"] = getattr(row, "sku", None)
-        item["metrics"]["last_active"] = getattr(row, "last_active", None)
+        # max(bucket_start) is a UTC instant → show it in the rollup tz, aware
+        # (carries an offset) so the API is self-describing and the UI renders
+        # the rollup wall clock via parseZone without re-converting.
+        item["metrics"]["last_active"] = to_rollup_aware(
+            getattr(row, "last_active", None), aware_tz
+        )
         items.append(item)
 
     # Per-row display dims matter only for single-dimension table groupings; a
@@ -719,10 +808,16 @@ async def resource_events(
         # func.lower(...) LIKE keeps it portable across PostgreSQL and MySQL.
         needle = f"%{resource_name.strip().lower()}%"
         stmt = stmt.where(func.lower(ResourceEvent.resource_name).like(needle))
-    if start_date is not None:
-        stmt = stmt.where(cast(ResourceEvent.occurred_at, Date) >= start_date)
-    if end_date is not None:
-        stmt = stmt.where(cast(ResourceEvent.occurred_at, Date) <= end_date)
+    # Filter by the rollup-tz calendar day, matching how occurred_at is
+    # displayed (and the breakdown buckets) — NOT the raw UTC day. Otherwise an
+    # event at 2026-05-26 20:00 UTC, shown as 2026-05-27 04:00+08:00, would be
+    # missed by a 2026-05-27 filter and wrongly returned by a 2026-05-26 one
+    # (the #5523 cross-boundary bug). Half-open UTC window, no per-row cast.
+    ev_start, ev_end = _rollup_day_window(start_date, end_date)
+    if ev_start is not None:
+        stmt = stmt.where(ResourceEvent.occurred_at >= ev_start)
+    if ev_end is not None:
+        stmt = stmt.where(ResourceEvent.occurred_at < ev_end)
 
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = (await session.exec(count_stmt)).first() or 0
@@ -735,6 +830,7 @@ async def resource_events(
         )
     ).all()
 
+    aware_tz = resolve_rollup_tz()  # resolved once, not per row
     return {
         "pagination": Pagination(
             page=page,
@@ -745,7 +841,10 @@ async def resource_events(
         "items": [
             {
                 "id": r.id,
-                "occurred_at": r.occurred_at,
+                # Show the event instant in the rollup tz, aware (carries an
+                # offset) so the API is self-describing and the UI renders the
+                # rollup wall clock via parseZone without re-converting.
+                "occurred_at": to_rollup_aware(r.occurred_at, aware_tz),
                 "resource_type": r.resource_type,
                 "resource_id": r.resource_id,
                 "resource_name": r.resource_name,

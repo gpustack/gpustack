@@ -1,7 +1,7 @@
 """Integration tests for the metered_usage read API SQL — exercises the real
 aggregation (case/coalesce/group-by) against an in-memory sqlite engine."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -521,3 +521,223 @@ async def test_breakdown_date_sub_group_splits_series(session):
     by_sku = {i["key"]: i["metrics"]["gpu_hours"] for i in out["items"]}
     assert by_sku["h100x2"] == pytest.approx(49795 * 2 / 3600, abs=0.01)
     assert by_sku["a100x1"] == pytest.approx(3600 / 3600, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_buckets_and_last_active_use_rollup_tz(session, monkeypatch):
+    # Pin the rollup tz to +08:00 (no DST). A 20:00 UTC bucket is 04:00 the
+    # NEXT day there → it must bucket on 05-27, and Last Active reads 05-27.
+    from gpustack import envs
+    from sqlalchemy import and_
+
+    monkeypatch.setattr(envs, "USAGE_ROLLUP_TIMEZONE", "Asia/Shanghai")
+
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=901,
+            resource_name="tz-gpu",
+            sku="tz-sku",
+            sku_count=1,
+            quantity=3600,
+            unit="seconds",
+            bucket_start=datetime(2026, 5, 26, 20, 0, 0),
+        )
+    )
+    await session.commit()
+
+    req = ResourceBreakdownRequest(
+        scope="all",
+        start_date=date(2026, 5, 26),
+        end_date=date(2026, 5, 27),
+        group_by=["date", "instance_type"],
+    )
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=req,
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["gpu_hours"],
+    )
+    tz_rows = [i for i in out["items"] if i.get("key") == "tz-sku"]
+    assert tz_rows, "tz-sku row missing"
+    # Bucketed on the rollup-tz day (05-27), not UTC's 05-26.
+    assert str(tz_rows[0]["date"]).startswith("2026-05-27")
+    # Last Active is the same instant rendered in the rollup tz (04:00 on 05-27),
+    # and aware (carries the +08:00 offset) so the API is self-describing.
+    last_active = tz_rows[0]["metrics"]["last_active"]
+    assert last_active.utcoffset() == timedelta(hours=8)
+    assert str(last_active).startswith("2026-05-27 04:00:00+08:00")
+
+    # Hour granularity → the bucket itself is an aware, offset-carrying instant.
+    hour_req = ResourceBreakdownRequest(
+        scope="all",
+        start_date=date(2026, 5, 26),
+        end_date=date(2026, 5, 27),
+        group_by=["date"],
+        granularity="hour",
+    )
+    hour_out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=hour_req,
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["gpu_hours"],
+    )
+    hour_dates = {str(i["date"]) for i in hour_out["items"]}
+    assert "2026-05-27 04:00:00+08:00" in hour_dates
+
+
+@pytest.mark.asyncio
+async def test_resource_events_filter_uses_rollup_tz_day(session, monkeypatch):
+    # #5523 regression: an event at 2026-05-26 20:00 UTC is 2026-05-27 04:00 in
+    # +08:00, so it must match a 05-27 filter and NOT a 05-26 one — matching how
+    # occurred_at is displayed (the bug was filtering on the raw UTC day).
+    from gpustack import envs
+    from gpustack.routes.resource_usage import resource_events
+    from gpustack.schemas.resource_events import EVENT_TYPE_CREATED, ResourceEvent
+
+    monkeypatch.setattr(envs, "USAGE_ROLLUP_TIMEZONE", "Asia/Shanghai")
+    session.add(
+        ResourceEvent(
+            occurred_at=datetime(2026, 5, 26, 20, 0, 0),
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=801,
+            resource_name="tz-evt",
+            event_type=EVENT_TYPE_CREATED,
+            creator_id=7,
+        )
+    )
+    await session.commit()
+
+    def names(out):
+        return {e["resource_name"] for e in out["items"]}
+
+    # The rollup-tz day (05-27) finds it, displayed at 04:00+08:00.
+    out = await resource_events(
+        session,
+        USER,
+        CTX,
+        scope="all",
+        start_date=date(2026, 5, 27),
+        end_date=date(2026, 5, 27),
+        resource_name="tz-evt",
+    )
+    assert names(out) == {"tz-evt"}
+    occurred = out["items"][0]["occurred_at"]
+    assert occurred.utcoffset() == timedelta(hours=8)
+    assert str(occurred).startswith("2026-05-27 04:00:00+08:00")
+
+    # The raw UTC day (05-26) must NOT return it anymore.
+    out = await resource_events(
+        session,
+        USER,
+        CTX,
+        scope="all",
+        start_date=date(2026, 5, 26),
+        end_date=date(2026, 5, 26),
+        resource_name="tz-evt",
+    )
+    assert names(out) == set()
+
+
+@pytest.mark.asyncio
+async def test_buckets_use_negative_offset_rollup_tz(session, monkeypatch):
+    # Negative-offset zone (America/Bogota, UTC-05:00, no DST). A 02:00 UTC
+    # bucket is 21:00 the PREVIOUS day there → it must bucket on 05-25 and Last
+    # Active carries the -05:00 offset.
+    from gpustack import envs
+    from sqlalchemy import and_
+
+    monkeypatch.setattr(envs, "USAGE_ROLLUP_TIMEZONE", "America/Bogota")
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=902,
+            resource_name="neg-gpu",
+            sku="neg-sku",
+            sku_count=1,
+            quantity=3600,
+            unit="seconds",
+            bucket_start=datetime(2026, 5, 26, 2, 0, 0),
+        )
+    )
+    await session.commit()
+
+    req = ResourceBreakdownRequest(
+        scope="all",
+        start_date=date(2026, 5, 25),
+        end_date=date(2026, 5, 26),
+        group_by=["date", "instance_type"],
+    )
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=req,
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["gpu_hours"],
+    )
+    rows = [i for i in out["items"] if i.get("key") == "neg-sku"]
+    assert rows, "neg-sku row missing"
+    assert str(rows[0]["date"]).startswith("2026-05-25")
+    last_active = rows[0]["metrics"]["last_active"]
+    assert last_active.utcoffset() == timedelta(hours=-5)
+    assert str(last_active).startswith("2026-05-25 21:00:00-05:00")
+
+
+@pytest.mark.asyncio
+async def test_breakdown_range_boundary_includes_shifted_edge(session, monkeypatch):
+    # The row sits at exactly start_day − offset: 2026-05-26 16:00 UTC is
+    # 2026-05-27 00:00 in +08:00, the first instant of the selected start day.
+    # The half-open shifted window must include it (off-by-one guard).
+    from gpustack import envs
+    from sqlalchemy import and_
+
+    monkeypatch.setattr(envs, "USAGE_ROLLUP_TIMEZONE", "Asia/Shanghai")
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=903,
+            resource_name="edge-gpu",
+            sku="edge-sku",
+            sku_count=1,
+            quantity=3600,
+            unit="seconds",
+            bucket_start=datetime(2026, 5, 26, 16, 0, 0),
+        )
+    )
+    await session.commit()
+
+    req = ResourceBreakdownRequest(
+        scope="all",
+        start_date=date(2026, 5, 27),  # selecting only 05-27 (rollup tz)
+        end_date=date(2026, 5, 27),
+        group_by=["instance_type"],
+    )
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=req,
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["gpu_hours"],
+    )
+    assert "edge-sku" in {i.get("key") for i in out["items"]}
