@@ -307,11 +307,10 @@ class RuntimeMetricsAggregator:
     def _should_skip_endpoint(
         self, model: Model, model_instance: ModelInstance, metrics_config: dict
     ) -> bool:
-        # skip image and audio models
-        if is_image_model(model) or is_audio_model(model):
+        # model and model instance must be valid
+        if not model:
             return True
 
-        # model and model instance must be valid
         if (
             model_instance.state != ModelInstanceStateEnum.RUNNING
             or model_instance.worker_ip is None
@@ -319,7 +318,8 @@ class RuntimeMetricsAggregator:
         ):
             return True
 
-        if not model:
+        # skip image and audio models
+        if is_image_model(model) or is_audio_model(model):
             return True
 
         runtime = model.backend
