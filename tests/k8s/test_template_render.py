@@ -18,6 +18,9 @@ from gpustack.schemas.clusters import (
 # PCI presence labels per vendor (mirrors _MANUFACTURER_PCI_ID).
 NVIDIA_PCI_LABEL = "feature.node.kubernetes.io/pci-10de.present"
 ASCEND_PCI_LABEL = "feature.node.kubernetes.io/pci-19e5.present"
+AMD_PCI_LABEL = "feature.node.kubernetes.io/pci-1002.present"
+# CPU node label (mirrors _CPU_NODE_LABEL).
+CPU_NODE_LABEL = "feature.gpustack.ai/acceleratable"
 
 
 def _registration():
@@ -51,100 +54,155 @@ def _pod_spec(ds):
 
 
 # ---------------------------------------------------------------------------
-# Single-runtime mode — one DaemonSet named gpustack-worker, label-minimal,
+# CPU-only mode — always rendered, even with no GPU runtimes.
+# ---------------------------------------------------------------------------
+
+
+def test_no_runtime_renders_cpu_daemonset_only():
+    """When no GPU runtimes are specified, only the CPU DaemonSet is rendered."""
+    cfg = _config()
+    assert cfg.multi_vendor_mode is False
+    dses = _daemonsets([d for d in yaml.safe_load_all(cfg.render()) if d])
+    assert set(dses.keys()) == {WORKER_DS_BASENAME}
+    ds = dses[WORKER_DS_BASENAME]
+    # CPU DS owns the legacy name.
+    assert ds["spec"]["template"]["metadata"]["labels"] == {"app": WORKER_DS_BASENAME}
+    # CPU node selector — no PCI labels.
+    assert _pod_spec(ds)["nodeSelector"] == {CPU_NODE_LABEL: "false"}
+    # No affinity in single-worker mode.
+    assert "affinity" not in _pod_spec(ds)
+
+
+def test_unknown_runtime_renders_cpu_daemonset_only():
+    """UNKNOWN is treated as no GPU → only the CPU worker DS is rendered."""
+    cfg = _config(runtimes=[ManufacturerEnum.UNKNOWN])
+    assert cfg.multi_vendor_mode is False
+    dses = _daemonsets([d for d in yaml.safe_load_all(cfg.render()) if d])
+    assert set(dses.keys()) == {WORKER_DS_BASENAME}
+
+
+def test_cpu_daemonset_no_vendor_volumes():
+    """CPU DaemonSet has no vendor-specific volumeMounts or volumes."""
+    docs = _render_docs()
+    ds = _daemonsets(docs)[WORKER_DS_BASENAME]
+    mounts = _pod_spec(ds)["containers"][0].get("volumeMounts") or []
+    assert mounts == []
+    volumes = _pod_spec(ds).get("volumes") or []
+    assert volumes == []
+
+
+def test_cpu_daemonset_no_runtime_class():
+    """CPU DaemonSet has no runtimeClassName."""
+    docs = _render_docs()
+    ds = _daemonsets(docs)[WORKER_DS_BASENAME]
+    assert "runtimeClassName" not in _pod_spec(ds)
+
+
+def test_cpu_daemonset_merges_base_node_selector():
+    """Base nodeSelector is merged with the CPU label."""
+    values = K8sOptions(node_selector={"env": "prod"})
+    docs = _render_docs(k8s_options=values)
+    ds = _daemonsets(docs)[WORKER_DS_BASENAME]
+    assert _pod_spec(ds)["nodeSelector"] == {
+        "env": "prod",
+        CPU_NODE_LABEL: "false",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Single-GPU-runtime mode — CPU DS + one GPU vendor DS. Label-minimal,
 # affinity-free, with the vendor's PCI nodeSelector.
 # ---------------------------------------------------------------------------
 
 
-def test_no_runtime_renders_no_worker_daemonset():
-    cfg = _config()
-    assert cfg.multi_vendor_mode is False
-    dses = _daemonsets([d for d in yaml.safe_load_all(cfg.render()) if d])
-    assert dses == {}
-
-
-def test_single_runtime_renders_single_legacy_daemonset_with_vendor_blocks():
+def test_single_gpu_runtime_renders_cpu_and_gpu_daemonsets():
     cfg = _config(runtimes=[ManufacturerEnum.NVIDIA])
-    assert cfg.multi_vendor_mode is False
-    docs = [d for d in yaml.safe_load_all(cfg.render()) if d]
-    dses = _daemonsets(docs)
-    assert list(dses.keys()) == [WORKER_DS_BASENAME]
-    ds = dses[WORKER_DS_BASENAME]
-    # Pod labels remain legacy single-label so apply does not trigger an
-    # unnecessary rolling update on existing v1 clusters.
-    assert ds["spec"]["template"]["metadata"]["labels"] == {"app": WORKER_DS_BASENAME}
-    # No podAntiAffinity in single-runtime mode.
-    assert "affinity" not in _pod_spec(ds)
-    # Vendor specifics still apply.
-    assert _pod_spec(ds).get("runtimeClassName") == "nvidia"
-    # PCI nodeSelector pins the DS to nvidia nodes.
-    assert _pod_spec(ds)["nodeSelector"] == {NVIDIA_PCI_LABEL: "true"}
-
-
-def test_single_runtime_ascend_keeps_vendor_volume_mounts():
-    docs = _render_docs(runtimes=[ManufacturerEnum.ASCEND])
-    ds = _daemonsets(docs)[WORKER_DS_BASENAME]
-    mounts = _pod_spec(ds)["containers"][0].get("volumeMounts") or []
-    assert {m["name"] for m in mounts} == {
-        "gpustack-ascend-driver",
-        "gpustack-ascend-toolkit",
-    }
-
-
-def test_single_vendor_service_uses_legacy_selector():
-    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
-    svc = next(d for d in docs if d.get("kind") == "Service")
-    assert svc["spec"]["selector"] == {"app": WORKER_DS_BASENAME}
-
-
-def test_unknown_runtime_renders_no_worker_daemonset():
-    """UNKNOWN is treated as no GPU → no worker DS at all."""
-    cfg = _config(runtimes=[ManufacturerEnum.UNKNOWN])
-    assert cfg.multi_vendor_mode is False
-    dses = _daemonsets([d for d in yaml.safe_load_all(cfg.render()) if d])
-    assert dses == {}
-
-
-def test_repeated_runtime_collapses_to_single_vendor_mode():
-    cfg = _config(runtimes=[ManufacturerEnum.NVIDIA, ManufacturerEnum.NVIDIA])
-    assert cfg.multi_vendor_mode is False
-    dses = _daemonsets([d for d in yaml.safe_load_all(cfg.render()) if d])
-    assert list(dses.keys()) == [WORKER_DS_BASENAME]
-
-
-def test_single_runtime_merges_base_node_selector_with_pci_label():
-    values = K8sOptions(node_selector={"env": "prod"})
-    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA], k8s_options=values)
-    ds = _daemonsets(docs)[WORKER_DS_BASENAME]
-    assert _pod_spec(ds)["nodeSelector"] == {
-        "env": "prod",
-        NVIDIA_PCI_LABEL: "true",
-    }
-
-
-# ---------------------------------------------------------------------------
-# Multi-vendor mode — one DS per runtime (first keeps the legacy name) plus
-# the cross-DS safety net (component/runtime labels + podAntiAffinity).
-# ---------------------------------------------------------------------------
-
-
-def test_multi_vendor_emits_one_daemonset_per_runtime():
-    cfg = _config(runtimes=[ManufacturerEnum.NVIDIA, ManufacturerEnum.ASCEND])
     assert cfg.multi_vendor_mode is True
     docs = [d for d in yaml.safe_load_all(cfg.render()) if d]
     dses = _daemonsets(docs)
-    # ascend sorts before nvidia in canonical order, so it owns the legacy
-    # name regardless of request order; nvidia is runtime-suffixed. No
-    # standalone CPU DaemonSet.
     assert set(dses.keys()) == {
         WORKER_DS_BASENAME,
         f"{WORKER_DS_BASENAME}-nvidia",
     }
 
 
+def test_single_gpu_runtime_gpu_daemonset_has_vendor_blocks():
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    dses = _daemonsets(docs)
+    gpu_ds = dses[f"{WORKER_DS_BASENAME}-nvidia"]
+    # Vendor specifics still apply.
+    assert _pod_spec(gpu_ds).get("runtimeClassName") == "nvidia"
+    # PCI nodeSelector pins the DS to nvidia nodes.
+    assert _pod_spec(gpu_ds)["nodeSelector"] == {NVIDIA_PCI_LABEL: "true"}
+
+
+def test_single_gpu_runtime_ascend_keeps_vendor_volume_mounts():
+    docs = _render_docs(runtimes=[ManufacturerEnum.ASCEND])
+    dses = _daemonsets(docs)
+    gpu_ds = dses[f"{WORKER_DS_BASENAME}-ascend"]
+    mounts = _pod_spec(gpu_ds)["containers"][0].get("volumeMounts") or []
+    assert {m["name"] for m in mounts} == {
+        "gpustack-ascend-driver",
+        "gpustack-ascend-toolkit",
+    }
+
+
+def test_single_gpu_runtime_service_uses_common_selector():
+    """With CPU + 1 GPU, multi_vendor_mode is true so the Service uses the
+    common component label selector."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    svc = next(d for d in docs if d.get("kind") == "Service")
+    assert svc["spec"]["selector"] == {"app.kubernetes.io/component": "worker"}
+
+
+def test_repeated_runtime_collapses_to_two_daemonsets():
+    """Duplicate GPU runtime does not produce an extra DS — one CPU + one GPU."""
+    cfg = _config(runtimes=[ManufacturerEnum.NVIDIA, ManufacturerEnum.NVIDIA])
+    assert cfg.multi_vendor_mode is True
+    dses = _daemonsets([d for d in yaml.safe_load_all(cfg.render()) if d])
+    assert set(dses.keys()) == {
+        WORKER_DS_BASENAME,
+        f"{WORKER_DS_BASENAME}-nvidia",
+    }
+
+
+def test_single_gpu_runtime_merges_base_node_selector_with_pci_label():
+    values = K8sOptions(node_selector={"env": "prod"})
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA], k8s_options=values)
+    dses = _daemonsets(docs)
+    # GPU DS gets base + PCI label.
+    assert _pod_spec(dses[f"{WORKER_DS_BASENAME}-nvidia"])["nodeSelector"] == {
+        "env": "prod",
+        NVIDIA_PCI_LABEL: "true",
+    }
+    # CPU DS gets base + CPU label.
+    assert _pod_spec(dses[WORKER_DS_BASENAME])["nodeSelector"] == {
+        "env": "prod",
+        CPU_NODE_LABEL: "false",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Multi-vendor mode — CPU DS + one DS per GPU runtime, plus the cross-DS
+# safety net (component/runtime labels + podAntiAffinity).
+# ---------------------------------------------------------------------------
+
+
+def test_multi_vendor_emits_one_daemonset_per_runtime_plus_cpu():
+    cfg = _config(runtimes=[ManufacturerEnum.NVIDIA, ManufacturerEnum.ASCEND])
+    assert cfg.multi_vendor_mode is True
+    docs = [d for d in yaml.safe_load_all(cfg.render()) if d]
+    dses = _daemonsets(docs)
+    # CPU DS + ascend DS + nvidia DS. All GPU vendors get suffixed names.
+    assert set(dses.keys()) == {
+        WORKER_DS_BASENAME,
+        f"{WORKER_DS_BASENAME}-ascend",
+        f"{WORKER_DS_BASENAME}-nvidia",
+    }
+
+
 def test_daemonset_names_are_request_order_independent():
-    """The legacy ``gpustack-worker`` name is owned by the canonically-first
-    runtime, so the rendered DS name set is identical no matter what order the
+    """The rendered DS name set is identical no matter what order the GPU
     runtimes were requested in (avoids selector churn on re-apply)."""
     names_forward = set(
         _daemonsets(
@@ -161,6 +219,7 @@ def test_daemonset_names_are_request_order_independent():
         == names_reversed
         == {
             WORKER_DS_BASENAME,
+            f"{WORKER_DS_BASENAME}-ascend",
             f"{WORKER_DS_BASENAME}-nvidia",
         }
     )
@@ -183,15 +242,19 @@ def test_multi_vendor_all_daemonsets_have_pod_anti_affinity():
         assert "nodeAffinity" not in _pod_spec(ds)["affinity"]
 
 
-def test_multi_vendor_each_daemonset_pins_its_vendor_pci_label():
+def test_multi_vendor_each_gpu_daemonset_pins_its_vendor_pci_label():
     docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA, ManufacturerEnum.ASCEND])
     dses = _daemonsets(docs)
-    # ascend owns the legacy name (canonically first), nvidia is suffixed.
-    assert _pod_spec(dses[WORKER_DS_BASENAME])["nodeSelector"] == {
+    # GPU DSes have their PCI labels.
+    assert _pod_spec(dses[f"{WORKER_DS_BASENAME}-ascend"])["nodeSelector"] == {
         ASCEND_PCI_LABEL: "true"
     }
     assert _pod_spec(dses[f"{WORKER_DS_BASENAME}-nvidia"])["nodeSelector"] == {
         NVIDIA_PCI_LABEL: "true"
+    }
+    # CPU DS has the CPU label, not a PCI label.
+    assert _pod_spec(dses[WORKER_DS_BASENAME])["nodeSelector"] == {
+        CPU_NODE_LABEL: "false"
     }
 
 
@@ -199,6 +262,7 @@ def test_multi_vendor_pod_labels_include_common_component_and_runtime_tag():
     docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA, ManufacturerEnum.ASCEND])
     dses = _daemonsets(docs)
 
+    # NVIDIA DS labels.
     nvidia_labels = dses[f"{WORKER_DS_BASENAME}-nvidia"]["spec"]["template"][
         "metadata"
     ]["labels"]
@@ -206,17 +270,28 @@ def test_multi_vendor_pod_labels_include_common_component_and_runtime_tag():
     assert nvidia_labels["gpustack.io/runtime"] == "nvidia"
     assert nvidia_labels["app"] == f"{WORKER_DS_BASENAME}-nvidia"
 
-    # The canonically-first runtime (ascend) keeps the legacy DS name but still
-    # carries its own runtime tag, not a CPU placeholder.
-    first_labels = dses[WORKER_DS_BASENAME]["spec"]["template"]["metadata"]["labels"]
-    assert first_labels["gpustack.io/runtime"] == "ascend"
-    assert first_labels["app"] == WORKER_DS_BASENAME
+    # ASCEND DS labels.
+    ascend_labels = dses[f"{WORKER_DS_BASENAME}-ascend"]["spec"]["template"][
+        "metadata"
+    ]["labels"]
+    assert ascend_labels["gpustack.io/runtime"] == "ascend"
+    assert ascend_labels["app"] == f"{WORKER_DS_BASENAME}-ascend"
+
+    # CPU DS labels — uses the legacy DS name but carries the cpu runtime tag.
+    cpu_labels = dses[WORKER_DS_BASENAME]["spec"]["template"]["metadata"]["labels"]
+    assert cpu_labels["gpustack.io/runtime"] == "cpu"
+    assert cpu_labels["app"] == WORKER_DS_BASENAME
 
 
 def test_multi_vendor_service_uses_common_component_label():
     docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA, ManufacturerEnum.ASCEND])
     svc = next(d for d in docs if d.get("kind") == "Service")
     assert svc["spec"]["selector"] == {"app.kubernetes.io/component": "worker"}
+
+
+# ---------------------------------------------------------------------------
+# Image pull secrets — should be referenced by all DaemonSets (CPU + GPU).
+# ---------------------------------------------------------------------------
 
 
 def test_image_credentials_materialise_to_dockerconfigjson_secrets():
@@ -301,9 +376,11 @@ def test_image_credentials_referenced_by_all_worker_daemonsets():
         {"name": "gpustack-image-pull-secret-1"},
     ]
     dses = _daemonsets(docs)
+    # CPU DS + nvidia DS + ascend DS — all must reference the same secrets.
     assert set(dses.keys()) == {
         WORKER_DS_BASENAME,
         f"{WORKER_DS_BASENAME}-nvidia",
+        f"{WORKER_DS_BASENAME}-ascend",
     }
     for ds in dses.values():
         assert _pod_spec(ds).get("imagePullSecrets") == expected_refs
@@ -329,12 +406,13 @@ def test_image_credentials_without_username_password_emit_placeholder_secret():
     )
     decoded = json.loads(base64.b64decode(secret["data"][".dockerconfigjson"]))
     assert decoded == {"auths": {}}
-    # The Secret is still referenced by worker DSes so users can patch in
+    # The Secret is still referenced by all worker DSes so users can patch in
     # credentials post-install without re-applying the manifest.
-    ds = _daemonsets(docs)[WORKER_DS_BASENAME]
-    assert _pod_spec(ds)["imagePullSecrets"] == [
-        {"name": "gpustack-image-pull-secret-0"}
-    ]
+    dses = _daemonsets(docs)
+    for ds in dses.values():
+        assert _pod_spec(ds)["imagePullSecrets"] == [
+            {"name": "gpustack-image-pull-secret-0"}
+        ]
 
 
 def test_image_credentials_with_only_username_falls_back_to_placeholder():
@@ -372,10 +450,13 @@ def test_no_image_credentials_emits_no_secret_or_reference():
         assert "imagePullSecrets" not in _pod_spec(ds)
 
 
+# ---------------------------------------------------------------------------
+# Volume mounts — applied to all DaemonSets (CPU + GPU).
+# ---------------------------------------------------------------------------
+
+
 def test_user_volume_mounts_flow_through_via_k8s_options():
-    """K8sOptions now carries the cluster's volumeMounts (previously the
-    top-level k8s_volume_mounts field). Each rendered DS should pick them
-    up."""
+    """K8sOptions volumeMounts are applied to all DaemonSets."""
     values = K8sOptions(
         volume_mounts=[
             K8sVolumeMount(
@@ -390,13 +471,16 @@ def test_user_volume_mounts_flow_through_via_k8s_options():
         ]
     )
     docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA], k8s_options=values)
-    ds = _daemonsets(docs)[WORKER_DS_BASENAME]
-    mount_names = {
-        m["name"] for m in (_pod_spec(ds)["containers"][0].get("volumeMounts") or [])
-    }
-    volume_names = {v["name"] for v in (_pod_spec(ds).get("volumes") or [])}
-    assert "data-dir" in mount_names
-    assert "data-dir" in volume_names
+    dses = _daemonsets(docs)
+    for ds_name in dses:
+        ds = dses[ds_name]
+        mount_names = {
+            m["name"]
+            for m in (_pod_spec(ds)["containers"][0].get("volumeMounts") or [])
+        }
+        volume_names = {v["name"] for v in (_pod_spec(ds).get("volumes") or [])}
+        assert "data-dir" in mount_names
+        assert "data-dir" in volume_names
 
 
 def test_multi_vendor_volume_mounts_applied_only_to_owning_vendor():
@@ -411,9 +495,10 @@ def test_multi_vendor_volume_mounts_applied_only_to_owning_vendor():
             for m in (_pod_spec(ds)["containers"][0].get("volumeMounts") or [])
         }
 
-    # amd sorts before ascend in canonical order → amd keeps the legacy name;
-    # ascend is suffixed.
-    assert mount_names(dses[WORKER_DS_BASENAME]) == {"gpustack-amd-driver"}
+    # CPU DS has no vendor-specific mounts.
+    assert mount_names(dses[WORKER_DS_BASENAME]) == set()
+    # Each GPU DS has its own vendor mounts.
+    assert mount_names(dses[f"{WORKER_DS_BASENAME}-amd"]) == {"gpustack-amd-driver"}
     assert mount_names(dses[f"{WORKER_DS_BASENAME}-ascend"]) == {
         "gpustack-ascend-driver",
         "gpustack-ascend-toolkit",
