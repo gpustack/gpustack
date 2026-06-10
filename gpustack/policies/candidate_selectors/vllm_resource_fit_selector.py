@@ -121,6 +121,19 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             model.backend_parameters, ["data-parallel-size-local", "dpl"]
         )
 
+        # Hybrid-LB: --data-parallel-size is a GLOBAL count spanning separate
+        # deployments (e.g. one per node), so it must NOT size this deployment's
+        # local GPU need. Only `dpl` ranks run here, each taking tp*pp GPUs, so
+        # the local world is tp*pp*dpl. Without dpl we can't infer it; leave
+        # world_size unset and let the manual GPU selection stand.
+        hybrid_lb = find_bool_parameter(
+            model.backend_parameters, ["data-parallel-hybrid-lb"]
+        )
+        if hybrid_lb:
+            if dpl is None:
+                return None, None
+            dp = dpl
+
         if tp or pp or dp:
             world_size = 1
             strategies = []
@@ -134,7 +147,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 strategies.append("dp")
                 world_size *= dp
 
-            if dpl:
+            # In hybrid-lb, dp already carries the dpl value above, so the "dp"
+            # strategy already reflects the local world; don't double-count dpl.
+            if dpl and not hybrid_lb:
                 strategies.append("dpl")
 
             return world_size, strategies
