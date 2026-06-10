@@ -5,8 +5,15 @@ import requests
 from typing import Dict, Any
 
 from gpustack import __version__, __git_commit__
+from gpustack.api.auth import SESSION_COOKIE_NAME
+from gpustack.cmd.local_auth import (
+    add_local_auth_arguments,
+    mint_admin_jwt,
+    read_local_jwt_secret,
+)
 from gpustack.cmd.start import load_config_from_yaml
 from gpustack.config.config import Config
+from gpustack.config.registration import read_worker_token
 from gpustack.utils.envs import get_gpustack_env
 from gpustack.utils.config import (
     WHITELIST_CONFIG_FIELDS,
@@ -70,9 +77,12 @@ def setup_reload_config_cmd(subparsers: argparse._SubParsersAction):
     parser.add_argument(
         "--api-key",
         type=str,
-        help="API Key to authenticate as admin.",
+        help="Admin API key to authenticate to the server endpoint. Note the "
+        "worker endpoint does not accept an admin API key; it uses the local "
+        "worker token.",
         default=get_gpustack_env("API_KEY"),
     )
+    add_local_auth_arguments(parser)
 
     parser.add_argument(
         "--server-port",
@@ -162,45 +172,123 @@ def parse_args_with_filter(args: argparse.Namespace, filtered_changes: Dict[str,
     return Config(**config_data)
 
 
+def resolve_scope_headers(args: argparse.Namespace) -> Dict[str, Dict[str, str]]:
+    """Build per-endpoint auth headers from credentials available on this host.
+
+    The command targets two endpoints that enforce different auth mechanisms,
+    so each gets its own credential. We do NOT gate endpoints on a role-marker
+    file: markers such as ``bootstrap_version`` are absent on legacy (<= v2.0.0)
+    installs, so role-guessing would silently skip the server reload on an
+    upgraded combined node. Instead we attach whatever credential each endpoint
+    accepts and let a ConnectionError (endpoint not running here) decide what to
+    skip — see ``apply_runtime_updates``.
+
+      - server (get_admin_user): an explicit --api-key, or a short-lived admin
+        JWT minted from the locally readable jwt_secret_key, sent as a session
+        cookie.
+      - worker (worker_auth): the local worker token sent as a bearer token.
+        An admin --api-key is NOT accepted here, so it is only used as a
+        fallback when no local worker token exists.
+    """
+    data_dir = getattr(args, "data_dir", None) or Config.get_data_dir()
+    api_key = getattr(args, "api_key", None)
+
+    headers: Dict[str, Dict[str, str]] = {}
+
+    # Server endpoint: an admin API key works via the bearer path, otherwise
+    # mint a short-lived admin JWT from the local jwt_secret_key.
+    if api_key:
+        headers["server"] = {"Authorization": f"Bearer {api_key}"}
+    else:
+        jwt_secret = read_local_jwt_secret(args)
+        if jwt_secret:
+            jwt_token = mint_admin_jwt(
+                jwt_secret, getattr(args, "admin_username", "admin")
+            )
+            headers["server"] = {"Cookie": f"{SESSION_COOKIE_NAME}={jwt_token}"}
+
+    # Worker endpoint: worker_auth only accepts the worker/registration token,
+    # not an admin API key — prefer the local worker token and fall back to
+    # --api-key only when none is present.
+    worker_token = read_worker_token(data_dir)
+    if worker_token:
+        headers["worker"] = {"Authorization": f"Bearer {worker_token}"}
+    elif api_key:
+        headers["worker"] = {"Authorization": f"Bearer {api_key}"}
+
+    return headers
+
+
 def apply_runtime_updates(
     payload: Dict[str, Any],
     args: argparse.Namespace,
 ):
-    api_key = getattr(args, "api_key", None)
-    server_port = getattr(args, "server_port") or 30080
-    worker_port = getattr(args, "worker_port") or 10150
-    urls = [
-        f"http://127.0.0.1:{server_port}{default_versioned_prefix}/config",
-        f"http://127.0.0.1:{worker_port}{default_versioned_prefix}/config",
-    ]
-    for url in urls:
+    server_port = getattr(args, "server_port", None) or 30080
+    worker_port = getattr(args, "worker_port", None) or 10150
+    scope_headers = resolve_scope_headers(args)
+    if not scope_headers:
+        raise Exception(
+            "No credential available to authenticate to the local config "
+            "endpoints. Provide --api-key, or run this command on the server "
+            "host (reads <data-dir>/jwt_secret_key) or a worker host (reads "
+            "<data-dir>/worker_token); use --data-dir to point at the data "
+            "directory."
+        )
+    endpoints = {
+        "server": f"http://127.0.0.1:{server_port}{default_versioned_prefix}/config",
+        "worker": f"http://127.0.0.1:{worker_port}{default_versioned_prefix}/config",
+    }
+    applied = False
+    failures: list[str] = []
+    for scope, url in endpoints.items():
+        if scope not in scope_headers:
+            # No credential for this endpoint's auth scheme. Skip rather than
+            # emit a misleading 401.
+            logger.debug(f"Skipping {scope} config endpoint: no local credential")
+            continue
         try:
-            headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-            resp = requests.put(url, json=payload, headers=headers)
+            resp = requests.put(
+                url, json=payload, headers=scope_headers[scope], timeout=5
+            )
             if resp.status_code == 200:
                 logger.info(f"Applied runtime config via {url}")
+                applied = True
             else:
                 logger.warning(f"Failed to apply config via {url}: {resp.status_code}")
+                failures.append(f"{url}: HTTP {resp.status_code}")
+        except requests.exceptions.ConnectionError:
+            # This endpoint's role (server/worker) isn't running on this host —
+            # e.g. on a worker host where the server port is not bound. Expected;
+            # not a failure.
+            logger.debug(f"Skipping {scope} config endpoint at {url}: not reachable")
         except Exception as e:
             logger.warning(f"Failed to apply config via {url}: {e}")
+            failures.append(f"{url}: {e}")
+
+    if failures:
+        raise Exception("Failed to apply runtime config to: " + "; ".join(failures))
+    if not applied:
+        raise Exception(
+            "No reachable config endpoint accepted the update. Ensure the "
+            "gpustack server or worker is running on this host, or target it "
+            "with --server-port/--worker-port."
+        )
 
 
-def list_runtime_values(
-    api_key: str | None = None,
-    server_port: int | None = None,
-    worker_port: int | None = None,
-) -> Dict[str, Dict[str, Any]]:
+def list_runtime_values(args: argparse.Namespace) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
-    s_port = server_port or 30080
-    w_port = worker_port or 10150
+    s_port = getattr(args, "server_port", None) or 30080
+    w_port = getattr(args, "worker_port", None) or 10150
+    scope_headers = resolve_scope_headers(args)
     endpoints = {
         "server": f"http://127.0.0.1:{s_port}{default_versioned_prefix}/config",
         "worker": f"http://127.0.0.1:{w_port}{default_versioned_prefix}/config",
     }
     for scope, url in endpoints.items():
+        if scope not in scope_headers:
+            continue
         try:
-            headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-            resp = requests.get(url, timeout=2, headers=headers)
+            resp = requests.get(url, timeout=2, headers=scope_headers[scope])
             if resp.status_code == 200:
                 results[scope] = resp.json()
         except Exception:
@@ -214,11 +302,7 @@ def handle_list_mode(args) -> bool:
     print("Whitelisted fields:")
     for field in sorted(WHITELIST_CONFIG_FIELDS):
         print(f"- {field.replace('_', '-')}")
-    runtime_values = list_runtime_values(
-        api_key=getattr(args, "api_key", None),
-        server_port=getattr(args, "server_port", None),
-        worker_port=getattr(args, "worker_port", None),
-    )
+    runtime_values = list_runtime_values(args)
     if runtime_values:
         print("Current config values:")
         for scope, conf in runtime_values.items():

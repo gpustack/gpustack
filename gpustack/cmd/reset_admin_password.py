@@ -1,16 +1,20 @@
 import argparse
 import logging
 import os
-from datetime import timedelta
 
 import requests
 
 from gpustack.api.auth import SESSION_COOKIE_NAME
 from gpustack.client.generated_clientset import ClientSet
+from gpustack.cmd.local_auth import (
+    add_local_auth_arguments,
+    mint_admin_jwt,
+    read_local_jwt_secret,
+)
 from gpustack.cmd.start import get_gpustack_env
 from gpustack.config.config import Config
 from gpustack.schemas.users import UserUpdate
-from gpustack.security import JWTManager, generate_secure_password
+from gpustack.security import generate_secure_password
 
 logger = logging.getLogger(__name__)
 
@@ -35,34 +39,7 @@ def setup_reset_admin_password_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("API_KEY"),
     )
 
-    parser.add_argument(
-        "-d",
-        "--data-dir",
-        type=str,
-        help="Directory of the local gpustack data dir. Used to read the JWT "
-        "secret when --api-key is not provided.",
-        default=get_gpustack_env("DATA_DIR"),
-    )
-
-    parser.add_argument(
-        "--jwt-secret-key",
-        type=str,
-        help="JWT secret key used to mint a short-lived admin token locally. "
-        "If unset, the CLI reads it from <data-dir>/jwt_secret_key. Use this "
-        "in distributed deployments where the operator passed --jwt-secret-key "
-        "to the server (in which case the file is not written to disk).",
-        default=get_gpustack_env("JWT_SECRET_KEY"),
-    )
-
-    parser.add_argument(
-        "-u",
-        "--admin-username",
-        type=str,
-        help="Username of the admin account to reset. Defaults to 'admin'. "
-        "Override if the admin user was renamed; the value is used as the JWT "
-        "subject and must match an existing admin user in the database.",
-        default=get_gpustack_env("ADMIN_USERNAME") or "admin",
-    )
+    add_local_auth_arguments(parser)
 
     parser.set_defaults(func=run)
 
@@ -92,10 +69,7 @@ def run(args):
             # locally readable JWT secret so this CLI keeps working on the
             # server host without requiring an explicit API key.
             jwt_secret = _resolve_jwt_secret(args)
-            jwt_token = JWTManager(
-                secret_key=jwt_secret,
-                expires_delta=timedelta(minutes=5),
-            ).create_jwt_token(args.admin_username)
+            jwt_token = mint_admin_jwt(jwt_secret, args.admin_username)
             # Pass the JWT as a Cookie header at construction time so every
             # sub-client (client.users, client.workers, ...) shares the same
             # authenticated HTTPClient instance. Reassigning
@@ -122,32 +96,20 @@ def run(args):
 
 
 def _resolve_jwt_secret(args) -> str:
-    # Explicit secret wins — covers distributed deployments that pass
-    # --jwt-secret-key to the server, in which case the secret is NOT
-    # written to <data_dir>/jwt_secret_key.
-    secret = args.jwt_secret_key
-    if secret:
-        secret = secret.strip()
-        if not secret:
-            raise Exception("--jwt-secret-key is empty.")
-        return secret
-
-    data_dir = args.data_dir or Config.get_data_dir()
-    jwt_secret_path = os.path.join(data_dir, "jwt_secret_key")
-    if not os.path.exists(jwt_secret_path):
+    # Unlike reload-config, resetting the password has no other auth path, so a
+    # missing secret is fatal here — wrap the shared reader and raise a helpful
+    # message pointing at the data dir.
+    secret = read_local_jwt_secret(args)
+    if not secret:
+        data_dir = args.data_dir or Config.get_data_dir()
+        jwt_secret_path = os.path.join(data_dir, "jwt_secret_key")
         raise Exception(
             "Cannot authenticate to the local gpustack server. "
-            f"JWT secret file not found at {jwt_secret_path}. "
+            f"No JWT secret found (checked --jwt-secret-key, "
+            f"GPUSTACK_JWT_SECRET_KEY, and {jwt_secret_path}). "
             "Please provide --api-key, --jwt-secret-key, or "
             "GPUSTACK_JWT_SECRET_KEY; alternatively run this command on the "
             "server host with --data-dir pointing at the server data directory."
-        )
-    with open(jwt_secret_path, "r") as f:
-        secret = f.read().strip()
-    if not secret:
-        raise Exception(
-            f"JWT secret file at {jwt_secret_path} is empty. "
-            "Please verify the gpustack server data directory."
         )
     return secret
 
