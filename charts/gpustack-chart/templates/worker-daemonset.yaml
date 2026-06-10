@@ -1,6 +1,5 @@
 {{- if .Values.worker.enabled }}
 {{- $vendors := include "gpustack.sortedVendors" . | fromJsonArray }}
-{{- $multiVendor := gt (len $vendors) 1 }}
 {{- $base := include "gpustack.workerBaseNodeSelectorJson" . | fromJson }}
 {{- $pciIds := include "gpustack.pciVendorIds" . | fromJson }}
 {{- $dsBasename := printf "%s-worker" .Release.Name }}
@@ -9,11 +8,18 @@
 Build the list of DaemonSets to render. Each entry carries:
   name          - logical name used in app labels and runtime tag
   dsName        - actual DaemonSet metadata.name
-  runtime       - vendor runtime tag for per-vendor blocks
-  nodeSelector  - effective nodeSelector (base merged with PCI label)
+  runtime       - vendor runtime tag for per-vendor blocks (empty for CPU)
+  nodeSelector  - effective nodeSelector (base merged with vendor label)
 */}}
 {{- $workers := list }}
-{{- range $idx, $vendor := $vendors }}
+
+{{- /* CPU DaemonSet — always rendered first, owns the legacy name. */}}
+{{- $cpuLabel := dict "feature.gpustack.ai/acceleratable" "false" }}
+{{- $cpuSel := mergeOverwrite (deepCopy $base) $cpuLabel }}
+{{- $workers = append $workers (dict "name" "cpu" "dsName" $dsBasename "runtime" "" "nodeSelector" $cpuSel) }}
+
+{{- /* GPU vendor DaemonSets — all get suffixed names. */}}
+{{- range $vendor := $vendors }}
   {{- $pciId := index $pciIds $vendor }}
   {{- $vendorSel := dict }}
   {{- if $pciId }}
@@ -21,12 +27,10 @@ Build the list of DaemonSets to render. Each entry carries:
     {{- $vendorSel = dict $pciLabel "true" }}
   {{- end }}
   {{- $merged := mergeOverwrite (deepCopy $base) $vendorSel }}
-  {{- if eq $idx 0 }}
-    {{- $workers = append $workers (dict "name" $vendor "dsName" $dsBasename "runtime" $vendor "nodeSelector" $merged) }}
-  {{- else }}
-    {{- $workers = append $workers (dict "name" $vendor "dsName" (printf "%s-%s" $dsBasename $vendor) "runtime" $vendor "nodeSelector" $merged) }}
-  {{- end }}
+  {{- $workers = append $workers (dict "name" $vendor "dsName" (printf "%s-%s" $dsBasename $vendor) "runtime" $vendor "nodeSelector" $merged) }}
 {{- end }}
+
+{{- $multiVendor := gt (len $workers) 1 }}
 
 {{- range $idx, $w := $workers }}
 {{- if $idx }}

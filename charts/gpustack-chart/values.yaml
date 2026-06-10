@@ -153,24 +153,26 @@ worker:
   #   cambricon - Cambricon MLU; mounts /usr/bin/cnmon and /usr/local/neuware
   #   thead     - T-Head PPU; mounts /usr/local/PPU_SDK
   #
-  # Rendering modes:
-  #   - 0 or 1 entry: single DaemonSet `<release>-worker`, no vendor labels,
-  #     no anti-affinity (byte-compatible with the v1 chart layout).
-  #   - 2+ entries: per-vendor DaemonSet. The first vendor in canonical
-  #     order (amd, ascend, cambricon, hygon, iluvatar, metax, mthreads,
-  #     nvidia, thead) keeps the legacy `<release>-worker` name; every other
-  #     vendor gets `<release>-worker-<vendor>`. All worker pods get a
-  #     required podAntiAffinity (topologyKey=hostname, namespaceSelector={})
-  #     so two GPUStack worker pods cannot share a node even across namespaces
-  #     — protects the `hostNetwork: true` ports from collision.
+  # A CPU worker DaemonSet (`<release>-worker`) is always rendered and uses
+  # the nodeSelector `feature.gpustack.ai/acceleratable: "false"` to schedule
+  # onto non-acceleratable (CPU-only) nodes. It has no vendor-specific volume
+  # mounts or runtimeClassName.
   #
-  # Each DaemonSet automatically receives a PCI-presence nodeSelector label
+  # Rendering modes:
+  #   - [] (empty): only the CPU DaemonSet `<release>-worker` is rendered
+  #     (single mode — no vendor labels, no anti-affinity).
+  #   - 1+ entries: CPU DaemonSet `<release>-worker` plus one DaemonSet per
+  #     GPU vendor named `<release>-worker-<vendor>` (multi-vendor mode).
+  #     All worker pods get a required podAntiAffinity
+  #     (topologyKey=hostname, namespaceSelector={}) so two GPUStack worker
+  #     pods cannot share a node even across namespaces — protects the
+  #     `hostNetwork: true` ports from collision.
+  #
+  # Each GPU DaemonSet automatically receives a PCI-presence nodeSelector label
   # (e.g. `feature.node.kubernetes.io/pci-10de.present: "true"` for NVIDIA)
   # based on the vendor's PCI ID. These labels are advertised by Node Feature
-  # Discovery (NFD); NFD must be installed in the cluster for workers to
+  # Discovery (NFD); NFD must be installed in the cluster for GPU workers to
   # schedule onto GPU nodes.
-  #
-  # Set to [] to disable the worker DaemonSet.
   gpuVendors:
     - nvidia
   # Base nodeSelector for ALL worker DaemonSets. When non-empty, REPLACES
