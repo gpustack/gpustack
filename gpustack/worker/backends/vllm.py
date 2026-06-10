@@ -749,6 +749,8 @@ class VLLMServer(InferenceServer):
 
         Followers also carry ``--headless`` to skip the API server. The leader
         always exposes the HTTP API (handled by --host/--port elsewhere).
+        Exception: under ``--data-parallel-hybrid-lb`` every DP engine serves
+        its own API, so ``--headless`` is not injected.
         """
         if (
             not ctx.is_distributed
@@ -800,7 +802,13 @@ class VLLMServer(InferenceServer):
                 ("--data-parallel-rpc-port", dp_rpc_port),
             )
 
-        if topology.is_follower:
+        # Hybrid-LB requires every DP engine (leader and followers alike) to
+        # run its own API server, so skip the headless injection when the user
+        # opts into it.
+        hybrid_lb = find_bool_parameter(
+            self._model.backend_parameters, ["data-parallel-hybrid-lb"]
+        )
+        if topology.is_follower and not hybrid_lb:
             extend_args_no_exist(arguments, "--headless")
         return arguments
 

@@ -23,6 +23,8 @@ from gpustack.utils.vllm_topology import (
 )
 from gpustack.worker.backends.vllm import (
     MultinodeTopology,
+    VLLMServer,
+    _VLLMArgsContext,
     cal_multinode_topology,
 )
 
@@ -113,6 +115,83 @@ def test_world_size_no_parallelism():
     )
     assert world_size is None
     assert strategies is None
+
+
+def test_world_size_hybrid_lb_sizes_by_dpl():
+    """Hybrid-LB: --data-parallel-size is global; local world sizes by dpl."""
+    params = [
+        "--data-parallel-hybrid-lb",
+        "--data-parallel-size",
+        "16",
+        "--data-parallel-size-local",
+        "8",
+    ]
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
+    )
+    assert world_size == 8
+    assert strategies == ["dp"]
+
+
+def test_world_size_hybrid_lb_with_tp():
+    """Hybrid-LB local world = tp * dpl, ignoring the global dp."""
+    params = ["--data-parallel-hybrid-lb", "--tp", "2", "--dp", "16", "--dpl", "4"]
+    world_size, _ = VLLMResourceFitSelector.get_world_size_from_backend_parameters(
+        _model(params)
+    )
+    assert world_size == 8
+
+
+def test_world_size_hybrid_lb_without_dpl():
+    """Hybrid-LB without dpl: local world cannot be inferred, leave it unset."""
+    params = ["--data-parallel-hybrid-lb", "--data-parallel-size", "16"]
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
+    )
+    assert world_size is None
+    assert strategies is None
+
+
+# ---------------------------------------------------------------------------
+# follower --headless injection (gated by --data-parallel-hybrid-lb)
+# ---------------------------------------------------------------------------
+
+
+def _follower_mp_arguments(backend_parameters):
+    """Drive _build_mp_multinode_arguments for a dp_only follower node."""
+    server = object.__new__(VLLMServer)
+    server._model = MagicMock(backend_parameters=backend_parameters)
+    server._model_instance = MagicMock(worker_ip="10.0.0.1", ports=[8000, 8001, 8002])
+    topology = MultinodeTopology(
+        shape="dp_only",
+        tp=1,
+        pp=1,
+        dp=16,
+        dpl=8,
+        nnodes=2,
+        node_rank=1,
+        start_rank=8,
+        is_follower=True,
+    )
+    ctx = _VLLMArgsContext(
+        port=8000,
+        is_distributed=True,
+        executor_backend="mp",
+        topology=topology,
+        is_omni=False,
+        is_audio=False,
+        entrypoint=None,
+        deployment_metadata=None,
+    )
+    return server._build_mp_multinode_arguments(ctx)
+
+
+def test_follower_gets_headless_by_default():
+    assert "--headless" in _follower_mp_arguments([])
+
+
+def test_follower_skips_headless_under_hybrid_lb():
+    assert "--headless" not in _follower_mp_arguments(["--data-parallel-hybrid-lb"])
 
 
 # ---------------------------------------------------------------------------
