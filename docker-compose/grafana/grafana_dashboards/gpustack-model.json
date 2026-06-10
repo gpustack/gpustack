@@ -1715,7 +1715,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Inter token latency in seconds.",
+      "description": "Inter token latency in seconds.\n\n**Supported backends:** vLLM, SGLang. MindIE does not expose this metric, so \"No data\" is expected when the runtime is MindIE (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2111,7 +2111,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Heatmap of request prompt length",
+      "description": "Heatmap of request prompt length\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -2203,7 +2203,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Heatmap of request generation length",
+      "description": "Heatmap of request generation length\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -2295,7 +2295,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per output token latency in seconds.",
+      "description": "Per output token latency in seconds.\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2467,7 +2467,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Number of finished requests by their finish reason: either an EOS token was generated or the max sequence length was reached.",
+      "description": "Number of finished requests by their finish reason: either an EOS token was generated or the max sequence length was reached.\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2732,7 +2732,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Time spent waiting in the request queue.",
+      "description": "Time spent waiting in the request queue.\n\n**Supported backends:** vLLM, SGLang. MindIE does not expose this metric, so \"No data\" is expected when the runtime is MindIE (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2904,7 +2904,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Time spent in the prefill phase.",
+      "description": "Time spent in the prefill phase.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3076,7 +3076,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Time spent in the decode phase.",
+      "description": "Time spent in the decode phase.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3365,14 +3365,14 @@
       ],
       "title": "Spec Decode Accept Rate",
       "type": "timeseries",
-      "description": "Average speculative decoding acceptance rate."
+      "description": "Average speculative decoding acceptance rate.\n\n**Supported backends:** vLLM, SGLang. MindIE does not expose this metric, so \"No data\" is expected when the runtime is MindIE (see Runtime in the Summary row)."
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Heatmap of requested number of parallel completions per request.",
+      "description": "Heatmap of requested number of parallel completions per request.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -3464,7 +3464,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Heatmap of requested max_tokens per request.",
+      "description": "Heatmap of requested max_tokens per request.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "custom": {
