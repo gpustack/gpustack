@@ -38,6 +38,22 @@ def test_is_metered_phase():
     assert not is_metered_phase("Deleting")
 
 
+# Every GPUInstancePhase must be listed in exactly one of these. New phases
+# land in neither, so test_every_phase_is_classified fails until someone makes
+# a deliberate metering decision — that's the whole point (no silent drift to
+# the "metered" default in is_metered_phase). When you add a phase to the
+# schema, add it here too: METERED if it holds the accelerator, NON_METERED if
+# it has released it.
+_EXPECTED_METERED_PHASES = frozenset(
+    {
+        "Ready",  # up
+        "NotReady",  # up, degraded
+        "Starting",  # coming up — reacquiring the reservation
+        "Unknown",  # status unreadable → assume still allocated (conservative)
+    }
+)
+
+
 def test_non_metered_phases_match_schema():
     """The non-metered phase literals are copies of GPUInstancePhase values
     (kept literal to keep utils import-light). Lock them so a rename on the
@@ -51,6 +67,41 @@ def test_non_metered_phases_match_schema():
         if not k.startswith("_") and isinstance(v, str)
     }
     assert _NON_METERED_PHASES <= valid, _NON_METERED_PHASES - valid
+
+
+def test_every_phase_is_classified():
+    """Every GPUInstancePhase must be explicitly classified as metered or
+    non-metered. A phase added to the schema but to neither set fails here —
+    forcing a deliberate metering decision instead of silently defaulting to
+    "metered" (is_metered_phase meters anything not in _NON_METERED_PHASES).
+
+    Also locks the two sets disjoint, and verifies is_metered_phase agrees with
+    the expected classification for every real schema phase."""
+    from gpustack.schemas.gpu_instances import GPUInstancePhase
+    from gpustack.utils.resource_usage import _NON_METERED_PHASES
+
+    all_phases = {
+        v
+        for k, v in vars(GPUInstancePhase).items()
+        if not k.startswith("_") and isinstance(v, str)
+    }
+
+    unclassified = all_phases - _NON_METERED_PHASES - _EXPECTED_METERED_PHASES
+    assert not unclassified, (
+        f"new GPUInstancePhase value(s) need a metering decision — add to "
+        f"_EXPECTED_METERED_PHASES (holds accelerator) or _NON_METERED_PHASES "
+        f"(released): {sorted(unclassified)}"
+    )
+
+    # The two classifications must not overlap.
+    overlap = _NON_METERED_PHASES & _EXPECTED_METERED_PHASES
+    assert (
+        not overlap
+    ), f"phase(s) classified as both metered and not: {sorted(overlap)}"
+
+    # And the predicate must agree with the classification for every phase.
+    for phase in all_phases:
+        assert is_metered_phase(phase) == (phase in _EXPECTED_METERED_PHASES), phase
 
 
 def test_parse_gpu_vram_mib():
