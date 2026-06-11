@@ -1385,6 +1385,51 @@ model_sets:
         - --tool-call-parser=deepseekv4
         - --trust-remote-code
         - --context-length=65536
+    # Ascend NPUs (vllm-ascend, w4a8 + MTP). Multi-node deployment:
+    # A2 (64G x8) needs >=4 nodes, A3 (128G x8) needs >=2 nodes (DP=4, TP=8).
+    # Requires a vllm-ascend build with DSV4 patch support. The per-deployment
+    # inter-node networking env (HCCL_IF_IP, IFNAME, GLOO/TP/HCCL_SOCKET_IFNAME,
+    # ASCEND_RT_VISIBLE_DEVICES) and --data-parallel-* address args must be set
+    # per node and are not included here. The optional jemalloc preload
+    # (LD_PRELOAD=.../libjemalloc.so.2) is also omitted (path is arch-specific).
+    - mode: throughput
+      quantization: W4A8
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp
+      backend: vLLM
+      env:
+        VLLM_ASCEND_APPLY_DSV4_PATCH: "1"
+        OMP_PROC_BIND: "false"
+        OMP_NUM_THREADS: "10"
+        PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
+        ACL_OP_INIT_MODE: "1"
+        VLLM_ASCEND_ENABLE_FLASHCOMM1: "1"
+        TASK_QUEUE_ENABLE: "1"
+        HCCL_OP_EXPANSION_MODE: "AIV"
+        # Timeouts enlarged for multi-node weight load + cross-node handshake.
+        VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+        HCCL_CONNECT_TIMEOUT: "7200"
+        ASCEND_CONNECT_TIMEOUT: "10000"
+        ASCEND_TRANSFER_TIMEOUT: "10000"
+        VLLM_RPC_TIMEOUT: "1800000"
+      backend_parameters:
+        - --max-model-len=65536
+        - --tokenizer-mode=deepseek_v4
+        - --tool-call-parser=deepseek_v4
+        - --enable-auto-tool-choice
+        - --reasoning-parser=deepseek_v4
+        - --safetensors-load-strategy=prefetch
+        - '--model-loader-extra-config={"enable_multithread_load":"true","num_threads":128}'
+        - --quantization=ascend
+        - --enable-expert-parallel
+        - --no-enable-prefix-caching
+        - --block-size=128
+        - '--speculative-config={"num_speculative_tokens": 1,"method": "mtp","enforce_eager": true}'
+        - '--compilation-config={"cudagraph_mode": "FULL_DECODE_ONLY"}'
+        - --async-scheduling
+        - '--additional-config={"ascend_compilation_config":{"enable_npugraph_ex":true,"enable_static_kernel":false},"enable_cpu_binding": true,"enable_shared_expert_dp": true,"multistream_overlap_shared_expert":true}'
     # vLLM standard fallback (FP8 checkpoint)
     - mode: standard
       quantization: FP8
@@ -1432,6 +1477,38 @@ model_sets:
         - --tool-call-parser=deepseekv4
         - --trust-remote-code
         - --context-length=65536
+    # Ascend NPUs (vllm-ascend, w8a8 + MTP). Requires a
+    # vllm-ascend build with DSV4 patch support.
+    - mode: throughput
+      quantization: W8A8
+      gpu_filters:
+        vendor: ascend
+      source: model_scope
+      model_scope_model_id: Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp
+      backend: vLLM
+      env:
+        VLLM_ASCEND_APPLY_DSV4_PATCH: "1"
+        OMP_PROC_BIND: "false"
+        OMP_NUM_THREADS: "10"
+        PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
+        VLLM_ASCEND_ENABLE_FLASHCOMM1: "1"
+        TASK_QUEUE_ENABLE: "1"
+        HCCL_OP_EXPANSION_MODE: "AIV"
+      backend_parameters:
+        - --max-model-len=65536
+        - --tokenizer-mode=deepseek_v4
+        - --tool-call-parser=deepseek_v4
+        - --enable-auto-tool-choice
+        - --reasoning-parser=deepseek_v4
+        - --safetensors-load-strategy=prefetch
+        - '--model-loader-extra-config={"enable_multithread_load":"true","num_threads":128}'
+        - --quantization=ascend
+        - --enable-expert-parallel
+        - --no-enable-prefix-caching
+        - '--speculative-config={"num_speculative_tokens": 1,"method": "mtp","enforce_eager": true}'
+        - '--compilation-config={"cudagraph_mode": "FULL_DECODE_ONLY"}'
+        - --async-scheduling
+        - '--additional-config={"ascend_compilation_config":{"enable_npugraph_ex":true,"enable_static_kernel":false},"enable_cpu_binding": true,"enable_dsa_cp": true,"multistream_overlap_shared_expert":true}'
     # vLLM standard fallback
     - mode: standard
       quantization: FP8
