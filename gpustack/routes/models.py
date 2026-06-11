@@ -269,6 +269,12 @@ async def _get_model(
 @router.get("/{id}/instances", response_model=ModelInstancesPublic)
 async def get_model_instances(ctx: TenantContextDep, id: int, params: ListParamsDep):
     if params.watch:
+        # Gate the stream on the same visibility check the non-watch
+        # branch applies, so a model id outside the caller's scope can't
+        # be tailed live.
+        async with async_session() as session:
+            model = await Model.one_by_id(session, id)
+            assert_resource_visible(ctx, model, not_found_message="Model not found")
         fields = {"model_id": id}
         return StreamingResponse(
             ModelInstance.streaming(fields=fields),
