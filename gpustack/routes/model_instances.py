@@ -21,6 +21,8 @@ from gpustack.schemas.clusters import Cluster
 from gpustack.api.tenant import (
     bypass_tenant_filter,
     assert_resource_visible,
+    cluster_scoped_system,
+    scoped_cluster_row_visible,
     tenant_list_conditions,
 )
 from gpustack.server.db import async_session
@@ -121,8 +123,15 @@ async def get_model_instances(
         fields["owner_principal_id"] = ctx.current_principal_id
 
     if params.watch:
+        # Cluster-bound service accounts (worker / cluster bootstrap)
+        # only stream instances of their own cluster.
+        filter_func = (
+            (lambda data: scoped_cluster_row_visible(ctx, data))
+            if cluster_scoped_system(ctx)
+            else None
+        )
         return StreamingResponse(
-            ModelInstance.streaming(fields=fields),
+            ModelInstance.streaming(fields=fields, filter_func=filter_func),
             media_type="text/event-stream",
         )
 

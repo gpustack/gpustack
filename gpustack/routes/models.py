@@ -28,6 +28,8 @@ from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.api.tenant import (
     bypass_tenant_filter,
     assert_resource_visible,
+    cluster_scoped_system,
+    scoped_cluster_row_visible,
     tenant_list_conditions,
 )
 from gpustack.server.db import async_session
@@ -87,6 +89,18 @@ class ModelStateFilterEnum(str, Enum):
     STOPPED = "stopped"
 
 
+def _make_model_watch_filter(ctx, categories):
+    """Watch-stream visibility: cluster-bound service accounts only see
+    their own cluster's models; everyone keeps the categories filter."""
+
+    def _visible(data) -> bool:
+        if cluster_scoped_system(ctx) and not scoped_cluster_row_visible(ctx, data):
+            return False
+        return categories_filter(data, categories)
+
+    return _visible
+
+
 @router.get("", response_model=ModelsPublic)
 async def get_models(
     ctx: TenantContextDep,
@@ -114,9 +128,9 @@ async def get_models(
     # Streaming uses field-equality only; scope by current org so non-admin
     # users never see cross-org rows via the live stream. Admin without an
     # explicit org context keeps the unfiltered cross-org stream. System
-    # users (workers / cluster accounts) bypass — they need the cross-org
-    # view to handle instances scheduled to them on clusters outside their
-    # default Org.
+    # users (workers / cluster accounts) bypass owner scoping — they serve
+    # every Org's models — but cluster-bound service accounts are narrowed
+    # to their own cluster's rows below.
     if ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
         fields["owner_principal_id"] = ctx.current_principal_id
 
@@ -125,7 +139,7 @@ async def get_models(
             Model.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=lambda data: categories_filter(data, categories),
+                filter_func=_make_model_watch_filter(ctx, categories),
             ),
             media_type="text/event-stream",
         )

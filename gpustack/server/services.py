@@ -71,6 +71,13 @@ class UserService:
         if result.worker is not None:
             # detach worker to avoid lazy loading
             self.session.expunge(result.worker)
+        if result.cluster is not None:
+            # detach cluster too — the cached User outlives this session
+            # and tenant-context resolution reads cluster.id /
+            # cluster.owner_principal_id on later requests; an instance
+            # still tied to the closed session risks DetachedInstanceError
+            # if anything expires it.
+            self.session.expunge(result.cluster)
         self.session.expunge(result)
         return result
 

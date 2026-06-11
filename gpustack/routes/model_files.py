@@ -14,6 +14,8 @@ from gpustack.api.tenant import (
     bypass_tenant_filter,
     assert_cluster_resource_visible,
     cluster_resource_visibility_conditions,
+    cluster_scoped_system,
+    scoped_cluster_row_visible,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import async_session
@@ -33,6 +35,8 @@ router = APIRouter()
 
 def _make_model_file_visibility_filter(ctx):
     def _visible(m: ModelFile) -> bool:
+        if cluster_scoped_system(ctx):
+            return scoped_cluster_row_visible(ctx, m)
         if bypass_tenant_filter(ctx):
             return True
         org_id = getattr(m, "owner_principal_id", None)
