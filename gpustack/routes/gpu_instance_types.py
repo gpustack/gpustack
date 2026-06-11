@@ -15,7 +15,11 @@ from gpustack.server.deps import TenantContextDep
 router = APIRouter()
 
 
-@router.get("", response_model=GPUAggregatedInstanceTypesPublic)
+@router.get(
+    "",
+    response_model=GPUAggregatedInstanceTypesPublic,
+    response_model_exclude_none=True,
+)
 async def get_gpu_instance_types(
     ctx: TenantContextDep,
     watch: bool = False,
