@@ -391,7 +391,9 @@ class ServeManager:
                 model = self._refresh_model(model_instance)
 
             backend = get_backend(model)
-            health_check_path = self._get_health_check_path(backend)
+            health_check_path = self._get_health_check_path(
+                backend, model.owner_principal_id
+            )
             if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
                 # NOTE: There is no known use case for now. Keep this in case the built-in backends
                 # introduce breaking changes and the default health check path no longer works.
@@ -1178,7 +1180,9 @@ class ServeManager:
                     log_file_path,
                     self._config,
                     self._worker_id,
-                    self._inference_backend_manager.get_backend_by_name(backend),
+                    self._inference_backend_manager.get_backend_by_name(
+                        backend, model.owner_principal_id
+                    ),
                     fallback_registry,
                 ),
             )
@@ -1507,16 +1511,22 @@ class ServeManager:
                 return process.is_alive()
         return False
 
-    def _get_health_check_path(self, backend: str) -> Optional[str]:
+    def _get_health_check_path(
+        self, backend: str, owner_principal_id: Optional[int] = None
+    ) -> Optional[str]:
         """
         Get health check path for the given backend.
 
         Args:
             backend: The backend name.
+            owner_principal_id: Owner of the model being served, used to
+                resolve an Org-scoped backend row over the Platform one.
         Returns:
             The health check path if exists, else None.
         """
-        inference_backend = self._inference_backend_manager.get_backend_by_name(backend)
+        inference_backend = self._inference_backend_manager.get_backend_by_name(
+            backend, owner_principal_id
+        )
 
         return inference_backend.health_check_path if inference_backend else None
 

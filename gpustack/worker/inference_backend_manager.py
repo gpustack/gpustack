@@ -5,7 +5,7 @@ from typing import Dict, Optional
 
 
 from gpustack.client import ClientSet
-from gpustack.schemas.inference_backend import InferenceBackend
+from gpustack.schemas.inference_backend import InferenceBackend, VersionConfigDict
 from gpustack.server.bus import EventType, Event
 
 
@@ -24,7 +24,11 @@ class InferenceBackendManager:
     """
 
     def __init__(self, clientset: ClientSet):
-        self.backends_cache: Dict[str, InferenceBackend] = {}
+        # backend_name -> owner_principal_id (None = Platform row) -> row.
+        # Rows are cached per Hybrid scope so one Org's update can never
+        # clobber another Org's (or the Platform's) custom versions;
+        # get_backend_by_name merges the relevant scopes at read time.
+        self.backends_cache: Dict[str, Dict[Optional[int], InferenceBackend]] = {}
 
         # Listener related attributes
         self._clientset: Optional[ClientSet] = clientset
@@ -49,12 +53,47 @@ class InferenceBackendManager:
         # Start watching for changes
         self._watch_task = asyncio.create_task(self._watch_changes())
 
-    def get_backend_by_name(self, backend_name: str) -> Optional[InferenceBackend]:
+    def get_backend_by_name(
+        self,
+        backend_name: str,
+        owner_principal_id: Optional[int] = None,
+    ) -> Optional[InferenceBackend]:
+        """
+        Resolve a backend for the given owner under the Hybrid scope:
+        the Platform row merged with the owner's row, the owner's
+        version_configs keys overriding the Platform ones. Rows owned by
+        other principals are ignored.
+        """
         with _cache_lock:
-            if backend_name in self.backends_cache:
-                return self.backends_cache[backend_name]
-
-        return None
+            scopes = self.backends_cache.get(backend_name)
+            if not scopes:
+                return None
+            platform_row = scopes.get(None)
+            owner_row = (
+                scopes.get(owner_principal_id)
+                if owner_principal_id is not None
+                else None
+            )
+            if owner_row is None:
+                return platform_row
+            if platform_row is None:
+                return owner_row
+            merged = owner_row.model_copy()
+            merged.version_configs = VersionConfigDict(
+                root={
+                    **(
+                        platform_row.version_configs.root
+                        if platform_row.version_configs
+                        else {}
+                    ),
+                    **(
+                        owner_row.version_configs.root
+                        if owner_row.version_configs
+                        else {}
+                    ),
+                }
+            )
+            return merged
 
     def _initialize_cache(self) -> None:
         """Initialize the cache with existing InferenceBackend data."""
@@ -69,7 +108,9 @@ class InferenceBackendManager:
                     for backend in backends:
                         backend = InferenceBackend.model_validate(backend)
                         if backend:
-                            self.backends_cache[backend.backend_name] = backend
+                            self.backends_cache.setdefault(backend.backend_name, {})[
+                                backend.owner_principal_id
+                            ] = backend
                 logger.info(
                     f"Initialized cache with {self.backends_cache.keys()} InferenceBackends"
                 )
@@ -107,7 +148,7 @@ class InferenceBackendManager:
         preserving built-in entries.
 
         Args:
-            old: Previously cached backend for the same name.
+            old: Previously cached backend for the same name and scope.
             backend: Incoming backend to be merged into the cache.
         """
         if old and backend.is_built_in:
@@ -139,19 +180,26 @@ class InferenceBackendManager:
         try:
             # Parse the backend data
             backend = InferenceBackend.model_validate(event.data)
+            scope = backend.owner_principal_id
 
             if event.type == EventType.CREATED or event.type == EventType.UPDATED:
                 with _cache_lock:
-                    old = self.backends_cache.get(backend.backend_name)
+                    scopes = self.backends_cache.setdefault(backend.backend_name, {})
+                    old = scopes.get(scope)
                     self._merge_version_configs(old, backend)
-                    self.backends_cache[backend.backend_name] = backend
+                    scopes[scope] = backend
                 logger.debug(
                     f"Updated InferenceBackend in cache: {backend.id} ({event.type})"
                 )
             elif event.type == EventType.DELETED:
                 with _cache_lock:
-                    # Remove from both caches
-                    self.backends_cache.pop(backend.backend_name, None)
+                    # Remove only the changed scope; other Orgs' rows and
+                    # the Platform row of the same backend stay cached.
+                    scopes = self.backends_cache.get(backend.backend_name)
+                    if scopes is not None:
+                        scopes.pop(scope, None)
+                        if not scopes:
+                            self.backends_cache.pop(backend.backend_name, None)
                     logger.debug(
                         f"Removed InferenceBackend from cache: {backend.backend_name}"
                     )
