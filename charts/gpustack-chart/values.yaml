@@ -136,7 +136,7 @@ higressPlugins:
     # Image repository including namespace (no registry); final reference is `{global.hub}/{repository}:{tag}`.
     repository: gpustack/higress-plugins
     pullPolicy: IfNotPresent
-    tag: "0.2.2-post1"
+    tag: "0.2.3.post4"
 worker:
   enabled: false
   # GPU vendors for the worker nodes. Accepts a list to allow a single
