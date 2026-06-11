@@ -147,6 +147,19 @@ async def get_admin_user(
     return current_user
 
 
+def is_server_token_principal(principal: Principal) -> bool:
+    """The in-memory principal minted by ``authenticate_system_principal``
+    for callers presenting the server token via legacy Basic auth
+    (pre-2.0 workers). Never persisted — ``id`` stays None — and trusted
+    platform-wide, since the server token is the platform-level secret."""
+    return (
+        principal is not None
+        and principal.kind == PrincipalType.SYSTEM
+        and principal.id is None
+        and principal.name.startswith(SYSTEM_WORKER_USER_PREFIX)
+    )
+
+
 async def get_cluster_principal(
     current_principal: Annotated[Principal, Depends(get_current_user)],
 ) -> Principal:
@@ -154,10 +167,12 @@ async def get_cluster_principal(
     # ``Cluster.system_principal_id``) is the cluster bootstrap
     # account. ``current_principal.cluster`` is the back-populated
     # relationship — eagerly loaded by ``UserService.get_by_username``
-    # so this check is a cheap attribute read.
-    if (
-        current_principal.kind == PrincipalType.SYSTEM
-        and current_principal.cluster is not None
+    # so this check is a cheap attribute read. The legacy server-token
+    # principal has no cluster row but holds the platform secret, so
+    # it passes too.
+    if current_principal.kind == PrincipalType.SYSTEM and (
+        current_principal.cluster is not None
+        or is_server_token_principal(current_principal)
     ):
         return current_principal
     return await get_admin_user(current_principal)
@@ -166,9 +181,9 @@ async def get_cluster_principal(
 async def get_worker_principal(
     current_principal: Annotated[Principal, Depends(get_current_user)],
 ) -> Principal:
-    if (
-        current_principal.kind == PrincipalType.SYSTEM
-        and current_principal.worker is not None
+    if current_principal.kind == PrincipalType.SYSTEM and (
+        current_principal.worker is not None
+        or is_server_token_principal(current_principal)
     ):
         return current_principal
     return await get_admin_user(current_principal)
@@ -184,15 +199,17 @@ async def authenticate_system_principal(
 ) -> Optional[Principal]:
     if credentials.username.startswith(SYSTEM_WORKER_USER_PREFIX):
         if credentials.password == config.token:
-            # In-memory principal — never persisted. SYSTEM kind is
-            # what downstream checks (``get_cluster_principal`` /
-            # ``get_worker_principal``) gate on, plus ``is_admin``
-            # flips on the all-access guards used by legacy worker
-            # callers.
+            # In-memory principal — never persisted. SYSTEM kind is what
+            # downstream tenant filters gate on; the worker / cluster
+            # client gates accept it via ``is_server_token_principal``.
+            # NOTE: must NOT set ``is_admin=True`` — the schema rejects
+            # the platform-superuser flag on non-USER principals at
+            # construction (PrincipalBase.model_post_init), which is
+            # also why this principal carries its trust through its
+            # SYSTEM kind + unpersisted identity instead.
             return Principal(
                 name=credentials.username,
                 kind=PrincipalType.SYSTEM,
-                is_admin=True,
             )
     return None
 

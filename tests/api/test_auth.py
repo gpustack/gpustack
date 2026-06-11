@@ -239,3 +239,58 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
     assert captured["trust_env"] is False
     assert captured["timeout"] is not None
     assert isinstance(captured["verify"], ssl.SSLContext)
+
+
+@pytest.mark.asyncio
+async def test_legacy_server_token_principal_authenticates():
+    """Pre-2.0 workers authenticate every request with Basic
+    ``system/worker/<uuid>:<server-token>``. The minted in-memory
+    principal must construct without tripping the schema's
+    is_admin-on-non-USER guard and pass the worker / cluster gates."""
+    from fastapi.security import HTTPBasicCredentials
+
+    from gpustack.api.auth import (
+        authenticate_system_principal,
+        get_cluster_principal,
+        get_worker_principal,
+        is_server_token_principal,
+    )
+    from gpustack.schemas.principals import PrincipalType
+
+    config = type("Config", (), {"token": "server-token"})()
+    principal = await authenticate_system_principal(
+        config,
+        HTTPBasicCredentials(username="system/worker/abc", password="server-token"),
+    )
+
+    assert principal is not None
+    assert principal.kind == PrincipalType.SYSTEM
+    assert principal.is_admin is False
+    assert principal.id is None
+    assert is_server_token_principal(principal)
+    assert (await get_cluster_principal(principal)) is principal
+    assert (await get_worker_principal(principal)) is principal
+
+    # Wrong password mints nothing.
+    rejected = await authenticate_system_principal(
+        config,
+        HTTPBasicCredentials(username="system/worker/abc", password="wrong"),
+    )
+    assert rejected is None
+
+
+@pytest.mark.asyncio
+async def test_persisted_system_principal_without_links_hits_admin_gate():
+    """A persisted SYSTEM principal (id set) with neither worker nor
+    cluster back-reference is NOT the server-token principal and must
+    fall through to the admin gate."""
+    from gpustack.api.auth import get_worker_principal, is_server_token_principal
+    from gpustack.api.exceptions import ForbiddenException
+    from gpustack.schemas.principals import Principal, PrincipalType
+
+    principal = Principal(name="system/worker-orphan", kind=PrincipalType.SYSTEM)
+    principal.id = 123
+
+    assert not is_server_token_principal(principal)
+    with pytest.raises(ForbiddenException):
+        await get_worker_principal(principal)
