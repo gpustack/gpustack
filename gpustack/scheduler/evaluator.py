@@ -124,6 +124,10 @@ def make_hashable_key(model: ModelSpec, workers: List[Worker]) -> str:
     key_data = json.dumps(
         {
             "model": model.model_dump(mode="json"),
+            # Excluded from model_dump (response-hidden field), but it
+            # changes which Org-scoped backend versions the evaluation
+            # sees — without it cached results would leak across Orgs.
+            "owner_principal_id": getattr(model, "owner_principal_id", None),
             "workers": [
                 w.model_dump(
                     mode="json",
