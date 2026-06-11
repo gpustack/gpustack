@@ -671,8 +671,19 @@ async def merge_runner_versions_to_db(
     # independently). Admin act-as mode behaves like the Org member —
     # they're acting *inside* that Org and want the collapsed
     # single-card UX too.
-    is_admin_view = ctx is None or (
-        ctx.is_platform_admin and ctx.current_principal_id is None
+    # System principals (worker / cluster service accounts) also get
+    # uncollapsed rows: they serve deploys for every Org and resolve
+    # the Platform-vs-Org scope per model themselves — collapsing all
+    # Orgs' rows into one entry here would lose that scoping.
+    is_system = (
+        ctx is not None
+        and ctx.user is not None
+        and ctx.user.kind == PrincipalType.SYSTEM
+    )
+    is_admin_view = (
+        ctx is None
+        or is_system
+        or (ctx.is_platform_admin and ctx.current_principal_id is None)
     )
     if is_admin_view:
         publics = [
