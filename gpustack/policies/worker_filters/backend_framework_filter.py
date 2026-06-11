@@ -1,11 +1,12 @@
 import logging
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 from gpustack.policies.base import WorkerFilter
 from gpustack.schemas.models import Model, get_backend, BackendEnum
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
+    VersionConfig,
 )
 from gpustack.server.db import async_session
 from gpustack_runner import list_service_runners
@@ -73,6 +74,38 @@ class BackendFrameworkFilter(WorkerFilter):
 
         return False, supported_runtime_versions
 
+    def _visible_version_configs(
+        self,
+        inference_backends: List[InferenceBackend],
+    ) -> Dict[str, VersionConfig]:
+        """
+        Version configs of this model's backend visible under the Hybrid
+        scope: the Platform row (owner_principal_id IS NULL) merged with the
+        model owner's row, whose keys override the Platform ones. Rows owned
+        by other principals are ignored.
+        """
+        # getattr, NOT direct access: the scheduler deploys persisted
+        # Model rows, but the evaluator drives this same filter through
+        # find_candidate with a ModelSpec (compatibility checks before a
+        # model exists), which carries no owner_principal_id — pydantic
+        # raises AttributeError on direct access. Unowned specs fall back
+        # to Platform-only visibility.
+        owner_id = getattr(self.model, "owner_principal_id", None)
+        platform_row = None
+        owner_row = None
+        for b in inference_backends:
+            if b.backend_name != self.backend_name:
+                continue
+            if b.owner_principal_id is None:
+                platform_row = b
+            elif b.owner_principal_id == owner_id:
+                owner_row = b
+        merged: Dict[str, VersionConfig] = {}
+        for row in (platform_row, owner_row):
+            if row and row.version_configs and row.version_configs.root:
+                merged.update(row.version_configs.root)
+        return merged
+
     async def _has_supported_runners(
         self,
         inference_backends: List[InferenceBackend],
@@ -93,31 +126,26 @@ class BackendFrameworkFilter(WorkerFilter):
         Returns:
             Tuple of (is_supported, supported_runtime_versions)
         """
-        backend = next(
-            (b for b in inference_backends if b.backend_name == self.backend_name),
-            None,
-        )
+        version_configs = self._visible_version_configs(inference_backends)
+        for version, version_config in version_configs.items():
+            if backend_version and backend_version != version:
+                continue
 
-        if backend and backend.version_configs and backend.version_configs.root:
-            for version, version_config in backend.version_configs.root.items():
-                if backend_version and backend_version != version:
-                    continue
+            # Check if gpu_type is supported by custom_framework
+            is_custom_supported = version_config.custom_framework and (
+                version_config.custom_framework == "cpu"
+                or gpu_type == version_config.custom_framework
+            )
 
-                # Check if gpu_type is supported by custom_framework
-                is_custom_supported = version_config.custom_framework and (
-                    version_config.custom_framework == "cpu"
-                    or gpu_type == version_config.custom_framework
-                )
+            # Check if gpu_type is supported by built_in_frameworks
+            is_built_in_supported = version_config.built_in_frameworks and (
+                "cpu" in version_config.built_in_frameworks
+                or gpu_type in version_config.built_in_frameworks
+            )
 
-                # Check if gpu_type is supported by built_in_frameworks
-                is_built_in_supported = version_config.built_in_frameworks and (
-                    "cpu" in version_config.built_in_frameworks
-                    or gpu_type in version_config.built_in_frameworks
-                )
-
-                # GPU is supported if either custom or built-in framework supports it
-                if is_custom_supported or is_built_in_supported:
-                    return True, []
+            # GPU is supported if either custom or built-in framework supports it
+            if is_custom_supported or is_built_in_supported:
+                return True, []
 
         kwargs = {
             "backend": gpu_type,

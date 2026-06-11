@@ -34,6 +34,8 @@ def create_inference_backend(
     backend_name="vLLM",
     version_configs=None,
     is_built_in=False,
+    id=1,
+    owner_principal_id=None,
 ):
     """Create a test inference backend."""
     if version_configs is None:
@@ -46,11 +48,12 @@ def create_inference_backend(
         }
 
     backend = InferenceBackend(
-        id=1,
+        id=id,
         backend_name=backend_name,
         version_configs=version_configs,
         default_version="0.11.0",
         is_built_in=is_built_in,
+        owner_principal_id=owner_principal_id,
     )
     # Simulate database deserialization - version_configs should be a VersionConfigDict with root attribute
     from gpustack.schemas.inference_backend import VersionConfigDict
@@ -686,6 +689,193 @@ async def test_cuda_version_incompatibility():
         assert len(filtered_workers) == 0
         assert len(messages) == 1
         assert "host-4-4080" in messages[0]
+
+
+@pytest.mark.asyncio
+async def test_org_scoped_backend_version_visible_to_owner():
+    """
+    Test 16: A custom version defined on an Org-scoped backend row must be
+    found when the deploying model belongs to that Org, even though the
+    Platform row of the same backend doesn't carry the version.
+    """
+    org_id = 42
+    model = create_model(
+        backend="vLLM",
+        backend_version="0.11.0-custom",
+        owner_principal_id=org_id,
+    )
+    workers = [linux_nvidia_4_4080_16gx4()]
+
+    platform_row = create_inference_backend(
+        backend_name="vLLM",
+        version_configs={},
+        is_built_in=True,
+        id=1,
+        owner_principal_id=None,
+    )
+    org_row = create_inference_backend(
+        backend_name="vLLM",
+        version_configs={
+            "0.11.0-custom": VersionConfig(
+                image_name="test:0.11.0-custom",
+                built_in_frameworks=None,
+                custom_framework="cuda",
+            )
+        },
+        is_built_in=True,
+        id=2,
+        owner_principal_id=org_id,
+    )
+
+    filter_instance = BackendFrameworkFilter(model)
+
+    async def mock_session_exec(statement):
+        mock_result = MagicMock()
+        mock_result.all.return_value = [platform_row, org_row]
+        return mock_result
+
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
+        with patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[],
+        ):
+            filtered_workers, messages = await filter_instance.filter(workers)
+
+            assert len(filtered_workers) == 1
+            assert filtered_workers[0].name == "host-4-4080"
+            assert len(messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_model_spec_without_owner_does_not_crash():
+    """The evaluator drives this filter with ModelSpec (no
+    owner_principal_id); it must fall back to Platform-only visibility
+    instead of raising AttributeError."""
+    from gpustack.schemas.model_sets import ModelSpec
+
+    spec = ModelSpec(
+        source="huggingface",
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        backend="vLLM",
+        backend_version="0.11.0",
+        replicas=1,
+    )
+    workers = [linux_nvidia_4_4080_16gx4()]
+
+    platform_row = create_inference_backend(
+        backend_name="vLLM",
+        version_configs={
+            "0.11.0": VersionConfig(
+                image_name="test:0.11.0",
+                built_in_frameworks=["cuda"],
+                custom_framework="",
+            )
+        },
+        is_built_in=True,
+        id=1,
+        owner_principal_id=None,
+    )
+    org_row = create_inference_backend(
+        backend_name="vLLM",
+        version_configs={
+            "0.11.0-custom": VersionConfig(
+                image_name="test:0.11.0-custom",
+                built_in_frameworks=None,
+                custom_framework="cuda",
+            )
+        },
+        is_built_in=True,
+        id=2,
+        owner_principal_id=42,
+    )
+
+    filter_instance = BackendFrameworkFilter(spec)
+
+    async def mock_session_exec(statement):
+        mock_result = MagicMock()
+        mock_result.all.return_value = [platform_row, org_row]
+        return mock_result
+
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
+        with patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[],
+        ):
+            filtered_workers, messages = await filter_instance.filter(workers)
+
+            # Platform version visible — worker passes, no crash.
+            assert len(filtered_workers) == 1
+            assert len(messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_org_scoped_backend_version_hidden_from_other_org():
+    """
+    Test 17: A custom version defined on another Org's backend row must NOT
+    be visible to a model owned by a different Org.
+    """
+    model = create_model(
+        backend="vLLM",
+        backend_version="0.11.0-custom",
+        owner_principal_id=7,
+    )
+    workers = [linux_nvidia_4_4080_16gx4()]
+
+    platform_row = create_inference_backend(
+        backend_name="vLLM",
+        version_configs={},
+        is_built_in=True,
+        id=1,
+        owner_principal_id=None,
+    )
+    other_org_row = create_inference_backend(
+        backend_name="vLLM",
+        version_configs={
+            "0.11.0-custom": VersionConfig(
+                image_name="test:0.11.0-custom",
+                built_in_frameworks=None,
+                custom_framework="cuda",
+            )
+        },
+        is_built_in=True,
+        id=2,
+        owner_principal_id=42,
+    )
+
+    filter_instance = BackendFrameworkFilter(model)
+
+    async def mock_session_exec(statement):
+        mock_result = MagicMock()
+        mock_result.all.return_value = [platform_row, other_org_row]
+        return mock_result
+
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
+        with patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[],
+        ):
+            filtered_workers, messages = await filter_instance.filter(workers)
+
+            assert len(filtered_workers) == 0
+            assert len(messages) == 1
 
 
 @pytest.mark.asyncio
