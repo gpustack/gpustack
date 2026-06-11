@@ -40,23 +40,23 @@ kubectl version
 
 ## Install GPUStack with Helm
 
-Clone the GPUStack GitHub repository to obtain the charts:
+The GPUStack Helm chart is published as an OCI artifact to Docker Hub at `oci://registry-1.docker.io/gpustack/gpustack-chart`. Install GPUStack directly from the registry:
 
 ```bash
-git clone https://github.com/gpustack/gpustack.git
+helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace
 ```
 
-Navigate to the `charts` directory and install GPUStack:
+To install a specific chart version, append `--version <chart-version>`:
 
 ```bash
-cd gpustack/charts
-helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace
+helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
+  --version <chart-version>
 ```
 
 By default, the `higress-core` sub-chart is enabled and deployed alongside GPUStack. If you already have Higress installed in your cluster, disable the bundled Higress and point GPUStack to your existing instance:
 
 ```bash
-helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace \
+helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
   --set higress-core.enabled=false \
   --set gateway.ingressClassname=<your-higress-ingressclass>
 ```
@@ -97,11 +97,11 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | image.repository                         | gpustack/gpustack                 | Image repo with namespace; see note below                                 |
 | image.tag                                | null                              | Image tag, defaults to chart's appVersion                                 |
 | image.pullPolicy                         | IfNotPresent                      | Image pull policy                                                         |
-| imagePullSecrets.existingSecrets         | []                                | Existing Secret names (release namespace) to use as image pull secrets    |
-| imagePullSecrets.credentials.registry    | docker.io                         | Registry host used when the chart creates a docker-registry Secret        |
-| imagePullSecrets.credentials.username    | null                              | Registry username; creates Secret when set with password                  |
-| imagePullSecrets.credentials.password    | null                              | Registry password; creates Secret when set with username                  |
-| imagePullSecrets.credentials.email       | null                              | Optional email for the docker-registry Secret                             |
+| global.imagePullSecrets                  | [gpustack-image-pull-secret]      | List of `{name}` refs on every pod; replace to use existing Secrets       |
+| imagePullSecret.credentials.registry     | docker.io                         | Registry host used when the chart creates a docker-registry Secret        |
+| imagePullSecret.credentials.username     | null                              | Registry username; creates Secret when set with password                  |
+| imagePullSecret.credentials.password     | null                              | Registry password; creates Secret when set with username                  |
+| imagePullSecret.credentials.email        | null                              | Optional email for the docker-registry Secret                             |
 | server.ingress.hostname                  | null                              | Ingress hostname                                                          |
 | server.ingress.tls.cert                  | null                              | Ingress TLS certificate content                                           |
 | server.ingress.tls.key                   | null                              | Ingress TLS private key content                                           |
@@ -145,7 +145,7 @@ To customize parameters, use `--set key=value` or `-f your-values.yaml` during i
 
 ### Multi-vendor Worker Deployment
 
-When `worker.gpuVendors` lists two or more vendors, the chart renders a per-vendor DaemonSet (`<release>-worker-<vendor>`). Each vendor DS gets the per-vendor driver mounts, `runtimeClassName`, and an automatic PCI-presence nodeSelector label (e.g. `feature.node.kubernetes.io/pci-10de.present: "true"` for NVIDIA) based on the vendor's PCI ID. All worker pods additionally get a required `podAntiAffinity` (topologyKey=hostname, namespaceSelector={}) so two workers can't share a node — protects the `hostNetwork: true` ports from collision across namespaces.
+When `worker.gpuVendors` lists one or more vendors, the chart renders a per-vendor DaemonSet (`<release>-worker-<vendor>`) for each, alongside the always-present CPU DaemonSet (`<release>-worker`). Each vendor DS gets the per-vendor driver mounts, `runtimeClassName`, and an automatic PCI-presence nodeSelector label (e.g. `feature.node.kubernetes.io/pci-10de.present: "true"` for NVIDIA) based on the vendor's PCI ID. Whenever at least one GPU vendor is listed, all worker pods additionally get a required `podAntiAffinity` (topologyKey=hostname, namespaceSelector={}) so two workers can't share a node — protects the `hostNetwork: true` ports from collision across namespaces.
 
 > **Prerequisite:** The PCI-presence labels are advertised by [Node Feature Discovery (NFD)](https://kubernetes-sigs.github.io/node-feature-discovery/). NFD must be installed in the cluster for worker pods to schedule onto GPU nodes. Without NFD, no nodes will carry the required labels and all worker pods will remain Pending.
 
@@ -171,7 +171,7 @@ worker:
 To pull all images (gpustack server/worker, higress-plugins, and the bundled higress-core gateway/controller/pilot) from a mirrored private registry, override `global.hub`:
 
 ```bash
-helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace \
+helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
   --set global.hub=myregistry.example.com
 ```
 
@@ -188,17 +188,17 @@ GPUStack supports two ways to configure image pull credentials, which may be com
 1. Reference one or more existing Secrets in the release namespace:
 
    ```bash
-   helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace \
-     --set imagePullSecrets.existingSecrets[0]=my-existing-secret
+   helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
+     --set global.imagePullSecrets[0].name=my-existing-secret
    ```
 
 2. Provide registry credentials; the chart creates a `docker-registry` Secret named `gpustack-image-pull-secret` and references it automatically:
 
    ```bash
-   helm install -n gpustack-system gpustack ./gpustack-chart --create-namespace \
-     --set imagePullSecrets.credentials.registry=registry.example.com \
-     --set imagePullSecrets.credentials.username=myuser \
-     --set imagePullSecrets.credentials.password=mypassword
+   helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
+     --set imagePullSecret.credentials.registry=registry.example.com \
+     --set imagePullSecret.credentials.username=myuser \
+     --set imagePullSecret.credentials.password=mypassword
    ```
 
 Both options apply to the gpustack server, worker, and higress-plugins pods.
