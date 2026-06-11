@@ -1,7 +1,7 @@
 from datetime import date
 from enum import Enum
 from typing import List, Optional, Union
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from gpustack.schemas.models import (
     ModelSource,
@@ -31,6 +31,21 @@ class ModelSpec(ModelSpecBase):
     quantization: Optional[str] = None
     mode: Optional[str] = "standard"
     gpu_filters: Optional[GPUFilters] = None
+    # The principal the model would be created under, stamped
+    # server-side by the evaluation route from the caller's context
+    # (never trusted from the client). Lets compatibility checks see
+    # the same Org-scoped backend versions a real deploy would —
+    # BackendFrameworkFilter resolves Hybrid backend rows by it, and
+    # make_hashable_key adds it to the evaluation cache key explicitly
+    # so results don't leak across Orgs. None = Platform-only view
+    # (catalog specs, admin in "All" mode).
+    #
+    # ``exclude=True`` keeps it out of every serialized response: the
+    # UI merges the evaluation result's default_spec back into the
+    # model-create payload, and ModelCreate.owner_principal_id is a
+    # non-nullable int — echoing ``null`` there fails validation with
+    # a 422.
+    owner_principal_id: Optional[int] = Field(default=None, exclude=True)
 
 
 class SizeUnit(str, Enum):
