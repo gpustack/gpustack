@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import threading
-from typing import Dict, Optional
+import time
+from typing import Dict, Optional, Set, Tuple
 
 
 from gpustack.client import ClientSet
@@ -13,6 +14,23 @@ logger = logging.getLogger(__name__)
 
 # Global lock for cache operations to avoid pickle serialization issues
 _cache_lock = threading.RLock()
+
+# Minimum spacing between cache-miss refreshes so repeated lookups for a
+# scope the server genuinely doesn't expose can't hammer the API.
+_REFRESH_MIN_INTERVAL_SECONDS = 30
+
+# Fields that never fall back from the owner row to the Platform row when
+# merging the two scopes: identity/scope keys, the version map (merged
+# separately), and row bookkeeping.
+_NON_FALLBACK_FIELDS = {
+    "backend_name",
+    "owner_principal_id",
+    "version_configs",
+    "id",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+}
 
 
 class InferenceBackendManager:
@@ -30,10 +48,18 @@ class InferenceBackendManager:
         # get_backend_by_name merges the relevant scopes at read time.
         self.backends_cache: Dict[str, Dict[Optional[int], InferenceBackend]] = {}
 
+        # (backend_name, owner_principal_id) scopes a refresh confirmed
+        # the server doesn't expose. Negative-cached so the steady-state
+        # common case (a model whose Org has no override row — including
+        # every Default-Org model) doesn't re-poll /inference-backends/all
+        # forever; invalidated by watch events and watch (re)connects.
+        self._missing_scopes: Set[Tuple[str, int]] = set()
+
         # Listener related attributes
         self._clientset: Optional[ClientSet] = clientset
         self._running = False
         self._watch_task: Optional[asyncio.Task] = None
+        self._last_refresh: float = 0.0
 
         self._initialize_cache()
 
@@ -64,6 +90,43 @@ class InferenceBackendManager:
         version_configs keys overriding the Platform ones. Rows owned by
         other principals are ignored.
         """
+        backend = self._resolve_backend(backend_name, owner_principal_id)
+        if owner_principal_id is not None and not self._has_scope(
+            backend_name, owner_principal_id
+        ):
+            scope_key = (backend_name, owner_principal_id)
+            with _cache_lock:
+                known_missing = scope_key in self._missing_scopes
+            # The owner's row may have become visible to this worker
+            # after the cache was built (e.g. created between the cache
+            # fetch and the watch starting) — refresh once before
+            # serving the Platform-only fallback. A confirmed miss is
+            # negative-cached: most owners legitimately have no override
+            # row, and the watch stream delivers any row created later.
+            if not known_missing and self._refresh_cache():
+                if self._has_scope(backend_name, owner_principal_id):
+                    backend = self._resolve_backend(backend_name, owner_principal_id)
+                else:
+                    with _cache_lock:
+                        self._missing_scopes.add(scope_key)
+                    logger.warning(
+                        f"No backend row for owner {owner_principal_id} of "
+                        f"backend {backend_name} after cache refresh; using "
+                        f"the Platform configuration only. If this owner is "
+                        f"expected to have overrides, the server-side scope "
+                        f"doesn't expose them to this worker."
+                    )
+        return backend
+
+    def _has_scope(self, backend_name: str, owner_principal_id: int) -> bool:
+        with _cache_lock:
+            return owner_principal_id in self.backends_cache.get(backend_name, {})
+
+    def _resolve_backend(
+        self,
+        backend_name: str,
+        owner_principal_id: Optional[int],
+    ) -> Optional[InferenceBackend]:
         with _cache_lock:
             scopes = self.backends_cache.get(backend_name)
             if not scopes:
@@ -79,6 +142,27 @@ class InferenceBackendManager:
             if platform_row is None:
                 return owner_row
             merged = owner_row.model_copy()
+            # Field-level fallback for scalars: an Org row may be sparse
+            # (e.g. created directly with just one custom version and no
+            # health_check_path); unset fields inherit the Platform value
+            # instead of shadowing it with None.
+            for field_name in type(owner_row).model_fields:
+                if field_name in _NON_FALLBACK_FIELDS:
+                    continue
+                if getattr(merged, field_name) is None:
+                    platform_value = getattr(platform_row, field_name)
+                    if platform_value is not None:
+                        setattr(merged, field_name, platform_value)
+            # Booleans carry concrete defaults, so the None-fallback above
+            # never reaches them. Align with the server's collapse
+            # semantics (_collapse_by_backend_name): ``enabled`` is OR'd
+            # so an Org row can't shadow a Platform-enabled backend. The
+            # same for ``is_built_in`` — a sparse Org-created override of
+            # a built-in defaults to is_built_in=False, which would
+            # otherwise flip version resolution onto the non-built-in
+            # path (resolve_target_version auto-picks the latest).
+            merged.enabled = bool(owner_row.enabled) or bool(platform_row.enabled)
+            merged.is_built_in = owner_row.is_built_in or platform_row.is_built_in
             merged.version_configs = VersionConfigDict(
                 root={
                     **(
@@ -95,36 +179,77 @@ class InferenceBackendManager:
             )
             return merged
 
+    def _fetch_backends(self) -> Dict[str, Dict[Optional[int], InferenceBackend]]:
+        """Load all visible backends from the server into a fresh
+        per-scope cache dict."""
+        resp = self._clientset.http_client.get_httpx_client().get(
+            "/inference-backends/all"
+        )
+        resp.raise_for_status()
+        cache: Dict[str, Dict[Optional[int], InferenceBackend]] = {}
+        for backend in resp.json() or []:
+            backend = InferenceBackend.model_validate(backend)
+            if backend:
+                cache.setdefault(backend.backend_name, {})[
+                    backend.owner_principal_id
+                ] = backend
+        return cache
+
     def _initialize_cache(self) -> None:
         """Initialize the cache with existing InferenceBackend data."""
         try:
             logger.info("Initializing InferenceBackend cache")
-            resp = self._clientset.http_client.get_httpx_client().get(
-                "/inference-backends/all"
-            )
-            backends = resp.json()
-            if backends:
-                with _cache_lock:
-                    for backend in backends:
-                        backend = InferenceBackend.model_validate(backend)
-                        if backend:
-                            self.backends_cache.setdefault(backend.backend_name, {})[
-                                backend.owner_principal_id
-                            ] = backend
-                logger.info(
-                    f"Initialized cache with {self.backends_cache.keys()} InferenceBackends"
-                )
+            cache = self._fetch_backends()
+            with _cache_lock:
+                self.backends_cache = cache
+            self._last_refresh = time.monotonic()
+            if cache:
+                logger.info(f"Initialized cache with {cache.keys()} InferenceBackends")
             else:
                 logger.info("No existing InferenceBackends found")
         except Exception as e:
             logger.error(f"Failed to initialize InferenceBackend cache: {e}")
             raise
 
+    def _refresh_cache(self) -> bool:
+        """Re-fetch the cache on a scope miss; throttled, best-effort.
+
+        Returns True when a refresh actually ran.
+        """
+        with _cache_lock:
+            # Claim the throttle slot before fetching so concurrent
+            # callers (health-check loop, instance starts) can't issue
+            # duplicate fetches; a failed fetch keeps the slot claimed,
+            # which also spaces out retries against a struggling server.
+            if time.monotonic() - self._last_refresh < _REFRESH_MIN_INTERVAL_SECONDS:
+                return False
+            self._last_refresh = time.monotonic()
+        try:
+            cache = self._fetch_backends()
+        except Exception as e:
+            logger.error(f"Failed to refresh InferenceBackend cache: {e}")
+            return False
+        with _cache_lock:
+            # Known race: a watch event landing between the fetch above
+            # and this swap is overwritten by the (older) snapshot until
+            # that row's next event. The window is tiny and self-healing,
+            # and merging instead of swapping would need delete-tracking
+            # — not worth it.
+            self.backends_cache = cache
+            self._missing_scopes.clear()
+        logger.info("Refreshed InferenceBackend cache after scope miss")
+        return True
+
     async def _watch_changes(self) -> None:
         """Watch for InferenceBackend changes and update the cache."""
         while self._running:
             try:
                 logger.info("Starting to watch InferenceBackend changes")
+                # Events may have been missed while disconnected — drop
+                # the confirmed-missing scopes so the next lookup may
+                # refresh and pick up rows created during the gap.
+                with _cache_lock:
+                    self._missing_scopes.clear()
                 await self._clientset.inference_backends.awatch(
                     callback=self._handle_event
                 )
@@ -188,6 +313,8 @@ class InferenceBackendManager:
                     old = scopes.get(scope)
                     self._merge_version_configs(old, backend)
                     scopes[scope] = backend
+                    if scope is not None:
+                        self._missing_scopes.discard((backend.backend_name, scope))
                 logger.debug(
                     f"Updated InferenceBackend in cache: {backend.id} ({event.type})"
                 )

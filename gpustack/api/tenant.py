@@ -84,6 +84,16 @@ class TenantContext:
     # ``scope='all'`` on the Usage page should behave like ``self``
     # here (no other tenants share this scope).
     current_is_personal_scope: bool = False
+    # For SYSTEM principals tied to exactly one cluster — worker
+    # registration accounts (workers.system_principal_id) and cluster
+    # bootstrap accounts (clusters.system_principal_id) — the cluster
+    # they serve and that cluster's owner principal. Read paths use
+    # these to scope the SYSTEM bypass down to the principal's own
+    # cluster instead of every tenant's rows. Both stay None for the
+    # legacy ``config.token`` principal (in-memory, platform-level
+    # secret), which keeps the full bypass.
+    scoped_cluster_id: Optional[int] = None
+    scoped_cluster_owner_id: Optional[int] = None
 
     @property
     def has_org_context(self) -> bool:
@@ -364,6 +374,21 @@ async def get_tenant_context(
                     message=(f"Organization {current_principal_id} not found")
                 )
 
+    # Resolve the cluster a SYSTEM service account belongs to. The
+    # ``worker`` / ``cluster`` back-references are eager-loaded by
+    # ``UserService.get_by_id`` on the API-key auth path; the legacy
+    # ``config.token`` principal is in-memory and has neither, so it
+    # stays unscoped (full bypass).
+    scoped_cluster_id = None
+    scoped_cluster_owner_id = None
+    if user.kind == PrincipalType.SYSTEM:
+        if user.worker is not None:
+            scoped_cluster_id = user.worker.cluster_id
+            scoped_cluster_owner_id = user.worker.owner_principal_id
+        elif user.cluster is not None:
+            scoped_cluster_id = user.cluster.id
+            scoped_cluster_owner_id = user.cluster.owner_principal_id
+
     ctx = TenantContext(
         user=user,
         is_platform_admin=is_platform_admin,
@@ -372,6 +397,8 @@ async def get_tenant_context(
         accessible_cluster_ids=accessible_cluster_ids,
         accessible_cluster_owner_ids=accessible_cluster_owner_ids,
         current_is_personal_scope=current_is_personal_scope,
+        scoped_cluster_id=scoped_cluster_id,
+        scoped_cluster_owner_id=scoped_cluster_owner_id,
     )
     request.state.tenant_context = ctx
     return ctx
@@ -396,12 +423,68 @@ def bypass_tenant_filter(ctx: TenantContext) -> bool:
       itself spawns). They authenticate as ``kind=SYSTEM`` and need to
       read every tenant's resources to do their job — e.g. a worker
       fetching the Model row for an instance assigned to it.
+
+    NOTE on reads: for SYSTEM principals tied to one cluster, the read
+    helpers below narrow this bypass to that cluster's rows via
+    :func:`cluster_scoped_system` BEFORE consulting this function. This
+    function stays permissive because write/role gates
+    (``require_org_role``, ``assert_org_owned_writable``) rely on the
+    SYSTEM bypass regardless of cluster.
     """
     if ctx.user is not None and ctx.user.kind == PrincipalType.SYSTEM:
         return True
     if ctx.is_platform_admin and ctx.current_principal_id is None:
         return True
     return False
+
+
+def cluster_scoped_system(ctx: Optional[TenantContext]) -> bool:
+    """True for SYSTEM service accounts that belong to exactly one
+    cluster (worker registration / cluster bootstrap accounts). Their
+    reads of cluster-bound resources are narrowed to that cluster: an
+    Org-owned cluster's credentials must not read other tenants' rows.
+    The legacy ``config.token`` principal has no cluster linkage and is
+    excluded (full bypass — it's the platform-level secret)."""
+    return (
+        ctx is not None
+        and ctx.user is not None
+        and ctx.user.kind == PrincipalType.SYSTEM
+        and ctx.scoped_cluster_id is not None
+    )
+
+
+# Sentinel distinguishing "resource has no cluster_id attribute" from
+# "cluster_id is NULL" in scoped-row checks.
+_UNSET = object()
+
+
+def scoped_cluster_row_visible(ctx: TenantContext, resource: Any) -> bool:
+    """Row-level mirror of the scoped-SYSTEM cluster filter.
+
+    Visible when the row belongs to the principal's cluster, or isn't
+    pinned to any cluster (NULL ``cluster_id`` — e.g. models that rely
+    on default-cluster resolution), or isn't cluster-bound at all (no
+    ``cluster_id`` attribute — such resources keep the plain SYSTEM
+    bypass).
+    """
+    cluster_id = getattr(resource, "cluster_id", _UNSET)
+    if cluster_id is _UNSET:
+        return True
+    return cluster_id is None or cluster_id == ctx.scoped_cluster_id
+
+
+def _scoped_cluster_conditions(ctx: TenantContext, model: Any) -> List[Any]:
+    """List-query mirror of :func:`scoped_cluster_row_visible`."""
+    from sqlalchemy import or_
+
+    if not hasattr(model, "cluster_id"):
+        return []
+    return [
+        or_(
+            model.cluster_id == ctx.scoped_cluster_id,
+            model.cluster_id.is_(None),
+        )
+    ]
 
 
 def tenant_list_conditions(
@@ -420,6 +503,8 @@ def tenant_list_conditions(
       ``get_tenant_context``.
     """
     conditions: List[Any] = []
+    if cluster_scoped_system(ctx):
+        return _scoped_cluster_conditions(ctx, model)
     if bypass_tenant_filter(ctx):
         return conditions
 
@@ -451,6 +536,9 @@ def cluster_visibility_conditions(
     """
     from sqlalchemy import or_
 
+    if cluster_scoped_system(ctx):
+        # A cluster-bound service account sees its own cluster row only.
+        return [model.id == ctx.scoped_cluster_id]
     if bypass_tenant_filter(ctx):
         return []
 
@@ -488,6 +576,8 @@ def cluster_resource_visibility_conditions(
     """
     from sqlalchemy import or_
 
+    if cluster_scoped_system(ctx):
+        return _scoped_cluster_conditions(ctx, model)
     if bypass_tenant_filter(ctx):
         return []
 
@@ -512,6 +602,10 @@ def assert_cluster_resource_visible(
 ) -> None:
     """Single-row mirror of ``cluster_resource_visibility_conditions``."""
     if resource is None:
+        raise NotFoundException(message=not_found_message)
+    if cluster_scoped_system(ctx):
+        if scoped_cluster_row_visible(ctx, resource):
+            return
         raise NotFoundException(message=not_found_message)
     if bypass_tenant_filter(ctx):
         return
@@ -538,6 +632,10 @@ def assert_cluster_visible(
 ) -> None:
     """404 if the caller can't see this cluster (own-principal OR cluster_access)."""
     if cluster is None:
+        raise NotFoundException(message=not_found_message)
+    if cluster_scoped_system(ctx):
+        if cluster.id == ctx.scoped_cluster_id:
+            return
         raise NotFoundException(message=not_found_message)
     if bypass_tenant_filter(ctx):
         return
@@ -684,6 +782,10 @@ def assert_resource_visible(
     if resource is None:
         raise NotFoundException(message=not_found_message)
 
+    if cluster_scoped_system(ctx):
+        if scoped_cluster_row_visible(ctx, resource):
+            return
+        raise NotFoundException(message=not_found_message)
     if bypass_tenant_filter(ctx):
         return
 

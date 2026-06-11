@@ -17,6 +17,8 @@ from gpustack.api.tenant import (
     bypass_tenant_filter,
     assert_cluster_resource_visible,
     cluster_resource_visibility_conditions,
+    cluster_scoped_system,
+    scoped_cluster_row_visible,
 )
 from gpustack.schemas.models import (
     Model,
@@ -127,6 +129,26 @@ def gpu_summary_filter(data: Benchmark, gpu_summary: Optional[str]) -> bool:
     return _fuzzy_contains(gpu_summary, data.gpu_summary)
 
 
+def _make_benchmark_visibility_filter(ctx):
+    def _visible(b: Benchmark) -> bool:
+        if cluster_scoped_system(ctx):
+            return scoped_cluster_row_visible(ctx, b)
+        if bypass_tenant_filter(ctx):
+            return True
+        org_id = getattr(b, "owner_principal_id", None)
+        if (
+            ctx.current_principal_id is not None
+            and org_id is not None
+            and org_id == ctx.current_principal_id
+        ):
+            return True
+        if getattr(b, "cluster_id", None) in ctx.accessible_cluster_ids:
+            return True
+        return False
+
+    return _visible
+
+
 async def _get_benchmarks(
     ctx,
     params: BenchmarkListParams,
@@ -162,19 +184,7 @@ async def _get_benchmarks(
             func.lower(Benchmark.model_name).like(f"%{model_name.lower()}%")
         )
 
-    def _benchmark_visible(b: Benchmark) -> bool:
-        if bypass_tenant_filter(ctx):
-            return True
-        org_id = getattr(b, "owner_principal_id", None)
-        if (
-            ctx.current_principal_id is not None
-            and org_id is not None
-            and org_id == ctx.current_principal_id
-        ):
-            return True
-        if getattr(b, "cluster_id", None) in ctx.accessible_cluster_ids:
-            return True
-        return False
+    _benchmark_visible = _make_benchmark_visibility_filter(ctx)
 
     if params.watch:
         return StreamingResponse(

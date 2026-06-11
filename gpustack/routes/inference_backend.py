@@ -18,6 +18,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.tenant import (
     assert_org_owned_writable,
+    cluster_scoped_system,
     validate_owner_principal,
 )
 from gpustack.schemas import Worker
@@ -515,9 +516,13 @@ def _hybrid_backend_conditions(ctx) -> List:
     Org rows are visible to:
     - their own Org's members (current_principal_id matches)
     - platform admin in "All" mode (no current_principal_id) — full bypass
-    - system principals (worker / cluster service accounts) — full bypass,
-      since they need every Org's overrides to actually run a deploy
-      whose backend version was customised at the Org level
+    - cluster-bound system principals (worker / cluster service
+      accounts) — Platform rows plus the cluster's owner Org's rows.
+      Model deployments aren't shared across Orgs (cluster_access
+      sharing serves GPU instances), so the owner Org is the only Org
+      whose backend overrides this cluster ever serves.
+    - the legacy ``config.token`` system principal (no cluster
+      linkage) — full bypass
     Platform admin in act-as mode (current_principal_id is set) follows the
     same scope as a non-admin caller in that Org: Platform NULL +
     that Org's rows only. They DON'T see other Orgs' rows while
@@ -525,11 +530,19 @@ def _hybrid_backend_conditions(ctx) -> List:
     """
     if ctx is None:
         return []
+    from sqlalchemy import or_
+
+    if cluster_scoped_system(ctx):
+        return [
+            or_(
+                InferenceBackend.owner_principal_id.is_(None),
+                InferenceBackend.owner_principal_id == ctx.scoped_cluster_owner_id,
+            )
+        ]
     if ctx.user is not None and ctx.user.kind == PrincipalType.SYSTEM:
         return []
     if ctx.is_platform_admin and ctx.current_principal_id is None:
         return []
-    from sqlalchemy import or_
 
     or_clauses = [InferenceBackend.owner_principal_id.is_(None)]
     if ctx.current_principal_id is not None:
@@ -815,14 +828,17 @@ async def get_inference_backends(  # noqa: C901
                 ctx.is_platform_admin and ctx.current_principal_id is None
             ):
                 return True
-            # System principals (worker / cluster) need every Org's
-            # overrides because they actually run the deploys.
-            if (
-                getattr(ctx, "user", None) is not None
-                and ctx.user.kind == PrincipalType.SYSTEM
-            ):
+            org_id = b.owner_principal_id
+            # Cluster-bound service accounts (worker / cluster
+            # bootstrap) serve only their cluster's owner Org, so
+            # Platform rows + that Org's rows suffice — mirrors
+            # _hybrid_backend_conditions.
+            if cluster_scoped_system(ctx):
+                return org_id is None or org_id == ctx.scoped_cluster_owner_id
+            # The legacy config.token system principal has no cluster
+            # linkage and keeps the full cross-Org stream.
+            if ctx.user is not None and ctx.user.kind == PrincipalType.SYSTEM:
                 return True
-            org_id = getattr(b, "owner_principal_id", None)
             if org_id is None:
                 return True
             return (
