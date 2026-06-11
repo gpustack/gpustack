@@ -299,6 +299,8 @@ class ModelFileDownloadTask:
         # Store download log file paths for related model instances
         self._instance_download_log_file = None
         self._download_completed = False
+        # One-shot guard for the finalize note.
+        self._finalizing_logged = False
         # Time control for log updates
         self._last_log_update_time = 0
         self._log_update_interval = 2.0  # 2 seconds interval
@@ -720,11 +722,33 @@ class ModelFileDownloadTask:
 
         with self._speed_lock:
             self._model_downloaded_size += n
+            # Bytes done but download_model not yet returned (finalize phase).
+            reached_full = (
+                not self._finalizing_logged
+                and self._model_file_size is not None
+                and self._model_file_size > 0
+                and self._model_downloaded_size >= self._model_file_size
+            )
+            if reached_full:
+                self._finalizing_logged = True
+
+        if reached_full:
+            self._write_finalize_note(
+                "All files downloaded. Finalizing (assembling/verifying)... "
+                "progress holds at 99% until finalization completes."
+            )
 
         try:
-            # Update overall progress
-            progress = round(
-                (self._model_downloaded_size / self._model_file_size) * 100, 2
+            # Cap at 99% until download_model returns; READY sets the real 100%.
+            progress = min(
+                (
+                    round(
+                        (self._model_downloaded_size / self._model_file_size) * 100, 2
+                    )
+                    if self._model_file_size
+                    else 0.0
+                ),
+                99.0,
             )
 
             # Update individual file progress using ANSI cursor positioning
@@ -907,6 +931,22 @@ class ModelFileDownloadTask:
         self._write_to_instance_download_logs(
             f"\033[{line_num};1H", use_tqdm_format=True  # Move cursor to end of file
         )
+
+    def _write_finalize_note(self, message: str):
+        """Write a one-line note on the line below the per-file progress block.
+
+        Uses absolute cursor positioning like the per-file writers, so it does
+        not touch _log_header_lines or clobber the ANSI-rendered file lines.
+        """
+        if not self._instance_download_log_file:
+            return
+        max_line_number = (
+            max(self._file_line_mapping.values()) if self._file_line_mapping else 0
+        )
+        line_num = max_line_number + self._log_header_lines + 1
+        timestamp = time.strftime('%H:%M:%S')
+        ansi_message = f"\033[{line_num};1H\033[2K[{timestamp}] {message}\n"
+        self._write_to_instance_download_logs(ansi_message, use_tqdm_format=True)
 
     def _ensure_model_file_size_and_paths(self):
         if self._model_file.size is not None:
