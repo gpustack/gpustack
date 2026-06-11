@@ -1458,14 +1458,17 @@ model_sets:
     - mit
   release_date: "2026-04-23"
   specs:
-    # SGLang throughput (FP4 MoE + FP8 attention) with EAGLE MTP
+    # SGLang throughput (FP8 weights + FP8 attention) with EAGLE MTP.
+    # Uses the SGLang-provided FP8 checkpoint: the native FP4 weights hit
+    # an "Hidden size mismatch" assert in the fused MoE kernel
+    # (sgl-project/sglang#23763).
     - mode: throughput
-      quantization: FP4
+      quantization: FP8
       gpu_filters:
         vendor: nvidia
         compute_capability: ">=9.0" # Hopper or later
       source: model_scope
-      model_scope_model_id: deepseek-ai/DeepSeek-V4-Flash
+      model_scope_model_id: sgl-project/DeepSeek-V4-Flash-FP8
       backend: SGLang
       env:
         SGLANG_ENABLE_SPEC_V2: "1"
