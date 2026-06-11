@@ -26,7 +26,7 @@ by node heartbeats.
 """
 
 import logging
-from typing import Iterable, Set
+from typing import Dict, Iterable, Optional, Set
 
 from sqlmodel import select, or_
 
@@ -36,6 +36,15 @@ from gpustack.server.cache import delete_cache_by_key, locked_cached
 from gpustack.server.db import async_session
 
 logger = logging.getLogger(__name__)
+
+
+def vram_allocated_for_index(vram: Dict[int, int], index: Optional[int]) -> int:
+    """Allocated VRAM for one GPU of a worker, given the worker's
+    {gpu_index: vram} aggregation. 0 when the device index is unknown or no
+    instance is assigned to it — shared fallback semantics for every place
+    that injects allocated into a device payload (/v2/workers and
+    /v1/gpu-devices, REST and watch)."""
+    return vram.get(index, 0) if index is not None else 0
 
 
 def _cache_key_for(worker_id: int) -> str:

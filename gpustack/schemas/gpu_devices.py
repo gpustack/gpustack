@@ -1,5 +1,5 @@
 from typing import ClassVar, List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlmodel import SQLModel
 
 from gpustack.mixins import BaseModelMixin
@@ -41,7 +41,11 @@ class GPUDeviceListParams(ListParams):
 
 
 class GPUDevicePublic(GPUDeviceBase):
-    pass
+    # Unlike WorkerPublic (SQLModel-based, from_attributes=True), this class
+    # is plain pydantic — without from_attributes the streaming path's
+    # _convert_to_public_class(GPUDevice) raises ValidationError and kills
+    # the watch stream on the first replayed event.
+    model_config = ConfigDict(from_attributes=True)
 
 
 GPUDevicesPublic = PaginatedList[GPUDevicePublic]
