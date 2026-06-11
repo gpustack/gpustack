@@ -71,7 +71,7 @@ The following sections describe examples of custom configuration options when st
 
 ### Using an External Database
 
-By default, GPUStack uses an embedded PostgreSQL database. To use an external database such as PostgreSQL or MySQL, set the `GPUSTACK_DATABASE_URL` environment variable or use the `--database-url` argument when starting the GPUStack container:
+By default, GPUStack uses an embedded PostgreSQL database. To use an external database such as PostgreSQL or MySQL, set the `GPUSTACK_DATABASE_URL` environment variable or use the `--database-url` argument when starting the GPUStack container. See [Database Requirements](requirements.md#database-requirements) for the list of compatible databases and verified versions.
 
 ```diff
  sudo docker run -d --name gpustack \

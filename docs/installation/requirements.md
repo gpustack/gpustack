@@ -11,6 +11,25 @@ GPUStack supports most modern Linux distributions on **AMD64** and **ARM64** arc
     - GPUStack is not supported for direct installation via PyPi. For best compatibility, use the provided Docker images.
     - The Network Time Protocol (NTP) package must be installed to ensure consistent state synchronization between nodes.
 
+## Database Requirements
+
+The GPUStack server stores its state in a SQL database. The server container image bundles an embedded PostgreSQL database, which works out of the box without any configuration.
+
+Alternatively, you can use an external database by setting the `--database-url` argument (or the `GPUSTACK_DATABASE_URL` environment variable). The following databases are compatible:
+
+| Database   | Verified Versions     | Database URL Format                              |
+| ---------- | --------------------- | ------------------------------------------------ |
+| PostgreSQL | `13.0+`               | `postgresql://username:password@host:port/dbname` |
+| MySQL      | `8.0.36+`             | `mysql://username:password@host:port/dbname`      |
+| openGauss  | `v6.0.5`, `v7.0.0-RC3` | `postgresql://username:password@host:port/dbname` |
+| OceanBase  | `CE-v4.3.5`           | `mysql://username:password@host:port/dbname`      |
+
+!!! note
+
+    openGauss is PostgreSQL-compatible and OceanBase is MySQL-compatible, so they use the `postgresql://` and `mysql://` URL schemes respectively.
+
+See [Using an External Database](installation.md#using-an-external-database) for configuration examples.
+
 ## Accelerator Runtime Requirements
 
 GPUStack supports a variety of General-Purpose Accelerators as inference backends, including:
