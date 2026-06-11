@@ -50,7 +50,10 @@ from gpustack.schemas.workers import (
     WorkerStateEnum,
 )
 from gpustack.server.bus import Event, EventType
-from gpustack.server.worker_allocated_cache import get_worker_allocated
+from gpustack.server.worker_allocated_cache import (
+    get_worker_allocated,
+    vram_allocated_for_index,
+)
 from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.api_keys import ApiKey
@@ -109,8 +112,7 @@ def _inject_allocated_into_status(
         device_memory = device.get('memory')
         if device_memory is None:
             continue
-        idx = device.get('index')
-        device_memory['allocated'] = vram.get(idx, 0) if idx is not None else 0
+        device_memory['allocated'] = vram_allocated_for_index(vram, device.get('index'))
 
 
 async def _lookup_allocated(worker_id: int) -> Tuple[int, Dict[int, int]]:
@@ -145,8 +147,7 @@ async def _inject_allocated_into_event(event: Event):
     for device in worker.status.gpu_devices or []:
         if device.memory is None:
             continue
-        idx = device.index
-        device.memory.allocated = vram.get(idx, 0) if idx is not None else 0
+        device.memory.allocated = vram_allocated_for_index(vram, device.index)
 
 
 def _make_worker_visibility_filter(ctx):
