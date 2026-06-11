@@ -29,7 +29,154 @@ class GPUAggregatedInstanceTypeUnitResources(BaseModel):
     """
 
 
-class GPUAggregatedInstanceTypeSpec(BaseModel):
+class GPUAggregatedInstanceTypeCPUCache(BaseModel):
+    """
+    Represents the cache information of the CPU of a GPU instance type.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    l1i: Optional[str] = None
+    """
+    The L1 instruction cache size in bytes of the CPU, e.g. "64".
+    """
+
+    l1d: Optional[str] = None
+    """
+    The L1 data cache size in bytes of the CPU, e.g. "64".
+    """
+
+    l2: Optional[str] = None
+    """
+    The L2 cache size in bytes of the CPU, e.g. "256", "512".
+    """
+
+    l3: Optional[str] = None
+    """
+    The L3 cache size in bytes of the CPU, e.g. "8192", "16384".
+    """
+
+
+class GPUAggregatedInstanceTypeCPU(BaseModel):
+    """
+    Represents the CPU resource information of a GPU instance type.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    physical_cores: Optional[str] = None
+    """
+    The number of physical cores of the CPU, e.g. "4", "8".
+    """
+
+    threads_per_physical_core: Optional[str] = None
+    """
+    The number of threads per physical core of the CPU, e.g. "2", "4".
+    """
+
+    logical_cores: Optional[str] = None
+    """
+    The number of logical cores of the CPU, e.g. "8", "16".
+    """
+
+    stepping: Optional[str] = None
+    """
+    The stepping of the CPU, e.g. "0", "1".
+    """
+
+    clock_speed: Optional[str] = None
+    """
+    The speed in Hz of the CPU, e.g. "2000".
+    """
+
+    max_clock_speed: Optional[str] = None
+    """
+    The maximum speed in Hz of the CPU, e.g. "3000".
+    """
+
+    cache_line: Optional[str] = None
+    """
+    The cache line size in bytes of the CPU, e.g. "64", "128".
+    """
+
+    cache: Optional[GPUAggregatedInstanceTypeCPUCache] = None
+    """
+    The cache information of the CPU.
+    """
+
+
+class GPUAggregatedInstanceTypeAcceleratorCPU(GPUAggregatedInstanceTypeCPU):
+    """
+    Represents the CPU information of the accelerator of a GPU instance type.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    manufacturer: Optional[str] = None
+    """
+    The name of the CPU manufacturer, e.g. "amd", "intel".
+    """
+
+    product: Optional[str] = None
+    """
+    The name of the CPU product.
+    """
+
+    family: Optional[str] = None
+    """
+    The family of the CPU.
+    """
+
+
+class GPUAggregatedInstanceTypeAccelerator(BaseModel):
+    """
+    Represents the accelerator resource information of a GPU instance type.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    memory: Optional[str] = None
+    """
+    The VRAM size of the accelerator, e.g. "65535Mi".
+    """
+
+    cores: Optional[str] = None
+    """
+    The number of cores of the accelerator, e.g. "128", "256".
+    """
+
+    compute_capability: Optional[str] = None
+    """
+    The compute capability of the accelerator, e.g. "8.0", "7.0".
+    """
+
+    sliced: Optional[str] = None
+    """
+    Indicates whether the accelerator is sliced.
+    When sliced is blank, that means the instance type is not sliced.
+    """
+
+    cpu: Optional[GPUAggregatedInstanceTypeAcceleratorCPU] = None
+    """
+    The CPU information of the accelerator.
+    """
+
+
+class GPUAggregatedInstanceTypeSpec(
+    GPUAggregatedInstanceTypeCPU, GPUAggregatedInstanceTypeAccelerator
+):
     """
     Represents the specification of a GPU instance type.
     """
@@ -59,25 +206,19 @@ class GPUAggregatedInstanceTypeSpec(BaseModel):
     The name of the GPU instance type product, e.g. "A100", "V100", "T4".
     """
 
-    memory: Optional[str] = None
-    """
-    The VRAM size of the GPU instance type, e.g. "65535Mi".
-    """
-
     family: Optional[str] = None
     """
     The family of the GPU instance type, e.g. "Ampere", "Volta", "Turing".
     """
 
-    compute_capability: Optional[str] = None
+    os: Optional[str] = None
     """
-    The compute capability of the GPU instance type, e.g. "8.0", "7.0".
+    The operating system of the GPU instance type, e.g. "linux", "windows".
     """
 
-    sliced: Optional[str] = None
+    arch: Optional[str] = None
     """
-    Indicates whether the GPU instance type is sliced.
-    When it is blank, that means the GPU instance type is not sliced.
+    The architecture of the GPU instance type, e.g. "amd64", "arm64".
     """
 
     unit_resources: Optional[GPUAggregatedInstanceTypeUnitResources] = None
