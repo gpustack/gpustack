@@ -10,11 +10,17 @@ A Kubernetes cluster should be built with runtime class installed and configured
 
 Please refer to the steps in [Register Kubernetes Cluster](../user-guide/cluster-management.md#register-kubernetes-cluster)
 
-After created the `Kubernetes` provider cluster, select Nvidia as the `GPU Vendor` and click `Next`.
+When creating a Kubernetes cluster, you can configure the following options:
+
+![kubernetes-cluster-options](../assets/tutorials/adding-gpucluster-using-kubernetes/k8s-options.png)
+
+Click `Save` to create the cluster.
+
+Once the `Kubernetes` provider cluster is created, select the `GPU Vendors` you need. You can select multiple vendors, or none at all.
 
 ![nvidia-gpu-vendor](../assets/tutorials/adding-gpucluster-using-kubernetes/nvidia-gpu-vendor.png)
 
-Use the script to check the environment, run the bash script in the k3s installed host.
+Click `Next` to get the environment check script, which verifies that the cluster is ready to register. Run the script on the host where k3s is installed.
 
 ![check-environment](../assets/tutorials/adding-gpucluster-using-kubernetes/check-environment.png)
 
