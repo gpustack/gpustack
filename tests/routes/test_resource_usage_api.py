@@ -227,6 +227,41 @@ async def test_gpu_instances_breakdown_by_instance_type(session):
 
 
 @pytest.mark.asyncio
+async def test_gpu_instances_breakdown_includes_cpu_instances(session):
+    # CPU-only instances are metered as ``cpu_instance`` — the GPU Instances
+    # tab must show them too (contributing instance_hours but 0 gpu_hours).
+    from gpustack.routes.resource_usage import gpu_instances_breakdown
+    from gpustack.schemas.metered_usage import RESOURCE_TYPE_CPU_INSTANCE
+
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_CPU_INSTANCE,
+            resource_id=601,
+            resource_name="cpu-1",
+            sku="gpustack--generic-31-ln-a64-1c-2g",
+            sku_count=1,
+            quantity=7200,
+            unit="seconds",
+        )
+    )
+    await session.commit()
+
+    out = await gpu_instances_breakdown(session, USER, CTX, _req("instance"))
+    by_name = {i["key"]: i["metrics"] for i in out["items"]}
+    assert set(by_name) == {"gpu-1", "gpu-2", "cpu-1"}
+    assert by_name["cpu-1"]["instance_hours"] == pytest.approx(2.0, abs=0.01)
+    # CPU rows never leak into GPU-Hours (sku_count=1 is the whole machine).
+    assert by_name["cpu-1"]["gpu_hours"] == 0
+    assert out["summary"]["instance_hours"] == pytest.approx(
+        (49795 + 3600 + 7200) / 3600, abs=0.01
+    )
+    assert out["summary"]["gpu_hours"] == pytest.approx(
+        (49795 * 2 + 3600) / 3600, abs=0.01
+    )
+
+
+@pytest.mark.asyncio
 async def test_storage_breakdown_by_volume(session):
     out = await _run_breakdown(
         session,
@@ -384,6 +419,32 @@ async def test_resource_meta_lists_creators_instances_volumes(session):
         502: "gpu-2",
     }
     assert {v["id"]: v["label"] for v in out["volumes"]} == {88: "pv-models"}
+
+
+@pytest.mark.asyncio
+async def test_resource_meta_instances_include_cpu_instances(session):
+    from gpustack.routes.resource_usage import resource_meta
+    from gpustack.schemas.metered_usage import RESOURCE_TYPE_CPU_INSTANCE
+
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_CPU_INSTANCE,
+            resource_id=601,
+            resource_name="cpu-1",
+            sku="gpustack--generic-31-ln-a64-1c-2g",
+            quantity=7200,
+            unit="seconds",
+        )
+    )
+    await session.commit()
+
+    out = await resource_meta(session, USER, CTX, scope="all")
+    assert {i["id"]: i["label"] for i in out["instances"]} == {
+        501: "gpu-1",
+        502: "gpu-2",
+        601: "cpu-1",
+    }
 
 
 @pytest.mark.asyncio

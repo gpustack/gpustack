@@ -321,24 +321,31 @@ def instance_resource_type(gpu_count: Optional[int]) -> str:
 
 
 def instance_sku(
+    instance_type: Optional[str],
     gpu_type: Optional[str],
     gpu_count: int,
     cpu_millicores: int,
     memory_mib: int,
 ) -> str:
-    """The "Instance Type" breakdown dimension (the sku), derived from spec.
+    """The "Instance Type" breakdown dimension (the sku).
 
-    GPU instances are **per card** → sku = ``gpu_type`` (the card model);
-    card count is carried separately in ``gpu_count`` and metered via GPU-Hours.
-    CPU instances (no GPU) are **whole-machine** → sku = the cpu flavor.
+    The sku is the instance spec's ``type`` (the flavor / queue name, e.g.
+    ``gpustack--generic-...--ascend-910b2-1d``) verbatim — it identifies the
+    flavor for both GPU and CPU instances. The remaining args are a fallback
+    for snapshots missing ``type``: GPU instances fall back to ``gpu_type``
+    (the card model), CPU instances to a ``cpu-{cores}vcpu-{gib}g`` flavor.
 
     Examples
     --------
-    >>> instance_sku("nvidia-h100", 2, 8000, 128000)
+    >>> instance_sku("gpustack-nvidia-h100-ab12c", "nvidia-h100", 2, 8000, 128000)
+    'gpustack-nvidia-h100-ab12c'
+    >>> instance_sku(None, "nvidia-h100", 2, 8000, 128000)
     'nvidia-h100'
-    >>> instance_sku(None, 0, 2000, 8192)
+    >>> instance_sku(None, None, 0, 2000, 8192)
     'cpu-2vcpu-8g'
     """
+    if instance_type:
+        return instance_type
     if gpu_count and gpu_count > 0:
         return gpu_type or "unknown"
     cores = f"{cpu_millicores / 1000:g}"

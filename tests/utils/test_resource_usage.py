@@ -152,11 +152,21 @@ def test_instance_resource_type():
 
 
 def test_instance_sku():
-    # GPU instances price per card → sku = gpu_type (count carried separately)
-    assert instance_sku("nvidia-h100", 2, 8000, 128000) == "nvidia-h100"
-    assert instance_sku("nvidia-h100", 1, 4000, 64000) == "nvidia-h100"
-    # CPU instances price whole-machine → sku = cpu flavor
-    assert instance_sku(None, 0, 2000, 8192) == "cpu-2vcpu-8g"
+    # sku = the instance spec's ``type`` verbatim, GPU or CPU alike.
+    assert (
+        instance_sku("gpustack-nvidia-h100-ab12c", "nvidia-h100", 2, 8000, 128000)
+        == "gpustack-nvidia-h100-ab12c"
+    )
+    assert (
+        instance_sku("gpustack--generic-31-ln-a64-1c-2g", None, 0, 1000, 2048)
+        == "gpustack--generic-31-ln-a64-1c-2g"
+    )
+    # Fallbacks for snapshots missing ``type``:
+    # GPU instances → gpu_type (count carried separately)
+    assert instance_sku(None, "nvidia-h100", 2, 8000, 128000) == "nvidia-h100"
+    assert instance_sku(None, "nvidia-h100", 1, 4000, 64000) == "nvidia-h100"
+    # CPU instances → derived cpu flavor
+    assert instance_sku(None, None, 0, 2000, 8192) == "cpu-2vcpu-8g"
 
 
 def test_split_delta_across_utc_midnight():

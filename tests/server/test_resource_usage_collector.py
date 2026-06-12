@@ -84,7 +84,8 @@ def test_open_window_extracts_sku_and_dims():
     assert w.resource_id == 1
     assert w.resource_type == RESOURCE_TYPE_GPU_INSTANCE
     assert w.gpu_count == 2
-    assert w.sku == "nvidia-h100"
+    # sku = the spec's ``type`` verbatim (the flavor name).
+    assert w.sku == "gpustack-nvidia-h100-c9bjn"
     assert w.dimensions["gpu_type"] == "nvidia-h100"
     assert w.dimensions["memory_mib"] == 125 * 1024
     assert w.dimensions["vram_mib"] == 80 * 1024  # per-card VRAM from description
@@ -289,7 +290,7 @@ async def test_reconcile_seeds_open_window(events_session):
     assert 1 in c._open
     w = c._open[1]
     assert w.gpu_count == 1
-    assert w.sku == "nvidia-geforce-rtx-5090-d"
+    assert w.sku == "gpustack-nvidia-geforce-rtx-5090-d-xpw9t"
 
 
 @pytest.mark.asyncio

@@ -147,7 +147,8 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
 
     # model_dump may serialize the field by name (``type_``) or alias
     # (``type``) depending on by_alias — read both for robustness.
-    gpu_type, _ = parse_gpu_type(spec.get("type_") or spec.get("type"))
+    instance_type = spec.get("type_") or spec.get("type")
+    gpu_type, _ = parse_gpu_type(instance_type)
     gpu_count = parse_accelerator_count(resources.get("accelerator"))
     cpu_milli = parse_quantity_to_millicores(resources.get("cpu"))
     mem_mib = parse_quantity_to_mib(resources.get("ram"))
@@ -200,7 +201,7 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         cluster_id=evt.cluster_id,
         cluster_name=evt.cluster_name,
         window_start=_naive_utc(evt.occurred_at),
-        sku=instance_sku(gpu_type, gpu_count, cpu_milli, mem_mib),
+        sku=instance_sku(instance_type, gpu_type, gpu_count, cpu_milli, mem_mib),
         gpu_count=gpu_count,
         dimensions=dimensions,
     )
