@@ -30,8 +30,10 @@ def upgrade() -> None:
     sa.Column('display_name', sqlmodel.sql.sqltypes.AutoString(length=63), nullable=True),
     sa.Column('description', sqlmodel.sql.sqltypes.AutoString(length=1024), nullable=True),
     sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('creator_id', sa.Integer(), nullable=True),
     sa.Column('name', sqlmodel.sql.sqltypes.AutoString(length=63), nullable=False),
     sa.Column('spec', gpustack.schemas.common.JSON(), nullable=False),
+    sa.ForeignKeyConstraint(['creator_id'], ['principals.id'], ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['owner_principal_id'], ['principals.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('owner_principal_id', 'name', name='uq_gpu_instance_persistent_volume_type_name_per_principal')
@@ -46,7 +48,9 @@ def upgrade() -> None:
     sa.Column('description', sqlmodel.sql.sqltypes.AutoString(length=1024), nullable=True),
     sa.Column('spec', gpustack.schemas.common.JSON(), nullable=False),
     sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('creator_id', sa.Integer(), nullable=True),
     sa.Column('name', sqlmodel.sql.sqltypes.AutoString(length=63), nullable=False),
+    sa.ForeignKeyConstraint(['creator_id'], ['principals.id'], ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['owner_principal_id'], ['principals.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('owner_principal_id', 'name', name='uq_gpu_instance_ssh_public_key_name_per_principal')
@@ -62,7 +66,9 @@ def upgrade() -> None:
     sa.Column('manufacturer', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('spec', gpustack.schemas.common.JSON(), nullable=False),
     sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('creator_id', sa.Integer(), nullable=True),
     sa.Column('name', sqlmodel.sql.sqltypes.AutoString(length=63), nullable=False),
+    sa.ForeignKeyConstraint(['creator_id'], ['principals.id'], ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['owner_principal_id'], ['principals.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('owner_principal_id', 'name', name='uq_gpu_instance_template_name_per_principal')

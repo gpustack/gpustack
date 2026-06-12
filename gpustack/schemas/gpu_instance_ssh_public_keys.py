@@ -99,6 +99,20 @@ class GPUInstanceSSHPublicKey(GPUInstanceSSHPublicKeyBase, BaseModelMixin, table
     )
     id: Optional[int] = Field(default=None, primary_key=True)
 
+    # Record the creator of the GPU instance SSH public key for auditing
+    # and ownership purposes.
+    creator_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("principals.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    """
+    Reference to the principal who created the GPU instance SSH public key.
+    """
+
     name: str = Field(
         max_length=63,
     )
@@ -132,6 +146,11 @@ class GPUInstanceSSHPublicKeyPublic(GPUInstanceSSHPublicKeyCreate, PublicFields)
     """
     Represents the public view of a GPU instance SSH public key,
     containing only fields that are safe to expose to clients.
+    """
+
+    creator_id: Optional[int] = None
+    """
+    Reference to the principal who created the GPU instance SSH public key.
     """
 
     pass

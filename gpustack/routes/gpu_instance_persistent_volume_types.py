@@ -148,12 +148,14 @@ async def create_gpu_instance_persistent_volume_type(
             message=(f"Storage type with name '{create_obj.name}' already exists."),
         )
 
+    source: dict = create_obj.model_dump()
+    source["creator_id"] = ctx.user.id
     async with handle_error(
         message="Failed to create GPU instance persistent volume type",
     ):
         return await GPUInstancePersistentVolumeType.create(
             session=session,
-            source=create_obj,
+            source=source,
         )
 
 

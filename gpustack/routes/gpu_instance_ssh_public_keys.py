@@ -116,12 +116,14 @@ async def create_gpu_instance_ssh_public_key(
             message=(f"SSH public key with name '{create_obj.name}' already exists."),
         )
 
+    source: dict = create_obj.model_dump()
+    source["creator_id"] = ctx.user.id
     async with handle_error(
         message="Failed to create GPU instance SSH public key",
     ):
         return await GPUInstanceSSHPublicKey.create(
             session=session,
-            source=create_obj,
+            source=source,
         )
 
 

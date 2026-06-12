@@ -142,12 +142,14 @@ async def create_gpu_instance_template(
             ),
         )
 
+    source: dict = create_obj.model_dump()
+    source["creator_id"] = ctx.user.id
     async with handle_error(
         message="Failed to create GPU instance template",
     ):
         return await GPUInstanceTemplate.create(
             session=session,
-            source=create_obj,
+            source=source,
         )
 
 
