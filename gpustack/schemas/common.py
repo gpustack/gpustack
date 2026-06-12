@@ -199,6 +199,7 @@ def pydantic_column_type(
 
 _IGNORE_CAMEL_CASE_FIELDS = {
     "owner_principal_id",
+    "creator_id",
     "created_at",
     "updated_at",
     "deleted_at",
