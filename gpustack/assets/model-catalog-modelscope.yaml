@@ -1,6 +1,6 @@
 # YAML Variables
-.vllm_omni_ascend_stable_version: &vllm_omni_ascend_stable_version "0.14.1"
-.vllm_omni_stable_version: &vllm_omni_stable_version "0.21.0"
+.vllm_omni_ascend_stable_version: &vllm_omni_ascend_stable_version "0.20.2"
+.vllm_omni_stable_version: &vllm_omni_stable_version "0.22.1"
 
 draft_models:
 - name: Qwen3-8B-EAGLE3
