@@ -83,13 +83,13 @@ router = APIRouter()
 def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
     """Construct the server URL based on request headers or fallback to default."""
     if cluster_override:
-        return cluster_override.strip("/")
+        return cluster_override.rstrip("/")
     url = get_global_config().server_external_url
     if not url:
         url = f"{request.url.scheme}://{request.url.hostname}"
         if request.url.port:
             url += f":{request.url.port}"
-    return url.removesuffix("/")
+    return url.rstrip("/")
 
 
 def _is_cluster_visible(cluster: Cluster, ctx: TenantContext) -> bool:
