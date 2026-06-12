@@ -642,7 +642,12 @@ async def gpu_instances_breakdown(
         request=request,
         base_filter=and_(
             MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
-            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+            # CPU-only instances are metered as ``cpu_instance`` — the tab
+            # shows both; they just contribute 0 to gpu_hours (see
+            # _metric_columns).
+            MeteredUsage.resource_type.in_(
+                [RESOURCE_TYPE_GPU_INSTANCE, RESOURCE_TYPE_CPU_INSTANCE]
+            ),
         ),
         metric_keys=["gpu_hours", "instance_hours"],
         join_volumes=False,  # GPU rows never resolve against the PV table
@@ -925,7 +930,7 @@ async def resource_meta(
     # snapshots the name, so deleted resources still resolve a label; flag the
     # ones no longer live (not in the source table) so the filter can tag them.
     async def _resources(
-        resource_type: str,
+        resource_types: List[str],
         model: Type[Union[GPUInstance, GPUInstancePersistentVolume]],
     ) -> List[Dict[str, Any]]:
         stmt = _scoped(
@@ -933,7 +938,7 @@ async def resource_meta(
                 MeteredUsage.resource_id,
                 func.max(MeteredUsage.resource_name).label("name"),
             )
-            .where(MeteredUsage.resource_type == resource_type)
+            .where(MeteredUsage.resource_type.in_(resource_types))
             .where(MeteredUsage.resource_id.isnot(None))
             .group_by(MeteredUsage.resource_id),
             MeteredUsage.creator_id,
@@ -957,9 +962,11 @@ async def resource_meta(
         out.sort(key=lambda x: (x["label"] or "").lower())
         return out
 
-    instances = await _resources(RESOURCE_TYPE_GPU_INSTANCE, GPUInstance)
+    instances = await _resources(
+        [RESOURCE_TYPE_GPU_INSTANCE, RESOURCE_TYPE_CPU_INSTANCE], GPUInstance
+    )
     volumes = await _resources(
-        RESOURCE_TYPE_PERSISTENT_VOLUME, GPUInstancePersistentVolume
+        [RESOURCE_TYPE_PERSISTENT_VOLUME], GPUInstancePersistentVolume
     )
 
     return {"creators": creators, "instances": instances, "volumes": volumes}
