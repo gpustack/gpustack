@@ -243,16 +243,31 @@ async def test_gpu_instances_breakdown_includes_cpu_instances(session):
             sku_count=1,
             quantity=7200,
             unit="seconds",
+            # A 4c8g request on a 1c2g flavor — the breakdown must surface the
+            # totals (cpu_milli/memory_mib), not only the per-unit specs.
+            dimensions={
+                "gpu_count": 0,
+                "cpu_milli": 4000,
+                "memory_mib": 8192,
+                "unit_cpu_milli": 1000,
+                "unit_memory_mib": 2048,
+            },
         )
     )
     await session.commit()
 
     out = await gpu_instances_breakdown(session, USER, CTX, _req("instance"))
-    by_name = {i["key"]: i["metrics"] for i in out["items"]}
+    items_by_name = {i["key"]: i for i in out["items"]}
+    by_name = {k: i["metrics"] for k, i in items_by_name.items()}
     assert set(by_name) == {"gpu-1", "gpu-2", "cpu-1"}
     assert by_name["cpu-1"]["instance_hours"] == pytest.approx(2.0, abs=0.01)
     # CPU rows never leak into GPU-Hours (sku_count=1 is the whole machine).
     assert by_name["cpu-1"]["gpu_hours"] == 0
+    cpu_dims = items_by_name["cpu-1"]["dimensions"]
+    assert cpu_dims["cpu_milli"] == 4000
+    assert cpu_dims["memory_mib"] == 8192
+    assert cpu_dims["unit_cpu_milli"] == 1000
+    assert cpu_dims["unit_memory_mib"] == 2048
     assert out["summary"]["instance_hours"] == pytest.approx(
         (49795 + 3600 + 7200) / 3600, abs=0.01
     )

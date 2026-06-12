@@ -419,6 +419,12 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
                 "unit_memory_mib": d.get("unit_memory_mib"),
                 "vram_mib": d.get("vram_mib"),
                 "gpu_count": d.get("gpu_count"),
+                # Instance totals (requested cpu/ram) — what the row actually
+                # holds, vs the per-unit flavor specs above. The headline spec
+                # for CPU instances (gpu_count=0), where unit_* alone would
+                # understate a multi-unit request (e.g. 4c8g on a 1c2g flavor).
+                "cpu_milli": d.get("cpu_milli"),
+                "memory_mib": d.get("memory_mib"),
                 "ephemeral_mib": d.get("ephemeral_mib"),
                 "local_storage_mib": d.get("local_storage_mib"),
                 "persistent_mib": d.get("persistent_mib"),
