@@ -60,6 +60,15 @@ WORKER_UNREACHABLE_CHECK_MODE = os.getenv(
     "GPUSTACK_WORKER_UNREACHABLE_CHECK_MODE", "auto"
 ).lower()
 
+# GPU instance configuration
+# Interval at which the server re-confirms the worker-side status of Ready
+# GPU instances. The reconciler is event-driven and stops touching a row once
+# it is fully Ready, so without this periodic sweep a worker-side change after
+# Ready would never be synced back. A value <= 0 disables the sweep.
+GPU_INSTANCE_RECONFIRM_INTERVAL = int(
+    os.getenv("GPUSTACK_GPU_INSTANCE_RECONFIRM_INTERVAL", 60)
+)  # in seconds
+
 # Model instance configuration
 MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(
     os.getenv("GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD", 300)

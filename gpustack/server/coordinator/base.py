@@ -32,6 +32,10 @@ class Event:
     data: Any
     changed_fields: Dict[str, Tuple[Any, Any]] = field(default_factory=dict)
     id: Optional[Any] = None
+    # Process-local marker for controller-internal periodic re-confirmation
+    # (see GPUInstanceController). Deliberately omitted from ``to_dict`` so it
+    # never crosses the coordinator — a reconfirm is always re-derived locally.
+    reconfirm: bool = False
 
     def __post_init__(self):
         if isinstance(self.type, int):

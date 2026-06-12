@@ -3225,8 +3225,14 @@ class GPUInstanceController:
         # Per-iid worker tasks. One task per iid serializes processing for
         # that iid without an explicit lock.
         self._workers: Dict[Any, asyncio.Task] = {}
+        # Background sweep that periodically re-confirms Ready instances
+        # against the worker side (the event loop alone never revisits a
+        # Ready row — see ``_reconfirm_loop``).
+        self._reconfirm_task: Optional[asyncio.Task] = None
 
     async def start(self):
+        if envs.GPU_INSTANCE_RECONFIRM_INTERVAL > 0:
+            self._reconfirm_task = asyncio.create_task(self._reconfirm_loop())
         try:
             async for event in GPUInstance.subscribe(source="gpu_instance_controller"):
                 if event.type == EventType.HEARTBEAT:
@@ -3263,10 +3269,15 @@ class GPUInstanceController:
                 # UPDATED / DELETED — coalesce per iid and run on a worker task.
                 self._enqueue(event)
         finally:
-            for task in list(self._workers.values()):
+            if self._reconfirm_task is not None:
+                self._reconfirm_task.cancel()
+            tasks = list(self._workers.values())
+            for task in tasks:
                 task.cancel()
-            if self._workers:
-                await asyncio.gather(*self._workers.values(), return_exceptions=True)
+            if self._reconfirm_task is not None:
+                tasks.append(self._reconfirm_task)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     def _enqueue(self, event: Event):
         """Coalesce ``event`` into the per-iid pending slot and ensure a worker."""
@@ -3275,6 +3286,14 @@ class GPUInstanceController:
             return
         existing = self._pending.get(iid)
         if existing is not None:
+            # A periodic re-confirm is best-effort and must never displace a
+            # real pending event. Otherwise a /stop or /start UPDATED (snapshot
+            # phase Stopping/Starting) sitting in the slot would be silently
+            # dropped, and since the sweep only revisits Ready rows the
+            # instance would strand in that phase until restart. The next sweep
+            # tick re-enqueues anyway, so dropping the reconfirm is harmless.
+            if event.reconfirm:
+                return
             # DELETED is terminal — nothing supersedes it.
             if existing.type == EventType.DELETED:
                 return
@@ -3315,6 +3334,13 @@ class GPUInstanceController:
     async def _reconcile(self, event: Event):
         instance: GPUInstance = event.data
         if instance is None:
+            return
+        # Periodic re-confirmation (see ``_reconfirm_loop``): a process-local
+        # marker carried on the event. It rides the same per-iid worker so it
+        # serializes with real /stop, /delete events, but reads the worker side
+        # back without the Ready short-circuit.
+        if event.reconfirm:
+            await self._reconcile_reconfirm(instance)
             return
         if event.type == EventType.UPDATED:
             await self._reconcile_updated(instance, event.changed_fields or {})
@@ -3877,6 +3903,124 @@ class GPUInstanceController:
                                 f"Failed to delete worker-side pv type {pvt_cluster_name}"
                             )
 
+    async def _reconfirm_loop(self):
+        """Periodically re-confirm Ready instances against the worker side.
+
+        The reconciler is event-driven and intentionally stops touching a
+        row once it is fully Ready (``_is_all_ready`` short-circuits in both
+        ``start`` and ``_reconcile_updated``). But the worker side has no
+        write-back path into the ``GPUInstance`` row, so a post-Ready change
+        on the worker (workload crash, allocation/address change, CR dropping
+        out of Ready, CR deleted) would otherwise never be observed. This
+        sweep re-reads the worker side every
+        ``GPU_INSTANCE_RECONFIRM_INTERVAL`` seconds and only writes back —
+        emitting the usual UPDATED event — when the status actually drifts,
+        so a steady Ready row produces no DB churn or bus traffic.
+
+        Driving this from a timer (rather than a self-perpetuating status
+        write) keeps it self-healing: it re-discovers every Ready row after a
+        server restart, which the startup CREATED replay deliberately drops.
+        """
+        while True:
+            try:
+                await asyncio.sleep(envs.GPU_INSTANCE_RECONFIRM_INTERVAL)
+                await self._enqueue_ready_reconfirm()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Failed to run GPU instance re-confirm sweep")
+
+    async def _enqueue_ready_reconfirm(self):
+        """Enqueue a re-confirm for every row the controller treats as Ready.
+
+        Targets exactly the rows frozen by the ``_is_all_ready`` short-circuit
+        — phase==Ready rows that fall short of it are still driven by the
+        normal event/count loop and don't need the sweep. Routing through
+        ``_enqueue`` reuses the per-iid serialization: ``_enqueue`` drops a
+        reconfirm whenever any real event is already pending for that iid, so
+        the sweep never displaces a /stop, /start, or /delete (it retries on
+        the next tick).
+        """
+        async with async_session() as session:
+            instances = await GPUInstance.all_by_fields(
+                session, fields={"deleted_at": None}
+            )
+        for instance in instances:
+            if not self._is_all_ready(instance):
+                continue
+            # Process-local marker; never published to the bus (see _reconcile)
+            # and dropped by _enqueue if a real event is already pending.
+            event = Event(type=EventType.UPDATED, data=instance, reconfirm=True)
+            self._enqueue(event)
+
+    async def _reconcile_reconfirm(self, instance: GPUInstance):
+        """Re-read the worker side for a Ready row, write back only on drift."""
+        async with async_session() as session:
+            fresh = await GPUInstance.one_by_id(session, instance.id)
+            if fresh is None or fresh.deleted_at is not None:
+                return
+            # Re-check under the fresh row: a real event may have moved the
+            # phase between enqueue and now, in which case the normal loop
+            # already owns it.
+            if not self._is_all_ready(fresh):
+                return
+
+            built = await self._build_ops(session, fresh)
+            if built is None:
+                return
+            ops, _ = built
+            async with ops:
+                try:
+                    read = await ops.read_instance(fresh.name)
+                except Exception:
+                    logger.exception(
+                        f"Failed to re-confirm worker-side instance for {fresh.name}"
+                    )
+                    # Transient — leave the row as-is; the next sweep retries.
+                    return
+
+                if read is None:
+                    # The CR vanished under a Ready row: real drift. Hand it
+                    # back to the event/count loop via Unknown rather than
+                    # writing a synthetic Ready.
+                    await self._set_status(
+                        session,
+                        fresh,
+                        GPUInstanceStatus(
+                            phase=self.PHASE_UNKNOWN,
+                            phase_message="Not found in cluster",
+                            namespace=ops.org_namespace,
+                        ),
+                        require_current_phase=self.PHASE_READY,
+                    )
+                    return
+
+                status_payload = dict(read.get("status") or {})
+                status_payload.pop("namespace", None)
+                candidate = GPUInstanceStatus(
+                    **status_payload,
+                    namespace=ops.org_namespace,
+                )
+                current = fresh.status or GPUInstanceStatus()
+                if self._status_equivalent(current, candidate):
+                    # No worker-side drift — no write, no event.
+                    return
+
+                # Guard the read→write window: only persist while the row is
+                # still Ready, so a /stop or /start that landed during
+                # read_instance isn't clobbered (the real event drives it).
+                await self._set_status(
+                    session,
+                    fresh,
+                    candidate,
+                    require_current_phase=self.PHASE_READY,
+                )
+
+    @staticmethod
+    def _status_equivalent(a: GPUInstanceStatus, b: GPUInstanceStatus) -> bool:
+        """Compare two statuses ignoring the server-only retry ``count``."""
+        return a.model_dump(exclude={"count"}) == b.model_dump(exclude={"count"})
+
     async def _build_ops(
         self,
         session: AsyncSession,
@@ -3934,6 +4078,7 @@ class GPUInstanceController:
         session: AsyncSession,
         instance: GPUInstance,
         expected: GPUInstanceStatus,
+        require_current_phase: Optional[str] = None,
     ):
         """Persist ``expected`` onto the row's status.
 
@@ -3942,6 +4087,15 @@ class GPUInstanceController:
         Stopping/Starting/etc. from this reconcile cannot resurrect a
         non-DELETING phase. ``session.refresh`` reloads the column
         values from the DB to close the cross-session race.
+
+        ``require_current_phase`` is an optional precondition for callers
+        that must not clobber a phase a concurrent action moved the row
+        into. The periodic re-confirm passes ``Ready``: between its
+        ``_is_all_ready`` check and this write a /stop or /start could land
+        Stopping/Starting, and blindly writing the (stale) re-read status
+        would overwrite it and strand the instance — the sweep only revisits
+        Ready rows. When the live phase no longer matches, the write is
+        dropped and the real pending event drives the transition.
         """
         await session.refresh(instance)
         current = instance.status or GPUInstanceStatus()
@@ -3950,18 +4104,25 @@ class GPUInstanceController:
             and expected.phase != GPUInstancePhase.DELETING
         ):
             return
+        if require_current_phase is not None and current.phase != require_current_phase:
+            return
         if current.phase == expected.phase:
             expected.count = current.count + 1
             await asyncio.sleep(expected.count % 15)
             # The sleep above yields the event loop, so a concurrent
-            # /delete can land DELETING on the row between the guard
-            # check and the write below. Re-read and re-check before
-            # committing the stale expected status.
+            # /delete (or /stop, /start) can land a new phase on the row
+            # between the guard check and the write below. Re-read and
+            # re-check before committing the stale expected status.
             await session.refresh(instance)
             current = instance.status or GPUInstanceStatus()
             if (
                 current.phase == GPUInstancePhase.DELETING
                 and expected.phase != GPUInstancePhase.DELETING
+            ):
+                return
+            if (
+                require_current_phase is not None
+                and current.phase != require_current_phase
             ):
                 return
         expected_dump = expected.model_dump(by_alias=True, exclude_none=True)
