@@ -491,6 +491,7 @@ class ClusterUpdate(SQLModel):
             parsed = urlparse(v)
             if not parsed.scheme or not parsed.netloc:
                 raise ValueError("Invalid server_url format")
+            return v.rstrip("/")
         return v
 
 

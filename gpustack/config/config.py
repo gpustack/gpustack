@@ -347,6 +347,11 @@ class Config(WorkerConfig, BaseSettings):
             if validators.url(self.server_url) is not True:
                 raise Exception("Invalid server URL.")
 
+        if self.server_external_url:
+            self.server_external_url = self.server_external_url.rstrip("/")
+            if validators.url(self.server_external_url) is not True:
+                raise Exception("Invalid server external URL.")
+
         if self.resources:
             self.get_gpu_devices()
             self.get_system_info()
