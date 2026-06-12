@@ -172,7 +172,7 @@ class BenchmarkRunner:
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
-                privileged=True,
+                privileged=False,
                 args=command_args,
             ),
             envs=[
