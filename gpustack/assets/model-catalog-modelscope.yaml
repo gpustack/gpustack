@@ -2595,17 +2595,24 @@ model_sets:
   licenses:
     - apache-2.0
   release_date: "2026-04-07"
+  .base_spec: &ernie_image_base_spec
+    mode: standard
+    quantization: BF16
+    source: model_scope
+    model_scope_model_id: PaddlePaddle/ERNIE-Image
+    backend: vLLM
+    backend_parameters:
+      - --omni
+      - --trust-remote-code
   specs:
-    - mode: standard
+    - <<: *ernie_image_base_spec
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_omni_ascend_stable_version
+    - <<: *ernie_image_base_spec
       gpu_filters:
         vendor: nvidia
-      quantization: BF16
-      source: model_scope
-      model_scope_model_id: PaddlePaddle/ERNIE-Image
-      backend: vLLM
-      backend_parameters:
-        - --omni
-        - --trust-remote-code
+      backend_version: *vllm_omni_stable_version
 - name: Qwen3-VL-8B-Instruct
   description: Qwen3-VL-8B-Instruct is a vision-language model that delivers comprehensive upgrades across text understanding, visual perception, and reasoning capabilities, supporting image/video/text unified understanding.
   home: https://qwen.ai
