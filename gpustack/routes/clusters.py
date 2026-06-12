@@ -89,7 +89,7 @@ def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
         url = f"{request.url.scheme}://{request.url.hostname}"
         if request.url.port:
             url += f":{request.url.port}"
-    return url
+    return url.removesuffix("/")
 
 
 def _is_cluster_visible(cluster: Cluster, ctx: TenantContext) -> bool:
