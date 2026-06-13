@@ -510,12 +510,53 @@ def mutate_request(
     ):
         apply_qwen3_reranker_templates(body_json)
 
+    if body_json and path.endswith("/responses"):
+        _normalize_responses_input(body_json)
+
     override = getattr(request.state, "overridden_model_name", None) or model.name
     if model_name != override:
         if body_json is not None:
             body_json["model"] = override
         elif form_data is not None:
             form_data.add_field("model", override)
+
+
+def _normalize_responses_input(body_json: dict):
+    """
+    Normalize /v1/responses input to handle output_text content in assistant messages.
+
+    When a client continues a multi-turn conversation via the Responses API, the
+    accumulated input items include assistant messages whose content contains
+    output_text objects. vLLM's upstream schema validation rejects these, causing
+    a 400 error on multi-turn /v1/responses requests.
+
+    This workaround converts output_text content arrays in assistant input items
+    to plain text strings so the request passes backend schema validation while
+    preserving the assistant's previous output for conversation context.
+    Ref: https://github.com/vllm-project/vllm/issues/33089
+    """
+    input_items = body_json.get("input")
+    if not isinstance(input_items, list):
+        return
+
+    for item in input_items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("role") != "assistant":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        # Flatten output_text content items into a single plain-text string.
+        text_parts = [
+            str(text)
+            for content_item in content
+            if isinstance(content_item, dict)
+            and "text" in content_item
+            and (text := content_item["text"]) is not None
+        ]
+        if text_parts:
+            item["content"] = "\n".join(text_parts)
 
 
 def apply_qwen3_reranker_templates(body_json: dict):
