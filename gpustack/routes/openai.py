@@ -240,8 +240,6 @@ async def proxy_request_by_model(
                 message=f"Worker with ID {instance.worker_id} not found",
                 is_openai_exception=True,
             )
-        session.expunge(instance)
-        session.expunge(worker)
     extra_headers = {
         router_header_key: f"{model_instance_prefix(instance)}.static",
     }
