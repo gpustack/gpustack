@@ -298,3 +298,60 @@ items:
       resources:
         localStorage: "15Gi"
       volumeMount: "/workspace"
+
+  #
+  # Ascend NPU instance templates
+  #
+
+  ## CANN
+  - name: "ubuntu-22-04-cann-9-0-0-a3"
+    displayName: "Ubuntu 22.04 LTS + CANN 9.0.0 (A3)"
+    manufacturer: "ascend"
+    spec:
+      image: "ascendai/cann:9.0.0-a3-ubuntu22.04-py3.11-devel"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "ubuntu-22-04-cann-9-0-0-910b"
+    displayName: "Ubuntu 22.04 LTS + CANN 9.0.0 (910B)"
+    manufacturer: "ascend"
+    spec:
+      image: "ascendai/cann:9.0.0-910b-ubuntu22.04-py3.11-devel"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "ubuntu-22-04-cann-9-0-0-310p"
+    displayName: "Ubuntu 22.04 LTS + CANN 9.0.0 (310P)"
+    manufacturer: "ascend"
+    spec:
+      image: "ascendai/cann:9.0.0-310p-ubuntu22.04-py3.11-devel"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
