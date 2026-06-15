@@ -27,7 +27,10 @@ class UserGroupUpdate(SQLModel):
 
 
 class UserGroupCreate(UserGroupUpdate):
-    pass
+    # Immutable after create (absent from ``UserGroupUpdate``). Used
+    # by ``sync_user_group_memberships`` to refuse cross-source name
+    # adoption.
+    source: AuthProviderEnum = AuthProviderEnum.Local
 
 
 class UserGroupListParams(ListParams):

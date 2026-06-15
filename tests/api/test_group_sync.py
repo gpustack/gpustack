@@ -68,12 +68,19 @@ def test_coerce_non_string_scalar_is_empty():
 # ---- sync_user_group_memberships -------------------------------------------
 
 
-def _principal(id: int, name: str) -> Principal:
-    """Make a Group-principal Mock that quacks like a real row."""
+def _principal(
+    id: int,
+    name: str,
+    source: AuthProviderEnum = AuthProviderEnum.OIDC,
+) -> Principal:
+    """Group-principal Mock. ``source`` defaults to OIDC to match the
+    typical ``provider=OIDC`` test setup; pass explicitly to exercise
+    the cross-source skip path."""
     p = MagicMock(spec=Principal)
     p.id = id
     p.kind = PrincipalType.GROUP
     p.name = name
+    p.source = source
     p.deleted_at = None
     return p
 
