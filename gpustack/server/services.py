@@ -239,31 +239,22 @@ async def _insert_group_or_refetch(
     name: str,
     provider: AuthProviderEnum,
     now: datetime,
-) -> Principal:
+) -> Optional[Principal]:
     """Insert a new GROUP-principal, or re-fetch if a concurrent
     transaction beat us to it.
 
-    Wraps the insert in a SAVEPOINT (``session.begin_nested``) so the
-    surrounding sync transaction survives an ``IntegrityError`` from
-    the ``uix_principals_group_name`` partial unique index when two
-    concurrent first-time logins push the same group name — we just
-    re-read the row the winner inserted. On MySQL the partial unique
-    index isn't supported; the migration falls back to a plain index
-    and the SAVEPOINT acts purely as defensive scaffolding (the race
-    window is wider but real conflicts still resolve via the
-    re-fetch).
+    SAVEPOINT-wraps the insert so an IntegrityError from
+    ``uix_principals_group_name`` (PG partial unique; MySQL falls
+    back to a plain index) doesn't roll back the caller's
+    transaction — we re-read the winning row instead.
+
+    Returns ``None`` when the winning row's source disagrees with
+    ``provider`` (cross-source adoption is refused). Raises only if
+    IntegrityError fired but no row is visible on re-read.
     """
     grp = Principal(
         kind=PrincipalType.GROUP,
-        # IdP-supplied group name; unique within the GROUP partition
-        # (``uix_principals_group_name`` on PG, app-layer pre-check on
-        # MySQL). A non-GROUP principal with the same ``name`` lives
-        # in a separate partition and does not conflict.
         name=name,
-        # Tag the Group with the provider that brought it into
-        # existence. UI uses this to badge IdP-managed rows; sync
-        # doesn't condition on it (matching is by name regardless of
-        # source).
         source=provider,
         created_at=now,
         updated_at=now,
@@ -284,9 +275,16 @@ async def _insert_group_or_refetch(
             )
         ).first()
         if existing is None:
-            # IntegrityError but no row visible — surface it; the
-            # caller's transaction will roll back.
             raise
+        if existing.source != provider:
+            logger.warning(
+                "Group '%s' exists with source '%s'; refusing to adopt "
+                "for provider '%s' sync.",
+                name,
+                existing.source,
+                provider,
+            )
+            return None
         return existing
 
 
@@ -339,10 +337,8 @@ async def sync_user_group_memberships(
         seen.add(name)
         wanted_names.append(name)
 
-    # Resolve to Group-principal ids, auto-creating any we haven't
-    # seen before. Existing rows match by name regardless of their
-    # ``source`` — an admin-created "engineering" Group is reused
-    # when the IdP later pushes "engineering" too.
+    # Cross-source name matches are refused, not adopted — the IdP
+    # claim is skipped so the user's other groups still sync.
     desired_group_ids: Set[int] = set()
     if wanted_names:
         existing = (
@@ -359,21 +355,25 @@ async def sync_user_group_memberships(
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         for name in wanted_names:
             grp = existing_by_name.get(name)
+            if grp is not None and grp.source != provider:
+                logger.warning(
+                    "Skipping group sync for '%s': exists with source "
+                    "'%s' but provider is '%s'.",
+                    name,
+                    grp.source,
+                    provider,
+                )
+                continue
             if grp is None:
-                # Race-tolerant create: a concurrent first-time login
-                # of another user can be inserting the same group name.
-                # On PG the ``uix_principals_group_name`` partial
-                # unique index aborts the loser with IntegrityError;
-                # on MySQL there's no partial unique so the window is
-                # wider but the SAVEPOINT-wrapped insert still lets us
-                # re-read the winner's row.
                 grp = await _insert_group_or_refetch(session, name, provider, now)
+                if grp is None:
+                    continue
             desired_group_ids.add(grp.id)
 
-    # Existing memberships for this user with source matching the
-    # provider — these are the rows the sync owns. We pull both
-    # active and soft-deleted so a re-add can revive the same row
-    # (keeps the audit timeline on a single id).
+    # Memberships this sync owns: this user's rows with matching
+    # provider on both the membership and the parent group. The
+    # group-source filter keeps legacy mis-attached rows out of the
+    # diff so first sync after upgrade doesn't silently delete them.
     user_pm_stmt = (
         select(PrincipalMembership)
         .join(Principal, Principal.id == PrincipalMembership.parent_principal_id)
@@ -381,6 +381,7 @@ async def sync_user_group_memberships(
             PrincipalMembership.member_principal_id == user_principal_id,
             PrincipalMembership.source == provider,
             Principal.kind == PrincipalType.GROUP,
+            Principal.source == provider,
         )
     )
     owned_rows: List[PrincipalMembership] = list(

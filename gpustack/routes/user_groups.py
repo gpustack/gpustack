@@ -181,6 +181,7 @@ async def create_group(session: SessionDep, body: UserGroupCreate):
             kind=PrincipalType.GROUP,
             name=body.name,
             description=body.description,
+            source=body.source,
         )
         created = await Principal.create(session, group)
     except Exception as e:
