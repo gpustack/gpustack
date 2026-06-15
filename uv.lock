@@ -1507,7 +1507,7 @@ requires-dist = [
     { name = "colorama", specifier = ">=0.4.6" },
     { name = "cryptography", specifier = ">=43.0.0" },
     { name = "dataclasses-json", specifier = ">=0.6.7" },
-    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.2.3.post4" },
     { name = "gpustack-runner", specifier = "==0.1.26.post5" },
