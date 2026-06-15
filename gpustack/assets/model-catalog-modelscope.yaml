@@ -1,6 +1,10 @@
 # YAML Variables
 .vllm_omni_ascend_stable_version: &vllm_omni_ascend_stable_version "0.20.2"
 .vllm_omni_stable_version: &vllm_omni_stable_version "0.22.1"
+# Pin for encoder (BERT/XLM-RoBERTa) embedding & reranker models on Ascend whose
+# encoder FlashAttention crashes on vLLM 0.20.2rc1 / CANN 9.0 (vllm-project/vllm-ascend#10094).
+# Also reused as the Ascend fallback for other 0.20.2rc1 regressions (e.g. JinaVL weight load).
+.vllm_ascend_encoder_pin_version: &vllm_ascend_encoder_pin_version "0.18.0"
 
 draft_models:
 - name: Qwen3-8B-EAGLE3
@@ -2077,6 +2081,18 @@ model_sets:
     - mit
   release_date: "2024-01-28"
   specs:
+    # Ascend: encoder (BERT/XLM-RoBERTa) FlashAttention crashes on CANN 9.0,
+    # pinned via *vllm_ascend_encoder_pin_version (vllm-project/vllm-ascend#10094).
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: BAAI/BGE-M3
+      categories:
+        - embedding
+      backend: vLLM
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_ascend_encoder_pin_version
     - mode: standard
       quantization: "BF16"
       source: model_scope
@@ -2099,6 +2115,18 @@ model_sets:
     - mit
   release_date: "2023-09-12"
   specs:
+    # Ascend: encoder (BERT/XLM-RoBERTa) FlashAttention crashes on CANN 9.0,
+    # pinned via *vllm_ascend_encoder_pin_version (vllm-project/vllm-ascend#10094).
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: BAAI/bge-large-zh-v1.5
+      categories:
+        - embedding
+      backend: vLLM
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_ascend_encoder_pin_version
     - mode: standard
       quantization: "BF16"
       source: model_scope
@@ -2121,6 +2149,18 @@ model_sets:
     - mit
   release_date: "2023-09-12"
   specs:
+    # Ascend: encoder (BERT/XLM-RoBERTa) FlashAttention crashes on CANN 9.0,
+    # pinned via *vllm_ascend_encoder_pin_version (vllm-project/vllm-ascend#10094).
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: BAAI/bge-large-en-v1.5
+      categories:
+        - embedding
+      backend: vLLM
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_ascend_encoder_pin_version
     - mode: standard
       quantization: "BF16"
       source: model_scope
@@ -2143,6 +2183,9 @@ model_sets:
     - apache-2.0
   release_date: "2024-02-14"
   specs:
+    # Ascend: encoder FlashAttention regression on 0.20.2rc1 / CANN 9.0,
+    # pinned via *vllm_ascend_encoder_pin_version (vllm-project/vllm-ascend#10094).
+    # VLLM_USE_MODELSCOPE: load trust-remote-code modules from ModelScope (HF unreachable offline).
     - mode: standard
       quantization: "BF16"
       source: model_scope
@@ -2152,6 +2195,22 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - --trust-remote-code
+      env:
+        VLLM_USE_MODELSCOPE: "true"
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_ascend_encoder_pin_version
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: nomic-ai/nomic-embed-text-v1.5
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
+      env:
+        VLLM_USE_MODELSCOPE: "true"
 - name: Jina-Embeddings-V3
   description: jina-embeddings-v3 is a multilingual multi-task text embedding model designed for a variety of NLP applications. Based on the Jina-XLM-RoBERTa architecture, this model supports Rotary Position Embeddings to handle long input sequences up to 8192 tokens.
   home: https://jina.ai
@@ -2167,6 +2226,9 @@ model_sets:
     - cc-by-nc-4.0
   release_date: "2024-09-18"
   specs:
+    # Ascend: encoder FlashAttention regression on 0.20.2rc1 / CANN 9.0,
+    # pinned via *vllm_ascend_encoder_pin_version (vllm-project/vllm-ascend#10094).
+    # VLLM_USE_MODELSCOPE: load trust-remote-code modules from ModelScope (HF unreachable offline).
     - mode: standard
       quantization: "BF16"
       source: model_scope
@@ -2176,6 +2238,22 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - --trust-remote-code
+      env:
+        VLLM_USE_MODELSCOPE: "true"
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_ascend_encoder_pin_version
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: jinaai/jina-embeddings-v3
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
+      env:
+        VLLM_USE_MODELSCOPE: "true"
 # Reranker models
 - name: Qwen3-Reranker-0.6B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
@@ -2301,6 +2379,20 @@ model_sets:
     - apache-2.0
   release_date: "2024-03-19"
   specs:
+    # Ascend: pin to vLLM 0.18.0 — bge-reranker (XLM-RoBERTa encoder) crashes
+    # on 0.20.2rc1 / CANN 9.0 in encoder FlashAttention
+    # (aclnnFlashAttentionVarLenScore err 161001), upstream
+    # vllm-project/vllm-ascend#10094. Drop this spec once fixed upstream.
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: BAAI/bge-reranker-v2-m3
+      categories:
+        - reranker
+      backend: vLLM
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_ascend_encoder_pin_version
     - mode: standard
       quantization: "BF16"
       source: model_scope
@@ -2322,6 +2414,16 @@ model_sets:
     - cc-by-nc-4.0
   release_date: "2025-04-08"
   specs:
+    # Ascend: JinaVL weight-load mismatch on 0.20.2rc1 (works on 0.18.0),
+    # pinned via *vllm_ascend_encoder_pin_version.
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: jinaai/jina-reranker-m0
+      backend: vLLM
+      gpu_filters:
+        vendor: ascend
+      backend_version: *vllm_ascend_encoder_pin_version
     - mode: standard
       quantization: "BF16"
       source: model_scope
