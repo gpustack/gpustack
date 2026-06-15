@@ -116,15 +116,20 @@ class UserBase(SQLModel):
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
-    source: Optional[str] = Field(default=AuthProviderEnum.Local)
+    source: Optional[AuthProviderEnum] = Field(default=AuthProviderEnum.Local)
     require_password_change: bool = Field(default=False)
 
 
 class UserCreate(UserBase):
-    password: str
+    # Optional because non-Local sources authenticate via the IdP and
+    # carry no password row. The Local-source requires-password rule
+    # lives in the route handler so it can reference ``source``.
+    password: Optional[str] = None
 
     @field_validator('password')
     def validate_password(cls, value):
+        if value is None:
+            return value
         return _validate_password(value)
 
 
