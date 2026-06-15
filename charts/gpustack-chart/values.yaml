@@ -111,7 +111,11 @@ higress-core:
   upstream:
     idleTimeout: 3
   gateway:
-    hub: null
+    # Empty string (not null): a literal `null` in a values file no longer
+    # overrides the subchart's default under Helm v4's coalesce semantics
+    # (only `--set ...=null` deletes). "" reliably falls through to
+    # `.Values.global.hub` on both Helm v3 and v4.
+    hub: ""
     image: gpustack/mirrored-higress-gateway
     imagePullSecrets:
       - name: gpustack-image-pull-secret
@@ -124,12 +128,12 @@ higress-core:
     # otherwise nodes without a gateway pod will drop traffic.
     externalTrafficPolicy: Local
   controller:
-    hub: null
+    hub: ""
     image: gpustack/mirrored-higress-higress
     imagePullSecrets:
       - name: gpustack-image-pull-secret
   pilot:
-    hub: null
+    hub: ""
     image: gpustack/mirrored-higress-pilot
 higressPlugins:
   image:
