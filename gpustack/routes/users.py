@@ -11,6 +11,7 @@ from gpustack.api.exceptions import (
     AlreadyExistsException,
     ForbiddenException,
     InternalServerErrorException,
+    InvalidException,
     NotFoundException,
     ConflictException,
 )
@@ -25,6 +26,7 @@ from gpustack.schemas.principals import (
 from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
 from gpustack.schemas.users import (
+    AuthProviderEnum,
     User,
     UserActivationUpdate,
     UserCreate,
@@ -162,12 +164,30 @@ async def create_user(session: SessionDep, user_in: UserCreate):
             message=f"User with name '{user_in.username}' already exists."
         )
 
+    # A local password on a non-Local user is a /login bypass around
+    # the IdP — ``authenticate_user`` only checks the password hash.
+    source = user_in.source if user_in.source is not None else AuthProviderEnum.Local
+    if source == AuthProviderEnum.Local and not user_in.password:
+        raise InvalidException(message="Password is required for Local users.")
+    if source != AuthProviderEnum.Local and user_in.password:
+        raise InvalidException(
+            message=f"Password must not be set for {source.value} users."
+        )
+    if source != AuthProviderEnum.Local and user_in.require_password_change:
+        raise InvalidException(
+            message=(
+                f"require_password_change is not applicable to "
+                f"{source.value} users."
+            )
+        )
+
     try:
         to_create = User(
             name=user_in.username,
             display_name=user_in.full_name,
             is_admin=user_in.is_admin,
             is_active=user_in.is_active,
+            source=source,
         )
         # Admin additionally joins the platform Org as OWNER; regular
         # users do NOT auto-join — admin can add them later if shared
@@ -214,6 +234,19 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
         and await is_only_admin_user(session, user)
     ):
         raise ConflictException(message="Cannot deactivate the only admin user")
+
+    # See the guard in :func:`create_user` — same /login bypass.
+    if user.source != AuthProviderEnum.Local and user_in.password:
+        raise InvalidException(
+            message=f"Password must not be set for {user.source.value} users."
+        )
+    if user.source != AuthProviderEnum.Local and user_in.require_password_change:
+        raise InvalidException(
+            message=(
+                f"require_password_change is not applicable to "
+                f"{user.source.value} users."
+            )
+        )
 
     try:
         # ``exclude_none=True`` so omitting an optional field (e.g.
@@ -322,6 +355,12 @@ async def get_user_me(session: SessionDep, user: CurrentUserDep):
 async def update_user_me(
     session: SessionDep, user: CurrentUserDep, user_in: UserSelfUpdate
 ):
+    # See the guard in :func:`create_user` — same /login bypass.
+    if user.source != AuthProviderEnum.Local and user_in.password:
+        raise InvalidException(
+            message=f"Password must not be set for {user.source.value} users."
+        )
+
     try:
         update_data = user_in.model_dump(exclude_none=True)
         if "full_name" in update_data:
