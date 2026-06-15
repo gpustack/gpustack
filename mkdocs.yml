@@ -171,6 +171,7 @@ nav:
           - Cloud Credential Management: user-guide/cloud-credential-management.md
           - API Key Management: user-guide/api-key-management.md
           - User Management: user-guide/user-management.md
+          - Usage: user-guide/usage.md
           - Single Sign-On (SSO) Authentication: user-guide/sso.md
           - Observability: user-guide/observability.md
           - Benchmarking: user-guide/benchmarking.md
