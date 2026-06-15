@@ -9,6 +9,14 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+# Starlette renamed HTTP_422_UNPROCESSABLE_ENTITY to HTTP_422_UNPROCESSABLE_CONTENT
+# (RFC 9110). Pick whichever the installed version exposes to avoid the
+# deprecation warning on newer Starlette while staying compatible with older ones.
+HTTP_422_UNPROCESSABLE = (
+    getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", None)
+    or status.HTTP_422_UNPROCESSABLE_ENTITY
+)
+
 
 class HTTPException(Exception):
     def __init__(self, status_code: int, reason: str, message: str):
@@ -56,7 +64,7 @@ ForbiddenException = http_exception_factory(
     status.HTTP_403_FORBIDDEN, "Forbidden", "Forbidden"
 )
 InvalidException = http_exception_factory(
-    status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid", "Invalid input"
+    HTTP_422_UNPROCESSABLE, "Invalid", "Invalid input"
 )
 BadRequestException = http_exception_factory(
     status.HTTP_400_BAD_REQUEST, "BadRequest", "Bad request"
@@ -121,7 +129,7 @@ def raise_errors(response: httpx.Response):
     if response.status_code == status.HTTP_403_FORBIDDEN:
         raise ForbiddenException(error.message)
 
-    if response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+    if response.status_code == HTTP_422_UNPROCESSABLE:
         raise InvalidException(error.message)
 
     if response.status_code == status.HTTP_400_BAD_REQUEST:
@@ -223,9 +231,9 @@ def register_handlers(app: FastAPI):
         for err in exc.errors():
             message += f"  {err}\n"
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTP_422_UNPROCESSABLE,
             content=ErrorResponse(
-                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                code=HTTP_422_UNPROCESSABLE,
                 reason="Invalid",
                 message=message,
             ).model_dump(),
