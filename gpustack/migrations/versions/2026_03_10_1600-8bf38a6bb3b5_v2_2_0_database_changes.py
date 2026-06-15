@@ -512,6 +512,18 @@ def upgrade() -> None:
                 nullable=False,
                 server_default='0',
             ),
+            # True iff the canonical usage chunk was observed before the
+            # stream ended (token counts are authoritative). False means the
+            # request was interrupted and the token counts above are
+            # server-side estimates. Billing reads this to gate per-request
+            # charges (image/tts/stt have no token fallback) and to flag
+            # estimated token-billed rows.
+            sa.Column(
+                'completed',
+                sa.Boolean(),
+                nullable=False,
+                server_default=sa.false(),
+            ),
             sa.Column('operation', sa.String(32), nullable=True),
             # Proxy-reported wall-clock (naive UTC), distinct from created_at
             # so reconciliation jobs anchor on request semantics, not row

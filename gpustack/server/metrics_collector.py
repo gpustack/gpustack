@@ -686,6 +686,11 @@ async def store_usage_metrics(
                         prompt_token_count=prompt_tokens,
                         completion_token_count=completion_tokens,
                         prompt_cached_token_count=metric.input_cached_token,
+                        # Persist the completion flag so downstream billing
+                        # can tell authoritative token counts from estimated
+                        # ones, and gate per-request charges (image/tts/stt)
+                        # on actual completion.
+                        completed=metric.completed,
                         operation=metric.operation,
                         # Proxy-reported wall-clock — preserved as NULL when
                         # the report didn't carry it, so reconciliation jobs
