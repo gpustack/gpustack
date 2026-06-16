@@ -1672,6 +1672,8 @@ class InferenceBackendController:
             "description",
             "icon",
             "default_env",
+            "parameter_format",
+            "common_parameters",
         ]
         backend_data = {k: config[k] for k in allowed_keys if k in config}
 
