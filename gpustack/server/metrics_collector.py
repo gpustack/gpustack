@@ -429,6 +429,7 @@ def _build_metric_snapshot(
     api_key_by_access_key: Dict[str, ApiKey],
     cluster_names_by_id: Dict[int, str],
     route_name_by_id: Dict[int, str],
+    route_owner_by_id: Dict[int, int],
 ) -> dict:
     user = user_by_id.get(metric.user_id)
     api_key = api_key_by_access_key.get(metric.access_key)
@@ -456,6 +457,12 @@ def _build_metric_snapshot(
                     "provider_id": provider.id,
                     "provider_name": provider.name,
                     "provider_type": provider_type,
+                    # MaaS provider targets have no local Model row, so the
+                    # tenant scope can't be sourced from model.owner_principal_id.
+                    # The provider always belongs to one Org (non-NULL owner),
+                    # so it is the authoritative owner for this usage row —
+                    # mirroring the model-path's model.owner_principal_id.
+                    "owner_principal_id": getattr(provider, "owner_principal_id", None),
                 }
             )
         if user is not None:
@@ -478,16 +485,20 @@ def _build_metric_snapshot(
         if model_route_id is not None:
             snapshot["model_route_id"] = model_route_id
             snapshot["model_route_name"] = model_route_name
-        # The "model deleted before flush" branch can no longer source
-        # tenant scope from ``model.owner_principal_id``. Fall back to the
-        # api_key's owner so cross-tenant attribution still works in this
-        # edge case — under the route/target same-Org rule, api_key owner
-        # is necessarily aligned with the route's (and the deleted model's)
-        # Org for any non-platform deployment.
-        if api_key is not None:
-            snapshot["owner_principal_id"] = getattr(
-                api_key, "owner_principal_id", None
-            )
+        # ``owner_principal_id`` is the tenant scope of the *consumed
+        # resource*, not of the caller — the caller's principal is captured
+        # separately as ``consumer_principal_id`` (from api_key.owner above).
+        # So the fallback must NOT reuse api_key.owner here: that conflates
+        # consumer with owner and only coincides under the same-Org rule.
+        #
+        # When the model was deleted before flush (provider also absent),
+        # source the owner from the route, which has a non-NULL owner and
+        # outlives the model. A provider-sourced owner (set above for MaaS
+        # provider targets) is authoritative and must not be overwritten.
+        if snapshot.get("owner_principal_id") is None and model_route_id is not None:
+            route_owner = route_owner_by_id.get(model_route_id)
+            if route_owner is not None:
+                snapshot["owner_principal_id"] = route_owner
     else:
         snapshot = build_model_usage_snapshot(
             model,
@@ -583,6 +594,7 @@ async def store_usage_metrics(
             )
             route_name_by_id: Dict[int, str] = {}
             route_base_model_id_by_id: Dict[int, int] = {}
+            route_owner_by_id: Dict[int, int] = {}
             if dedup_route_ids:
                 routes = await ModelRoute.all_by_fields(
                     session=session,
@@ -594,6 +606,11 @@ async def store_usage_metrics(
                     r.id: r.created_model_id
                     for r in routes
                     if r.created_model_id is not None
+                }
+                route_owner_by_id = {
+                    r.id: r.owner_principal_id
+                    for r in routes
+                    if r.owner_principal_id is not None
                 }
             validated_user_ids = {u.id for u in users}
             user_by_id = {u.id: u for u in users}
@@ -626,6 +643,7 @@ async def store_usage_metrics(
                     api_key_by_access_key,
                     cluster_names_by_id,
                     route_name_by_id,
+                    route_owner_by_id,
                 )
                 prompt_tokens, completion_tokens = _resolve_usage_tokens(
                     metric, model_by_id.get(metric.model_id)
@@ -662,6 +680,7 @@ async def store_usage_metrics(
                     api_key_by_access_key,
                     cluster_names_by_id,
                     route_name_by_id,
+                    route_owner_by_id,
                 )
                 prompt_tokens, completion_tokens = _resolve_usage_tokens(
                     metric, model_by_id.get(metric.model_id)
