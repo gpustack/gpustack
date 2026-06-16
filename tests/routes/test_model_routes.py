@@ -109,7 +109,7 @@ async def test_apply_effective_name_to_my_models_prefixes_by_owner(monkeypatch):
     exec_result.all.return_value = [(2, "alpha"), (3, "beta")]
     session.exec = AsyncMock(return_value=exec_result)
 
-    await model_routes._apply_effective_name_to_my_models(session, MyModel, items)
+    await model_routes._apply_effective_name_to_my_models(session, items, enabled=True)
 
     assert items[0].name == "qwen3-0.6b"  # platform Org → no prefix
     assert items[1].name == "alpha/qwen3-0.6b"
@@ -117,18 +117,39 @@ async def test_apply_effective_name_to_my_models_prefixes_by_owner(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_apply_effective_name_to_my_models_skips_model_route():
-    """``ModelRoute`` callers (the management surface) reuse the same
-    code path but must skip the rewrite — Routes always belong to the
-    caller's own Org, the frontend already has it cached, and the page
-    expects raw ``name``."""
+async def test_apply_effective_name_to_my_models_skips_when_disabled():
+    """The rewrite is gated by ``enabled``, not the item's class —
+    callers that don't opt in (the management list/get surfaces) leave
+    ``name`` raw and avoid the owner-name lookup round-trip entirely."""
     session = SimpleNamespace(exec=AsyncMock())
     item = SimpleNamespace(name="qwen3-0.6b", owner_principal_id=2)
 
-    await model_routes._apply_effective_name_to_my_models(session, ModelRoute, [item])
+    await model_routes._apply_effective_name_to_my_models(
+        session, [item], enabled=False
+    )
 
     session.exec.assert_not_called()
     assert item.name == "qwen3-0.6b"
+
+
+@pytest.mark.asyncio
+async def test_apply_effective_name_to_my_models_prefixes_admin_model_routes(
+    monkeypatch,
+):
+    """When enabled, ``ModelRoute`` rows (the admin ``get_my_models``
+    path) get prefixed just like the non-admin ``MyModel`` view, so a
+    single endpoint returns one consistent ``name`` format for both."""
+    monkeypatch.setattr(model_routes, "platform_principal_id", lambda: 1)
+
+    item = ModelRoute(name="qwen3-0.6b", owner_principal_id=2)
+    session = SimpleNamespace()
+    exec_result = MagicMock()
+    exec_result.all.return_value = [(2, "alpha")]
+    session.exec = AsyncMock(return_value=exec_result)
+
+    await model_routes._apply_effective_name_to_my_models(session, [item], enabled=True)
+
+    assert item.name == "alpha/qwen3-0.6b"
 
 
 def test_model_route_create_rejects_slashed_name():
@@ -165,7 +186,7 @@ async def test_apply_effective_name_to_my_models_empty_is_noop():
     spurious round-trip per page would be a regression."""
     session = SimpleNamespace(exec=AsyncMock())
 
-    await model_routes._apply_effective_name_to_my_models(session, MyModel, [])
+    await model_routes._apply_effective_name_to_my_models(session, [], enabled=True)
 
     session.exec.assert_not_called()
 

@@ -263,6 +263,7 @@ async def _get_model_routes(
     target_class: Union[ModelRoute, MyModel] = ModelRoute,
     ctx: Optional[TenantContext] = None,
     include_grants: bool = False,
+    include_owner_prefix: bool = False,
 ):
     fuzzy_fields = {}
     if search:
@@ -351,12 +352,16 @@ async def _get_model_routes(
             order_by=params.order_by,
             extra_conditions=extra_conditions,
         )
-        await _apply_effective_name_to_my_models(session, target_class, result.items)
+        await _apply_effective_name_to_my_models(
+            session, result.items, enabled=include_owner_prefix
+        )
         return result
 
 
 async def _apply_effective_name_to_my_models(
-    session: AsyncSession, target_class, items: List[MyModel]
+    session: AsyncSession,
+    items: List[Union[ModelRoute, MyModel]],
+    enabled: bool,
 ) -> None:
     """Overwrite ``item.name`` with the OpenAI-style effective name —
     bare for the platform Org, ``<owner-name>/<name>`` otherwise — so
@@ -375,12 +380,19 @@ async def _apply_effective_name_to_my_models(
     ``from_attributes`` reads via ``getattr``, which still resolves
     through ``__dict__``, so the response picks up the rewritten value.
 
-    Accepts ``target_class`` so callers can invoke unconditionally —
-    the helper short-circuits for ``ModelRoute``. Keeps the surrounding
-    ``_get_model_routes`` / ``_get_model_route`` branches flat (their
-    cyclomatic complexity is already at the limit).
+    Gated per-endpoint via ``include_owner_prefix``, NOT per
+    ``target_class``: ``get_my_models`` serves both the non-admin
+    ``MyModel`` view and the admin ``ModelRoute`` table from one route,
+    so keying the rewrite off the class diverged the two responses
+    (admin saw raw names, non-admin saw prefixed) and broke frontend
+    consumers that expect one ``name`` format. The endpoint now passes
+    ``include_owner_prefix=True`` for both, while other listing
+    surfaces leave it off and keep the raw ``name``. The ``enabled``
+    short-circuit lives here rather than at the call site so
+    ``_get_model_routes`` stays flat (its cyclomatic complexity is
+    already at the limit).
     """
-    if target_class is not MyModel:
+    if not enabled:
         return
     if not items:
         return
@@ -465,6 +477,7 @@ async def _get_model_route(
     owner_principal_id: Optional[int] = None,
     ctx: Optional[TenantContext] = None,
     include_grants: bool = False,
+    include_owner_prefix: bool = False,
 ):
     fields = {"id": id}
     if user_id is not None:
@@ -505,7 +518,9 @@ async def _get_model_route(
                 existing,
                 not_found_message=f"ModelAccess with id '{id}' not found.",
             )
-    await _apply_effective_name_to_my_models(session, target_class, [existing])
+    await _apply_effective_name_to_my_models(
+        session, [existing], enabled=include_owner_prefix
+    )
     return existing
 
 
@@ -1464,6 +1479,7 @@ async def get_my_models(
         user_id=user_id,
         ctx=ctx,
         include_grants=user.is_admin,
+        include_owner_prefix=True,
     )
 
 
@@ -1487,4 +1503,5 @@ async def get_my_model(
         target_class=target_class,
         ctx=ctx,
         include_grants=user.is_admin,
+        include_owner_prefix=True,
     )
