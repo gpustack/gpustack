@@ -145,7 +145,7 @@ nav:
       - Quickstart: quickstart.md
       - Installation:
           - Requirements: installation/requirements.md
-          - Installation: installation/installation.md
+          - Installation via Docker: installation/installation.md
           - Installation via Helm: installation/helm.md
           - Air-Gapped Installation: installation/air-gapped.md
           - Uninstallation: installation/uninstallation.md
