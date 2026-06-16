@@ -103,6 +103,59 @@
   default_run_command: -m {{model_path}} --host 0.0.0.0 --port {{port}} --alias {{model_name}}
   is_built_in: false
   health_check_path: /v1/models
+  parameter_format: space
+  common_parameters:
+  - --ctx-size
+  - --batch-size
+  - --ubatch-size
+  - --keep
+  - --parallel
+  - --cache-reuse
+  - --cache-type-k
+  - --cache-type-v
+  - --flash-attn
+  - --kv-offload
+  - --mlock
+  - --no-mmap
+  - --gpu-layers
+  - --split-mode
+  - --tensor-split
+  - --main-gpu
+  - --device
+  - --threads
+  - --threads-batch
+  - --numa
+  - --rope-scaling
+  - --rope-scale
+  - --rope-freq-base
+  - --rope-freq-scale
+  - --yarn-orig-ctx
+  - --temp
+  - --top-k
+  - --top-p
+  - --min-p
+  - --repeat-penalty
+  - --presence-penalty
+  - --frequency-penalty
+  - --metrics
+  - --slots
+  - --props
+  - --jinja
+  - --chat-template
+  - --chat-template-file
+  - --reasoning-format
+  - --reasoning-budget
+  - --mmproj
+  - --mmproj-url
+  - --lora
+  - --lora-scaled
+  - --embedding
+  - --pooling
+  - --rerank
+  - --embd-normalize
+  - --spec-draft-model
+  - --spec-draft-n-max
+  - --spec-type
   framework_index_map:
     cuda:
     - cuda
