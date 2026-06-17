@@ -158,7 +158,7 @@ data:
               image: {{ config.operator_image }}
               imagePullPolicy: IfNotPresent
               args:
-                - gpustack
+                - gpustack-operator
                 - worker
                 - -v=2
                 #@ if/end data.values.certmanagerEnabled:

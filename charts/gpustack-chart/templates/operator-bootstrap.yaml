@@ -140,7 +140,7 @@ data:
               image: {{ include "gpustack.operatorImage" . }}
               imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
               args:
-                - gpustack
+                - gpustack-operator
                 - worker
                 - -v=2
                 # ytt if/end: only wraps the immediately following node
