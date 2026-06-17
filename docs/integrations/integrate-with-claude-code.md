@@ -26,7 +26,7 @@ Claude Code is an agentic coding tool from Anthropic. Since model deployments on
 
 ## Create an API Key
 
-1. Hover over the user avatar and navigate to the **API Keys** page, then click **Add API Key**.
+1. Navigate to the **Access Control** > **API Keys** page, then click **Add API Key**.
 
 2. Enter a name, then click **Save**.
 
