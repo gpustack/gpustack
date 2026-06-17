@@ -128,7 +128,7 @@
   "gpustack/mirrored-higress-higress:2.1.9",
   "gpustack/mirrored-higress-pilot:2.1.9",
   "gpustack/mirrored-higress-gateway:2.1.9",
-  "gpustack/gpustack-operator:v0.5.0",
+  "gpustack/gpustack-operator:v0.5.1",
   "gpustack/ssh-server:v1.1.0",
   "gpustack/mirrored-kueue:v0.18.0",
   "gpustack/mirrored-node-feature-discovery:v0.18.3",
