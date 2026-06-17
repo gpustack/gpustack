@@ -19,7 +19,7 @@ CherryStudio integrates with GPUStack to leverage locally hosted LLMs, embedding
 
 ## Create an API Key
 
-1. Hover over the user avatar and navigate to the `API Keys` page, then click on `New API Key`.
+1. Navigate to the `Access Control` > `API Keys` page, then click on `New API Key`.
 
 2. Fill in the name, then click `Save`.
 

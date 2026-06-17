@@ -115,7 +115,7 @@ vllm serve Qwen/Qwen3.5-0.8B --tensor-parallel-size=2 --max-model-len=8192 --lor
 
 There are two ways to add a custom inference backend:
 
-- Through the UI form: Navigate to the **Resources > Inference Backends** page and click the **Add Custom Inference Backend** button.
+- Through the UI form: Navigate to the **Model Service > Inference Backends** page and click the **Add Custom Inference Backend** button.
 - Through YAML configuration: Import a YAML file containing the backend configuration.
 
 ### Enable Community Inference Backend

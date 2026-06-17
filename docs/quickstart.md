@@ -102,7 +102,7 @@ sudo docker run -d --name gpustack-worker \
 
 ## Use the model via API
 
-1. Hover over the user avatar and navigate to the `API Keys` page, then click the `New API Key` button.
+1. Navigate to the `Access Control` > `API Keys` page, then click the `New API Key` button.
 
 2. Fill in the `Name` and click the `Save` button.
 
