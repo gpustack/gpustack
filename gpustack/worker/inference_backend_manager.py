@@ -109,7 +109,7 @@ class InferenceBackendManager:
                 else:
                     with _cache_lock:
                         self._missing_scopes.add(scope_key)
-                    logger.warning(
+                    logger.debug(
                         f"No backend row for owner {owner_principal_id} of "
                         f"backend {backend_name} after cache refresh; using "
                         f"the Platform configuration only. If this owner is "
