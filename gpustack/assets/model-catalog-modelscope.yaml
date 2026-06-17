@@ -2656,6 +2656,9 @@ model_sets:
   release_date: "2026-01-12"
   specs:
     - mode: standard
+      meta:
+        default_width: 768
+        default_height: 1024
       gpu_filters:
         vendor: nvidia
       quantization: BF16
