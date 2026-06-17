@@ -168,6 +168,13 @@ nav:
           - Compatibility Check: user-guide/compatibility-check.md
           - Model File management: user-guide/model-file-management.md
           - Cluster Management: user-guide/cluster-management.md
+          - GPU Service:
+              - GPU Instances: user-guide/gpuservice-instances.md
+              - Instance Types: user-guide/gpuservice-instance-types.md
+              - Instance Templates: user-guide/gpuservice-instance-templates.md
+              - Storage: user-guide/gpuservice-storage.md
+              - Storage Types: user-guide/gpuservice-storage-types.md
+              - SSH Public Keys: user-guide/gpuservice-ssh-public-keys.md
           - Cloud Credential Management: user-guide/cloud-credential-management.md
           - API Key Management: user-guide/api-key-management.md
           - User Management: user-guide/user-management.md
