@@ -2546,7 +2546,8 @@ model_sets:
     - <<: *flux_2_klein_4b_base_spec
       gpu_filters:
         vendor: ascend
-      backend_version: *vllm_omni_ascend_stable_version
+      # Pinned to 0.18.0: 0.20.2 breaks FLUX.2 RoPE on Ascend (issue #5647)
+      backend_version: "0.18.0"
     - <<: *flux_2_klein_4b_base_spec
       backend_version: *vllm_omni_stable_version
 - name: FLUX.2-klein-9B
@@ -2571,7 +2572,8 @@ model_sets:
     - <<: *flux_2_klein_9b_base_spec
       gpu_filters:
         vendor: ascend
-      backend_version: *vllm_omni_ascend_stable_version
+      # Pinned to 0.18.0: 0.20.2 breaks FLUX.2 RoPE on Ascend (issue #5647)
+      backend_version: "0.18.0"
     - <<: *flux_2_klein_9b_base_spec
       backend_version: *vllm_omni_stable_version
 - name: Qwen-Image
