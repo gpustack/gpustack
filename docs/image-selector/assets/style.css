@@ -455,9 +455,18 @@ main {
     min-width: 200px;
 }
 
+.selector-item.flex-3 {
+    flex: 3;
+    min-width: 200px;
+}
+
 .selector-item.flex-4 {
     flex: 4;
     min-width: 200px;
+}
+
+#arch-selector .option-button {
+    min-width: 80px;
 }
 
 /* 4.4 Grids */
