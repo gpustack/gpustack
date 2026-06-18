@@ -1,7 +1,12 @@
 import pytest
+from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
+from gpustack.policies.utils import should_skip_gpu_count_check
 from gpustack.scheduler.evaluator import evaluate_model_metadata
-from tests.utils.model import new_model
-from gpustack.scheduler.scheduler import evaluate_pretrained_config
+from tests.utils.model import make_model, new_model
+from gpustack.scheduler.scheduler import (
+    evaluate_pretrained_config,
+    set_model_gpus_per_replica,
+)
 from gpustack.schemas.models import CategoryEnum, BackendEnum
 
 
@@ -220,3 +225,98 @@ async def test_evaluate_model_metadata(
         ), f"Expected error message: {expect_error_match}, but got: {actual_error}"
     except AssertionError as e:
         raise AssertionError(f"Test case '{case_name}' failed: {e}") from e
+
+
+# --- issue #5089: GPUSTACK_SKIP_GPU_COUNT_CHECK bypass ---------------------
+
+_MANUAL_8_GPU_IDS = [f"w22:cuda:{i}" for i in range(8)]
+_TP8_DP2_DPL1 = [
+    "--tensor-parallel-size=8",
+    "--data-parallel-size=2",
+    "--data-parallel-size-local=1",
+]
+
+
+@pytest.mark.parametrize(
+    "case_name, manual_select, env, expected",
+    [
+        (
+            "no_gpu_selector_env_set",
+            False,
+            {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "1"},
+            False,
+        ),
+        ("manual_no_env", True, None, False),
+        ("manual_env_1", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "1"}, True),
+        ("manual_env_true", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "TRUE"}, True),
+        ("manual_env_yes", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "yes"}, True),
+        ("manual_env_on", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "on"}, True),
+        ("manual_env_0", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "0"}, False),
+        ("manual_env_false", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "false"}, False),
+        ("manual_env_empty", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": ""}, False),
+    ],
+)
+def test_should_skip_gpu_count_check(case_name, manual_select, env, expected):
+    model = make_model(
+        gpus_per_replica=8,
+        gpu_ids=_MANUAL_8_GPU_IDS if manual_select else None,
+        backend=BackendEnum.VLLM.value,
+        env=env,
+    )
+    assert should_skip_gpu_count_check(model) is expected, f"case '{case_name}' failed"
+
+
+@pytest.mark.parametrize(
+    "case_name, env, expected",
+    [
+        # world_size = tp*dp = 16 takes precedence by default.
+        ("default", None, 16),
+        # Bypass on: honor the manual selection (8 GPUs / 1 replica).
+        ("skip", {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "1"}, 8),
+    ],
+)
+def test_set_model_gpus_per_replica_skip_gpu_count_check(case_name, env, expected):
+    model = make_model(
+        gpus_per_replica=None,
+        gpu_ids=_MANUAL_8_GPU_IDS,
+        repo_id="deepseek-ai/DeepSeek-R1",
+        backend=BackendEnum.VLLM.value,
+        backend_parameters=_TP8_DP2_DPL1,
+        env=env,
+    )
+    set_model_gpus_per_replica(model)
+    assert model.gpu_selector.gpus_per_replica == expected, f"case '{case_name}' failed"
+
+
+def _build_selector_for_set_gpu_count(model) -> VLLMResourceFitSelector:
+    # Bypass __init__ to exercise _set_gpu_count in isolation.
+    selector = VLLMResourceFitSelector.__new__(VLLMResourceFitSelector)
+    selector._model = model
+    selector._gpu_count = 0
+    selector._selected_gpu_workers = []
+    selector._selected_gpu_indexes_by_gpu_type_and_worker = {}
+    return selector
+
+
+def test_set_gpu_count_mismatch_raises_by_default():
+    model = make_model(
+        gpus_per_replica=8,
+        gpu_ids=_MANUAL_8_GPU_IDS,
+        backend=BackendEnum.VLLM.value,
+    )
+    selector = _build_selector_for_set_gpu_count(model)
+    with pytest.raises(ValueError, match="does not match the world size"):
+        selector._set_gpu_count(world_size=16, strategies=["tp", "dp"])
+
+
+def test_set_gpu_count_mismatch_bypassed():
+    model = make_model(
+        gpus_per_replica=8,
+        gpu_ids=_MANUAL_8_GPU_IDS,
+        backend=BackendEnum.VLLM.value,
+        env={"GPUSTACK_SKIP_GPU_COUNT_CHECK": "1"},
+    )
+    selector = _build_selector_for_set_gpu_count(model)
+    selector._set_gpu_count(world_size=16, strategies=["tp", "dp"])
+    # Keeps the manual selection count instead of overwriting with world_size.
+    assert selector._gpu_count == 8

@@ -1020,13 +1020,13 @@ model_sets:
     - mit
   release_date: "2026-04-04"
   specs:
-    # Ascend NPUs (vllm-ascend, BF16)
+    # Ascend NPUs (vllm-ascend, W8A8)
     - mode: throughput
-      quantization: BF16
+      quantization: W8A8
       gpu_filters:
         vendor: ascend
       source: model_scope
-      model_scope_model_id: ZhipuAI/GLM-5.1
+      model_scope_model_id: Eco-Tech/GLM-5.1-w8a8
       backend: vLLM
       env:
         HCCL_OP_EXPANSION_MODE: AIV
@@ -1037,6 +1037,7 @@ model_sets:
         - --max-model-len=8192
         - --gpu-memory-utilization=0.95
         - --trust-remote-code
+        - --quantization=ascend
     # NVIDIA Hopper+ (vLLM, FP8 + MTP speculative)
     - mode: throughput
       quantization: FP8

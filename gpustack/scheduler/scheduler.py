@@ -29,7 +29,7 @@ from gpustack.policies.candidate_selectors import (
 from gpustack.policies.candidate_selectors.custom_backend_resource_fit_selector import (
     CustomBackendResourceFitSelector,
 )
-from gpustack.policies.utils import ListMessageBuilder
+from gpustack.policies.utils import ListMessageBuilder, should_skip_gpu_count_check
 from gpustack.policies.worker_filters.backend_framework_filter import (
     BackendFrameworkFilter,
 )
@@ -836,6 +836,12 @@ def set_model_gpus_per_replica(model: Model) -> bool:
         if model.backend == BackendEnum.VOX_BOX.value:
             return 1
 
+        replicas = model.replicas or 1
+        gpus_per_replica = len(model.gpu_selector.gpu_ids) // replicas
+
+        if should_skip_gpu_count_check(model):
+            return gpus_per_replica
+
         # User-specified world size from backend parameters takes precedence.
         if model.backend_parameters is not None:
             selector_map = {
@@ -852,10 +858,7 @@ def set_model_gpus_per_replica(model: Model) -> bool:
                 return world_size
 
         # The largest power of 2 less than or equal to (total GPUs / replicas), used as the initial per-replica GPU count.
-        gpus_per_replica = largest_power_of_2_leq(
-            len(model.gpu_selector.gpu_ids) // model.replicas
-        )
-        return gpus_per_replica
+        return largest_power_of_2_leq(gpus_per_replica)
 
     if not model.gpu_selector or not model.gpu_selector.gpu_ids:
         return False
