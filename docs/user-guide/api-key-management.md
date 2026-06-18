@@ -8,11 +8,14 @@ GPUStack supports authentication using API keys. Each GPUStack user can generate
 2. Click the `Add API Key` button.
 3. Fill in the `Name`, `Description`, and select the `Expiration` of the API key.
 4. Select the `Type` of the API key:
+
    - **Auto-generated**: GPUStack generates the API key for you.
    - **Custom**: Provide your own key value in the `Key` field. This field is required when choosing **Custom**.
+
 5. In the `Access Permissions` section, select the permissions for the API key:
+
    - **Platform Management**: Grants access to platform management endpoints (users, models, workers, etc.).
-   - **Model Access**: Grants access to inference APIs. When selected, choose either **All models** or **Allowed models**, and if choosing **Allowed models**, select which models this API key can access from the list.
+   - **Model Access**: Grants access to inference APIs. When selected, choose either `All models` or `Allowed models`, and if choosing `Allowed models`, select which models this API key can access from the list.
 
    If no permission is selected, the API key has no access permissions.
 6. Click the `Save` button.
@@ -29,8 +32,10 @@ GPUStack supports authentication using API keys. Each GPUStack user can generate
 3. Click the `Edit` button in the `Operations` column.
 4. Update the `Description` if needed.
 5. In the `Access Permissions` section, adjust the selected permissions:
+
    - **Platform Management**: Grants access to platform management endpoints (users, models, workers, etc.).
-   - **Model Access**: Grants access to inference APIs. When selected, choose either **All models** or **Allowed models**, and if choosing **Allowed models**, select which models this API key can access from the list.
+   - **Model Access**: Grants access to inference APIs. When selected, choose either `All models` or `Allowed models`, and if choosing `Allowed models`, select which models this API key can access from the list.
+
 6. Click the `Save` button.
 
 !!! note

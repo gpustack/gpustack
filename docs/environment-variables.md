@@ -101,15 +101,19 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_USAGE_EVENTS_ARCHIVE_CRON`               | Cron expression (UTC) for the resource-events archiver's recurring sweep. The archiver also runs once on server startup regardless of this schedule.                                                                                               | `30 3 * * *` | Server     |
 | `GPUSTACK_USAGE_EVENTS_ARCHIVE_BATCH_SIZE`         | Per-batch row count for resource-events archival moves.                                                                                                                                                                                            | `5000`       | Server     |
 
-> **Note — `GPUSTACK_USAGE_ROLLUP_TIMEZONE` scope & DST.** This one timezone
-> governs every usage view: the daily `model_usages` token rollup, the
-> GPU/storage time buckets, and the displayed Last Active and resource-event
-> times. For a zone that observes **DST**
-> this has two consequences worth knowing: (a) near a DST transition an event's
-> displayed clock time can fall on a different calendar day than the bucket it is
-> counted in; and (b) re-running the same historical query after a DST switch can
-> re-bucket older rows by an hour, so the result drifts over time. Non-DST zones
-> (UTC, `Asia/Shanghai`, …) are exact and unaffected.
+!!! note "`GPUSTACK_USAGE_ROLLUP_TIMEZONE` scope & DST"
+
+    This one timezone governs every usage view: the daily `model_usages` token
+    rollup, the GPU/storage time buckets, and the displayed Last Active and
+    resource-event times. For a zone that observes **DST** this has two
+    consequences worth knowing:
+
+    - Near a DST transition an event's displayed clock time can fall on a
+      different calendar day than the bucket it is counted in.
+    - Re-running the same historical query after a DST switch can re-bucket
+      older rows by an hour, so the result drifts over time.
+
+    Non-DST zones (UTC, `Asia/Shanghai`, …) are exact and unaffected.
 
 ### Cluster Configuration
 
