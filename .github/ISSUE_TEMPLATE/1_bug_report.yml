@@ -53,6 +53,15 @@ body:
       required: true
 
   - type: textarea
+    id: expected
+    attributes:
+      label: ✅ Expected result
+      description: What did you expect to happen?
+      placeholder: The behavior you expected
+    validations:
+      required: false
+
+  - type: textarea
     id: result
     attributes:
       label: ❌ Actual result
