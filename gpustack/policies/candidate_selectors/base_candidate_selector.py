@@ -290,7 +290,9 @@ class ScheduleCandidatesSelector(ABC):
                     return
                 strategies_str = "/".join(strategies) if strategies else "parallelism"
                 raise ValueError(
-                    f"Model {model.name} has {strategies_str} set, but the selected gpu count ({self._gpu_count}) does not match the world size ({world_size})."
+                    f"Model {model.name} has {strategies_str} set, but the selected gpu count ({self._gpu_count}) does not match the world size ({world_size}). "
+                    f"Adjust the selected GPUs or the parallelism backend parameters so they match. "
+                    f"If the mismatch is intentional, add GPUSTACK_SKIP_GPU_COUNT_CHECK=1 to the model's environment variables to bypass this check and keep the selected gpu count."
                 )
 
             self._gpu_count = world_size
