@@ -204,7 +204,7 @@ nav:
           - Integrate with Claude Code: integrations/integrate-with-claude-code.md
           - Integrate with Dify: integrations/integrate-with-dify.md
           - Integrate with RAGFlow: integrations/integrate-with-ragflow.md
-          - Integrate with CherryStudio: integrations/integrate-with-cherrystudio.md
+          - Integrate with Cherry Studio: integrations/integrate-with-cherrystudio.md
           - Integrate with OpenClaw: integrations/integrate-with-openclaw.md
           - Integrate with n8n: integrations/integrate-with-n8n.md
           - Integrate with MaxKB: integrations/integrate-with-maxkb.md

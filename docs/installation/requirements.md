@@ -50,7 +50,7 @@ Ensure all required drivers and toolkits are installed before running GPUStack.
 
 #### Requirements
 
-- [NVIDIA GPU Driver](https://www.nvidia.com/en-us/drivers/) that supports NVIDIA CUDA 12.6 or higher.
+- [NVIDIA GPU Driver](https://www.nvidia.com/en-us/drivers/) that supports NVIDIA CUDA 12.8 or higher.
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit)
 
 Run the following commands to verify:
@@ -75,7 +75,7 @@ sudo docker info 2>/dev/null | grep -q "nvidia" \
 
 #### Requirements
 
-- [AMD GPU Driver](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/) that supports AMD ROCm 6.4 or higher.
+- [AMD GPU Driver](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/) that supports AMD ROCm 7.0 or higher.
 - [AMD Container Runtime](https://instinct.docs.amd.com/projects/container-toolkit/en/latest/container-runtime/overview.html)
 
 Run the following commands to verify:
