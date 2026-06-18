@@ -8,7 +8,7 @@ attribute consumption to users, and reason about cost.
 
 1. Navigate to the `Usage` page from the left navigation (the bar-chart icon).
 2. Select a tab — `Summary`, `Tokens`, `GPU Instances`, `Storage`, or `Resource Events`.
-3. Set the **date range** (and any other filters) to scope the report.
+3. Set the `date range` (and any other filters) to scope the report.
 
 The tabs are:
 
@@ -28,7 +28,7 @@ The tabs are:
 
 ## Visibility
 
-GPUStack has two roles — `Admin` and `User` (see [User Management](user-management.md)):
+GPUStack has two roles — **Admin** and **User** (see [User Management](user-management.md)):
 
 - **Admin** — can view usage across all users, and narrow the view with the **Filter by user**
   control.
@@ -44,31 +44,31 @@ Every tab (except Resource Events, which has its own filters) shares the same co
 - **Refresh** — re-fetch with the current filters.
 - **Metric** — which value the trend chart and KPI sort use (e.g. GPU Hours vs Instance Hours).
 - **Group by** — split the trend chart into one series per group (e.g. per instance type).
-- **Granularity** — the trend bucket: **Hour / Day / Week / Month** for GPU Instances and
-  Storage, **Day / Week / Month** for Tokens (token usage is a daily rollup, so it has no
-  hourly granularity).
-- **Export** (download icon, Tokens / GPU Instances / Storage) — opens a preview of the
-  current filtered breakdown and lets you download it.
+- **Granularity** — the trend bucket. GPU Instances and Storage support
+  **Hour / Day / Week / Month**; Tokens supports **Day / Week / Month** only (token usage is a
+  daily rollup, so it has no hourly bucket).
+- **Export** (download icon, available on Tokens / GPU Instances / Storage) — opens a preview
+  of the current filtered breakdown and lets you download it.
 
 ## Metric definitions
 
 | Metric                                                        | Meaning                                                                                                             |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **Input Tokens**                                              | Prompt tokens. **Input Tokens Cached** is the subset served from the prompt cache.                                  |
+| **Input Tokens**                                              | Prompt tokens. **Input Cached Tokens** is the subset served from the prompt cache.                                  |
 | **Output Tokens**                                             | Completion tokens generated.                                                                                        |
 | **Total Tokens**                                              | Input + Output.                                                                                                     |
 | **Instance Hours**                                            | Wall-clock instance runtime: Σ(uptime) regardless of how many cards the instance holds.                             |
 | **GPU Hours**                                                 | Accelerator runtime: Σ(uptime × GPU card count). A 2-GPU instance run for 1 hour = 2 GPU Hours but 1 Instance Hour. |
 | **GB-Days**                                                   | Provisioned storage over time: capacity (GB) × days held.                                                           |
 | **GB-Hours**                                                  | Same as GB-Days, expressed per hour.                                                                                |
-| **Active Instances** / **Active Storages** / **Active Users** | Resources that are still live (not deleted) within the window — Active Instances / Active Storages / Active Users.  |
+| **Active Instances** / **Active Storages** / **Active Users** | Resources that are still live (not **Deleted**) within the window.                                                  |
 | **Last Active**                                               | The most recent bucket in which the resource accrued usage.                                                         |
 
 !!! note
 
     Deleted resources keep their historical usage — a deleted model, instance, or storage
     still appears in the tables (flagged **Deleted**) and contributes to the totals, but it is
-    no longer counted as "Active".
+    no longer counted as **Active**.
 
 ## Summary
 
@@ -87,7 +87,7 @@ Token consumption from LLM inference. KPIs across the top: **Input / Output / To
 
 The bottom section groups the detail table three ways:
 
-- **Models** — per model: Input / Input Cached / Output / Total Tokens, API Requests, Last Active.
+- **Models** — per model: Input Tokens / Input Cached Tokens / Output Tokens / Total Tokens, API Requests, Last Active.
 - **Users** — per user (admins only).
 - **API Keys** — per API key.
 
