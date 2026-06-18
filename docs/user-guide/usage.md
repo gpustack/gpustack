@@ -107,8 +107,8 @@ The detail table groups by:
 
 !!! note
 
-    CPU instances have no accelerator, so they contribute to **Instance Hours** but 0 to
-    **GPU Hours**.
+    CPU instances have no accelerator, so they contribute to **Instance Hours** but
+    not to **GPU Hours**.
 
 ## Storage
 

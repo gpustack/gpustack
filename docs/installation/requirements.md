@@ -8,7 +8,7 @@ GPUStack supports most modern Linux distributions on **AMD64** and **ARM64** arc
 
 !!! note
 
-    - GPUStack is not supported for direct installation via PyPi. For best compatibility, use the provided Docker images.
+    - Installing GPUStack directly via PyPI is not supported. For best compatibility, use the provided Docker images.
     - The Network Time Protocol (NTP) package must be installed to ensure consistent state synchronization between nodes.
 
 ## Database Requirements

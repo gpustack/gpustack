@@ -7,7 +7,7 @@ GPUStack provides model route management capabilities. Through model routes, you
 1. Go to `Routes` page.
 2. Click `Add Route`.
 3. Fill the route `Name` as the serving model name.
-4. Select at lease one `Route Targets`.
+4. Select one or more `Route Targets`.
 5. Click the `Save` button.
 
 ## Manage Route Targets

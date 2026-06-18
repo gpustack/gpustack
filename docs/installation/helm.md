@@ -23,7 +23,7 @@ In addition:
 
 - The GPUStack server is deployed as a `StatefulSet` and currently does **not** support more than one replica.
 - By default, the bundled embedded `PostgreSQL` database is used. It is recommended to specify an external database via `server.externalDatabaseURL` for production.
-- Higress plugins are served by a dedicated `gpustack/higress-plugins` Deployment installed alongside GPUStack. When the Higress gateway restarts, it downloads the plugins from this service; if the service is unavailable, the gateway's startup is blocked until the plugins become accessible.
+- Higress plugins are served by a dedicated `gpustack/higress-plugins` Deployment installed alongside GPUStack. The Higress gateway downloads plugins from this service on restart; if the service is unavailable, gateway startup is blocked until the plugins become accessible.
 - The bundled `higress-core` sub-chart deploys Higress as the cluster's ingress controller. If another ingress controller is already running, set `higress-core.enabled=false` and point `gateway.ingressClassname` at an existing Higress instance.
 
 ## Install k3s (optional)

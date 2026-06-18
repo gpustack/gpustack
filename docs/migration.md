@@ -66,7 +66,7 @@ done
 
 ### Migrate Server Using Docker
 
-Since v2.0.0, you no longer need to specify the GPU computing platform or version (such as `-cpu`, `-cuda12.8`, or `-rocm`) for the server or worker images. Simply use the latest image: gpustack/gpustack:latest.
+Since v2.0.0, you no longer need to specify the GPU computing platform or version (such as `-cpu`, `-cuda12.8`, or `-rocm`) for the server or worker images. Use the unified image instead: `gpustack/gpustack:latest`.
 
 #### Embedded Database Migration (SQLite → PostgreSQL)
 
@@ -88,7 +88,7 @@ sudo docker run -d --name gpustack \
 
 If you are getting the error from docker `docker: Error response from daemon: unknown or invalid runtime name: nvidia`, please check [Accelerator Runtime Requirements](./installation/requirements.md#accelerator-runtime-requirements) first and following the document [Other GPU Architectures](#other-gpu-architectures) to change the `--runtime nvidia` argument with your runtime.
 
-Also customizing the `--data-dir`, `GPUSTACK_DATA_DIR` is also supported in database migration by following command changes:
+Customizing the data directory via `--data-dir` or `GPUSTACK_DATA_DIR` is also supported during database migration. Adjust the command as follows:
 
 ```diff
 ...

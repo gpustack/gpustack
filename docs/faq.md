@@ -136,7 +136,7 @@ If the model is stored on a specific worker, you can use the worker selector to 
 
 Another option is to mount a shared storage across multiple nodes.
 
-And the model files must be mounted into the container, and the host directory and the container mount path must be identical.
+The model files must also be mounted into the container, and the host directory and the container mount path must be identical.
 
 When deploying Safetensors models from Local Path, the path **must point to the absolute path of the model directory which contain `*.safetensors`, `config.json`, and other files**.
 
@@ -146,7 +146,7 @@ When deploying GGUF models from Local Path, the path **must point to the absolut
 
 ### What should I do if the model is stuck in `Pending` state?
 
-`Pending` means that there are currently no workers meeting the model’s requirements, move the mouse over the `Pending` status to view the reason.
+`Pending` means that no workers currently meet the model's requirements. Hover over the `Pending` status to view the reason.
 
 First, check the `Workers` section to ensure that the worker status is Ready.
 
@@ -180,7 +180,7 @@ Try restarting the GPUStack container where the model is scheduled. If the issue
 
 ### What should I do if the model is stuck in `Error` state?
 
-Move the mouse over the `Error` status to view the reason. If there is a `View More` button, click it to check the error messages in the model logs and analyze the cause of the error.
+Hover over the `Error` status to view the reason. If there is a `View More` button, click it to check the error messages in the model logs and analyze the cause of the error.
 
 ### Why does the model fail to start when using a custom backend version based on the official vLLM image with `PYPI_PACKAGES_INSTALL`?
 

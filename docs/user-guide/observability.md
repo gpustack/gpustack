@@ -126,7 +126,7 @@ _(where `custom_metrics_config.json` is your new config file)_
 **Get default config:**
 
 ```bash
-curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/default-config
+curl http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/default-config
 ```
 
 > **Note**: The configuration should be provided in valid JSON format.

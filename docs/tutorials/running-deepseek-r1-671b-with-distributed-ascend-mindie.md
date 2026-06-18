@@ -26,7 +26,7 @@ Before you begin, make sure the following requirements are met:
 !!! note
 
     - In this tutorial, we assume a setup of 4 nodes, each equipped with 8 910B3 NPUs and connected via 200G Huawei Cache Conherence Network (HCCN).
-    - Altas NPUs do not support the FP8 precision originally used by DeepSeek R1. Hence, we use the BF16 version from [Unsloth](https://huggingface.co/unsloth/DeepSeek-R1-BF16).
+    - Atlas NPUs do not support the FP8 precision originally used by DeepSeek R1. Hence, we use the BF16 version from [Unsloth](https://huggingface.co/unsloth/DeepSeek-R1-BF16).
 
 ## Step 1: Install GPUStack Server
 
@@ -87,7 +87,7 @@ sudo docker run -d --name gpustack \
 
     - Replace the placeholder paths, IP address/hostname, and cluster token accordingly.
     - Replace `/path/to/your/model` with the actual path on your system where the DeepSeek R1 model files are stored.
-    - Ensure the `hccn_tool` tool is installed and configured correctly on your system. This is required for discvoring the HCCN network communication.
+    - Ensure `hccn_tool` is installed and configured correctly on your system. This is required for discovering the HCCN network communication.
 
 After all workers are added, return to the GPUStack UI.
 

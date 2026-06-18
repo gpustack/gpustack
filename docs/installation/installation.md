@@ -36,7 +36,7 @@ Check the GPUStack container logs:
 sudo docker logs -f gpustack
 ```
 
-If everything is normal, open `http://your_host_ip` in a browser to access the GPUStack UI.
+Once the server is up, open `http://your_host_ip` in a browser to access the GPUStack UI.
 
 Log in with username `admin` and the default password. Retrieve the initial password with:
 
@@ -143,7 +143,7 @@ Start the GPUStack server:
 sudo docker compose -f docker-compose.server.yaml up -d
 ```
 
-If everything is normal, open `http://your_host_ip` in a browser to access the GPUStack UI.
+Once the server is up, open `http://your_host_ip` in a browser to access the GPUStack UI.
 
 Log in with username `admin` and the default password. Retrieve the initial password with:
 
