@@ -30,6 +30,7 @@ from gpustack.policies.utils import (
     get_model_vision_num_attention_heads,
     get_worker_allocatable_resource,
     get_worker_model_instances,
+    should_skip_gpu_count_check,
     sort_gpu_indexes_by_allocatable_rate,
     sort_selected_workers_by_gpu_type_and_resource,
 )
@@ -280,6 +281,13 @@ class ScheduleCandidatesSelector(ABC):
         if world_size and world_size > 0:
             if self._gpu_count and self._gpu_count != world_size:
                 # Both gpu selector and parallelism are set, validate they match.
+                if should_skip_gpu_count_check(model):
+                    logger.warning(
+                        f"Model {model.name}: world size ({world_size}) does not match "
+                        f"selected gpu count ({self._gpu_count}); skipping the check due "
+                        f"to GPUSTACK_SKIP_GPU_COUNT_CHECK. Keeping the selected gpu count."
+                    )
+                    return
                 strategies_str = "/".join(strategies) if strategies else "parallelism"
                 raise ValueError(
                     f"Model {model.name} has {strategies_str} set, but the selected gpu count ({self._gpu_count}) does not match the world size ({world_size})."

@@ -269,6 +269,21 @@ def get_vram_claim_from_model_env(model: Model) -> Optional[int]:
     return None
 
 
+def should_skip_gpu_count_check(model: Model) -> bool:
+    """
+    Whether to bypass the world-size-vs-selected-gpu-count check (GPUSTACK_SKIP_GPU_COUNT_CHECK).
+    Only honored when GPUs are manually selected; auto-scheduling is unaffected.
+    """
+    if not (model.gpu_selector and model.gpu_selector.gpu_ids):
+        return False
+    if not model.env:
+        return False
+    value = model.env.get("GPUSTACK_SKIP_GPU_COUNT_CHECK")
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 async def _get_cached_model_size(
     session: Optional[AsyncSession],
     model: Model,
