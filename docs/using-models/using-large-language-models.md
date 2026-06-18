@@ -14,7 +14,7 @@ Before you begin, ensure that you have the following:
 
 ## Step 1: Deploy Large Language Models
 
-### Deoloy from Catalog
+### Deploy from Catalog
 
 Large language models in the catalog are marked with the `LLM` category. When you select a large language model from the catalog, the default configurations should work as long as you have enough GPU resources and the backend is compatible with your setup (e.g., vLLM backend requires an amd64 Linux worker).
 

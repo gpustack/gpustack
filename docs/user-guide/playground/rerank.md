@@ -6,7 +6,7 @@ The Rerank Playground allows you to test reranker models that reorder multiple t
 
 Add multiple text entries to the document for reranking.
 
-## Bach Input Text
+## Batch Input Text
 
 Enable `Batch Input Mode` to split multi-line text into separate entries based on line breaks. This is useful for processing multiple text snippets efficiently.
 

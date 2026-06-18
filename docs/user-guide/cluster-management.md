@@ -43,7 +43,7 @@ The kubernetes can be registered after the cluster is created.
 1. Go to `Clusters` page.
 2. Find the cluster which you want to register the Kubernetes cluster.
 3. Click the ellipsis button in the operations column, then select `Register Cluster`.
-4. Select the options to register cluster. Following the same steps as abovve, from `Select the GPU vendor` to `Run command`.
+4. Select the options to register the cluster. Follow the same steps as above, from `Select the GPU vendor` to `Run command`.
 
 #### Kubernetes Cluster Options
 
@@ -74,7 +74,7 @@ The `Advanced` settings expose the following Kubernetes deployment options:
 3. Adding one or more `Worker Pools`. For each pool, `Name`, `Instance Type`, `OS Image`, `Replicas`, `Batch Size`, `Labels` and `Volumes` can be specified.
 4. Click `Save` after the worker pools are configured.
 
-The worker poll can be added after the cluster is created.
+Additional worker pools can be added after the cluster is created.
 
 1. Go to `Clusters` page.
 2. Find the `DigitalOcean` cluster which you want to add worker pool.

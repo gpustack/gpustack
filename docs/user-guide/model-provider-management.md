@@ -44,7 +44,7 @@ The currently supported providers are:
 1. Go to `Providers` Page.
 2. Click the `Add Provider`.
 3. Fill the required options like `Name`, `Type`, `API Key`.
-4. Click `Add Model` to configure at lease one model for this provider.
+4. Click `Add Model` to configure at least one model for this provider.
 5. Click the `Save` button.
 
 ## Add Route for Provider

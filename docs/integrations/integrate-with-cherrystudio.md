@@ -1,6 +1,6 @@
-# Integrate with CherryStudio
+# Integrate with Cherry Studio
 
-CherryStudio integrates with GPUStack to leverage locally hosted LLMs, embeddings and reranking capabilities.
+Cherry Studio integrates with GPUStack to leverage locally hosted LLMs, embeddings, and reranking capabilities.
 
 ## Deploying Models
 
@@ -25,15 +25,15 @@ CherryStudio integrates with GPUStack to leverage locally hosted LLMs, embedding
 
 3. Copy the API key and save it for later use.
 
-## Integrating GPUStack into CherryStudio
+## Integrating GPUStack into Cherry Studio
 
-1. Open CherryStudio, go to `Settings` → `Model Provider`, find GPUStack, enable it, and configure it as shown:
+1. Open Cherry Studio, go to `Settings` → `Model Provider`, find GPUStack, enable it, and configure it as shown:
 
     - `API Key`: Input the API key you copied from previous steps.
 
     - `API Host`: `Access URL` in the `API Access Info` panel.
 
-   ![CherryStudio GPUStack setup](../assets/integrations/integration-cherrystudio-01.png)
+   ![Cherry Studio GPUStack setup](../assets/integrations/integration-cherrystudio-01.png)
 
 2. In the GPUStack provider configuration, click "Manage" and enable the models you need:
 
@@ -45,7 +45,7 @@ CherryStudio integrates with GPUStack to leverage locally hosted LLMs, embedding
 
    ![Test API](../assets/integrations/integration-cherrystudio-04.png)
 
-After configuration, return to the CherryStudio home page and start using your models.
+After configuration, return to the Cherry Studio home page and start using your models.
 
 ## Using LLMs
 

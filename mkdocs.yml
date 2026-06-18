@@ -153,7 +153,7 @@ nav:
       - Migration: migration.md
       - User Guide:
           - Playground:
-              - Playgound: user-guide/playground/index.md
+              - Overview: user-guide/playground/index.md
               - Chat: user-guide/playground/chat.md
               - Image: user-guide/playground/image.md
               - Audio: user-guide/playground/audio.md
