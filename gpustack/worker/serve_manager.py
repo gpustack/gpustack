@@ -1551,6 +1551,12 @@ class ServeManager:
             else None
         )
 
+    def get_model_by_model_instance_id(self, model_instance_id: int) -> Optional[Model]:
+        """
+        Get the cached Model (including its meta) for the given model instance ID.
+        """
+        return self._model_cache_by_instance.get(model_instance_id)
+
 
 def is_ready(
     backend: str,
