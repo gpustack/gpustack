@@ -1,13 +1,29 @@
 import os
 import time
+import shutil
 import pytest
+from unittest.mock import patch
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.schemas.models import SourceEnum
-from gpustack.server.catalog import get_model_set_specs, init_model_catalog
+from gpustack.server.catalog import get_model_set_specs, init_model_catalog, prepare_chat_templates
 from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
 from gpustack.utils.compat_importlib import pkg_resources
 from huggingface_hub import HfApi
 from modelscope.hub.api import HubApi
+
+
+def test_prepare_chat_templates_handles_permission_error(tmp_path):
+    """prepare_chat_templates should log a warning and not raise on PermissionError."""
+    with patch("gpustack.utils.file.copy_with_owner", side_effect=PermissionError("Permission denied")):
+        # Should not raise; worker startup must not crash on permission errors.
+        prepare_chat_templates(str(tmp_path))
+
+
+def test_prepare_chat_templates_handles_shutil_error(tmp_path):
+    """prepare_chat_templates should log a warning and not raise on shutil.Error."""
+    with patch("gpustack.utils.file.copy_with_owner", side_effect=shutil.Error([("src", "dst", "Permission denied")])):
+        # Should not raise; worker startup must not crash when copytree fails.
+        prepare_chat_templates(str(tmp_path))
 
 
 @pytest.mark.skipif(
