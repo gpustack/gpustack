@@ -116,7 +116,7 @@ class UserBase(SQLModel):
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
-    source: Optional[AuthProviderEnum] = Field(default=AuthProviderEnum.Local)
+    source: Optional[str] = Field(default=AuthProviderEnum.Local.value)
     require_password_change: bool = Field(default=False)
 
 

@@ -30,7 +30,7 @@ class UserGroupCreate(UserGroupUpdate):
     # Immutable after create (absent from ``UserGroupUpdate``). Used
     # by ``sync_user_group_memberships`` to refuse cross-source name
     # adoption.
-    source: AuthProviderEnum = AuthProviderEnum.Local
+    source: str = AuthProviderEnum.Local.value
 
 
 class UserGroupListParams(ListParams):
@@ -51,9 +51,9 @@ class UserGroupPublic(SQLModel):
     # populated by the list/get routes (zero for empty groups).
     member_count: int = 0
     # Where the Group originated. ``Local`` = admin created via UI;
-    # ``OIDC`` / ``SAML`` = auto-created by IdP sync. UI badges
-    # IdP-managed rows distinctly.
-    source: AuthProviderEnum = AuthProviderEnum.Local
+    # ``OIDC`` / ``SAML`` / other IdP names = auto-created by IdP sync.
+    # UI badges IdP-managed rows distinctly.
+    source: str = AuthProviderEnum.Local.value
     created_at: datetime
     updated_at: datetime
 

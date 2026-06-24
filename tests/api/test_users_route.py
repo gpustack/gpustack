@@ -6,8 +6,6 @@ paths. Mock-based per :mod:`tests.api.test_p2_routes`.
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic import ValidationError
-
 from gpustack.api.exceptions import InvalidException
 from gpustack.routes import users as users_route
 from gpustack.schemas.users import AuthProviderEnum, UserCreate
@@ -94,15 +92,17 @@ async def test_create_user_oidc_require_password_change_rejected():
         await users_route.create_user(session=session, user_in=body)
 
 
-def test_create_user_invalid_source_rejected_at_schema():
-    # Pydantic enum validation catches this before the route runs,
-    # so FastAPI emits 422 instead of 500 from the catch-all.
-    with pytest.raises(ValidationError):
-        UserCreate(
-            username="alice",
-            password="StrongPassw0rd!",
-            source="Google",
-        )
+def test_create_user_accepts_arbitrary_source_string():
+    # ``source`` is a free-form string column so new SSO kinds
+    # (LDAP, vendor-specific, etc.) can be recorded without a schema
+    # change. The values in :class:`AuthProviderEnum` are references,
+    # not a closed set — pick a name that is *not* one of them to
+    # actually exercise the open-string contract.
+    body = UserCreate(
+        username="alice",
+        source="Google",
+    )
+    assert body.source == "Google"
 
 
 # ---- update_user / update_user_me password-bypass guards -------------------

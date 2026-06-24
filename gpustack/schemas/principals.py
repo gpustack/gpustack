@@ -33,7 +33,7 @@ from datetime import datetime
 from enum import Enum
 from typing import ClassVar, List, Optional, TYPE_CHECKING
 
-from sqlalchemy import Enum as SQLEnum, Text, text
+from sqlalchemy import Enum as SQLEnum, String, Text, text
 from sqlmodel import (
     Column,
     Field,
@@ -245,15 +245,21 @@ class PrincipalBase(SQLModel):
         default=None, sa_column=Column(Text, nullable=True)
     )
 
-    # Where this principal originated. Local for admin/UI-created
-    # rows; OIDC / SAML for IdP-synced rows. Meaningful for USER (auth
-    # source) and GROUP (IdP-sync provenance); typically Local for ORG.
-    source: AuthProviderEnum = Field(
-        default=AuthProviderEnum.Local,
+    # Where this principal originated. ``Local`` for admin/UI-created
+    # rows; ``OIDC`` / ``SAML`` / ``CAS`` / … for IdP-synced rows.
+    # Stored as a free-form string so callers can extend the provider
+    # set without a schema migration; :class:`AuthProviderEnum` enumerates
+    # the well-known values for in-code references.
+    source: str = Field(
+        default=AuthProviderEnum.Local.value,
         sa_column=Column(
-            SQLEnum(AuthProviderEnum),
+            String(length=64),
             nullable=False,
-            server_default=AuthProviderEnum.Local.value,
+            # ``server_default`` is interpreted as raw SQL — a bare
+            # ``"Local"`` would render as ``DEFAULT Local`` (unquoted
+            # identifier) and trip PostgreSQL on table creation. Wrap
+            # in single quotes so the DDL is ``DEFAULT 'Local'``.
+            server_default=f"'{AuthProviderEnum.Local.value}'",
         ),
     )
 
@@ -401,7 +407,7 @@ class PrincipalPublic(SQLModel):
     name: Optional[str] = None
     display_name: Optional[str] = None
     description: Optional[str] = None
-    source: AuthProviderEnum = AuthProviderEnum.Local
+    source: str = AuthProviderEnum.Local.value
     created_at: datetime
     updated_at: datetime
 
@@ -437,12 +443,16 @@ class PrincipalMembershipBase(SQLModel):
         default=None,
         sa_column=Column(SQLEnum(OrgRole), nullable=True),
     )
-    source: AuthProviderEnum = Field(
-        default=AuthProviderEnum.Local,
+    source: str = Field(
+        default=AuthProviderEnum.Local.value,
         sa_column=Column(
-            SQLEnum(AuthProviderEnum),
+            String(length=64),
             nullable=False,
-            server_default=AuthProviderEnum.Local.value,
+            # ``server_default`` is interpreted as raw SQL — a bare
+            # ``"Local"`` would render as ``DEFAULT Local`` (unquoted
+            # identifier) and trip PostgreSQL on table creation. Wrap
+            # in single quotes so the DDL is ``DEFAULT 'Local'``.
+            server_default=f"'{AuthProviderEnum.Local.value}'",
         ),
     )
 
