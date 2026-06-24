@@ -65,6 +65,7 @@ class AuthProviderEnum(str, Enum):
     Local = "Local"
     OIDC = "OIDC"
     SAML = "SAML"
+    CAS = "CAS"
 
 
 # Canonical ``name`` of the built-in platform Org-principal. Created

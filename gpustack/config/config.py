@@ -210,6 +210,29 @@ class Config(WorkerConfig, BaseSettings):
     saml_sp_slo_url: Optional[str] = None
     saml_idp_x509_cert: Optional[str] = ''  # saml idp_x509_cert
     saml_security: Optional[str] = '{}'  # saml security
+    # CAS (Central Authentication Service) settings. Enabled when
+    # ``cas_server_url`` is set; takes precedence after OIDC and SAML
+    # in :meth:`init_auth`. CAS speaks XML over HTTP — the ticket
+    # validator parses CAS 2.0 / 3.0 ``serviceValidate`` responses,
+    # with or without the ``cas:`` namespace prefix, so most CAS
+    # servers in the wild work without extra tuning.
+    cas_server_url: Optional[str] = None  # e.g. https://cas.example.com/cas
+    # Defaults to ``{server_external_url}/auth/cas/callback`` at request
+    # time when unset, but the ``service`` parameter sent to CAS must
+    # match what's registered on the CAS server, so allow an override
+    # for deployments fronted by a proxy that rewrites paths.
+    cas_callback_url: Optional[str] = None
+    # CAS 3.0 ``/p3/serviceValidate`` returns ``<cas:attributes>``;
+    # CAS 2.0 ``/serviceValidate`` returns only ``<cas:user>``. We
+    # default to 3.0 so the ``cas_*_attribute`` mappings have data to
+    # work with; pre-CAS-3.0 servers can override to ``/serviceValidate``.
+    cas_validate_endpoint: str = "/p3/serviceValidate"
+    # Attribute names to read out of the CAS XML. ``cas_username_attribute``
+    # defaults to CAS's built-in ``cas:user`` element; the other two stay
+    # off unless mapped, since CAS attribute schemas vary by deployment.
+    cas_username_attribute: Optional[str] = None
+    cas_full_name_attribute: Optional[str] = None
+    cas_avatar_attribute: Optional[str] = None
     server_external_url: Optional[str] = None
     # custom post-logout redirection key for compatibility with different IdPs.
     external_auth_post_logout_redirect_key: Optional[str] = None
@@ -676,6 +699,8 @@ class Config(WorkerConfig, BaseSettings):
             self.openid_configuration = get_openid_configuration(self.oidc_issuer)
         elif self.saml_idp_server_url:
             self.external_auth_type = AuthProviderEnum.SAML
+        elif self.cas_server_url:
+            self.external_auth_type = AuthProviderEnum.CAS
 
     @staticmethod
     def get_data_dir():
