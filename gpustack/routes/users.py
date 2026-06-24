@@ -170,15 +170,10 @@ async def create_user(session: SessionDep, user_in: UserCreate):
     if source == AuthProviderEnum.Local and not user_in.password:
         raise InvalidException(message="Password is required for Local users.")
     if source != AuthProviderEnum.Local and user_in.password:
-        raise InvalidException(
-            message=f"Password must not be set for {source.value} users."
-        )
+        raise InvalidException(message=f"Password must not be set for {source} users.")
     if source != AuthProviderEnum.Local and user_in.require_password_change:
         raise InvalidException(
-            message=(
-                f"require_password_change is not applicable to "
-                f"{source.value} users."
-            )
+            message=f"require_password_change is not applicable to {source} users."
         )
 
     try:
@@ -238,14 +233,11 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
     # See the guard in :func:`create_user` — same /login bypass.
     if user.source != AuthProviderEnum.Local and user_in.password:
         raise InvalidException(
-            message=f"Password must not be set for {user.source.value} users."
+            message=f"Password must not be set for {user.source} users."
         )
     if user.source != AuthProviderEnum.Local and user_in.require_password_change:
         raise InvalidException(
-            message=(
-                f"require_password_change is not applicable to "
-                f"{user.source.value} users."
-            )
+            message=f"require_password_change is not applicable to {user.source} users."
         )
 
     try:
@@ -358,7 +350,7 @@ async def update_user_me(
     # See the guard in :func:`create_user` — same /login bypass.
     if user.source != AuthProviderEnum.Local and user_in.password:
         raise InvalidException(
-            message=f"Password must not be set for {user.source.value} users."
+            message=f"Password must not be set for {user.source} users."
         )
 
     try:
