@@ -222,6 +222,10 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
     )()
     request.query_params = {"code": "auth-code", "state": "test-state"}
     request.cookies = {"gpustack_oidc_state": "test-state"}
+    # Read by the session-cookie hardening (``secure=request.url.scheme
+    # == "https"``). Pretend the inbound request was HTTPS so the
+    # ``secure`` flag would have flipped on in production.
+    request.url = type("URL", (), {"scheme": "https"})()
 
     monkeypatch.setattr("gpustack.routes.auth.httpx.AsyncClient", FakeAsyncClient)
     monkeypatch.setattr("gpustack.routes.auth.use_proxy_env_for_url", lambda url: False)
@@ -229,8 +233,17 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
         "gpustack.routes.auth.get_oidc_user_data",
         AsyncMock(return_value={"email": "user@example.com", "name": "Test User"}),
     )
+    # Return an existing user already tagged as the OIDC source so the
+    # cross-provider-takeover guard treats this as a legitimate repeat
+    # login rather than a username collision from a different IdP.
+    from gpustack.schemas.users import AuthProviderEnum
+
+    existing_oidc_user = type(
+        "User", (), {"is_active": True, "source": AuthProviderEnum.OIDC}
+    )()
     monkeypatch.setattr(
-        "gpustack.routes.auth.User.first_by_fields", AsyncMock(return_value=object())
+        "gpustack.routes.auth.User.first_by_fields",
+        AsyncMock(return_value=existing_oidc_user),
     )
 
     response = await oidc_callback(request=request, session=object())

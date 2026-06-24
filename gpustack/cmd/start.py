@@ -468,6 +468,44 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("SAML_SECURITY"),
     )
 
+    # CAS settings
+    server_group.add_argument(
+        "--cas-server-url",
+        type=str,
+        help="CAS (Central Authentication Service) server base URL, e.g., 'https://cas.example.com/cas'. Setting this enables CAS login.",
+        default=get_gpustack_env("CAS_SERVER_URL"),
+    )
+    server_group.add_argument(
+        "--cas-callback-url",
+        type=str,
+        help="CAS callback URL registered with the CAS server. Defaults to `<server-url>/auth/cas/callback` when unset.",
+        default=get_gpustack_env("CAS_CALLBACK_URL"),
+    )
+    server_group.add_argument(
+        "--cas-validate-endpoint",
+        type=str,
+        help="CAS ticket validation endpoint, relative to --cas-server-url. Default: '/p3/serviceValidate' (CAS 3.0, returns attributes). Use '/serviceValidate' for pre-3.0 servers.",
+        default=get_gpustack_env("CAS_VALIDATE_ENDPOINT"),
+    )
+    server_group.add_argument(
+        "--cas-username-attribute",
+        type=str,
+        help="CAS XML attribute name to use as the GPUStack username. Defaults to the CAS `cas:user` element when unset.",
+        default=get_gpustack_env("CAS_USERNAME_ATTRIBUTE"),
+    )
+    server_group.add_argument(
+        "--cas-full-name-attribute",
+        type=str,
+        help="CAS XML attribute name to use as the user's full name, e.g., 'displayName'.",
+        default=get_gpustack_env("CAS_FULL_NAME_ATTRIBUTE"),
+    )
+    server_group.add_argument(
+        "--cas-avatar-attribute",
+        type=str,
+        help="CAS XML attribute name to use as the user's avatar URL.",
+        default=get_gpustack_env("CAS_AVATAR_ATTRIBUTE"),
+    )
+
     # External Authentication settings
     server_group.add_argument(
         "--external-auth-name",
@@ -808,6 +846,12 @@ def set_server_options(args, config_data: dict):
         "saml_sp_private_key",
         "saml_sp_attribute_prefix",
         "saml_security",
+        "cas_server_url",
+        "cas_callback_url",
+        "cas_validate_endpoint",
+        "cas_username_attribute",
+        "cas_full_name_attribute",
+        "cas_avatar_attribute",
         "server_external_url",
         "gateway_concurrency",
         "gateway_plugin_server_url",

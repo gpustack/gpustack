@@ -1,6 +1,6 @@
 # Single Sign-On (SSO) Authentication
 
-GPUStack supports Single Sign-On (SSO) authentication methods such as OIDC and SAML. This allows users to log in using their existing credentials from an external identity provider.
+GPUStack supports Single Sign-On (SSO) authentication methods such as OIDC, SAML, and CAS. This allows users to log in using their existing credentials from an external identity provider.
 
 ## OIDC
 
@@ -184,3 +184,63 @@ sudo docker run -d --name gpustack \
 !!! note
 
     Not all IdPs provide standard SAML Single Logout (SLO). Auth0 SAML connections commonly do not expose `singleLogoutService`. If unavailable, GPUStack will still clear local sessions on logout; for full browser sign-out with Auth0, consider using its OIDC `v2/logout` with `client_id` and `returnTo` allowed.
+
+## CAS
+
+!!! note
+
+    Modern Apereo CAS servers ship modules for OIDC and SAML2 alongside the native CAS protocol. If your CAS server has either enabled, you can also wire it up via the [OIDC](#oidc) or [SAML](#saml) section above — capability is the same; pick whichever matches what your server actually exposes. The native CAS protocol below is the right choice when only CAS is available (common in older Apereo / education / government deployments) or when you want the smallest integration surface.
+
+GPUStack supports CAS (Central Authentication Service) protocol versions 2.0 and 3.0. The login flow redirects the browser to `<cas-server-url>/login?service=<gpustack-callback>`; on success, GPUStack exchanges the returned service ticket via the standard `/serviceValidate` endpoint and provisions the user from the XML response. The callback URL registered with the CAS server should point to `<server-url>/auth/cas/callback`.
+
+CAS responses are parsed with or without the `cas:` XML namespace, so most servers in the wild work without extra tuning. CAS Single Sign-Out is wired into `/auth/logout` and sends the browser to `<cas-server-url>/logout?service=<server-external-url>` when the active session originated from CAS.
+
+The following CLI flags are available for CAS configuration:
+
+| <div style="width:200px">Flag</div>           | Description                                                                                                                                                                                |
+|-----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--cas-server-url`                            | CAS server base URL, e.g., `https://cas.example.com/cas`. Setting this enables CAS login.                                                                                                  |
+| `--cas-callback-url` (Optional)               | CAS callback URL registered with the CAS server. Defaults to `<server-url>/auth/cas/callback` at request time when unset.                                                                  |
+| `--cas-validate-endpoint` (Optional)          | CAS ticket validation endpoint, relative to `--cas-server-url`. Default: `/p3/serviceValidate` (CAS 3.0, returns user attributes). Use `/serviceValidate` only when targeting a pre-CAS-3.0 server. |
+| `--cas-username-attribute` (Optional)         | CAS XML attribute name to use as the GPUStack username. Defaults to the CAS `cas:user` element when unset.                                                                                 |
+| `--cas-full-name-attribute` (Optional)        | CAS XML attribute name to use as the user's full name, e.g., `displayName`. Falls back to a `displayName` attribute if present, otherwise the username.                                    |
+| `--cas-avatar-attribute` (Optional)           | CAS XML attribute name to use as the user's avatar URL.                                                                                                                                    |
+| `--external-auth-default-inactive` (Optional) | Prevents new SSO users from being activated by default.                                                                                                                                    |
+
+You can also set these options via environment variables instead of CLI flags:
+
+```bash
+GPUSTACK_CAS_SERVER_URL="https://cas.example.com/cas"
+# Optional
+GPUSTACK_CAS_CALLBACK_URL="{your-server-url}/auth/cas/callback"
+GPUSTACK_CAS_VALIDATE_ENDPOINT="/p3/serviceValidate"
+GPUSTACK_CAS_USERNAME_ATTRIBUTE="uid"
+GPUSTACK_CAS_FULL_NAME_ATTRIBUTE="displayName"
+GPUSTACK_CAS_AVATAR_ATTRIBUTE=""
+GPUSTACK_EXTERNAL_AUTH_DEFAULT_INACTIVE="true"
+```
+
+### Example: Integrate with an Apereo CAS server
+
+1. Register GPUStack as a service on the CAS server with `serviceId` matching `<your-server-url>/auth/cas/callback`. Allow the attributes you intend to map (e.g., `uid`, `displayName`).
+
+2. Run GPUStack with the CAS configuration. The following example uses Docker with CUDA:
+
+```bash
+sudo docker run -d --name gpustack \
+    --restart=unless-stopped \
+    --privileged \
+    --network=host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
+    -e GPUSTACK_SERVER_EXTERNAL_URL="https://gpustack.example.com" \
+    -e GPUSTACK_CAS_SERVER_URL="https://cas.example.com/cas" \
+    -e GPUSTACK_CAS_USERNAME_ATTRIBUTE="uid" \
+    -e GPUSTACK_CAS_FULL_NAME_ATTRIBUTE="displayName" \
+    gpustack/gpustack
+```
+
+!!! note
+
+    If your CAS server uses a certificate issued by a private or corporate CA, see [Additional Trusted CAs](../installation/installation.md#additional-trusted-cas) for how to mount CA certificates into the GPUStack container.
