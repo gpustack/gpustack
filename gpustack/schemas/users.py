@@ -28,12 +28,13 @@ working unchanged.
 
 import re
 from datetime import datetime
-from typing import ClassVar, List, Optional
+from typing import ClassVar, List, Optional, Tuple
 
 from pydantic import (
     AliasChoices,
     ConfigDict,
     Field as PField,
+    computed_field,
     field_validator,
 )
 from sqlalchemy import Text
@@ -47,7 +48,6 @@ from gpustack.schemas.principals import (  # noqa: F401  re-exports
     Principal,
     PrincipalType,
 )
-
 
 # ``User`` aliases the unified :class:`Principal` so that code which
 # constructs / queries the user-shaped surface continues to work
@@ -180,13 +180,31 @@ class UserActivationUpdate(SQLModel):
 class UserListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
         "name",
+        "username",
         "is_admin",
         "display_name",
+        "full_name",
         "source",
         "is_active",
         "created_at",
         "updated_at",
     ]
+
+    # Wire-level field names that map to different DB column names.
+    # Key = wire name (from API / UI), value = DB column name.
+    _WIRE_TO_DB_SORT_MAP: dict[str, str] = {
+        "username": "name",
+        "full_name": "display_name",
+    }
+
+    @computed_field
+    @property
+    def order_by(self) -> Optional[List[Tuple[str, str]]]:
+        """Override to map wire-level sort field names to DB column names."""
+        raw = super().order_by
+        if raw is None:
+            return None
+        return [(self._WIRE_TO_DB_SORT_MAP.get(f, f), d) for f, d in raw]
 
 
 class UserPublic(UserBase):
