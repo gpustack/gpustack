@@ -194,10 +194,8 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 
 ## 构建
 
-1.  安装 Python（版本 3.10 到 3.12）。
-2.  运行 `make build`。
-
-您可以在 `dist` 目录中找到构建好的 wheel 包。
+1.  安装 [Docker](https://docs.docker.com/engine/install/)。
+2.  运行 `make package`。
 
 ## 贡献
 
