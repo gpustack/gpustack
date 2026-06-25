@@ -3432,12 +3432,8 @@ class GPUInstanceController:
                         return
 
                     pvt_name = pv.spec.type_
-                    pvt = await GPUInstancePersistentVolumeType.first_by_fields(
-                        session,
-                        fields={
-                            "owner_principal_id": fresh.owner_principal_id,
-                            "name": pvt_name,
-                        },
+                    pvt = await GPUInstancePersistentVolumeType.one_by_id(
+                        session, pv.persistent_volume_type_id
                     )
                     if pvt is None:
                         logger.error(
