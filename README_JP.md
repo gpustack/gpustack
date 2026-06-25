@@ -197,11 +197,9 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 
 ## ビルド
 
-1. Python（バージョン3.10から3.12）をインストールします。
+1. [Docker](https://docs.docker.com/engine/install/) をインストールします。
 
-2. `make build`を実行します。
-
-ビルドされたwheelパッケージは`dist`ディレクトリにあります。
+2. `make package` を実行します。
 
 ## 貢献
 

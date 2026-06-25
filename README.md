@@ -204,11 +204,9 @@ Please see the [official docs site](https://docs.gpustack.ai) for complete docum
 
 ## Build
 
-1. Install Python (version 3.10 to 3.12).
+1. Install [Docker](https://docs.docker.com/engine/install/).
 
-2. Run `make build`.
-
-You can find the built wheel package in `dist` directory.
+2. Run `make package`.
 
 ## Contributing
 
