@@ -3830,18 +3830,13 @@ class GPUInstanceController:
                                 f"Failed to delete worker-side pv {pv_name}"
                             )
 
-                        pvt = await GPUInstancePersistentVolumeType.first_by_fields(
+                        if await self._user_still_uses_pvt_by_name(
                             session,
-                            fields={
-                                "owner_principal_id": instance.owner_principal_id,
-                                "name": pvt_name,
-                            },
-                        )
-                        if pvt is not None:
+                            owner_principal_id=instance.owner_principal_id,
+                            pvt_name=pvt_name,
+                        ):
                             return
 
-                        # The PVT row is gone,
-                        # so we can delete the worker-side PVT unconditionally if it exists.
                         pvt_cluster_name = get_persistent_volume_type_name(
                             template.spec.type_,
                             principal_identifier=principal_identifier,
@@ -3882,18 +3877,13 @@ class GPUInstanceController:
                     if parsed is not None:
                         pvt_name, _ = parsed
 
-                        pvt = await GPUInstancePersistentVolumeType.first_by_fields(
+                        if await self._user_still_uses_pvt_by_name(
                             session,
-                            fields={
-                                "owner_principal_id": instance.owner_principal_id,
-                                "name": pvt_name,
-                            },
-                        )
-                        if pvt is not None:
+                            owner_principal_id=instance.owner_principal_id,
+                            pvt_name=pvt_name,
+                        ):
                             return
 
-                        # The PVT row is gone,
-                        # so we can delete the worker-side PVT unconditionally if it exists.
                         try:
                             await ops.delete_persistent_volume_type(pvt_cluster_name)
                         except Exception:
@@ -4146,3 +4136,31 @@ class GPUInstanceController:
                 )
             parts.append(key.spec.data)
         return "\n".join(parts)
+
+    @staticmethod
+    async def _user_still_uses_pvt_by_name(
+        session: AsyncSession,
+        *,
+        owner_principal_id: int,
+        pvt_name: str,
+    ) -> bool:
+        """Whether ``owner_principal_id`` has any PV referencing a PVT
+        named ``pvt_name``. The PVT side is intentionally unscoped by
+        owner: the worker-side PVT is keyed by ``(instance owner,
+        pvt_name)`` regardless of which Org owns the server-side PVT,
+        so the cleanup gate must use the same key shape — any Org's
+        PVT with this name counts."""
+        stmt = (
+            select(GPUInstancePersistentVolume.id)
+            .join(
+                GPUInstancePersistentVolumeType,
+                GPUInstancePersistentVolumeType.id
+                == GPUInstancePersistentVolume.persistent_volume_type_id,
+            )
+            .where(
+                GPUInstancePersistentVolume.owner_principal_id == owner_principal_id,
+                GPUInstancePersistentVolumeType.name == pvt_name,
+            )
+            .limit(1)
+        )
+        return (await session.exec(stmt)).first() is not None
