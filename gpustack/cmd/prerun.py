@@ -275,8 +275,7 @@ def prepare_observability_config(cfg: Config):
         os.getenv("PROMETHEUS_CONFIG_FILE", "/etc/prometheus/prometheus.yml")
     )
     prometheus_config_path.parent.mkdir(parents=True, exist_ok=True)
-    prometheus_config_path.write_text(
-        f"""# Managed by GPUStack
+    prometheus_config = f"""# Managed by GPUStack
 global:
   scrape_interval: 15s
   scrape_timeout: 10s
@@ -299,7 +298,20 @@ scrape_configs:
       - targets:
           - 127.0.0.1:{cfg.metrics_port}
 """
-    )
+
+    if cfg.gateway_mode == GatewayModeEnum.embedded:
+        pilot_status_port = os.getenv('GATEWAY_PILOT_AGENT_METRICS_PORT', '15020')
+        prometheus_config += f"""  - job_name: gpustack-gateway
+    metrics_path: /stats/prometheus
+    scrape_interval: 5s
+    static_configs:
+      - targets:
+          - 127.0.0.1:{pilot_status_port}
+        labels:
+          higress: {cfg.gateway_namespace}-higress-gateway
+"""
+
+    prometheus_config_path.write_text(prometheus_config)
 
     grafana_provisioning_dir = Path(
         os.getenv("GF_PATHS_PROVISIONING", "/etc/grafana/provisioning")
