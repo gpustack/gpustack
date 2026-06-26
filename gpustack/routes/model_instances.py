@@ -99,6 +99,7 @@ async def get_model_instances(
     id: Optional[int] = None,
     model_id: Optional[int] = None,
     worker_id: Optional[int] = None,
+    cluster_id: Optional[int] = None,
     state: Optional[str] = None,
 ):
     fields = {}
@@ -110,6 +111,9 @@ async def get_model_instances(
 
     if worker_id:
         fields["worker_id"] = worker_id
+
+    if cluster_id:
+        fields["cluster_id"] = cluster_id
 
     if state:
         fields["state"] = state
