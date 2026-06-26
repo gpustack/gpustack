@@ -378,6 +378,27 @@ def _resolve_effective_scope(user: User, ctx, requested_scope: str) -> str:
     return USAGE_SCOPE_ALL
 
 
+def _self_scope_consumer_condition(user_id: int, org_id: int):
+    """Consumer-side scoping for the ``self`` view.
+
+    In personal scope (``org_id`` is the caller's own USER-principal) the
+    caller's un-attributed rows (``consumer_principal_id IS NULL``) are
+    surfaced alongside their personal-Org rows. Cookie-authed direct
+    traffic — e.g. the UI Playground — carries no api_key and no
+    ``X-Organization-Id``, so its rows land NULL; without this branch the
+    strict ``consumer_principal_id == org_id`` equality silently drops the
+    user's own usage from their Usage page. When acting inside a real Org
+    the strict equality is kept so personal direct usage doesn't bleed
+    into the Org view.
+    """
+    if org_id == user_id:
+        return or_(
+            ModelUsage.consumer_principal_id == org_id,
+            ModelUsage.consumer_principal_id.is_(None),
+        )
+    return ModelUsage.consumer_principal_id == org_id
+
+
 def _apply_usage_scope_and_filters(
     statement: Select,
     *,
@@ -397,7 +418,7 @@ def _apply_usage_scope_and_filters(
     if scope == USAGE_SCOPE_SELF:
         statement = statement.where(ModelUsage.user_id == user.id)
         if org_id is not None:
-            statement = statement.where(ModelUsage.consumer_principal_id == org_id)
+            statement = statement.where(_self_scope_consumer_condition(user.id, org_id))
     elif org_id is not None:
         statement = statement.where(ModelUsage.consumer_principal_id == org_id)
 
@@ -519,7 +540,7 @@ async def get_usage_meta(
         base_statement = base_statement.where(ModelUsage.user_id == user.id)
         if ctx.current_principal_id is not None:
             base_statement = base_statement.where(
-                ModelUsage.consumer_principal_id == ctx.current_principal_id
+                _self_scope_consumer_condition(user.id, ctx.current_principal_id)
             )
     elif ctx.current_principal_id is not None:
         base_statement = base_statement.where(

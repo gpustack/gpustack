@@ -6,6 +6,7 @@ import pytest
 
 from gpustack.api.exceptions import ForbiddenException
 from gpustack.routes.usage import (
+    _self_scope_consumer_condition,
     get_usage_breakdown,
     get_usage_meta,
 )
@@ -171,6 +172,25 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
     assert response.filters.users == []
     assert response.filters.routes == []
     assert response.filters.api_keys[0].label == "alice / test"
+
+
+def test_self_scope_personal_includes_null_consumer_rows():
+    # Personal scope (org_id == the caller's own USER-principal): cookie-authed
+    # direct chats land with consumer_principal_id NULL, so the caller's own
+    # usage must still surface — the condition is an OR that admits NULL.
+    condition = _self_scope_consumer_condition(user_id=7, org_id=7)
+    sql = str(condition.compile(compile_kwargs={"literal_binds": True}))
+    assert "IS NULL" in sql
+    assert " OR " in sql
+
+
+def test_self_scope_org_context_excludes_null_consumer_rows():
+    # Acting inside a real Org (org_id != caller's USER-principal): keep the
+    # strict equality so personal direct usage doesn't bleed into the Org view.
+    condition = _self_scope_consumer_condition(user_id=7, org_id=42)
+    sql = str(condition.compile(compile_kwargs={"literal_binds": True}))
+    assert "IS NULL" not in sql
+    assert " OR " not in sql
 
 
 @pytest.mark.asyncio

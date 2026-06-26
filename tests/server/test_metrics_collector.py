@@ -5,10 +5,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from types import SimpleNamespace
+
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model
+from gpustack.schemas.principals import PrincipalType, platform_principal_id
 from gpustack.server.metrics_collector import (
     ModelUsageMetrics,
+    _build_metric_snapshot,
     _estimate_partial_usage,
     _make_buffer_key,
     _resolve_metric_datetime,
@@ -20,6 +24,54 @@ from gpustack.server.metrics_collector import (
     gateway_metrics_buffer,
     store_usage_metrics,
 )
+
+
+def _snapshot_for(user, *, organization_id=None):
+    """Run ``_build_metric_snapshot`` for a model-less cookie metric (no
+    api_key) attributed to ``user``. Mirrors OSS Playground traffic."""
+    metric = ModelUsageMetrics(
+        model="qwen3-0.6b",
+        user_id=getattr(user, "id", None),
+        organization_id=organization_id,
+    )
+    user_by_id = {} if user is None else {user.id: user}
+    return _build_metric_snapshot(
+        metric,
+        {},  # model_by_id
+        {},  # provider_by_id
+        user_by_id,
+        {},  # api_key_by_access_key
+        {},  # cluster_names_by_id
+        {},  # route_name_by_id
+        {},  # route_owner_by_id
+    )
+
+
+def test_consumer_fallback_regular_user_attributes_to_self():
+    user = SimpleNamespace(id=5, name="carol", kind=PrincipalType.USER, is_admin=False)
+    snapshot = _snapshot_for(user)
+    assert snapshot["consumer_principal_id"] == 5
+
+
+def test_consumer_fallback_admin_attributes_to_platform_org():
+    user = SimpleNamespace(id=1, name="admin", kind=PrincipalType.USER, is_admin=True)
+    snapshot = _snapshot_for(user)
+    assert snapshot["consumer_principal_id"] == platform_principal_id()
+
+
+def test_consumer_org_header_wins_over_fallback():
+    # Enterprise path: organization_id present → fallback must not run.
+    user = SimpleNamespace(id=5, name="carol", kind=PrincipalType.USER, is_admin=False)
+    snapshot = _snapshot_for(user, organization_id="42")
+    assert snapshot["consumer_principal_id"] == 42
+
+
+def test_consumer_fallback_skips_system_caller():
+    user = SimpleNamespace(
+        id=9, name="worker", kind=PrincipalType.SYSTEM, is_admin=False
+    )
+    snapshot = _snapshot_for(user)
+    assert "consumer_principal_id" not in snapshot
 
 
 @pytest.fixture(autouse=True)
