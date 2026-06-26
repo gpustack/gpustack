@@ -54,7 +54,7 @@ def registration_client(
     server_url: str,
     registration_token: Optional[str] = None,
     wait_token_file: bool = False,
-) -> Optional[WorkerRegistrationClient]:
+) -> WorkerRegistrationClient:
     # if token exists, skip registration
     if registration_token is None and wait_token_file:
         timeout = 10
@@ -79,7 +79,10 @@ def registration_client(
             api_key=registration_token,
         )
         return WorkerRegistrationClient(clientset.http_client)
-    return None
+    raise ValueError(
+        "No registration token configured. "
+        "Please provide a valid token via --token or the corresponding configuration."
+    )
 
 
 cache = TTLCache(maxsize=3, ttl=3600)
