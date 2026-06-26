@@ -877,11 +877,25 @@ async def update_model_route_targets(
             input_dict["route_name"] = new_route_name
         update_source = {}
         if existing_dict != input_dict:
-            # set state to UNAVAILABLE to force re-validate on next use
+            # Local-model targets go UNAVAILABLE so the controller
+            # re-validates against current model readiness on the
+            # resulting UPDATED event; provider (maas) targets have no
+            # readiness to wait on — ``_sync_state`` forces them to
+            # ACTIVE unconditionally — so set ACTIVE directly to avoid a
+            # transient UNAVAILABLE routing gap and a redundant reconcile
+            # write. Mirrors ``create_model_route_targets``. Keyed on the
+            # merged ``input_dict`` (not the existing row) so a
+            # type-changing edit is classified correctly, matching
+            # ``_sync_state``'s model_id-takes-precedence semantics.
+            new_state = (
+                TargetStateEnum.UNAVAILABLE
+                if input_dict.get("model_id") is not None
+                else TargetStateEnum.ACTIVE
+            )
             update_source.update(
                 {
                     **input_dict,
-                    "state": TargetStateEnum.UNAVAILABLE,
+                    "state": new_state,
                 }
             )
         if len(update_source) > 0:
