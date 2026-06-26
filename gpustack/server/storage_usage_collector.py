@@ -40,7 +40,14 @@ from gpustack.server.resource_usage_collector import (
     _naive_utc,
     _snapshot_dict,
 )
-from gpustack.utils.resource_usage import iter_utc_hour_segments, parse_quantity_to_mib
+from gpustack.schemas.gpu_instance_persistent_volume_types import (
+    GPUInstancePersistentVolumeType,
+)
+from gpustack.utils.resource_usage import (
+    iter_utc_hour_segments,
+    parse_quantity_to_mib,
+    volume_sku,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +71,12 @@ class _OpenVolume:
     window_start: datetime
     capacity_mib: int
     settled_through: Optional[datetime] = None
+    # ``spec.type_`` resolves to this volume-type id; used to look up the
+    # provisioner category (nfs / s3) for the sku. Resolved lazily on first
+    # settle and cached so the per-bucket hot path stays DB-free.
+    volume_type_id: Optional[int] = None
+    storage_category: Optional[str] = None
+    category_resolved: bool = False
 
 
 def _open_volume_from_event(evt: ResourceEvent) -> Optional[_OpenVolume]:
@@ -76,6 +89,7 @@ def _open_volume_from_event(evt: ResourceEvent) -> Optional[_OpenVolume]:
         volume_name=evt.resource_name or snap.get("name") or "",
         volume_display_name=snap.get("display_name"),
         storage_type=spec.get("type_") or spec.get("type"),
+        volume_type_id=snap.get("persistent_volume_type_id"),
         owner_principal_id=evt.owner_principal_id,
         owner_name=evt.owner_name,
         consumer_principal_id=evt.consumer_principal_id,
@@ -85,6 +99,47 @@ def _open_volume_from_event(evt: ResourceEvent) -> Optional[_OpenVolume]:
         window_start=_naive_utc(evt.occurred_at),
         capacity_mib=parse_quantity_to_mib(spec.get("capacity")),
     )
+
+
+def _category_from_spec(spec) -> Optional[str]:
+    """Provisioner kind of a volume type from its spec — ``nfs`` / ``s3`` by
+    which config block is populated, ``None`` if neither (or no spec).
+
+    Accepts either the ORM-loaded pydantic spec model or a plain dict (some
+    drivers / configs surface the JSON column un-parsed), so resolution never
+    silently degrades the sku to ``volume--unknown--<type_name>``."""
+    if spec is None:
+        return None
+
+    def _get(key: str):
+        return spec.get(key) if isinstance(spec, dict) else getattr(spec, key, None)
+
+    if _get("nfs") is not None:
+        return "nfs"
+    if _get("s3") is not None:
+        return "s3"
+    return None
+
+
+async def _resolve_storage_category(session, vol: _OpenVolume) -> Optional[str]:
+    """Resolve a volume's provisioner category for the sku. Prefers the
+    ``persistent_volume_type_id`` FK (survives a type rename); falls back to the
+    (owner, name) unique key. ``None`` if the type was deleted — the sku then
+    degrades to ``volume--<type_name>`` rather than failing."""
+    vt = None
+    if vol.volume_type_id is not None:
+        vt = await session.get(GPUInstancePersistentVolumeType, vol.volume_type_id)
+    if vt is None and vol.storage_type:
+        vt = (
+            await session.exec(
+                select(GPUInstancePersistentVolumeType).where(
+                    GPUInstancePersistentVolumeType.owner_principal_id
+                    == vol.owner_principal_id,
+                    GPUInstancePersistentVolumeType.name == vol.storage_type,
+                )
+            )
+        ).first()
+    return _category_from_spec(vt.spec) if vt is not None else None
 
 
 class StorageUsageCollector:
@@ -248,11 +303,30 @@ class StorageUsageCollector:
         segments = iter_utc_hour_segments(start, end_ts)
         if segments:
             async with async_session() as session:
-                for bucket_start, seg_start, seg_end in segments:
-                    await self._upsert_bucket(
-                        session, vol, bucket_start, seg_start, seg_end
+                # Resolve the provisioner category once per window (cached on the
+                # vol); it's static for a volume type, so later settles reuse it.
+                if not vol.category_resolved:
+                    vol.storage_category = await _resolve_storage_category(session, vol)
+                    vol.category_resolved = True
+                # A live volume always has a type (``spec.type_`` is required)
+                # whose provisioner resolves — the type can't be deleted while in
+                # use (FK RESTRICT) and a valid type always has nfs/s3. A missing
+                # value means a malformed snapshot: skip the rollup with a warning
+                # rather than record an unattributable sku.
+                if vol.storage_type and vol.storage_category:
+                    for bucket_start, seg_start, seg_end in segments:
+                        await self._upsert_bucket(
+                            session, vol, bucket_start, seg_start, seg_end
+                        )
+                    await session.commit()
+                else:
+                    logger.warning(
+                        "storage_usage_collector: missing storage type/category "
+                        "for volume_id=%s (type=%r category=%r); skipping rollup",
+                        vol.volume_id,
+                        vol.storage_type,
+                        vol.storage_category,
                     )
-                await session.commit()
         if vol.settled_through is None or end_ts > vol.settled_through:
             vol.settled_through = end_ts
 
@@ -279,6 +353,12 @@ class StorageUsageCollector:
         prior = _naive_utc(row.settled_until) if row is not None else None
         add_seconds = _clamped_seconds(seg_start, seg_end, prior)
         delta_capacity = add_seconds * vol.capacity_mib
+        sku = volume_sku(vol.storage_category, vol.storage_type)
+        dimensions = {
+            "storage_type": vol.storage_type,
+            "storage_category": vol.storage_category,
+            "capacity_mib": vol.capacity_mib,
+        }
 
         if row is not None:
             # Sealed buckets are final — drop any late segment (see
@@ -305,12 +385,8 @@ class StorageUsageCollector:
                 row.consumer_name = vol.consumer_name
             if vol.creator_name is not None:
                 row.creator_name = vol.creator_name
-            if vol.storage_type is not None:
-                row.sku = vol.storage_type
-            row.dimensions = {
-                "storage_type": vol.storage_type,
-                "capacity_mib": vol.capacity_mib,
-            }
+            row.sku = sku
+            row.dimensions = dimensions
             session.add(row)
             return
 
@@ -331,12 +407,9 @@ class StorageUsageCollector:
                 resource_id=vol.volume_id,
                 resource_name=vol.volume_name or "",
                 resource_display_name=vol.volume_display_name,
-                sku=vol.storage_type,
+                sku=sku,
                 sku_count=1,
-                dimensions={
-                    "storage_type": vol.storage_type,
-                    "capacity_mib": vol.capacity_mib,
-                },
+                dimensions=dimensions,
                 bucket_start=bucket_start,
                 quantity=delta_capacity,
                 unit=UNIT_MIB_SECONDS,

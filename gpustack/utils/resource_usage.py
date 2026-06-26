@@ -353,6 +353,34 @@ def instance_sku(
     return f"cpu-{cores}vcpu-{gib}g"
 
 
+def volume_sku(category: str, type_name: str) -> str:
+    """The "Storage Type" breakdown dimension (the sku) for persistent volumes.
+
+    Mirrors the instance ``gpustack--...`` flavor convention with a ``volume--``
+    prefix so the resource kind and provisioner are recoverable from the sku
+    string alone (issue #5716). Three ``--``-joined segments::
+
+        volume--<category>--<type_name>
+
+    where ``category`` is the provisioner kind (``nfs`` / ``s3``) derived from
+    the volume type's spec and ``type_name`` is the user-defined volume-type
+    name. Both are always resolvable for a live volume — its type can't be
+    deleted while in use (FK ``RESTRICT``) and a valid type always has a
+    provisioner — so callers pass concrete values; the collector skips the
+    rollup if either is somehow missing rather than synthesizing a placeholder.
+    All volumes of a type share one sku, so the "by type" breakdown still
+    aggregates per storage type.
+
+    Examples
+    --------
+    >>> volume_sku("nfs", "aws")
+    'volume--nfs--aws'
+    >>> volume_sku("s3", "minio")
+    'volume--s3--minio'
+    """
+    return f"volume--{category}--{type_name}"
+
+
 def split_delta_across_utc_midnight(
     start: datetime, end: datetime
 ) -> List[Tuple[date, int]]:
