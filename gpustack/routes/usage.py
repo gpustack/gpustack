@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from sqlalchemy import Date, Select, and_, asc, cast, desc
 from sqlmodel import func, or_, select
 
+from gpustack import envs
 from gpustack.api.exceptions import ForbiddenException, InvalidException
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.users import User
@@ -743,13 +744,29 @@ async def get_usage_breakdown(
         else func.max(ModelUsage.date)
     )
     sort_exprs = _order_expression(request.order_by, metric_columns, date_sort_expr)
-    items_statement = (
-        grouped_statement.order_by(*sort_exprs)
-        .offset((request.page - 1) * request.perPage)
-        .limit(request.perPage)
-    )
+    items_statement = grouped_statement.order_by(*sort_exprs)
+    # ``page <= 0`` is the project-wide "no pagination" sentinel (mirrors
+    # ActiveRecordMixin.page_query): return every bucket unsliced. The trend
+    # chart needs the full date series — a token-sorted page would drop the
+    # low-traffic (often most recent) buckets and leave gaps in the chart.
+    if request.page > 0:
+        items_statement = items_statement.offset(
+            (request.page - 1) * request.perPage
+        ).limit(request.perPage)
 
     total = _row_count_value(await _get_first_row(session, count_statement))
+    # No-pagination (page <= 0) returns the whole series. ``total`` (the bucket
+    # count) is already computed above, so reject an over-large result before
+    # fetching its rows — narrowing the range / adding filters beats silently
+    # truncating, which would reintroduce the chart-gap bug this path fixes.
+    if request.page <= 0 and total > envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS:
+        raise InvalidException(
+            message=(
+                f"Result set too large ({total} buckets, limit "
+                f"{envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS}). Narrow the "
+                "date range or add filters."
+            )
+        )
     item_rows = await _get_rows(session, items_statement)
 
     return UsageBreakdownResponse(
@@ -760,7 +777,11 @@ async def get_usage_breakdown(
             page=request.page,
             perPage=request.perPage,
             total=total,
-            totalPage=ceil(total / request.perPage) if total else 0,
+            totalPage=(
+                ceil(total / request.perPage)
+                if request.page > 0 and total
+                else (1 if total else 0)
+            ),
         ),
         items=[
             _build_breakdown_item(request.group_by, row, granularity)

@@ -204,6 +204,75 @@ async def test_resource_breakdown_by_type(session):
     )
 
 
+def test_resource_breakdown_request_rejects_page_zero():
+    with pytest.raises(ValueError):
+        ResourceBreakdownRequest(
+            scope="self",
+            start_date=D,
+            end_date=D,
+            group_by=["resource_type"],
+            page=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_breakdown_no_pagination_rejects_oversized(session, monkeypatch):
+    from gpustack.api.exceptions import InvalidException
+
+    # resource_type yields two buckets; cap at 1 so page=-1 is rejected rather
+    # than silently truncated.
+    monkeypatch.setattr(
+        "gpustack.routes.resource_usage.envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS",
+        1,
+    )
+    with pytest.raises(InvalidException):
+        await _run_breakdown(
+            session,
+            user=USER,
+            ctx=CTX,
+            request=ResourceBreakdownRequest(
+                scope="self",
+                start_date=D,
+                end_date=D,
+                group_by=["resource_type"],
+                page=-1,
+            ),
+            base_filter=None,
+            metric_keys=["gb_days"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_breakdown_no_pagination_returns_all_groups(session):
+    # resource_type yields two buckets (GPU instance + persistent volume).
+    base = dict(scope="self", start_date=D, end_date=D, group_by=["resource_type"])
+    # perPage=1 truncates to a single bucket...
+    paged = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=ResourceBreakdownRequest(**base, page=1, perPage=1),
+        base_filter=None,
+        metric_keys=["gb_days"],
+    )
+    assert len(paged["items"]) == 1
+    assert paged["pagination"].total == 2
+    assert paged["pagination"].totalPage == 2
+
+    # ...page=-1 (no-pagination sentinel) returns every bucket.
+    full = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=ResourceBreakdownRequest(**base, page=-1),
+        base_filter=None,
+        metric_keys=["gb_days"],
+    )
+    assert len(full["items"]) == 2
+    assert full["pagination"].page == -1
+    assert full["pagination"].totalPage == 1
+
+
 @pytest.mark.asyncio
 async def test_gpu_instances_breakdown_by_instance_type(session):
     from gpustack.schemas.metered_usage import METER_INSTANCE_UPTIME as UPTIME
