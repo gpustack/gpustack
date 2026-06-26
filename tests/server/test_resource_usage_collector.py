@@ -158,6 +158,31 @@ def test_clamped_seconds_gap_window_not_double_counted():
     )
 
 
+def test_clamped_seconds_subsecond_ticks_sum_to_full_hour():
+    # Regression for #5710: a full hour filled by many ticks landing on
+    # sub-second boundaries must total exactly 3600, not 3599. Truncating each
+    # segment independently drops a fraction per tick; anchoring to bucket_start
+    # makes the losses telescope.
+    bucket_start = datetime(2026, 5, 26, 11, 0, 0)
+    # Tick boundaries within the hour, each carrying microseconds. The first
+    # segment starts at the exact hour, the last ends at the exact next hour.
+    boundaries = [
+        bucket_start,
+        datetime(2026, 5, 26, 11, 5, 3, 200000),
+        datetime(2026, 5, 26, 11, 10, 3, 500000),
+        datetime(2026, 5, 26, 11, 23, 47, 900000),
+        datetime(2026, 5, 26, 11, 41, 12, 100000),
+        datetime(2026, 5, 26, 11, 55, 3, 700000),
+        datetime(2026, 5, 26, 12, 0, 0),
+    ]
+    total = 0
+    prior = None
+    for i in range(len(boundaries) - 1):
+        total += _clamped_seconds(boundaries[i], boundaries[i + 1], prior)
+        prior = boundaries[i + 1]
+    assert total == 3600
+
+
 # ---------------------------------------------------------------------------
 # Event dispatch state machine (upsert patched out)
 # ---------------------------------------------------------------------------

@@ -126,11 +126,24 @@ def _clamped_seconds(
     Only the slice of ``[seg_start, seg_end]`` *after* ``prior_settled`` counts,
     so re-processing an already-settled window (replay / tick overlap / restart /
     stop→start within a day) adds 0. Pure (no DB) so it's unit-testable.
+
+    The count is the difference of two integer offsets from the hour's
+    ``bucket_start`` rather than ``int(seg_end - effective_start)``. A bucket is
+    filled by many ticks landing on sub-second boundaries; truncating each
+    segment independently drops the fractional remainder every tick, so a full
+    hour under-counts (e.g. 3599 instead of 3600). Anchoring the truncation to a
+    fixed origin makes the per-segment losses telescope: the offsets cancel and
+    a fully-covered hour sums to exactly 3600 (see issue #5710).
     """
     effective_start = seg_start
     if prior_settled is not None and prior_settled > effective_start:
         effective_start = prior_settled
-    seconds = int((seg_end - effective_start).total_seconds())
+    if seg_end <= effective_start:
+        return 0
+    bucket_start = seg_start.replace(minute=0, second=0, microsecond=0)
+    end_offset = int((seg_end - bucket_start).total_seconds())
+    start_offset = int((effective_start - bucket_start).total_seconds())
+    seconds = end_offset - start_offset
     return seconds if seconds > 0 else 0
 
 
