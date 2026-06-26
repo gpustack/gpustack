@@ -6,6 +6,7 @@ from gpustack.utils.resource_usage import (
     instance_resource_type,
     instance_sku,
     is_metered_phase,
+    volume_sku,
     iter_utc_day_segments,
     iter_utc_hour_segments,
     parse_accelerator_count,
@@ -167,6 +168,13 @@ def test_instance_sku():
     assert instance_sku(None, "nvidia-h100", 1, 4000, 64000) == "nvidia-h100"
     # CPU instances → derived cpu flavor
     assert instance_sku(None, None, 0, 2000, 8192) == "cpu-2vcpu-8g"
+
+
+def test_volume_sku():
+    # volume--<category>--<type_name> — all volumes of a type share one sku, so
+    # "by type" breakdown still aggregates per storage type (issue #5716).
+    assert volume_sku("nfs", "aws") == "volume--nfs--aws"
+    assert volume_sku("s3", "minio") == "volume--s3--minio"
 
 
 def test_split_delta_across_utc_midnight():

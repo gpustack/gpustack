@@ -15,6 +15,7 @@ from gpustack.schemas.resource_events import (
 )
 from gpustack.server.storage_usage_collector import (
     StorageUsageCollector,
+    _category_from_spec,
     _open_volume_from_event,
 )
 
@@ -27,6 +28,7 @@ def make_pv_event(
     resource_name: str = "pv-models",
     capacity: str = "200Gi",
     storage_type: str = "ssd",
+    volume_type_id: int = 5,
 ) -> ResourceEvent:
     return ResourceEvent(
         occurred_at=occurred_at,
@@ -38,6 +40,7 @@ def make_pv_event(
         event_type=event_type,
         spec_snapshot={
             "name": resource_name,
+            "persistent_volume_type_id": volume_type_id,
             "spec": {"type_": storage_type, "capacity": capacity},
         },
     )
@@ -52,8 +55,26 @@ def test_open_volume_extracts_capacity_and_type():
     assert vol is not None
     assert vol.volume_id == 88
     assert vol.storage_type == "ssd"
+    assert vol.volume_type_id == 5  # carried for provisioner-category lookup
     assert vol.capacity_mib == 200 * 1024
     assert vol.window_start == datetime(2026, 5, 26, 17, 0, 0)
+
+
+def test_category_from_spec():
+    # Provisioner kind comes from whichever config block is populated.
+    class _Spec:
+        def __init__(self, nfs=None, s3=None):
+            self.nfs = nfs
+            self.s3 = s3
+
+    assert _category_from_spec(_Spec(nfs={"server": "x"})) == "nfs"
+    assert _category_from_spec(_Spec(s3={"endpoint": "x"})) == "s3"
+    assert _category_from_spec(_Spec()) is None
+    # Also accept a plain dict (un-parsed JSON column).
+    assert _category_from_spec({"nfs": {"server": "x"}}) == "nfs"
+    assert _category_from_spec({"s3": {"endpoint": "x"}}) == "s3"
+    assert _category_from_spec({}) is None
+    assert _category_from_spec(None) is None
 
 
 @pytest.mark.asyncio
