@@ -19,7 +19,10 @@ from gpustack.schemas.model_routes import (
     ModelRouteListParams,
     ModelRoutePublic,
     ModelRoutesPublic,
+    ModelRouteTarget,
+    ModelRouteTargetUpdateItem,
     MyModel,
+    TargetStateEnum,
 )
 from gpustack.schemas.models import SourceEnum
 from gpustack.schemas.principals import Principal, PrincipalType
@@ -681,3 +684,211 @@ async def test_list_local_loras_filters_by_q():
 
     names = [item["lora_repo_name"] for item in result]
     assert names == ["org/chat-lora"]
+
+
+def _capture_target_updates(monkeypatch):
+    """Patch ModelRouteTarget.update to record the source dict of each
+    persisted update without touching a database."""
+    captured = []
+
+    async def fake_update(self, session=None, source=None, auto_commit=False):
+        captured.append(source)
+        for key, value in (source or {}).items():
+            setattr(self, key, value)
+        return self
+
+    monkeypatch.setattr(ModelRouteTarget, "update", fake_update)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_update_targets_model_to_provider_clears_model_id(monkeypatch):
+    # Switching a local-model target to a provider target must null model_id;
+    # leaving both ids set persists a row the schema validator rejects.
+    captured = _capture_target_updates(monkeypatch)
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    result = await model_routes.update_model_route_targets(
+        session=MagicMock(),
+        targets=[
+            ModelRouteTargetUpdateItem(
+                id=1, provider_id=10, overridden_model_name="gpt-4", weight=1
+            )
+        ],
+        existing_target_map={1: existing},
+    )
+
+    assert len(captured) == 1
+    source = captured[0]
+    assert source["model_id"] is None
+    assert source["provider_id"] == 10
+    # provider targets carry no readiness, so they go straight to ACTIVE.
+    assert source["state"] == TargetStateEnum.ACTIVE
+    assert result[0].model_id is None
+    assert result[0].provider_id == 10
+
+
+@pytest.mark.asyncio
+async def test_update_targets_provider_to_model_clears_provider_id(monkeypatch):
+    # The reverse switch must null provider_id and go UNAVAILABLE so the
+    # controller re-validates against current model readiness.
+    captured = _capture_target_updates(monkeypatch)
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        provider_id=10,
+        overridden_model_name="gpt-4",
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    await model_routes.update_model_route_targets(
+        session=MagicMock(),
+        targets=[
+            ModelRouteTargetUpdateItem(
+                id=1, model_id=5, overridden_model_name="base:lora", weight=1
+            )
+        ],
+        existing_target_map={1: existing},
+    )
+
+    assert len(captured) == 1
+    source = captured[0]
+    assert source["provider_id"] is None
+    assert source["model_id"] == 5
+    assert source["state"] == TargetStateEnum.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_update_targets_noop_does_not_write(monkeypatch):
+    # Re-sending the same values must not trigger a spurious update/state reset.
+    captured = _capture_target_updates(monkeypatch)
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        provider_id=10,
+        overridden_model_name="gpt-4",
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    await model_routes.update_model_route_targets(
+        session=MagicMock(),
+        targets=[
+            ModelRouteTargetUpdateItem(
+                id=1, provider_id=10, overridden_model_name="gpt-4", weight=1
+            )
+        ],
+        existing_target_map={1: existing},
+    )
+
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_update_targets_clears_nulled_optional_fields(monkeypatch):
+    # An explicit null clears optional fields (e.g. removing a LoRA override or
+    # a fallback config) instead of being silently dropped by exclude_none.
+    captured = _capture_target_updates(monkeypatch)
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        overridden_model_name="base:lora",
+        fallback_status_codes=["5xx"],
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    await model_routes.update_model_route_targets(
+        session=MagicMock(),
+        targets=[
+            ModelRouteTargetUpdateItem(
+                id=1,
+                model_id=5,
+                overridden_model_name=None,
+                fallback_status_codes=None,
+                weight=1,
+            )
+        ],
+        existing_target_map={1: existing},
+    )
+
+    assert len(captured) == 1
+    source = captured[0]
+    assert source["overridden_model_name"] is None
+    assert source["fallback_status_codes"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_targets_switch_resets_type_coupled_overridden_name(monkeypatch):
+    # provider -> model switch that omits overridden_model_name must NOT keep
+    # the provider's name (which is invalid for a model target); it resets to
+    # the item's value (None here).
+    captured = _capture_target_updates(monkeypatch)
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        provider_id=10,
+        overridden_model_name="gpt-4",
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    await model_routes.update_model_route_targets(
+        session=MagicMock(),
+        targets=[ModelRouteTargetUpdateItem(id=1, model_id=5, weight=1)],
+        existing_target_map={1: existing},
+    )
+
+    assert len(captured) == 1
+    source = captured[0]
+    assert source["model_id"] == 5
+    assert source["provider_id"] is None
+    assert source["overridden_model_name"] is None
+    assert source["state"] == TargetStateEnum.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_update_targets_keeps_omitted_fields(monkeypatch):
+    # A field the client omits is left untouched (partial update); only the
+    # provided field changes.
+    captured = _capture_target_updates(monkeypatch)
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        overridden_model_name="base:lora",
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    await model_routes.update_model_route_targets(
+        session=MagicMock(),
+        targets=[ModelRouteTargetUpdateItem(id=1, model_id=5, weight=9)],
+        existing_target_map={1: existing},
+    )
+
+    assert len(captured) == 1
+    source = captured[0]
+    assert source["weight"] == 9
+    # overridden_model_name was not sent, so it is preserved.
+    assert source["overridden_model_name"] == "base:lora"
