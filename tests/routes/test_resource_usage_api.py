@@ -204,6 +204,57 @@ async def test_resource_breakdown_by_type(session):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("granularity", ["day", "hour"])
+async def test_trend_enriches_instance_type_product(session, granularity):
+    # A grouped trend ["date", "instance_type"] must carry the flavor's pretty
+    # product name (dimensions.product), not just the raw sku slug, so the chart
+    # legend matches the GPU Instances list (#5700). Enrichment is granularity
+    # agnostic — date/hour share the ["date", <dim>] shape (week/month use the
+    # same path but their bucket SQL isn't sqlite-portable, so aren't run here).
+    from sqlalchemy import and_
+
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=701,
+            resource_name="gpu-x",
+            sku="flavor-a100x4",
+            sku_count=4,
+            quantity=3600,
+            unit="seconds",
+            dimensions={
+                "product": "NVIDIA-A100-80G",
+                "unit_cpu_milli": 1000,
+                "unit_memory_mib": 2048,
+                "vram_mib": 81920,
+            },
+        )
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=ResourceBreakdownRequest(
+            scope="self",
+            start_date=D,
+            end_date=D,
+            group_by=["date", "instance_type"],
+            granularity=granularity,
+        ),
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["gpu_hours"],
+    )
+    by_sku = {i.get("sku"): i for i in out["items"]}
+    assert by_sku["flavor-a100x4"]["dimensions"]["product"] == "NVIDIA-A100-80G"
+
+
 def test_resource_breakdown_request_rejects_page_zero():
     with pytest.raises(ValueError):
         ResourceBreakdownRequest(

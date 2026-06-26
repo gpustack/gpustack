@@ -618,10 +618,14 @@ async def _run_breakdown(
         )
         items.append(item)
 
-    # Per-row display dims matter only for single-dimension table groupings; a
-    # date-bucketed trend (["date", <dim>]) doesn't need them.
+    # Resolve display fields for the secondary dimension regardless of whether
+    # a date axis is present — a grouped trend (["date", <dim>]) needs them too,
+    # else e.g. instance_type series carry the raw flavor slug instead of the
+    # pretty product name in the chart legend (#5700). ``granularity`` only
+    # changes the time bucket, never the group_by tokens, so this is granularity
+    # agnostic (hour/day/week/month all share the ["date", <dim>] shape).
     dims = [g for g in request.group_by if g != "date"]
-    if dims and "date" not in request.group_by:
+    if dims:
         await _enrich_items(session, dims[0], items)
 
     return {
