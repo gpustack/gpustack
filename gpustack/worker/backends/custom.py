@@ -138,6 +138,7 @@ class CustomServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
+            host_ipc=True,
             shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=[run_container],
             run_as_user=container_config.user,
