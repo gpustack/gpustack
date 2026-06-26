@@ -864,15 +864,43 @@ async def update_model_route_targets(
             "provider_id",
             "fallback_status_codes",
         }
-        existing_dict = existing_target.model_dump(
-            include=to_compare_fields, exclude_none=True
-        )
+        # Dump every compare field with its real value (including None) so the
+        # before/after dicts compare symmetrically; ``exclude_none`` would hide
+        # a field the update clears and register a phantom diff for one it sets.
+        existing_dict = existing_target.model_dump(include=to_compare_fields)
         input_target = to_update_target_map.get(id, None)
         input_dict = {**existing_dict}
         if input_target is not None:
-            input_dict.update(
-                input_target.model_dump(include=to_compare_fields, exclude_none=True)
+            # ``check_provider_or_model`` guarantees an update item sets exactly
+            # one of model_id/provider_id, so the item fully determines the
+            # target type. Pin both ids from the item so a model<->provider
+            # switch clears the opposite id even when the client only sends the
+            # new id (omitting, rather than nulling, the old one). Leaving both
+            # set persists a row the schema validator rejects and never nulls
+            # the stale column.
+            input_dict["model_id"] = input_target.model_id
+            input_dict["provider_id"] = input_target.provider_id
+            type_switched = (input_target.model_id is None) != (
+                existing_target.model_id is None
             )
+            # ``overridden_model_name`` is type-coupled (a LoRA suffix for a
+            # model target, the upstream model name for a provider target). On a
+            # type switch the existing value belongs to the old kind and is
+            # meaningless — often invalid — for the new one, so reset it from
+            # the item (whose value the validator already vetted for the new
+            # type) rather than preserving the stale value when the client
+            # omits it.
+            if type_switched:
+                input_dict["overridden_model_name"] = input_target.overridden_model_name
+            # For the remaining fields, honor exactly what the client sent:
+            # apply a value the client provided (including an explicit None that
+            # clears e.g. a LoRA override or a fallback config) and leave
+            # fields the client omitted untouched (partial update).
+            for field in to_compare_fields - {"model_id", "provider_id"}:
+                if type_switched and field == "overridden_model_name":
+                    continue
+                if field in input_target.model_fields_set:
+                    input_dict[field] = getattr(input_target, field)
         if new_route_name is not None:
             input_dict["route_name"] = new_route_name
         update_source = {}
@@ -884,9 +912,10 @@ async def update_model_route_targets(
             # ACTIVE unconditionally — so set ACTIVE directly to avoid a
             # transient UNAVAILABLE routing gap and a redundant reconcile
             # write. Mirrors ``create_model_route_targets``. Keyed on the
-            # merged ``input_dict`` (not the existing row) so a
-            # type-changing edit is classified correctly, matching
-            # ``_sync_state``'s model_id-takes-precedence semantics.
+            # merged ``input_dict`` (whose type ids are pinned from the input
+            # item above) so a type-changing edit is classified by its
+            # resulting type, matching ``_sync_state``'s
+            # model_id-takes-precedence semantics.
             new_state = (
                 TargetStateEnum.UNAVAILABLE
                 if input_dict.get("model_id") is not None
