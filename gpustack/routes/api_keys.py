@@ -8,7 +8,6 @@ from sqlmodel import select
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
-    ForbiddenException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
@@ -23,7 +22,7 @@ from gpustack.schemas.api_keys import (
     ApiKeysPublic,
     ApiKeyUpdate,
 )
-from gpustack.schemas.principals import OrgRole, PrincipalType
+from gpustack.schemas.principals import OrgRole, PrincipalType, platform_principal_id
 from gpustack.schemas.users import User
 from gpustack.server.services import APIKeyService
 from gpustack.utils.api_keys import get_masked_api_key_value
@@ -163,11 +162,10 @@ async def create_api_key(
     session: SessionDep, ctx: TenantContextDep, key_in: ApiKeyCreate
 ):
     user = ctx.user
-    target_org_id = ctx.target_principal_id_for_write()
-    if target_org_id is None:
-        raise ForbiddenException(
-            message="Organization context is required to create an API key"
-        )
+    # Admin "All" mode: no current_principal_id. Land in the platform Org
+    # (not admin's USER-principal) so the key aligns with where Models /
+    # instances default to live. Same fallback as model_routes.create_model_route.
+    target_org_id = ctx.current_principal_id or platform_principal_id()
     fields = {
         "user_id": user.id,
         "owner_principal_id": target_org_id,

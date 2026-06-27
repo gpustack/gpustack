@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gpustack.routes import api_keys
-from gpustack.schemas.api_keys import ApiKey, ApiKeyListParams, ApiKeysPublic
+from gpustack.schemas.api_keys import (
+    ApiKey,
+    ApiKeyCreate,
+    ApiKeyListParams,
+    ApiKeysPublic,
+)
 from gpustack.schemas.common import Pagination
 from gpustack.schemas.principals import OrgRole
 from gpustack.schemas.users import User
@@ -97,3 +102,33 @@ async def test_org_owner_can_delete_other_users_api_key_in_current_org(monkeypat
     )
 
     assert deleted["api_key_id"] == 5
+
+
+@pytest.mark.asyncio
+async def test_admin_all_mode_lands_key_in_platform_org(monkeypatch):
+    """Admin without an Org context (no X-Organization-Id) must land the
+    new key in the platform Org, not the admin's own USER-principal —
+    otherwise tenant-filtered reads return empty (see /v2/model-instances)."""
+    monkeypatch.setattr(api_keys, "platform_principal_id", lambda: 42)
+    monkeypatch.setattr(ApiKey, "one_by_fields", AsyncMock(return_value=None))
+
+    captured = {}
+
+    async def fake_create(session, api_key):
+        captured["owner_principal_id"] = api_key.owner_principal_id
+        captured["user_id"] = api_key.user_id
+        api_key.id = 1
+        api_key.created_at = datetime(2026, 1, 1)
+        api_key.updated_at = datetime(2026, 1, 1)
+        return api_key
+
+    monkeypatch.setattr(ApiKey, "create", fake_create)
+
+    await api_keys.create_api_key(
+        session=object(),
+        ctx=_ctx(user_id=1, is_admin=True, current_principal_id=None),
+        key_in=ApiKeyCreate(name="admin-mgmt"),
+    )
+
+    assert captured["owner_principal_id"] == 42
+    assert captured["user_id"] == 1
