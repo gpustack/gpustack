@@ -18,10 +18,11 @@ from math import ceil
 from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, case, desc, func, literal_column, or_
 from sqlmodel import select
 
+from gpustack import envs
 from gpustack.api.exceptions import InvalidException
 from gpustack.routes.usage import _resolve_effective_scope
 from gpustack.schemas.common import Pagination
@@ -118,10 +119,20 @@ class ResourceBreakdownRequest(BaseModel):
     # receives the kind that matches its ``base_filter``.
     instance_ids: Optional[List[int]] = None
     volume_ids: Optional[List[int]] = None
-    page: int = Field(default=1, ge=1)
-    # Upper bound is generous (not 100) because the export path fetches the
-    # whole filtered set in one page (perPage=10000); cap only blocks abuse.
-    perPage: int = Field(default=20, ge=1, le=10000)
+    # ``-1`` is the no-pagination sentinel (return all buckets) used by the
+    # trend chart and the export path; any other value must be positive.
+    page: int = 1
+    # Per-page cap matches the largest table page size the UI offers. The whole
+    # filtered set (trends / exports) is fetched via ``page=-1`` now, so this no
+    # longer needs the old generous 10000 ceiling.
+    perPage: int = Field(default=20, ge=1, le=100)
+
+    @field_validator("page")
+    @classmethod
+    def validate_page(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("page must be a positive number or -1 (no pagination)")
+        return value
 
 
 def _parse_id_csv(value: Optional[str]) -> Optional[List[int]]:
@@ -552,9 +563,27 @@ async def _run_breakdown(
     count_stmt = select(func.count()).select_from(grouped.subquery())
     total = (await session.exec(count_stmt)).first() or 0
 
-    items_stmt = grouped.offset((request.page - 1) * request.perPage).limit(
-        request.perPage
-    )
+    # No-pagination returns the whole series; ``total`` (bucket count) is known
+    # here, so reject an over-large result before fetching its rows rather than
+    # silently truncating (which would reintroduce the chart-gap bug).
+    if request.page <= 0 and total > envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS:
+        raise InvalidException(
+            message=(
+                f"Result set too large ({total} buckets, limit "
+                f"{envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS}). Narrow the "
+                "date range or add filters."
+            )
+        )
+
+    # ``page <= 0`` is the project-wide "no pagination" sentinel (mirrors
+    # ActiveRecordMixin.page_query): the trend chart needs every bucket, so an
+    # order-by-metric page would drop low-usage (often most recent) buckets and
+    # leave gaps. Replaces the old ``perPage=10000`` workaround on the client.
+    items_stmt = grouped
+    if request.page > 0:
+        items_stmt = items_stmt.offset((request.page - 1) * request.perPage).limit(
+            request.perPage
+        )
     rows = (await session.exec(items_stmt)).all()
 
     def metrics_of(row) -> Dict[str, Any]:
@@ -589,10 +618,14 @@ async def _run_breakdown(
         )
         items.append(item)
 
-    # Per-row display dims matter only for single-dimension table groupings; a
-    # date-bucketed trend (["date", <dim>]) doesn't need them.
+    # Resolve display fields for the secondary dimension regardless of whether
+    # a date axis is present — a grouped trend (["date", <dim>]) needs them too,
+    # else e.g. instance_type series carry the raw flavor slug instead of the
+    # pretty product name in the chart legend (#5700). ``granularity`` only
+    # changes the time bucket, never the group_by tokens, so this is granularity
+    # agnostic (hour/day/week/month all share the ["date", <dim>] shape).
     dims = [g for g in request.group_by if g != "date"]
-    if dims and "date" not in request.group_by:
+    if dims:
         await _enrich_items(session, dims[0], items)
 
     return {
@@ -602,7 +635,11 @@ async def _run_breakdown(
             page=request.page,
             perPage=request.perPage,
             total=total,
-            totalPage=ceil(total / request.perPage) if total else 0,
+            totalPage=(
+                ceil(total / request.perPage)
+                if request.page > 0 and total
+                else (1 if total else 0)
+            ),
         ),
         "items": items,
     }

@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from sqlalchemy import Date, Select, and_, asc, cast, desc
 from sqlmodel import func, or_, select
 
+from gpustack import envs
 from gpustack.api.exceptions import ForbiddenException, InvalidException
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.users import User
@@ -378,6 +379,27 @@ def _resolve_effective_scope(user: User, ctx, requested_scope: str) -> str:
     return USAGE_SCOPE_ALL
 
 
+def _self_scope_consumer_condition(user_id: int, org_id: int):
+    """Consumer-side scoping for the ``self`` view.
+
+    In personal scope (``org_id`` is the caller's own USER-principal) the
+    caller's un-attributed rows (``consumer_principal_id IS NULL``) are
+    surfaced alongside their personal-Org rows. Cookie-authed direct
+    traffic — e.g. the UI Playground — carries no api_key and no
+    ``X-Organization-Id``, so its rows land NULL; without this branch the
+    strict ``consumer_principal_id == org_id`` equality silently drops the
+    user's own usage from their Usage page. When acting inside a real Org
+    the strict equality is kept so personal direct usage doesn't bleed
+    into the Org view.
+    """
+    if org_id == user_id:
+        return or_(
+            ModelUsage.consumer_principal_id == org_id,
+            ModelUsage.consumer_principal_id.is_(None),
+        )
+    return ModelUsage.consumer_principal_id == org_id
+
+
 def _apply_usage_scope_and_filters(
     statement: Select,
     *,
@@ -397,7 +419,7 @@ def _apply_usage_scope_and_filters(
     if scope == USAGE_SCOPE_SELF:
         statement = statement.where(ModelUsage.user_id == user.id)
         if org_id is not None:
-            statement = statement.where(ModelUsage.consumer_principal_id == org_id)
+            statement = statement.where(_self_scope_consumer_condition(user.id, org_id))
     elif org_id is not None:
         statement = statement.where(ModelUsage.consumer_principal_id == org_id)
 
@@ -519,7 +541,7 @@ async def get_usage_meta(
         base_statement = base_statement.where(ModelUsage.user_id == user.id)
         if ctx.current_principal_id is not None:
             base_statement = base_statement.where(
-                ModelUsage.consumer_principal_id == ctx.current_principal_id
+                _self_scope_consumer_condition(user.id, ctx.current_principal_id)
             )
     elif ctx.current_principal_id is not None:
         base_statement = base_statement.where(
@@ -722,13 +744,29 @@ async def get_usage_breakdown(
         else func.max(ModelUsage.date)
     )
     sort_exprs = _order_expression(request.order_by, metric_columns, date_sort_expr)
-    items_statement = (
-        grouped_statement.order_by(*sort_exprs)
-        .offset((request.page - 1) * request.perPage)
-        .limit(request.perPage)
-    )
+    items_statement = grouped_statement.order_by(*sort_exprs)
+    # ``page <= 0`` is the project-wide "no pagination" sentinel (mirrors
+    # ActiveRecordMixin.page_query): return every bucket unsliced. The trend
+    # chart needs the full date series — a token-sorted page would drop the
+    # low-traffic (often most recent) buckets and leave gaps in the chart.
+    if request.page > 0:
+        items_statement = items_statement.offset(
+            (request.page - 1) * request.perPage
+        ).limit(request.perPage)
 
     total = _row_count_value(await _get_first_row(session, count_statement))
+    # No-pagination (page <= 0) returns the whole series. ``total`` (the bucket
+    # count) is already computed above, so reject an over-large result before
+    # fetching its rows — narrowing the range / adding filters beats silently
+    # truncating, which would reintroduce the chart-gap bug this path fixes.
+    if request.page <= 0 and total > envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS:
+        raise InvalidException(
+            message=(
+                f"Result set too large ({total} buckets, limit "
+                f"{envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS}). Narrow the "
+                "date range or add filters."
+            )
+        )
     item_rows = await _get_rows(session, items_statement)
 
     return UsageBreakdownResponse(
@@ -739,7 +777,11 @@ async def get_usage_breakdown(
             page=request.page,
             perPage=request.perPage,
             total=total,
-            totalPage=ceil(total / request.perPage) if total else 0,
+            totalPage=(
+                ceil(total / request.perPage)
+                if request.page > 0 and total
+                else (1 if total else 0)
+            ),
         ),
         items=[
             _build_breakdown_item(request.group_by, row, granularity)

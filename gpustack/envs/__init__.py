@@ -249,3 +249,14 @@ BENCHMARK_DATASET_SHAREGPT_PATH = os.getenv(
 BENCHMARK_REQUEST_TIMEOUT = int(
     os.getenv("GPUSTACK_BENCHMARK_REQUEST_TIMEOUT", 3600)  # 1 hour
 )  # in seconds
+
+# Usage breakdown configuration
+# Upper bound on the number of buckets a single no-pagination (page=-1)
+# breakdown request may return — the trend charts and exports fetch the whole
+# series unpaginated. A request whose grouping × date range would exceed this
+# is rejected (HTTP 400) rather than silently truncated, so the caller narrows
+# the range or adds filters. Tune up for very wide dashboards, or down to cap
+# memory/payload more aggressively.
+USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS = int(
+    os.getenv("GPUSTACK_USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS", 50000)
+)
