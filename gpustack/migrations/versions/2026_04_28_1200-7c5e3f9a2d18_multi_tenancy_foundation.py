@@ -78,7 +78,6 @@ from alembic import op
 import sqlalchemy as sa
 
 import gpustack  # noqa: F401  (keeps SQLModel registrations side-effect-loaded)
-import gpustack.utils.sql_enum as sql_enum
 from gpustack.migrations.utils import column_exists, table_exists
 from gpustack.schemas.principals import (
     AUTHENTICATED_PRINCIPAL_DISPLAY_NAME,
@@ -108,7 +107,7 @@ def _enums_to_create(bind):
     """
     return [
         sa.Enum('OWNER', 'MEMBER', name='orgrole'),
-        sa.Enum('ORG', 'GROUP', 'USER', name='principaltype'),
+        sa.Enum('ORG', 'GROUP', 'USER', 'SYSTEM', name='principaltype'),
         sa.Enum('ARGON2', name='passwordalgorithm'),
     ]
 
@@ -147,9 +146,9 @@ def _principal_type_ref(bind):
         from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 
         return PGEnum(
-            'ORG', 'GROUP', 'USER', name='principaltype', create_type=False
+            'ORG', 'GROUP', 'USER', 'SYSTEM', name='principaltype', create_type=False
         )
-    return sa.Enum('ORG', 'GROUP', 'USER', name='principaltype')
+    return sa.Enum('ORG', 'GROUP', 'USER', 'SYSTEM', name='principaltype')
 
 
 def _existing_auth_provider_enum(bind):
@@ -461,8 +460,9 @@ def upgrade() -> None:
     #   the two globally unique would break OIDC/SAML group sync.
     # - SYSTEM gets no partial unique index: its rows are internally
     #   generated (``system/cluster-<id>`` / ``system/worker-<id>``), so
-    #   they're structurally unique with no user-facing create path, and
-    #   the ``SYSTEM`` enum value doesn't even exist until step 17a.
+    #   they're structurally unique with no user-facing create path.
+    #   No SYSTEM rows exist yet at this point either — step 17c
+    #   promotes the legacy ``is_system=true`` rows to ``kind='SYSTEM'``.
     #
     # Postgres supports partial unique indexes natively. MySQL has
     # no equivalent — fall back to a single plain (non-unique) index
@@ -1326,15 +1326,7 @@ def upgrade() -> None:
     # (``is_system`` / ``cluster_id`` / ``worker_id``) need to survive
     # long enough to populate the inverse links.
 
-    # 17a. Add ``SYSTEM`` to the principaltype enum.
-    principal_type_enum = sa.Enum(
-        'USER', 'ORG', 'GROUP', name='principaltype'
-    )
-    sql_enum.add_enum_values(
-        {'principals': 'kind'}, principal_type_enum, 'SYSTEM'
-    )
-
-    # 17b. Add ``system_principal_id`` to clusters and workers
+    # 17a. Add ``system_principal_id`` to clusters and workers
     # (nullable, UNIQUE, SET NULL on principal delete).
     with op.batch_alter_table('clusters', schema=None) as batch_op:
         if not column_exists('clusters', 'system_principal_id'):
@@ -1367,7 +1359,7 @@ def upgrade() -> None:
                 'uix_workers_system_principal_id', ['system_principal_id']
             )
 
-    # 17c. Backfill the inverse links from the legacy
+    # 17b. Backfill the inverse links from the legacy
     # principals.cluster_id / principals.worker_id columns. Pre-rename
     # invariants: exactly one ``role='Cluster'`` system principal per
     # cluster, and exactly one ``role='Worker'`` system principal per
@@ -1402,14 +1394,14 @@ def upgrade() -> None:
         )
     )
 
-    # 17d. Promote kind to SYSTEM for service-account rows.
+    # 17c. Promote kind to SYSTEM for service-account rows.
     op.execute(
         sa.text(
             f"UPDATE principals SET kind = 'SYSTEM' WHERE is_system = {bool_true}"
         )
     )
 
-    # 17e. Drop the now-redundant columns from principals.
+    # 17d. Drop the now-redundant columns from principals.
     #
     # The column drops trip a "depends on" error unless the FK
     # constraints are dropped first, and the constraint names came
