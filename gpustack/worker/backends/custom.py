@@ -154,12 +154,16 @@ class CustomServer(InferenceServer):
     ) -> Tuple[List[str], List[str]]:
         command_args = []
 
+        selected_gpu_indexes = sorted(d.index for d in self._get_selected_gpu_devices())
+
         command_args_inline = self.inference_backend.replace_command_param(
             version=self._model.backend_version,
             model_path=self._model_path,
             port=self._get_serving_port(),
             worker_ip=self._worker.ip,
             model_name=self._model.name,
+            gpu_count=len(selected_gpu_indexes),
+            gpu_ids=selected_gpu_indexes,
             command=self._model.run_command,
             env=self._model.env,
         )
