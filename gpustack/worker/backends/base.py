@@ -768,6 +768,9 @@ exec "$@"
             )
             resolved_port = port if port is not None else self._model_instance.port
             resolved_model_name = self._model_instance.model_name
+            selected_gpu_indexes = sorted(
+                d.index for d in self._get_selected_gpu_devices()
+            )
 
             command = self.inference_backend.replace_command_param(
                 version=version,
@@ -775,6 +778,8 @@ exec "$@"
                 port=resolved_port,
                 worker_ip=self._worker.ip,
                 model_name=resolved_model_name,
+                gpu_count=len(selected_gpu_indexes),
+                gpu_ids=selected_gpu_indexes,
                 command=version_config.run_command,
                 env=self._model.env,
             )
