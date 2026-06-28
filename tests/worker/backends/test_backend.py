@@ -639,7 +639,9 @@ def test_custom_command_args_return_injected_parameters_after_entrypoint():
     backend = CustomServer.__new__(CustomServer)
     backend._model_path = "/models/custom"
     backend._worker = types.SimpleNamespace(ip="192.168.50.10")
-    backend._model_instance = types.SimpleNamespace(ports=[4000])
+    backend._model_instance = types.SimpleNamespace(
+        ports=[4000], gpu_indexes=None, gpu_type=None, distributed_servers=None
+    )
     backend._model = types.SimpleNamespace(
         backend_parameters=["--temperature", "0.2"],
         backend_version=None,
@@ -663,7 +665,9 @@ def test_custom_command_args_include_short_flags_as_injected():
     backend = CustomServer.__new__(CustomServer)
     backend._model_path = "/models/custom"
     backend._worker = types.SimpleNamespace(ip="192.168.50.10")
-    backend._model_instance = types.SimpleNamespace(ports=[4000])
+    backend._model_instance = types.SimpleNamespace(
+        ports=[4000], gpu_indexes=None, gpu_type=None, distributed_servers=None
+    )
     backend._model = types.SimpleNamespace(
         backend_parameters=["-u", "1"],
         backend_version=None,
@@ -684,7 +688,9 @@ def test_injected_parameters_start_at_zero_with_explicit_container_entrypoint():
     backend = CustomServer.__new__(CustomServer)
     backend._model_path = "/models/custom"
     backend._worker = types.SimpleNamespace(ip="192.168.50.10")
-    backend._model_instance = types.SimpleNamespace(ports=[4000])
+    backend._model_instance = types.SimpleNamespace(
+        ports=[4000], gpu_indexes=None, gpu_type=None, distributed_servers=None
+    )
     backend._model = types.SimpleNamespace(
         backend_parameters=["-u", "1"],
         backend_version=None,
@@ -730,7 +736,9 @@ def test_custom_backend_configured_entrypoint_injected_parameters(
     backend = CustomServer.__new__(CustomServer)
     backend._model_path = "/models/custom"
     backend._worker = types.SimpleNamespace(ip="192.168.50.10")
-    backend._model_instance = types.SimpleNamespace(ports=[4000])
+    backend._model_instance = types.SimpleNamespace(
+        ports=[4000], gpu_indexes=None, gpu_type=None, distributed_servers=None
+    )
     backend._model = types.SimpleNamespace(
         backend_parameters=["--user-param", "1"],
         backend_version="cpu",
