@@ -336,7 +336,7 @@ async def sync_replicas(session: AsyncSession, model: Model):
     if len(instances) < model.replicas:
         for _ in range(model.replicas - len(instances)):
             name_prefix = ''.join(
-                random.choices(string.ascii_letters + string.digits, k=5)
+                random.choices(string.ascii_lowercase + string.digits, k=5)
             )
             instance = ModelInstanceCreate(
                 name=f"{model.name}-{name_prefix}",
