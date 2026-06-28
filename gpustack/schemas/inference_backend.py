@@ -219,7 +219,9 @@ class InferenceBackendBase(SQLModel):
         command = command.replace("{{port}}", str(port))
         command = command.replace("{{worker_ip}}", worker_ip or "")
         command = command.replace("{{model_name}}", model_name or "")
-        command = command.replace("{{gpu_count}}", str(gpu_count or 0))
+        command = command.replace(
+            "{{gpu_count}}", str(gpu_count) if gpu_count is not None else ""
+        )
         command = command.replace(
             "{{gpu_ids}}", ",".join(str(i) for i in gpu_ids) if gpu_ids else ""
         )
