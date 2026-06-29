@@ -8,7 +8,6 @@ from sqlmodel import select
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
-    ForbiddenException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
@@ -163,11 +162,15 @@ async def create_api_key(
     session: SessionDep, ctx: TenantContextDep, key_in: ApiKeyCreate
 ):
     user = ctx.user
-    target_org_id = ctx.target_principal_id_for_write()
-    if target_org_id is None:
-        raise ForbiddenException(
-            message="Organization context is required to create an API key"
-        )
+    # Admin "All" mode (no Org context) creates an untenant-pinned key:
+    # ``owner_principal_id`` stays NULL so ``_resolve_requested_principal_id``
+    # falls through to user-based resolution on each request and admin
+    # gets the same cross-principal ``bypass_tenant_filter`` reach as
+    # their cookie session. For every other caller — Org act-as, Org
+    # member, personal scope — ``current_principal_id`` is already
+    # non-NULL by ``_resolve_requested_principal_id`` design and pins
+    # the key to that principal.
+    target_org_id = ctx.current_principal_id
     fields = {
         "user_id": user.id,
         "owner_principal_id": target_org_id,

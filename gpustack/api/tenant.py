@@ -108,21 +108,6 @@ class TenantContext:
         if self.org_role is None or self.org_role not in allowed:
             raise OrgRoleError(message="Insufficient organization role")
 
-    def target_principal_id_for_write(self) -> Optional[int]:
-        """Resolve the principal a CREATE / write request should land in.
-
-        Reads happily honor the platform-admin "no current_principal_id
-        = all-orgs" mode, but writes need an actual principal to stamp
-        on the new row. When the request didn't pin a context (no
-        header on an admin request, or a built-in client like the OSS
-        host that never sends ``X-Organization-Id``), fall back to the
-        user's own USER-principal — guaranteed non-null by schema —
-        instead of failing.
-        """
-        if self.current_principal_id is not None:
-            return self.current_principal_id
-        return self.user.id
-
 
 async def _resolve_effective_org_role(
     session: AsyncSession,
