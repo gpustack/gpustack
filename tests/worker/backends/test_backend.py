@@ -790,7 +790,7 @@ def _gpu_placeholder_backend() -> InferenceBackend:
     "gpu_count, gpu_ids, expected_gpus, expected_gpu_ids",
     [
         (None, None, "", ""),
-        (0, [], "", ""),
+        (0, [], "0", ""),
         (1, [2], "1", "2"),
         (3, [0, 1, 2], "3", "0,1,2"),
     ],
