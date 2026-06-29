@@ -282,7 +282,9 @@ class ServeManager:
                 f"server no longer reports it assigned to this worker."
             )
             try:
-                self._stop_model_instance(stale)
+                # Equivalent to a dropped DELETED event, so purge logs too —
+                # otherwise a reused id would inherit this instance's stale logs.
+                self._stop_model_instance(stale, delete_logs=True)
             except Exception as e:
                 logger.warning(f"Failed to reap stale model instance {stale.name}: {e}")
 
@@ -757,7 +759,7 @@ class ServeManager:
                     return
 
         if event.type == EventType.DELETED:
-            self._stop_model_instance(mi)
+            self._stop_model_instance(mi, delete_logs=True)
             logger.trace(f"DELETED event: stopped deleted model instance {mi.name}.")
             return
 
@@ -1043,15 +1045,15 @@ class ServeManager:
                     )
 
     def _cleanup_old_logs(self, model_instance_id: int, current_restart_count: int):
-        """Remove serve log files except the current and previous restart_count.
+        """Keep serve logs for restart_count in {R, R-1}.
 
-        Keeps files for restart_count in {R, R-1} where R is current_restart_count;
-        when R is 0, only R is kept.
-
-        Args:
-            model_instance_id: Model instance ID
-            current_restart_count: Restart count for the upcoming run (same as log path).
+        R==0 is a fresh lifecycle start, so all existing files are purged (any
+        present belong to a previous owner of a reused id).
         """
+        if current_restart_count == 0:
+            self._purge_instance_logs(model_instance_id)
+            return
+
         try:
             log_dir = Path(self._serve_log_dir)
 
@@ -1120,6 +1122,21 @@ class ServeManager:
                 logger.info(f"Deleted old {log_type} log file: {f}")
             except Exception as e:
                 logger.warning(f"Failed to delete {log_type} log file {f}: {e}")
+
+    def _purge_instance_logs(self, model_instance_id: int):
+        """Delete all serve logs (main/container/sidecar) for a model instance id."""
+        try:
+            log_dir = Path(self._serve_log_dir)
+            for f in log_dir.glob(f"{model_instance_id}.*.log"):
+                try:
+                    f.unlink()
+                    logger.info(f"Deleted serve log file: {f}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete serve log file {f}: {e}")
+        except Exception as e:
+            logger.error(
+                f"Failed to purge logs for model instance {model_instance_id}: {e}"
+            )
 
     def _start_model_instance(self, mi: ModelInstance):  # noqa: C901
         """
@@ -1386,7 +1403,10 @@ class ServeManager:
             )
 
     def _stop_model_instance(
-        self, mi: ModelInstance, clear_restart_backoff: bool = True
+        self,
+        mi: ModelInstance,
+        clear_restart_backoff: bool = True,
+        delete_logs: bool = False,
     ):
         """
         Stop model instance and clean up.
@@ -1394,12 +1414,18 @@ class ServeManager:
         Args:
             mi: The model instance to stop.
             clear_restart_backoff: Whether to clear transient restart backoff state.
+            delete_logs: Whether to remove the instance's serve log files. Only set
+                on permanent teardown (DELETED); a restart must keep them so the
+                log viewer can still show the previous run.
         """
 
         logger.debug(f"Stopping model instance {mi.name or mi.id}")
 
         # Stop container log persistence thread
         self._stop_container_log_persistence(mi.id)
+
+        if delete_logs:
+            self._purge_instance_logs(mi.id)
 
         # Teardown provisioning process if still alive.
         if self._is_provisioning(mi):
