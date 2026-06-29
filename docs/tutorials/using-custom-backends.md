@@ -35,7 +35,7 @@ The following uses TensorRT-LLM as an example to illustrate how to add and use a
 > These examples are functional demonstrations, not performance-optimized configurations. For better performance, consult each backend’s official documentation for tuning.
 
 1. Find the required image from the [release page](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tensorrt-llm/containers/release) linked from the TensorRT-LLM documentation.
-2. TensorRT-LLM images must launch the inference service using `trtllm-serve`; otherwise, they start an interactive shell session. The `run_command` supports placeholders such as `{{model_path}}` and `{{port}}` (and optionally `{{model_name}}`, `{{worker_ip}}`), which are automatically replaced with the actual values when the deployment is scheduled to a worker.
+2. TensorRT-LLM images must launch the inference service using `trtllm-serve`; otherwise, they start an interactive shell session. The `run_command` supports placeholders such as `{{model_path}}` and `{{port}}` (and optionally `{{model_name}}`, `{{worker_ip}}`, `{{gpu_count}}`, `{{gpu_ids}}`), which are automatically replaced with the actual values when the deployment is scheduled to a worker. `{{gpu_count}}` and `{{gpu_ids}}` reflect the GPUs assigned on the scheduled worker (custom backends run on a single worker).
 3. Add configuration on the Inference Backend page; YAML import is supported. Example:
 ```yaml
 backend_name: TensorRT-LLM-custom

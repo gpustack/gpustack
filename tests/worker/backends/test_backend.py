@@ -770,6 +770,84 @@ def test_custom_backend_configured_entrypoint_injected_parameters(
     assert injected == expected_injected
 
 
+def _gpu_placeholder_backend() -> InferenceBackend:
+    return InferenceBackend(
+        backend_name="gpu-placeholder-backend",
+        default_version="v1",
+        default_run_command="serve {{model_path}} --gpus {{gpu_count}} --gpu-ids {{gpu_ids}} --port {{port}}",
+        version_configs=VersionConfigDict(
+            root={
+                "v1": VersionConfig(
+                    image_name="custom/backend:v1",
+                    custom_framework="cuda",
+                )
+            }
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "gpu_count, gpu_ids, expected_gpus, expected_gpu_ids",
+    [
+        (None, None, "", ""),
+        (0, [], "", ""),
+        (1, [2], "1", "2"),
+        (3, [0, 1, 2], "3", "0,1,2"),
+    ],
+)
+def test_replace_command_param_substitutes_gpu_placeholders(
+    gpu_count, gpu_ids, expected_gpus, expected_gpu_ids
+):
+    backend = _gpu_placeholder_backend()
+
+    command = backend.replace_command_param(
+        version="v1",
+        model_path="/models/custom",
+        port=4000,
+        gpu_count=gpu_count,
+        gpu_ids=gpu_ids,
+    )
+
+    assert command == (
+        f"serve /models/custom --gpus {expected_gpus} "
+        f"--gpu-ids {expected_gpu_ids} --port 4000"
+    )
+
+
+def test_replace_command_param_substitutes_all_placeholders_together():
+    backend = InferenceBackend(
+        backend_name="all-placeholder-backend",
+        default_version="v1",
+        default_run_command=(
+            "serve {{model_path}} --port {{port}} --served-model-name {{model_name}} "
+            "--host {{worker_ip}} --gpus {{gpu_count}} --gpu-ids {{gpu_ids}}"
+        ),
+        version_configs=VersionConfigDict(
+            root={
+                "v1": VersionConfig(
+                    image_name="custom/backend:v1",
+                    custom_framework="cuda",
+                )
+            }
+        ),
+    )
+
+    command = backend.replace_command_param(
+        version="v1",
+        model_path="/models/custom",
+        port=4000,
+        worker_ip="192.168.50.10",
+        model_name="custom-model",
+        gpu_count=2,
+        gpu_ids=[0, 1],
+    )
+
+    assert command == (
+        "serve /models/custom --port 4000 --served-model-name custom-model "
+        "--host 192.168.50.10 --gpus 2 --gpu-ids 0,1"
+    )
+
+
 @pytest.mark.parametrize(
     "command, command_args, command_script, expected_command, expected_args",
     [
