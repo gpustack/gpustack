@@ -539,10 +539,9 @@ async def create_model_route(
     #
     # Resolve owner from the current Org context, falling back to the
     # platform Org for admin "All" mode. Routes are an Org-owned
-    # resource — using the admin's USER-principal here (as
-    # ``target_principal_id_for_write`` would) misaligns the route from
-    # its targets, since Models default to the platform Org and trip
-    # the cross-Org check in ``_assert_target_tenant_aligned``.
+    # resource — using the admin's USER-principal here would misalign
+    # the route from its targets, since Models default to the platform
+    # Org and trip the cross-Org check in ``_assert_target_tenant_aligned``.
     target_org_id = ctx.current_principal_id or platform_principal_id()
     existing = await ModelRoute.one_by_fields(
         session,

@@ -102,6 +102,28 @@ def test_resolve_principal_id_prefers_api_key():
     assert _resolve_requested_principal_id(request, user, "999") == 42
 
 
+def test_resolve_principal_id_null_owner_key_falls_through_for_admin():
+    """An admin-created ``All`` mode key carries ``owner_principal_id=None``
+    (no tenant pinning). The resolver must fall through to the
+    user-based path so admin lands at ``current_principal_id=None``
+    and ``bypass_tenant_filter`` triggers — same reach as the admin
+    cookie session."""
+    user = _user(id=1, is_admin=True)
+    request = _request(api_key=_api_key(owner_principal_id=None))
+    assert _resolve_requested_principal_id(request, user, None) is None
+
+
+def test_resolve_principal_id_null_owner_key_falls_through_for_non_admin():
+    """If a NULL-owner key were somehow tied to a non-admin user
+    (e.g. demoted after key creation), the fall-through resolves to
+    their USER-principal id — personal scope — not None / bypass.
+    Guards against accidental cross-tenant reach when admin loses
+    their flag."""
+    user = _user(id=7, is_admin=False)
+    request = _request(api_key=_api_key(owner_principal_id=None))
+    assert _resolve_requested_principal_id(request, user, None) == 7
+
+
 def test_resolve_principal_id_uses_header_when_no_api_key():
     user = _user(id=1)
     request = _request()
