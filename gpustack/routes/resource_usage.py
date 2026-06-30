@@ -18,10 +18,11 @@ from math import ceil
 from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, case, desc, func, literal_column, or_
 from sqlmodel import select
 
+from gpustack import envs
 from gpustack.api.exceptions import InvalidException
 from gpustack.routes.usage import _resolve_effective_scope
 from gpustack.schemas.common import Pagination
@@ -118,10 +119,21 @@ class ResourceBreakdownRequest(BaseModel):
     # receives the kind that matches its ``base_filter``.
     instance_ids: Optional[List[int]] = None
     volume_ids: Optional[List[int]] = None
-    page: int = Field(default=1, ge=1)
-    # Upper bound is generous (not 100) because the export path fetches the
-    # whole filtered set in one page (perPage=10000); cap only blocks abuse.
+    # ``-1`` is the no-pagination sentinel (return all buckets) used by the
+    # trend chart and the export path; any other value must be positive.
+    page: int = 1
+    # Generous ceiling (abuse cap only). Kept at 10000 for backward compat:
+    # older UIs fetch the whole filtered set via perPage=10000, so lowering it
+    # would 400 their trend/export requests during a rolling upgrade. New
+    # callers fetch the full series via page=-1 instead.
     perPage: int = Field(default=20, ge=1, le=10000)
+
+    @field_validator("page")
+    @classmethod
+    def validate_page(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("page must be a positive number or -1 (no pagination)")
+        return value
 
 
 def _parse_id_csv(value: Optional[str]) -> Optional[List[int]]:
@@ -152,7 +164,22 @@ def _group_columns(
         return [MeteredUsage.resource_type.label("group_key")], [
             MeteredUsage.resource_type
         ]
-    if group_by in ("instance_type", "type", "sku"):
+    if group_by == "instance_type":
+        # Group by the actual resource *shape* = the flavor ``sku`` plus
+        # ``sku_count`` (GPU card count / CPU base-flavor unit count). A generic
+        # CPU flavor hosts 1c2g / 2c4g / 3c6g and a GPU flavor hosts different
+        # card counts, all under one sku; sku_count splits them. Both are indexed
+        # columns — ``dimensions`` is a display blob and grouping on its JSON
+        # would force a full scan, so the shape's specs are read from a
+        # representative row per (sku, sku_count) instead (see _attach_dimensions).
+        return (
+            [
+                MeteredUsage.sku.label("group_key"),
+                MeteredUsage.sku_count.label("group_sku_count"),
+            ],
+            [MeteredUsage.sku, MeteredUsage.sku_count],
+        )
+    if group_by in ("type", "sku"):
         return [MeteredUsage.sku.label("group_key")], [MeteredUsage.sku]
     if group_by in ("instance", "volume", "resource"):
         return (
@@ -376,6 +403,35 @@ async def _dims_by_representative(session, *, group_col, keys, extra_filter):
     return {r[0]: (r[1] or {}) for r in rows}
 
 
+async def _dims_by_shape(session, shapes):
+    """``{(sku, sku_count): dimensions}`` from the latest row per shape.
+
+    Instance types are grouped by ``(sku, sku_count)``; every row of one shape
+    has the same specs (cpu/mem/cards) and flavor fields, so one MAX(id) per
+    ``(sku, sku_count)`` supplies the whole display blob. Grouping is on indexed
+    columns, not JSON.
+    """
+    skus = {s for s, _ in shapes if s}
+    if not skus:
+        return {}
+    rep_ids = (
+        select(func.max(MeteredUsage.id))
+        .where(_UPTIME)
+        .where(MeteredUsage.sku.in_(skus))
+        .group_by(MeteredUsage.sku, MeteredUsage.sku_count)
+    )
+    rows = (
+        await session.exec(
+            select(
+                MeteredUsage.sku,
+                MeteredUsage.sku_count,
+                MeteredUsage.dimensions,
+            ).where(MeteredUsage.id.in_(rep_ids))
+        )
+    ).all()
+    return {(r[0], r[1]): (r[2] or {}) for r in rows}
+
+
 async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
     """Attach the ``dimensions`` the UI needs per grouping (in place).
 
@@ -384,20 +440,27 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
     no-op.
     """
     if gb == "instance_type":
-        # Flavor-constant specs per sku → pretty product name + per-card specs.
-        dims = await _dims_by_representative(
+        # One representative row per (sku, sku_count) supplies the whole shape's
+        # display blob (product / per-unit specs / VRAM are flavor-constant;
+        # cpu/mem/cards are constant within the shape).
+        dims = await _dims_by_shape(
             session,
-            group_col=MeteredUsage.sku,
-            keys=[i.get("sku") for i in items if i.get("sku")],
-            extra_filter=_UPTIME,
+            {(i.get("sku"), i.get("_sku_count")) for i in items},
         )
         for i in items:
-            d = dims.get(i.get("sku")) or {}
+            d = dims.get((i.get("sku"), i.pop("_sku_count", None))) or {}
             i["dimensions"] = {
                 "product": d.get("product"),
                 "unit_cpu_milli": d.get("unit_cpu_milli"),
                 "unit_memory_mib": d.get("unit_memory_mib"),
                 "vram_mib": d.get("vram_mib"),
+                # GPU card count (0 for CPU) — the UI uses it to tell GPU from
+                # CPU and to render "<product> x <cards>".
+                "gpu_count": d.get("gpu_count"),
+                # Instance totals (requested cpu/ram) so each row shows its real
+                # size — "CPU Only · 3 vCPU · 6 GB" / "NVIDIA-A100-80GB x 4".
+                "cpu_milli": d.get("cpu_milli"),
+                "memory_mib": d.get("memory_mib"),
             }
     elif gb == "instance":
         # Per-instance dims: gpu_count varies per instance (unlike the flavor),
@@ -552,9 +615,27 @@ async def _run_breakdown(
     count_stmt = select(func.count()).select_from(grouped.subquery())
     total = (await session.exec(count_stmt)).first() or 0
 
-    items_stmt = grouped.offset((request.page - 1) * request.perPage).limit(
-        request.perPage
-    )
+    # No-pagination returns the whole series; ``total`` (bucket count) is known
+    # here, so reject an over-large result before fetching its rows rather than
+    # silently truncating (which would reintroduce the chart-gap bug).
+    if request.page <= 0 and total > envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS:
+        raise InvalidException(
+            message=(
+                f"Result set too large ({total} buckets, limit "
+                f"{envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS}). Narrow the "
+                "date range or add filters."
+            )
+        )
+
+    # ``page <= 0`` is the project-wide "no pagination" sentinel (mirrors
+    # ActiveRecordMixin.page_query): the trend chart needs every bucket, so an
+    # order-by-metric page would drop low-usage (often most recent) buckets and
+    # leave gaps. Replaces the old ``perPage=10000`` workaround on the client.
+    items_stmt = grouped
+    if request.page > 0:
+        items_stmt = items_stmt.offset((request.page - 1) * request.perPage).limit(
+            request.perPage
+        )
     rows = (await session.exec(items_stmt)).all()
 
     def metrics_of(row) -> Dict[str, Any]:
@@ -580,6 +661,10 @@ async def _run_breakdown(
             item["key"] = getattr(row, "group_key", None)
         if hasattr(row, "group_id"):
             item["id"] = getattr(row, "group_id", None)
+        # instance_type rows are grouped by (sku, sku_count); carry sku_count so
+        # enrichment can fetch the right per-shape representative for display.
+        if hasattr(row, "group_sku_count"):
+            item["_sku_count"] = getattr(row, "group_sku_count", None)
         item["sku"] = getattr(row, "sku", None)
         # max(bucket_start) is a UTC instant → show it in the rollup tz, aware
         # (carries an offset) so the API is self-describing and the UI renders
@@ -589,10 +674,14 @@ async def _run_breakdown(
         )
         items.append(item)
 
-    # Per-row display dims matter only for single-dimension table groupings; a
-    # date-bucketed trend (["date", <dim>]) doesn't need them.
+    # Resolve display fields for the secondary dimension regardless of whether
+    # a date axis is present — a grouped trend (["date", <dim>]) needs them too,
+    # else e.g. instance_type series carry the raw flavor slug instead of the
+    # pretty product name in the chart legend (#5700). ``granularity`` only
+    # changes the time bucket, never the group_by tokens, so this is granularity
+    # agnostic (hour/day/week/month all share the ["date", <dim>] shape).
     dims = [g for g in request.group_by if g != "date"]
-    if dims and "date" not in request.group_by:
+    if dims:
         await _enrich_items(session, dims[0], items)
 
     return {
@@ -602,7 +691,11 @@ async def _run_breakdown(
             page=request.page,
             perPage=request.perPage,
             total=total,
-            totalPage=ceil(total / request.perPage) if total else 0,
+            totalPage=(
+                ceil(total / request.perPage)
+                if request.page > 0 and total
+                else (1 if total else 0)
+            ),
         ),
         "items": items,
     }

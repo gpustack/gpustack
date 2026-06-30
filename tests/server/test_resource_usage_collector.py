@@ -97,6 +97,55 @@ def test_open_window_extracts_sku_and_dims():
     assert w.cluster_name == "default"
 
 
+def test_resolve_sku_count():
+    from gpustack.server.resource_usage_collector import _resolve_sku_count
+
+    # GPU: accelerator card count.
+    assert _resolve_sku_count(2, 8000, 128000, None, None) == 2
+    # CPU: base-flavor unit multiple (2c4g on 1c2g → 2; 3c6g → 3).
+    assert _resolve_sku_count(0, 2000, 4096, 1000, 2048) == 2
+    assert _resolve_sku_count(0, 3000, 6144, 1000, 2048) == 3
+    # CPU: memory fallback when the cpu unit is unknown.
+    assert _resolve_sku_count(0, 0, 4096, None, 2048) == 2
+    # Unknown unit spec (legacy flavor) → 1.
+    assert _resolve_sku_count(0, 2000, 4096, None, None) == 1
+
+
+def test_open_window_cpu_unit_count():
+    # A 2c4g CPU instance on a 1c2g base flavor → 2 units.
+    snap = {
+        "name": "cpu-1",
+        "display_name": "CPU 1",
+        "description": '{"spec": {"unitResources": {"cpu": "1000m", "ram": "2Gi"}}}',
+        "spec": {
+            "type_": "gpustack--generic-1c-2g",
+            "resources": {"cpu": "2", "ram": "4Gi"},
+        },
+    }
+    evt = make_event(
+        occurred_at=datetime(2026, 5, 26, 10, 0, 5),
+        event_type=EVENT_TYPE_PHASE_TO_METERED,
+        spec_snapshot=snap,
+    )
+    w = _open_window_from_event(evt)
+    assert w is not None
+    assert w.gpu_count == 0
+    # The unit multiplier lands on the sku_count column (2c4g / 1c2g = 2).
+    assert w.sku_count == 2
+
+
+def test_open_window_skips_empty_snapshot():
+    # A phase_to_metered event whose snapshot carries no resources and no type
+    # (empty / NULL snapshot — seed rows or a malformed event) must not mint a
+    # bogus "cpu-0vcpu-0g" window that pollutes the breakdown / GPU-Hours.
+    evt = make_event(
+        occurred_at=datetime(2026, 5, 26, 10, 0, 5),
+        event_type=EVENT_TYPE_PHASE_TO_METERED,
+        spec_snapshot={"name": "ghost", "spec": {}},
+    )
+    assert _open_window_from_event(evt) is None
+
+
 def test_open_window_none_without_resource_id():
     evt = make_event(
         occurred_at=datetime(2026, 5, 26, 10, 0, 5),
