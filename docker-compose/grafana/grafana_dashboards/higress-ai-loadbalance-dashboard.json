@@ -102,7 +102,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "sum by (endpoint) (\n  label_replace(\n    increase(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__range]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n)",
+          "expr": "sum by (endpoint) (\n  label_replace(\n    increase(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__range]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n) > 0",
           "legendFormat": "{{endpoint}}",
           "instant": true,
           "range": false,
