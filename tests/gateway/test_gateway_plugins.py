@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from gpustack.gateway.plugins import (
     HigressPlugin,
     get_plugin_url_prefix,
@@ -7,6 +7,7 @@ from gpustack.gateway.plugins import (
     supported_plugins,
     http_path_prefix,
 )
+from gpustack.gateway import ext_auth_plugin
 
 
 def make_cfg(plugin_server_url: str):
@@ -106,3 +107,46 @@ class TestSupportedPlugins:
             "gpustack-set-header-pre-route",
         ]:
             assert expected in names, f"{expected} not found in supported_plugins"
+
+
+class TestExtAuthPlugin:
+    def _build(self, namespace, gateway_namespace):
+        registry = MagicMock()
+        registry.get_service_name.return_value = "gpustack.static"
+        registry.port = 80
+        cfg = MagicMock()
+        cfg.get_derived_gateway_token.return_value = "token"
+        cfg.get_namespace.return_value = namespace
+        cfg.gateway_namespace = gateway_namespace
+        with (
+            patch(
+                "gpustack.gateway.get_gpustack_higress_registry", return_value=registry
+            ),
+            patch(
+                "gpustack.gateway.get_plugin_url_with_name_and_version",
+                return_value="http://127.0.0.1/wasm/ext-auth/2.0.0/plugin.wasm",
+            ),
+        ):
+            return ext_auth_plugin(cfg=cfg)
+
+    def _rule(self, spec):
+        rules = spec.defaultConfig["_rules_"]
+        assert len(rules) == 1
+        return rules[0]
+
+    def test_scopes_to_model_route_prefix(self):
+        _, spec = self._build(namespace="default", gateway_namespace="higress-system")
+        # auth is applied via defaultConfig _rules_ matched by route prefix,
+        # not a global catch-all, and there are no separate matchRules.
+        assert spec.defaultConfigDisable is False
+        assert not spec.matchRules
+        rule = self._rule(spec)
+        assert rule["_match_route_prefix_"] == ["default/ai-route-route-"]
+        assert rule["match_type"] == "blacklist"
+
+    def test_no_namespace_prefix_when_same_namespace(self):
+        _, spec = self._build(
+            namespace="higress-system", gateway_namespace="higress-system"
+        )
+        rule = self._rule(spec)
+        assert rule["_match_route_prefix_"] == ["ai-route-route-"]
