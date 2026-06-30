@@ -199,9 +199,11 @@ class UsageBreakdownRequest(UsageBaseRequest):
     @field_validator("page")
     @classmethod
     def validate_page(cls, value: int) -> int:
-        # ``page <= 0`` is the no-pagination sentinel (return all buckets),
-        # matching ActiveRecordMixin.page_query. Otherwise must be positive.
-        if value == 0:
+        # ``-1`` is the no-pagination sentinel (return all buckets); otherwise a
+        # positive page. Reject 0 and any other negative so a stray value can't
+        # slip through as "no pagination" and get echoed back as a bogus
+        # ``pagination.page`` (e.g. "page -42 of 1").
+        if value != -1 and value < 1:
             raise ValueError("page must be a positive number or -1 (no pagination)")
         return value
 

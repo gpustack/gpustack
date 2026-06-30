@@ -266,6 +266,19 @@ def test_resource_breakdown_request_rejects_page_zero():
         )
 
 
+def test_resource_breakdown_request_rejects_other_negative_page():
+    # Only -1 is the no-pagination sentinel; other negatives are rejected.
+    for bad in (-2, -42):
+        with pytest.raises(ValueError):
+            ResourceBreakdownRequest(
+                scope="self",
+                start_date=D,
+                end_date=D,
+                group_by=["resource_type"],
+                page=bad,
+            )
+
+
 @pytest.mark.asyncio
 async def test_breakdown_no_pagination_rejects_oversized(session, monkeypatch):
     from gpustack.api.exceptions import InvalidException

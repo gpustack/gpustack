@@ -237,6 +237,19 @@ def test_breakdown_request_rejects_page_zero():
         )
 
 
+def test_breakdown_request_rejects_other_negative_page():
+    # Only -1 is the sentinel; other negatives must not slip through as
+    # "no pagination" and echo back as a bogus pagination.page.
+    for bad in (-2, -42):
+        with pytest.raises(ValueError):
+            UsageBreakdownRequest(
+                start_date=date(2026, 4, 1),
+                end_date=date(2026, 4, 30),
+                group_by=["date"],
+                page=bad,
+            )
+
+
 @pytest.mark.asyncio
 async def test_get_usage_breakdown_no_pagination_returns_all_date_buckets():
     # With page=-1 every date bucket is returned (no offset/limit), so a trend
