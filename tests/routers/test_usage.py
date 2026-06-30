@@ -4,8 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gpustack.api.exceptions import ForbiddenException
+from gpustack.api.exceptions import ForbiddenException, InvalidException
 from gpustack.routes.usage import (
+    _self_scope_consumer_condition,
     get_usage_breakdown,
     get_usage_meta,
 )
@@ -171,6 +172,158 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
     assert response.filters.users == []
     assert response.filters.routes == []
     assert response.filters.api_keys[0].label == "alice / test"
+
+
+def test_self_scope_personal_includes_null_consumer_rows():
+    # Personal scope (org_id == the caller's own USER-principal): cookie-authed
+    # direct chats land with consumer_principal_id NULL, so the caller's own
+    # usage must still surface — the condition is an OR that admits NULL.
+    condition = _self_scope_consumer_condition(user_id=7, org_id=7)
+    sql = str(condition.compile(compile_kwargs={"literal_binds": True}))
+    assert "IS NULL" in sql
+    assert " OR " in sql
+
+
+def test_self_scope_org_context_excludes_null_consumer_rows():
+    # Acting inside a real Org (org_id != caller's USER-principal): keep the
+    # strict equality so personal direct usage doesn't bleed into the Org view.
+    condition = _self_scope_consumer_condition(user_id=7, org_id=42)
+    sql = str(condition.compile(compile_kwargs={"literal_binds": True}))
+    assert "IS NULL" not in sql
+    assert " OR " not in sql
+
+
+def test_breakdown_request_allows_page_minus_one_sentinel():
+    # page=-1 is the no-pagination sentinel used by the trend chart.
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 30),
+        group_by=["date"],
+        page=-1,
+    )
+    assert request.page == -1
+
+
+def test_breakdown_request_allows_legacy_large_per_page():
+    # perPage=10000 stays valid (older UIs fetch the whole set this way); the
+    # whole series is otherwise fetched via page=-1.
+    req = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 30),
+        group_by=["date"],
+        perPage=10000,
+    )
+    assert req.perPage == 10000
+
+
+def test_breakdown_request_rejects_per_page_over_cap():
+    # Beyond the abuse ceiling is still rejected.
+    with pytest.raises(ValueError):
+        UsageBreakdownRequest(
+            start_date=date(2026, 4, 1),
+            end_date=date(2026, 4, 30),
+            group_by=["date"],
+            perPage=10001,
+        )
+
+
+def test_breakdown_request_rejects_page_zero():
+    with pytest.raises(ValueError):
+        UsageBreakdownRequest(
+            start_date=date(2026, 4, 1),
+            end_date=date(2026, 4, 30),
+            group_by=["date"],
+            page=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_no_pagination_returns_all_date_buckets():
+    # With page=-1 every date bucket is returned (no offset/limit), so a trend
+    # spanning more buckets than the default perPage doesn't lose recent dates.
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=600,
+                        output_tokens=240,
+                        input_cached_tokens=0,
+                        total_tokens=840,
+                        api_requests=6,
+                        models_called=1,
+                    ),
+                ]
+            ),
+            _mock_exec_result([3]),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(group_date=date(2026, 4, 1), total_tokens=500),
+                    SimpleNamespace(group_date=date(2026, 4, 15), total_tokens=300),
+                    SimpleNamespace(group_date=date(2026, 4, 30), total_tokens=40),
+                ]
+            ),
+        ]
+    )
+    user = User(id=1, name="admin", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 30),
+        group_by=["date"],
+        granularity="day",
+        page=-1,
+    )
+
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
+
+    assert response.pagination.page == -1
+    assert response.pagination.total == 3
+    assert response.pagination.totalPage == 1
+    assert len(response.items) == 3
+    assert response.items[-1].date.value == date(2026, 4, 30)
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_no_pagination_rejects_oversized(monkeypatch):
+    # page=-1 over a result larger than the configured cap is rejected before
+    # the items are fetched — never silently truncated.
+    monkeypatch.setattr(
+        "gpustack.routes.usage.envs.USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS", 2
+    )
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=1,
+                        output_tokens=0,
+                        input_cached_tokens=0,
+                        total_tokens=1,
+                        api_requests=1,
+                        models_called=1,
+                    ),
+                ]
+            ),
+            _mock_exec_result([3]),  # total = 3 > cap of 2
+        ]
+    )
+    user = User(id=1, name="admin", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 30),
+        group_by=["date"],
+        granularity="day",
+        page=-1,
+    )
+
+    with pytest.raises(InvalidException):
+        await get_usage_breakdown(
+            session=session, user=user, ctx=_ctx_for(user), request=request
+        )
 
 
 @pytest.mark.asyncio
