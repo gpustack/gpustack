@@ -1,4 +1,5 @@
 import ssl
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
@@ -32,9 +33,14 @@ async def test_get_current_user_accepts_x_api_key(monkeypatch):
     auth_mock = AsyncMock(return_value=(expected_user, expected_key))
     monkeypatch.setattr("gpustack.api.auth.get_user_from_api_token", auth_mock)
 
+    @asynccontextmanager
+    async def fake_async_session():
+        yield session
+
+    monkeypatch.setattr("gpustack.api.auth.async_session", fake_async_session)
+
     user = await get_current_user(
         request=request,
-        session=session,
         x_api_key="sk_test_value",
     )
 
@@ -90,9 +96,14 @@ async def test_get_current_user_falls_back_to_x_api_key_when_bearer_empty(
     auth_mock = AsyncMock(return_value=(expected_user, expected_key))
     monkeypatch.setattr("gpustack.api.auth.get_user_from_api_token", auth_mock)
 
+    @asynccontextmanager
+    async def fake_async_session():
+        yield session
+
+    monkeypatch.setattr("gpustack.api.auth.async_session", fake_async_session)
+
     user = await get_current_user(
         request=request,
-        session=session,
         bearer_token=HTTPAuthorizationCredentials(scheme="Bearer", credentials=""),
         x_api_key="sk_test_value",
     )
@@ -153,7 +164,6 @@ async def test_get_current_user_requires_credentials(monkeypatch, client_host, h
     # The auto-admin localhost shortcut has been removed entirely.
     # Every unauthenticated request — local, proxied, or remote — must be
     # rejected.
-    session = object()
     request = _make_request(headers=headers, client_host=client_host)
 
     first_by_field = AsyncMock()
@@ -164,7 +174,7 @@ async def test_get_current_user_requires_credentials(monkeypatch, client_host, h
     )
 
     with pytest.raises(UnauthorizedException):
-        await get_current_user(request=request, session=session)
+        await get_current_user(request=request)
     # No DB lookup path may fire when there are no credentials.
     first_by_field.assert_not_awaited()
     get_by_username.assert_not_awaited()
