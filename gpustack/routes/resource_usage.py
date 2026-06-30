@@ -131,7 +131,10 @@ class ResourceBreakdownRequest(BaseModel):
     @field_validator("page")
     @classmethod
     def validate_page(cls, value: int) -> int:
-        if value == 0:
+        # ``-1`` is the no-pagination sentinel; otherwise a positive page. Reject
+        # 0 and any other negative so a stray value can't pass as "no pagination"
+        # and be echoed back as a bogus pagination.page (e.g. "page -42 of 1").
+        if value != -1 and value < 1:
             raise ValueError("page must be a positive number or -1 (no pagination)")
         return value
 
