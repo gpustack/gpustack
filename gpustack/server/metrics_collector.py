@@ -16,7 +16,11 @@ from gpustack.schemas.model_routes import ModelRoute
 from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.model_usage_details import ModelUsageDetails
 from gpustack.schemas.models import Model, is_embedding_model, is_reranker_model
-from gpustack.schemas.principals import Principal
+from gpustack.schemas.principals import (
+    Principal,
+    PrincipalType,
+    platform_principal_id,
+)
 from gpustack.server.db import async_session
 from gpustack.utils.rollup_tz import resolve_rollup_tz
 from gpustack.utils.usage_snapshots import build_model_usage_snapshot
@@ -520,14 +524,31 @@ def _build_metric_snapshot(
     # cookie-authed traffic (no api_key) the gateway plugin still
     # provides the active tenant via the wire-format
     # ``organization_id`` header — parse it back to int so the row
-    # carries its Org scope. Direct-to-gpustack cookie calls don't
-    # populate this field and land NULL; that's by design (no Org
-    # context known at that path).
+    # carries its Org scope.
     if "consumer_principal_id" not in snapshot and metric.organization_id:
         try:
             snapshot["consumer_principal_id"] = int(metric.organization_id)
         except (TypeError, ValueError):
             pass
+    # Fallback for cookie-authed traffic with no Org header — the Enterprise
+    # UI sends ``X-Organization-Id`` (parsed above), but the OSS UI omits it
+    # since there's a single Org. Attribute to the caller's tenant the same
+    # way ownership is resolved everywhere else (``current_principal_id or
+    # platform_principal_id()``): a regular user consumes as themselves, a
+    # platform admin as the default/platform Org. This mirrors the read side
+    # (a regular user's self-scope filters ``consumer_principal_id ==
+    # user.id``) so the user sees their own usage, and keeps NULL off new
+    # rows. Enterprise is unaffected — ``organization_id`` is set there, so
+    # this branch never runs. SYSTEM callers (worker-proxied inference) are
+    # left unattributed.
+    if (
+        "consumer_principal_id" not in snapshot
+        and user is not None
+        and user.kind == PrincipalType.USER
+    ):
+        snapshot["consumer_principal_id"] = (
+            platform_principal_id() if user.is_admin else user.id
+        )
     return snapshot
 
 
