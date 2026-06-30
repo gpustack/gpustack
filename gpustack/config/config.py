@@ -41,7 +41,7 @@ from gpustack.schemas.config import (
     PredefinedConfigNoDefaults,
     GatewayModeEnum,
 )
-from gpustack import __version__, __operator_version__
+from gpustack import __operator_version__
 from gpustack.config.registration import (
     read_registration_token,
     read_worker_token,
@@ -946,7 +946,10 @@ def get_image_name(
 ) -> str:
     if image_name_override:
         return image_name_override
-    version = __version__
+    # Lazy import: gpustack.extension imports from this module at top level.
+    from gpustack.extension import resolve_version_info
+
+    version, _ = resolve_version_info()
     if version.removeprefix("v") == "0.0.0":
         version = "dev"
     prefix = f"{registry}/" if registry else ""

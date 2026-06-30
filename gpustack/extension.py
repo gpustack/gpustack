@@ -25,6 +25,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def resolve_version_info() -> Tuple[str, str]:
+    """Let plugins override the reported version. First non-None wins; on
+    any failure, fall back to core's baked-in values.
+
+    Used wherever core needs the *user-facing* version — ``gpustack version``,
+    the ``/version`` endpoint's response, OpenAPI ``info.version``, and the
+    worker image tag returned by the cluster registration-token endpoint.
+    Anything that surfaces an image reference or a build identifier to
+    operators should go through this helper so a downstream repackage can
+    present a consistent build string instead of the wheel's baked-in
+    ``__version__``.
+    """
+    from gpustack import __version__, __git_commit__
+
+    for name, plugin_class in iter_plugin_classes():
+        if not (isinstance(plugin_class, type) and issubclass(plugin_class, Plugin)):
+            continue
+        try:
+            info = plugin_class.get_version_info()
+        except Exception:
+            logger.debug(
+                "Failed to read version info from plugin '%s'", name, exc_info=True
+            )
+            continue
+        if info is not None:
+            return info
+    return __version__, __git_commit__
+
+
 def iter_plugin_classes() -> Generator[Tuple[str, type], None, None]:
     """Iterate over registered plugin classes via the ``gpustack.plugins``
     entry-point group.
