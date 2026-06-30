@@ -465,7 +465,7 @@ async def test_select_candidates(
     with (
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -531,7 +531,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
     with (
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -613,7 +613,7 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
     with (
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -699,7 +699,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
     with (
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -859,7 +859,7 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
     with (
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -947,7 +947,7 @@ async def test_auto_schedule_embedding_models(config):
     with (
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -1996,7 +1996,7 @@ async def test_select_candidates_from_different_gpu_types(
         ),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.policies.worker_filters.backend_framework_filter.async_session',
