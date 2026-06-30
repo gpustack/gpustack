@@ -143,7 +143,7 @@ data:
                 - gpustack-operator
                 - worker
                 - -v=2
-                # ytt if/end: only wraps the immediately following node
+                #! ytt if/end: only wraps the immediately following node
                 #@ if/end data.values.certmanagerEnabled:
                 - --cert-dir=/var/run/gpustack/certs
               resources:
@@ -217,7 +217,7 @@ data:
               volumeMounts:
                 - name: gpustack-data-dir
                   mountPath: /var/lib/gpustack
-                # ytt if/end: only wraps the immediately following node
+                #! ytt if/end: only wraps the immediately following node
                 #@ if/end data.values.certmanagerEnabled:
                 - name: gpustack-cert-dir
                   mountPath: /var/run/gpustack/certs
@@ -226,7 +226,7 @@ data:
               hostPath:
                 path: {{ .Values.worker.dataDir | quote }}
                 type: DirectoryOrCreate
-            # ytt if/end: only wraps the immediately following node
+            #! ytt if/end: only wraps the immediately following node
             #@ if/end data.values.certmanagerEnabled:
             - name: gpustack-cert-dir
               secret:

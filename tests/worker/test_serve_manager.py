@@ -9,7 +9,9 @@ from gpustack.schemas.models import (
     DistributedServers,
     ModelInstanceSubordinateWorker,
     ModelInstanceStateEnum,
+    SourceEnum,
 )
+from gpustack.server.bus import Event, EventType
 from gpustack.worker.serve_manager import ServeManager
 from tests.utils.model import new_model, new_model_instance
 
@@ -153,11 +155,19 @@ def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path
     ]
 
 
-def test_cleanup_old_logs_restart_zero_keeps_only_zero(tmp_path: Path):
+def test_cleanup_old_logs_restart_zero_purges_all(tmp_path: Path):
+    """Fresh start (restart_count 0) removes every log for the id, incl. sidecar,
+    but leaves other instances' logs and model-file download logs."""
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir(parents=True)
-    mid = 7
-    for name in (f"{mid}.0.log", f"{mid}.1.log", f"{mid}.container.1.log"):
+    mid, other = 7, 8
+    for name in (
+        f"{mid}.0.log",
+        f"{mid}.container.1.log",
+        f"{mid}.container.ray-head.0.log",
+        f"{other}.0.log",
+        f"model_file_{mid}.download.log",
+    ):
         (serve_dir / name).write_text("x", encoding="utf-8")
 
     manager, _clients = _build_serve_manager()
@@ -166,4 +176,63 @@ def test_cleanup_old_logs_restart_zero_keeps_only_zero(tmp_path: Path):
     manager._cleanup_old_logs(mid, 0)
 
     remaining = sorted(p.name for p in serve_dir.iterdir())
-    assert remaining == [f"{mid}.0.log"]
+    assert remaining == [f"{other}.0.log", f"model_file_{mid}.download.log"]
+
+
+def test_delete_event_purges_logs_but_restart_keeps_them(tmp_path: Path):
+    """DELETED removes the instance's serve logs so a reused id can't inherit them;
+    a restart (default stop) keeps them for the log viewer."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir(parents=True)
+    log = serve_dir / "1.container.ray-head.0.log"
+    log.write_text("x", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager(worker_id=1)
+    manager._serve_log_dir = str(serve_dir)
+    model_instance = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    # _handle_model_instance_event re-validates the payload; source/repo required.
+    model_instance.source = SourceEnum.HUGGING_FACE
+    model_instance.huggingface_repo_id = "Qwen/Qwen3-0.6B"
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch("gpustack.worker.serve_manager.delete_workload"),
+        patch.object(manager, "_stop_container_log_persistence"),
+        patch.object(manager, "_is_provisioning", return_value=False),
+    ):
+        manager._stop_model_instance(model_instance)
+        assert log.exists()
+
+        manager._handle_model_instance_event(
+            Event(type=EventType.DELETED, data=model_instance)
+        )
+        assert not log.exists()
+
+
+def test_reap_stale_instance_purges_logs(tmp_path: Path):
+    """Reaping an instance the server no longer reports (a dropped DELETED) must
+    also remove its serve logs, mirroring the DELETED handler."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir(parents=True)
+    log = serve_dir / "1.container.ray-head.0.log"
+    log.write_text("x", encoding="utf-8")
+
+    manager, clientset = _build_serve_manager(worker_id=1)
+    manager._serve_log_dir = str(serve_dir)
+    stale = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[stale.id] = stale
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[])
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch("gpustack.worker.serve_manager.delete_workload"),
+        patch.object(manager, "_stop_container_log_persistence"),
+        patch.object(manager, "_is_provisioning", return_value=False),
+    ):
+        manager.sync_model_instances_state()
+
+    assert not log.exists()

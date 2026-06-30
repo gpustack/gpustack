@@ -1,0 +1,462 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Visualizes how Higress balances inference requests across upstream endpoints (ai_cluster). Filter by ai_model, ai_route and ai_consumer. Based on the route_upstream_model_consumer_metric_llm_* counters.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Load Balance Across Endpoints",
+      "type": "row",
+      "panels": []
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Per-endpoint request rate. Lines that stay close together indicate balanced load; a persistent gap means one endpoint is taking more traffic.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "req/s",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "legend": { "calcs": ["mean", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (endpoint) (\n  label_replace(\n    rate(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__rate_interval]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n)",
+          "legendFormat": "{{endpoint}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Request Rate by Endpoint (ai_cluster)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Share of total requests handled by each endpoint over the selected time range. The closer the slices are to equal, the more balanced the load.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 1 },
+      "id": 2,
+      "options": {
+        "displayLabels": ["percent"],
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "values": ["value", "percent"] },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "tooltip": { "mode": "single", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (endpoint) (\n  label_replace(\n    increase(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__range]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n)",
+          "legendFormat": "{{endpoint}}",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Request Share by Endpoint",
+      "type": "piechart"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Balance ratio = busiest endpoint rate / quietest endpoint rate. 1.0 = perfectly balanced. Higher values mean more skew. Green < 1.5, yellow < 3, red otherwise.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1.5 },
+              { "color": "red", "value": 3 }
+            ]
+          },
+          "unit": "none",
+          "decimals": 2,
+          "min": 1
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 10 },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "max(sum by (ai_cluster) (rate(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__rate_interval])))\n/\nclamp_min(min(sum by (ai_cluster) (rate(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__rate_interval]))), 0.0001)",
+          "legendFormat": "balance ratio",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Balance Ratio (max/min)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Number of upstream endpoints currently receiving traffic for the selected filters.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 10 },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "count(sum by (ai_cluster) (rate(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__rate_interval]) > 0))",
+          "legendFormat": "active endpoints",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Active Endpoints",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Current per-endpoint request rate as horizontal bars - a quick visual read of relative load.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-GrYlRd" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "reqps",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 10 },
+      "id": 5,
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (endpoint) (\n  label_replace(\n    rate(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__rate_interval]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n)",
+          "legendFormat": "{{endpoint}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Current Load by Endpoint",
+      "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "id": 101,
+      "title": "Latency & Breakdown",
+      "type": "row",
+      "panels": []
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Average LLM duration per endpoint (llm_service_duration / llm_duration_count). Useful to confirm a balanced request count is not hiding uneven latency.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": ["mean", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (endpoint) (\n  label_replace(\n    rate(route_upstream_model_consumer_metric_llm_service_duration{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__rate_interval]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n)\n/\nsum by (endpoint) (\n  label_replace(\n    rate(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__rate_interval]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n)",
+          "legendFormat": "{{endpoint}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Avg Duration by Endpoint",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Per-endpoint totals over the selected range with each endpoint's share of total traffic.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Share %" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
+              { "id": "max", "value": 100 },
+              { "id": "min", "value": 0 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Requests" },
+            "properties": [{ "id": "custom.cellOptions", "value": { "type": "auto" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 7,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": true },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Requests" }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (endpoint) (\n  label_replace(\n    increase(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__range]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n)",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "100 * sum by (endpoint) (\n  label_replace(\n    increase(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__range]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n)\n/ ignoring(endpoint) group_left sum(\n  increase(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__range])\n)",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true },
+            "indexByName": {},
+            "renameByName": {
+              "endpoint": "Endpoint",
+              "Value #A": "Requests",
+              "Value #B": "Share %"
+            }
+          }
+        }
+      ],
+      "title": "Per-Endpoint Totals",
+      "type": "table"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["higress", "ai-gateway", "llm", "loadbalance"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(route_upstream_model_consumer_metric_llm_duration_count, ai_model)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "AI Model",
+        "multi": true,
+        "name": "ai_model",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(route_upstream_model_consumer_metric_llm_duration_count, ai_model)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(route_upstream_model_consumer_metric_llm_duration_count{ai_model=~\"$ai_model\"}, ai_route)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "AI Route",
+        "multi": true,
+        "name": "ai_route",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(route_upstream_model_consumer_metric_llm_duration_count{ai_model=~\"$ai_model\"}, ai_route)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(route_upstream_model_consumer_metric_llm_duration_count{ai_model=~\"$ai_model\"}, ai_consumer)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "AI Consumer",
+        "multi": true,
+        "name": "ai_consumer",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(route_upstream_model_consumer_metric_llm_duration_count{ai_model=~\"$ai_model\"}, ai_consumer)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(route_upstream_model_consumer_metric_llm_duration_count{ai_model=~\"$ai_model\", ai_route=~\"$ai_route\"}, ai_cluster)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Endpoint (ai_cluster)",
+        "multi": true,
+        "name": "ai_cluster",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(route_upstream_model_consumer_metric_llm_duration_count{ai_model=~\"$ai_model\", ai_route=~\"$ai_route\"}, ai_cluster)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Higress AI Gateway - Endpoint Load Balance",
+  "uid": "higress-ai-loadbalance",
+  "version": 1,
+  "weekStart": ""
+}

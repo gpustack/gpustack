@@ -205,6 +205,8 @@ class InferenceBackendBase(SQLModel):
         port: Optional[int],
         worker_ip: Optional[str] = None,
         model_name: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+        gpu_ids: Optional[List[int]] = None,
         command: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
     ) -> str:
@@ -217,6 +219,12 @@ class InferenceBackendBase(SQLModel):
         command = command.replace("{{port}}", str(port))
         command = command.replace("{{worker_ip}}", worker_ip or "")
         command = command.replace("{{model_name}}", model_name or "")
+        command = command.replace(
+            "{{gpu_count}}", str(gpu_count) if gpu_count is not None else ""
+        )
+        command = command.replace(
+            "{{gpu_ids}}", ",".join(str(i) for i in gpu_ids) if gpu_ids else ""
+        )
 
         # Resolve environment variables using {{VAR_NAME}} syntax
         # Use provided env (from model) if available, otherwise fall back to backend env
