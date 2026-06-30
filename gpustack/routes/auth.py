@@ -1,3 +1,4 @@
+import functools
 import hmac
 import json
 import os
@@ -11,6 +12,7 @@ from gpustack.config.config import Config
 from typing import Annotated, Dict, List, Optional
 from fastapi import APIRouter, Form, Request, Response
 from gpustack.api.exceptions import (
+    ConflictException,
     InvalidException,
     UnauthorizedException,
     BadRequestException,
@@ -134,6 +136,67 @@ async def get_oidc_user_data(
     return user_data
 
 
+# Browser-facing SSO callbacks (CAS / OIDC / SAML) are reached via a
+# full-page IdP redirect: a JSON exception raised inside them would
+# land the user on a raw error page rather than the login form.
+# Failures are surfaced via ``/login?error=<code>`` instead, so the
+# login UI can read the code and render an actionable toast.
+#
+# Two codes are recognised today:
+#   * ``source_conflict`` — same username collides with a different
+#     auth source; user needs an admin to link or convert.
+#   * ``auth_failed`` — anything else (bad ticket, expired state,
+#     IdP unreachable, malformed response, …). Generic by design:
+#     the underlying detail goes to ``logger`` for diagnosis rather
+#     than into a URL exposed to an unauthenticated caller.
+SOURCE_CONFLICT_LOGIN_URL = "/login?error=source_conflict"
+AUTH_FAILED_LOGIN_URL = "/login?error=auth_failed"
+
+
+# ``303 See Other`` so a browser arriving via POST (SAML's POST
+# binding) switches to GET on the login page; ``302`` would
+# technically allow the browser to re-POST.
+def _source_conflict_redirect() -> RedirectResponse:
+    return RedirectResponse(url=SOURCE_CONFLICT_LOGIN_URL, status_code=303)
+
+
+def _auth_failed_redirect() -> RedirectResponse:
+    return RedirectResponse(url=AUTH_FAILED_LOGIN_URL, status_code=303)
+
+
+def _sso_callback_errors_to_redirect(fn):
+    """Decorator: turn auth failures inside an SSO callback into a
+    redirect to ``/login?error=<code>``.
+
+    ``ConflictException`` maps to ``source_conflict`` (specific
+    actionable case). Any other exception — typed auth errors,
+    malformed-IdP-response errors, even programming errors — maps to
+    the generic ``auth_failed`` code and is logged with stacktrace so
+    the cause is recoverable from server-side logs without exposing
+    the original message to the browser.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except ConflictException:
+            return _source_conflict_redirect()
+        except Exception as exc:
+            # ``HTTPException`` subclasses store the description on
+            # ``.message`` and don't pass it to ``Exception.__init__``,
+            # so ``str(exc)`` (and thus the traceback's tail line) is
+            # empty. Pull the descriptive text out explicitly so
+            # operators reading logs see e.g. "The Assertion of the
+            # Response is not signed and the SP requires it" instead
+            # of a bare exception type.
+            detail = getattr(exc, "message", None) or str(exc) or type(exc).__name__
+            logger.exception("SSO callback %s failed: %s", fn.__name__, detail)
+            return _auth_failed_redirect()
+
+    return wrapper
+
+
 async def _resolve_external_user(
     session, username: str, expected_source: AuthProviderEnum
 ) -> Optional[User]:
@@ -146,19 +209,57 @@ async def _resolve_external_user(
 
     The ``source`` match is a security check, not a convenience one:
     without it, an attacker who controls ``username`` on *any* enabled
-    IdP could hand themselves the session of an existing local-admin /
-    OIDC / SAML user with the same name. Raise ``UnauthorizedException``
-    on mismatch — the error message stays generic so it doesn't leak
-    which other provider owns the name.
+    IdP could hand themselves the session of an existing local-admin
+    / OIDC / SAML user with the same name. The mismatch message
+    stays silent about *which* provider owns the name so it doesn't
+    leak that to an unauthenticated caller.
     """
     user = await User.first_by_fields(
         session=session, fields={"name": username, "kind": PrincipalType.USER}
     )
     if user and user.source != expected_source:
-        raise UnauthorizedException(
-            message="An account with this username already exists from a different authentication source."
+        raise ConflictException(
+            message=(
+                "An account with this username already exists from a different "
+                "authentication source. Please contact an administrator to "
+                "link or convert it."
+            )
         )
     return user
+
+
+async def _resolve_or_provision_external_user(
+    session,
+    username: str,
+    expected_source: AuthProviderEnum,
+    *,
+    display_name: str = "",
+    avatar_url: Optional[str] = None,
+    is_active: bool = True,
+):
+    """Resolve an SSO-callback user, provisioning a new principal row
+    when the username is new.
+
+    :class:`ConflictException` from :func:`_resolve_external_user`
+    propagates unchanged; the SSO callback wrapper
+    :func:`_sso_callback_errors_to_redirect` converts it into a
+    browser-friendly redirect. The three callbacks share this helper
+    so the resolve-or-create idiom (and the source-mismatch check
+    inside it) stays identical across providers.
+    """
+    user = await _resolve_external_user(session, username, expected_source)
+    if user is not None:
+        return user
+    user_info = User(
+        kind=PrincipalType.USER,
+        name=username,
+        display_name=display_name or username,
+        avatar_url=avatar_url,
+        is_admin=False,
+        is_active=is_active,
+        source=expected_source,
+    )
+    return await User.create(session, user_info)
 
 
 async def init_saml_auth(request: Request):
@@ -216,114 +317,123 @@ async def saml_login(request: Request):
 
 
 @router.api_route("/saml/callback", methods=["GET", "POST"])
+@_sso_callback_errors_to_redirect
 async def saml_callback(request: Request, session: SessionDep):
     logger.debug("Invoke saml callback.")
-    try:
-        if request.method == "GET":
-            query = dict(request.query_params)
-            SAMLResponse = query['SAMLResponse']
-            decoded = safe_b64decode(SAMLResponse)
-            xml_bytes = inflate_data(decoded)
+    if request.method == "GET":
+        query = dict(request.query_params)
+        SAMLResponse = query['SAMLResponse']
+        decoded = safe_b64decode(SAMLResponse)
+        xml_bytes = inflate_data(decoded)
+    else:
+        form_data = await request.form()
+        form_dict = dict(form_data)
+        SAMLResponse = form_dict.get('SAMLResponse')
+        xml_bytes = safe_b64decode(SAMLResponse)
+
+    # ``lxml`` resolves entities and loads external DTDs by default —
+    # neither is needed for SAML assertions, and both widen the XXE
+    # attack surface on attacker-controllable input.
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+    root = etree.fromstring(xml_bytes, parser=parser)
+    name_id = root.find('.//{*}NameID').text
+    ns = {'saml': 'urn:oasis:names:tc:SAML:2.0:assertion'}
+    attributes = {}
+    attributes['name_id'] = name_id
+    for attr in root.xpath('//saml:Attribute', namespaces=ns):
+        attr_name = attr.get('Name')
+        values = [v.text for v in attr.xpath('saml:AttributeValue', namespaces=ns)]
+        attributes[attr_name] = values[0] if len(values) == 1 else values
+
+    config: Config = request.app.state.server_config
+
+    if config.external_auth_name:
+        # If external_auth_name is set, use it as username.
+        username = get_saml_attributes(config, attributes, config.external_auth_name)
+        if not username:
+            # Operator pointed us at a specific attribute, but it
+            # isn't present on this assertion. Bail with a clear
+            # message instead of letting ``None`` flow into the
+            # resolve / create path.
+            raise UnauthorizedException(
+                message=(
+                    f"Username attribute "
+                    f"'{config.external_auth_name}' not found in SAML "
+                    f"attributes"
+                )
+            )
+    else:
+        # Try email or name_id for username if external_auth_name is not set.
+        for key in ["email", "emailaddress", "name_id", "nameidentifier"]:
+            username = get_saml_attributes(config, attributes, key)
+            if username:
+                break
         else:
-            form_data = await request.form()
-            form_dict = dict(form_data)
-            SAMLResponse = form_dict.get('SAMLResponse')
-            xml_bytes = safe_b64decode(SAMLResponse)
-
-        root = etree.fromstring(xml_bytes)
-        name_id = root.find('.//{*}NameID').text
-        ns = {'saml': 'urn:oasis:names:tc:SAML:2.0:assertion'}
-        attributes = {}
-        attributes['name_id'] = name_id
-        for attr in root.xpath('//saml:Attribute', namespaces=ns):
-            attr_name = attr.get('Name')
-            values = [v.text for v in attr.xpath('saml:AttributeValue', namespaces=ns)]
-            attributes[attr_name] = values[0] if len(values) == 1 else values
-
-        config: Config = request.app.state.server_config
-
-        if config.external_auth_name:
-            # If external_auth_name is set, use it as username.
-            username = get_saml_attributes(
-                config, attributes, config.external_auth_name
-            )
-        else:
-            # Try email or name_id for username if external_auth_name is not set.
-            for key in ["email", "emailaddress", "name_id", "nameidentifier"]:
-                username = get_saml_attributes(config, attributes, key)
-                if username:
-                    break
-            else:
-                raise Exception(message="No valid username found in saml attributes")
-
-        if config.external_auth_full_name and '+' not in config.external_auth_full_name:
-            # If external_auth_full_name is set, use it as user's full name.
-            full_name = get_saml_attributes(
-                config, attributes, config.external_auth_full_name
-            )
-        elif config.external_auth_full_name:
-            # external_auth_full_name is set with concat symbol '+'.
-            full_name = ' '.join(
-                [
-                    get_saml_attributes(config, attributes, v.strip())
-                    for v in config.external_auth_full_name.split('+')
-                ]
-            )
-        else:
-            full_name = ""
-            # Try common claims. These are not guaranteed to be present.
-            for key in ["displayName", "name"]:
-                full_name = get_saml_attributes(config, attributes, key)
-                if full_name:
-                    break
-
-        avatar_url = None
-        if config.external_auth_avatar_url:
-            avatar_url = get_saml_attributes(
-                config, attributes, config.external_auth_avatar_url
+            raise UnauthorizedException(
+                message="No valid username found in saml attributes"
             )
 
-        user = await _resolve_external_user(session, username, AuthProviderEnum.SAML)
-        if not user:
-            user_info = User(
-                kind=PrincipalType.USER,
-                name=username,
-                display_name=full_name or username,
-                avatar_url=avatar_url,
-                is_admin=False,
-                is_active=not config.external_auth_default_inactive,
-                source=AuthProviderEnum.SAML,
-            )
-            user = await User.create(session, user_info)
-
-        await _sync_saml_groups_if_enabled(session, user, attributes, config)
-
-        jwt_manager: JWTManager = request.app.state.jwt_manager
-        access_token = jwt_manager.create_jwt_token(
-            username=username,
+    if config.external_auth_full_name and '+' not in config.external_auth_full_name:
+        # If external_auth_full_name is set, use it as user's full name.
+        full_name = get_saml_attributes(
+            config, attributes, config.external_auth_full_name
         )
-        response = RedirectResponse(url='/', status_code=303)
-        response.set_cookie(
-            key=SESSION_COOKIE_NAME,
-            value=access_token,
-            httponly=True,
-            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-            samesite="lax",
-            secure=request.url.scheme == "https",
+    elif config.external_auth_full_name:
+        # external_auth_full_name is set with concat symbol '+'.
+        full_name = ' '.join(
+            [
+                get_saml_attributes(config, attributes, v.strip())
+                for v in config.external_auth_full_name.split('+')
+            ]
         )
-        response.set_cookie(
-            key=SSO_LOGIN_COOKIE_NAME,
-            value="true",
-            httponly=True,
-            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-            samesite="lax",
-            secure=request.url.scheme == "https",
+    else:
+        full_name = ""
+        # Try common claims. These are not guaranteed to be present.
+        for key in ["displayName", "name"]:
+            full_name = get_saml_attributes(config, attributes, key)
+            if full_name:
+                break
+
+    avatar_url = None
+    if config.external_auth_avatar_url:
+        avatar_url = get_saml_attributes(
+            config, attributes, config.external_auth_avatar_url
         )
-    except Exception as e:
-        logger.error(f"SAML callback error: {str(e)}")
-        raise UnauthorizedException(message=str(e))
+
+    user = await _resolve_or_provision_external_user(
+        session,
+        username,
+        AuthProviderEnum.SAML,
+        display_name=full_name or username,
+        avatar_url=avatar_url,
+        is_active=not config.external_auth_default_inactive,
+    )
+
+    await _sync_saml_groups_if_enabled(session, user, attributes, config)
+
+    jwt_manager: JWTManager = request.app.state.jwt_manager
+    access_token = jwt_manager.create_jwt_token(
+        username=username,
+    )
+    response = RedirectResponse(url='/', status_code=303)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=access_token,
+        httponly=True,
+        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+    response.set_cookie(
+        key=SSO_LOGIN_COOKIE_NAME,
+        value="true",
+        httponly=True,
+        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
 
     return response
 
@@ -488,6 +598,7 @@ async def oidc_login(request: Request):
 
 
 @router.get("/oidc/callback")
+@_sso_callback_errors_to_redirect
 async def oidc_callback(request: Request, session: SessionDep):
     logger.debug("Invoke oidc callback.")
     config: Config = request.app.state.server_config
@@ -564,18 +675,14 @@ async def oidc_callback(request: Request, session: SessionDep):
         except Exception as e:
             logger.error(f"Get OIDC user info error: {str(e)}")
             raise UnauthorizedException(message=str(e))
-    user = await _resolve_external_user(session, username, AuthProviderEnum.OIDC)
-    if not user:
-        user_info = User(
-            kind=PrincipalType.USER,
-            name=username,
-            display_name=full_name or username,
-            avatar_url=avatar_url,
-            is_admin=False,
-            is_active=not config.external_auth_default_inactive,
-            source=AuthProviderEnum.OIDC,
-        )
-        user = await User.create(session, user_info)
+    user = await _resolve_or_provision_external_user(
+        session,
+        username,
+        AuthProviderEnum.OIDC,
+        display_name=full_name or username,
+        avatar_url=avatar_url,
+        is_active=not config.external_auth_default_inactive,
+    )
 
     await _sync_oidc_groups_if_enabled(session, user, user_data, config)
 
@@ -780,6 +887,7 @@ async def cas_login(request: Request):
 
 
 @router.get("/cas/callback")
+@_sso_callback_errors_to_redirect
 async def cas_callback(request: Request, session: SessionDep):
     logger.debug("Invoke CAS callback.")
     config: Config = request.app.state.server_config
@@ -827,18 +935,18 @@ async def cas_callback(request: Request, session: SessionDep):
     if config.cas_avatar_attribute:
         avatar_url = _first(user_data.get(config.cas_avatar_attribute))
 
-    user = await _resolve_external_user(session, username, AuthProviderEnum.CAS)
-    if not user:
-        user_info = User(
-            kind=PrincipalType.USER,
-            name=username,
-            display_name=full_name or username,
-            avatar_url=avatar_url,
-            is_admin=False,
-            is_active=not config.external_auth_default_inactive,
-            source=AuthProviderEnum.CAS,
-        )
-        user = await User.create(session, user_info)
+    # The JWT is keyed by ``username``; CAS has no group-sync step
+    # that would need the principal row, so the helper's return value
+    # is discarded once the resolve-or-provision side effects have
+    # run.
+    await _resolve_or_provision_external_user(
+        session,
+        username,
+        AuthProviderEnum.CAS,
+        display_name=full_name or username,
+        avatar_url=avatar_url,
+        is_active=not config.external_auth_default_inactive,
+    )
 
     jwt_manager: JWTManager = request.app.state.jwt_manager
     access_token = jwt_manager.create_jwt_token(username=username)

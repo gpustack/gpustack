@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gpustack.api.exceptions import UnauthorizedException
+from gpustack.api.exceptions import ConflictException, UnauthorizedException
 from gpustack.routes import auth as auth_route
 
 
@@ -323,11 +323,14 @@ def _request_with_config(server_config) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_cas_callback_rejects_existing_user_from_other_source(monkeypatch):
-    """A CAS login carrying a username that already exists as a Local /
-    OIDC / SAML user must NOT be silently bound to that account —
+    """A CAS login carrying a username that already exists as a Local
+    / OIDC / SAML user must NOT be silently bound to that account —
     otherwise an attacker who can register the username on the CAS
-    server hijacks the existing GPUStack admin / OIDC user.
-    """
+    server hijacks the existing GPUStack admin / OIDC user. The
+    response is a 303 redirect to ``/login?error=source_conflict``
+    rather than a raw JSON 409 page, so the login form can render the
+    actionable "ask an admin to link / convert" message via its
+    ``?error=`` handler."""
     from gpustack.schemas.users import AuthProviderEnum
 
     monkeypatch.setattr(
@@ -357,9 +360,65 @@ async def test_cas_callback_rejects_existing_user_from_other_source(monkeypatch)
     request.app.url_path_for.return_value = "/auth/cas/callback"
     request.query_params = {"ticket": "ST-attacker"}
 
-    with pytest.raises(UnauthorizedException) as exc:
-        await auth_route.cas_callback(request=request, session=MagicMock())
+    response = await auth_route.cas_callback(request=request, session=MagicMock())
+    assert response.status_code in (302, 303, 307)
+    assert response.headers["location"] == auth_route.SOURCE_CONFLICT_LOGIN_URL
+
+
+@pytest.mark.asyncio
+async def test_resolve_external_user_raises_conflict_on_mismatch(monkeypatch):
+    """The structured 409 path that the browser callbacks layer the
+    redirect on top of: direct callers (and the existing tests) get a
+    typed ``ConflictException`` with the message that surfaces in the
+    login UI."""
+    from gpustack.schemas.users import AuthProviderEnum
+
+    existing = MagicMock()
+    existing.source = AuthProviderEnum.Local
+    monkeypatch.setattr(
+        auth_route.User, "first_by_fields", AsyncMock(return_value=existing)
+    )
+
+    with pytest.raises(ConflictException) as exc:
+        await auth_route._resolve_external_user(
+            MagicMock(), "admin", AuthProviderEnum.CAS
+        )
     assert "different authentication source" in str(exc.value.message)
+    assert "administrator" in str(exc.value.message).lower()
+
+
+@pytest.mark.asyncio
+async def test_cas_callback_translates_other_failures_to_auth_failed(monkeypatch):
+    """Anything that isn't a source conflict — bad ticket, malformed
+    response, IdP unreachable — lands on ``/login?error=auth_failed``.
+    Mirrors the source-conflict redirect: the browser never sees a
+    raw JSON error page, and the underlying detail goes to the server
+    log via the decorator's ``logger.exception`` call."""
+    from gpustack.api.exceptions import UnauthorizedException
+
+    # validate_cas_ticket raises Unauthorized on a bad ticket — the
+    # most representative non-conflict failure for this callback.
+    monkeypatch.setattr(
+        auth_route,
+        "validate_cas_ticket",
+        AsyncMock(side_effect=UnauthorizedException(message="bad ticket")),
+    )
+    monkeypatch.setattr(auth_route, "use_proxy_env_for_url", lambda url: False)
+    monkeypatch.setattr(auth_route, "make_ssl_context", lambda: None)
+    monkeypatch.setattr(
+        auth_route.httpx, "AsyncClient", lambda **kw: _AsyncClientFake()
+    )
+
+    request = MagicMock()
+    request.app.state.server_config.cas_server_url = "https://cas.example.com/cas"
+    request.app.state.server_config.cas_callback_url = None
+    request.app.state.server_config.server_external_url = "https://gpustack.example.com"
+    request.app.url_path_for.return_value = "/auth/cas/callback"
+    request.query_params = {"ticket": "ST-bad"}
+
+    response = await auth_route.cas_callback(request=request, session=MagicMock())
+    assert response.status_code in (302, 303, 307)
+    assert response.headers["location"] == auth_route.AUTH_FAILED_LOGIN_URL
 
 
 class _AsyncClientFake:
