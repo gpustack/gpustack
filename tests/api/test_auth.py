@@ -307,3 +307,102 @@ async def test_persisted_system_principal_without_links_hits_admin_gate():
     assert not is_server_token_principal(principal)
     with pytest.raises(ForbiddenException):
         await get_worker_principal(principal)
+
+
+_SAML_XXE_PAYLOAD = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE samlp:Response [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+  <saml:Assertion>
+    <saml:Subject>
+      <saml:NameID>&xxe;</saml:NameID>
+    </saml:Subject>
+  </saml:Assertion>
+</samlp:Response>
+"""
+
+
+@pytest.mark.asyncio
+async def test_saml_callback_does_not_resolve_external_entities():
+    """A SAML assertion is parsed *before* any signature check, on
+    fully attacker-controllable input. With ``resolve_entities=False``
+    the ``&xxe;`` reference is never expanded, so ``<saml:NameID>``
+    surfaces empty and the username-resolution path bails cleanly —
+    crucially without having touched ``file:///etc/passwd``.
+    """
+    import base64
+    from unittest.mock import MagicMock
+
+    from gpustack.routes import auth as auth_route
+
+    encoded = base64.b64encode(_SAML_XXE_PAYLOAD.encode("utf-8")).decode("ascii")
+    request = MagicMock()
+    request.method = "POST"
+
+    async def _form():
+        return {"SAMLResponse": encoded}
+
+    request.form = _form
+    request.app.state.server_config.external_auth_name = None
+    request.app.state.server_config.external_auth_full_name = None
+    request.app.state.server_config.external_auth_avatar_url = None
+    request.app.state.server_config.external_auth_default_inactive = False
+
+    # Call the *unwrapped* function so the SSO-callback decorator
+    # doesn't swallow the exception into a redirect — we want to
+    # assert directly on what the inner code raises.
+    with pytest.raises(UnauthorizedException) as exc:
+        await auth_route.saml_callback.__wrapped__(request=request, session=MagicMock())
+    msg = str(exc.value.message)
+    assert "root:" not in msg
+    assert "/etc/passwd" not in msg
+
+
+_SAML_NO_MATCHING_ATTR = """<?xml version="1.0" encoding="UTF-8"?>
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+  <saml:Assertion>
+    <saml:Subject>
+      <saml:NameID>alice@example.com</saml:NameID>
+    </saml:Subject>
+    <saml:AttributeStatement>
+      <saml:Attribute Name="email">
+        <saml:AttributeValue>alice@example.com</saml:AttributeValue>
+      </saml:Attribute>
+    </saml:AttributeStatement>
+  </saml:Assertion>
+</samlp:Response>
+"""
+
+
+@pytest.mark.asyncio
+async def test_saml_callback_missing_configured_username_attribute_rejects():
+    """When the operator pins ``external_auth_name`` to a specific
+    attribute and the assertion doesn't carry it, fail loudly at the
+    source rather than letting ``None`` flow into the user
+    resolve/create path."""
+    import base64
+    from unittest.mock import MagicMock
+
+    from gpustack.routes import auth as auth_route
+
+    encoded = base64.b64encode(_SAML_NO_MATCHING_ATTR.encode("utf-8")).decode("ascii")
+    request = MagicMock()
+    request.method = "POST"
+
+    async def _form():
+        return {"SAMLResponse": encoded}
+
+    request.form = _form
+    # Operator pointed at ``employeeId`` — the assertion above only
+    # carries ``email`` and ``name_id``.
+    request.app.state.server_config.external_auth_name = "employeeId"
+    request.app.state.server_config.external_auth_full_name = None
+    request.app.state.server_config.external_auth_avatar_url = None
+    request.app.state.server_config.external_auth_default_inactive = False
+
+    with pytest.raises(UnauthorizedException) as exc:
+        await auth_route.saml_callback.__wrapped__(request=request, session=MagicMock())
+    assert "employeeId" in str(exc.value.message)
