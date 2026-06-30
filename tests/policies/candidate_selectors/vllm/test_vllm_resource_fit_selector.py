@@ -676,7 +676,7 @@ async def test_select_candidates(
     with (
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -936,7 +936,7 @@ async def test_select_candidates_headless(
     with (
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -1187,7 +1187,7 @@ async def test_select_candidates_from_different_gpu_types(
     with (
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=(True, []),
+            return_value=True,
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
