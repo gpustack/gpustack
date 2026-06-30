@@ -17,12 +17,23 @@ Bundles the pre-release schema tweaks for v2.2.1:
    The previous platform-Org fallback left USER-personal and cross-Org
    resources unreachable.
 
+3. Backfill ``metered_usage.sku_count`` from the snapshotted shape.
+   ``sku_count`` is the per-instance unit multiplier — GPU card count, or CPU
+   base-flavor unit count (e.g. 3 for a 3c6g instance on a 1c2g flavor). Older
+   metering wrote ``gpu_count or 1``, so every CPU row landed ``1`` regardless
+   of size. The Instance Types breakdown groups by ``(sku, sku_count)``, so
+   historical CPU rows would otherwise collapse all sizes into one row.
+   Recompute it from each row's ``dimensions`` (live table + archive), in
+   batches and Python-side so it is dialect-agnostic. GPU rows already stored
+   the count, so in practice only CPU rows change.
+
 Revision ID: c4d7e8f9a0b1
 Revises: b2c3d4e5f6a7
 Create Date: 2026-06-24 11:00:00.000000
 
 """
-from typing import Sequence, Union
+import json
+from typing import Optional, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
@@ -39,6 +50,71 @@ _TABLES = ('principals', 'principal_memberships')
 _ENUM_NAME = 'authproviderenum'
 _ENUM_VALUES = ('Local', 'OIDC', 'SAML')
 
+
+# --- sku_count backfill (part 3) ---
+_UPTIME_METER = 'instance.uptime'
+_METERED_TABLES = ('metered_usage', 'metered_usage_archive')
+_BATCH = 1000
+
+
+def _coerce_dims(value) -> dict:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _resolve_sku_count(dims: dict) -> int:
+    """Unit multiplier from a stored ``dimensions`` blob — GPU card count, else
+    CPU base-flavor unit count (mirrors
+    gpustack.server.resource_usage_collector._resolve_sku_count; inlined so the
+    migration carries no app-import dependency)."""
+
+    def _int(v) -> Optional[int]:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    gpu_count = _int(dims.get('gpu_count')) or 0
+    if gpu_count > 0:
+        return gpu_count
+    for total_key, unit_key in (
+        ('cpu_milli', 'unit_cpu_milli'),
+        ('memory_mib', 'unit_memory_mib'),
+    ):
+        total = _int(dims.get(total_key))
+        unit = _int(dims.get(unit_key))
+        if total and unit and unit > 0:
+            return max(1, round(total / unit))
+    return 1
+
+
+def _backfill_sku_count(bind) -> None:
+    for table in _METERED_TABLES:
+        if not sa.inspect(bind).has_table(table):
+            continue
+        rows = bind.execute(
+            sa.text(
+                f"SELECT id, sku_count, dimensions FROM {table} "
+                f"WHERE meter_key = :m"
+            ),
+            {"m": _UPTIME_METER},
+        ).fetchall()
+
+        updates = [
+            {"id": r[0], "c": _resolve_sku_count(_coerce_dims(r[2]))}
+            for r in rows
+        ]
+        updates = [u for u, r in zip(updates, rows) if u["c"] != r[1]]
+
+        stmt = sa.text(f"UPDATE {table} SET sku_count = :c WHERE id = :id")
+        for i in range(0, len(updates), _BATCH):
+            bind.execute(stmt, updates[i : i + _BATCH])
 
 def upgrade() -> None:
     bind = op.get_bind()
@@ -78,6 +154,9 @@ def upgrade() -> None:
             existing_type=sa.Integer(),
             nullable=True,
         )
+        
+    # Part 3: backfill sku_count (all dialects).
+    _backfill_sku_count(bind)
 
 
 def downgrade() -> None:
@@ -156,3 +235,7 @@ def downgrade() -> None:
                 existing_nullable=False,
                 existing_server_default='Local',
             )
+            
+    # Part 3 (sku_count backfill) is an irreversible data fix — the original
+    # (mostly ``1``) values are not recoverable and were wrong anyway, so the
+    # downgrade only reverts the principal.source column type.
