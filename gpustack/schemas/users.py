@@ -135,6 +135,20 @@ class UserCreate(UserBase):
 
 class UserUpdate(UserBase):
     password: Optional[str] = None
+    # Overrides ``UserBase.source`` on two axes.
+    #
+    # Default ``None`` (vs. ``UserBase``'s ``"Local"``): an omitted
+    # ``source`` must mean "leave as-is". Inheriting the ``Local``
+    # default would silently flip every existing SSO user back to
+    # Local the first time an admin saved an unrelated field via a
+    # client that didn't send the key.
+    #
+    # Tighter type (``AuthProviderEnum`` vs. free-form ``str``):
+    # ``_resolve_external_user`` needs an exact match on the next
+    # login, so a garbage value like ``"banana"`` would lock the
+    # user out with no error at write time. Pydantic rejects
+    # anything outside the enum at 422.
+    source: Optional[AuthProviderEnum] = None
 
 
 class UserSelfUpdate(SQLModel):

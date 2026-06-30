@@ -158,3 +158,24 @@ async def clear_require_password_change(
     row.require_password_change = False
     row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     await row.save(session, auto_commit=auto_commit)
+
+
+async def clear_password(
+    session: AsyncSession,
+    principal_id: int,
+    *,
+    auto_commit: bool = True,
+) -> None:
+    """Soft-delete the active password row, if any.
+
+    Used to retire a local credential without removing the principal:
+    leaving a verifiable hash on a row whose ``source`` is no longer
+    ``Local`` would keep ``/login`` usable as a parallel ingress that
+    bypasses the IdP, since :func:`authenticate_user` only checks the
+    hash. No-op when no active row exists (SSO-only users, or rows
+    already cleared).
+    """
+    row = await _get(session, principal_id)
+    if row is None:
+        return
+    await row.delete(session, soft=True, auto_commit=auto_commit)
