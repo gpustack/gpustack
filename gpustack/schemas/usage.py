@@ -186,11 +186,23 @@ class UsageBreakdownRequest(UsageBaseRequest):
                 )
         return value
 
-    @field_validator("page", "perPage")
+    @field_validator("perPage")
     @classmethod
-    def validate_positive_int(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("page and perPage must be positive")
+    def validate_per_page(cls, value: int) -> int:
+        # Generous ceiling (abuse cap only). Kept at 10000 for backward compat
+        # with older UIs that fetch the whole set via perPage=10000; new callers
+        # use page=-1. Lowering it would 400 cached old UIs on upgrade.
+        if value < 1 or value > 10000:
+            raise ValueError("perPage must be between 1 and 10000")
+        return value
+
+    @field_validator("page")
+    @classmethod
+    def validate_page(cls, value: int) -> int:
+        # ``page <= 0`` is the no-pagination sentinel (return all buckets),
+        # matching ActiveRecordMixin.page_query. Otherwise must be positive.
+        if value == 0:
+            raise ValueError("page must be a positive number or -1 (no pagination)")
         return value
 
     @computed_field
