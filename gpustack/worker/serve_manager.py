@@ -37,6 +37,7 @@ from gpustack.utils import network
 from gpustack.utils.convert import safe_int
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.command import find_int_parameter
+from gpustack.utils.vllm_topology import subordinates_serve_api
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
 from gpustack.worker.backends.sglang import SGLangServer
@@ -356,34 +357,24 @@ class ServeManager:
             ]:
                 # Only if not in ERROR state yet.
                 if model_instance.state != ModelInstanceStateEnum.ERROR:
-                    with contextlib.suppress(NotFoundException):
-                        # Get patch dict for main worker.
-                        if is_main_worker:
-                            patch_dict = {
-                                "state": ModelInstanceStateEnum.ERROR,
-                                "state_message": "Inference server exited or unhealthy.",
-                            }
-                        # Get patch dict for subordinate worker.
-                        else:
-                            sw_pos = next(
-                                (
-                                    i
-                                    for i, sw in enumerate(
-                                        model_instance.distributed_servers.subordinate_workers
-                                    )
-                                    if sw.worker_id == self._worker_id
-                                ),
+                    if is_main_worker:
+                        with contextlib.suppress(NotFoundException):
+                            self._update_model_instance(
+                                model_instance.id,
+                                state=ModelInstanceStateEnum.ERROR,
+                                state_message="Inference server exited or unhealthy.",
                             )
-                            sw = model_instance.distributed_servers.subordinate_workers[
-                                sw_pos
-                            ]
-                            sw.state = ModelInstanceStateEnum.ERROR
-                            sw.state_message = "Inference server exited or unhealthy."
-                            patch_dict = {
-                                f"distributed_servers.subordinate_workers.{sw_pos}": sw,
-                            }
-                        # Update model instance.
-                        self._update_model_instance(model_instance.id, **patch_dict)
+                    else:
+                        # Resolve by worker_id on the fresh instance (never a
+                        # captured index) so a concurrent reorder can't write the
+                        # wrong slot, and a missing entry is logged instead of
+                        # raising StopIteration past the NotFoundException guard.
+                        self._update_subordinate_worker_state(
+                            model_instance.id,
+                            self._worker_id,
+                            ModelInstanceStateEnum.ERROR,
+                            "Inference server exited or unhealthy.",
+                        )
                 continue
 
             # Otherwise, update model instance state to RUNNING if everything is fine.
@@ -453,24 +444,25 @@ class ServeManager:
                         == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
                     ):
                         continue
-                    # Otherwise, update subordinate worker state to RUNNING.
-                    sw_pos = next(
+                    # Snapshot lookup only to skip a redundant write when already
+                    # RUNNING; the write re-resolves by worker_id on the fresh instance.
+                    own = next(
                         (
-                            i
-                            for i, sw in enumerate(
-                                model_instance.distributed_servers.subordinate_workers
-                            )
+                            sw
+                            for sw in model_instance.distributed_servers.subordinate_workers
                             if sw.worker_id == self._worker_id
                         ),
+                        None,
                     )
-                    sw = model_instance.distributed_servers.subordinate_workers[sw_pos]
-                    if sw.state == ModelInstanceStateEnum.RUNNING:
+                    if own is None or own.state == ModelInstanceStateEnum.RUNNING:
                         continue
-                    sw.state = ModelInstanceStateEnum.RUNNING
-                    sw.state_message = ""
-                    patch_dict = {
-                        f"distributed_servers.subordinate_workers.{sw_pos}": sw,
-                    }
+                    self._update_subordinate_worker_state(
+                        model_instance.id,
+                        self._worker_id,
+                        ModelInstanceStateEnum.RUNNING,
+                        "",
+                    )
+                    continue
                 # Update model instance.
                 self._update_model_instance(model_instance.id, **patch_dict)
 
@@ -478,6 +470,11 @@ class ServeManager:
     def _get_main_worker_distributed_state(
         model_instance: ModelInstance,
     ) -> Optional[dict]:
+        """All-or-nothing by design: any subordinate ERROR/UNREACHABLE takes the
+        whole instance down. vLLM MoE+EP nodes are coupled (cross-rank all-to-all),
+        so one dead rank cascades — keeping healthy nodes serving would just route
+        to an already-crashed cluster. Don't relax this to per-node tolerance.
+        """
         subordinate_workers = (
             model_instance.distributed_servers.subordinate_workers
             if (
@@ -586,6 +583,64 @@ class ServeManager:
                     )
                     raise e
 
+    def _resolve_inference_health_probe(self, model_instance: ModelInstance, model):
+        """Where to probe this RUNNING instance from this worker, or None when
+        this worker serves no API for it (a headless follower).
+
+        Returns (probe_host, probe_port, on_failure). The leader probes its own
+        worker_ip:port. An API-serving subordinate (hybrid-LB / external-LB)
+        probes its own worker_ip:ports[0]; on failure it marks its subordinate
+        entry ERROR so _get_main_worker_distributed_state takes the instance
+        down. Within one worker an instance id maps to a single role, so the
+        instance id alone keys the failure counters.
+        """
+        if model_instance.worker_id == self._worker_id:
+
+            def on_failure():
+                self._update_model_instance(
+                    model_instance.id,
+                    state=ModelInstanceStateEnum.ERROR,
+                    state_message=_INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
+                )
+
+            return model_instance.worker_ip, model_instance.port, on_failure
+
+        if not subordinates_serve_api(model.backend_parameters):
+            return None
+        distributed_servers = model_instance.distributed_servers
+        if not (distributed_servers and distributed_servers.subordinate_workers):
+            return None
+        sw_pos = next(
+            (
+                i
+                for i, subordinate_worker in enumerate(
+                    distributed_servers.subordinate_workers
+                )
+                if subordinate_worker.worker_id == self._worker_id
+            ),
+            None,
+        )
+        if sw_pos is None:
+            return None
+        subordinate_worker = distributed_servers.subordinate_workers[sw_pos]
+        if not subordinate_worker.worker_ip:
+            # Empty IP falls back to mi.worker_ip (the leader) in is_inference_ready;
+            # skip instead of silently probing the wrong host.
+            return None
+        probe_port = (
+            model_instance.ports[0] if model_instance.ports else model_instance.port
+        )
+
+        def on_failure():
+            self._update_subordinate_worker_state(
+                model_instance.id,
+                self._worker_id,
+                ModelInstanceStateEnum.ERROR,
+                _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
+            )
+
+        return subordinate_worker.worker_ip, probe_port, on_failure
+
     def sync_model_instances_inference_health(self):
         """
         Synchronize model instances' inference health by sending actual inference requests.
@@ -598,23 +653,26 @@ class ServeManager:
 
         If the model has received successful inference traffic recently
         (within the configured interval), the active health check is skipped.
+
+        Each RUNNING instance hosted here is probed on the endpoint this worker
+        actually serves: the leader on its own worker_ip:port, or — for an API
+        serving subordinate (hybrid-LB / external-LB) — this subordinate's own
+        worker_ip:ports[0]. Headless followers serve nothing and are skipped.
         """
-
-        # Use the event-driven local cache instead of an API call.
-        model_instances = [
-            mi
-            for mi in self._model_instance_by_instance_id.values()
-            if mi.state == ModelInstanceStateEnum.RUNNING
-        ]
-        if not model_instances:
-            return
-
         now = time.time()
 
-        for model_instance in model_instances:
+        # Snapshot the map: on_failure may patch state and mutate it mid-loop.
+        for model_instance in list(self._model_instance_by_instance_id.values()):
+            if model_instance.state != ModelInstanceStateEnum.RUNNING:
+                continue
             model = self._get_model(model_instance)
             if not model:
                 continue
+
+            probe = self._resolve_inference_health_probe(model_instance, model)
+            if probe is None:
+                continue
+            probe_host, probe_port, on_failure = probe
 
             # Read per-model config from model.env.
             config = _get_inference_health_check_config(model)
@@ -647,8 +705,14 @@ class ServeManager:
                 self._inference_health_check_failures.pop(model_instance.id, None)
                 continue
 
-            # Perform inference health check.
-            if not is_inference_ready(model_instance, model, timeout=timeout):
+            # Perform inference health check against the served endpoint.
+            if not is_inference_ready(
+                model_instance,
+                model,
+                timeout=timeout,
+                host=probe_host,
+                port=probe_port,
+            ):
                 failure_count = self._inference_health_check_failures.get(
                     model_instance.id, 0
                 )
@@ -660,11 +724,7 @@ class ServeManager:
                         f"Model instance {model_instance.name} inference health check failed "
                         f"{failure_count} times, updating state to ERROR."
                     )
-                    patch_dict = {
-                        "state": ModelInstanceStateEnum.ERROR,
-                        "state_message": _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
-                    }
-                    self._update_model_instance(model_instance.id, **patch_dict)
+                    on_failure()
                     # Reset failure count after marking as error.
                     del self._inference_health_check_failures[model_instance.id]
                 else:
@@ -691,6 +751,14 @@ class ServeManager:
         )
 
         is_main_worker = mi.worker_id == self._worker_id
+
+        # Tear down on DELETED before the start-gating below; otherwise a stale
+        # _get_model (NotFoundException once the parent model is gone) or a gating
+        # early-return skips the stop and orphans the container.
+        if event.type == EventType.DELETED:
+            self._stop_model_instance(mi, delete_logs=True)
+            logger.trace(f"DELETED event: stopped deleted model instance {mi.name}.")
+            return
 
         if is_main_worker:
             self._model_instance_by_instance_id[mi.id] = mi
@@ -728,6 +796,20 @@ class ServeManager:
             )
             if not joined:
                 return
+
+            # Subordinates that serve their own API (hybrid-LB / external-LB)
+            # have no --headless, so the server's proxy/gateway may route
+            # inference traffic here. Track the instance in the by-id map so the
+            # routing header resolves to this worker's local serving port via
+            # get_instance_port_by_model_instance_id (ports[0] is the same number
+            # on every node, each bound to its own worker IP). Other distributed
+            # followers stay headless and out of the map so they never receive
+            # direct traffic.
+            follower_model = self._get_model(mi)
+            if follower_model and subordinates_serve_api(
+                follower_model.backend_parameters
+            ):
+                self._model_instance_by_instance_id[mi.id] = mi
             # Return if the main worker isn't initialized.
             if (
                 mi.distributed_servers.mode
@@ -758,11 +840,6 @@ class ServeManager:
                         f"Model instance {mi.name} waits for previous subordinate worker {sw.worker_ip} to be ready."
                     )
                     return
-
-        if event.type == EventType.DELETED:
-            self._stop_model_instance(mi, delete_logs=True)
-            logger.trace(f"DELETED event: stopped deleted model instance {mi.name}.")
-            return
 
         if event.type == EventType.UPDATED:
             # Caching matched ERROR instances for restart handling.
@@ -1460,6 +1537,44 @@ class ServeManager:
                 f"Model instance with ID {id} not found when trying to update."
             )
 
+    def _update_subordinate_worker_state(
+        self,
+        id: int,
+        worker_id: int,
+        state: ModelInstanceStateEnum,
+        state_message: str,
+    ):
+        """Set this worker's subordinate entry state on the instance, resolving
+        the entry by worker_id against the freshly fetched instance (never a
+        captured index) so a concurrent reorder/rebuild of subordinate_workers
+        can't write the wrong slot or pad the list with None.
+        """
+        try:
+            mi_public = self._clientset.model_instances.get(id=id)
+            mi = ModelInstanceUpdate(**mi_public.model_dump())
+            subordinate_workers = (
+                mi.distributed_servers.subordinate_workers
+                if mi.distributed_servers
+                else None
+            ) or []
+            target = next(
+                (sw for sw in subordinate_workers if sw.worker_id == worker_id),
+                None,
+            )
+            if target is None:
+                logger.warning(
+                    f"Subordinate worker {worker_id} no longer on model instance "
+                    f"{id}; skip state update."
+                )
+                return
+            target.state = state
+            target.state_message = state_message
+            self._clientset.model_instances.update(id=id, model_update=mi)
+        except NotFoundException:
+            logger.warning(
+                f"Model instance with ID {id} not found when trying to update."
+            )
+
     def _stop_model_instance(
         self,
         mi: ModelInstance,
@@ -1629,6 +1744,11 @@ class ServeManager:
         instance = self._model_instance_by_instance_id.get(
             model_instance_id
         )  # Ensure the model instance is cached.
+        # ports[0] is the serving port and carries the same number on every node
+        # of a distributed instance (each bound to its own worker IP), so this
+        # resolves correctly whether this worker hosts the leader or an
+        # API-serving subordinate (hybrid-LB / external-LB) — the worker proxy
+        # forwards to this worker's own IP:port.
         return (
             instance.ports[0]
             if instance and instance.state == ModelInstanceStateEnum.RUNNING
@@ -1749,16 +1869,28 @@ def _get_inference_health_check_config(model: Model) -> dict:
     }
 
 
-def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bool:
+def is_inference_ready(
+    mi: ModelInstance,
+    model: Model,
+    timeout: int = 15,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+) -> bool:
     """
     Send a minimal inference request to verify the inference capability is working.
+
+    Defaults to the instance's leader endpoint; a subordinate probe overrides
+    host/port with its own serving address (hybrid-LB / external-LB).
     """
     # Check Custom backend (no standard inference API)
     if is_custom_backend(model.backend):
         return True
 
+    probe_host = host or mi.worker_ip
+    probe_port = port or mi.port
+
     # Check port assignment
-    if not mi.port:
+    if not probe_port:
         logger.debug(f"Model instance {mi.name} does not have port assigned yet.")
         return False
 
@@ -1769,7 +1901,7 @@ def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bo
         return True
 
     endpoint_path, payload = result
-    inference_url = f"http://{mi.worker_ip}:{mi.port}{endpoint_path}"
+    inference_url = f"http://{probe_host}:{probe_port}{endpoint_path}"
 
     try:
         response = requests.post(inference_url, json=payload, timeout=timeout)

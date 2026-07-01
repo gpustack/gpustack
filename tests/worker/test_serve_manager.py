@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
+from gpustack.api.exceptions import NotFoundException
 from gpustack.schemas.models import (
     BackendEnum,
     DistributedServerCoordinateModeEnum,
@@ -404,3 +405,281 @@ def test_persist_container_logs_window_anchor_ignores_repeated_line(
     # Window [A,B,A,B] matches only at the end; single-line 'B' would match
     # index 1 and duplicate A,B.
     assert Path(log_path).read_text(encoding="utf-8") == "A\nB\nA\nB\nC\n"
+
+
+def _build_distributed_follower_instance(backend_parameters):
+    """2-node distributed instance: leader on worker 1, follower on worker 2."""
+    model_instance = new_model_instance(
+        1,
+        "distributed-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+    )
+    # _handle_model_instance_event re-validates the event payload, so source
+    # (a required field) must be set.
+    model_instance.source = SourceEnum.HUGGING_FACE
+    model_instance.huggingface_repo_id = "Qwen/Qwen2.5-0.5B-Instruct"
+    model_instance.worker_ip = "10.0.0.1"
+    model_instance.port = 8000
+    # ports[0] is the serving port, identical on every node (bound to each
+    # worker's own IP); the rest are DP/master/connecting ports.
+    model_instance.ports = [8000, 8001, 8002, 8003]
+    model_instance.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2,
+                worker_name="worker-2",
+                worker_ip="10.0.0.2",
+                state=ModelInstanceStateEnum.RUNNING,
+            )
+        ],
+    )
+    model = new_model(
+        1,
+        "test",
+        1,
+        huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct",
+        backend_parameters=backend_parameters,
+    )
+    model.backend = BackendEnum.VLLM
+    return model_instance, model
+
+
+def _drive_follower_event(manager, model_instance, model):
+    """Drive an UPDATED event on a follower worker, stubbing workload start."""
+    event = Event(type=EventType.UPDATED, data=model_instance)
+    with (
+        # logger.trace is a custom level not registered in the bare test logger.
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(manager, "_get_model", return_value=model),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state="running"),
+        ),
+        patch.object(manager, "_start_model_instance"),
+    ):
+        manager._handle_model_instance_event(event)
+
+
+def test_hybrid_lb_follower_is_cached_for_routing():
+    """A hybrid-LB follower serves its own API, so the follower worker must
+    track the instance by id and resolve its local serving port (ports[0])."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    model_instance, model = _build_distributed_follower_instance(
+        [
+            "--data-parallel-hybrid-lb",
+            "--tensor-parallel-size",
+            "8",
+            "--data-parallel-size",
+            "2",
+        ]
+    )
+
+    _drive_follower_event(manager, model_instance, model)
+
+    assert model_instance.id in manager._model_instance_by_instance_id
+    assert manager.get_instance_port_by_model_instance_id(model_instance.id) == 8000
+
+
+def test_external_lb_follower_is_cached_for_routing():
+    """An external-LB follower also serves its own API, so it must be tracked
+    by id and resolve its local serving port, same as hybrid-LB."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    model_instance, model = _build_distributed_follower_instance(
+        [
+            "--data-parallel-external-lb",
+            "--tensor-parallel-size",
+            "8",
+            "--data-parallel-size",
+            "2",
+        ]
+    )
+
+    _drive_follower_event(manager, model_instance, model)
+
+    assert model_instance.id in manager._model_instance_by_instance_id
+    assert manager.get_instance_port_by_model_instance_id(model_instance.id) == 8000
+
+
+def test_headless_follower_is_not_cached_for_routing():
+    """A non-hybrid (headless) follower does not serve an API, so it must stay
+    out of the by-id map and never receive routed traffic."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    model_instance, model = _build_distributed_follower_instance(
+        [
+            "--tensor-parallel-size",
+            "8",
+            "--data-parallel-size",
+            "2",
+            "--data-parallel-size-local",
+            "1",
+        ]
+    )
+
+    _drive_follower_event(manager, model_instance, model)
+
+    assert model_instance.id not in manager._model_instance_by_instance_id
+    assert manager.get_instance_port_by_model_instance_id(model_instance.id) is None
+
+
+def test_delete_event_stops_follower_when_parent_model_already_deleted():
+    """Regression: a DELETED event must tear down the follower's workload even
+    when the parent model is already gone, in which case _get_model raises
+    NotFoundException. The stop must still happen (handled before the
+    start-gating), otherwise the container is orphaned on the subordinate."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    model_instance, _model = _build_distributed_follower_instance(
+        ["--data-parallel-hybrid-lb", "--data-parallel-size", "2"]
+    )
+
+    event = Event(type=EventType.DELETED, data=model_instance)
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(
+            manager, "_get_model", side_effect=NotFoundException("model deleted")
+        ),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+    ):
+        manager._handle_model_instance_event(event)
+
+    stop_model_instance.assert_called_once()
+    assert stop_model_instance.call_args.args[0].id == model_instance.id
+
+
+def test_resolve_inference_health_probe_leader_uses_own_endpoint():
+    manager, _clients = _build_serve_manager(worker_id=1)
+    model_instance, model = _build_distributed_follower_instance(
+        ["--data-parallel-hybrid-lb"]
+    )
+
+    probe = manager._resolve_inference_health_probe(model_instance, model)
+    assert probe is not None
+    host, port, on_failure = probe
+    assert (host, port) == ("10.0.0.1", 8000)
+
+    with patch.object(manager, "_update_model_instance") as update_model_instance:
+        on_failure()
+    update_model_instance.assert_called_once_with(
+        model_instance.id,
+        state=ModelInstanceStateEnum.ERROR,
+        state_message=ANY,
+    )
+
+
+def test_resolve_inference_health_probe_subordinate_uses_own_endpoint():
+    # On the subordinate worker, the probe targets this node's own
+    # worker_ip:ports[0], not the leader, and a failure flips this worker's
+    # subordinate entry to ERROR — resolved by worker_id, not a captured index.
+    manager, _clients = _build_serve_manager(worker_id=2)
+    model_instance, model = _build_distributed_follower_instance(
+        ["--data-parallel-hybrid-lb"]
+    )
+
+    probe = manager._resolve_inference_health_probe(model_instance, model)
+    assert probe is not None
+    host, port, on_failure = probe
+    assert (host, port) == ("10.0.0.2", 8000)
+
+    with patch.object(
+        manager, "_update_subordinate_worker_state"
+    ) as update_subordinate:
+        on_failure()
+    update_subordinate.assert_called_once_with(
+        model_instance.id,
+        2,
+        ModelInstanceStateEnum.ERROR,
+        ANY,
+    )
+
+
+def test_resolve_inference_health_probe_subordinate_missing_ip_skipped():
+    # An empty subordinate IP would make is_inference_ready fall back to the
+    # leader's worker_ip, silently probing the wrong host; skip instead.
+    manager, _clients = _build_serve_manager(worker_id=2)
+    model_instance, model = _build_distributed_follower_instance(
+        ["--data-parallel-hybrid-lb"]
+    )
+    model_instance.distributed_servers.subordinate_workers[0].worker_ip = ""
+
+    assert manager._resolve_inference_health_probe(model_instance, model) is None
+
+
+def test_update_subordinate_worker_state_resolves_by_worker_id_after_reorder():
+    # The probe captured this worker at one position, but subordinate_workers was
+    # rebuilt/reordered before the failure threshold. The update must locate the
+    # entry by worker_id on the freshly fetched instance, flip only that entry,
+    # and never pad the list with None (a stale index would do both wrong).
+    manager, clientset = _build_serve_manager(worker_id=2)
+    fresh = new_model_instance(
+        1, "test", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    fresh.source = SourceEnum.HUGGING_FACE
+    fresh.huggingface_repo_id = "Qwen/Qwen2.5-0.5B-Instruct"
+    fresh.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=3,
+                worker_ip="10.0.0.3",
+                state=ModelInstanceStateEnum.RUNNING,
+            ),
+            ModelInstanceSubordinateWorker(
+                worker_id=2,
+                worker_ip="10.0.0.2",
+                state=ModelInstanceStateEnum.RUNNING,
+            ),
+        ],
+    )
+    clientset.model_instances.get.return_value = fresh
+
+    manager._update_subordinate_worker_state(
+        fresh.id, 2, ModelInstanceStateEnum.ERROR, "boom"
+    )
+
+    clientset.model_instances.update.assert_called_once()
+    sent = clientset.model_instances.update.call_args.kwargs["model_update"]
+    subs = sent.distributed_servers.subordinate_workers
+    assert len(subs) == 2  # no None appended
+    by_id = {sw.worker_id: sw for sw in subs}
+    assert by_id[2].state == ModelInstanceStateEnum.ERROR
+    assert by_id[3].state == ModelInstanceStateEnum.RUNNING  # untouched
+
+
+def test_update_subordinate_worker_state_skips_when_worker_absent():
+    # If this worker is no longer a subordinate on the fresh instance, skip the
+    # write entirely rather than appending a bogus entry.
+    manager, clientset = _build_serve_manager(worker_id=99)
+    fresh = new_model_instance(
+        1, "test", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    fresh.source = SourceEnum.HUGGING_FACE
+    fresh.huggingface_repo_id = "Qwen/Qwen2.5-0.5B-Instruct"
+    fresh.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2,
+                worker_ip="10.0.0.2",
+                state=ModelInstanceStateEnum.RUNNING,
+            ),
+        ],
+    )
+    clientset.model_instances.get.return_value = fresh
+
+    manager._update_subordinate_worker_state(
+        fresh.id, 99, ModelInstanceStateEnum.ERROR, "boom"
+    )
+
+    clientset.model_instances.update.assert_not_called()
+
+
+def test_resolve_inference_health_probe_headless_follower_skipped():
+    # internal-LB follower serves no API, so this worker must not probe it.
+    manager, _clients = _build_serve_manager(worker_id=2)
+    model_instance, model = _build_distributed_follower_instance(
+        ["--data-parallel-size", "2", "--data-parallel-size-local", "1"]
+    )
+
+    assert manager._resolve_inference_health_probe(model_instance, model) is None
