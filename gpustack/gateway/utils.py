@@ -58,6 +58,7 @@ from gpustack.server.services import ModelInstanceService, WorkerService
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
+from gpustack.policies.utils import manual_distributed_from_env
 from gpustack.utils.network import is_ipaddress
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException, V1IngressTLS
@@ -1489,6 +1490,11 @@ async def cleanup_mcpbridge_registry(
     for model_id, instances in instances_by_model.items():
         model = model_by_id.get(model_id)
         if model is None:
+            continue
+        if manual_distributed_from_env(model.env):
+            # Manual-distributed models manage gateway/LB externally; not adding
+            # their registries lets the prefix-diff clear them, matching the
+            # reconcile path (_ensure_model_mcp_bridge) instead of fighting it.
             continue
         for instance in instances:
             worker = worker_by_id.get(instance.worker_id)

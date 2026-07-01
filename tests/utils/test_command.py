@@ -5,9 +5,8 @@ from gpustack.utils.command import (
     is_command_available,
     find_parameter,
     find_bool_parameter,
-    subordinates_serve_api,
+    parse_bool_env,
     resolve_executor_backend,
-    resolve_data_parallel_load_balance_mode,
     get_versioned_command,
     extend_args_no_exist,
     flatten_to_argv,
@@ -421,29 +420,6 @@ def test_find_bool_parameter_argv_stream():
 
 
 @pytest.mark.parametrize(
-    "parameters, expected",
-    [
-        # hybrid-lb flag.
-        (['--data-parallel-hybrid-lb'], True),
-        (['--data-parallel-size', '4', '--data-parallel-hybrid-lb'], True),
-        # external-lb flag.
-        (['--data-parallel-external-lb'], True),
-        (['--data-parallel-size=4', '--data-parallel-external-lb'], True),
-        # Explicit rank implies external-lb in vLLM, even rank 0 (falsy value).
-        (['--data-parallel-rank', '0'], True),
-        (['--data-parallel-rank', '3'], True),
-        # Plain internal-lb DP must NOT be treated as per-rank API.
-        (['--data-parallel-size', '4'], False),
-        # Nothing relevant.
-        (['--tp', '8'], False),
-        (None, False),
-    ],
-)
-def test_subordinates_serve_api(parameters, expected):
-    assert subordinates_serve_api(parameters) is expected
-
-
-@pytest.mark.parametrize(
     "parameters, backend_version, expected",
     [
         # User-supplied flag drives the branch.
@@ -462,16 +438,22 @@ def test_resolve_executor_backend(parameters, backend_version, expected):
 
 
 @pytest.mark.parametrize(
-    "parameters, expected",
+    "value, expected",
     [
-        # Raw flags map to their mode.
-        (['--data-parallel-hybrid-lb'], "hybrid"),
-        (['--data-parallel-external-lb'], "external"),
-        (['--data-parallel-rank', '0'], "external"),
-        # Defaults to internal.
-        (['--data-parallel-size', '4'], "internal"),
-        ([], "internal"),
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("On", True),
+        # Shares find_bool_parameter's vocabulary, so single-letter forms count.
+        ("t", True),
+        ("y", True),
+        (" true ", True),
+        ("0", False),
+        ("false", False),
+        ("nope", False),
+        ("", False),
+        (None, False),
     ],
 )
-def test_resolve_data_parallel_load_balance_mode(parameters, expected):
-    assert resolve_data_parallel_load_balance_mode(parameters) == expected
+def test_parse_bool_env(value, expected):
+    assert parse_bool_env(value) is expected

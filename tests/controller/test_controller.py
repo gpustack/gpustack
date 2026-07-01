@@ -7,7 +7,10 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
 )
 from gpustack.schemas.workers import WorkerStateEnum
-from gpustack.server.controllers import find_scale_down_candidates
+from gpustack.server.controllers import (
+    calculate_model_destinations,
+    find_scale_down_candidates,
+)
 from tests.fixtures.workers.fixtures import (
     linux_nvidia_19_4090_24gx2,
     linux_nvidia_2_4080_16gx2,
@@ -124,6 +127,22 @@ async def test_find_scale_down_candidates():
         ]
 
         compare_candidates(candidates, expected_candidates)
+
+
+@pytest.mark.asyncio
+async def test_calculate_model_destinations_manual_distributed_returns_empty():
+    # Manual-distributed models opt out of gateway routing, so destinations must
+    # be empty (no route points at an unregistered upstream). The early return
+    # precedes any session access, so None is safe here.
+    model = new_model(
+        1,
+        "manual-dp",
+        1,
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        env={"GPUSTACK_MANUAL_DISTRIBUTED": "1"},
+    )
+    destinations = await calculate_model_destinations(session=None, model=model)
+    assert destinations == []
 
 
 def compare_candidates(candidates: List[ModelInstanceScore], expected_candidates):

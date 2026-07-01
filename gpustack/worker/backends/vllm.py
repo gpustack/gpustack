@@ -34,8 +34,6 @@ from gpustack.utils.command import (
     extend_args_no_exist,
     format_backend_parameters,
     resolve_executor_backend,
-    resolve_data_parallel_load_balance_mode,
-    subordinates_serve_api,
 )
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
@@ -44,6 +42,8 @@ from gpustack.utils.vllm_topology import (
     MultinodeUserParallelism,
     parse_user_parallelism,
     validate_multinode_topology,
+    resolve_data_parallel_load_balance_mode,
+    subordinates_serve_api,
 )
 from gpustack.worker.backends.base import (
     InferenceServer,
