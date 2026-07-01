@@ -40,6 +40,7 @@ from gpustack.utils.command import (
     find_parameter,
     find_int_parameter,
     resolve_executor_backend,
+    resolve_data_parallel_load_balance_mode,
 )
 from gpustack.utils.unit import byte_to_gib
 from gpustack.utils.vllm_topology import (
@@ -121,15 +122,24 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             model.backend_parameters, ["data-parallel-size-local", "dpl"]
         )
 
-        # Hybrid-LB: --data-parallel-size is a GLOBAL count spanning separate
-        # deployments (e.g. one per node), so it must NOT size this deployment's
-        # local GPU need. Only `dpl` ranks run here, each taking tp*pp GPUs, so
-        # the local world is tp*pp*dpl. Without dpl we can't infer it; leave
-        # world_size unset and let the manual GPU selection stand.
-        hybrid_lb = find_bool_parameter(
-            model.backend_parameters, ["data-parallel-hybrid-lb"]
+        # Hybrid-LB sizing depends on whether the cluster is one deployment or many:
+        # - Legacy (one deployment per node, distributed_inference_across_workers
+        #   off): --data-parallel-size is a GLOBAL count spanning those separate
+        #   deployments, so it must NOT size this deployment. Only `dpl` ranks run
+        #   here (each taking tp*pp GPUs, local world = tp*pp*dpl); without dpl we
+        #   can't infer it, so leave world_size unset and let manual GPU selection
+        #   stand.
+        # - Unified (distributed_inference_across_workers on): the whole hybrid-lb
+        #   cluster is one model_instance, so --data-parallel-size is the
+        #   cluster-wide DP total and sizes normally (world = tp*pp*dp); per-node
+        #   dpl is derived from the physical topology, same as headless multi-node.
+        # Hybrid is driven by the raw flag (the same resolver the worker uses),
+        # so it sizes consistently.
+        hybrid_lb = (
+            resolve_data_parallel_load_balance_mode(model.backend_parameters)
+            == "hybrid"
         )
-        if hybrid_lb:
+        if hybrid_lb and not model.distributed_inference_across_workers:
             if dpl is None:
                 return None, None
             dp = dpl
@@ -793,6 +803,47 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 f"vLLM multi-node: --data-parallel-size {dp} must be a multiple "
                 f"of --data-parallel-size-local {dpl}."
             )
+
+        load_balance_mode = resolve_data_parallel_load_balance_mode(
+            self._model.backend_parameters,
+        )
+        if load_balance_mode in ("hybrid", "external"):
+            is_moe = bool(self._model_params.moe_num_experts)
+            if not is_moe:
+                raise ValueError(
+                    f"vLLM data-parallel load-balance mode '{load_balance_mode}' is "
+                    f"only supported for MoE models, but '{self._model.name}' is "
+                    "dense — vLLM would crash on a needs_dp_coordinator "
+                    "stats_update_address assertion. Use the 'internal' mode."
+                )
+        if load_balance_mode == "external" and (dp is None or dp <= 1):
+            got = "omitted, vLLM defaults to 1" if dp is None else dp
+            raise ValueError(
+                "vLLM external load-balance mode requires --data-parallel-size > 1 "
+                f"(got {got}); each node serves one DP rank independently."
+            )
+        # external-LB across workers auto-assigns a distinct per-node rank, so a
+        # user-pinned rank collapses every node to one rank and a user dpl != 1
+        # breaks one-rank-per-node. Reject at schedule time; leave single
+        # (non-cross-worker) deployments to the user's own wiring.
+        if (
+            load_balance_mode == "external"
+            and self._model.distributed_inference_across_workers
+        ):
+            if (
+                find_parameter(self._model.backend_parameters, ["data-parallel-rank"])
+                is not None
+            ):
+                raise ValueError(
+                    "vLLM external load-balance mode across workers auto-assigns a "
+                    "distinct --data-parallel-rank per node; remove the explicit "
+                    "--data-parallel-rank (every node would otherwise share one rank)."
+                )
+            if dpl is not None and dpl != 1:
+                raise ValueError(
+                    "vLLM external load-balance mode requires exactly one DP rank per "
+                    f"node (--data-parallel-size-local must be 1, got {dpl})."
+                )
 
 
 def _create_candidate(

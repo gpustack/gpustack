@@ -5,6 +5,9 @@ from gpustack.utils.command import (
     is_command_available,
     find_parameter,
     find_bool_parameter,
+    subordinates_serve_api,
+    resolve_executor_backend,
+    resolve_data_parallel_load_balance_mode,
     get_versioned_command,
     extend_args_no_exist,
     flatten_to_argv,
@@ -415,3 +418,60 @@ def test_find_bool_parameter_argv_stream():
         ['--tp 8 --max-model-len 1024'],
         ['enable-expert-parallel'],
     )
+
+
+@pytest.mark.parametrize(
+    "parameters, expected",
+    [
+        # hybrid-lb flag.
+        (['--data-parallel-hybrid-lb'], True),
+        (['--data-parallel-size', '4', '--data-parallel-hybrid-lb'], True),
+        # external-lb flag.
+        (['--data-parallel-external-lb'], True),
+        (['--data-parallel-size=4', '--data-parallel-external-lb'], True),
+        # Explicit rank implies external-lb in vLLM, even rank 0 (falsy value).
+        (['--data-parallel-rank', '0'], True),
+        (['--data-parallel-rank', '3'], True),
+        # Plain internal-lb DP must NOT be treated as per-rank API.
+        (['--data-parallel-size', '4'], False),
+        # Nothing relevant.
+        (['--tp', '8'], False),
+        (None, False),
+    ],
+)
+def test_subordinates_serve_api(parameters, expected):
+    assert subordinates_serve_api(parameters) is expected
+
+
+@pytest.mark.parametrize(
+    "parameters, backend_version, expected",
+    [
+        # User-supplied flag drives the branch.
+        (['--distributed-executor-backend=mp'], None, "mp"),
+        (['--distributed-executor-backend=ray'], None, "ray"),
+        # Any explicit non-"mp" value routes to the ray branch.
+        (['--distributed-executor-backend=external_launcher'], None, "ray"),
+        # No flag falls back to the version default (default-to-ray here).
+        ([], None, "ray"),
+        # Custom image on vLLM >= 0.18.0 drops Ray from defaults -> mp.
+        ([], "0.18.0-custom", "mp"),
+    ],
+)
+def test_resolve_executor_backend(parameters, backend_version, expected):
+    assert resolve_executor_backend(parameters, backend_version) == expected
+
+
+@pytest.mark.parametrize(
+    "parameters, expected",
+    [
+        # Raw flags map to their mode.
+        (['--data-parallel-hybrid-lb'], "hybrid"),
+        (['--data-parallel-external-lb'], "external"),
+        (['--data-parallel-rank', '0'], "external"),
+        # Defaults to internal.
+        (['--data-parallel-size', '4'], "internal"),
+        ([], "internal"),
+    ],
+)
+def test_resolve_data_parallel_load_balance_mode(parameters, expected):
+    assert resolve_data_parallel_load_balance_mode(parameters) == expected
