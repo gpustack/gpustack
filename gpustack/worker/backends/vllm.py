@@ -34,6 +34,8 @@ from gpustack.utils.command import (
     extend_args_no_exist,
     format_backend_parameters,
     resolve_executor_backend,
+    resolve_data_parallel_load_balance_mode,
+    subordinates_serve_api,
 )
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
@@ -651,6 +653,23 @@ class VLLMServer(InferenceServer):
             ("--served-model-name", self._model_instance.model_name),
         )
 
+        # An API-serving subordinate (hybrid-LB / external-LB) binds ports[0] on
+        # its own IP, but that port number is chosen on the leader node and never
+        # re-checked here, so it may already be taken on this worker. Fail fast
+        # with a clear message instead of letting vLLM crash on bind.
+        if (
+            subordinates_serve_api(self._model.backend_parameters)
+            and ctx.topology is not None
+            and ctx.topology.is_follower
+            and not network.is_port_available(ctx.port, host=self._worker.ip)
+        ):
+            raise ValueError(
+                f"vLLM subordinate serving port {ctx.port} is already in use on "
+                f"worker {self._worker.ip}. The port is selected on the leader node "
+                "and shared across nodes but was not verified free here; free it on "
+                "this worker, then redeploy."
+            )
+
         injected = self._get_injected_backend_parameters(
             arguments, user_backend_parameters, entrypoint
         )
@@ -737,20 +756,19 @@ class VLLMServer(InferenceServer):
         ctx: _VLLMArgsContext,
     ) -> List[str]:
         """
-        MP multi-node (non-Ray) path. Dispatches to one of three parameter
-        shapes based on the resolved topology:
+        MP multi-node (non-Ray) path. Emits the parameter shape matching the
+        resolved topology, then suppresses the API server on headless followers.
 
-        - ``dp_only``  → ``--data-parallel-*`` only; vLLM treats every node as
-          a DP engine head (no PP/TP spans nodes).
-        - ``mp_only``  → ``--nnodes`` + ``--node-rank`` only; a single DP rank
-          is spread across all nodes for cross-node TP/PP.
+        - ``dp_only``  → ``--data-parallel-*`` only; every node is a DP engine
+          head (no PP/TP spans nodes). See :meth:`_dp_only_args`.
+        - ``mp_only``  → ``--nnodes`` + ``--node-rank``; one DP rank spread over
+          all nodes for cross-node TP/PP.
         - ``nested``   → both sets; vLLM derives node role internally via
           ``node_rank % nnodes_within_dp``.
 
-        Followers also carry ``--headless`` to skip the API server. The leader
-        always exposes the HTTP API (handled by --host/--port elsewhere).
-        Exception: under ``--data-parallel-hybrid-lb`` every DP engine serves
-        its own API, so ``--headless`` is not injected.
+        Followers carry ``--headless`` to skip the API server (the leader always
+        exposes it). Exception: when subordinates serve their own API (hybrid-LB
+        / external-LB) every DP engine serves, so ``--headless`` is not injected.
         """
         if (
             not ctx.is_distributed
@@ -761,6 +779,13 @@ class VLLMServer(InferenceServer):
 
         topology = ctx.topology
         leader_ip = self._model_instance.worker_ip
+        # serve_manager._assign_ports reserves ports[1] for the DP RPC endpoint
+        # (ZMQ) and ports[2] for the PyTorch master endpoint (TCPStore). The two
+        # channels use different protocols and can't share one port, so each
+        # shape consumes the subset it needs.
+        dp_rpc_port = str(self._model_instance.ports[1])
+        master_port = str(self._model_instance.ports[2])
+
         arguments: List[str] = []
         if (
             find_parameter(
@@ -770,47 +795,91 @@ class VLLMServer(InferenceServer):
         ):
             arguments.extend(["--distributed-executor-backend", "mp"])
 
-        # serve_manager._assign_ports reserves ports[1] for the DP RPC
-        # endpoint (ZMQ) and ports[2] for the PyTorch master endpoint
-        # (TCPStore). The two channels use different protocols and can't
-        # share one port, so each shape consumes the subset it needs.
-        dp_rpc_port = str(self._model_instance.ports[1])
-        master_port = str(self._model_instance.ports[2])
+        load_balance_mode = resolve_data_parallel_load_balance_mode(
+            self._model.backend_parameters,
+        )
+
         if topology.shape == "dp_only":
-            extend_args_no_exist(
-                arguments,
-                ("--data-parallel-start-rank", str(topology.start_rank)),
-                ("--data-parallel-address", leader_ip),
-                ("--data-parallel-rpc-port", dp_rpc_port),
+            shape_args = self._dp_only_args(
+                topology, leader_ip, dp_rpc_port, load_balance_mode
             )
         elif topology.shape == "mp_only":
-            extend_args_no_exist(
-                arguments,
-                ("--nnodes", str(topology.nnodes)),
-                ("--node-rank", str(topology.node_rank)),
-                ("--master-addr", leader_ip),
-                ("--master-port", master_port),
-            )
+            shape_args = self._cross_node_args(topology, leader_ip, master_port)
         else:  # nested
-            extend_args_no_exist(
-                arguments,
-                ("--nnodes", str(topology.nnodes)),
-                ("--node-rank", str(topology.node_rank)),
-                ("--master-addr", leader_ip),
-                ("--master-port", master_port),
-                ("--data-parallel-address", leader_ip),
-                ("--data-parallel-rpc-port", dp_rpc_port),
+            shape_args = self._cross_node_args(
+                topology, leader_ip, master_port, dp_rpc_port=dp_rpc_port
             )
+        extend_args_no_exist(arguments, *shape_args)
 
-        # Hybrid-LB requires every DP engine (leader and followers alike) to
-        # run its own API server, so skip the headless injection when the user
-        # opts into it.
-        hybrid_lb = find_bool_parameter(
-            self._model.backend_parameters, ["data-parallel-hybrid-lb"]
-        )
-        if topology.is_follower and not hybrid_lb:
+        if topology.is_follower and not subordinates_serve_api(
+            self._model.backend_parameters
+        ):
             extend_args_no_exist(arguments, "--headless")
         return arguments
+
+    def _dp_only_args(
+        self,
+        topology: "MultinodeTopology",
+        leader_ip: str,
+        dp_rpc_port: str,
+        load_balance_mode: str,
+    ) -> List[Tuple[str, str]]:
+        """Per-node DP-head arguments for the ``dp_only`` shape.
+
+        Internal-LB / hybrid-LB emit ``--data-parallel-start-rank``. external-LB
+        is one rank per node, so it emits a per-node ``--data-parallel-rank``
+        (start_rank == this node's DP rank when each node hosts a single rank) —
+        unless the user pinned the rank, in which case GPUStack defers to it.
+        """
+        args = [
+            ("--data-parallel-address", leader_ip),
+            ("--data-parallel-rpc-port", dp_rpc_port),
+        ]
+        backend_parameters = self._model.backend_parameters
+        if find_parameter(backend_parameters, ["data-parallel-rank"]) is not None:
+            # User input wins: leave their --data-parallel-rank untouched. A
+            # single shared value across workers would collapse every node to the
+            # same rank, so warn for multi-worker layouts.
+            logger.warning(
+                "vLLM external-LB: --data-parallel-rank is user-specified; "
+                "GPUStack will not auto-assign per-node ranks. Ensure each worker "
+                "gets a distinct rank in a multi-worker deployment."
+            )
+            return args
+        if load_balance_mode == "external":
+            if topology.dpl != 1:
+                raise ValueError(
+                    "vLLM external-LB requires exactly one DP rank per node "
+                    f"(this node hosts {topology.dpl}); tensor-parallel-size * "
+                    "pipeline-parallel-size must equal the node's GPU count."
+                )
+            return [("--data-parallel-rank", str(topology.start_rank)), *args]
+        return [("--data-parallel-start-rank", str(topology.start_rank)), *args]
+
+    def _cross_node_args(
+        self,
+        topology: "MultinodeTopology",
+        leader_ip: str,
+        master_port: str,
+        dp_rpc_port: Optional[str] = None,
+    ) -> List[Tuple[str, str]]:
+        """Cross-node TP/PP arguments shared by ``mp_only`` and ``nested``.
+
+        Passing ``dp_rpc_port`` adds the DP channel (the ``nested`` case), where
+        vLLM derives each node's DP rank from ``node_rank // nnodes_within_dp``.
+        """
+        args = [
+            ("--nnodes", str(topology.nnodes)),
+            ("--node-rank", str(topology.node_rank)),
+            ("--master-addr", leader_ip),
+            ("--master-port", master_port),
+        ]
+        if dp_rpc_port is not None:
+            args += [
+                ("--data-parallel-address", leader_ip),
+                ("--data-parallel-rpc-port", dp_rpc_port),
+            ]
+        return args
 
     def _build_extended_kv_cache_arguments(self, ctx: _VLLMArgsContext) -> List[str]:
         extended = self._model.extended_kv_cache
