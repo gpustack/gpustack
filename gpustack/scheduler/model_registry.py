@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.24.0/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 # NOTE: entries are only added/renamed here, never removed, so that older vLLM
 # versions and other backends (SGLang, Ascend MindIE) keep recognizing them.
@@ -97,6 +97,7 @@ _TEXT_GENERATION_MODELS = [
     "MiniMaxText01ForCausalLM",
     "MiniMaxM1ForCausalLM",
     "MiniMaxM2ForCausalLM",
+    "MiniMaxM3SparseForCausalLM",
     "MistralForCausalLM",
     "MixtralForCausalLM",
     "MotifForCausalLM",
@@ -148,6 +149,7 @@ _TEXT_GENERATION_MODELS = [
     "DeepseekV4ForCausalLM",
     "Gemma4ForCausalLM",
     "HCXVisionV2ForCausalLM",
+    "HrmTextForCausalLM",
     "HYV3ForCausalLM",
     "HyperCLOVAXForCausalLM",
     "Jais2ForCausalLM",
@@ -257,6 +259,7 @@ _MULTIMODAL_MODELS = [
     "Blip2ForConditionalGeneration",
     "ChameleonForConditionalGeneration",
     "Cohere2VisionForConditionalGeneration",
+    "Cosmos3ForConditionalGeneration",
     "DeepseekVLV2ForCausalLM",
     "DeepseekOCRForCausalLM",
     "DeepseekOCR2ForCausalLM",
@@ -298,7 +301,9 @@ _MULTIMODAL_MODELS = [
     "LlavaOnevisionForConditionalGeneration",
     "MantisForConditionalGeneration",
     "MiDashengLMModel",
+    "MossAudioModel",
     "MiniMaxVL01ForConditionalGeneration",
+    "MiniMaxM3SparseForConditionalGeneration",
     "MiniCPMO",
     "MiniCPMV",
     "Mistral3ForConditionalGeneration",
@@ -330,6 +335,7 @@ _MULTIMODAL_MODELS = [
     "UltravoxModel",
     "SkyworkR1VChatModel",
     "Step3VLForConditionalGeneration",
+    "Step3p7ForConditionalGeneration",
     "TarsierForConditionalGeneration",
     "Tarsier2ForConditionalGeneration",
     "VoxtralStreamingGeneration",
@@ -344,6 +350,8 @@ _MULTIMODAL_MODELS = [
     "CheersForConditionalGeneration",
     "Exaone4_5_ForConditionalGeneration",
     "Gemma4ForConditionalGeneration",
+    "Gemma4UnifiedForConditionalGeneration",
+    "DiffusionGemmaForBlockDiffusion",
     "Granite4VisionForConditionalGeneration",
     "Moondream3ForCausalLM",
     "HfMoondream",
@@ -365,6 +373,7 @@ _SPEECH_TO_TEXT_MODELS = [
     "FunAudioChatForConditionalGeneration",
     "GlmAsrForConditionalGeneration",
     "GraniteSpeechForConditionalGeneration",
+    "GraniteSpeechPlusForConditionalGeneration",
     "Qwen3ASRForConditionalGeneration",
     "Qwen3ASRRealtimeGeneration",
     "VoxtralForConditionalGeneration",
