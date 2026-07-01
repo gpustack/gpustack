@@ -1303,26 +1303,42 @@ class ServeManager:
             mi.ports = [mi.port]
             unavailable_ports.add(mi.port)
 
-            # Additional ports for distributed servers.
-            #
-            # ports[0]: HTTP API (always).
-            # Native (mp) path — both reserved unconditionally, dp_only uses
-            # ports[1], mp_only uses ports[2], nested uses both:
+            # Additional ports for distributed servers (mp path allocates all):
+            #   ports[0]: HTTP API (always)
             #   ports[1]: --data-parallel-rpc-port (DP coordinator ZMQ)
-            #   ports[2]: --master-port (PyTorch torch.distributed TCP store)
-            # Ray path: ports[1] = DP RPC when user-specified dp > 1.
-            # ports[-1]: subordinate workers' connecting port.
+            #   ports[2]: --master-port (PyTorch distributed TCP store)
+            #   ports[3]: env VLLM_PORT
+            #   ports[-1]: connecting port (= VLLM_DP_MASTER_PORT for dp_only/nested)
+            # Ray path: only ports[1] (DP RPC), when user dp > 1.
             if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
+                # Allocate first so we can fence off the 10-port band vLLM reserves
+                # around VLLM_DP_MASTER_PORT (= connecting port), keeping the cross
+                # ports (incl. VLLM_PORT) outside it.
+                connecting_port = network.get_free_port(
+                    port_range=self._config.service_port_range,
+                    unavailable_ports=unavailable_ports,
+                    host=mi.worker_ip,
+                )
+                unavailable_ports.add(connecting_port)
+
+                cross_ports: List[int] = []
                 if backend == BackendEnum.VLLM:
                     executor_backend = resolve_executor_backend(
                         model.backend_parameters, model.backend_version
                     )
                     if executor_backend == "mp":
-                        # Pre-allocate both DP RPC and PyTorch master ports;
-                        # the two channels use different protocols (ZMQ vs
-                        # TCPStore) and can't share one port in the nested
-                        # shape, so reserving both keeps the layout stable.
-                        cross_port_count = 2
+                        # DP RPC + PyTorch master + VLLM_PORT. Clamp the band to
+                        # service_port_range; out-of-range ports would inflate
+                        # get_free_port's exhaustion count.
+                        _, end_port = network.parse_port_range(
+                            self._config.service_port_range
+                        )
+                        unavailable_ports |= set(
+                            range(
+                                connecting_port, min(connecting_port + 10, end_port + 1)
+                            )
+                        )
+                        cross_port_count = 3
                     else:
                         dps = find_int_parameter(
                             model.backend_parameters,
@@ -1335,17 +1351,11 @@ class ServeManager:
                             unavailable_ports=unavailable_ports,
                             host=mi.worker_ip,
                         )
-                        mi.ports.append(cross_port)
+                        cross_ports.append(cross_port)
                         unavailable_ports.add(cross_port)
 
-                # Connecting port for subordinate workers communication
-                connecting_port = network.get_free_port(
-                    port_range=self._config.service_port_range,
-                    unavailable_ports=unavailable_ports,
-                    host=mi.worker_ip,
-                )
+                mi.ports.extend(cross_ports)
                 mi.ports.append(connecting_port)
-                unavailable_ports.add(connecting_port)
 
             self._assigned_ports[mi.id] = set(mi.ports)
 
