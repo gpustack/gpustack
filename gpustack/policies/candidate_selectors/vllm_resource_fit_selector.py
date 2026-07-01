@@ -40,12 +40,12 @@ from gpustack.utils.command import (
     find_parameter,
     find_int_parameter,
     resolve_executor_backend,
-    resolve_data_parallel_load_balance_mode,
 )
 from gpustack.utils.unit import byte_to_gib
 from gpustack.utils.vllm_topology import (
     parse_user_parallelism,
     validate_multinode_topology,
+    resolve_data_parallel_load_balance_mode,
 )
 
 logger = logging.getLogger(__name__)

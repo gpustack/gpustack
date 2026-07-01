@@ -1,6 +1,9 @@
 import pytest
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
-from gpustack.policies.utils import should_skip_gpu_count_check
+from gpustack.policies.utils import (
+    manual_distributed_from_env,
+    should_skip_gpu_count_check,
+)
 from gpustack.scheduler.evaluator import evaluate_model_metadata
 from tests.utils.model import make_model, new_model
 from gpustack.scheduler.scheduler import (
@@ -254,6 +257,16 @@ _TP8_DP2_DPL1 = [
         ("manual_env_0", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "0"}, False),
         ("manual_env_false", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "false"}, False),
         ("manual_env_empty", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": ""}, False),
+        # GPUSTACK_MANUAL_DISTRIBUTED implies the bypass, but still only when
+        # GPUs are manually selected (the gpu_selector guard stays in front).
+        ("manual_distributed_on", True, {"GPUSTACK_MANUAL_DISTRIBUTED": "1"}, True),
+        (
+            "manual_distributed_no_selector",
+            False,
+            {"GPUSTACK_MANUAL_DISTRIBUTED": "1"},
+            False,
+        ),
+        ("manual_distributed_off", True, {"GPUSTACK_MANUAL_DISTRIBUTED": "0"}, False),
     ],
 )
 def test_should_skip_gpu_count_check(case_name, manual_select, env, expected):
@@ -264,6 +277,22 @@ def test_should_skip_gpu_count_check(case_name, manual_select, env, expected):
         env=env,
     )
     assert should_skip_gpu_count_check(model) is expected, f"case '{case_name}' failed"
+
+
+@pytest.mark.parametrize(
+    "case_name, env, expected",
+    [
+        ("no_env", None, False),
+        ("on_1", {"GPUSTACK_MANUAL_DISTRIBUTED": "1"}, True),
+        ("on_true", {"GPUSTACK_MANUAL_DISTRIBUTED": "TRUE"}, True),
+        ("on_yes", {"GPUSTACK_MANUAL_DISTRIBUTED": "yes"}, True),
+        ("off_0", {"GPUSTACK_MANUAL_DISTRIBUTED": "0"}, False),
+        ("off_empty", {"GPUSTACK_MANUAL_DISTRIBUTED": ""}, False),
+        ("other_key", {"OTHER": "1"}, False),
+    ],
+)
+def test_manual_distributed_from_env(case_name, env, expected):
+    assert manual_distributed_from_env(env) is expected, f"case '{case_name}' failed"
 
 
 @pytest.mark.parametrize(
