@@ -112,6 +112,16 @@ def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
     return False
 
 
+def parse_bool_env(value: Optional[str]) -> bool:
+    """Parse a truthy environment-variable value, sharing the same vocabulary as
+    backend-parameter bool parsing (``1``/``true``/``yes``/``on``/``t``/``y``).
+    ``None``/empty/unrecognized -> False.
+    """
+    if value is None:
+        return False
+    return str(value).strip().lower() in _TRUTHY_VALUES
+
+
 def get_versioned_command(command_name: str, version: str) -> str:
     """
     Get the versioned command name.

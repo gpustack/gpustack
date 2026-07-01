@@ -12,7 +12,11 @@ from functools import reduce
 from math import gcd
 from typing import List, Literal, Optional
 
-from gpustack.utils.command import find_int_parameter
+from gpustack.utils.command import (
+    find_int_parameter,
+    find_bool_parameter,
+    find_parameter,
+)
 
 
 MultinodeShape = Literal["dp_only", "mp_only", "nested"]
@@ -190,4 +194,53 @@ def parse_user_parallelism(
         pp=find_int_parameter(backend_parameters, ["pipeline-parallel-size", "pp"]),
         dp=find_int_parameter(backend_parameters, ["data-parallel-size", "dp"]),
         dpl=find_int_parameter(backend_parameters, ["data-parallel-size-local", "dpl"]),
+    )
+
+
+def resolve_data_parallel_load_balance_mode(
+    backend_parameters: Optional[List[str]],
+) -> str:
+    """Resolve the effective vLLM data-parallel load-balance mode from the
+    user-supplied backend parameters.
+
+    ``--data-parallel-hybrid-lb`` -> ``"hybrid"``; ``--data-parallel-external-lb``
+    or a pinned ``--data-parallel-rank`` -> ``"external"`` (vLLM implies
+    external-LB then). Defaults to ``"internal"``.
+    """
+    if find_bool_parameter(backend_parameters, ["data-parallel-hybrid-lb"]):
+        return "hybrid"
+    if (
+        find_bool_parameter(backend_parameters, ["data-parallel-external-lb"])
+        or find_parameter(backend_parameters, ["data-parallel-rank"]) is not None
+    ):
+        return "external"
+    return "internal"
+
+
+def subordinates_serve_api(backend_parameters: Optional[List[str]]) -> bool:
+    """Whether each subordinate worker runs its own API server (non-headless) and
+    must be registered as an independent gateway backend. True for any non-internal
+    load-balance mode (hybrid-LB / external-LB; see
+    ``resolve_data_parallel_load_balance_mode``); internal-LB followers stay
+    ``--headless`` so only the leader serves.
+    """
+    return resolve_data_parallel_load_balance_mode(backend_parameters) != "internal"
+
+
+_MANUAL_DISTRIBUTED_PARAMS = [
+    "data-parallel-address",
+    "data-parallel-start-rank",
+    "node-rank",
+    "data-parallel-rank",
+]
+
+
+def has_manual_distributed_params(backend_parameters: Optional[List[str]]) -> bool:
+    """Whether backend_parameters hand-wire a DP cluster (explicit
+    ``--data-parallel-address`` / ``--node-rank`` / rank), signaling the user
+    manages distribution themselves rather than letting GPUStack orchestrate it.
+    """
+    return any(
+        find_parameter(backend_parameters, [param]) is not None
+        for param in _MANUAL_DISTRIBUTED_PARAMS
     )
