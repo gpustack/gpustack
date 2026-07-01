@@ -1,3 +1,4 @@
+import base64
 import functools
 import hmac
 import json
@@ -36,7 +37,7 @@ from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
 from lxml import etree
 from gpustack.utils.convert import safe_b64decode, inflate_data
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 from gpustack.ssl_context import make_ssl_context
 from gpustack.utils.network import use_proxy_env_for_url
@@ -262,49 +263,190 @@ async def _resolve_or_provision_external_user(
     return await User.create(session, user_info)
 
 
-async def init_saml_auth(request: Request):
+def _saml_response_signature_kinds(xml_bytes: bytes) -> "tuple[bool, bool]":
+    """Report which SAML signature elements are present on the raw
+    response — as ``(response_signed, assertion_signed)``.
+
+    Presence-only inspection: does *not* validate the signature, only
+    checks the DOM shape. The toolkit does the actual crypto check
+    once the corresponding ``wantMessagesSigned`` / ``wantAssertionsSigned``
+    flag is set, and rejects a faked ``<ds:Signature>`` element there.
+
+    The toolkit's two ``wantX`` knobs are directional — "reject if
+    this position is unsigned" — so there's no direct way to express
+    "either position signed is fine". Different IdPs sign different
+    combinations, so the callback flips the flag matching whichever
+    signature is actually present.
+
+    XXE-safe parser: this is the callback's first read of attacker-
+    controlled bytes, and needs the same hardening the toolkit applies
+    internally.
     """
-    Initialize SAML authentication configuration.
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+    try:
+        root = etree.fromstring(xml_bytes, parser=parser)
+    except etree.XMLSyntaxError:
+        return (False, False)
+    ns = {
+        "ds": "http://www.w3.org/2000/09/xmldsig#",
+        "saml": "urn:oasis:names:tc:SAML:2.0:assertion",
+    }
+    response_signed = root.find("ds:Signature", ns) is not None
+    assertion_signed = root.find(".//saml:Assertion/ds:Signature", ns) is not None
+    return (response_signed, assertion_signed)
+
+
+def _saml_unsigned_escape_hatch(config: Config) -> bool:
+    """Whether the operator has explicitly opted the callback out of
+    signature verification via ``--saml-security``.
+
+    Only the exact combination of *both* ``wantAssertionsSigned`` and
+    ``wantMessagesSigned`` set to ``False`` counts — a missing key or
+    a half-opt-out doesn't. Intended purely for local IdP-integration
+    testing (e.g. Keycloak with all three signing switches off) where
+    turning on signing is inconvenient; enabling this mode makes the
+    /auth/saml/callback endpoint accept forged SAMLResponses from any
+    client.
     """
-    config: Config = request.app.state.server_config
-    form_data = await request.form()
-    form_dict = dict(form_data)
-    saml_settings = {
+    try:
+        operator_security = json.loads(config.saml_security)
+    except (TypeError, ValueError):
+        return False
+    return (
+        operator_security.get("wantAssertionsSigned") is False
+        and operator_security.get("wantMessagesSigned") is False
+    )
+
+
+def _extract_saml_attributes_unsigned(xml_bytes: bytes) -> Dict:
+    """Pull NameID + attributes out of the assertion without any
+    signature check. Used by the testing escape hatch — see
+    :func:`_saml_unsigned_escape_hatch`.
+
+    XXE-safe parser so "signature off" doesn't double as an XXE hole.
+
+    Output shape matches what the toolkit's ``get_attributes()``
+    yields after we collapse single-item lists, so the callback code
+    downstream doesn't need to branch: bare string for single-valued
+    attributes, list for multi-valued.
+    """
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+    root = etree.fromstring(xml_bytes, parser=parser)
+    ns = {"saml": "urn:oasis:names:tc:SAML:2.0:assertion"}
+
+    nameid_elem = root.find(".//saml:NameID", ns)
+    nameid = nameid_elem.text if nameid_elem is not None else ""
+
+    attributes: Dict = {"name_id": nameid}
+    for attr in root.iterfind(".//saml:Attribute", ns):
+        attr_name = attr.get("Name")
+        if not attr_name:
+            continue
+        values = [
+            v.text
+            for v in attr.iterfind("saml:AttributeValue", ns)
+            if v.text is not None
+        ]
+        # Multiple ``<Attribute Name="X">`` elements with the same
+        # Name are valid multi-valued SAML — merge values into one
+        # list rather than overwriting.
+        existing = attributes.get(attr_name)
+        if existing is None:
+            attributes[attr_name] = values[0] if len(values) == 1 else values
+        else:
+            merged = existing if isinstance(existing, list) else [existing]
+            merged.extend(values)
+            attributes[attr_name] = merged
+    return attributes
+
+
+def _saml_settings(config: Config, *, xml_bytes: Optional[bytes] = None) -> Dict:
+    """Assemble the OneLogin toolkit's SP+IdP settings dict.
+
+    The toolkit ships with both ``wantAssertionsSigned`` and
+    ``wantMessagesSigned`` defaulted to ``False``, and ``strict=True``
+    on its own doesn't enforce either — so an unsigned (i.e. forged)
+    assertion would pass. Two-step policy on those flags:
+
+    * **Adaptive detection** (callback path only, when ``xml_bytes``
+      is given): flip ``wantMessagesSigned`` / ``wantAssertionsSigned``
+      to match whichever ``<ds:Signature>`` is actually present. Lets
+      IdPs that sign only the outer ``<Response>`` and IdPs that sign
+      only the inner ``<Assertion>`` both work without any operator
+      config. An operator's explicit setting always wins — a strict
+      deployment can require Assertion signing regardless.
+
+    * **Floor** (applied last): if neither ends up True, force
+      ``wantAssertionsSigned=True``. Layered strictness (encrypted
+      NameID, both-signed, …) is available via ``--saml-security``.
+    """
+    operator_security = json.loads(config.saml_security)
+    security = dict(operator_security)
+    if xml_bytes is not None:
+        response_signed, assertion_signed = _saml_response_signature_kinds(xml_bytes)
+        if "wantMessagesSigned" not in operator_security and response_signed:
+            security["wantMessagesSigned"] = True
+        if "wantAssertionsSigned" not in operator_security and assertion_signed:
+            security["wantAssertionsSigned"] = True
+    # Floor: if neither ``wantX`` ends up True, force
+    # ``wantAssertionsSigned=True`` so an unsigned response is refused.
+    if not security.get("wantAssertionsSigned") and not security.get(
+        "wantMessagesSigned"
+    ):
+        security["wantAssertionsSigned"] = True
+    # Default-tolerate duplicate ``<Attribute Name="X">`` elements in
+    # the assertion (values are merged into one list). SAML allows
+    # multi-valued attributes as either repeated ``<AttributeValue>``
+    # or repeated ``<Attribute>`` — Keycloak's default mappers emit
+    # the latter (role list + role name mappers both write ``Role``),
+    # and the toolkit's out-of-box behaviour is to reject that.
+    # Rejecting isn't a security control, it's a compatibility knob:
+    # operators can still opt into strict mode via ``--saml-security``.
+    security.setdefault("allowRepeatAttributeName", True)
+    return {
         "strict": True,
         "sp": {
-            "entityId": config.saml_sp_entity_id,  # sp_entityId
+            "entityId": config.saml_sp_entity_id,
             "assertionConsumerService": {
-                "url": config.saml_sp_acs_url,  # callback url
+                "url": config.saml_sp_acs_url,
                 "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
             },
             "singleLogoutService": {
                 "url": config.saml_sp_slo_url,
                 "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
             },
-            "x509cert": config.saml_sp_x509_cert,  # SP public key
-            "privateKey": config.saml_sp_private_key,  # sp privateKey
+            "x509cert": config.saml_sp_x509_cert,
+            "privateKey": config.saml_sp_private_key,
         },
         "idp": {
-            "entityId": config.saml_idp_entity_id,  # idp_entityId
+            "entityId": config.saml_idp_entity_id,
             "singleSignOnService": {
-                "url": config.saml_idp_server_url,  # server url
+                "url": config.saml_idp_server_url,
                 "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
             },
             "singleLogoutService": {
                 "url": config.saml_idp_logout_url,
                 "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
             },
-            "x509cert": config.saml_idp_x509_cert,  # idp public key
+            "x509cert": config.saml_idp_x509_cert,
         },
-        "security": json.loads(config.saml_security),
-    }  # Signature configuration
+        "security": security,
+    }
+
+
+async def init_saml_auth(request: Request):
+    """
+    Initialize SAML authentication configuration.
+    """
+    config: Config = request.app.state.server_config
+    form_data = await request.form()
     req = {
         "http_host": request.client.host,
         "script_name": request.url.path,
         "get_data": dict(request.query_params),
-        "post_data": form_dict,
+        "post_data": dict(form_data),
     }
-    return OneLogin_Saml2_Auth(req, saml_settings)
+    return OneLogin_Saml2_Auth(req, _saml_settings(config))
 
 
 # SAML login and callback endpoints
@@ -320,32 +462,87 @@ async def saml_login(request: Request):
 @_sso_callback_errors_to_redirect
 async def saml_callback(request: Request, session: SessionDep):
     logger.debug("Invoke saml callback.")
+    config: Config = request.app.state.server_config
+
+    # Normalise the SAMLResponse to plain base64 (HTTP-POST binding
+    # shape) so the OneLogin toolkit can consume it via
+    # ``request_data['post_data']``. The HTTP-Redirect binding (GET)
+    # additionally DEFLATE-compresses the assertion, which the
+    # toolkit doesn't unwrap on its own — inflate here and re-encode.
     if request.method == "GET":
-        query = dict(request.query_params)
-        SAMLResponse = query['SAMLResponse']
-        decoded = safe_b64decode(SAMLResponse)
-        xml_bytes = inflate_data(decoded)
+        raw = request.query_params.get("SAMLResponse", "")
+        xml_bytes = inflate_data(safe_b64decode(raw))
+        saml_response = base64.b64encode(xml_bytes).decode("ascii")
     else:
         form_data = await request.form()
-        form_dict = dict(form_data)
-        SAMLResponse = form_dict.get('SAMLResponse')
-        xml_bytes = safe_b64decode(SAMLResponse)
+        saml_response = form_data.get("SAMLResponse", "")
+        xml_bytes = safe_b64decode(saml_response) if saml_response else b""
 
-    # ``lxml`` resolves entities and loads external DTDs by default —
-    # neither is needed for SAML assertions, and both widen the XXE
-    # attack surface on attacker-controllable input.
-    parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
-    root = etree.fromstring(xml_bytes, parser=parser)
-    name_id = root.find('.//{*}NameID').text
-    ns = {'saml': 'urn:oasis:names:tc:SAML:2.0:assertion'}
-    attributes = {}
-    attributes['name_id'] = name_id
-    for attr in root.xpath('//saml:Attribute', namespaces=ns):
-        attr_name = attr.get('Name')
-        values = [v.text for v in attr.xpath('saml:AttributeValue', namespaces=ns)]
-        attributes[attr_name] = values[0] if len(values) == 1 else values
+    if _saml_unsigned_escape_hatch(config):
+        # ``OneLogin_Saml2_Auth`` has a hard-coded "at least one
+        # signature element must be present" check (``response.py``
+        # ``No Signature found``) that fires regardless of the ``wantX``
+        # flags, so the escape hatch has to bypass the toolkit
+        # entirely rather than adjust its settings.
+        logger.warning(
+            "SAML signature verification is disabled via --saml-security "
+            "(both wantAssertionsSigned and wantMessagesSigned set to false). "
+            "Any client can log in as any user by posting a forged "
+            "SAMLResponse. Do NOT use in production."
+        )
+        attributes = _extract_saml_attributes_unsigned(xml_bytes)
+    else:
+        # ``current_url`` (used by the toolkit for the ``Destination`` /
+        # ``Recipient`` checks) is derived from the operator's
+        # configured ``saml_sp_acs_url`` rather than from ``request.url``:
+        # behind a reverse proxy or UI dev-server the request the
+        # callback sees often has its host/port/scheme rewritten and
+        # no longer matches what the IdP signed the assertion for. The
+        # ACS URL is what the SP publicly claims to be, so anchoring
+        # the check to it is both more reliable and no weaker —
+        # Destination binding still prevents a response signed for
+        # this SP from being replayed against a *different* SP.
+        acs = urlparse(config.saml_sp_acs_url or "")
+        req = {
+            "http_host": acs.hostname or "",
+            "server_port": str(
+                acs.port
+                if acs.port is not None
+                else (443 if acs.scheme == "https" else 80)
+            ),
+            "https": "on" if acs.scheme == "https" else "off",
+            "script_name": acs.path,
+            "get_data": dict(request.query_params),
+            "post_data": {"SAMLResponse": saml_response},
+        }
+        saml_auth = OneLogin_Saml2_Auth(
+            req, _saml_settings(config, xml_bytes=xml_bytes)
+        )
+        saml_auth.process_response()
 
-    config: Config = request.app.state.server_config
+        errors = saml_auth.get_errors()
+        if errors:
+            # The descriptive reason goes to the server log via the
+            # decorator's ``logger.exception``; the browser only sees
+            # a generic ``auth_failed`` redirect. Prefer the reason
+            # string over the coarse code list when present.
+            raise UnauthorizedException(
+                message="SAML response validation failed: "
+                + (saml_auth.get_last_error_reason() or ", ".join(errors))
+            )
+        if not saml_auth.is_authenticated():
+            raise UnauthorizedException(message="SAML response is not authenticated")
+
+        # Collapse ``dict[str, list[str]]`` (what the toolkit returns)
+        # into "bare string for single-valued, list for multi-valued"
+        # so downstream code doesn't need to branch on arity — matches
+        # the shape ``_extract_saml_attributes_unsigned`` produces.
+        attrs_raw = saml_auth.get_attributes()
+        attributes = {
+            k: (v[0] if isinstance(v, list) and len(v) == 1 else v)
+            for k, v in attrs_raw.items()
+        }
+        attributes["name_id"] = saml_auth.get_nameid()
 
     if config.external_auth_name:
         # If external_auth_name is set, use it as username.

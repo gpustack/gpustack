@@ -1,10 +1,11 @@
 import ssl
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
 from gpustack.api.auth import get_current_user, worker_auth
 from gpustack.api.exceptions import UnauthorizedException
+from gpustack.routes import auth as auth_route
 from gpustack.routes.auth import oidc_callback
 
 
@@ -309,100 +310,444 @@ async def test_persisted_system_principal_without_links_hits_admin_gate():
         await get_worker_principal(principal)
 
 
-_SAML_XXE_PAYLOAD = """<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE samlp:Response [
-  <!ENTITY xxe SYSTEM "file:///etc/passwd">
-]>
-<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
-                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
-  <saml:Assertion>
-    <saml:Subject>
-      <saml:NameID>&xxe;</saml:NameID>
-    </saml:Subject>
-  </saml:Assertion>
-</samlp:Response>
-"""
-
-
-@pytest.mark.asyncio
-async def test_saml_callback_does_not_resolve_external_entities():
-    """A SAML assertion is parsed *before* any signature check, on
-    fully attacker-controllable input. With ``resolve_entities=False``
-    the ``&xxe;`` reference is never expanded, so ``<saml:NameID>``
-    surfaces empty and the username-resolution path bails cleanly —
-    crucially without having touched ``file:///etc/passwd``.
+def test_saml_settings_signature_floor():
+    """Signature floor: at least one of ``wantAssertionsSigned`` /
+    ``wantMessagesSigned`` must be True after the helper resolves the
+    operator's ``--saml-security``. Both defaulting to False (the
+    OneLogin ship state) would let ``process_response`` admit forged
+    (unsigned) assertions — the vulnerability this fix exists to
+    close. Operators who already opted in to either — some IdPs sign
+    only the Response, others only the Assertion — keep their choice.
     """
-    import base64
-    from unittest.mock import MagicMock
+    config = MagicMock()
 
-    from gpustack.routes import auth as auth_route
+    # Operator passed no security config → toolkit ships with both
+    # off; helper defaults ``wantAssertionsSigned`` on to enforce the
+    # floor.
+    config.saml_security = "{}"
+    security = auth_route._saml_settings(config)["security"]
+    assert security.get("wantAssertionsSigned") is True
 
-    encoded = base64.b64encode(_SAML_XXE_PAYLOAD.encode("utf-8")).decode("ascii")
+    # Operator signs only the outer ``<Response>`` (some IdPs do this,
+    # not the Assertion). Respect that — don't force both.
+    config.saml_security = '{"wantAssertionsSigned": false, "wantMessagesSigned": true}'
+    security = auth_route._saml_settings(config)["security"]
+    assert security.get("wantAssertionsSigned") is False
+    assert security.get("wantMessagesSigned") is True
+
+    # Operator signs only the ``<Assertion>`` (typical Keycloak
+    # setup). Respect that too.
+    config.saml_security = '{"wantAssertionsSigned": true, "wantMessagesSigned": false}'
+    security = auth_route._saml_settings(config)["security"]
+    assert security.get("wantAssertionsSigned") is True
+    assert security.get("wantMessagesSigned") is False
+
+
+def test_saml_unsigned_escape_hatch_detects_both_false():
+    """The unsigned escape hatch flags only when *both*
+    ``wantAssertionsSigned`` and ``wantMessagesSigned`` are the
+    literal ``False`` from operator input — a missing key, or a
+    half-opt-out, must not turn the hatch on. The callback branches
+    on this to decide whether to skip signature verification, so
+    correctness of the detection is security-load-bearing."""
+    config = MagicMock()
+
+    # Both explicitly False → hatch on
+    config.saml_security = (
+        '{"wantAssertionsSigned": false, "wantMessagesSigned": false}'
+    )
+    assert auth_route._saml_unsigned_escape_hatch(config) is True
+
+    # Only one explicit False → hatch off (still hits the floor)
+    config.saml_security = '{"wantAssertionsSigned": false}'
+    assert auth_route._saml_unsigned_escape_hatch(config) is False
+
+    # Missing keys → hatch off
+    config.saml_security = "{}"
+    assert auth_route._saml_unsigned_escape_hatch(config) is False
+
+    # Explicit True somewhere → hatch off
+    config.saml_security = '{"wantAssertionsSigned": true, "wantMessagesSigned": false}'
+    assert auth_route._saml_unsigned_escape_hatch(config) is False
+
+
+def test_extract_saml_attributes_unsigned_returns_nameid_and_attributes():
+    """The unsigned parser must extract the same downstream shape the
+    toolkit path produces (single-valued as bare string, multi-valued
+    as list, plus a ``name_id`` key) so the rest of the callback runs
+    unchanged."""
+    xml = (
+        '<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"'
+        ' xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">'
+        "<saml:Assertion><saml:Subject><saml:NameID>alice@example.com"
+        "</saml:NameID></saml:Subject><saml:AttributeStatement>"
+        '<saml:Attribute Name="email"><saml:AttributeValue>alice@example.com'
+        "</saml:AttributeValue></saml:Attribute>"
+        '<saml:Attribute Name="Role"><saml:AttributeValue>engineer'
+        "</saml:AttributeValue></saml:Attribute>"
+        '<saml:Attribute Name="Role"><saml:AttributeValue>admin'
+        "</saml:AttributeValue></saml:Attribute>"
+        "</saml:AttributeStatement></saml:Assertion></samlp:Response>"
+    ).encode()
+    attrs = auth_route._extract_saml_attributes_unsigned(xml)
+    assert attrs["name_id"] == "alice@example.com"
+    assert attrs["email"] == "alice@example.com"
+    # Repeated ``<Attribute Name="Role">`` should be merged into a
+    # list, matching ``allowRepeatAttributeName=True`` in the toolkit
+    # path.
+    assert attrs["Role"] == ["engineer", "admin"]
+
+
+def test_extract_saml_attributes_unsigned_rejects_xxe():
+    """Even in the unsigned escape-hatch path, the parser must not
+    resolve external entities — otherwise turning signature
+    verification off for local IdP tests would also open an XXE
+    file-read vector."""
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<!DOCTYPE samlp:Response ["
+        '  <!ENTITY xxe SYSTEM "file:///etc/passwd">'
+        "]>"
+        '<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"'
+        ' xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">'
+        "<saml:Assertion><saml:Subject><saml:NameID>&xxe;</saml:NameID>"
+        "</saml:Subject></saml:Assertion></samlp:Response>"
+    ).encode()
+    attrs = auth_route._extract_saml_attributes_unsigned(xml)
+    # No expansion happened — the parser didn't fetch /etc/passwd.
+    assert "root:" not in (attrs.get("name_id") or "")
+    assert "/etc/passwd" not in (attrs.get("name_id") or "")
+
+
+_SAML_ENV_WRAPPER = (
+    '<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+    'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" '
+    'xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
+    "{signatures}"
+    "<saml:Assertion>{assertion_signature}<saml:Subject>"
+    "<saml:NameID>alice@example.com</saml:NameID>"
+    "</saml:Subject></saml:Assertion></samlp:Response>"
+)
+_FAKE_SIG = "<ds:Signature><ds:SignatureValue>dummy</ds:SignatureValue></ds:Signature>"
+
+
+def _saml_response_xml(*, response_signed: bool, assertion_signed: bool) -> bytes:
+    return _SAML_ENV_WRAPPER.format(
+        signatures=_FAKE_SIG if response_signed else "",
+        assertion_signature=_FAKE_SIG if assertion_signed else "",
+    ).encode()
+
+
+def test_saml_settings_adapts_to_response_only_signature():
+    """When Keycloak / ADFS is configured to sign the outer
+    ``<Response>`` but not the inner ``<Assertion>`` (Keycloak's own
+    docs describe this as valid: ``Sign Documents=On, Sign
+    Assertions=Off``), the callback must ask the toolkit to require
+    the message signature rather than reject with "Assertion not
+    signed". Adaptive detection sets ``wantMessagesSigned`` based on
+    the DOM shape of what actually arrived — no ``--saml-security``
+    tweaking needed for this common config."""
+
+    config = MagicMock()
+    config.saml_security = "{}"
+    xml = _saml_response_xml(response_signed=True, assertion_signed=False)
+    security = auth_route._saml_settings(config, xml_bytes=xml)["security"]
+    assert security.get("wantMessagesSigned") is True
+    # Assertion-signed floor NOT forced in — the response *is* signed,
+    # just at the outer level.
+    assert security.get("wantAssertionsSigned") is not True
+
+
+def test_saml_settings_adapts_to_assertion_only_signature():
+    """Symmetric case: only the inner ``<Assertion>`` is signed
+    (Keycloak default when ``Sign Assertions=On, Sign Documents=Off``)."""
+
+    config = MagicMock()
+    config.saml_security = "{}"
+    xml = _saml_response_xml(response_signed=False, assertion_signed=True)
+    security = auth_route._saml_settings(config, xml_bytes=xml)["security"]
+    assert security.get("wantAssertionsSigned") is True
+    assert security.get("wantMessagesSigned") is not True
+
+
+def test_saml_settings_operator_explicit_wins_over_adaptive():
+    """Operator strictness must not be dialled *down* by adaptive
+    detection: a deployment that mandates Assertion signing (via
+    ``--saml-security``) keeps that requirement even if the incoming
+    response only signs the outer ``<Response>``. Better to reject a
+    non-compliant IdP than silently lower the bar."""
+
+    config = MagicMock()
+    config.saml_security = '{"wantAssertionsSigned": true}'
+    xml = _saml_response_xml(response_signed=True, assertion_signed=False)
+    security = auth_route._saml_settings(config, xml_bytes=xml)["security"]
+    assert security.get("wantAssertionsSigned") is True
+    # Adaptive still added the ``wantMessagesSigned`` since the
+    # Response *is* signed and the operator didn't explicitly refuse.
+    assert security.get("wantMessagesSigned") is True
+
+
+def test_saml_settings_unsigned_response_still_hits_floor():
+    """If the DOM has neither signature and the operator didn't
+    opt in either way, the floor kicks in with
+    ``wantAssertionsSigned=True`` so the toolkit refuses the
+    (attacker-forgeable) unsigned response."""
+
+    config = MagicMock()
+    config.saml_security = "{}"
+    xml = _saml_response_xml(response_signed=False, assertion_signed=False)
+    security = auth_route._saml_settings(config, xml_bytes=xml)["security"]
+    assert security.get("wantAssertionsSigned") is True
+
+
+def test_saml_settings_defaults_allow_repeat_attribute_name():
+    """SAML allows multi-valued attributes as either repeated
+    ``<AttributeValue>`` inside one ``<Attribute>`` or as multiple
+    ``<Attribute Name="X">`` elements. Keycloak's default mappers
+    emit the latter (role_list + role_name both write ``Role``);
+    the toolkit's out-of-box strict mode rejects that. Default the
+    knob on so real IdPs work without extra config; operators who
+    want strict mode can opt in via ``--saml-security``."""
+
+    config = MagicMock()
+
+    config.saml_security = "{}"
+    assert (
+        auth_route._saml_settings(config)["security"]["allowRepeatAttributeName"]
+        is True
+    )
+
+    # Operator explicit opt-out is respected — strict-mode
+    # deployments can still catch mis-configured IdPs.
+    config.saml_security = '{"allowRepeatAttributeName": false}'
+    assert (
+        auth_route._saml_settings(config)["security"]["allowRepeatAttributeName"]
+        is False
+    )
+
+
+def _saml_callback_request(saml_response_b64: str, **config_overrides) -> object:
+    """Build a request double for the SAML callback tests. The
+    callback derives OneLogin's ``current_url`` from ``saml_sp_acs_url``,
+    not from ``request.url``, so the URL fields on the request are
+    only used for the ``get_data`` payload."""
+
     request = MagicMock()
     request.method = "POST"
 
     async def _form():
-        return {"SAMLResponse": encoded}
+        return {"SAMLResponse": saml_response_b64}
 
     request.form = _form
-    request.app.state.server_config.external_auth_name = None
-    request.app.state.server_config.external_auth_full_name = None
-    request.app.state.server_config.external_auth_avatar_url = None
-    request.app.state.server_config.external_auth_default_inactive = False
+    request.query_params = {}
 
-    # Call the *unwrapped* function so the SSO-callback decorator
-    # doesn't swallow the exception into a redirect — we want to
-    # assert directly on what the inner code raises.
+    cfg = request.app.state.server_config
+    cfg.saml_security = "{}"
+    cfg.saml_sp_acs_url = "http://localhost:9000/auth/saml/callback"
+    cfg.external_auth_name = None
+    cfg.external_auth_full_name = None
+    cfg.external_auth_avatar_url = None
+    cfg.external_auth_default_inactive = False
+    for k, v in config_overrides.items():
+        setattr(cfg, k, v)
+    return request
+
+
+def _patch_saml_auth(monkeypatch, **auth_overrides):
+    """Replace ``OneLogin_Saml2_Auth`` with a scripted fake so tests
+    can exercise the callback's flow around signature validation
+    without producing real signed XML. The fake returns the caller's
+    scripted ``get_errors`` / ``is_authenticated`` / ``get_nameid`` /
+    ``get_attributes`` values from ``process_response`` onwards."""
+
+    fake = MagicMock()
+    fake.process_response = MagicMock()
+    fake.get_errors = MagicMock(return_value=auth_overrides.get("errors", []))
+    fake.get_last_error_reason = MagicMock(
+        return_value=auth_overrides.get("error_reason", "")
+    )
+    fake.is_authenticated = MagicMock(
+        return_value=auth_overrides.get("authenticated", True)
+    )
+    fake.get_nameid = MagicMock(return_value=auth_overrides.get("nameid", ""))
+    fake.get_attributes = MagicMock(return_value=auth_overrides.get("attributes", {}))
+    monkeypatch.setattr(auth_route, "OneLogin_Saml2_Auth", MagicMock(return_value=fake))
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_saml_callback_rejects_when_toolkit_reports_errors(monkeypatch):
+    """Signature failure surfaces via ``auth.get_errors()``. The
+    callback must raise so the decorator produces an ``auth_failed``
+    redirect — never mint a JWT for an unverified assertion."""
+
+    _patch_saml_auth(
+        monkeypatch,
+        errors=["invalid_response"],
+        error_reason="Signature validation failed",
+    )
+    request = _saml_callback_request("dummy-b64")
+
     with pytest.raises(UnauthorizedException) as exc:
         await auth_route.saml_callback.__wrapped__(request=request, session=MagicMock())
-    msg = str(exc.value.message)
-    assert "root:" not in msg
-    assert "/etc/passwd" not in msg
-
-
-_SAML_NO_MATCHING_ATTR = """<?xml version="1.0" encoding="UTF-8"?>
-<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
-                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
-  <saml:Assertion>
-    <saml:Subject>
-      <saml:NameID>alice@example.com</saml:NameID>
-    </saml:Subject>
-    <saml:AttributeStatement>
-      <saml:Attribute Name="email">
-        <saml:AttributeValue>alice@example.com</saml:AttributeValue>
-      </saml:Attribute>
-    </saml:AttributeStatement>
-  </saml:Assertion>
-</samlp:Response>
-"""
+    assert "Signature validation failed" in str(exc.value.message)
 
 
 @pytest.mark.asyncio
-async def test_saml_callback_missing_configured_username_attribute_rejects():
+async def test_saml_callback_rejects_when_not_authenticated(monkeypatch):
+    """The toolkit can complete ``process_response`` with an empty
+    error list but ``is_authenticated`` still False (e.g. status
+    element carries a non-Success code). Treat that the same as a
+    signature failure — refuse to trust NameID / attributes."""
+
+    _patch_saml_auth(monkeypatch, errors=[], authenticated=False)
+    request = _saml_callback_request("dummy-b64")
+
+    with pytest.raises(UnauthorizedException) as exc:
+        await auth_route.saml_callback.__wrapped__(request=request, session=MagicMock())
+    assert "not authenticated" in str(exc.value.message).lower()
+
+
+@pytest.mark.asyncio
+async def test_saml_callback_missing_configured_username_attribute_rejects(
+    monkeypatch,
+):
     """When the operator pins ``external_auth_name`` to a specific
-    attribute and the assertion doesn't carry it, fail loudly at the
-    source rather than letting ``None`` flow into the user
-    resolve/create path."""
-    import base64
-    from unittest.mock import MagicMock
+    attribute and the (verified) assertion doesn't carry it, fail
+    loudly at the source rather than letting ``None`` flow into the
+    user resolve/create path."""
 
-    from gpustack.routes import auth as auth_route
-
-    encoded = base64.b64encode(_SAML_NO_MATCHING_ATTR.encode("utf-8")).decode("ascii")
-    request = MagicMock()
-    request.method = "POST"
-
-    async def _form():
-        return {"SAMLResponse": encoded}
-
-    request.form = _form
-    # Operator pointed at ``employeeId`` — the assertion above only
-    # carries ``email`` and ``name_id``.
-    request.app.state.server_config.external_auth_name = "employeeId"
-    request.app.state.server_config.external_auth_full_name = None
-    request.app.state.server_config.external_auth_avatar_url = None
-    request.app.state.server_config.external_auth_default_inactive = False
+    _patch_saml_auth(
+        monkeypatch,
+        authenticated=True,
+        nameid="alice@example.com",
+        attributes={"email": ["alice@example.com"]},
+    )
+    # Operator pointed at ``employeeId`` — the (mocked-verified)
+    # assertion above only carries ``email`` and ``name_id``.
+    request = _saml_callback_request("dummy-b64", external_auth_name="employeeId")
 
     with pytest.raises(UnauthorizedException) as exc:
         await auth_route.saml_callback.__wrapped__(request=request, session=MagicMock())
     assert "employeeId" in str(exc.value.message)
+
+
+@pytest.mark.asyncio
+async def test_saml_callback_derives_current_url_from_configured_acs(monkeypatch):
+    """Reverse-proxy / UI-dev-server setups routinely land the callback
+    request on an internal host:port that doesn't match what Keycloak
+    signed the assertion for. The toolkit's Destination check would
+    then reject valid assertions — the fix is to anchor
+    ``current_url`` on the operator's configured ACS URL rather than
+    on ``request.url``. This test pins that behaviour: even though
+    the request's ``url`` claims a different host / port / scheme,
+    ``OneLogin_Saml2_Auth`` is constructed with the ACS-derived
+    request_data."""
+
+    _patch_saml_auth(
+        monkeypatch,
+        authenticated=True,
+        nameid="alice@example.com",
+        attributes={"email": ["alice@example.com"]},
+    )
+    captured = {}
+
+    def _capture(req, settings):
+        captured["req"] = req
+        captured["settings"] = settings
+        fake = MagicMock()
+        fake.process_response = MagicMock()
+        fake.get_errors = MagicMock(return_value=[])
+        fake.is_authenticated = MagicMock(return_value=True)
+        fake.get_nameid = MagicMock(return_value="alice@example.com")
+        fake.get_attributes = MagicMock(return_value={"email": ["alice@example.com"]})
+        return fake
+
+    monkeypatch.setattr(auth_route, "OneLogin_Saml2_Auth", _capture)
+    monkeypatch.setattr(
+        auth_route,
+        "_resolve_or_provision_external_user",
+        AsyncMock(return_value=MagicMock()),
+    )
+    monkeypatch.setattr(
+        auth_route, "_sync_saml_groups_if_enabled", AsyncMock(return_value=None)
+    )
+
+    request = _saml_callback_request(
+        "dummy-b64",
+        saml_sp_acs_url="https://gpustack.example.com:8443/auth/saml/callback",
+    )
+    # Whatever the *request* URL looks like (a UI dev server on 9000
+    # proxying to a backend on some other port, TLS termination
+    # elsewhere, ...) — the toolkit still gets the config-anchored
+    # values.
+    request.url.scheme = "http"
+    request.url.hostname = "localhost"
+    request.url.port = None
+    request.url.path = "/proxied/path"
+
+    request.app.state.jwt_manager.create_jwt_token = MagicMock(return_value="fake-jwt")
+
+    await auth_route.saml_callback.__wrapped__(request=request, session=MagicMock())
+
+    assert captured["req"]["http_host"] == "gpustack.example.com"
+    assert captured["req"]["server_port"] == "8443"
+    assert captured["req"]["https"] == "on"
+    assert captured["req"]["script_name"] == "/auth/saml/callback"
+    assert captured["req"]["post_data"] == {"SAMLResponse": "dummy-b64"}
+
+
+@pytest.mark.asyncio
+async def test_saml_callback_unsigned_escape_hatch_skips_toolkit(monkeypatch, caplog):
+    """With the operator's explicit both-False opt-out, the callback
+    must **not** call ``OneLogin_Saml2_Auth`` at all (its hard-coded
+    "No Signature found" check would reject the unsigned response
+    regardless of the ``wantX`` flags). It must instead extract
+    NameID / attributes via the manual parser, log the loud warning
+    on that path, and continue to JWT minting."""
+    import base64
+    import logging
+
+    unsigned_xml = (
+        '<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"'
+        ' xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">'
+        "<saml:Assertion><saml:Subject><saml:NameID>alice@example.com"
+        "</saml:NameID></saml:Subject><saml:AttributeStatement>"
+        '<saml:Attribute Name="email"><saml:AttributeValue>alice@example.com'
+        "</saml:AttributeValue></saml:Attribute></saml:AttributeStatement>"
+        "</saml:Assertion></samlp:Response>"
+    ).encode()
+    encoded = base64.b64encode(unsigned_xml).decode("ascii")
+
+    # Make the toolkit blow up loudly if it *is* invoked — proves the
+    # escape hatch path really bypassed it.
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "OneLogin_Saml2_Auth must not be invoked on escape-hatch path"
+        )
+
+    monkeypatch.setattr(auth_route, "OneLogin_Saml2_Auth", _fail_if_called)
+    monkeypatch.setattr(
+        auth_route,
+        "_resolve_or_provision_external_user",
+        AsyncMock(return_value=MagicMock()),
+    )
+    monkeypatch.setattr(
+        auth_route, "_sync_saml_groups_if_enabled", AsyncMock(return_value=None)
+    )
+
+    request = _saml_callback_request(
+        encoded,
+        saml_security='{"wantAssertionsSigned": false, "wantMessagesSigned": false}',
+    )
+    request.app.state.jwt_manager.create_jwt_token = MagicMock(return_value="fake-jwt")
+
+    with caplog.at_level(logging.WARNING, logger="gpustack.routes.auth"):
+        await auth_route.saml_callback.__wrapped__(request=request, session=MagicMock())
+
+    # Loud, unmissable warning fired on the request that took this path.
+    assert any(
+        "signature verification is disabled" in rec.message.lower()
+        and "production" in rec.message.lower()
+        for rec in caplog.records
+    )
