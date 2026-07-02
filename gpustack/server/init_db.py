@@ -83,8 +83,14 @@ async def init_db_engine(db_url: str):
             option = qoptions[0]
             if option.startswith('-csearch_path='):
                 schema_name = option[len('-csearch_path=') :]
+        server_settings = {
+            'idle_in_transaction_session_timeout': str(
+                envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS * 1000
+            ),
+        }
         if schema_name:
-            connect_args['server_settings'] = {'search_path': schema_name}
+            server_settings['search_path'] = schema_name
+        connect_args['server_settings'] = server_settings
         new_parsed = parsed._replace(query={})
         db_url = urlunparse(new_parsed)
 
