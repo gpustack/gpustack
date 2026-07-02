@@ -3,7 +3,7 @@ from __future__ import annotations
 import http
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 from kubernetes_asyncio import client
 
@@ -361,6 +361,27 @@ class ClusterOps:
                 return
             raise
 
+    async def _list(self, spec: _CRDSpec) -> List[dict]:
+        """List all objects of ``spec`` in the cluster.
+
+        Always uses the cluster-scoped list endpoint: for a cluster-scoped CRD
+        (e.g. ``_PV_TYPE``) that is the natural list, and for a namespaced CRD
+        (e.g. ``_PV``) it returns objects across **all** namespaces — both are
+        what the finalizer controllers need. A missing CRD yields ``[]``.
+        """
+        crd = self._crd()
+        try:
+            result = await crd.list_cluster_custom_object(
+                group=_GROUP,
+                version=_VERSION,
+                plural=spec.plural,
+            )
+        except client.exceptions.ApiException as e:
+            if e.status == http.HTTPStatus.NOT_FOUND:
+                return []
+            raise
+        return (result or {}).get("items", []) or []
+
     #
     # Namespace Operations
     #
@@ -450,6 +471,10 @@ class ClusterOps:
         """
         return await self._read(_PV_TYPE, name)
 
+    async def list_persistent_volume_types(self) -> List[dict]:
+        """List all persistent volume types in the cluster (cluster-scoped)."""
+        return await self._list(_PV_TYPE)
+
     async def create_persistent_volume_type(
         self, name: str, spec: dict, ignore_existed: bool = True
     ) -> dict:
@@ -480,6 +505,10 @@ class ClusterOps:
         If the persistent volume does not exist, return None.
         """
         return await self._read(_PV, name)
+
+    async def list_persistent_volumes(self) -> List[dict]:
+        """List all persistent volumes in the cluster across all namespaces."""
+        return await self._list(_PV)
 
     async def create_persistent_volume(
         self, name: str, spec: dict, ignore_existed: bool = True

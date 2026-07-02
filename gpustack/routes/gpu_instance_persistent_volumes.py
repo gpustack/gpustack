@@ -28,7 +28,9 @@ from gpustack.schemas import (
     GPUInstancePersistentVolumeListParams,
     GPUInstancePersistentVolumesPublic,
     GPUInstancePersistentVolumeCreate,
+    GPUInstancePersistentVolumeStatus,
 )
+from gpustack.schemas.gpu_instances import GPUInstancePhase
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
@@ -155,12 +157,20 @@ async def update_gpu_instance_persistent_volume(
         return ret
 
 
-@router.delete("/{id}")
+@router.delete(
+    "/{id}", status_code=202, response_model=GPUInstancePersistentVolumePublic
+)
 async def delete_gpu_instance_persistent_volume(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
 ):
+    """Mark the persistent volume for deletion (soft delete).
+
+    Stamps ``status.phase = Deleting`` and retains the row; the PV
+    finalizer controller cleans up the downstream CRs across clusters and
+    then hard-deletes the row.
+    """
     ret = ensure_writable(
         await GPUInstancePersistentVolume.one_by_id(
             session=session,
@@ -169,12 +179,15 @@ async def delete_gpu_instance_persistent_volume(
         ctx,
     )
 
+    source = _build_delete_phase_source(ret)
     async with handle_error(
         message="Failed to delete GPU instance persistent volume",
     ):
-        await ret.delete(
+        await ret.update(
             session=session,
+            source=source,
         )
+        return ret
 
 
 def ensure_visible(obj, ctx: TenantContext):
@@ -288,4 +301,23 @@ def _build_create_source(
     source: dict = create_obj.model_dump()
     source["creator_id"] = creator_id
     source["persistent_volume_type_id"] = persistent_volume_type_id
+    source["status"] = GPUInstancePersistentVolumeStatus(
+        phase=GPUInstancePhase.READY,
+    )
     return source
+
+
+def _build_delete_phase_source(existing: GPUInstancePersistentVolume) -> dict:
+    """Stamp the soft-delete phase onto status, clearing any prior
+    ``phase_message`` while preserving ``finalizing`` so a re-issued delete
+    stays idempotent. The finalizer controller fills ``finalizing`` and
+    hard-deletes the row once downstream cleanup completes."""
+    base = existing.status or GPUInstancePersistentVolumeStatus()
+    return {
+        "status": base.model_copy(
+            update={
+                "phase": GPUInstancePhase.DELETING,
+                "phase_message": None,
+            },
+        ),
+    }

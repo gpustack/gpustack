@@ -35,6 +35,12 @@ Bundles the pre-release schema tweaks for v2.2.2:
    (dangling) and the read path resolves existence live, tagging gone
    entities ``(Deleted)``. Targets PostgreSQL and MySQL (SQLite unsupported).
 
+5. Add a nullable ``status`` (phase, finalizing) JSON column to
+   ``gpu_instance_persistent_volumes`` and
+   ``gpu_instance_persistent_volume_types``. The soft-delete flow stamps
+   ``phase=Deleting`` and the finalizer controllers track downstream CR
+   cleanup in ``finalizing`` before the row is hard-deleted.
+
 Revision ID: c4d7e8f9a0b1
 Revises: b2c3d4e5f6a7
 Create Date: 2026-06-24 11:00:00.000000
@@ -45,6 +51,7 @@ from typing import Optional, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+import gpustack
 
 
 # revision identifiers, used by Alembic.
@@ -188,10 +195,36 @@ def upgrade() -> None:
         if fk.get('name'):
             op.drop_constraint(fk['name'], 'model_usages', type_='foreignkey')
 
+    # Part 5: add a nullable status column to the pv/pvt tables.
+    with op.batch_alter_table(
+        'gpu_instance_persistent_volume_types', schema=None
+    ) as batch_op:
+        batch_op.add_column(
+            sa.Column('status', gpustack.schemas.common.JSON(), nullable=True)
+        )
+
+    with op.batch_alter_table(
+        'gpu_instance_persistent_volumes', schema=None
+    ) as batch_op:
+        batch_op.add_column(
+            sa.Column('status', gpustack.schemas.common.JSON(), nullable=True)
+        )
+
 
 def downgrade() -> None:
     bind = op.get_bind()
     dialect = bind.dialect.name
+
+    # Revert part 5: drop the pv/pvt status column.
+    with op.batch_alter_table(
+        'gpu_instance_persistent_volumes', schema=None
+    ) as batch_op:
+        batch_op.drop_column('status')
+
+    with op.batch_alter_table(
+        'gpu_instance_persistent_volume_types', schema=None
+    ) as batch_op:
+        batch_op.drop_column('status')
 
     # Revert part 4: recreate the model_usages foreign keys as ON DELETE SET
     # NULL, pointing at the (post-rename) parent tables.

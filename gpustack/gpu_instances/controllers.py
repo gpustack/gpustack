@@ -4,6 +4,7 @@ import asyncio
 import re
 from typing import Any, Dict, List, Set, Tuple, Optional
 from cachetools import TTLCache
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -16,7 +17,6 @@ from gpustack.gpu_instances.cluster_apis_util import (
     spec_persistent_volume,
     spec_persistent_volume_type,
     get_persistent_volume_type_name,
-    parse_persistent_volume_type_name,
     parse_namespace_name,
     principal_namespace_identifier,
 )
@@ -28,9 +28,11 @@ from gpustack.schemas.gpu_instances import (
 )
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolume,
+    GPUInstancePersistentVolumeStatus,
 )
 from gpustack.schemas.gpu_instance_persistent_volume_types import (
     GPUInstancePersistentVolumeType,
+    GPUInstancePersistentVolumeTypeStatus,
 )
 from gpustack.schemas.gpu_instance_ssh_public_keys import (
     GPUInstanceSSHPublicKey,
@@ -787,7 +789,7 @@ class GPUInstanceController:
 
                 await self._set_status(session, fresh, merged)
 
-    async def _reconcile_deleted(self, instance: GPUInstance):  # noqa: C901
+    async def _reconcile_deleted(self, instance: GPUInstance):
         # A deleted row has no re-confirm chain; drop any lingering guard (the
         # queue cancels the delayed entry itself when the DELETED event lands).
         self._reconfirm_scheduled.discard(instance.id)
@@ -795,7 +797,7 @@ class GPUInstanceController:
             built = await self._build_ops(session, instance)
             if built is None:
                 return
-            ops, principal_identifier = built
+            ops, _ = built
 
             # When the row went through DELETING, _reconcile_updated
             # already confirmed the CR was gone before hard-deleting the
@@ -821,109 +823,46 @@ class GPUInstanceController:
                         f"Failed to delete worker-side ssh public key for {instance.name}"
                     )
 
-                # Delete Persistent volume cleanup.
-                # GPUInstancePersistentVolume and GPUInstancePersistentVolumeType have no global syncer,
-                # so we evaluate against the DB state and clean up the worker side ourselves.
-                volume = instance.spec.volume
-                if volume is None:
-                    return
+            # Persistent volume release. PV / PVT are independent
+            # finalizer-driven resources now (their controllers own downstream
+            # cleanup), so instance deletion no longer tears down their worker
+            # side directly. The one instance-scoped case is a
+            # ``persistent_template`` that opted into ``release_with_instance``:
+            # soft-delete its PV row so the PV finalizer reclaims it.
+            volume = instance.spec.volume
+            if volume is None or volume.persistent_template is None:
+                return
+            if not volume.persistent_template.release_with_instance:
+                return
+            await self._release_persistent_volume(
+                session,
+                owner_principal_id=instance.owner_principal_id,
+                name=volume.persistent_template.name,
+            )
 
-                if volume.persistent_template is not None:
-                    template = volume.persistent_template
+    async def _release_persistent_volume(
+        self, session: AsyncSession, *, owner_principal_id: int, name: str
+    ):
+        """Soft-delete a template-created PV so its finalizer tears it down.
 
-                    pv_name = template.name
-                    pvt_name = template.spec.type_
-                    should_delete_pv = template.release_with_instance
-
-                    pv = await GPUInstancePersistentVolume.first_by_fields(
-                        session,
-                        fields={
-                            "owner_principal_id": instance.owner_principal_id,
-                            "name": pv_name,
-                        },
-                    )
-                    if should_delete_pv:
-                        if pv is not None:
-                            try:
-                                await pv.delete(session)
-                            except Exception:
-                                logger.exception(
-                                    f"Failed to delete PV row for {pv_name}"
-                                )
-                    else:
-                        # Even the release_with_instance is false,
-                        # if the PV row is already gone,
-                        # we can still delete the worker-side PV to avoid orphan resource.
-                        should_delete_pv = pv is None
-
-                    if should_delete_pv:
-                        try:
-                            await ops.delete_persistent_volume(pv_name)
-                        except Exception:
-                            logger.exception(
-                                f"Failed to delete worker-side pv {pv_name}"
-                            )
-
-                        if await self._user_still_uses_pvt_by_name(
-                            session,
-                            owner_principal_id=instance.owner_principal_id,
-                            pvt_name=pvt_name,
-                        ):
-                            return
-
-                        pvt_cluster_name = get_persistent_volume_type_name(
-                            template.spec.type_,
-                            principal_identifier=principal_identifier,
-                        )
-                        try:
-                            await ops.delete_persistent_volume_type(pvt_cluster_name)
-                        except Exception:
-                            logger.exception(
-                                f"Failed to delete worker-side pv type {pvt_cluster_name}"
-                            )
-
-                elif volume.persistent is not None:
-                    pv_name = volume.persistent.name
-
-                    pv = await GPUInstancePersistentVolume.first_by_fields(
-                        session,
-                        fields={
-                            "owner_principal_id": instance.owner_principal_id,
-                            "name": pv_name,
-                        },
-                    )
-                    if pv is not None:
-                        return
-
-                    cluster_pv = await ops.read_persistent_volume(pv_name)
-                    if cluster_pv is None:
-                        return
-
-                    # The PV row is gone,
-                    # so we can delete the worker-side PV unconditionally if it exists.
-                    try:
-                        await ops.delete_persistent_volume(pv_name)
-                    except Exception:
-                        logger.exception(f"Failed to delete worker-side pv {pv_name}")
-
-                    pvt_cluster_name = (cluster_pv.get("spec") or {}).get("type")
-                    parsed = parse_persistent_volume_type_name(pvt_cluster_name)
-                    if parsed is not None:
-                        pvt_name, _ = parsed
-
-                        if await self._user_still_uses_pvt_by_name(
-                            session,
-                            owner_principal_id=instance.owner_principal_id,
-                            pvt_name=pvt_name,
-                        ):
-                            return
-
-                        try:
-                            await ops.delete_persistent_volume_type(pvt_cluster_name)
-                        except Exception:
-                            logger.exception(
-                                f"Failed to delete worker-side pv type {pvt_cluster_name}"
-                            )
+        Mirrors the DELETE route's soft delete (``phase=Deleting``): the PV
+        finalizer (``GPUInstancePersistentVolumeController``) then deletes the
+        downstream CRs across clusters and hard-deletes the row, waiting on any
+        other active instance still sharing the volume. No-op if the PV row is
+        already gone or already Deleting."""
+        pv = await GPUInstancePersistentVolume.first_by_fields(
+            session,
+            fields={"owner_principal_id": owner_principal_id, "name": name},
+        )
+        if pv is None or (
+            pv.status is not None and pv.status.phase == GPUInstancePhase.DELETING
+        ):
+            return
+        base = pv.status or GPUInstancePersistentVolumeStatus()
+        updated = base.model_copy(
+            update={"phase": GPUInstancePhase.DELETING, "phase_message": None}
+        )
+        await pv.update(session, source={"status": updated})
 
     async def _reconcile_reconfirm(self, instance: GPUInstance):
         """Re-read the worker side for a Ready row, write back only on drift.
@@ -1121,30 +1060,274 @@ class GPUInstanceController:
             parts.append(key.spec.data)
         return "\n".join(parts)
 
+
+# Cadence for re-probing a still-finalizing PV / PVT row. Uses ``add_after``
+# (in-memory, no DB write), so a row that keeps waiting produces no churn.
+_FINALIZE_REQUEUE_INTERVAL = 15.0
+
+
+class _FinalizerController:
+    """Shared machinery for the PV / PVT soft-delete finalizers.
+
+    A PV / PVT ``DELETE`` is a soft delete (``status.phase = Deleting``); these
+    leader-only controllers finalize such rows: they enumerate every cluster,
+    probe the downstream CR, delete it where present, record the clusters still
+    holding it in ``status.finalizing``, and hard-delete the row once none
+    remain. Steady polling is an in-memory ``add_after`` requeue with no DB
+    write, and ``status.finalizing`` is persisted only when it changes, so the
+    finalizer adds no write-to-self churn.
+
+    Subclasses bind the model + the downstream probe/delete + the "still
+    referenced?" gate; the base owns the queue, the Deleting-only enqueue, the
+    all-cluster finalize loop, the change-only ``status`` write, and the
+    hard-delete.
+    """
+
+    MODEL: Any = None  # SQLModel table class
+    STATUS_CLS: Any = None  # its status BaseModel
+    SOURCE: str = ""  # subscribe source label
+
+    def __init__(self, cfg: Config):
+        self._config = cfg
+        self._queue: WorkQueue = WorkQueue()
+        self._inflight: Dict[Any, asyncio.Task] = {}
+        self._dispatch_task: Optional[asyncio.Task] = None
+
+    async def start(self):
+        self._dispatch_task = asyncio.create_task(self._dispatch())
+        try:
+            async for event in self.MODEL.subscribe(source=self.SOURCE):
+                if event.type == EventType.HEARTBEAT or event.data is None:
+                    continue
+                # A DELETED bus event means the row is already gone; nothing to
+                # finalize. Only rows that entered ``Deleting`` need work.
+                if event.type == EventType.DELETED:
+                    continue
+                if self._is_deleting(event.data):
+                    self._enqueue(event.data.id)
+        finally:
+            tasks: List[asyncio.Task] = []
+            if self._dispatch_task is not None:
+                self._dispatch_task.cancel()
+                tasks.append(self._dispatch_task)
+            for task in list(self._inflight.values()):
+                task.cancel()
+                tasks.append(task)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
     @staticmethod
-    async def _user_still_uses_pvt_by_name(
+    def _is_deleting(row) -> bool:
+        return bool(row.status and row.status.phase == GPUInstancePhase.DELETING)
+
+    def _enqueue(self, row_id: Any) -> None:
+        if row_id is None:
+            return
+        self._queue.add(
+            WorkEvent(keys=(row_id,), type=WorkEventType.MODIFIED, object=row_id)
+        )
+
+    def _requeue_after(self, row_id: Any, delay: float) -> None:
+        self._queue.add_after(
+            WorkEvent(keys=(row_id,), type=WorkEventType.MODIFIED, object=row_id),
+            delay,
+        )
+
+    async def _dispatch(self):
+        while True:
+            event = await self._queue.get()
+            self._inflight[event.keys] = asyncio.create_task(self._process(event))
+
+    async def _process(self, event: WorkEvent):
+        keys = event.keys
+        try:
+            await self._finalize(event.object)
+        except Exception:
+            logger.exception("Failed to finalize %s %s", self.SOURCE, keys[0])
+        finally:
+            self._queue.done(keys)
+            self._inflight.pop(keys, None)
+
+    async def _finalize(self, row_id: int):
+        async with async_session() as session:
+            row = await self.MODEL.one_by_id(session, row_id)
+            if row is None or not self._is_deleting(row):
+                # Already hard-deleted, or no longer marked for deletion.
+                return
+
+            principal = await Principal.one_by_id(session, row.owner_principal_id)
+            if principal is None:
+                logger.warning(
+                    "%s %s references missing principal %s",
+                    self.SOURCE,
+                    row.name,
+                    row.owner_principal_id,
+                )
+                return
+            owner_identifier = principal_namespace_identifier(principal)
+
+            blocked = await self._blocked_reason(session, row)
+            if blocked is not None:
+                await self._write_status(session, row, phase_message=blocked)
+                self._requeue_after(row_id, _FINALIZE_REQUEUE_INTERVAL)
+                return
+
+            finalizing = await self._probe_clusters(session, row, owner_identifier)
+            if not finalizing:
+                await self._hard_delete(session, row)
+                return
+
+            await self._write_status(session, row, finalizing=finalizing)
+            self._requeue_after(row_id, _FINALIZE_REQUEUE_INTERVAL)
+
+    async def _probe_clusters(
+        self, session: AsyncSession, row, owner_identifier: str
+    ) -> List[int]:
+        """Probe every cluster; delete the downstream CR where present. Returns
+        the cluster ids that still hold the object (a cluster whose probe errored
+        is kept so the next round retries it)."""
+        finalizing: List[int] = []
+        for cluster in await Cluster.all(session):
+            try:
+                ops = self._build_ops(cluster, owner_identifier)
+                async with ops:
+                    if await self._probe_and_delete(ops, row, owner_identifier):
+                        finalizing.append(cluster.id)
+            except Exception:
+                logger.exception(
+                    "Failed probing cluster %s for %s %s",
+                    cluster.id,
+                    self.SOURCE,
+                    row.name,
+                )
+                finalizing.append(cluster.id)
+        return finalizing
+
+    def _build_ops(self, cluster: Cluster, owner_identifier: str) -> ClusterOps:
+        return ClusterOps(
+            server_api_port=self._config.get_api_port(),
+            cluster_id=cluster.id,
+            cluster_registration_token=cluster.registration_token,
+            cluster_owner_principal_identifier=owner_identifier,
+        )
+
+    async def _write_status(
+        self,
         session: AsyncSession,
+        row,
         *,
-        owner_principal_id: int,
-        pvt_name: str,
+        finalizing: Optional[List[int]] = None,
+        phase_message: Optional[str] = None,
+    ):
+        """Persist ``finalizing`` / ``phase_message`` onto status — but only on a
+        real change, so a steady wait re-queues without a DB write."""
+        base = row.status or self.STATUS_CLS()
+        target_finalizing = finalizing if finalizing is not None else base.finalizing
+        if base.phase_message == phase_message and (base.finalizing or []) == (
+            target_finalizing or []
+        ):
+            return
+        updated = base.model_copy(
+            update={"finalizing": target_finalizing, "phase_message": phase_message}
+        )
+        await row.update(session, source={"status": updated})
+
+    async def _hard_delete(self, session: AsyncSession, row):
+        try:
+            await row.delete(session)
+        except IntegrityError:
+            # RESTRICT backstop (a PVT still referenced by a PV): the reference
+            # check above should have caught it, but a concurrent PV create could
+            # slip in — wait and retry rather than crash.
+            logger.info(
+                "Deferring hard-delete of %s %s: still referenced downstream",
+                self.SOURCE,
+                row.name,
+            )
+            self._requeue_after(row.id, _FINALIZE_REQUEUE_INTERVAL)
+
+    # -- subclass hooks ----------------------------------------------------- #
+
+    async def _blocked_reason(self, session: AsyncSession, row) -> Optional[str]:
+        """A human-readable reason the row must not be finalized yet, or None."""
+        raise NotImplementedError
+
+    async def _probe_and_delete(
+        self, ops: ClusterOps, row, owner_identifier: str
     ) -> bool:
-        """Whether ``owner_principal_id`` has any PV referencing a PVT
-        named ``pvt_name``. The PVT side is intentionally unscoped by
-        owner: the worker-side PVT is keyed by ``(instance owner,
-        pvt_name)`` regardless of which Org owns the server-side PVT,
-        so the cleanup gate must use the same key shape — any Org's
-        PVT with this name counts."""
+        """Whether the downstream CR is present on this cluster; delete it when
+        so (it stays 'present' until a later probe confirms it is gone)."""
+        raise NotImplementedError
+
+
+class GPUInstancePersistentVolumeController(_FinalizerController):
+    """Finalizes soft-deleted ``GPUInstancePersistentVolume`` rows."""
+
+    MODEL = GPUInstancePersistentVolume
+    STATUS_CLS = GPUInstancePersistentVolumeStatus
+    SOURCE = "gpu_instance_persistent_volume_controller"
+
+    async def _blocked_reason(self, session: AsyncSession, row) -> Optional[str]:
+        # GPUInstance -> PV is ON DELETE SET NULL, so a hard-delete would silently
+        # detach a volume still mounted by a running instance. Wait until every
+        # active reference clears (a deleting instance clears its ref only once
+        # its own hard-delete SET NULLs it).
         stmt = (
-            select(GPUInstancePersistentVolume.id)
-            .join(
-                GPUInstancePersistentVolumeType,
-                GPUInstancePersistentVolumeType.id
-                == GPUInstancePersistentVolume.persistent_volume_type_id,
-            )
-            .where(
-                GPUInstancePersistentVolume.owner_principal_id == owner_principal_id,
-                GPUInstancePersistentVolumeType.name == pvt_name,
-            )
+            select(GPUInstance.id)
+            .where(GPUInstance.persistent_volume_id == row.id)
             .limit(1)
         )
-        return (await session.exec(stmt)).first() is not None
+        if (await session.exec(stmt)).first() is not None:
+            return "waiting for active GPU instance(s) to release this volume"
+        return None
+
+    async def _probe_and_delete(
+        self, ops: ClusterOps, row, owner_identifier: str
+    ) -> bool:
+        # PV is namespaced; list across all namespaces (ClusterOps._list) and
+        # match our own name + namespace so a same-named PV in another Org's
+        # namespace is never touched.
+        for item in await ops.list_persistent_volumes():
+            metadata = item.get("metadata") or {}
+            if (
+                metadata.get("name") == row.name
+                and metadata.get("namespace") == ops.org_namespace
+            ):
+                await ops.delete_persistent_volume(row.name)
+                return True
+        return False
+
+
+class GPUInstancePersistentVolumeTypeController(_FinalizerController):
+    """Finalizes soft-deleted ``GPUInstancePersistentVolumeType`` rows."""
+
+    MODEL = GPUInstancePersistentVolumeType
+    STATUS_CLS = GPUInstancePersistentVolumeTypeStatus
+    SOURCE = "gpu_instance_persistent_volume_type_controller"
+
+    async def _blocked_reason(self, session: AsyncSession, row) -> Optional[str]:
+        # PV -> PVT is ON DELETE RESTRICT, so PV before PVT: wait until no PV row
+        # references this type before clearing the downstream PVTs and hard-
+        # deleting the row (the RESTRICT is a hard-delete backstop).
+        stmt = (
+            select(GPUInstancePersistentVolume.id)
+            .where(GPUInstancePersistentVolume.persistent_volume_type_id == row.id)
+            .limit(1)
+        )
+        if (await session.exec(stmt)).first() is not None:
+            return "waiting for referencing persistent volume(s) to be deleted first"
+        return None
+
+    async def _probe_and_delete(
+        self, ops: ClusterOps, row, owner_identifier: str
+    ) -> bool:
+        # PVT is cluster-scoped; its downstream name folds in the owner
+        # identifier, so match that computed name against the cluster list.
+        cluster_name = get_persistent_volume_type_name(
+            row.name, principal_identifier=owner_identifier
+        )
+        for item in await ops.list_persistent_volume_types():
+            if (item.get("metadata") or {}).get("name") == cluster_name:
+                await ops.delete_persistent_volume_type(cluster_name)
+                return True
+        return False

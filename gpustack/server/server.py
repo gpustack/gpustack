@@ -61,7 +61,11 @@ from gpustack.server.controllers import (
     ModelRouteTargetController,
     ModelProviderController,
 )
-from gpustack.gpu_instances.controllers import GPUInstanceController
+from gpustack.gpu_instances.controllers import (
+    GPUInstanceController,
+    GPUInstancePersistentVolumeController,
+    GPUInstancePersistentVolumeTypeController,
+)
 from gpustack.server.db import async_session
 from gpustack.server.lora_model_routes import (
     cleanup_orphan_lora_routes,
@@ -411,6 +415,14 @@ class Server:
 
         gpu_instance_controller = GPUInstanceController(self._config)
         tasks.append(asyncio.create_task(gpu_instance_controller.start()))
+
+        gpu_instance_pv_controller = GPUInstancePersistentVolumeController(self._config)
+        tasks.append(asyncio.create_task(gpu_instance_pv_controller.start()))
+
+        gpu_instance_pvt_controller = GPUInstancePersistentVolumeTypeController(
+            self._config
+        )
+        tasks.append(asyncio.create_task(gpu_instance_pvt_controller.start()))
 
         logger.debug("Controllers started.")
         return tasks
