@@ -60,8 +60,8 @@ from gpustack.server.controllers import (
     ModelRouteController,
     ModelRouteTargetController,
     ModelProviderController,
-    GPUInstanceController,
 )
+from gpustack.gpu_instances.controllers import GPUInstanceController
 from gpustack.server.db import async_session
 from gpustack.server.lora_model_routes import (
     cleanup_orphan_lora_routes,

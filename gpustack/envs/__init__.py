@@ -77,6 +77,14 @@ GPU_INSTANCE_RECONFIRM_INTERVAL = int(
     os.getenv("GPUSTACK_GPU_INSTANCE_RECONFIRM_INTERVAL", 60)
 )  # in seconds
 
+# Interval at which the controller re-observes an in-flight (non-terminal) GPU
+# instance via an in-memory requeue instead of writing its own status back to
+# the DB to self-trigger the next poll. Replaces the old ``count % 15`` self-
+# poll. Clamped to >= 1s at use to avoid a busy loop.
+GPU_INSTANCE_REQUEUE_INTERVAL = int(
+    os.getenv("GPUSTACK_GPU_INSTANCE_REQUEUE_INTERVAL", 5)
+)  # in seconds
+
 # Model instance configuration
 MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(
     os.getenv("GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD", 300)

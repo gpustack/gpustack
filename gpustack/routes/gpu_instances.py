@@ -60,7 +60,13 @@ from gpustack.schemas import (
     GPUInstancesPublic,
     GPUInstanceCreate,
 )
-from gpustack.schemas.gpu_instances import GPUInstancePhase, GPUInstanceStatus
+from gpustack.schemas.gpu_instances import (
+    FAILED_PHASES,
+    INTERRUPTED_PHASES,
+    TRANSITIONING_PHASES,
+    GPUInstancePhase,
+    GPUInstanceStatus,
+)
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
@@ -457,30 +463,17 @@ def _build_update_phase_source(existing_obj: GPUInstance, phase: str) -> dict:
     }
 
 
-# Source-phase gates for each lifecycle action. /delete has no gate
-# (allowed from any phase, including ``None`` pre-create).
-_FAILED_PHASES = frozenset(
-    {
-        GPUInstancePhase.CREATE_FAILED,
-        GPUInstancePhase.SSH_KEY_CREATE_FAILED,
-        GPUInstancePhase.PV_TYPE_CREATE_FAILED,
-        GPUInstancePhase.PV_CREATE_FAILED,
-        GPUInstancePhase.INITIALIZE_FAILED,
-    }
-)
-_STOP_DISALLOWED_FROM = (
-    frozenset(
-        {
-            GPUInstancePhase.DELETING,
-            GPUInstancePhase.STOPPING,
-            GPUInstancePhase.STOPPED,
-            GPUInstancePhase.STARTING,
-            GPUInstancePhase.NOT_READY,
-        }
-    )
-    | _FAILED_PHASES
-)
-_START_ALLOWED_FROM = frozenset({GPUInstancePhase.STOPPED})
+# Source-phase gates for each lifecycle action. /delete has no gate (allowed
+# from any phase, including ``None`` pre-create). The phase categories these
+# compose from (``TRANSITIONING_PHASES`` / ``INTERRUPTED_PHASES`` /
+# ``FAILED_PHASES``) are owned by the schema.
+#
+# Stop is allowed only from a settled, running phase: disallow it while the
+# instance is transitioning, interrupted, or failed (``None`` pre-create is
+# rejected at the call site).
+_STOP_DISALLOWED_FROM = TRANSITIONING_PHASES | INTERRUPTED_PHASES | FAILED_PHASES
+# Start resumes an interrupted (Stopped) instance.
+_START_ALLOWED_FROM = INTERRUPTED_PHASES
 
 
 async def _transition_to_phase(

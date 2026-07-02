@@ -131,20 +131,38 @@ class ClusterOps:
                 return None
             raise
 
+    def _envelope(self, spec: _CRDSpec, body: dict) -> dict:
+        """Complete a caller-supplied CR body (``metadata`` + ``spec``) with the
+        cluster-plumbing fields the caller can't know: ``apiVersion`` / ``kind``
+        and, when namespaced, ``metadata.namespace``.
+        """
+        metadata = {**body.get("metadata", {})}
+        if spec.namespaced:
+            metadata["namespace"] = self.org_namespace
+        return {
+            **body,
+            "apiVersion": spec.api_version,
+            "kind": spec.kind,
+            "metadata": metadata,
+        }
+
     async def _create(
         self,
         spec: _CRDSpec,
-        name: str,
-        body_spec: dict,
+        body: dict,
         ignore_existed: bool,
     ) -> dict:
-        """Create a CRD object and return the server-acknowledged dict.
+        """Create a CRD object from a full body and return the server-ack dict.
+
+        ``body`` is the caller-owned CR envelope (``metadata`` + ``spec``); the
+        cluster-plumbing fields are filled by :meth:`_envelope`.
 
         When ``ignore_existed`` is true and the object already exists (either
         observed up-front or raced against another writer), the current
         server state is read back and returned, so callers always see a
         consistent post-condition.
         """
+        name = body["metadata"]["name"]
         if spec.namespaced:
             await self.ensure_org_namespace()
 
@@ -153,14 +171,7 @@ class ClusterOps:
             if existing is not None:
                 return existing
 
-        body = {
-            "apiVersion": spec.api_version,
-            "kind": spec.kind,
-            "metadata": {"name": name},
-            "spec": body_spec,
-        }
-        if spec.namespaced:
-            body["metadata"]["namespace"] = self.org_namespace
+        body = self._envelope(spec, body)
 
         crd = self._crd()
         try:
@@ -196,8 +207,7 @@ class ClusterOps:
     async def _upsert(
         self,
         spec: _CRDSpec,
-        name: str,
-        body_spec: dict,
+        body: dict,
     ) -> dict:
         """Patch-then-create-on-404 for a CRD object.
 
@@ -208,11 +218,14 @@ class ClusterOps:
         returned object reflects the concurrent writer's spec. Callers that
         require last-writer-wins must retry on their side.
         """
+        name = body["metadata"]["name"]
         if spec.namespaced:
             await self.ensure_org_namespace()
 
         crd = self._crd()
-        patch_body = {"spec": body_spec}
+        # Patch spec only — metadata (labels/annotations) the operator may have
+        # added downstream is left untouched.
+        patch_body = {"spec": body["spec"]}
 
         try:
             if spec.namespaced:
@@ -245,14 +258,7 @@ class ClusterOps:
             if e.status != http.HTTPStatus.NOT_FOUND:
                 raise
 
-        create_body = {
-            "apiVersion": spec.api_version,
-            "kind": spec.kind,
-            "metadata": {"name": name},
-            "spec": body_spec,
-        }
-        if spec.namespaced:
-            create_body["metadata"]["namespace"] = self.org_namespace
+        create_body = self._envelope(spec, body)
 
         try:
             if spec.namespaced:
@@ -422,7 +428,9 @@ class ClusterOps:
 
         Returns the server-acknowledged object.
         """
-        return await self._upsert(_SSH_PUBLIC_KEY, name, spec)
+        return await self._upsert(
+            _SSH_PUBLIC_KEY, {"metadata": {"name": name}, "spec": spec}
+        )
 
     async def delete_ssh_public_key(self, name: str):
         """
@@ -451,7 +459,9 @@ class ClusterOps:
         Returns the created object, or the existing one when
         ``ignore_existed`` is true and the resource already exists.
         """
-        return await self._create(_PV_TYPE, name, spec, ignore_existed)
+        return await self._create(
+            _PV_TYPE, {"metadata": {"name": name}, "spec": spec}, ignore_existed
+        )
 
     async def delete_persistent_volume_type(self, name: str):
         """
@@ -480,7 +490,9 @@ class ClusterOps:
         Returns the created object, or the existing one when
         ``ignore_existed`` is true and the resource already exists.
         """
-        return await self._create(_PV, name, spec, ignore_existed)
+        return await self._create(
+            _PV, {"metadata": {"name": name}, "spec": spec}, ignore_existed
+        )
 
     async def delete_persistent_volume(self, name: str):
         """
@@ -511,16 +523,15 @@ class ClusterOps:
         """
         return await self._read(_INSTANCE, name)
 
-    async def create_instance(
-        self, name: str, spec: dict, ignore_existed: bool = True
-    ) -> dict:
+    async def create_instance(self, body: dict, ignore_existed: bool = True) -> dict:
         """
-        Create the instance in the cluster.
+        Create the instance in the cluster from a full CR body
+        (:meth:`GPUInstance.convert_to_kuberes`).
 
         Returns the created object, or the existing one when
         ``ignore_existed`` is true and the resource already exists.
         """
-        return await self._create(_INSTANCE, name, spec, ignore_existed)
+        return await self._create(_INSTANCE, body, ignore_existed)
 
     async def stop_instance(self, name: str) -> Optional[dict]:
         """Stop the instance by patching ``spec.stop=true``.
