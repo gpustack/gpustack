@@ -83,7 +83,6 @@ async def server_auth(
     try:
         user = await get_current_user(
             request=request,
-            session=session,
             basic_credentials=await basic_auth(request),
             bearer_token=await bearer_auth(request),
             x_api_key=x_api_key,
