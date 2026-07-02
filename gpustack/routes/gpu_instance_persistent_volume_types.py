@@ -26,7 +26,9 @@ from gpustack.schemas import (
     GPUInstancePersistentVolumeTypeListParams,
     GPUInstancePersistentVolumeTypesPublic,
     GPUInstancePersistentVolumeTypeCreate,
+    GPUInstancePersistentVolumeTypeStatus,
 )
+from gpustack.schemas.gpu_instances import GPUInstancePhase
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
@@ -150,6 +152,9 @@ async def create_gpu_instance_persistent_volume_type(
 
     source: dict = create_obj.model_dump()
     source["creator_id"] = ctx.user.id
+    source["status"] = GPUInstancePersistentVolumeTypeStatus(
+        phase=GPUInstancePhase.READY,
+    )
     async with handle_error(
         message="Failed to create GPU instance persistent volume type",
     ):
@@ -184,12 +189,22 @@ async def update_gpu_instance_persistent_volume_type(
         return ret
 
 
-@router.delete("/{id}")
+@router.delete(
+    "/{id}",
+    status_code=202,
+    response_model=GPUInstancePersistentVolumeTypePublic,
+)
 async def delete_gpu_instance_persistent_volume_type(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
 ):
+    """Mark the persistent volume type for deletion (soft delete).
+
+    Stamps ``status.phase = Deleting`` and retains the row; the PVT
+    finalizer controller waits until no persistent volume references it and
+    the downstream types are cleared, then hard-deletes the row.
+    """
     ret = ensure_writable(
         await GPUInstancePersistentVolumeType.one_by_id(
             session=session,
@@ -198,12 +213,15 @@ async def delete_gpu_instance_persistent_volume_type(
         ctx,
     )
 
+    source = _build_delete_phase_source(ret)
     async with handle_error(
         message="Failed to delete GPU instance persistent volume type",
     ):
-        await ret.delete(
+        await ret.update(
             session=session,
+            source=source,
         )
+        return ret
 
 
 def ensure_visible(obj, ctx: TenantContext):
@@ -270,3 +288,19 @@ async def handle_error(message: str):
 
 def _validate_create_obj(create_obj: GPUInstancePersistentVolumeTypeCreate):
     validate_k8s_object_name(create_obj.name)
+
+
+def _build_delete_phase_source(existing: GPUInstancePersistentVolumeType) -> dict:
+    """Stamp the soft-delete phase onto status, clearing any prior
+    ``phase_message`` while preserving ``finalizing`` so a re-issued delete
+    stays idempotent. The finalizer controller fills ``finalizing`` and
+    hard-deletes the row once downstream cleanup completes."""
+    base = existing.status or GPUInstancePersistentVolumeTypeStatus()
+    return {
+        "status": base.model_copy(
+            update={
+                "phase": GPUInstancePhase.DELETING,
+                "phase_message": None,
+            },
+        ),
+    }
