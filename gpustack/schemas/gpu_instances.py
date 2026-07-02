@@ -6,7 +6,6 @@ from pydantic import (
     BaseModel,
     AliasChoices,
     Field as PField,
-    model_validator,
 )
 from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
 from sqlmodel import SQLModel, Field
@@ -479,11 +478,6 @@ class GPUInstanceStatus(BaseModel):
         populate_by_name=True,
     )
 
-    count: int = 0
-    """
-    Counting the same phase occurrences.
-    """
-
     namespace: str = ""
     """
     The Kubernetes namespace where the GPU instance is running.
@@ -537,28 +531,6 @@ class GPUInstanceStatus(BaseModel):
     """
     Optional list of allocated accelerator devices for the GPU instance, grouped by manufacturer and type.
     """
-
-
-class GPUInstanceStatusPublic(GPUInstanceStatus):
-    """
-    Identical to :class:`GPUInstanceStatus` except ``count``
-    is excluded from serialization, so the count never leaves the
-    server in API responses. Inputs (create/update) continue to bind
-    against :class:`GPUInstanceStatus`.
-    """
-
-    count: Optional[int] = Field(default=None, exclude=True)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_parent_instance(cls, value):
-        # Pydantic v2 rejects parent-class instances when validating
-        # against a child model. The ORM row stores ``GPUInstanceStatus``
-        # while the public response expects ``GPUInstanceStatusPublic``,
-        # so dump the parent to a dict and let it re-validate as the child.
-        if isinstance(value, GPUInstanceStatus) and not isinstance(value, cls):
-            return value.model_dump()
-        return value
 
 
 class GPUInstanceBase(SQLModel):
@@ -736,6 +708,15 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
         phase = self._phase()
         return phase is not None and phase.endswith("Failed")
 
+    def is_transitioning(self) -> bool:
+        """Whether the instance is mid-transition and still needs re-polling.
+
+        Settled states (ready, stopped, failed) are done; everything else —
+        pre-create (``phase is None``), starting, stopping, deleting, unknown,
+        not-ready, and Ready-but-incomplete — is still reconciling.
+        """
+        return not (self.is_ready() or self.is_stopped() or self.is_failed())
+
     # -- downstream CR (de)serialization ----------------------------------- #
 
     def convert_to_kuberes(self) -> dict:
@@ -785,8 +766,8 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
         """Map a downstream worker CR dict into a :class:`GPUInstanceStatus`.
 
         Pure merge — **no** concurrency guards (DELETING sticky,
-        ``require_current_phase``, ``count`` backoff, ``session.refresh``) and
-        no mutation of ``self``; those stay in the controller's ``_set_status``.
+        ``session.refresh``) and no mutation of ``self``; those stay in the
+        controller's write path (``_write_status``).
 
         The k8s ``namespace`` is taken from the CR's ``metadata.namespace``
         (authoritative), so callers don't stamp it separately.
@@ -857,7 +838,7 @@ class GPUInstancePublic(GPUInstanceCreate, PublicFields):
     Reference to the principal who created the GPU instance.
     """
 
-    status: Optional[GPUInstanceStatusPublic] = None
+    status: Optional[GPUInstanceStatus] = None
     """
     Status of the GPU instance, including phase, host IPs, ports, etc.
     """

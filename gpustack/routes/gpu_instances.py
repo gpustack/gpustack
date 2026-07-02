@@ -20,7 +20,7 @@ against the worker-side ``Instance`` CR. State machine:
         - /delete ─► Deleting (cleanup)
 
     /delete works from **any** phase and is sticky: the controller's
-    ``_set_status`` refuses to overwrite a row that already reads
+    ``_write_status`` refuses to overwrite a row that already reads
     Deleting, so an in-flight Stopping/Starting reconcile cannot
     resurrect it.
 
@@ -449,15 +449,14 @@ def _build_update_source(
 
 
 def _build_update_phase_source(existing_obj: GPUInstance, phase: str) -> dict:
-    """Stamp ``phase`` onto status, resetting ``count`` and ``phase_message``
-    so the controller restarts its backoff from zero on the new phase."""
+    """Stamp ``phase`` onto status, clearing ``phase_message`` so the new phase
+    starts clean."""
     base = existing_obj.status or GPUInstanceStatus()
     return {
         "status": base.model_copy(
             update={
                 "phase": phase,
                 "phase_message": None,
-                "count": 0,
             },
         ),
     }

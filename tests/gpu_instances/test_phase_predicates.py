@@ -139,6 +139,38 @@ def test_failed_phases_are_the_five_gpustack_defined_ones():
     assert all(p.endswith("Failed") for p in FAILED_PHASES)
 
 
+def test_is_transitioning_true_for_in_flight_phases():
+    # Everything not settled (ready / stopped / failed) is still reconciling.
+    for phase in (
+        None,
+        GPUInstancePhase.NOT_READY,
+        GPUInstancePhase.STARTING,
+        GPUInstancePhase.STOPPING,
+        GPUInstancePhase.DELETING,
+        GPUInstancePhase.UNKNOWN,
+    ):
+        assert _gi(phase).is_transitioning() is True
+
+
+def test_is_transitioning_false_for_settled_phases():
+    # Fully-ready, stopped, and any failed phase are settled.
+    spec = GPUInstanceSpec(type_="gpu", image="busybox")
+    assert _gi_full(GPUInstancePhase.READY, spec=spec).is_transitioning() is False
+    assert _gi(GPUInstancePhase.STOPPED).is_transitioning() is False
+    for phase in FAILED_PHASES:
+        assert _gi(phase).is_transitioning() is False
+
+
+def test_is_transitioning_true_for_ready_but_incomplete():
+    # Phase Ready but required fields not yet populated -> still reconciling.
+    spec = GPUInstanceSpec(
+        type_="gpu", image="busybox", ports=[GPUInstancePort(port=8080)]
+    )
+    incomplete = _gi_full(GPUInstancePhase.READY, spec=spec)
+    assert incomplete.is_ready() is False
+    assert incomplete.is_transitioning() is True
+
+
 def test_phase_category_sets_are_disjoint():
     assert TRANSITIONING_PHASES == frozenset(
         {

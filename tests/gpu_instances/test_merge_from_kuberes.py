@@ -2,8 +2,8 @@
 
 This is the inverse of ``convert_to_kuberes``: it maps a downstream worker CR
 dict into a :class:`GPUInstanceStatus`. It is a **pure merge** — no concurrency
-guards (DELETING sticky / require_current_phase / count backoff / refresh) and
-no mutation of ``self``; those live in the controller's ``_set_status``.
+guards (DELETING sticky / refresh) and no mutation of ``self``; those live in
+the controller's write path (``_write_status``).
 """
 
 from gpustack.schemas.gpu_instances import (
@@ -74,18 +74,24 @@ def test_merge_from_kuberes_empty_or_missing_status():
 
     assert inst.merge_from_kuberes({}).phase is None
     assert inst.merge_from_kuberes({"status": None}).phase is None
-    assert inst.merge_from_kuberes({"status": {}}).count == 0
+    assert inst.merge_from_kuberes({"status": {}}).phase is None
+
+
+def test_status_ignores_legacy_count_key():
+    # Rows persisted before ``count`` was removed still carry it in their stored
+    # status JSON; validation must ignore the unknown key, not fail.
+    status = GPUInstanceStatus.model_validate({"count": 7, "phase": "Ready"})
+    assert status.phase == "Ready"
+    assert not hasattr(status, "count")
 
 
 def test_merge_from_kuberes_is_pure_no_guards_no_mutation():
     # A DELETING row must NOT be protected here (that guard lives in the
-    # controller); merge returns exactly what the downstream reports, applies no
-    # count backoff, and never mutates self.status.
-    inst = _gi(status=GPUInstanceStatus(phase="Deleting", count=3))
+    # controller); merge returns exactly what the downstream reports and never
+    # mutates self.status.
+    inst = _gi(status=GPUInstanceStatus(phase="Deleting"))
 
     status = inst.merge_from_kuberes({"status": {"phase": "Ready"}})
 
     assert status.phase == "Ready"  # no DELETING sticky
-    assert status.count == 0  # no count backoff
     assert inst.status.phase == "Deleting"  # self untouched
-    assert inst.status.count == 3
