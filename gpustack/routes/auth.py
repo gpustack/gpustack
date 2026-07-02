@@ -1,3 +1,5 @@
+import base64
+import functools
 import hmac
 import json
 import os
@@ -11,6 +13,7 @@ from gpustack.config.config import Config
 from typing import Annotated, Dict, List, Optional
 from fastapi import APIRouter, Form, Request, Response
 from gpustack.api.exceptions import (
+    ConflictException,
     InvalidException,
     UnauthorizedException,
     BadRequestException,
@@ -34,7 +37,7 @@ from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
 from lxml import etree
 from gpustack.utils.convert import safe_b64decode, inflate_data
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 from gpustack.ssl_context import make_ssl_context
 from gpustack.utils.network import use_proxy_env_for_url
@@ -134,6 +137,67 @@ async def get_oidc_user_data(
     return user_data
 
 
+# Browser-facing SSO callbacks (CAS / OIDC / SAML) are reached via a
+# full-page IdP redirect: a JSON exception raised inside them would
+# land the user on a raw error page rather than the login form.
+# Failures are surfaced via ``/login?error=<code>`` instead, so the
+# login UI can read the code and render an actionable toast.
+#
+# Two codes are recognised today:
+#   * ``source_conflict`` — same username collides with a different
+#     auth source; user needs an admin to link or convert.
+#   * ``auth_failed`` — anything else (bad ticket, expired state,
+#     IdP unreachable, malformed response, …). Generic by design:
+#     the underlying detail goes to ``logger`` for diagnosis rather
+#     than into a URL exposed to an unauthenticated caller.
+SOURCE_CONFLICT_LOGIN_URL = "/login?error=source_conflict"
+AUTH_FAILED_LOGIN_URL = "/login?error=auth_failed"
+
+
+# ``303 See Other`` so a browser arriving via POST (SAML's POST
+# binding) switches to GET on the login page; ``302`` would
+# technically allow the browser to re-POST.
+def _source_conflict_redirect() -> RedirectResponse:
+    return RedirectResponse(url=SOURCE_CONFLICT_LOGIN_URL, status_code=303)
+
+
+def _auth_failed_redirect() -> RedirectResponse:
+    return RedirectResponse(url=AUTH_FAILED_LOGIN_URL, status_code=303)
+
+
+def _sso_callback_errors_to_redirect(fn):
+    """Decorator: turn auth failures inside an SSO callback into a
+    redirect to ``/login?error=<code>``.
+
+    ``ConflictException`` maps to ``source_conflict`` (specific
+    actionable case). Any other exception — typed auth errors,
+    malformed-IdP-response errors, even programming errors — maps to
+    the generic ``auth_failed`` code and is logged with stacktrace so
+    the cause is recoverable from server-side logs without exposing
+    the original message to the browser.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except ConflictException:
+            return _source_conflict_redirect()
+        except Exception as exc:
+            # ``HTTPException`` subclasses store the description on
+            # ``.message`` and don't pass it to ``Exception.__init__``,
+            # so ``str(exc)`` (and thus the traceback's tail line) is
+            # empty. Pull the descriptive text out explicitly so
+            # operators reading logs see e.g. "The Assertion of the
+            # Response is not signed and the SP requires it" instead
+            # of a bare exception type.
+            detail = getattr(exc, "message", None) or str(exc) or type(exc).__name__
+            logger.exception("SSO callback %s failed: %s", fn.__name__, detail)
+            return _auth_failed_redirect()
+
+    return wrapper
+
+
 async def _resolve_external_user(
     session, username: str, expected_source: AuthProviderEnum
 ) -> Optional[User]:
@@ -146,19 +210,228 @@ async def _resolve_external_user(
 
     The ``source`` match is a security check, not a convenience one:
     without it, an attacker who controls ``username`` on *any* enabled
-    IdP could hand themselves the session of an existing local-admin /
-    OIDC / SAML user with the same name. Raise ``UnauthorizedException``
-    on mismatch — the error message stays generic so it doesn't leak
-    which other provider owns the name.
+    IdP could hand themselves the session of an existing local-admin
+    / OIDC / SAML user with the same name. The mismatch message
+    stays silent about *which* provider owns the name so it doesn't
+    leak that to an unauthenticated caller.
     """
     user = await User.first_by_fields(
         session=session, fields={"name": username, "kind": PrincipalType.USER}
     )
     if user and user.source != expected_source:
-        raise UnauthorizedException(
-            message="An account with this username already exists from a different authentication source."
+        raise ConflictException(
+            message=(
+                "An account with this username already exists from a different "
+                "authentication source. Please contact an administrator to "
+                "link or convert it."
+            )
         )
     return user
+
+
+async def _resolve_or_provision_external_user(
+    session,
+    username: str,
+    expected_source: AuthProviderEnum,
+    *,
+    display_name: str = "",
+    avatar_url: Optional[str] = None,
+    is_active: bool = True,
+):
+    """Resolve an SSO-callback user, provisioning a new principal row
+    when the username is new.
+
+    :class:`ConflictException` from :func:`_resolve_external_user`
+    propagates unchanged; the SSO callback wrapper
+    :func:`_sso_callback_errors_to_redirect` converts it into a
+    browser-friendly redirect. The three callbacks share this helper
+    so the resolve-or-create idiom (and the source-mismatch check
+    inside it) stays identical across providers.
+    """
+    user = await _resolve_external_user(session, username, expected_source)
+    if user is not None:
+        return user
+    user_info = User(
+        kind=PrincipalType.USER,
+        name=username,
+        display_name=display_name or username,
+        avatar_url=avatar_url,
+        is_admin=False,
+        is_active=is_active,
+        source=expected_source,
+    )
+    return await User.create(session, user_info)
+
+
+def _saml_response_signature_kinds(xml_bytes: bytes) -> "tuple[bool, bool]":
+    """Report which SAML signature elements are present on the raw
+    response — as ``(response_signed, assertion_signed)``.
+
+    Presence-only inspection: does *not* validate the signature, only
+    checks the DOM shape. The toolkit does the actual crypto check
+    once the corresponding ``wantMessagesSigned`` / ``wantAssertionsSigned``
+    flag is set, and rejects a faked ``<ds:Signature>`` element there.
+
+    The toolkit's two ``wantX`` knobs are directional — "reject if
+    this position is unsigned" — so there's no direct way to express
+    "either position signed is fine". Different IdPs sign different
+    combinations, so the callback flips the flag matching whichever
+    signature is actually present.
+
+    XXE-safe parser: this is the callback's first read of attacker-
+    controlled bytes, and needs the same hardening the toolkit applies
+    internally.
+    """
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+    try:
+        root = etree.fromstring(xml_bytes, parser=parser)
+    except etree.XMLSyntaxError:
+        return (False, False)
+    ns = {
+        "ds": "http://www.w3.org/2000/09/xmldsig#",
+        "saml": "urn:oasis:names:tc:SAML:2.0:assertion",
+    }
+    response_signed = root.find("ds:Signature", ns) is not None
+    assertion_signed = root.find(".//saml:Assertion/ds:Signature", ns) is not None
+    return (response_signed, assertion_signed)
+
+
+def _saml_unsigned_escape_hatch(config: Config) -> bool:
+    """Whether the operator has explicitly opted the callback out of
+    signature verification via ``--saml-security``.
+
+    Only the exact combination of *both* ``wantAssertionsSigned`` and
+    ``wantMessagesSigned`` set to ``False`` counts — a missing key or
+    a half-opt-out doesn't. Intended purely for local IdP-integration
+    testing (e.g. Keycloak with all three signing switches off) where
+    turning on signing is inconvenient; enabling this mode makes the
+    /auth/saml/callback endpoint accept forged SAMLResponses from any
+    client.
+    """
+    try:
+        operator_security = json.loads(config.saml_security)
+    except (TypeError, ValueError):
+        return False
+    return (
+        operator_security.get("wantAssertionsSigned") is False
+        and operator_security.get("wantMessagesSigned") is False
+    )
+
+
+def _extract_saml_attributes_unsigned(xml_bytes: bytes) -> Dict:
+    """Pull NameID + attributes out of the assertion without any
+    signature check. Used by the testing escape hatch — see
+    :func:`_saml_unsigned_escape_hatch`.
+
+    XXE-safe parser so "signature off" doesn't double as an XXE hole.
+
+    Output shape matches what the toolkit's ``get_attributes()``
+    yields after we collapse single-item lists, so the callback code
+    downstream doesn't need to branch: bare string for single-valued
+    attributes, list for multi-valued.
+    """
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+    root = etree.fromstring(xml_bytes, parser=parser)
+    ns = {"saml": "urn:oasis:names:tc:SAML:2.0:assertion"}
+
+    nameid_elem = root.find(".//saml:NameID", ns)
+    nameid = nameid_elem.text if nameid_elem is not None else ""
+
+    attributes: Dict = {"name_id": nameid}
+    for attr in root.iterfind(".//saml:Attribute", ns):
+        attr_name = attr.get("Name")
+        if not attr_name:
+            continue
+        values = [
+            v.text
+            for v in attr.iterfind("saml:AttributeValue", ns)
+            if v.text is not None
+        ]
+        # Multiple ``<Attribute Name="X">`` elements with the same
+        # Name are valid multi-valued SAML — merge values into one
+        # list rather than overwriting.
+        existing = attributes.get(attr_name)
+        if existing is None:
+            attributes[attr_name] = values[0] if len(values) == 1 else values
+        else:
+            merged = existing if isinstance(existing, list) else [existing]
+            merged.extend(values)
+            attributes[attr_name] = merged
+    return attributes
+
+
+def _saml_settings(config: Config, *, xml_bytes: Optional[bytes] = None) -> Dict:
+    """Assemble the OneLogin toolkit's SP+IdP settings dict.
+
+    The toolkit ships with both ``wantAssertionsSigned`` and
+    ``wantMessagesSigned`` defaulted to ``False``, and ``strict=True``
+    on its own doesn't enforce either — so an unsigned (i.e. forged)
+    assertion would pass. Two-step policy on those flags:
+
+    * **Adaptive detection** (callback path only, when ``xml_bytes``
+      is given): flip ``wantMessagesSigned`` / ``wantAssertionsSigned``
+      to match whichever ``<ds:Signature>`` is actually present. Lets
+      IdPs that sign only the outer ``<Response>`` and IdPs that sign
+      only the inner ``<Assertion>`` both work without any operator
+      config. An operator's explicit setting always wins — a strict
+      deployment can require Assertion signing regardless.
+
+    * **Floor** (applied last): if neither ends up True, force
+      ``wantAssertionsSigned=True``. Layered strictness (encrypted
+      NameID, both-signed, …) is available via ``--saml-security``.
+    """
+    operator_security = json.loads(config.saml_security)
+    security = dict(operator_security)
+    if xml_bytes is not None:
+        response_signed, assertion_signed = _saml_response_signature_kinds(xml_bytes)
+        if "wantMessagesSigned" not in operator_security and response_signed:
+            security["wantMessagesSigned"] = True
+        if "wantAssertionsSigned" not in operator_security and assertion_signed:
+            security["wantAssertionsSigned"] = True
+    # Floor: if neither ``wantX`` ends up True, force
+    # ``wantAssertionsSigned=True`` so an unsigned response is refused.
+    if not security.get("wantAssertionsSigned") and not security.get(
+        "wantMessagesSigned"
+    ):
+        security["wantAssertionsSigned"] = True
+    # Default-tolerate duplicate ``<Attribute Name="X">`` elements in
+    # the assertion (values are merged into one list). SAML allows
+    # multi-valued attributes as either repeated ``<AttributeValue>``
+    # or repeated ``<Attribute>`` — Keycloak's default mappers emit
+    # the latter (role list + role name mappers both write ``Role``),
+    # and the toolkit's out-of-box behaviour is to reject that.
+    # Rejecting isn't a security control, it's a compatibility knob:
+    # operators can still opt into strict mode via ``--saml-security``.
+    security.setdefault("allowRepeatAttributeName", True)
+    return {
+        "strict": True,
+        "sp": {
+            "entityId": config.saml_sp_entity_id,
+            "assertionConsumerService": {
+                "url": config.saml_sp_acs_url,
+                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+            },
+            "singleLogoutService": {
+                "url": config.saml_sp_slo_url,
+                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+            },
+            "x509cert": config.saml_sp_x509_cert,
+            "privateKey": config.saml_sp_private_key,
+        },
+        "idp": {
+            "entityId": config.saml_idp_entity_id,
+            "singleSignOnService": {
+                "url": config.saml_idp_server_url,
+                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+            },
+            "singleLogoutService": {
+                "url": config.saml_idp_logout_url,
+                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+            },
+            "x509cert": config.saml_idp_x509_cert,
+        },
+        "security": security,
+    }
 
 
 async def init_saml_auth(request: Request):
@@ -167,43 +440,13 @@ async def init_saml_auth(request: Request):
     """
     config: Config = request.app.state.server_config
     form_data = await request.form()
-    form_dict = dict(form_data)
-    saml_settings = {
-        "strict": True,
-        "sp": {
-            "entityId": config.saml_sp_entity_id,  # sp_entityId
-            "assertionConsumerService": {
-                "url": config.saml_sp_acs_url,  # callback url
-                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
-            },
-            "singleLogoutService": {
-                "url": config.saml_sp_slo_url,
-                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
-            },
-            "x509cert": config.saml_sp_x509_cert,  # SP public key
-            "privateKey": config.saml_sp_private_key,  # sp privateKey
-        },
-        "idp": {
-            "entityId": config.saml_idp_entity_id,  # idp_entityId
-            "singleSignOnService": {
-                "url": config.saml_idp_server_url,  # server url
-                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
-            },
-            "singleLogoutService": {
-                "url": config.saml_idp_logout_url,
-                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
-            },
-            "x509cert": config.saml_idp_x509_cert,  # idp public key
-        },
-        "security": json.loads(config.saml_security),
-    }  # Signature configuration
     req = {
         "http_host": request.client.host,
         "script_name": request.url.path,
         "get_data": dict(request.query_params),
-        "post_data": form_dict,
+        "post_data": dict(form_data),
     }
-    return OneLogin_Saml2_Auth(req, saml_settings)
+    return OneLogin_Saml2_Auth(req, _saml_settings(config))
 
 
 # SAML login and callback endpoints
@@ -216,114 +459,178 @@ async def saml_login(request: Request):
 
 
 @router.api_route("/saml/callback", methods=["GET", "POST"])
+@_sso_callback_errors_to_redirect
 async def saml_callback(request: Request, session: SessionDep):
     logger.debug("Invoke saml callback.")
-    try:
-        if request.method == "GET":
-            query = dict(request.query_params)
-            SAMLResponse = query['SAMLResponse']
-            decoded = safe_b64decode(SAMLResponse)
-            xml_bytes = inflate_data(decoded)
-        else:
-            form_data = await request.form()
-            form_dict = dict(form_data)
-            SAMLResponse = form_dict.get('SAMLResponse')
-            xml_bytes = safe_b64decode(SAMLResponse)
+    config: Config = request.app.state.server_config
 
-        root = etree.fromstring(xml_bytes)
-        name_id = root.find('.//{*}NameID').text
-        ns = {'saml': 'urn:oasis:names:tc:SAML:2.0:assertion'}
-        attributes = {}
-        attributes['name_id'] = name_id
-        for attr in root.xpath('//saml:Attribute', namespaces=ns):
-            attr_name = attr.get('Name')
-            values = [v.text for v in attr.xpath('saml:AttributeValue', namespaces=ns)]
-            attributes[attr_name] = values[0] if len(values) == 1 else values
+    # Normalise the SAMLResponse to plain base64 (HTTP-POST binding
+    # shape) so the OneLogin toolkit can consume it via
+    # ``request_data['post_data']``. The HTTP-Redirect binding (GET)
+    # additionally DEFLATE-compresses the assertion, which the
+    # toolkit doesn't unwrap on its own — inflate here and re-encode.
+    if request.method == "GET":
+        raw = request.query_params.get("SAMLResponse", "")
+        xml_bytes = inflate_data(safe_b64decode(raw))
+        saml_response = base64.b64encode(xml_bytes).decode("ascii")
+    else:
+        form_data = await request.form()
+        saml_response = form_data.get("SAMLResponse", "")
+        xml_bytes = safe_b64decode(saml_response) if saml_response else b""
 
-        config: Config = request.app.state.server_config
-
-        if config.external_auth_name:
-            # If external_auth_name is set, use it as username.
-            username = get_saml_attributes(
-                config, attributes, config.external_auth_name
-            )
-        else:
-            # Try email or name_id for username if external_auth_name is not set.
-            for key in ["email", "emailaddress", "name_id", "nameidentifier"]:
-                username = get_saml_attributes(config, attributes, key)
-                if username:
-                    break
-            else:
-                raise Exception(message="No valid username found in saml attributes")
-
-        if config.external_auth_full_name and '+' not in config.external_auth_full_name:
-            # If external_auth_full_name is set, use it as user's full name.
-            full_name = get_saml_attributes(
-                config, attributes, config.external_auth_full_name
-            )
-        elif config.external_auth_full_name:
-            # external_auth_full_name is set with concat symbol '+'.
-            full_name = ' '.join(
-                [
-                    get_saml_attributes(config, attributes, v.strip())
-                    for v in config.external_auth_full_name.split('+')
-                ]
-            )
-        else:
-            full_name = ""
-            # Try common claims. These are not guaranteed to be present.
-            for key in ["displayName", "name"]:
-                full_name = get_saml_attributes(config, attributes, key)
-                if full_name:
-                    break
-
-        avatar_url = None
-        if config.external_auth_avatar_url:
-            avatar_url = get_saml_attributes(
-                config, attributes, config.external_auth_avatar_url
-            )
-
-        user = await _resolve_external_user(session, username, AuthProviderEnum.SAML)
-        if not user:
-            user_info = User(
-                kind=PrincipalType.USER,
-                name=username,
-                display_name=full_name or username,
-                avatar_url=avatar_url,
-                is_admin=False,
-                is_active=not config.external_auth_default_inactive,
-                source=AuthProviderEnum.SAML,
-            )
-            user = await User.create(session, user_info)
-
-        await _sync_saml_groups_if_enabled(session, user, attributes, config)
-
-        jwt_manager: JWTManager = request.app.state.jwt_manager
-        access_token = jwt_manager.create_jwt_token(
-            username=username,
+    if _saml_unsigned_escape_hatch(config):
+        # ``OneLogin_Saml2_Auth`` has a hard-coded "at least one
+        # signature element must be present" check (``response.py``
+        # ``No Signature found``) that fires regardless of the ``wantX``
+        # flags, so the escape hatch has to bypass the toolkit
+        # entirely rather than adjust its settings.
+        logger.warning(
+            "SAML signature verification is disabled via --saml-security "
+            "(both wantAssertionsSigned and wantMessagesSigned set to false). "
+            "Any client can log in as any user by posting a forged "
+            "SAMLResponse. Do NOT use in production."
         )
-        response = RedirectResponse(url='/', status_code=303)
-        response.set_cookie(
-            key=SESSION_COOKIE_NAME,
-            value=access_token,
-            httponly=True,
-            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-            samesite="lax",
-            secure=request.url.scheme == "https",
+        attributes = _extract_saml_attributes_unsigned(xml_bytes)
+    else:
+        # ``current_url`` (used by the toolkit for the ``Destination`` /
+        # ``Recipient`` checks) is derived from the operator's
+        # configured ``saml_sp_acs_url`` rather than from ``request.url``:
+        # behind a reverse proxy or UI dev-server the request the
+        # callback sees often has its host/port/scheme rewritten and
+        # no longer matches what the IdP signed the assertion for. The
+        # ACS URL is what the SP publicly claims to be, so anchoring
+        # the check to it is both more reliable and no weaker —
+        # Destination binding still prevents a response signed for
+        # this SP from being replayed against a *different* SP.
+        acs = urlparse(config.saml_sp_acs_url or "")
+        req = {
+            "http_host": acs.hostname or "",
+            "server_port": str(
+                acs.port
+                if acs.port is not None
+                else (443 if acs.scheme == "https" else 80)
+            ),
+            "https": "on" if acs.scheme == "https" else "off",
+            "script_name": acs.path,
+            "get_data": dict(request.query_params),
+            "post_data": {"SAMLResponse": saml_response},
+        }
+        saml_auth = OneLogin_Saml2_Auth(
+            req, _saml_settings(config, xml_bytes=xml_bytes)
         )
-        response.set_cookie(
-            key=SSO_LOGIN_COOKIE_NAME,
-            value="true",
-            httponly=True,
-            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-            samesite="lax",
-            secure=request.url.scheme == "https",
+        saml_auth.process_response()
+
+        errors = saml_auth.get_errors()
+        if errors:
+            # The descriptive reason goes to the server log via the
+            # decorator's ``logger.exception``; the browser only sees
+            # a generic ``auth_failed`` redirect. Prefer the reason
+            # string over the coarse code list when present.
+            raise UnauthorizedException(
+                message="SAML response validation failed: "
+                + (saml_auth.get_last_error_reason() or ", ".join(errors))
+            )
+        if not saml_auth.is_authenticated():
+            raise UnauthorizedException(message="SAML response is not authenticated")
+
+        # Collapse ``dict[str, list[str]]`` (what the toolkit returns)
+        # into "bare string for single-valued, list for multi-valued"
+        # so downstream code doesn't need to branch on arity — matches
+        # the shape ``_extract_saml_attributes_unsigned`` produces.
+        attrs_raw = saml_auth.get_attributes()
+        attributes = {
+            k: (v[0] if isinstance(v, list) and len(v) == 1 else v)
+            for k, v in attrs_raw.items()
+        }
+        attributes["name_id"] = saml_auth.get_nameid()
+
+    if config.external_auth_name:
+        # If external_auth_name is set, use it as username.
+        username = get_saml_attributes(config, attributes, config.external_auth_name)
+        if not username:
+            # Operator pointed us at a specific attribute, but it
+            # isn't present on this assertion. Bail with a clear
+            # message instead of letting ``None`` flow into the
+            # resolve / create path.
+            raise UnauthorizedException(
+                message=(
+                    f"Username attribute "
+                    f"'{config.external_auth_name}' not found in SAML "
+                    f"attributes"
+                )
+            )
+    else:
+        # Try email or name_id for username if external_auth_name is not set.
+        for key in ["email", "emailaddress", "name_id", "nameidentifier"]:
+            username = get_saml_attributes(config, attributes, key)
+            if username:
+                break
+        else:
+            raise UnauthorizedException(
+                message="No valid username found in saml attributes"
+            )
+
+    if config.external_auth_full_name and '+' not in config.external_auth_full_name:
+        # If external_auth_full_name is set, use it as user's full name.
+        full_name = get_saml_attributes(
+            config, attributes, config.external_auth_full_name
         )
-    except Exception as e:
-        logger.error(f"SAML callback error: {str(e)}")
-        raise UnauthorizedException(message=str(e))
+    elif config.external_auth_full_name:
+        # external_auth_full_name is set with concat symbol '+'.
+        full_name = ' '.join(
+            [
+                get_saml_attributes(config, attributes, v.strip())
+                for v in config.external_auth_full_name.split('+')
+            ]
+        )
+    else:
+        full_name = ""
+        # Try common claims. These are not guaranteed to be present.
+        for key in ["displayName", "name"]:
+            full_name = get_saml_attributes(config, attributes, key)
+            if full_name:
+                break
+
+    avatar_url = None
+    if config.external_auth_avatar_url:
+        avatar_url = get_saml_attributes(
+            config, attributes, config.external_auth_avatar_url
+        )
+
+    user = await _resolve_or_provision_external_user(
+        session,
+        username,
+        AuthProviderEnum.SAML,
+        display_name=full_name or username,
+        avatar_url=avatar_url,
+        is_active=not config.external_auth_default_inactive,
+    )
+
+    await _sync_saml_groups_if_enabled(session, user, attributes, config)
+
+    jwt_manager: JWTManager = request.app.state.jwt_manager
+    access_token = jwt_manager.create_jwt_token(
+        username=username,
+    )
+    response = RedirectResponse(url='/', status_code=303)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=access_token,
+        httponly=True,
+        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+    response.set_cookie(
+        key=SSO_LOGIN_COOKIE_NAME,
+        value="true",
+        httponly=True,
+        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
 
     return response
 
@@ -488,6 +795,7 @@ async def oidc_login(request: Request):
 
 
 @router.get("/oidc/callback")
+@_sso_callback_errors_to_redirect
 async def oidc_callback(request: Request, session: SessionDep):
     logger.debug("Invoke oidc callback.")
     config: Config = request.app.state.server_config
@@ -564,18 +872,14 @@ async def oidc_callback(request: Request, session: SessionDep):
         except Exception as e:
             logger.error(f"Get OIDC user info error: {str(e)}")
             raise UnauthorizedException(message=str(e))
-    user = await _resolve_external_user(session, username, AuthProviderEnum.OIDC)
-    if not user:
-        user_info = User(
-            kind=PrincipalType.USER,
-            name=username,
-            display_name=full_name or username,
-            avatar_url=avatar_url,
-            is_admin=False,
-            is_active=not config.external_auth_default_inactive,
-            source=AuthProviderEnum.OIDC,
-        )
-        user = await User.create(session, user_info)
+    user = await _resolve_or_provision_external_user(
+        session,
+        username,
+        AuthProviderEnum.OIDC,
+        display_name=full_name or username,
+        avatar_url=avatar_url,
+        is_active=not config.external_auth_default_inactive,
+    )
 
     await _sync_oidc_groups_if_enabled(session, user, user_data, config)
 
@@ -780,6 +1084,7 @@ async def cas_login(request: Request):
 
 
 @router.get("/cas/callback")
+@_sso_callback_errors_to_redirect
 async def cas_callback(request: Request, session: SessionDep):
     logger.debug("Invoke CAS callback.")
     config: Config = request.app.state.server_config
@@ -827,18 +1132,18 @@ async def cas_callback(request: Request, session: SessionDep):
     if config.cas_avatar_attribute:
         avatar_url = _first(user_data.get(config.cas_avatar_attribute))
 
-    user = await _resolve_external_user(session, username, AuthProviderEnum.CAS)
-    if not user:
-        user_info = User(
-            kind=PrincipalType.USER,
-            name=username,
-            display_name=full_name or username,
-            avatar_url=avatar_url,
-            is_admin=False,
-            is_active=not config.external_auth_default_inactive,
-            source=AuthProviderEnum.CAS,
-        )
-        user = await User.create(session, user_info)
+    # The JWT is keyed by ``username``; CAS has no group-sync step
+    # that would need the principal row, so the helper's return value
+    # is discarded once the resolve-or-provision side effects have
+    # run.
+    await _resolve_or_provision_external_user(
+        session,
+        username,
+        AuthProviderEnum.CAS,
+        display_name=full_name or username,
+        avatar_url=avatar_url,
+        is_active=not config.external_auth_default_inactive,
+    )
 
     jwt_manager: JWTManager = request.app.state.jwt_manager
     access_token = jwt_manager.create_jwt_token(username=username)

@@ -10,7 +10,6 @@ from gpustack.schemas.inference_backend import (
 )
 from gpustack.server.db import async_session
 from gpustack_runner import list_service_runners
-from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime.detector import ManufacturerEnum
 
@@ -53,27 +52,6 @@ class BackendFrameworkFilter(WorkerFilter):
             query_conditions.add(("cpu", None, self.model.backend_version, None))
         return list(query_conditions)
 
-    async def _has_lower_runners(self, **kwargs) -> Tuple[bool, List[str]]:
-        backend_version = kwargs.get("backend_version")
-        if backend_version:
-            kwargs.pop("backend_version")
-        # Since backend versions are backward compatible,
-        # if an exact version match cannot be found, we can try to see if a lower version is available.
-        runners_list = list_service_runners(**kwargs)
-        supported_runtime_versions = []
-        for runner in runners_list:
-            if not runner.versions or len(runner.versions) == 0:
-                continue
-            try:
-                runner_version = runner.versions[0].backends[0].versions[0].version
-                if compare_versions(runner_version, backend_version) <= 0:
-                    return True, []
-                supported_runtime_versions.append(runner_version)
-            except Exception:
-                pass
-
-        return False, supported_runtime_versions
-
     def _visible_version_configs(
         self,
         inference_backends: List[InferenceBackend],
@@ -110,21 +88,19 @@ class BackendFrameworkFilter(WorkerFilter):
         self,
         inference_backends: List[InferenceBackend],
         gpu_type: str,
-        runtime_version: Optional[str],
         backend_version: Optional[str],
         variant: Optional[str],
-    ) -> Tuple[bool, List[str]]:
+    ) -> bool:
         """
-        Get supported runner versions for given GPU configuration.
+        Check whether a supported runner exists for the given GPU configuration.
 
         Args:
             gpu_type: GPU type (cuda, rocm, cann)
-            runtime_version: GPU runtime version (e.g., "12.4")
             backend_version: Inference Backend version (e.g., "0.11.0")
             variant: Variant for Ascend GPUs (CANN version)
 
         Returns:
-            Tuple of (is_supported, supported_runtime_versions)
+            True if a supported runner exists, False otherwise.
         """
         version_configs = self._visible_version_configs(inference_backends)
         for version, version_config in version_configs.items():
@@ -145,14 +121,12 @@ class BackendFrameworkFilter(WorkerFilter):
 
             # GPU is supported if either custom or built-in framework supports it
             if is_custom_supported or is_built_in_supported:
-                return True, []
+                return True
 
         kwargs = {
             "backend": gpu_type,
             "service": self.backend_name.lower(),
         }
-        if runtime_version:
-            kwargs["backend_version"] = runtime_version
         if variant:
             kwargs["backend_variant"] = variant
 
@@ -166,9 +140,9 @@ class BackendFrameworkFilter(WorkerFilter):
 
         runners_list = list_service_runners(**kwargs)
         if runners_list and len(runners_list) > 0:
-            return True, []
+            return True
 
-        return await self._has_lower_runners(**kwargs)
+        return False
 
     async def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:
         """
@@ -211,10 +185,9 @@ class BackendFrameworkFilter(WorkerFilter):
                 # Check framework compatibility
 
                 # Get supported runners for this GPU configuration
-                is_supported, supported_versions = await self._has_supported_runners(
+                is_supported = await self._has_supported_runners(
                     inference_backends,
                     gpu_type,
-                    runtime_version,
                     backend_version,
                     variant,
                 )
@@ -245,11 +218,6 @@ class BackendFrameworkFilter(WorkerFilter):
                             reason_text += (
                                 f"GPU device ({gpu_type} {runtime_version or ''})"
                             )
-                        reason_text += (
-                            f", The supported runtimes are {gpu_type} {', '.join(supported_versions)}"
-                            if supported_versions
-                            else ""
-                        )
                         incompatible_reasons.append(reason_text)
 
             if is_compatible:

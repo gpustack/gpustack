@@ -37,6 +37,7 @@ from gpustack.schemas.users import (
     UserSelfUpdate,
 )
 from gpustack.server.passwords import (
+    clear_password,
     is_password_change_required,
     password_change_required_map,
     set_password,
@@ -230,41 +231,87 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
     ):
         raise ConflictException(message="Cannot deactivate the only admin user")
 
-    # See the guard in :func:`create_user` — same /login bypass.
-    if user.source != AuthProviderEnum.Local and user_in.password:
+    # Authentication-source switch (Local ↔ OIDC / SAML / CAS / …).
+    # An omitted ``source`` means "leave as-is" — see the override on
+    # :class:`UserUpdate.source`. When the caller does change it, the
+    # switch is a sensitive linking operation: it rewires how the
+    # user logs in, so the credential side (password row) must move
+    # in lockstep with the source column.
+    new_source = user_in.source or user.source
+    is_switching = new_source != user.source
+
+    # Same /login-bypass guard as in :func:`create_user`, but keyed
+    # off the *resulting* source so a Local → SSO switch in the same
+    # PUT can't smuggle a leftover password through.
+    if new_source != AuthProviderEnum.Local and user_in.password:
         raise InvalidException(
-            message=f"Password must not be set for {user.source} users."
+            message=f"Password must not be set for {new_source} users."
         )
-    if user.source != AuthProviderEnum.Local and user_in.require_password_change:
+    if new_source != AuthProviderEnum.Local and user_in.require_password_change:
         raise InvalidException(
-            message=f"require_password_change is not applicable to {user.source} users."
+            message=f"require_password_change is not applicable to {new_source} users."
+        )
+    # SSO → Local needs a fresh credential in the same request:
+    # there's no password row to fall back on, and leaving the account
+    # password-less would lock the user out of /login.
+    if is_switching and new_source == AuthProviderEnum.Local and not user_in.password:
+        raise InvalidException(
+            message=("Password is required when switching a user's source to Local.")
         )
 
     try:
-        # ``exclude_none=True`` so omitting an optional field (e.g.
-        # ``full_name``) on the PUT request leaves the stored value
-        # alone rather than clobbering it with NULL; matches
-        # :func:`update_user_me`. Wire-level ``username`` /
-        # ``full_name`` are mapped back onto the Principal columns
-        # ``name`` / ``display_name`` for the storage write — see
-        # :class:`UserBase`. Password + require-change flag live on
-        # the ``user_passwords`` row, handled separately.
-        update_data = user_in.model_dump(exclude_none=True)
+        # ``exclude_unset=True`` so only the fields the client
+        # actually sent get written — a partial PUT that omits e.g.
+        # ``is_admin`` must not silently reset it to the schema
+        # default (``False``, i.e. demote the user). Wire-level
+        # ``username`` / ``full_name`` are mapped back onto the
+        # Principal columns ``name`` / ``display_name`` for the
+        # storage write — see :class:`UserBase`. Password +
+        # require-change flag live on the ``user_passwords`` row,
+        # handled separately.
+        update_data = user_in.model_dump(exclude_unset=True)
         if "username" in update_data:
             update_data["name"] = update_data.pop("username")
         if "full_name" in update_data:
             update_data["display_name"] = update_data.pop("full_name")
         update_data.pop("password", None)
-        update_data.pop("source", None)
         require_change = update_data.pop("require_password_change", False)
-        await UserService(session).update(user, update_data)
+        # ``source`` is written through the switch-validated path
+        # below rather than as-is from ``update_data``: sending
+        # ``{"source": null}`` explicitly would otherwise write NULL
+        # to a NOT NULL column, and using the client's raw value
+        # bypasses the enum check that lives at the schema layer.
+        update_data.pop("source", None)
+        if is_switching:
+            update_data["source"] = new_source
+
+        # Single transaction across all three writes (source column,
+        # password row create, password row clear). Otherwise a
+        # ``clear_password`` failure on a Local → SSO switch would
+        # leave the row committed with ``source=SSO`` while the local
+        # password hash is still verifiable — exactly the /login
+        # bypass state the switch is meant to eliminate. Matches
+        # :func:`create_user`'s ``auto_commit=False`` composition.
+        service = UserService(session)
+        old_name = user.name
+        await service.update(user, update_data, auto_commit=False)
         if user_in.password:
             await set_password(
                 session,
                 user.id,
                 user_in.password,
                 require_password_change=require_change,
+                auto_commit=False,
             )
+        if is_switching and new_source != AuthProviderEnum.Local:
+            # Local → SSO: drop the local password so /login can't be
+            # used as a parallel ingress that bypasses the IdP.
+            await clear_password(session, user.id, auto_commit=False)
+        await session.commit()
+        # Cache invalidation runs *after* the commit so a concurrent
+        # read during the transaction's window can't refill the entry
+        # from the pre-commit row and outlive our invalidation.
+        await service.invalidate_cache(user, old_name=old_name)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 

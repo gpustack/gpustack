@@ -750,7 +750,14 @@ async def create_worker_status(user: CurrentUserDep, input: WorkerStatusStored):
         raise ForbiddenException(message="Failed to find related worker")
 
     heartbeat_time = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
-    input_dict = input.model_dump(exclude_unset=True)
+    # Buffer the typed attribute values for the set fields (mirroring
+    # ActiveRecordMixin.update) rather than model_dump()'d dicts. flush_worker_status
+    # assigns each buffered value onto the worker via setattr; assigning a plain dict
+    # to a Pydantic-typed JSON column (e.g. status -> WorkerStatus) leaves the
+    # in-memory worker holding an untyped dict, which triggers
+    # PydanticSerializationUnexpectedValue warnings when it is later serialized for
+    # watch events / the API response (issue #5751).
+    input_dict = {key: getattr(input, key) for key in input.model_fields_set}
     input_dict["heartbeat_time"] = heartbeat_time
 
     # Add worker status to buffer for batch update

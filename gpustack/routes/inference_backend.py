@@ -1,12 +1,10 @@
 import logging
 import math
-from copy import deepcopy
 from typing import List, Tuple, Optional, Dict
 
 import yaml
 from fastapi import APIRouter, Body
-from gpustack_runner.runner import ServiceVersionedRunner, ServiceRunner
-from gpustack_runtime.deployer.__utils__ import compare_versions
+from gpustack_runner.runner import ServiceVersionedRunner
 from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
@@ -124,55 +122,8 @@ async def check_backend_in_use(
         return False, []
 
 
-def get_lower_version_runners(
-    runners: list[ServiceRunner], backend_version: str
-) -> list[ServiceRunner]:
-    """
-    Filter runners whose version is less than or equal to the given backend_version.
-    Rebuilds the list[ServiceRunner] structure with only the matching elements.
-
-    Args:
-        runners: List of ServiceRunner objects to filter
-        backend_version: The version to compare against (only runners with versions <= this will be kept)
-
-    Returns:
-        List of ServiceRunner objects with filtered versions/backends
-    """
-    filtered_runners = []
-    for runner in runners:
-        # Create a new runner with filtered structure
-        new_runner = deepcopy(runner)
-
-        # Filter versions in backends
-        for version in new_runner.versions:
-            for backend in version.backends:
-                # Filter backend versions that are <= backend_version
-                backend.versions = [
-                    bv
-                    for bv in backend.versions
-                    if compare_versions(bv.version, backend_version) <= 0
-                ]
-
-        # Remove backends with no matching versions
-        for version in new_runner.versions:
-            version.backends = [
-                backend for backend in version.backends if backend.versions
-            ]
-
-        # Remove versions with no matching backends
-        new_runner.versions = [
-            version for version in new_runner.versions if version.backends
-        ]
-
-        # Only add runner if it has matching versions
-        if new_runner.versions:
-            filtered_runners.append(new_runner)
-
-    return filtered_runners
-
-
 def get_runner_versions_and_configs(
-    backend_name: str, backend_version: Optional[str], **kwargs
+    backend_name: str, **kwargs
 ) -> Tuple[Dict[str, ServiceVersionedRunner], VersionConfigDict, Optional[str]]:
     """
     Get runner versions and version configs for a given backend.
@@ -191,8 +142,6 @@ def get_runner_versions_and_configs(
         service=backend_name.lower(),
         **kwargs,
     )
-    if backend_version:
-        runners_list = get_lower_version_runners(runners_list, backend_version)
     runner_versions: Dict[str, ServiceVersionedRunner] = {}
     version_configs = VersionConfigDict()
     default_version = None
@@ -273,24 +222,22 @@ def merge_list_runners(  # noqa: C901
                 if gpu.vendor == ManufacturerEnum.ASCEND and gpu.arch_family:
                     variant = get_ascend_cann_variant(gpu.arch_family).lower()
 
-                # Add (type, runtime_version, variant) tuple to set
-                # Use None for runtime_version if not available
-                query_conditions.add((gpu.type, gpu.runtime_version, variant))
+                query_conditions.add((gpu.type, variant))
 
     merged_runner_versions: Dict[str, List[ServiceVersionedRunner]] = {}
     merged_version_configs = VersionConfigDict()
     merged_default_version = None
 
     # Loop through each unique query condition
-    for idx, (gpu_type, runtime_version, variant) in enumerate(query_conditions):
+    for idx, (gpu_type, variant) in enumerate(query_conditions):
         # Build kwargs for get_runner_versions_and_configs
         kwargs = {"backend": gpu_type}
         if variant:
             kwargs["backend_variant"] = variant
 
-        # Get runner versions and configs for this condition
+        # List all versions regardless of the detected runtime version.
         runner_versions, version_configs, default_version = (
-            get_runner_versions_and_configs(backend_name, runtime_version, **kwargs)
+            get_runner_versions_and_configs(backend_name, **kwargs)
         )
 
         # For the first condition, use its results as base
@@ -570,7 +517,6 @@ def _enrich_built_in_with_runner_versions(
     """Layer runner-discovered versions on top of the DB row in place."""
     _, runner_versions, default_version = get_runner_versions_and_configs(
         backend_name,
-        backend_version=None,
         with_deprecated=with_deprecated,
     )
     for runner_version, version_config in runner_versions.root.items():
