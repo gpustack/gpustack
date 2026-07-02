@@ -8,7 +8,7 @@ from fastapi import Depends, Request, WebSocket
 from starlette.datastructures import Headers
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
-from gpustack.server.db import get_session, async_session
+from gpustack.server.db import async_session
 from typing import Annotated, Optional, Tuple, List, Dict
 from fastapi.security import (
     APIKeyCookie,
@@ -94,7 +94,6 @@ def client_ip_getter(request: Request) -> str:
 
 async def get_current_user(
     request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
     basic_credentials: Annotated[
         Optional[HTTPBasicCredentials], Depends(basic_auth)
     ] = None,
@@ -113,15 +112,26 @@ async def get_current_user(
         server_config: Config = request.app.state.server_config
         if basic_credentials and is_system_user(basic_credentials.username):
             user = await authenticate_system_principal(server_config, basic_credentials)
-        elif basic_credentials:
-            user = await authenticate_basic_user(session, basic_credentials)
-        elif cookie_token:
-            jwt_manager: JWTManager = request.app.state.jwt_manager
-            user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
-        elif bearer_token or x_api_key:
-            token = (bearer_token.credentials if bearer_token else None) or x_api_key
-            if token is not None:
-                user, api_key = await get_user_from_api_token(session, token)
+        elif basic_credentials or cookie_token or bearer_token or x_api_key:
+            # Scoped to just the auth lookup (not Depends(get_session)) so the
+            # connection/transaction isn't held open for the lifetime of the
+            # request -- otherwise a long-lived StreamingResponse (SSE watch,
+            # streaming inference proxy) leaves it idle-in-transaction until
+            # the stream ends, which can be hours. See #5678.
+            async with async_session() as session:
+                if basic_credentials:
+                    user = await authenticate_basic_user(session, basic_credentials)
+                elif cookie_token:
+                    jwt_manager: JWTManager = request.app.state.jwt_manager
+                    user = await get_user_from_jwt_token(
+                        session, jwt_manager, cookie_token
+                    )
+                elif bearer_token or x_api_key:
+                    token = (
+                        bearer_token.credentials if bearer_token else None
+                    ) or x_api_key
+                    if token is not None:
+                        user, api_key = await get_user_from_api_token(session, token)
 
         if user:
             if not user.is_active:

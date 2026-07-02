@@ -7,6 +7,14 @@ DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
 DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 30))
 DB_MAX_OVERFLOW = int(os.getenv("GPUSTACK_DB_MAX_OVERFLOW", 20))
 DB_POOL_TIMEOUT = int(os.getenv("GPUSTACK_DB_POOL_TIMEOUT", 30))
+# Backstop against leaked/long-held sessions accumulating as Postgres
+# "idle in transaction" connections and exhausting the pool (#5678). Only
+# fires while a transaction is open and idle -- an actively-running query,
+# however long, is never affected. 0 disables it. Ignored for non-Postgres
+# backends.
+DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS = int(
+    os.getenv("GPUSTACK_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS", 8 * 3600)
+)
 
 # Proxy configuration
 PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
