@@ -69,20 +69,15 @@ WORKER_UNREACHABLE_CHECK_MODE = os.getenv(
 ).lower()
 
 # GPU instance configuration
-# Interval at which the server re-confirms the worker-side status of Ready
-# GPU instances. The reconciler is event-driven and stops touching a row once
-# it is fully Ready, so without this periodic sweep a worker-side change after
-# Ready would never be synced back. A value <= 0 disables the sweep.
-GPU_INSTANCE_RECONFIRM_INTERVAL = int(
-    os.getenv("GPUSTACK_GPU_INSTANCE_RECONFIRM_INTERVAL", 60)
-)  # in seconds
-
-# Interval at which the controller re-observes an in-flight (non-terminal) GPU
-# instance via an in-memory requeue instead of writing its own status back to
-# the DB to self-trigger the next poll. Replaces the old ``count % 15`` self-
-# poll. Clamped to >= 1s at use to avoid a busy loop.
-GPU_INSTANCE_REQUEUE_INTERVAL = int(
-    os.getenv("GPUSTACK_GPU_INSTANCE_REQUEUE_INTERVAL", 5)
+# Interval at which the controller re-observes a still-transitioning (non-
+# settled) GPU instance via an in-memory requeue, instead of writing its own
+# status back to the DB to self-trigger the next poll. Ready-row drift is
+# picked up by the downstream watch, so only transitioning rows re-observe on
+# this cadence. The PV / PVT finalize controllers reuse this cadence to re-probe
+# a still-finalizing row, which is just another transitioning row. Clamped to
+# >= 1s at use to avoid a busy loop.
+GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL = int(
+    os.getenv("GPUSTACK_GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL", 15)
 )  # in seconds
 
 # Model instance configuration

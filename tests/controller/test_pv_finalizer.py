@@ -118,15 +118,6 @@ def _mock_clusters(monkeypatch, controller, ops_by_cluster):
     )
 
 
-def test_is_deleting_predicate():
-    active = GPUInstancePersistentVolume(id=1, name="p", status=None)
-    deleting = GPUInstancePersistentVolume(
-        id=2, name="p", status=GPUInstancePersistentVolumeStatus(phase="Deleting")
-    )
-    assert GPUInstancePersistentVolumeController._is_deleting(active) is False
-    assert GPUInstancePersistentVolumeController._is_deleting(deleting) is True
-
-
 @pytest.mark.asyncio
 async def test_absent_downstream_hard_deletes_row(engine, controller, monkeypatch):
     await _seed(engine)

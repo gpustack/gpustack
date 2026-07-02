@@ -1,14 +1,16 @@
-"""E4c: instance deletion no longer cleans up PV/PVT inline.
+"""Instance deletion soft-deletes a template PV that opted into release.
 
-The inline worker-side PV/PVT teardown moved to the finalizer controllers. The
-one instance-scoped case that remains is a ``persistent_template`` volume with
-``release_with_instance=True``: deleting the instance soft-deletes the PV row
-(``phase=Deleting``) so the PV finalizer reclaims it. A ``release_with_instance``
-of False, an existing-PV reference, or no volume leaves the PV untouched.
+The deleting branch (``_reconcile_deleting``) tears the worker side down and,
+once the CR is gone, calls ``_release_template_persistent_volume`` before
+hard-deleting the
+row. That helper soft-deletes (``phase=Deleting``) only a ``persistent_template``
+volume with ``release_with_instance=True`` so the PV finalizer reclaims it; an
+existing-PV reference, ``release_with_instance=False``, or no volume leaves the
+PV untouched. ``_release_persistent_volume`` is idempotent on an already-Deleting
+row.
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -32,20 +34,6 @@ from gpustack.schemas.gpu_instance_persistent_volumes import (
 )
 
 
-class FakeInstanceOps:
-    """ClusterOps stand-in for _reconcile_deleted's instance + ssh deletes."""
-
-    def __init__(self):
-        self.delete_instance = AsyncMock()
-        self.delete_ssh_public_key = AsyncMock()
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-
 @pytest_asyncio.fixture
 async def engine():
     e = create_async_engine("sqlite+aiosqlite://")
@@ -56,16 +44,8 @@ async def engine():
 
 
 @pytest.fixture
-def controller(engine, monkeypatch):
-    monkeypatch.setattr(
-        "gpustack.gpu_instances.controllers.async_session",
-        lambda: AsyncSession(engine, expire_on_commit=False),
-    )
-    ctl = GPUInstanceController(SimpleNamespace(get_api_port=lambda: 80))
-    monkeypatch.setattr(
-        ctl, "_build_ops", AsyncMock(return_value=(FakeInstanceOps(), "acme"))
-    )
-    return ctl
+def controller():
+    return GPUInstanceController(SimpleNamespace(get_api_port=lambda: 80))
 
 
 async def _seed_pv(engine, *, phase=None):
@@ -114,7 +94,10 @@ def _template_volume(release_with_instance=True):
 async def test_release_with_instance_soft_deletes_pv(engine, controller):
     await _seed_pv(engine)
 
-    await controller._reconcile_deleted(_deleting_instance(_template_volume(True)))
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        await controller._release_template_persistent_volume(
+            s, _deleting_instance(_template_volume(True))
+        )
 
     pv = await _get_pv(engine)
     assert pv is not None  # soft delete, not hard delete
@@ -125,7 +108,10 @@ async def test_release_with_instance_soft_deletes_pv(engine, controller):
 async def test_release_with_instance_false_keeps_pv(engine, controller):
     await _seed_pv(engine)
 
-    await controller._reconcile_deleted(_deleting_instance(_template_volume(False)))
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        await controller._release_template_persistent_volume(
+            s, _deleting_instance(_template_volume(False))
+        )
 
     pv = await _get_pv(engine)
     assert pv is not None
@@ -139,7 +125,10 @@ async def test_existing_pv_reference_is_not_released(engine, controller):
         persistent=GPUInstancePersistentVolumeReference(name="pv-1")
     )
 
-    await controller._reconcile_deleted(_deleting_instance(volume))
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        await controller._release_template_persistent_volume(
+            s, _deleting_instance(volume)
+        )
 
     pv = await _get_pv(engine)
     assert pv.status is None  # a referenced existing PV is never auto-released
@@ -149,7 +138,10 @@ async def test_existing_pv_reference_is_not_released(engine, controller):
 async def test_no_volume_is_noop(engine, controller):
     await _seed_pv(engine)
 
-    await controller._reconcile_deleted(_deleting_instance(None))
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        await controller._release_template_persistent_volume(
+            s, _deleting_instance(None)
+        )
 
     assert (await _get_pv(engine)).status is None
 
