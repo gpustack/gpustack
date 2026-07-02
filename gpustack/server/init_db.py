@@ -13,6 +13,7 @@ from sqlalchemy import DDL, event, text
 
 from gpustack import envs
 from gpustack.server import db
+from gpustack.utils.db import is_opengauss
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.schemas.model_usage import ModelUsage
@@ -73,6 +74,11 @@ async def init_db(db_url: str):
 async def init_db_engine(db_url: str):
     connect_args = {}
     if db_url.startswith("postgresql://"):
+        # Probe once to see whether we're talking to openGauss — it presents
+        # as PostgreSQL but rejects PG's millisecond-scale value for
+        # ``idle_in_transaction_session_timeout``. Skip the setting on openGauss.
+        opengauss = await is_opengauss(db_url)
+
         db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
         parsed = urlparse(db_url)
         # rewrite the parameters to use asyncpg with custom database schema
@@ -83,14 +89,15 @@ async def init_db_engine(db_url: str):
             option = qoptions[0]
             if option.startswith('-csearch_path='):
                 schema_name = option[len('-csearch_path=') :]
-        server_settings = {
-            'idle_in_transaction_session_timeout': str(
-                envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS * 1000
-            ),
-        }
+        server_settings = {}
         if schema_name:
             server_settings['search_path'] = schema_name
-        connect_args['server_settings'] = server_settings
+        if not opengauss and envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS > 0:
+            server_settings['idle_in_transaction_session_timeout'] = str(
+                envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS * 1000
+            )
+        if server_settings:
+            connect_args['server_settings'] = server_settings
         new_parsed = parsed._replace(query={})
         db_url = urlunparse(new_parsed)
 
