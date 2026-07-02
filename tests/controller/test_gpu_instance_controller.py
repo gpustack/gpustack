@@ -1,9 +1,13 @@
 """Unit tests for GPUInstanceController's in-memory event coalescing.
 
-These exercise ``_enqueue`` in isolation — the per-iid pending-slot policy is
-concurrency-sensitive and easy to regress. The reconfirm sweep (#5587) routes
-best-effort re-confirmation events through the same slot, and must never
-displace a real /stop, /start, or /delete that is already pending.
+Coalescing now lives in the generic ``WorkQueue`` via a controller-supplied
+policy (``GPUInstanceController._coalesce_events``). These exercise that policy
+end-to-end through ``_enqueue`` and by inspecting the queue's pending slot.
+
+The reconfirm sweep (#5587) routes best-effort re-confirmation events through
+the same slot, and must never displace a real /stop, /start, or /delete that is
+already pending. A pending DELETED is terminal, and a pending DELETING must not
+be superseded by a later UPDATED (only upgraded by a DELETED).
 """
 
 from gpustack.schemas.gpu_instances import (
@@ -12,7 +16,7 @@ from gpustack.schemas.gpu_instances import (
     GPUInstanceStatus,
 )
 from gpustack.server.bus import Event, EventType
-from gpustack.server.controllers import GPUInstanceController
+from gpustack.gpu_instances.controllers import GPUInstanceController
 
 
 def _gi(id_: int, phase: str) -> GPUInstance:
@@ -27,23 +31,14 @@ def _gi(id_: int, phase: str) -> GPUInstance:
 
 
 def _controller() -> GPUInstanceController:
-    controller = GPUInstanceController(cfg=None)
-    # Pre-seed the per-iid worker slots so ``_enqueue`` treats a worker as
-    # already running and does not spawn real asyncio tasks (which would open
-    # DB sessions). We only assert on the synchronous ``_pending`` slot here.
-    controller._workers = _AlwaysContains()
-    return controller
+    # ``_enqueue`` now only routes into the queue (no per-iid worker task is
+    # spawned until the dispatch loop runs), so no test stubbing is needed.
+    return GPUInstanceController(cfg=None)
 
 
-class _AlwaysContains:
-    """Stand-in for ``_workers`` that reports every iid as already having a
-    worker, so ``_enqueue`` never calls ``asyncio.create_task``."""
-
-    def __contains__(self, _key) -> bool:
-        return True
-
-    def __setitem__(self, _key, _value) -> None:  # pragma: no cover - unused
-        pass
+def _pending(controller: GPUInstanceController, iid: int) -> Event:
+    """The bus Event currently occupying the queue slot for ``iid``."""
+    return controller._queue._pending[(iid,)].object
 
 
 def test_reconfirm_does_not_displace_pending_stop():
@@ -60,7 +55,7 @@ def test_reconfirm_does_not_displace_pending_stop():
         )
     )
 
-    pending = controller._pending[1]
+    pending = _pending(controller, 1)
     assert pending.reconfirm is False
     assert pending.data.status.phase == GPUInstancePhase.STOPPING
 
@@ -77,7 +72,7 @@ def test_reconfirm_does_not_displace_pending_delete():
         )
     )
 
-    assert controller._pending[2].type == EventType.DELETED
+    assert _pending(controller, 2).type == EventType.DELETED
 
 
 def test_reconfirm_fills_empty_slot():
@@ -89,7 +84,7 @@ def test_reconfirm_fills_empty_slot():
         )
     )
 
-    assert controller._pending[3].reconfirm is True
+    assert _pending(controller, 3).reconfirm is True
 
 
 def test_real_event_displaces_pending_reconfirm():
@@ -105,6 +100,34 @@ def test_real_event_displaces_pending_reconfirm():
         Event(type=EventType.UPDATED, data=_gi(4, GPUInstancePhase.STOPPING))
     )
 
-    pending = controller._pending[4]
+    pending = _pending(controller, 4)
     assert pending.reconfirm is False
     assert pending.data.status.phase == GPUInstancePhase.STOPPING
+
+
+def test_deleting_not_displaced_by_later_update():
+    controller = _controller()
+
+    # An in-flight UPDATED already reading DELETING is terminal-bound.
+    controller._enqueue(
+        Event(type=EventType.UPDATED, data=_gi(5, GPUInstancePhase.DELETING))
+    )
+    controller._enqueue(
+        Event(type=EventType.UPDATED, data=_gi(5, GPUInstancePhase.READY))
+    )
+
+    assert _pending(controller, 5).data.status.phase == GPUInstancePhase.DELETING
+
+
+def test_deleted_upgrades_pending_deleting():
+    controller = _controller()
+
+    controller._enqueue(
+        Event(type=EventType.UPDATED, data=_gi(6, GPUInstancePhase.DELETING))
+    )
+    # DELETED is the one event allowed to supersede a pending DELETING.
+    controller._enqueue(
+        Event(type=EventType.DELETED, data=_gi(6, GPUInstancePhase.DELETING))
+    )
+
+    assert _pending(controller, 6).type == EventType.DELETED
