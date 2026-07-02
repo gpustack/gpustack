@@ -13,7 +13,16 @@ from gpustack.schemas.models import (
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.serve_manager import ServeManager
+from gpustack_runtime.deployer import WorkloadStatusStateEnum
 from tests.utils.model import new_model, new_model_instance
+
+
+def _fake_stop_event():
+    """A never-set stop event whose wait() returns instantly, so the log
+    persistence loop is driven purely by the get_workload state sequence."""
+    stop_event = MagicMock()
+    stop_event.is_set.return_value = False
+    return stop_event
 
 
 def _build_serve_manager(worker_id: int = 1):
@@ -236,3 +245,162 @@ def test_reap_stale_instance_purges_logs(tmp_path: Path):
         manager.sync_model_instances_state()
 
     assert not log.exists()
+
+
+def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):
+    """On stream EOF while the workload is still running, reconnect and resume
+    by skipping already-written history (anchor), appending only new lines."""
+    manager, _clients = _build_serve_manager()
+    log_path = str(tmp_path / "1.container.0.log")
+
+    # First stream: initial history. Reconnect: full history replay + new line.
+    streams = [iter(["a\n", "b\n"]), iter(["a\n", "b\n", "c\n"])]
+    tails = []
+
+    def fake_logs_workload(**kwargs):
+        tails.append(kwargs["tail"])
+        return streams.pop(0)
+
+    # First EOF -> still RUNNING (reconnect); second EOF -> FAILED (exit).
+    states = [
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+    ]
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=fake_logs_workload,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=lambda name: states.pop(0),
+        ),
+    ):
+        manager._persist_container_logs("wl", log_path, _fake_stop_event())
+
+    assert tails == [-1, -1]
+    assert Path(log_path).read_text(encoding="utf-8") == "a\nb\nc\n"
+
+
+def test_persist_container_logs_exits_when_workload_gone(tmp_path: Path):
+    """EOF while the workload no longer exists -> exit immediately, no reconnect."""
+    manager, _clients = _build_serve_manager()
+    log_path = str(tmp_path / "1.container.0.log")
+    tails = []
+
+    def fake_logs_workload(**kwargs):
+        tails.append(kwargs["tail"])
+        return iter(["a\n"])
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=fake_logs_workload,
+        ),
+        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+    ):
+        manager._persist_container_logs("wl", log_path, _fake_stop_event())
+
+    assert tails == [-1]  # only one connection, no reconnect
+    assert Path(log_path).read_text(encoding="utf-8") == "a\n"
+
+
+def test_persist_container_logs_resets_when_anchor_rotated(tmp_path: Path):
+    """If the anchor line was rotated out of the reconnect logs, restart from
+    scratch (full rewrite) instead of skipping new lines forever."""
+    manager, _clients = _build_serve_manager()
+    log_path = str(tmp_path / "1.container.0.log")
+
+    streams = [
+        iter(["a\n", "b\n"]),  # round1: write a,b (anchor=b)
+        iter(["x\n", "c\n"]),  # round2: anchor 'b' rotated out -> skip all, reset
+        iter(["x\n", "c\n", "d\n"]),  # round3: fresh rewrite recovers
+    ]
+    states = [
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+    ]
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=lambda **kwargs: streams.pop(0),
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=lambda name: states.pop(0),
+        ),
+    ):
+        manager._persist_container_logs("wl", log_path, _fake_stop_event())
+
+    assert Path(log_path).read_text(encoding="utf-8") == "x\nc\nd\n"
+
+
+def test_persist_container_logs_empty_reconnect_keeps_history(tmp_path: Path):
+    """An empty reconnect (0 lines) must not reset first_connect; otherwise the
+    next reconnect reopens in 'w' and truncates already-persisted logs."""
+    manager, _clients = _build_serve_manager()
+    log_path = str(tmp_path / "1.container.0.log")
+
+    streams = [
+        iter(["a\n", "b\n"]),  # round1: write a,b
+        iter([]),  # round2: empty reconnect (0 lines) -> must NOT reset
+        iter(["b\n"]),  # round3: suffix replay; a,b already persisted survive
+    ]
+    states = [
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+    ]
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=lambda **kwargs: streams.pop(0),
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=lambda name: states.pop(0),
+        ),
+    ):
+        manager._persist_container_logs("wl", log_path, _fake_stop_event())
+
+    # Had the empty round2 reset first_connect, round3 would reopen in 'w' and
+    # truncate 'a'; a,b surviving proves it did not.
+    assert Path(log_path).read_text(encoding="utf-8") == "a\nb\n"
+
+
+def test_persist_container_logs_window_anchor_ignores_repeated_line(
+    tmp_path: Path,
+):
+    """The multi-line anchor window only matches the true tail: a single-line
+    anchor would false-match an earlier identical line and duplicate history."""
+    manager, _clients = _build_serve_manager()
+    log_path = str(tmp_path / "1.container.0.log")
+
+    streams = [
+        iter(["A\n", "B\n", "A\n", "B\n"]),  # round1: last line B repeats earlier
+        iter(["A\n", "B\n", "A\n", "B\n", "C\n"]),  # round2: full replay + new C
+    ]
+    states = [
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+    ]
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=lambda **kwargs: streams.pop(0),
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=lambda name: states.pop(0),
+        ),
+    ):
+        manager._persist_container_logs("wl", log_path, _fake_stop_event())
+
+    # Window [A,B,A,B] matches only at the end; single-line 'B' would match
+    # index 1 and duplicate A,B.
+    assert Path(log_path).read_text(encoding="utf-8") == "A\nB\nA\nB\nC\n"

@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 import contextlib
 from datetime import datetime, timezone
 import multiprocessing
@@ -838,10 +839,12 @@ class ServeManager:
         stop_event: threading.Event,
         token: Optional[str] = None,
     ):
-        """Persist container logs to local file.
+        """Persist container logs to local file (runs in a separate thread).
 
-        This is a blocking operation that runs in a separate thread.
-        Retries indefinitely until container is created.
+        Reconnects on stream EOF while the workload is still alive, resuming by
+        skipping already-written history (matched by an anchor window of the
+        last lines written). Exits once the workload has terminated or is
+        deleted.
 
         Args:
             workload_name: Name of the container workload
@@ -851,6 +854,10 @@ class ServeManager:
                 If None, logs from the default (index=0) container are fetched.
         """
         retry_count = 0
+        first_connect = True
+        # Anchor: a window of the last lines written. Matching a run of lines
+        # (not one) avoids false-matching a repeated line during replay.
+        anchor_window = deque(maxlen=5)
 
         while not stop_event.is_set():
             try:
@@ -862,18 +869,56 @@ class ServeManager:
                 )
 
                 if hasattr(log_stream, '__iter__'):
-                    with open(log_path, 'w', buffering=1, encoding='utf-8') as f:
+                    # On reconnect the runtime replays history from the start;
+                    # skip it until the anchor window matches.
+                    anchor = list(anchor_window)
+                    skip_until_anchor = not first_connect and bool(anchor)
+                    replayed = deque(maxlen=len(anchor)) if anchor else None
+                    received_lines = False
+                    with open(
+                        log_path,
+                        'w' if first_connect else 'a',
+                        buffering=1,
+                        encoding='utf-8',
+                    ) as f:
+                        first_connect = False
                         for line in log_stream:
+                            received_lines = True
                             if stop_event.is_set():
                                 break
 
                             if isinstance(line, bytes):
-                                f.write(line.decode('utf-8', errors='replace'))
+                                line = line.decode('utf-8', errors='replace')
                             else:
-                                f.write(str(line))
-                            f.flush()
+                                line = str(line)
 
-                break
+                            if skip_until_anchor:
+                                replayed.append(line)
+                                if list(replayed) == anchor:
+                                    skip_until_anchor = False
+                                continue
+
+                            f.write(line)
+                            f.flush()
+                            anchor_window.append(line)
+                    retry_count = 0
+
+                    # Anchor never matched -> rotated out; restart fresh. An
+                    # empty reconnect must NOT reset, or the next round reopens
+                    # in 'w' and truncates the saved log.
+                    if skip_until_anchor and received_lines:
+                        first_connect = True
+                        anchor_window.clear()
+
+                if stop_event.is_set() or not self._container_still_running(
+                    workload_name
+                ):
+                    break
+                logger.debug(
+                    f"Log stream for {workload_name} ended while workload still "
+                    f"running; reconnecting"
+                )
+                stop_event.wait(timeout=1)
 
             except Exception as e:
                 if stop_event.is_set():
@@ -886,6 +931,19 @@ class ServeManager:
                 stop_event.wait(timeout=2)
 
         logger.debug(f"Log persistence thread for {workload_name} exiting")
+
+    def _container_still_running(self, workload_name: str) -> bool:
+        """Whether the workload is still alive (a dead stream should reconnect
+        rather than exit)."""
+        try:
+            workload = get_workload(workload_name)
+        except Exception:
+            return True  # transient query failure: reconnect, don't drop logs
+        return bool(workload) and workload.state in (
+            WorkloadStatusStateEnum.PENDING,
+            WorkloadStatusStateEnum.INITIALIZING,
+            WorkloadStatusStateEnum.RUNNING,
+        )
 
     def _discover_sidecar_logs(
         self,
