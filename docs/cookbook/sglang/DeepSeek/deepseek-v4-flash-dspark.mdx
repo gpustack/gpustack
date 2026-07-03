@@ -1,1 +1,54 @@
+---
+title: DeepSeek-V4-Pro-DSpark
+description: "Deploy DeepSeek-V4-Pro with SGLang-DSPARK — DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model using DSPARK speculative decoding and 1M context, on H20."
+tag: NEW
+---
+
+# Deploying DeepSeek-V4-Pro-DSpark with GPUStack and SGLang
+
+This tutorial guides you through setting up **DeepSeek-V4-Pro-DSpark**—a cutting-edge, ultra-low-latency deployment of the DeepSeek flagship MoE architecture—using the hardware-optimized **SGLang-DSPARK** engine in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `swr.cn-north-4.myhuaweicloud.com/desaysv/gpustack/sglang-dspark:v1.0`
+* **Hardware Requirements**: H20 (8x GPUs for balanced Tensor & Expert Parallelism)
+
+### 2. Model Weights Source
+* **Model Name**: `DeepSeek-V4-Pro-DSpark`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/deepseek-ai/DeepSeek-V4-Pro-DSpark`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `DeepSeek-V4-Pro-DSpark`
+* **Container Image**: `swr.cn-north-4.myhuaweicloud.com/desaysv/gpustack/sglang-dspark:v1.0`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+You can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--trust-remote-code
+--tp 8
+--ep-size 8
+--moe-runner-backend flashinfer_mxfp4
+--speculative-moe-runner-backend flashinfer_mxfp4
+--speculative-algorithm DSPARK
+--speculative-eagle-topk 1
+--speculative-num-steps 1
+--mem-fraction-static 0.85
+--context-length 1000000
+--cuda-graph-max-bs 32
+--max-running-requests 32
+--disable-overlap-schedule
+```
+### 3. more config
+
+https://github.com/sgl-project/sglang/pull/29538
 
