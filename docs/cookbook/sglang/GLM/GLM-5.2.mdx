@@ -51,6 +51,7 @@ You can directly copy and paste the following parameters into the **server Argum
 --enable-nsa-prefill-context-parallel
 --nsa-prefill-cp-mode round-robin-split
 --attn-cp-size 8
+```
 
 ### 3. Parameter Optimizations
 MTP / speculative decoding. The checkpoint ships one nextn layer. Enable EAGLE MTP for lower latency (--speculative-algorithm EAGLE --speculative-num-steps 5 --speculative-eagle-topk 1 --speculative-num-draft-tokens 6 for low-latency; 1-1-2 for balanced). The config’s index_share_for_mtp_iteration reuses the DSA indexer’s topk across draft steps (effective only at --speculative-eagle-topk 1). Tune the draft length to the accept length. GLM-5.2’s MTP head is strong — accept length runs high (4+ in many workloads, near-saturating at 5–6 in low-latency runs). Watch the server’s reported accept length and adjust --speculative-num-steps / --speculative-num-draft-tokens accordingly: while accept length stays close to the draft-token count there is headroom to push them higher (more accepted tokens per step); if it falls well below, lower them — every rejected draft token is wasted verification compute.
