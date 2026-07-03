@@ -1,54 +1,4708 @@
----
-title: GLM-5.2
-description: "Deploy GLM-5.2 with SGLang — Z.ai's DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model with MTP speculative decoding and 1M context, on H200, B200, B300, GB300, and AMD MI300X/MI325X/MI355X."
-tag: NEW
----
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.sglang.io/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# GLM-5.2
+
+> Deploy GLM-5.2 with SGLang — Z.ai's DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model with MTP speculative decoding and 1M context, on H200, B200, B300, GB300, and AMD MI300X/MI325X/MI355X.
+
+export const Playground = ({config}) => {
+  if (!config) {
+    return <div style={{
+      padding: 12,
+      color: "#b91c1c"
+    }}>Playground: missing <code>config</code> prop</div>;
+  }
+  const DIMENSIONS = ["hw", "variant", "quant", "strategy", "nodes"];
+  const STORAGE_KEY = "sglang-deploy-env";
+  const pgFeatures = config.playgroundFeatures || ({});
+  const PD_PORTS = {
+    prefill: {
+      serve: 30000,
+      dist: 30335
+    },
+    decode: {
+      serve: 30100,
+      dist: 30435
+    }
+  };
+  const findCell = (cells, sel) => cells.find(c => DIMENSIONS.every(d => c.match[d] === sel[d]));
+  const findMatchingCell = (cells, sel, pgEnv, pgFlags) => {
+    const flagsEq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+    const envEq = (a, b) => {
+      if (a.length !== b.length) return false;
+      const set = new Set(a);
+      for (const x of b) if (!set.has(x)) return false;
+      return true;
+    };
+    for (const c of cells) {
+      if (c.match.hw !== sel.hw) continue;
+      if (c.match.variant !== sel.variant) continue;
+      if (c.match.quant !== sel.quant) continue;
+      if (c.match.nodes !== sel.nodes) continue;
+      if (flagsEq(c.flags || [], pgFlags || []) && envEq(c.env || [], pgEnv || [])) {
+        return c;
+      }
+    }
+    return null;
+  };
+  const resolveModelName = sel => {
+    const triple = `${sel.hw}|${sel.variant}|${sel.quant}`;
+    const pair = `${sel.variant}|${sel.quant}`;
+    return (config.modelNames[triple] ?? config.modelNames[pair]) ?? "";
+  };
+  const interpolate = (text, env, modelName) => text.replace(/{{(\w+)}}/g, (_, key) => key === "MODEL_NAME" ? modelName : env[key] ?? `{{${key}}}`);
+  const parseNnodes = id => {
+    if (id === "single") return 1;
+    const m = (/^multi-(\d+)$/).exec(id);
+    return m ? parseInt(m[1], 10) : 1;
+  };
+  const placeholderDefaults = schema => {
+    const out = {};
+    for (const [k, v] of Object.entries(schema || ({}))) out[k] = v.default ?? "";
+    return out;
+  };
+  const matchConstraint = (base, constraint) => {
+    if (!constraint || typeof constraint !== "object") return false;
+    const entries = Object.entries(constraint);
+    if (entries.length === 0) return false;
+    return entries.every(([k, vs]) => Array.isArray(vs) && vs.includes(base[k]));
+  };
+  const evaluateChip = (entry, base) => {
+    if (entry === null || typeof entry !== "object") {
+      return {
+        value: entry,
+        label: undefined,
+        hidden: false,
+        disabled: false,
+        disableReason: ""
+      };
+    }
+    const hidden = entry.hide ? matchConstraint(base, entry.hide) : false;
+    let disabled = entry.disabled === true || entry.disable === true;
+    if (!disabled && entry.disable && typeof entry.disable === "object") {
+      disabled = matchConstraint(base, entry.disable);
+    }
+    return {
+      ...entry,
+      value: entry.id !== undefined ? entry.id : entry.value,
+      label: entry.label,
+      hidden,
+      disabled,
+      disableReason: entry.disableReason || ""
+    };
+  };
+  const findEntry = (entries, picked) => {
+    for (const e of entries || []) {
+      const v = e === null || typeof e !== "object" ? e : e.id !== undefined ? e.id : e.value;
+      if (v === picked) return e;
+    }
+    return null;
+  };
+  const isHidden = (entries, picked, base) => {
+    const e = findEntry(entries, picked);
+    if (e === null || e === undefined) return false;
+    return evaluateChip(e, base).hidden;
+  };
+  const stripFlagsByFirstToken = (flags, prefixes) => {
+    const set = new Set(prefixes);
+    return flags.filter(f => !set.has(f.split(/[\s=]/)[0]));
+  };
+  const stripEnvByPrefix = (envList, prefixes) => {
+    if (!prefixes || !prefixes.length) return envList;
+    const set = new Set(prefixes);
+    return envList.filter(e => !set.has(e.split("=")[0]));
+  };
+  const insertBeforeTail = (flags, additions) => {
+    const idx = flags.findIndex(f => f.startsWith("--host"));
+    const at = idx === -1 ? flags.length : idx;
+    const out = flags.slice();
+    out.splice(at, 0, ...additions);
+    return out;
+  };
+  const insertAfter = (flags, afterAnyOf, additions) => {
+    let idx = -1;
+    for (const anchor of afterAnyOf) {
+      idx = flags.findIndex(f => f.split(/[\s=]/)[0] === anchor);
+      if (idx !== -1) break;
+    }
+    if (idx === -1) idx = flags.findIndex(f => f.startsWith("--model-path"));
+    const out = flags.slice();
+    out.splice(idx + 1, 0, ...additions);
+    return out;
+  };
+  const parseIntFlag = (flags, prefix) => {
+    for (const f of flags || []) {
+      if (f.split(/[\s=]/)[0] !== prefix) continue;
+      const rest = f.slice(prefix.length).replace(/^[\s=]+/, "");
+      const n = parseInt(rest, 10);
+      if (!isNaN(n)) return n;
+    }
+    return null;
+  };
+  const hasFlag = (flags, name) => (flags || []).some(f => f.split(/[\s=]/)[0] === name);
+  const findFlagArg = (flags, prefix) => {
+    for (const f of flags || []) {
+      if (f.split(/[\s=]/)[0] !== prefix) continue;
+      const rest = f.slice(prefix.length).replace(/^[\s=]+/, "");
+      return rest.length ? rest : null;
+    }
+    return null;
+  };
+  const ANCHOR_NEAR_MODEL_PATH = ["--model-path"];
+  const ANCHOR_NEAR_TP = ["--tp", "--model-path"];
+  const ANCHOR_NEAR_DP = ["--dp", "--tp", "--model-path"];
+  const ANCHOR_NEAR_DPATTN = ["--enable-dp-attention", "--dp", "--tp", "--model-path"];
+  const ANCHOR_NEAR_MOE = ["--moe-a2a-backend", "--moe-runner-backend", "--enable-dp-attention", "--dp", "--tp", "--model-path"];
+  const helpers = {
+    matchConstraint,
+    evaluateChip,
+    findEntry,
+    isHidden,
+    stripFlagsByFirstToken,
+    stripEnvByPrefix,
+    insertBeforeTail,
+    insertAfter,
+    parseIntFlag,
+    hasFlag,
+    findFlagArg,
+    ANCHOR_NEAR_MODEL_PATH,
+    ANCHOR_NEAR_TP,
+    ANCHOR_NEAR_DP,
+    ANCHOR_NEAR_DPATTN,
+    ANCHOR_NEAR_MOE
+  };
+  const AXIS_HANDLERS = {
+    attention: {
+      initState: () => ({
+        tp: null,
+        cp: null,
+        dpAttn: null
+      }),
+      deriveFromBase: (cell, fc, h) => {
+        const flags = cell && cell.flags || [];
+        const dpVal = h.parseIntFlag(flags, "--dp");
+        const hasDpAttn = h.hasFlag(flags, "--enable-dp-attention");
+        let dpAttn;
+        if (dpVal !== null) dpAttn = dpVal; else if (hasDpAttn) dpAttn = 1; else dpAttn = false;
+        return {
+          tp: h.parseIntFlag(flags, "--tp"),
+          cp: h.hasFlag(flags, "--enable-nsa-prefill-context-parallel") ? 2 : null,
+          dpAttn
+        };
+      },
+      revertHidden: (value, fc, base, h) => {
+        let changed = false;
+        const next = {
+          ...value
+        };
+        for (const knob of fc.knobs || []) {
+          const cur = next[knob.id];
+          if (cur !== null && cur !== undefined && h.isHidden(knob.values, cur, base)) {
+            next[knob.id] = null;
+            changed = true;
+          }
+        }
+        return changed ? next : value;
+      },
+      apply: ({flags, env, value, h}) => {
+        if (value.tp !== null) {
+          flags = h.stripFlagsByFirstToken(flags, ["--tp"]);
+          flags = h.insertAfter(flags, h.ANCHOR_NEAR_MODEL_PATH, [`--tp ${value.tp}`]);
+        }
+        if (value.dpAttn !== null && value.dpAttn !== undefined) {
+          flags = h.stripFlagsByFirstToken(flags, ["--dp", "--enable-dp-attention"]);
+          if (typeof value.dpAttn === "number" && value.dpAttn > 0) {
+            flags = h.insertAfter(flags, h.ANCHOR_NEAR_TP, [`--dp ${value.dpAttn}`, "--enable-dp-attention"]);
+          }
+        }
+        if (value.cp !== null) {
+          flags = h.stripFlagsByFirstToken(flags, ["--enable-nsa-prefill-context-parallel", "--nsa-prefill-cp-mode"]);
+          if (value.cp > 1) {
+            flags = h.insertAfter(flags, h.ANCHOR_NEAR_DPATTN, ["--enable-nsa-prefill-context-parallel", "--nsa-prefill-cp-mode round-robin-split"]);
+          }
+        }
+        return {
+          flags,
+          env
+        };
+      },
+      render: ({axisId, value, setValue, fc, base, s, renderSelect, derived}) => {
+        const knobs = fc.knobs || [];
+        if (!knobs.length) return null;
+        const setKnob = (k, v) => setValue({
+          ...value,
+          [k]: v
+        });
+        const labelFor = knob => c => {
+          if (c.label !== undefined) return c.label;
+          if (knob.id === "dpAttn") {
+            const labelMap = knob.labels || ({
+              "auto": "Auto",
+              "false": "Off"
+            });
+            const k = c.value === null ? "auto" : String(c.value);
+            return labelMap[k] || k;
+          }
+          return c.value === null ? "Auto" : String(c.value);
+        };
+        const knobDisplay = knob => {
+          const v = value[knob.id];
+          if (v !== null && v !== undefined) return v;
+          if (derived && derived[knob.id] !== undefined) return derived[knob.id];
+          return null;
+        };
+        const hideNullFor = knob => {
+          const d = derived ? derived[knob.id] : null;
+          return d !== null && d !== undefined ? [null] : [];
+        };
+        return <div key={axisId} style={s.card}>
+            <div style={s.compactRow}>
+              <span style={s.axisTitle}>Attention</span>
+              {knobs.map(knob => <span key={knob.id} style={s.field}>
+                  <span style={s.fieldLabel}>{knob.label || knob.id.toUpperCase()}</span>
+                  {renderSelect(knobDisplay(knob), knob.values || [null], nv => setKnob(knob.id, nv), base, labelFor(knob), {
+          hideValues: hideNullFor(knob)
+        })}
+                </span>)}
+            </div>
+          </div>;
+      }
+    },
+    moe: {
+      initState: () => ({
+        backend: null,
+        ep: null,
+        mmQuant: null
+      }),
+      deriveFromBase: (cell, fc, h) => {
+        const flags = cell && cell.flags || [];
+        const baseEnv = cell && cell.env || [];
+        const a2a = h.findFlagArg(flags, "--moe-a2a-backend");
+        const runner = h.findFlagArg(flags, "--moe-runner-backend");
+        const fp4Acts = baseEnv.some(e => e.startsWith("SGLANG_OPT_DEEPGEMM_MEGA_MOE_USE_FP4_ACTS"));
+        return {
+          backend: a2a || runner || null,
+          ep: h.parseIntFlag(flags, "--ep"),
+          mmQuant: fp4Acts ? "w4a4" : "w4a8"
+        };
+      },
+      revertHidden: (value, fc, base, h) => {
+        let changed = false;
+        const next = {
+          ...value
+        };
+        if (next.backend !== null && fc.backend?.options && h.isHidden(fc.backend.options, next.backend, base)) {
+          next.backend = null;
+          changed = true;
+        }
+        const mmOpt = (fc.backend?.options || []).find(o => o.id === "megamoe");
+        const mmAvail = !!mmOpt && (!mmOpt.requiresHw || mmOpt.requiresHw.includes(base.hw)) && (!mmOpt.excludesStrategy || !mmOpt.excludesStrategy.includes(base.strategy));
+        if (next.backend === "megamoe" && !mmAvail) {
+          next.backend = null;
+          changed = true;
+        }
+        if (next.ep !== null && fc.ep?.values && h.isHidden(fc.ep.values, next.ep, base)) {
+          next.ep = null;
+          changed = true;
+        }
+        return changed ? next : value;
+      },
+      apply: ({flags, env, value, fc, h, derived}) => {
+        if (value.backend !== null) {
+          flags = h.stripFlagsByFirstToken(flags, ["--moe-a2a-backend", "--moe-runner-backend"]);
+          const opt = (fc.backend?.options || []).find(o => o.id === value.backend);
+          if (opt?.flags?.length) {
+            flags = h.insertAfter(flags, h.ANCHOR_NEAR_DPATTN, opt.flags);
+          }
+        }
+        const mq = fc.megamoeQuant;
+        if (mq) {
+          const quantKeys = [];
+          for (const o of mq.options || []) {
+            for (const e of o.env || []) quantKeys.push(e.split("=")[0]);
+          }
+          const effBackend = value.backend !== null ? value.backend : derived && derived.backend;
+          if (effBackend === "megamoe") {
+            env = h.stripEnvByPrefix(env, [...mq.stripEnv || [], ...quantKeys]);
+            const quant = value.mmQuant != null ? value.mmQuant : derived && derived.mmQuant || "w4a8";
+            const opt = (mq.options || []).find(o => o.id === quant);
+            if (opt?.env?.length) env = [...env, ...opt.env];
+          } else if (value.backend !== null) {
+            env = h.stripEnvByPrefix(env, quantKeys);
+          }
+        }
+        if (value.ep !== null) {
+          flags = h.stripFlagsByFirstToken(flags, ["--ep"]);
+          if (value.ep > 1) {
+            flags = h.insertAfter(flags, h.ANCHOR_NEAR_MOE, [`--ep ${value.ep}`]);
+          }
+        }
+        return {
+          flags,
+          env
+        };
+      },
+      render: ({axisId, value, setValue, fc, base, s, renderSelect, derived}) => {
+        if (!fc.backend && !fc.ep) return null;
+        const setSlot = (k, v) => setValue({
+          ...value,
+          [k]: v
+        });
+        const slotDisplay = k => {
+          const v = value[k];
+          if (v !== null && v !== undefined) return v;
+          if (derived && derived[k] !== undefined) return derived[k];
+          return null;
+        };
+        const hideNull = k => {
+          const d = derived ? derived[k] : null;
+          return d !== null && d !== undefined ? [null] : [];
+        };
+        const mmOpt = (fc.backend?.options || []).find(o => o.id === "megamoe");
+        const mmAvail = !!mmOpt && (!mmOpt.requiresHw || mmOpt.requiresHw.includes(base.hw)) && (!mmOpt.excludesStrategy || !mmOpt.excludesStrategy.includes(base.strategy));
+        const backendIsMega = slotDisplay("backend") === "megamoe";
+        return <div key={axisId} style={s.card}>
+            <div style={s.compactRow}>
+              <span style={s.axisTitle}>MoE</span>
+              {fc.backend && <span style={s.field}>
+                  <span style={s.fieldLabel}>Backend</span>
+                  {renderSelect(slotDisplay("backend"), fc.backend.options || [], v => setSlot("backend", v), base, undefined, {
+          hideValues: [...hideNull("backend"), ...mmAvail ? [] : ["megamoe"]]
+        })}
+                </span>}
+              {fc.megamoeQuant && backendIsMega && <span style={s.field}>
+                  <span style={s.fieldLabel}>Quantization</span>
+                  {renderSelect(value.mmQuant != null ? value.mmQuant : derived && derived.mmQuant || "w4a8", fc.megamoeQuant.options || [], v => setSlot("mmQuant", v), base)}
+                </span>}
+              {fc.ep && <span style={s.field}>
+                  <span style={s.fieldLabel}>{fc.ep.label || "EP"}</span>
+                  {renderSelect(slotDisplay("ep"), fc.ep.values || [null], v => setSlot("ep", v), base, undefined, {
+          hideValues: hideNull("ep")
+        })}
+                </span>}
+            </div>
+          </div>;
+      }
+    },
+    parsers: {
+      initState: fc => {
+        const out = {};
+        for (const item of fc.items || []) out[item.id] = null;
+        return out;
+      },
+      deriveFromBase: (cell, fc, h) => {
+        const flags = cell && cell.flags || [];
+        const out = {};
+        for (const item of fc.items || []) {
+          const prefix = item.flag.split(/[\s=]/)[0];
+          out[item.id] = h.hasFlag(flags, prefix);
+        }
+        return out;
+      },
+      revertHidden: (value, fc, base, h) => {
+        let changed = false;
+        const next = {
+          ...value
+        };
+        for (const item of fc.items || []) {
+          if (next[item.id] !== null && next[item.id] !== undefined && h.evaluateChip(item, base).hidden) {
+            next[item.id] = null;
+            changed = true;
+          }
+        }
+        return changed ? next : value;
+      },
+      apply: ({flags, env, value, fc, h, derived}) => {
+        const items = fc.items || [];
+        const eff = {};
+        const baseOf = {};
+        for (const item of items) {
+          baseOf[item.id] = derived ? !!derived[item.id] : false;
+          const v = value[item.id];
+          eff[item.id] = v === null || v === undefined ? baseOf[item.id] : v;
+        }
+        const anyOverride = items.some(it => eff[it.id] !== baseOf[it.id]);
+        if (!anyOverride) return {
+          flags,
+          env
+        };
+        flags = h.stripFlagsByFirstToken(flags, ["--reasoning-parser", "--tool-call-parser"]);
+        const adds = [];
+        for (const item of items) {
+          if (eff[item.id]) adds.push(item.flag);
+        }
+        if (adds.length) flags = h.insertBeforeTail(flags, adds);
+        return {
+          flags,
+          env
+        };
+      },
+      render: ({axisId, value, setValue, fc, base, s, h, renderChip, derived}) => {
+        const visible = (fc.items || []).map(item => ({
+          item,
+          c: h.evaluateChip(item, base)
+        })).filter(({c}) => !c.hidden);
+        if (visible.length === 0) return null;
+        const effOn = id => {
+          const v = value[id];
+          if (v !== null && v !== undefined) return v;
+          if (derived && derived[id] !== undefined) return derived[id];
+          return false;
+        };
+        return <div key={axisId} style={s.card}>
+            <div style={s.compactRow}>
+              <span style={s.axisTitle}>Parsers</span>
+              {visible.map(({item, c}) => <span key={item.id} style={s.field}>
+                  {renderChip(item.label, effOn(item.id), true, () => setValue({
+          ...value,
+          [item.id]: !effOn(item.id)
+        }), {
+          disabled: c.disabled,
+          disabledReason: c.disableReason
+        })}
+                </span>)}
+            </div>
+          </div>;
+      }
+    },
+    speculative: {
+      initState: () => "current",
+      deriveFromBase: (cell, fc) => {
+        const flags = cell && cell.flags || [];
+        const baseSpec = flags.filter(f => {
+          const head = f.split(/[\s=]/)[0];
+          return head === "--speculative-algorithm" || head === "--speculative-num-steps" || head === "--speculative-eagle-topk" || head === "--speculative-num-draft-tokens" || head === "--speculative-ngram-max-bfs-breadth";
+        });
+        if (baseSpec.length === 0) return "off";
+        for (const opt of fc.options || []) {
+          if (!opt.flags || opt.flags.length !== baseSpec.length) continue;
+          const ok = opt.flags.every(pf => baseSpec.includes(pf));
+          if (ok) return opt.id;
+        }
+        return "current";
+      },
+      revertHidden: (value, fc, base, h) => {
+        if (value !== "current" && h.isHidden(fc.options || [], value, base)) {
+          return "current";
+        }
+        return value;
+      },
+      apply: ({flags, env, value, fc, h, derived}) => {
+        if (value === "current") return {
+          flags,
+          env
+        };
+        if (derived && value === derived) return {
+          flags,
+          env
+        };
+        const picked = (fc.options || []).find(p => p.id === value);
+        if (picked && h.evaluateChip(picked, {
+          dpAttnOn: h.hasFlag(flags, "--enable-dp-attention")
+        }).disabled) {
+          return {
+            flags,
+            env
+          };
+        }
+        flags = h.stripFlagsByFirstToken(flags, ["--speculative-algorithm", "--speculative-num-steps", "--speculative-eagle-topk", "--speculative-num-draft-tokens", "--speculative-ngram-max-bfs-breadth"]);
+        const preset = (fc.options || []).find(p => p.id === value);
+        if (preset?.flags?.length) flags = h.insertBeforeTail(flags, preset.flags);
+        return {
+          flags,
+          env
+        };
+      },
+      render: ({axisId, value, setValue, fc, base, s, h, renderChip, derived}) => {
+        const opts = fc.options || [];
+        if (!opts.length) return null;
+        const display = value !== "current" ? value : derived ? derived : "current";
+        const hideCurrent = !!(derived && derived !== "current");
+        const visible = opts.map(opt => h.evaluateChip(opt, base)).filter(c => !c.hidden && !(hideCurrent && c.value === "current"));
+        if (visible.length === 0) return null;
+        return <div key={axisId} style={s.card}>
+            <div style={s.compactRow}>
+              <span style={s.axisTitle}>Speculative</span>
+              {visible.map(c => <span key={c.value} style={s.field}>
+                  {renderChip(c.label, display, c.value, () => setValue(c.value), {
+          disabled: c.disabled,
+          disabledReason: c.disableReason
+        })}
+                </span>)}
+            </div>
+          </div>;
+      }
+    },
+    pdDisagg: {
+      initState: () => ({
+        mode: "off",
+        transferBackend: "mooncake",
+        ibDevice: "auto"
+      }),
+      revertHidden: (value, fc, base, h) => {
+        let changed = false;
+        const next = {
+          ...value
+        };
+        if (next.mode !== "off" && fc.modes && h.isHidden(fc.modes, next.mode, base)) {
+          next.mode = "off";
+          changed = true;
+        }
+        if (next.ibDevice !== "auto" && fc.ibDevices && h.isHidden(fc.ibDevices, next.ibDevice, base)) {
+          next.ibDevice = "auto";
+          changed = true;
+        }
+        return changed ? next : value;
+      },
+      apply: ({flags, env, value, sel, fc, h}) => {
+        flags = h.stripFlagsByFirstToken(flags, ["--disaggregation-mode", "--disaggregation-transfer-backend", "--disaggregation-ib-device", "--disaggregation-bootstrap-port"]);
+        const backends = fc.transferBackends || [];
+        if (value.mode === "prefill" || value.mode === "decode") {
+          const backend = value.transferBackend || "mooncake";
+          const adds = [`--disaggregation-mode ${value.mode}`, `--disaggregation-transfer-backend ${backend}`];
+          if (value.ibDevice && value.ibDevice !== "auto") {
+            adds.push(`--disaggregation-ib-device ${value.ibDevice}`);
+          }
+          flags = h.insertBeforeTail(flags, adds);
+          const servePort = PD_PORTS[value.mode].serve;
+          flags = flags.map(f => f.split(/[\s=]/)[0] === "--port" ? `--port ${servePort}` : f);
+          const meta = backends.find(b => b.id === backend);
+          if (meta && meta.env && meta.env.length) {
+            const gate = meta.envWhen;
+            const ok = !gate || Object.keys(gate).every(k => (gate[k] || []).includes(sel[k]));
+            if (ok) env = [...env, ...meta.env.filter(e => !env.includes(e))];
+          }
+        }
+        return {
+          flags,
+          env
+        };
+      },
+      getRenderHints: value => {
+        if (value.mode === "prefill" || value.mode === "decode") {
+          return {
+            pdMode: value.mode
+          };
+        }
+        return null;
+      },
+      render: ({axisId, value, setValue, fc, base, s, renderSelect}) => {
+        const setSlot = (k, v) => setValue({
+          ...value,
+          [k]: v
+        });
+        const showModes = (fc.modes || []).length > 0;
+        const showBackends = (fc.transferBackends || []).length > 0;
+        const showIb = (fc.ibDevices || []).length > 0;
+        if (!showModes && !showBackends && !showIb) return null;
+        return <div key={axisId} style={s.card}>
+            <div style={s.compactRow}>
+              <span style={s.axisTitle}>PD Disagg</span>
+              {showModes && <span style={s.field}>
+                  <span style={s.fieldLabel}>Mode</span>
+                  {renderSelect(value.mode, fc.modes, v => setSlot("mode", v), base)}
+                </span>}
+              {showBackends && <span style={s.field}>
+                  <span style={s.fieldLabel}>Transfer Backend</span>
+                  {renderSelect(value.transferBackend, fc.transferBackends, v => setSlot("transferBackend", v), base)}
+                </span>}
+              {showIb && <span style={s.field}>
+                  <span style={s.fieldLabel}>IB Device</span>
+                  {renderSelect(value.ibDevice, fc.ibDevices, v => setSlot("ibDevice", v), base)}
+                </span>}
+            </div>
+          </div>;
+      }
+    },
+    hisparse: {
+      initState: fc => ({
+        enable: false,
+        hostRatio: fc && fc.defaultHostRatio || null
+      }),
+      revertHidden: (value, fc, base, h) => {
+        if (value.hostRatio !== null && fc.hostRatios && h.isHidden(fc.hostRatios, value.hostRatio, base)) {
+          return {
+            ...value,
+            hostRatio: fc && fc.defaultHostRatio || null
+          };
+        }
+        return value;
+      },
+      apply: ({flags, env, value, fc, h}) => {
+        const ownedHeads = ["--enable-hisparse", "--hisparse-config", ...(fc.requiredFlags || []).map(f => f.split(/\s/)[0])];
+        flags = h.stripFlagsByFirstToken(flags, ownedHeads);
+        const isDecode = flags.includes("--disaggregation-mode decode");
+        if (value.enable && isDecode) {
+          const ratio = value.hostRatio !== null && value.hostRatio !== undefined ? value.hostRatio : fc.defaultHostRatio || 10;
+          const cfg = {
+            ...fc.config || ({}),
+            host_to_device_ratio: ratio
+          };
+          const adds = [...fc.requiredFlags || [], "--enable-hisparse", `--hisparse-config '${JSON.stringify(cfg)}'`];
+          flags = h.insertBeforeTail(flags, adds);
+        }
+        return {
+          flags,
+          env
+        };
+      },
+      render: ({axisId, value, setValue, fc, base, s, renderChip, renderSelect}) => {
+        if (base.pdMode !== "decode") return null;
+        const setSlot = (k, v) => setValue({
+          ...value,
+          [k]: v
+        });
+        const hasRatios = (fc.hostRatios || []).length > 0;
+        return <div key={axisId} style={s.card}>
+            <div style={s.compactRow}>
+              <span style={s.axisTitle}>HiSparse</span>
+              <span style={s.field}>
+                {renderChip("Enable", value.enable, true, () => setSlot("enable", !value.enable))}
+              </span>
+              {hasRatios && <span style={s.field}>
+                  <span style={s.fieldLabel}>Host ratio</span>
+                  {renderSelect(value.hostRatio, fc.hostRatios, v => setSlot("hostRatio", v), base)}
+                </span>}
+            </div>
+          </div>;
+      }
+    },
+    hicache: {
+      initState: () => ({
+        enable: false,
+        backend: null,
+        writePolicy: "auto"
+      }),
+      revertHidden: (value, fc, base, h) => {
+        let changed = false;
+        const next = {
+          ...value
+        };
+        if (next.backend !== null && fc.backends && h.isHidden(fc.backends, next.backend, base)) {
+          next.backend = null;
+          changed = true;
+        }
+        if (next.writePolicy !== "auto" && fc.writePolicies && h.isHidden(fc.writePolicies, next.writePolicy, base)) {
+          next.writePolicy = "auto";
+          changed = true;
+        }
+        return changed ? next : value;
+      },
+      apply: ({flags, env, value, fc, sel, h}) => {
+        if (fc.excludesHw && sel && fc.excludesHw.includes(sel.hw)) return {
+          flags,
+          env
+        };
+        flags = h.stripFlagsByFirstToken(flags, ["--enable-hierarchical-cache", "--hicache-ratio", "--hicache-size", "--hicache-write-policy", "--hicache-mem-layout", "--hicache-io-backend", "--hicache-storage-backend", "--hicache-storage-prefetch-policy"]);
+        if (value.enable) {
+          const adds = ["--enable-hierarchical-cache", "--hicache-ratio 2", "--hicache-size 0"];
+          if (value.backend) {
+            adds.push("--hicache-mem-layout page_first_direct", "--hicache-io-backend direct");
+          }
+          const writePolicy = value.writePolicy && value.writePolicy !== "auto" ? value.writePolicy : "write_through";
+          adds.push(`--hicache-write-policy ${writePolicy}`);
+          if (value.backend) {
+            adds.push(`--hicache-storage-backend ${value.backend}`, "--hicache-storage-prefetch-policy wait_complete");
+          }
+          flags = h.insertBeforeTail(flags, adds);
+        }
+        return {
+          flags,
+          env
+        };
+      },
+      render: ({axisId, value, setValue, fc, base, s, renderChip, renderSelect}) => {
+        if (fc.excludesHw && fc.excludesHw.includes(base.hw)) return null;
+        const setSlot = (k, v) => setValue({
+          ...value,
+          [k]: v
+        });
+        const hasBackends = (fc.backends || []).length > 0;
+        const hasPolicies = (fc.writePolicies || []).length > 0;
+        return <div key={axisId} style={s.card}>
+            <div style={s.compactRow}>
+              <span style={s.axisTitle}>HiCache</span>
+              <span style={s.field}>
+                {renderChip("Enable", value.enable, true, () => setSlot("enable", !value.enable))}
+              </span>
+              {hasBackends && <span style={s.field}>
+                  <span style={s.fieldLabel}>Storage</span>
+                  {renderSelect(value.backend, fc.backends, v => setSlot("backend", v), base)}
+                </span>}
+              {hasPolicies && <span style={s.field}>
+                  <span style={s.fieldLabel}>Write</span>
+                  {renderSelect(value.writePolicy, fc.writePolicies, v => setSlot("writePolicy", v), base)}
+                </span>}
+            </div>
+          </div>;
+      }
+    },
+    flagSelects: {
+      initState: fc => {
+        const out = {};
+        for (const spec of fc || []) out[spec.id] = null;
+        return out;
+      },
+      deriveFromBase: (cell, fc) => {
+        const flags = cell && cell.flags || [];
+        const out = {};
+        for (const spec of fc || []) {
+          const prefixes = spec.stripPrefixes || [];
+          const fam = flags.filter(f => prefixes.includes(f.split(/[\s=]/)[0]));
+          let hit = null;
+          for (const opt of spec.options || []) {
+            const of = opt.flags || [];
+            if (of.length === fam.length && of.every(x => fam.includes(x))) {
+              hit = opt.id;
+              break;
+            }
+          }
+          out[spec.id] = hit;
+        }
+        return out;
+      },
+      revertHidden: (value, fc, base, h) => {
+        let changed = false;
+        const next = {
+          ...value
+        };
+        for (const spec of fc || []) {
+          const cur = next[spec.id];
+          if (cur !== null && cur !== undefined && h.isHidden(spec.options, cur, base)) {
+            next[spec.id] = null;
+            changed = true;
+          }
+        }
+        return changed ? next : value;
+      },
+      apply: ({flags, env, value, fc, sel, h, derived}) => {
+        const evalBase = {
+          ...sel || ({}),
+          dpAttnOn: h.hasFlag(flags, "--enable-dp-attention"),
+          pdMode: h.findFlagArg(flags, "--disaggregation-mode") || "off"
+        };
+        for (const spec of fc || []) {
+          const v = value ? value[spec.id] : null;
+          if (v === null || v === undefined) continue;
+          const d = derived ? derived[spec.id] : null;
+          if (v === d) continue;
+          const opt = (spec.options || []).find(o => o.id === v);
+          if (!opt) continue;
+          if (h.evaluateChip(opt, evalBase).disabled) continue;
+          flags = h.stripFlagsByFirstToken(flags, spec.stripPrefixes || []);
+          if (opt.flags && opt.flags.length) {
+            flags = h.insertBeforeTail(flags, opt.flags);
+          }
+        }
+        return {
+          flags,
+          env
+        };
+      },
+      render: ({axisId, value, setValue, fc, base, s, h, renderChip, derived}) => {
+        const cards = [];
+        for (const spec of fc || []) {
+          const opts = (spec.options || []).map(o => h.evaluateChip(o, base)).filter(c => !c.hidden);
+          if (!opts.length) continue;
+          const explicit = value ? value[spec.id] : null;
+          const display = explicit !== null && explicit !== undefined ? explicit : derived ? derived[spec.id] : null;
+          cards.push(<div key={`${axisId}-${spec.id}`} style={s.card}>
+              <div style={s.compactRow}>
+                <span style={s.axisTitle}>{spec.title}</span>
+                {opts.map(c => <span key={c.value} style={s.field}>
+                    {renderChip(c.label, display, c.value, () => setValue({
+            ...value,
+            [spec.id]: c.value
+          }), {
+            disabled: c.disabled,
+            disabledReason: c.disableReason
+          })}
+                  </span>)}
+              </div>
+            </div>);
+        }
+        return cards.length ? cards : null;
+      }
+    }
+  };
+  const applyAllDeltas = (baseFlags, baseEnv, allDeltas, sel, derivedMap) => {
+    let flags = [...baseFlags];
+    let env = [...baseEnv || []];
+    let pdMode = null;
+    for (const [axisId, handler] of Object.entries(AXIS_HANDLERS)) {
+      const fc = pgFeatures[axisId];
+      if (!fc) continue;
+      const value = allDeltas[axisId];
+      if (value === undefined) continue;
+      const derived = derivedMap ? derivedMap[axisId] : null;
+      const out = handler.apply({
+        flags,
+        env,
+        value,
+        fc,
+        sel,
+        h: helpers,
+        derived
+      });
+      flags = out.flags;
+      env = out.env;
+      if (handler.getRenderHints) {
+        const hints = handler.getRenderHints(value, fc) || ({});
+        if (hints.pdMode) pdMode = hints.pdMode;
+      }
+    }
+    return {
+      flags,
+      env,
+      pdMode
+    };
+  };
+  const renderCommandLines = (cell, flags, cellEnv, sel, envValues, pdMode = null, mode = "python") => {
+    const modelName = resolveModelName(sel);
+    const nnodes = parseNnodes(sel.nodes);
+    const multinode = nnodes > 1;
+    let f = [...flags];
+    if (multinode && !f.some(x => x.startsWith("--nnodes"))) {
+      const PARALLELISM_ANCHORS = ["--enable-dp-attention", "--dp", "--tp"];
+      let at = -1;
+      for (const anchor of PARALLELISM_ANCHORS) {
+        at = f.findIndex(x => x.split(/[\s=]/)[0] === anchor);
+        if (at !== -1) break;
+      }
+      if (at === -1) at = f.findIndex(x => x.startsWith("--model-path"));
+      const distPort = pdMode && PD_PORTS[pdMode] ? PD_PORTS[pdMode].dist : 20000;
+      f.splice(at + 1, 0, `--nnodes ${nnodes}`, `--node-rank {{NODE_RANK}}`, `--dist-init-addr {{NODE0_IP}}:${distPort}`);
+    }
+    let cmd;
+    if (mode === "docker") {
+      const di = config.dockerImages || ({});
+      const image = di[`${sel.hw}|${sel.quant}`] || di[sel.hw] || "lmsysorg/sglang:dev";
+      const portFlag = f.find(x => x.split(/[\s=]/)[0] === "--port");
+      const servePort = portFlag ? portFlag.slice(("--port").length).trim() : "{{PORT}}";
+      const dockerLines = ["docker run --gpus all", "  --shm-size 32g", multinode || pdMode ? "  --network host" : `  -p ${servePort}:${servePort}`, "  -v ~/.cache/huggingface:/root/.cache/huggingface", `  --env "HF_TOKEN={{HF_TOKEN}}"`, ...cellEnv.map(e => `  --env ${e}`), "  --ipc=host", `  ${image}`, "  sglang serve", ...f.map(x => "    " + x)];
+      cmd = dockerLines.join(" \\\n");
+    } else {
+      const flagBlock = f.map(x => "  " + x).join(" \\\n");
+      const envBlock = cellEnv.length ? cellEnv.join(" \\\n") + " \\\n" : "";
+      cmd = `${envBlock}sglang serve \\\n${flagBlock}`;
+    }
+    if (multinode && config.multiNodeHints && config.multiNodeHints[sel.hw]) {
+      const hint = config.multiNodeHints[sel.hw].map(line => line.length ? "# " + line : "#").join("\n");
+      cmd = `${hint}\n${cmd}`;
+    }
+    cmd = interpolate(cmd, envValues, modelName);
+    if (multinode) {
+      const header = `# Multi-node (${nnodes} nodes). Run the same command on every node with:\n` + `#   <node-rank> = 0 on the head node, 1..${nnodes - 1} on the others\n` + `#   <node0-ip>  = IP of the head node (reachable from all others)`;
+      cmd = `${header}\n${cmd}`;
+    }
+    if (pdMode === "prefill" || pdMode === "decode") {
+      const sibling = pdMode === "prefill" ? "decode" : "prefill";
+      const routerCfg = config.playgroundFeatures && config.playgroundFeatures.pdDisagg && config.playgroundFeatures.pdDisagg.router;
+      const routerPort = routerCfg && routerCfg.port || 8000;
+      const routerLine = routerCfg ? `# then front BOTH with the Router (SGLang Model Gateway) shown below.\n` + `# Client traffic (cURL) targets the router (:${routerPort}), not this role server.` : `# then front BOTH with a router; client traffic targets the router, not this role server.`;
+      const banner = `# === PD Disaggregation: ${pdMode.toUpperCase()} role ===\n` + `# Runs the ${pdMode} server. Also run the ${sibling} role on its peer host,\n` + routerLine;
+      cmd = `${banner}\n${cmd}`;
+    }
+    return cmd;
+  };
+  const computeDiff = (baseStr, pgStr) => {
+    const a = baseStr.split("\n");
+    const b = pgStr.split("\n");
+    const m = a.length, n = b.length;
+    const dp = Array(m + 1).fill(null).map(() => new Array(n + 1).fill(0));
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        if (a[i - 1] === b[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1; else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+    const out = [];
+    let i = m, j = n;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+        out.unshift({
+          line: a[i - 1],
+          kind: "unchanged"
+        });
+        i--;
+        j--;
+      } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+        out.unshift({
+          line: b[j - 1],
+          kind: "added"
+        });
+        j--;
+      } else {
+        out.unshift({
+          line: a[i - 1],
+          kind: "removed"
+        });
+        i--;
+      }
+    }
+    return out;
+  };
+  const serializeCell = (sel, env, flags) => {
+    const matchEntries = [`hw: ${JSON.stringify(sel.hw)}`, `variant: ${JSON.stringify(sel.variant)}`, `quant: ${JSON.stringify(sel.quant)}`, `strategy: ${JSON.stringify(sel.strategy)}`, `nodes: ${JSON.stringify(sel.nodes)}`].join(", ");
+    const fmtList = items => {
+      if (!items || items.length === 0) return "[]";
+      const lines = items.map(s => `        ${JSON.stringify(s)},`).join("\n");
+      return `[\n${lines}\n      ]`;
+    };
+    return ["    {", `      match: { ${matchEntries} },`, "      verified: true,", `      env: ${fmtList(env)},`, `      flags: ${fmtList(flags)},`, "    },"].join("\n");
+  };
+  const buildSubmitUrl = (sel, fields) => {
+    const gh = config.github || ({});
+    const owner = gh.owner || "sgl-project";
+    const repo = gh.repo || "sglang";
+    const tmpl = gh.issueTemplate || "3-playground-verified-cell.yml";
+    const cookbookModel = gh.cookbookModel || "deepseek-ai/deepseek-v4";
+    const combo = `${sel.hw} / ${sel.variant} / ${sel.quant} / ${sel.strategy} / ${sel.nodes}`;
+    const params = new URLSearchParams({
+      template: tmpl,
+      title: `[Playground] Verified cell: ${combo}`,
+      model: cookbookModel,
+      combination: combo,
+      "cell-snippet": fields.cellSnippet || "",
+      "existing-cell": fields.existingCell || "",
+      "sglang-version": fields.sglangVersion || "",
+      "bench-result": fields.benchResult || "",
+      notes: fields.notes || ""
+    });
+    return `https://github.com/${owner}/${repo}/issues/new?${params.toString()}`;
+  };
+  const makeStyles = isDark => ({
+    container: {
+      maxWidth: "900px",
+      margin: "0 auto",
+      display: "flex",
+      flexDirection: "column",
+      gap: "6px"
+    },
+    card: {
+      padding: "6px 10px",
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      borderLeft: `3px solid ${isDark ? "#FDBA74" : "#FB923C"}`,
+      borderRadius: "4px",
+      background: isDark ? "#1f2937" : "#fff"
+    },
+    cardStack: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "6px"
+    },
+    baseStrip: {
+      padding: "8px 12px",
+      borderRadius: "4px",
+      background: isDark ? "#064e3b" : "#d1fae5",
+      color: isDark ? "#a7f3d0" : "#065f46",
+      fontSize: "12px",
+      display: "flex",
+      alignItems: "center",
+      gap: "10px"
+    },
+    title: {
+      fontSize: "13px",
+      fontWeight: "600",
+      color: isDark ? "#e5e7eb" : "inherit",
+      marginBottom: "8px"
+    },
+    compactRow: {
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: "10px",
+      rowGap: "4px"
+    },
+    axisTitle: {
+      fontSize: "12px",
+      fontWeight: 700,
+      color: isDark ? "#FDBA74" : "#C2410C",
+      letterSpacing: "0.02em",
+      minWidth: "100px",
+      flexShrink: 0
+    },
+    field: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "4px"
+    },
+    fieldLabel: {
+      fontSize: "11px",
+      fontWeight: 500,
+      color: isDark ? "#9ca3af" : "#6b7280"
+    },
+    select: {
+      padding: "2px 6px",
+      border: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`,
+      borderRadius: "3px",
+      fontSize: "12px",
+      background: isDark ? "#111827" : "#fff",
+      color: isDark ? "#e5e7eb" : "#111827",
+      cursor: "pointer",
+      lineHeight: "1.4"
+    },
+    rowFlex: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "6px",
+      alignItems: "center",
+      flex: 1
+    },
+    subRow: {
+      display: "flex",
+      alignItems: "center",
+      gap: "10px"
+    },
+    subLabel: {
+      fontSize: "11px",
+      fontWeight: 600,
+      color: isDark ? "#9ca3af" : "#6b7280",
+      minWidth: "96px",
+      flexShrink: 0,
+      letterSpacing: "0.02em"
+    },
+    chipRow: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "6px",
+      flex: 1
+    },
+    chip: {
+      padding: "3px 9px",
+      border: `1px solid ${isDark ? "#9ca3af" : "#d1d5db"}`,
+      borderRadius: "3px",
+      cursor: "pointer",
+      fontSize: "12px",
+      userSelect: "none",
+      background: isDark ? "#374151" : "#fff",
+      color: isDark ? "#e5e7eb" : "inherit",
+      textAlign: "center"
+    },
+    chipChecked: {
+      background: "#D45D44",
+      color: "white",
+      borderColor: "#D45D44"
+    },
+    chipDisabled: {
+      cursor: "not-allowed",
+      opacity: 0.4
+    },
+    commandWrap: {
+      position: "relative",
+      background: isDark ? "#111827" : "#f5f5f5",
+      borderRadius: "6px",
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      overflow: "hidden"
+    },
+    commandHeader: {
+      display: "flex",
+      flexWrap: "wrap",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: "6px 10px",
+      padding: "6px 10px",
+      borderBottom: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      background: isDark ? "#1f2937" : "#fafafa"
+    },
+    commandPre: {
+      padding: "12px 16px",
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+      fontSize: "12px",
+      lineHeight: "1.5",
+      color: isDark ? "#e5e7eb" : "#374151",
+      whiteSpace: "pre-wrap",
+      overflowX: "auto",
+      margin: 0
+    },
+    mtpWarn: {
+      margin: "8px 0 0",
+      padding: "8px 12px",
+      borderRadius: "8px",
+      fontSize: "12px",
+      lineHeight: "1.45",
+      background: isDark ? "#78350f" : "#fef3c7",
+      color: isDark ? "#fde68a" : "#92400e",
+      border: `1px solid ${isDark ? "#92400e" : "#fcd34d"}`
+    },
+    diffLineUnchanged: {
+      display: "block"
+    },
+    diffLineAdded: {
+      display: "block",
+      background: isDark ? "rgba(16,185,129,0.15)" : "rgba(16,185,129,0.18)",
+      color: isDark ? "#a7f3d0" : "#065f46",
+      borderLeft: `3px solid #10b981`,
+      paddingLeft: "8px",
+      marginLeft: "-8px"
+    },
+    diffLineRemoved: {
+      display: "block",
+      background: isDark ? "rgba(239,68,68,0.10)" : "rgba(239,68,68,0.10)",
+      color: isDark ? "#fca5a5" : "#991b1b",
+      textDecoration: "line-through",
+      opacity: 0.7,
+      borderLeft: `3px solid #ef4444`,
+      paddingLeft: "8px",
+      marginLeft: "-8px"
+    },
+    badge: verified => ({
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "6px",
+      padding: "2px 8px",
+      borderRadius: "10px",
+      background: verified ? isDark ? "#064e3b" : "#d1fae5" : isDark ? "#78350f" : "#fef3c7",
+      color: verified ? isDark ? "#a7f3d0" : "#065f46" : isDark ? "#fde68a" : "#92400e",
+      fontSize: "11px",
+      fontWeight: 600
+    }),
+    badgeDot: verified => ({
+      width: "8px",
+      height: "8px",
+      borderRadius: "50%",
+      background: verified ? "#10b981" : "#f59e0b"
+    }),
+    iconButton: {
+      padding: "4px 10px",
+      border: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`,
+      borderRadius: "4px",
+      background: isDark ? "#1f2937" : "#fff",
+      color: isDark ? "#e5e7eb" : "#374151",
+      fontSize: "11px",
+      fontWeight: 500,
+      cursor: "pointer",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "4px"
+    },
+    iconRow: {
+      display: "inline-flex",
+      flexWrap: "wrap",
+      gap: "6px"
+    },
+    runModeWrap: {
+      display: "inline-flex",
+      border: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`,
+      borderRadius: "10px",
+      overflow: "hidden",
+      fontSize: "11px",
+      fontWeight: 600,
+      userSelect: "none"
+    },
+    runModeChip: active => ({
+      padding: "2px 10px",
+      cursor: "pointer",
+      background: active ? isDark ? "#1f2937" : "#fff" : "transparent",
+      color: active ? isDark ? "#e5e7eb" : "#111827" : isDark ? "#9ca3af" : "#6b7280",
+      borderRight: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`
+    }),
+    runModeChipLast: active => ({
+      padding: "2px 10px",
+      cursor: "pointer",
+      background: active ? isDark ? "#1f2937" : "#fff" : "transparent",
+      color: active ? isDark ? "#e5e7eb" : "#111827" : isDark ? "#9ca3af" : "#6b7280"
+    }),
+    headerLeft: {
+      display: "inline-flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: "8px"
+    },
+    dialog: {
+      background: isDark ? "#1f2937" : "#fff",
+      color: isDark ? "#e5e7eb" : "#111827",
+      borderRadius: "8px",
+      padding: "20px",
+      maxWidth: "720px",
+      width: "92%",
+      maxHeight: "calc(100vh - 80px)",
+      overflowY: "auto",
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      boxShadow: "0 10px 25px rgba(0,0,0,0.25)",
+      margin: "auto"
+    },
+    modalHeader: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: "12px"
+    },
+    modalTitle: {
+      fontSize: "15px",
+      fontWeight: 600
+    },
+    modalCloseBtn: {
+      background: "transparent",
+      border: "none",
+      color: "inherit",
+      fontSize: "20px",
+      cursor: "pointer",
+      padding: "0 6px",
+      lineHeight: 1
+    },
+    formField: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "4px",
+      marginBottom: "10px"
+    },
+    formLabel: {
+      fontSize: "12px",
+      fontWeight: 500,
+      color: isDark ? "#9ca3af" : "#4b5563"
+    },
+    formInput: {
+      padding: "6px 10px",
+      fontSize: "13px",
+      border: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`,
+      borderRadius: "4px",
+      background: isDark ? "#111827" : "#fff",
+      color: isDark ? "#e5e7eb" : "#111827",
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace"
+    },
+    sectionHeading: {
+      fontSize: "12px",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.04em",
+      color: isDark ? "#9ca3af" : "#6b7280",
+      margin: "12px 0 6px 0"
+    },
+    primaryBtn: {
+      padding: "6px 14px",
+      background: isDark ? "#FDBA74" : "#FB923C",
+      color: isDark ? "#7C2D12" : "white",
+      border: "none",
+      borderRadius: "4px",
+      cursor: "pointer",
+      fontSize: "13px",
+      fontWeight: 500
+    },
+    resetBtn: {
+      marginLeft: "auto",
+      padding: "2px 8px",
+      fontSize: "11px",
+      border: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`,
+      borderRadius: "3px",
+      background: "transparent",
+      color: isDark ? "#9ca3af" : "#6b7280",
+      cursor: "pointer"
+    },
+    switchBaseBtn: {
+      padding: "2px 8px",
+      fontSize: "11px",
+      fontWeight: 600,
+      border: `1px solid ${isDark ? "#FDBA74" : "#FB923C"}`,
+      borderRadius: "3px",
+      background: "transparent",
+      color: isDark ? "#FDBA74" : "#C2410C",
+      cursor: "pointer"
+    },
+    matchedHint: {
+      fontSize: "11px",
+      color: isDark ? "#9ca3af" : "#6b7280",
+      marginLeft: "8px",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "4px"
+    },
+    matchedSwitchBtn: {
+      marginLeft: "4px",
+      background: "transparent",
+      border: "none",
+      padding: 0,
+      color: isDark ? "#FDBA74" : "#C2410C",
+      cursor: "pointer",
+      fontSize: "11px",
+      fontWeight: 600,
+      textDecoration: "underline",
+      textUnderlineOffset: "2px"
+    }
+  });
+  const [isDark, setIsDark] = useState(false);
+  useEffect(() => {
+    const check = () => {
+      const html = document.documentElement;
+      setIsDark(html.classList.contains("dark") || html.getAttribute("data-theme") === "dark" || html.style.colorScheme === "dark");
+    };
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme", "style"]
+    });
+    return () => observer.disconnect();
+  }, []);
+  const [env, setEnv] = useState(() => placeholderDefaults(config.placeholders));
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setEnv({
+          ...placeholderDefaults(config.placeholders),
+          ...parsed
+        });
+      }
+    } catch {}
+  }, []);
+  const saveEnv = next => {
+    setEnv(next);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {}
+  };
+  const initialBaseFromHash = () => {
+    const fallback = config.cells[0].match;
+    if (typeof window === "undefined") return {
+      ...fallback
+    };
+    const raw = window.location.hash.replace(/^#/, "");
+    if (!raw) return {
+      ...fallback
+    };
+    const params = new URLSearchParams(raw);
+    const out = {
+      ...fallback
+    };
+    params.forEach((value, key) => {
+      if ((key in out)) out[key] = value;
+    });
+    return out;
+  };
+  const [base, setBase] = useState(() => initialBaseFromHash());
+  useEffect(() => {
+    const onHash = () => setBase(initialBaseFromHash());
+    const onSelEvent = e => {
+      const fallback = config.cells[0].match;
+      const incoming = e && e.detail || ({});
+      const next = {
+        ...fallback
+      };
+      for (const k of Object.keys(next)) {
+        if (incoming[k] !== undefined) next[k] = incoming[k];
+      }
+      setBase(next);
+    };
+    window.addEventListener("hashchange", onHash);
+    window.addEventListener("sglang-deploy-sel", onSelEvent);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("sglang-deploy-sel", onSelEvent);
+    };
+  }, []);
+  const initialDeltas = () => {
+    const out = {};
+    for (const [axisId, handler] of Object.entries(AXIS_HANDLERS)) {
+      const fc = pgFeatures[axisId];
+      if (fc) out[axisId] = handler.initState(fc);
+    }
+    return out;
+  };
+  const [deltas, setDeltas] = useState(initialDeltas);
+  useEffect(() => {
+    setDeltas(d => {
+      let next = d;
+      let mutated = false;
+      for (const [axisId, handler] of Object.entries(AXIS_HANDLERS)) {
+        const fc = pgFeatures[axisId];
+        if (!fc || d[axisId] === undefined) continue;
+        const nv = handler.revertHidden(d[axisId], fc, base, helpers);
+        if (nv !== d[axisId]) {
+          if (!mutated) {
+            next = {
+              ...d
+            };
+            mutated = true;
+          }
+          next[axisId] = nv;
+        }
+      }
+      return mutated ? next : d;
+    });
+  }, [base.hw, base.variant, base.quant, base.strategy, base.nodes]);
+  const [modal, setModal] = useState(null);
+  const openDialog = el => {
+    if (el && !el.open) {
+      try {
+        el.showModal();
+      } catch {}
+    }
+  };
+  const onDialogClick = e => {
+    if (e.target !== e.currentTarget) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const {clientX: x, clientY: y} = e;
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) setModal(null);
+  };
+  useEffect(() => {
+    const ID = "__playground_dialog_backdrop";
+    if (document.getElementById(ID)) return undefined;
+    const style = document.createElement("style");
+    style.id = ID;
+    style.textContent = `dialog::backdrop { background: rgba(0, 0, 0, 0.5); }`;
+    document.head.appendChild(style);
+    return () => {
+      const el = document.getElementById(ID);
+      if (el) el.remove();
+    };
+  }, []);
+  const [copied, setCopied] = useState(false);
+  const [curlCopied, setCurlCopied] = useState(false);
+  const [routerCopied, setRouterCopied] = useState(false);
+  const [envDraft, setEnvDraft] = useState(env);
+  useEffect(() => {
+    if (modal === "env") setEnvDraft(env);
+  }, [modal, env]);
+  const [runMode, setRunMode] = useState("python");
+  const [submitDraft, setSubmitDraft] = useState({
+    sglangVersion: "",
+    benchResult: "",
+    notes: ""
+  });
+  const [submitAttest, setSubmitAttest] = useState({
+    ranCommand: false,
+    reachedReady: false,
+    outputCorrect: false
+  });
+  useEffect(() => {
+    if (modal === "submit") {
+      setSubmitDraft({
+        sglangVersion: "",
+        benchResult: "",
+        notes: ""
+      });
+      setSubmitAttest({
+        ranCommand: false,
+        reachedReady: false,
+        outputCorrect: false
+      });
+    }
+  }, [modal]);
+  const s = makeStyles(isDark);
+  const baseCell = findCell(config.cells, base);
+  const modelName = resolveModelName(base);
+  const derivedMap = {};
+  if (baseCell) {
+    for (const [axisId, handler] of Object.entries(AXIS_HANDLERS)) {
+      const fc = pgFeatures[axisId];
+      if (!fc || !handler.deriveFromBase) continue;
+      derivedMap[axisId] = handler.deriveFromBase(baseCell, fc, helpers);
+    }
+  }
+  const attnDelta = deltas.attention || ({});
+  const attnDerived = derivedMap.attention || ({});
+  const effDpAttn = attnDelta.dpAttn !== null && attnDelta.dpAttn !== undefined ? attnDelta.dpAttn : attnDerived.dpAttn !== undefined ? attnDerived.dpAttn : null;
+  const dpAttnOn = effDpAttn === true || typeof effDpAttn === "number" && effDpAttn > 0;
+  const pdMode = deltas.pdDisagg && deltas.pdDisagg.mode || "off";
+  const constraintBase = {
+    ...base,
+    dpAttnOn,
+    pdMode
+  };
+  let baseCommand = "";
+  let playgroundCommand = "";
+  let diffLines = [];
+  let pgFlagsLatest = [];
+  let pgEnvLatest = [];
+  if (baseCell) {
+    baseCommand = renderCommandLines(baseCell, baseCell.flags, baseCell.env, base, env, null, runMode);
+    const {flags: pgFlags, env: pgEnv, pdMode} = applyAllDeltas(baseCell.flags, baseCell.env, deltas, base, derivedMap);
+    pgFlagsLatest = pgFlags;
+    pgEnvLatest = pgEnv;
+    playgroundCommand = renderCommandLines(baseCell, pgFlags, pgEnv, base, env, pdMode, runMode);
+    diffLines = computeDiff(baseCommand, playgroundCommand);
+  }
+  const matchedCell = baseCell ? findMatchingCell(config.cells, base, pgEnvLatest, pgFlagsLatest) : null;
+  const playgroundVerified = !!(matchedCell && matchedCell.verified);
+  const matchedSiblingCell = matchedCell && matchedCell !== baseCell ? matchedCell : null;
+  const pgMtpHint = pgFlagsLatest.some(f => f.split(/[\s=]/)[0] === "--speculative-algorithm") && !pgFlagsLatest.some(f => f.split(/[\s=]/)[0] === "--max-running-requests");
+  const proposedCellSnippet = baseCell ? serializeCell(base, pgEnvLatest, pgFlagsLatest) : "";
+  const existingCellSnippet = baseCell ? serializeCell(base, baseCell.env || [], baseCell.flags) : "";
+  const submitUrl = baseCell ? buildSubmitUrl(base, {
+    cellSnippet: proposedCellSnippet,
+    existingCell: existingCellSnippet,
+    sglangVersion: submitDraft.sglangVersion,
+    benchResult: submitDraft.benchResult,
+    notes: submitDraft.notes
+  }) : "";
+  const submitReady = submitAttest.ranCommand && submitAttest.reachedReady && submitAttest.outputCorrect && submitDraft.sglangVersion.trim().length > 0;
+  const pdRouter = pdMode !== "off" && config.playgroundFeatures && config.playgroundFeatures.pdDisagg && config.playgroundFeatures.pdDisagg.router || null;
+  const curlEnv = pdRouter && pdRouter.port != null ? {
+    ...env,
+    CURL_PORT: String(pdRouter.port)
+  } : env;
+  const curlText = interpolate(config.curl || "", curlEnv, modelName);
+  const routerText = pdRouter && pdRouter.command ? interpolate(pdRouter.command, {
+    ...env,
+    PREFILL_PORT: PD_PORTS.prefill.serve,
+    DECODE_PORT: PD_PORTS.decode.serve,
+    ROUTER_PORT: pdRouter.port
+  }, modelName) : "";
+  const resetAll = () => setDeltas(initialDeltas());
+  const placeholderGroups = (() => {
+    const out = {
+      command: [],
+      curl: []
+    };
+    for (const [key, meta] of Object.entries(config.placeholders || ({}))) {
+      (out[meta.target] || (out[meta.target] = [])).push({
+        key,
+        ...meta
+      });
+    }
+    return out;
+  })();
+  const handleCopy = () => {
+    navigator.clipboard.writeText(playgroundCommand);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+  const copyCurl = () => {
+    navigator.clipboard.writeText(curlText);
+    setCurlCopied(true);
+    setTimeout(() => setCurlCopied(false), 1200);
+  };
+  const baseSummary = baseCell ? `${base.hw.toUpperCase()} · ${base.variant} · ${base.quant.toUpperCase()} · ${base.strategy} · ${base.nodes}` : "(no verified cell at the current Deploy selection — showing playground only)";
+  const renderChip = (label, current, value, onPick, opts = {}) => {
+    const checked = current === value;
+    const disabled = !!opts.disabled;
+    return <span key={`${label}-${value === null ? "auto" : value}`} style={{
+      ...s.chip,
+      ...checked ? s.chipChecked : {},
+      ...disabled ? s.chipDisabled : {}
+    }} title={disabled ? opts.disabledReason || "Not available" : ""} onClick={() => {
+      if (!disabled) onPick(value);
+    }}>
+        {label}
+      </span>;
+  };
+  const renderSelect = (current, entries, onPick, base, labelFor, opts = {}) => {
+    const hideSet = new Set(opts.hideValues || []);
+    const items = [];
+    for (const entry of entries || []) {
+      const c = helpers.evaluateChip(entry, base);
+      if (c.hidden) continue;
+      if (hideSet.has(c.value)) continue;
+      const lbl = labelFor ? labelFor(c) : c.label !== undefined ? c.label : c.value === null ? "Auto" : String(c.value);
+      items.push({
+        ...c,
+        label: lbl
+      });
+    }
+    let idx = items.findIndex(c => c.value === current);
+    if (idx === -1) idx = 0;
+    return <select style={s.select} value={idx} onChange={e => {
+      const next = items[parseInt(e.target.value, 10)];
+      if (next && !next.disabled) onPick(next.value);
+    }}>
+        {items.map((c, i) => <option key={i} value={i} disabled={c.disabled}>
+            {c.label}{c.disabled ? " (n/a)" : ""}
+          </option>)}
+      </select>;
+  };
+  return <div style={s.container} className="not-prose">
+      {}
+      <div style={s.baseStrip}>
+        <span style={{
+    fontWeight: 600
+  }}>Inherited base from Deployment:</span>
+        <code style={{
+    fontFamily: "Menlo, monospace"
+  }}>{baseSummary}</code>
+        {}
+        <button type="button" style={s.switchBaseBtn} onClick={() => {
+    const el = document.getElementById("deployment") || document.getElementById("deploy");
+    if (el) el.scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    });
+  }}>
+          ↑ Switch base
+        </button>
+        <button style={s.resetBtn} onClick={resetAll}>Reset all overrides</button>
+      </div>
+
+      {}
+      {Object.entries(AXIS_HANDLERS).map(([axisId, handler]) => {
+    const fc = pgFeatures[axisId];
+    if (!fc) return null;
+    const setValue = next => setDeltas(d => ({
+      ...d,
+      [axisId]: next
+    }));
+    return handler.render({
+      axisId,
+      value: deltas[axisId],
+      setValue,
+      fc,
+      base: constraintBase,
+      s,
+      h: helpers,
+      renderChip,
+      renderSelect,
+      derived: derivedMap[axisId] || null
+    });
+  })}
+
+      {}
+      <div style={s.card}>
+        <div style={s.title}>Playground Command (compare with base)</div>
+        <div style={s.commandWrap}>
+          <div style={s.commandHeader}>
+            <div style={s.headerLeft}>
+              <div style={s.badge(playgroundVerified)}>
+                <span style={s.badgeDot(playgroundVerified)} />
+                {playgroundVerified ? "Verified" : "Not Verified"}
+              </div>
+              {}
+              {matchedSiblingCell && <span style={s.matchedHint}>
+                  matches <code style={{
+    fontFamily: "Menlo, monospace"
+  }}>
+                    {matchedSiblingCell.match.strategy}
+                  </code>
+                  <button type="button" style={s.matchedSwitchBtn} onClick={() => {
+    const m = matchedSiblingCell.match;
+    setDeltas(initialDeltas());
+    const hash = new URLSearchParams(m).toString();
+    window.location.hash = hash;
+    window.dispatchEvent(new CustomEvent("sglang-deploy-sel", {
+      detail: m
+    }));
+  }}>
+                    switch base →
+                  </button>
+                </span>}
+              <div style={s.runModeWrap} role="tablist" aria-label="Output format">
+                <span style={s.runModeChip(runMode === "python")} onClick={() => setRunMode("python")} role="tab" aria-selected={runMode === "python"}>
+                  Python
+                </span>
+                <span style={s.runModeChipLast(runMode === "docker")} onClick={() => setRunMode("docker")} role="tab" aria-selected={runMode === "docker"}>
+                  Docker
+                </span>
+              </div>
+            </div>
+            <div style={s.iconRow}>
+              <button style={s.iconButton} onClick={handleCopy}>
+                {copied ? "✓ Copied" : "⧉ Copy"}
+              </button>
+              <button style={s.iconButton} onClick={() => setModal("curl")}>$ cURL</button>
+              <button style={s.iconButton} onClick={() => setModal("env")}>⚙ Env</button>
+              {}
+              {!playgroundVerified && baseCell && <button style={{
+    ...s.iconButton,
+    borderColor: isDark ? "#FDBA74" : "#FB923C",
+    color: isDark ? "#FDBA74" : "#C2410C",
+    fontWeight: 600
+  }} onClick={() => setModal("submit")} title="I verified this command on my hardware — open a pre-filled GitHub issue to land it as a cookbook cell.">
+                  Submit ↗
+                </button>}
+            </div>
+          </div>
+          <pre style={s.commandPre}>
+            {baseCell ? diffLines.map((d, i) => <span key={i} style={d.kind === "added" ? s.diffLineAdded : d.kind === "removed" ? s.diffLineRemoved : s.diffLineUnchanged}>
+                {d.kind === "added" ? "+ " : d.kind === "removed" ? "- " : "  "}
+                {d.line}{"\n"}
+              </span>) : "# No verified base cell at the current Deployment selection.\n# Pick a supported hardware/variant in the Deployment panel to populate the playground base."}
+          </pre>
+          {pgMtpHint && <div style={s.mtpWarn}>
+              ⚠️ Speculative decoding (MTP) is on — SGLang resets <code>--max-running-requests</code> to <strong>48</strong> when it isn't set. Add <code>--max-running-requests &lt;N&gt;</code> sized for your target concurrency.
+            </div>}
+        </div>
+      </div>
+
+      {}
+      {pdRouter && routerText && <div style={s.card}>
+          <div style={s.title}>Router (SGLang Model Gateway)</div>
+          <div style={{
+    fontSize: 11,
+    opacity: 0.7,
+    margin: "0 0 6px"
+  }}>
+            Run after both roles are up. Substitute <code>{"<prefill-host>"}</code> /{" "}
+            <code>{"<decode-host>"}</code> with reachable hosts (both <code>127.0.0.1</code>{" "}
+            on a same-host deployment). Client traffic (cURL) targets this router.
+          </div>
+          <div style={s.commandWrap}>
+            <div style={s.commandHeader}>
+              <div style={{
+    fontSize: 11,
+    opacity: 0.7
+  }}>port {pdRouter.port}</div>
+              <button style={s.iconButton} onClick={() => {
+    navigator.clipboard.writeText(routerText);
+    setRouterCopied(true);
+    setTimeout(() => setRouterCopied(false), 1200);
+  }}>
+                {routerCopied ? "✓ Copied" : "⧉ Copy"}
+              </button>
+            </div>
+            <pre style={s.commandPre}>{routerText}</pre>
+          </div>
+        </div>}
+
+      {}
+      {modal === "curl" && <dialog ref={openDialog} style={s.dialog} onClose={() => setModal(null)} onClick={onDialogClick}>
+          <div style={s.modalHeader}>
+            <div style={s.modalTitle}>cURL example</div>
+            <button style={s.modalCloseBtn} onClick={() => setModal(null)} aria-label="Close">×</button>
+          </div>
+          <div style={s.commandWrap}>
+            <div style={s.commandHeader}>
+              <div style={{
+    fontSize: 11,
+    opacity: 0.7
+  }}>
+                Model: <code>{modelName || "(unresolved)"}</code>
+              </div>
+              <button style={s.iconButton} onClick={copyCurl}>
+                {curlCopied ? "✓ Copied" : "⧉ Copy"}
+              </button>
+            </div>
+            <pre style={s.commandPre}>{curlText}</pre>
+          </div>
+          {pdRouter && <p style={{
+    fontSize: 11,
+    opacity: 0.85,
+    marginTop: 8
+  }}>
+              <strong>PD-Disaggregation active</strong> — this targets the router on
+              {" "}<code>:{pdRouter.port}</code>; client traffic must not hit the role
+              servers directly.
+            </p>}
+          <p style={{
+    fontSize: 11,
+    opacity: 0.7,
+    marginTop: 8
+  }}>
+            Edit <code>CURL_HOST</code> / <code>CURL_PORT</code> in the Env panel.
+          </p>
+        </dialog>}
+
+      {}
+      {modal === "env" && <dialog ref={openDialog} style={s.dialog} onClose={() => setModal(null)} onClick={onDialogClick}>
+          <div style={s.modalHeader}>
+            <div style={s.modalTitle}>Env / placeholder values</div>
+            <button style={s.modalCloseBtn} onClick={() => setModal(null)} aria-label="Close">×</button>
+          </div>
+            {placeholderGroups.curl.length > 0 && <div>
+                <div style={s.sectionHeading}>cURL placeholders</div>
+                {placeholderGroups.curl.map(({key, label}) => <div key={key} style={s.formField}>
+                    <label style={s.formLabel}>
+                      {label} <code style={{
+    opacity: 0.6
+  }}>{`{{${key}}}`}</code>
+                    </label>
+                    <input style={s.formInput} value={envDraft[key] ?? ""} onChange={e => setEnvDraft({
+    ...envDraft,
+    [key]: e.target.value
+  })} />
+                  </div>)}
+              </div>}
+            {placeholderGroups.command.length > 0 && <div>
+                <div style={s.sectionHeading}>Command placeholders</div>
+                {placeholderGroups.command.map(({key, label}) => <div key={key} style={s.formField}>
+                    <label style={s.formLabel}>
+                      {label} <code style={{
+    opacity: 0.6
+  }}>{`{{${key}}}`}</code>
+                    </label>
+                    <input style={s.formInput} value={envDraft[key] ?? ""} onChange={e => setEnvDraft({
+    ...envDraft,
+    [key]: e.target.value
+  })} />
+                  </div>)}
+              </div>}
+            <div style={{
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 16
+  }}>
+              <button style={{
+    ...s.iconButton,
+    padding: "6px 14px"
+  }} onClick={() => setModal(null)}>Cancel</button>
+              <button style={s.primaryBtn} onClick={() => {
+    saveEnv(envDraft);
+    setModal(null);
+  }}>Save</button>
+            </div>
+          <p style={{
+    fontSize: 11,
+    opacity: 0.7,
+    marginTop: 10
+  }}>
+            Values persist in localStorage and are shared with the Deployment panel.
+          </p>
+        </dialog>}
+
+      {}
+      {modal === "submit" && <dialog ref={openDialog} style={s.dialog} onClose={() => setModal(null)} onClick={onDialogClick}>
+            <div style={s.modalHeader}>
+              <div style={s.modalTitle}>Submit verified cell</div>
+              <button style={s.modalCloseBtn} onClick={() => setModal(null)} aria-label="Close">×</button>
+            </div>
+            <p style={{
+    fontSize: 12,
+    opacity: 0.85,
+    marginTop: 0,
+    marginBottom: 12
+  }}>
+              You've put together a combination that isn't in the verified
+              catalog yet. After you've run the command end-to-end on the
+              target hardware, this submits a pre-filled GitHub Issue that a
+              maintainer can convert into a PR.
+            </p>
+
+            <div style={s.sectionHeading}>Combination</div>
+            <code style={{
+    fontFamily: "Menlo, monospace",
+    fontSize: 12
+  }}>
+              {base.hw} / {base.variant} / {base.quant} / {base.strategy} / {base.nodes}
+            </code>
+            {}
+            {(() => {
+    const adds = diffLines.filter(d => d.kind === "added");
+    const rems = diffLines.filter(d => d.kind === "removed");
+    if (adds.length === 0 && rems.length === 0) return null;
+    return <>
+                  <div style={{
+      ...s.sectionHeading,
+      marginTop: 10
+    }}>
+                    Overrides vs base ({adds.length} added · {rems.length} removed)
+                  </div>
+                  <pre style={{
+      margin: 0,
+      padding: "8px 10px",
+      background: isDark ? "#111827" : "#f5f5f5",
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      borderRadius: 4,
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+      fontSize: 12,
+      lineHeight: 1.4,
+      maxHeight: 160,
+      overflowY: "auto",
+      whiteSpace: "pre-wrap"
+    }}>
+                    {[...rems, ...adds].map((d, i) => <div key={i} style={d.kind === "added" ? s.diffLineAdded : s.diffLineRemoved}>
+                        {d.kind === "added" ? "+ " : "- "}
+                        {d.line.replace(/^\s*/, "")}
+                      </div>)}
+                  </pre>
+                </>;
+  })()}
+
+            <div style={{
+    ...s.sectionHeading,
+    marginTop: 14
+  }}>Attestation (all required)</div>
+            <div style={s.formField}>
+              <label style={{
+    fontSize: 12,
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 6
+  }}>
+                <input type="checkbox" checked={submitAttest.ranCommand} onChange={e => setSubmitAttest({
+    ...submitAttest,
+    ranCommand: e.target.checked
+  })} />
+                I ran this exact command on the listed hardware.
+              </label>
+              <label style={{
+    fontSize: 12,
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 6
+  }}>
+                <input type="checkbox" checked={submitAttest.reachedReady} onChange={e => setSubmitAttest({
+    ...submitAttest,
+    reachedReady: e.target.checked
+  })} />
+                The server reached READY and answered a cURL request successfully.
+              </label>
+              <label style={{
+    fontSize: 12,
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 6
+  }}>
+                <input type="checkbox" checked={submitAttest.outputCorrect} onChange={e => setSubmitAttest({
+    ...submitAttest,
+    outputCorrect: e.target.checked
+  })} />
+                Output looked correct on at least one prompt.
+              </label>
+            </div>
+
+            <div style={{
+    ...s.sectionHeading,
+    marginTop: 14
+  }}>SGLang version (required)</div>
+            <input style={{
+    ...s.formInput,
+    width: "100%",
+    boxSizing: "border-box"
+  }} placeholder="sglang==0.5.4  (or git SHA abc1234)" value={submitDraft.sglangVersion} onChange={e => setSubmitDraft({
+    ...submitDraft,
+    sglangVersion: e.target.value
+  })} />
+
+            <div style={{
+    ...s.sectionHeading,
+    marginTop: 14
+  }}>Benchmark result (optional)</div>
+            <input style={{
+    ...s.formInput,
+    width: "100%",
+    boxSizing: "border-box"
+  }} placeholder="TTFT 95 ms / TPOT 18 ms / 1820 tok/s @ bs=64" value={submitDraft.benchResult} onChange={e => setSubmitDraft({
+    ...submitDraft,
+    benchResult: e.target.value
+  })} />
+
+            <div style={{
+    ...s.sectionHeading,
+    marginTop: 14
+  }}>Notes / caveats (optional)</div>
+            <textarea style={{
+    ...s.formInput,
+    width: "100%",
+    boxSizing: "border-box",
+    minHeight: 110,
+    resize: "vertical",
+    fontFamily: "inherit"
+  }} placeholder="Cluster config, env-var quirks, NIC mappings, multi-node bootstrap details, …" value={submitDraft.notes} onChange={e => setSubmitDraft({
+    ...submitDraft,
+    notes: e.target.value
+  })} />
+
+            <div style={{
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 16,
+    alignItems: "center"
+  }}>
+              {!submitReady && <span style={{
+    fontSize: 11,
+    opacity: 0.7,
+    marginRight: "auto"
+  }}>
+                  Tick all attestations and fill SGLang version to enable submit.
+                </span>}
+              <button style={{
+    ...s.iconButton,
+    padding: "6px 14px"
+  }} onClick={() => setModal(null)}>Cancel</button>
+              <a href={submitReady ? submitUrl : undefined} target="_blank" rel="noopener noreferrer" onClick={e => {
+    if (!submitReady) e.preventDefault(); else setModal(null);
+  }} style={{
+    ...s.primaryBtn,
+    textDecoration: "none",
+    display: "inline-flex",
+    alignItems: "center",
+    opacity: submitReady ? 1 : 0.4,
+    cursor: submitReady ? "pointer" : "not-allowed"
+  }}>
+                Open submission on GitHub →
+              </a>
+            </div>
+          <p style={{
+    fontSize: 11,
+    opacity: 0.7,
+    marginTop: 10
+  }}>
+            The CTA opens a pre-filled GitHub Issue using the
+            <code> 3-playground-verified-cell.yml</code> template. A
+            maintainer with the listed hardware will review and convert it
+            into a cookbook PR.
+          </p>
+        </dialog>}
+    </div>;
+};
+
+export const benchmarks = [{
+  match: {
+    hw: "h200",
+    variant: "default",
+    quant: "fp8",
+    strategy: "low-latency",
+    nodes: "single"
+  }
+}, {
+  match: {
+    hw: "h200",
+    variant: "default",
+    quant: "fp8",
+    strategy: "balanced",
+    nodes: "single"
+  }
+}, {
+  match: {
+    hw: "h200",
+    variant: "default",
+    quant: "fp8",
+    strategy: "high-throughput",
+    nodes: "single"
+  }
+}, {
+  match: {
+    hw: "b200",
+    variant: "default",
+    quant: "fp8",
+    strategy: "low-latency",
+    nodes: "single"
+  },
+  sglang_version: "main @ 09ca4fc",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1
+    },
+    ttft_ms: 757,
+    tpot_ms: 3.22,
+    tokens_per_sec_per_gpu: 32
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 16
+    },
+    ttft_ms: 3188,
+    tpot_ms: 9.12,
+    tokens_per_sec_per_gpu: 164
+  }]
+}, {
+  match: {
+    hw: "b200",
+    variant: "default",
+    quant: "fp8",
+    strategy: "balanced",
+    nodes: "single"
+  },
+  sglang_version: "main @ 09ca4fc",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 64
+    },
+    ttft_ms: 5742,
+    tpot_ms: 17.65,
+    tokens_per_sec_per_gpu: 342
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 256
+    },
+    ttft_ms: 18744,
+    tpot_ms: 32.61,
+    tokens_per_sec_per_gpu: 558
+  }]
+}, {
+  match: {
+    hw: "b200",
+    variant: "default",
+    quant: "fp8",
+    strategy: "high-throughput",
+    nodes: "single"
+  },
+  sglang_version: "main @ 09ca4fc",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1024
+    },
+    ttft_ms: 177620,
+    tpot_ms: 47.99,
+    tokens_per_sec_per_gpu: 451
+  }]
+}, {
+  match: {
+    hw: "gb300",
+    variant: "default",
+    quant: "fp8",
+    strategy: "low-latency",
+    nodes: "single"
+  },
+  sglang_version: "main @ 09ca4fc",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1
+    },
+    ttft_ms: 374,
+    tpot_ms: 4.55,
+    tokens_per_sec_per_gpu: 51
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 16
+    },
+    ttft_ms: 3719,
+    tpot_ms: 11.5,
+    tokens_per_sec_per_gpu: 264
+  }]
+}, {
+  match: {
+    hw: "gb300",
+    variant: "default",
+    quant: "fp8",
+    strategy: "balanced",
+    nodes: "single"
+  },
+  sglang_version: "main @ 09ca4fc",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 64
+    },
+    ttft_ms: 7429,
+    tpot_ms: 25.21,
+    tokens_per_sec_per_gpu: 493
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 256
+    },
+    ttft_ms: 27488,
+    tpot_ms: 48.43,
+    tokens_per_sec_per_gpu: 756
+  }]
+}, {
+  match: {
+    hw: "gb300",
+    variant: "default",
+    quant: "fp8",
+    strategy: "high-throughput",
+    nodes: "single"
+  },
+  sglang_version: "main @ 09ca4fc",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1024
+    },
+    ttft_ms: 231101,
+    tpot_ms: 86.01,
+    tokens_per_sec_per_gpu: 671
+  }]
+}, {
+  match: {
+    hw: "b300",
+    variant: "default",
+    quant: "fp8",
+    strategy: "low-latency",
+    nodes: "single"
+  }
+}, {
+  match: {
+    hw: "b300",
+    variant: "default",
+    quant: "fp8",
+    strategy: "balanced",
+    nodes: "single"
+  }
+}, {
+  match: {
+    hw: "b300",
+    variant: "default",
+    quant: "fp8",
+    strategy: "high-throughput",
+    nodes: "single"
+  }
+}, {
+  match: {
+    hw: "b300",
+    variant: "default",
+    quant: "bf16",
+    strategy: "low-latency",
+    nodes: "single"
+  }
+}, {
+  match: {
+    hw: "b300",
+    variant: "default",
+    quant: "bf16",
+    strategy: "balanced",
+    nodes: "single"
+  }
+}, {
+  match: {
+    hw: "b300",
+    variant: "default",
+    quant: "bf16",
+    strategy: "high-throughput",
+    nodes: "single"
+  }
+}, {
+  match: {
+    hw: "h200",
+    variant: "default",
+    quant: "bf16",
+    strategy: "low-latency",
+    nodes: "multi-2"
+  }
+}, {
+  match: {
+    hw: "h200",
+    variant: "default",
+    quant: "bf16",
+    strategy: "balanced",
+    nodes: "multi-2"
+  }
+}, {
+  match: {
+    hw: "h200",
+    variant: "default",
+    quant: "bf16",
+    strategy: "high-throughput",
+    nodes: "multi-2"
+  }
+}, {
+  match: {
+    hw: "b200",
+    variant: "default",
+    quant: "bf16",
+    strategy: "low-latency",
+    nodes: "multi-2"
+  }
+}, {
+  match: {
+    hw: "b200",
+    variant: "default",
+    quant: "bf16",
+    strategy: "balanced",
+    nodes: "multi-2"
+  }
+}, {
+  match: {
+    hw: "b200",
+    variant: "default",
+    quant: "bf16",
+    strategy: "high-throughput",
+    nodes: "multi-2"
+  }
+}, {
+  match: {
+    hw: "gb300",
+    variant: "default",
+    quant: "bf16",
+    strategy: "low-latency",
+    nodes: "multi-2"
+  }
+}, {
+  match: {
+    hw: "gb300",
+    variant: "default",
+    quant: "bf16",
+    strategy: "balanced",
+    nodes: "multi-2"
+  }
+}, {
+  match: {
+    hw: "gb300",
+    variant: "default",
+    quant: "bf16",
+    strategy: "high-throughput",
+    nodes: "multi-2"
+  }
+}, {
+  match: {
+    hw: "b200",
+    variant: "default",
+    quant: "nvfp4",
+    strategy: "low-latency",
+    nodes: "single"
+  },
+  sglang_version: "dev-glm52-nvfp4",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1
+    },
+    ttft_ms: 295,
+    tpot_ms: 1.85,
+    tokens_per_sec_per_gpu: 58.6
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 16
+    },
+    ttft_ms: 2491,
+    tpot_ms: 5.43,
+    tokens_per_sec_per_gpu: 254.3
+  }]
+}, {
+  match: {
+    hw: "b200",
+    variant: "default",
+    quant: "nvfp4",
+    strategy: "balanced",
+    nodes: "single"
+  },
+  sglang_version: "dev-glm52-nvfp4",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 64
+    },
+    ttft_ms: 5837,
+    tpot_ms: 12.70,
+    tokens_per_sec_per_gpu: 418.9
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 256
+    },
+    ttft_ms: 16736,
+    tpot_ms: 30.00,
+    tokens_per_sec_per_gpu: 593.7
+  }]
+}, {
+  match: {
+    hw: "b200",
+    variant: "default",
+    quant: "nvfp4",
+    strategy: "high-throughput",
+    nodes: "single"
+  },
+  sglang_version: "dev-glm52-nvfp4",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1024
+    },
+    ttft_ms: 130174,
+    tpot_ms: 67.12,
+    tokens_per_sec_per_gpu: 589.4
+  }]
+}, {
+  match: {
+    hw: "b300",
+    variant: "default",
+    quant: "nvfp4",
+    strategy: "low-latency",
+    nodes: "single"
+  },
+  sglang_version: "dev-glm52-nvfp4",
+  accuracy: {
+    aime25_pct: 89.58
+  },
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1
+    },
+    ttft_ms: 196,
+    tpot_ms: 1.86,
+    tokens_per_sec_per_gpu: 51
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 16
+    },
+    ttft_ms: 274,
+    tpot_ms: 6.95,
+    tokens_per_sec_per_gpu: 224
+  }]
+}, {
+  match: {
+    hw: "b300",
+    variant: "default",
+    quant: "nvfp4",
+    strategy: "balanced",
+    nodes: "single"
+  },
+  sglang_version: "dev-glm52-nvfp4",
+  accuracy: {
+    aime25_pct: 89.58
+  },
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 64
+    },
+    ttft_ms: 680,
+    tpot_ms: 48.9,
+    tokens_per_sec_per_gpu: 153
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 256
+    },
+    ttft_ms: 3010,
+    tpot_ms: 149,
+    tokens_per_sec_per_gpu: 205
+  }]
+}, {
+  match: {
+    hw: "b300",
+    variant: "default",
+    quant: "nvfp4",
+    strategy: "high-throughput",
+    nodes: "single"
+  },
+  sglang_version: "dev-glm52-nvfp4",
+  accuracy: {
+    aime25_pct: 89.58
+  },
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1024
+    },
+    ttft_ms: 6370,
+    tpot_ms: 280,
+    tokens_per_sec_per_gpu: 430
+  }]
+}, {
+  match: {
+    hw: "mi355x",
+    variant: "default",
+    quant: "fp8",
+    strategy: "low-latency",
+    nodes: "single"
+  },
+  sglang_version: "0.5.13.post1",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1
+    },
+    ttft_ms: 634,
+    tpot_ms: 13.56,
+    tokens_per_sec_per_gpu: 9
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 16
+    },
+    ttft_ms: 5411,
+    tpot_ms: 23.60,
+    tokens_per_sec_per_gpu: 69
+  }]
+}, {
+  match: {
+    hw: "mi355x",
+    variant: "default",
+    quant: "fp8",
+    strategy: "balanced",
+    nodes: "single"
+  },
+  sglang_version: "0.5.13.post1",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 64
+    },
+    ttft_ms: 19526,
+    tpot_ms: 46.50,
+    tokens_per_sec_per_gpu: 122
+  }, {
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 256
+    },
+    ttft_ms: 117866,
+    tpot_ms: 56.12,
+    tokens_per_sec_per_gpu: 116
+  }]
+}, {
+  match: {
+    hw: "mi355x",
+    variant: "default",
+    quant: "fp8",
+    strategy: "high-throughput",
+    nodes: "single"
+  },
+  sglang_version: "0.5.13.post1",
+  speed: [{
+    workload: {
+      dataset: "random",
+      isl: 8192,
+      osl: 1024,
+      max_concurrency: 1024
+    },
+    ttft_ms: 432058,
+    tpot_ms: 106.44,
+    tokens_per_sec_per_gpu: 141
+  }]
+}];
+
+export const config = {
+  modelName: "GLM-5.2",
+  supportedHardware: ["h200", "b200", "gb300", "b300", "mi355x", "mi325x", "mi300x"],
+  variants: [{
+    id: "default",
+    label: "GLM-5.2",
+    subtitle: "MoE · DSA"
+  }],
+  quantizations: [{
+    id: "fp8",
+    label: "FP8"
+  }, {
+    id: "bf16",
+    label: "BF16"
+  }, {
+    id: "nvfp4",
+    label: "NVFP4"
+  }],
+  strategies: [{
+    id: "low-latency",
+    label: "Low-Latency"
+  }, {
+    id: "balanced",
+    label: "Balanced"
+  }, {
+    id: "high-throughput",
+    label: "High-Throughput"
+  }],
+  nodesOptions: [{
+    id: "single",
+    label: "Single Node"
+  }, {
+    id: "multi-2",
+    label: "Multi-Nodes"
+  }],
+  modelNames: {
+    "default|fp8": "zai-org/GLM-5.2-FP8",
+    "default|bf16": "zai-org/GLM-5.2",
+    "default|nvfp4": "nvidia/GLM-5.2-NVFP4"
+  },
+  placeholders: {
+    HOST_IP: {
+      target: "command",
+      label: "Bind host",
+      default: "0.0.0.0"
+    },
+    PORT: {
+      target: "command",
+      label: "Bind port",
+      default: "30000"
+    },
+    NODE0_IP: {
+      target: "command",
+      label: "Head node IP",
+      default: "<node0-ip>"
+    },
+    NODE_RANK: {
+      target: "command",
+      label: "This node rank",
+      default: "<node-rank>"
+    },
+    CURL_HOST: {
+      target: "curl",
+      label: "Server host",
+      default: "localhost"
+    },
+    CURL_PORT: {
+      target: "curl",
+      label: "Server port",
+      default: "30000"
+    }
+  },
+  curl: `curl http://{{CURL_HOST}}:{{CURL_PORT}}/v1/chat/completions \\
+-H 'Content-Type: application/json' \\
+-d '{ "model": "{{MODEL_NAME}}", "messages": [{"role":"user","content":"Hello"}] }'`,
+  benchmarkCommands: {
+    speed: `python3 -m sglang.bench_serving \\
+  --backend sglang \\
+  --host {{CURL_HOST}} --port {{CURL_PORT}} \\
+  --model {{MODEL_NAME}} \\
+  --dataset-name {{DATASET}} \\
+  --random-input-len {{ISL}} --random-output-len {{OSL}} \\
+  --random-range-ratio 1.0 \\
+  --num-prompts {{NUM_PROMPTS}} --max-concurrency {{MAX_CONCURRENCY}} \\
+  --warmup-requests 64 --flush-cache`,
+    accuracy: {
+      gsm8k_pct: `# To install sgl-eval: pip install git+https://github.com/sgl-project/sgl-eval
+sgl-eval run gsm8k \\
+  --base-url http://{{CURL_HOST}}:{{CURL_PORT}}/v1 \\
+  --num-threads 32`,
+      aime25_pct: `# To install sgl-eval: pip install git+https://github.com/sgl-project/sgl-eval
+sgl-eval run aime25 \\
+  --model {{MODEL_NAME}} --api-key <api-key> \\
+  --n-repeats 16 --max-tokens 64000 \\
+  --temperature 1.0 --top-p 0.95 --thinking \\
+  --out-dir /sgl-workspace/logs \\
+  --base-url http://{{CURL_HOST}}:{{CURL_PORT}}/v1`
+    },
+    numPromptsByConc: {
+      1: 8,
+      16: 64,
+      64: 128,
+      256: 512,
+      1024: 2048,
+      4096: 8192
+    }
+  },
+  defaultAccuracy: {
+    default: {
+      gsm8k_pct: 98.2,
+      aime25_pct: 87.7
+    }
+  },
+  accuracyLabels: [["aime25_pct", "AIME25", "%"], ["gsm8k_pct", "GSM8K (1-shot)", "%"]],
+  dockerImages: {
+    h200: "lmsysorg/sglang:latest",
+    b200: "lmsysorg/sglang:latest",
+    gb300: "lmsysorg/sglang:latest",
+    b300: "lmsysorg/sglang:latest",
+    mi355x: "lmsysorg/sglang-rocm:v0.5.13.post1-rocm720-mi35x-20260618",
+    mi325x: "lmsysorg/sglang-rocm:v0.5.13.post1-rocm700-mi30x-20260616",
+    mi300x: "lmsysorg/sglang-rocm:v0.5.13.post1-rocm700-mi30x-20260616",
+    "b200|nvfp4": "lmsysorg/sglang:dev-glm52-nvfp4",
+    "b300|nvfp4": "lmsysorg/sglang:dev-glm52-nvfp4",
+    "gb300|nvfp4": "lmsysorg/sglang:dev-glm52-nvfp4"
+  },
+  github: {
+    cookbookModel: "zai-org/glm-5.2"
+  },
+  playgroundFeatures: {
+    attention: {
+      knobs: [{
+        id: "tp",
+        label: "TP",
+        values: [null, 4, 8]
+      }, {
+        id: "cp",
+        label: "CP (DSA prefill)",
+        values: [null, 1, 2, 4, 8],
+        disable: {
+          hw: ["b200", "gb300", "b300", "mi355x", "mi325x", "mi300x"]
+        },
+        disableReason: "DSA prefill Context Parallel is verified on Hopper (H200); the Blackwell sm100 DSA-CP FP8 rope kernel is not yet adapted, and the ROCm DSA-CP path is not yet validated on AMD (MI300X/MI325X/MI355X)."
+      }, {
+        id: "dpAttn",
+        label: "DP-Attention",
+        values: [null, false, 4, 8],
+        labels: {
+          "auto": "Auto",
+          "false": "Off"
+        }
+      }]
+    },
+    moe: {
+      backend: {
+        options: [{
+          id: null,
+          label: "Inherited"
+        }, {
+          id: "deepep",
+          label: "DeepEP",
+          flags: ["--moe-a2a-backend deepep"]
+        }]
+      },
+      ep: {
+        label: "EP",
+        values: [null, 4, 8]
+      }
+    },
+    parsers: {
+      items: [{
+        id: "reasoning",
+        label: "Reasoning Parser",
+        flag: "--reasoning-parser glm45"
+      }, {
+        id: "toolCall",
+        label: "Tool Call Parser",
+        flag: "--tool-call-parser glm47"
+      }]
+    },
+    speculative: {
+      options: [{
+        id: "current",
+        label: "Inherited from base"
+      }, {
+        id: "off",
+        label: "Off (greedy)"
+      }, {
+        id: "mtp-516",
+        label: "EAGLE / MTP 5-1-6 (low-latency)",
+        flags: ["--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6"],
+        disable: {
+          hw: ["mi355x", "mi325x", "mi300x"]
+        },
+        disableReason: "MTP/EAGLE speculative decoding is not yet validated on AMD ROCm (MI300X/MI325X/MI355X): the gfx950 spec-decode draft kernel is not yet validated and at --speculative-num-steps > 3 hits a separate build issue; the DSA nextn draft path is CUDA-only."
+      }, {
+        id: "mtp-112",
+        label: "EAGLE / MTP 1-1-2 (balanced)",
+        flags: ["--speculative-algorithm EAGLE", "--speculative-num-steps 1", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 2"],
+        disable: {
+          hw: ["mi355x", "mi325x", "mi300x"]
+        },
+        disableReason: "MTP/EAGLE speculative decoding is not yet validated on AMD ROCm (MI300X/MI325X/MI355X): the gfx950 spec-decode draft kernel is not yet validated and at --speculative-num-steps > 3 hits a separate build issue; the DSA nextn draft path is CUDA-only."
+      }]
+    },
+    pdDisagg: {
+      modes: [{
+        id: "off",
+        label: "Off"
+      }, {
+        id: "prefill",
+        label: "Prefill role"
+      }, {
+        id: "decode",
+        label: "Decode role"
+      }],
+      transferBackends: [{
+        id: "mooncake",
+        label: "Mooncake",
+        env: ["NCCL_MNNVL_ENABLE=1", "NCCL_CUMEM_ENABLE=1", "SGLANG_MOONCAKE_CUSTOM_MEM_POOL=True", "MC_FORCE_MNNVL=1"],
+        envWhen: {
+          hw: ["gb300"]
+        }
+      }, {
+        id: "nixl",
+        label: "NiXL"
+      }],
+      router: {
+        port: 8000,
+        command: `python3 -m sglang_router.launch_router \\
+  --pd-disaggregation \\
+  --prefill http://<prefill-host>:{{PREFILL_PORT}} \\
+  --decode http://<decode-host>:{{DECODE_PORT}} \\
+  --host 0.0.0.0 --port {{ROUTER_PORT}} \\
+  --disable-circuit-breaker \\
+  --health-check-interval-secs 999999`
+      }
+    },
+    hicache: {
+      backends: [{
+        id: null,
+        label: "Auto"
+      }, {
+        id: "file",
+        label: "File"
+      }, {
+        id: "mooncake",
+        label: "Mooncake"
+      }],
+      writePolicies: [{
+        id: "auto",
+        label: "Auto"
+      }, {
+        id: "write_through",
+        label: "Write-through"
+      }, {
+        id: "write_back",
+        label: "Write-back"
+      }]
+    }
+  },
+  cells: [{
+    match: {
+      hw: "h200",
+      variant: "default",
+      quant: "fp8",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--mem-fraction-static 0.8", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "h200",
+      variant: "default",
+      quant: "fp8",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dp 8", "--enable-dp-attention", "--moe-a2a-backend deepep", "--speculative-algorithm EAGLE", "--speculative-num-steps 1", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 2", "--mem-fraction-static 0.85", "--chunked-prefill-size 32768", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "h200",
+      variant: "default",
+      quant: "fp8",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dp 8", "--enable-dp-attention", "--moe-a2a-backend deepep", "--mem-fraction-static 0.85", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b200",
+      variant: "default",
+      quant: "fp8",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--mem-fraction-static 0.8", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b200",
+      variant: "default",
+      quant: "fp8",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dp 8", "--enable-dp-attention", "--moe-a2a-backend deepep", "--speculative-algorithm EAGLE", "--speculative-num-steps 1", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 2", "--mem-fraction-static 0.85", "--chunked-prefill-size 32768", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b200",
+      variant: "default",
+      quant: "fp8",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dp 8", "--enable-dp-attention", "--moe-a2a-backend deepep", "--mem-fraction-static 0.85", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "gb300",
+      variant: "default",
+      quant: "fp8",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 4", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "gb300",
+      variant: "default",
+      quant: "fp8",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 4", "--dp 4", "--enable-dp-attention", "--moe-a2a-backend deepep", "--speculative-algorithm EAGLE", "--speculative-num-steps 1", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 2", "--mem-fraction-static 0.85", "--chunked-prefill-size 32768", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "gb300",
+      variant: "default",
+      quant: "fp8",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: true,
+    env: ["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=512"],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 4", "--dp 4", "--enable-dp-attention", "--moe-a2a-backend deepep", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b300",
+      variant: "default",
+      quant: "fp8",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--mem-fraction-static 0.8", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b300",
+      variant: "default",
+      quant: "fp8",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dp 8", "--enable-dp-attention", "--moe-a2a-backend deepep", "--speculative-algorithm EAGLE", "--speculative-num-steps 1", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 2", "--mem-fraction-static 0.85", "--chunked-prefill-size 32768", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b300",
+      variant: "default",
+      quant: "fp8",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dp 8", "--enable-dp-attention", "--moe-a2a-backend deepep", "--mem-fraction-static 0.85", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b300",
+      variant: "default",
+      quant: "bf16",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--mem-fraction-static 0.9", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b300",
+      variant: "default",
+      quant: "bf16",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--speculative-algorithm EAGLE", "--speculative-num-steps 1", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 2", "--mem-fraction-static 0.9", "--chunked-prefill-size 32768", "--max-running-requests 80", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b300",
+      variant: "default",
+      quant: "bf16",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--mem-fraction-static 0.9", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "h200",
+      variant: "default",
+      quant: "bf16",
+      strategy: "low-latency",
+      nodes: "multi-2"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 16", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "h200",
+      variant: "default",
+      quant: "bf16",
+      strategy: "balanced",
+      nodes: "multi-2"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 16", "--speculative-algorithm EAGLE", "--speculative-num-steps 1", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 2", "--mem-fraction-static 0.85", "--chunked-prefill-size 32768", "--max-running-requests 80", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "h200",
+      variant: "default",
+      quant: "bf16",
+      strategy: "high-throughput",
+      nodes: "multi-2"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 16", "--mem-fraction-static 0.85", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b200",
+      variant: "default",
+      quant: "bf16",
+      strategy: "low-latency",
+      nodes: "multi-2"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 16", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b200",
+      variant: "default",
+      quant: "bf16",
+      strategy: "balanced",
+      nodes: "multi-2"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 16", "--speculative-algorithm EAGLE", "--speculative-num-steps 1", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 2", "--mem-fraction-static 0.85", "--chunked-prefill-size 32768", "--max-running-requests 80", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b200",
+      variant: "default",
+      quant: "bf16",
+      strategy: "high-throughput",
+      nodes: "multi-2"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 16", "--mem-fraction-static 0.85", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "gb300",
+      variant: "default",
+      quant: "bf16",
+      strategy: "low-latency",
+      nodes: "multi-2"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "gb300",
+      variant: "default",
+      quant: "bf16",
+      strategy: "balanced",
+      nodes: "multi-2"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--speculative-algorithm EAGLE", "--speculative-num-steps 1", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 2", "--mem-fraction-static 0.85", "--chunked-prefill-size 32768", "--max-running-requests 80", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "gb300",
+      variant: "default",
+      quant: "bf16",
+      strategy: "high-throughput",
+      nodes: "multi-2"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--mem-fraction-static 0.85", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b200",
+      variant: "default",
+      quant: "nvfp4",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--quantization modelopt_fp4", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--chunked-prefill-size 8192", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b200",
+      variant: "default",
+      quant: "nvfp4",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--quantization modelopt_fp4", "--dp 8", "--enable-dp-attention", "--speculative-algorithm EAGLE", "--speculative-num-steps 2", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 3", "--chunked-prefill-size 32768", "--mem-fraction-static 0.92", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b200",
+      variant: "default",
+      quant: "nvfp4",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--quantization modelopt_fp4", "--dp 8", "--enable-dp-attention", "--chunked-prefill-size 32768", "--mem-fraction-static 0.92", "--max-running-requests 512", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b300",
+      variant: "default",
+      quant: "nvfp4",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--quantization modelopt_fp4", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--chunked-prefill-size 8192", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b300",
+      variant: "default",
+      quant: "nvfp4",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dp 8", "--enable-dp-attention", "--quantization modelopt_fp4", "--speculative-algorithm EAGLE", "--speculative-num-steps 2", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 3", "--speculative-attention-mode decode", "--max-running-requests 256", "--chunked-prefill-size 8192", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "b300",
+      variant: "default",
+      quant: "nvfp4",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dp 8", "--enable-dp-attention", "--quantization modelopt_fp4", "--max-running-requests 1024", "--chunked-prefill-size 8192", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "gb300",
+      variant: "default",
+      quant: "nvfp4",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 4", "--quantization modelopt_fp4", "--speculative-algorithm EAGLE", "--speculative-num-steps 5", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 6", "--chunked-prefill-size 8192", "--mem-fraction-static 0.85", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "gb300",
+      variant: "default",
+      quant: "nvfp4",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 4", "--quantization modelopt_fp4", "--dp 4", "--enable-dp-attention", "--speculative-algorithm EAGLE", "--speculative-num-steps 2", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 3", "--chunked-prefill-size 8192", "--mem-fraction-static 0.92", "--max-running-requests 256", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "gb300",
+      variant: "default",
+      quant: "nvfp4",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 4", "--quantization modelopt_fp4", "--dp 4", "--enable-dp-attention", "--chunked-prefill-size 8192", "--mem-fraction-static 0.92", "--max-running-requests 512", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi355x",
+      variant: "default",
+      quant: "fp8",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 131072", "--mem-fraction-static 0.80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi355x",
+      variant: "default",
+      quant: "fp8",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 32768", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 128", "--max-running-requests 80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi355x",
+      variant: "default",
+      quant: "fp8",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: true,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 256", "--max-running-requests 256", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi355x",
+      variant: "default",
+      quant: "bf16",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 131072", "--mem-fraction-static 0.80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi355x",
+      variant: "default",
+      quant: "bf16",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 32768", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 128", "--max-running-requests 80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi355x",
+      variant: "default",
+      quant: "bf16",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 256", "--max-running-requests 256", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi325x",
+      variant: "default",
+      quant: "fp8",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 131072", "--mem-fraction-static 0.80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi325x",
+      variant: "default",
+      quant: "fp8",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 32768", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 128", "--max-running-requests 80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi325x",
+      variant: "default",
+      quant: "fp8",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 256", "--max-running-requests 256", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi325x",
+      variant: "default",
+      quant: "bf16",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 131072", "--mem-fraction-static 0.80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi325x",
+      variant: "default",
+      quant: "bf16",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 32768", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 128", "--max-running-requests 80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi325x",
+      variant: "default",
+      quant: "bf16",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 256", "--max-running-requests 256", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi300x",
+      variant: "default",
+      quant: "fp8",
+      strategy: "low-latency",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 131072", "--mem-fraction-static 0.80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi300x",
+      variant: "default",
+      quant: "fp8",
+      strategy: "balanced",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--chunked-prefill-size 32768", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 128", "--max-running-requests 80", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }, {
+    match: {
+      hw: "mi300x",
+      variant: "default",
+      quant: "fp8",
+      strategy: "high-throughput",
+      nodes: "single"
+    },
+    verified: false,
+    env: [],
+    flags: ["--model-path {{MODEL_NAME}}", "--tp 8", "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--mem-fraction-static 0.85", "--cuda-graph-max-bs 256", "--max-running-requests 256", "--watchdog-timeout 1200", "--host {{HOST_IP}}", "--port {{PORT}}"]
+  }]
+};
+
+export const Deployment = ({config, benchmarks}) => {
+  if (!config) {
+    return <div style={{
+      padding: 12,
+      color: "#b91c1c"
+    }}>Deployment: missing <code>config</code> prop</div>;
+  }
+  const HARDWARE_CATALOG = {
+    nvidia: [{
+      id: "h100",
+      label: "H100",
+      vram: "80GB"
+    }, {
+      id: "h200",
+      label: "H200",
+      vram: "141GB"
+    }, {
+      id: "b200",
+      label: "B200",
+      vram: "192GB"
+    }, {
+      id: "b300",
+      label: "B300",
+      vram: "288GB"
+    }, {
+      id: "gb200",
+      label: "GB200",
+      vram: "192GB"
+    }, {
+      id: "gb300",
+      label: "GB300",
+      vram: "288GB"
+    }],
+    amd: [{
+      id: "mi300x",
+      label: "MI300X",
+      vram: "192GB"
+    }, {
+      id: "mi325x",
+      label: "MI325X",
+      vram: "256GB"
+    }, {
+      id: "mi350x",
+      label: "MI350X",
+      vram: "288GB"
+    }, {
+      id: "mi355x",
+      label: "MI355X",
+      vram: "288GB"
+    }]
+  };
+  const makeStyles = isDark => ({
+    container: {
+      maxWidth: "900px",
+      margin: "0 auto",
+      display: "flex",
+      flexDirection: "column",
+      gap: "3px"
+    },
+    card: {
+      padding: "5px 10px",
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      borderLeft: `3px solid ${isDark ? "#E85D4D" : "#D45D44"}`,
+      borderRadius: "4px",
+      display: "flex",
+      alignItems: "center",
+      gap: "10px",
+      background: isDark ? "#1f2937" : "#fff"
+    },
+    cardColumn: {
+      padding: "5px 10px",
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      borderLeft: `3px solid ${isDark ? "#E85D4D" : "#D45D44"}`,
+      borderRadius: "4px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "4px",
+      background: isDark ? "#1f2937" : "#fff"
+    },
+    title: {
+      fontSize: "12px",
+      fontWeight: "600",
+      minWidth: "108px",
+      flexShrink: 0,
+      color: isDark ? "#e5e7eb" : "inherit"
+    },
+    vendorRow: {
+      display: "flex",
+      alignItems: "center",
+      gap: "6px"
+    },
+    vendorLabel: {
+      fontSize: "10px",
+      fontWeight: "600",
+      color: isDark ? "#9ca3af" : "#6b7280",
+      minWidth: "38px",
+      textTransform: "uppercase",
+      letterSpacing: "0.04em"
+    },
+    itemsGrid: () => ({
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(72px, 1fr))",
+      gap: "4px",
+      flex: 1
+    }),
+    labelBase: {
+      padding: "2px 8px",
+      border: `1px solid ${isDark ? "#9ca3af" : "#d1d5db"}`,
+      borderRadius: "3px",
+      cursor: "pointer",
+      display: "inline-flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      fontWeight: "500",
+      fontSize: "12px",
+      transition: "all 0.2s",
+      userSelect: "none",
+      minHeight: "26px",
+      textAlign: "center",
+      background: isDark ? "#374151" : "#fff",
+      color: isDark ? "#e5e7eb" : "inherit"
+    },
+    checked: {
+      background: "#D45D44",
+      color: "white",
+      borderColor: "#D45D44"
+    },
+    disabled: {
+      cursor: "not-allowed",
+      opacity: 0.4
+    },
+    subtitle: {
+      display: "block",
+      fontSize: "9px",
+      marginTop: "1px",
+      lineHeight: "1.1",
+      opacity: 0.7
+    },
+    commandWrap: {
+      position: "relative",
+      flex: 1,
+      background: isDark ? "#111827" : "#f5f5f5",
+      borderRadius: "6px",
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      overflow: "hidden"
+    },
+    commandHeader: {
+      display: "flex",
+      flexWrap: "wrap",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: "6px 10px",
+      padding: "6px 10px",
+      borderBottom: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      background: isDark ? "#1f2937" : "#fafafa"
+    },
+    commandPre: {
+      padding: "12px 16px",
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+      fontSize: "12px",
+      lineHeight: "1.5",
+      color: isDark ? "#e5e7eb" : "#374151",
+      whiteSpace: "pre-wrap",
+      overflowX: "auto",
+      margin: 0
+    },
+    mtpWarn: {
+      margin: "8px 0 0",
+      padding: "8px 12px",
+      borderRadius: "8px",
+      fontSize: "12px",
+      lineHeight: "1.45",
+      background: isDark ? "#78350f" : "#fef3c7",
+      color: isDark ? "#fde68a" : "#92400e",
+      border: `1px solid ${isDark ? "#92400e" : "#fcd34d"}`
+    },
+    badge: verified => ({
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "6px",
+      padding: "2px 8px",
+      borderRadius: "10px",
+      background: verified ? isDark ? "#064e3b" : "#d1fae5" : isDark ? "#78350f" : "#fef3c7",
+      color: verified ? isDark ? "#a7f3d0" : "#065f46" : isDark ? "#fde68a" : "#92400e",
+      fontSize: "11px",
+      fontWeight: 600
+    }),
+    badgeDot: verified => ({
+      width: "8px",
+      height: "8px",
+      borderRadius: "50%",
+      background: verified ? "#10b981" : "#f59e0b"
+    }),
+    iconButton: {
+      padding: "4px 10px",
+      border: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`,
+      borderRadius: "4px",
+      background: isDark ? "#1f2937" : "#fff",
+      color: isDark ? "#e5e7eb" : "#374151",
+      fontSize: "11px",
+      fontWeight: 500,
+      cursor: "pointer",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "4px"
+    },
+    iconRow: {
+      display: "inline-flex",
+      flexWrap: "wrap",
+      gap: "6px"
+    },
+    runModeWrap: {
+      display: "inline-flex",
+      border: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`,
+      borderRadius: "10px",
+      overflow: "hidden",
+      fontSize: "11px",
+      fontWeight: 600,
+      userSelect: "none"
+    },
+    runModeChip: active => ({
+      padding: "2px 10px",
+      cursor: "pointer",
+      background: active ? isDark ? "#1f2937" : "#fff" : "transparent",
+      color: active ? isDark ? "#e5e7eb" : "#111827" : isDark ? "#9ca3af" : "#6b7280",
+      borderRight: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`
+    }),
+    runModeChipLast: active => ({
+      padding: "2px 10px",
+      cursor: "pointer",
+      background: active ? isDark ? "#1f2937" : "#fff" : "transparent",
+      color: active ? isDark ? "#e5e7eb" : "#111827" : isDark ? "#9ca3af" : "#6b7280"
+    }),
+    headerLeft: {
+      display: "inline-flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: "8px"
+    },
+    modalBackdrop: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.5)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 9999
+    },
+    modalBox: {
+      background: isDark ? "#1f2937" : "#fff",
+      color: isDark ? "#e5e7eb" : "#111827",
+      borderRadius: "8px",
+      padding: "20px",
+      maxWidth: "720px",
+      width: "92%",
+      maxHeight: "85vh",
+      overflowY: "auto",
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      boxShadow: "0 10px 25px rgba(0,0,0,0.25)"
+    },
+    modalHeader: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: "12px"
+    },
+    modalTitle: {
+      fontSize: "15px",
+      fontWeight: 600
+    },
+    modalCloseBtn: {
+      background: "transparent",
+      border: "none",
+      color: "inherit",
+      fontSize: "20px",
+      cursor: "pointer",
+      padding: "0 6px",
+      lineHeight: 1
+    },
+    formField: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "4px",
+      marginBottom: "10px"
+    },
+    formLabel: {
+      fontSize: "12px",
+      fontWeight: 500,
+      color: isDark ? "#9ca3af" : "#4b5563"
+    },
+    formInput: {
+      padding: "6px 10px",
+      fontSize: "13px",
+      border: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`,
+      borderRadius: "4px",
+      background: isDark ? "#111827" : "#fff",
+      color: isDark ? "#e5e7eb" : "#111827",
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace"
+    },
+    sectionHeading: {
+      fontSize: "12px",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.04em",
+      color: isDark ? "#9ca3af" : "#6b7280",
+      margin: "12px 0 6px 0"
+    },
+    primaryBtn: {
+      padding: "6px 14px",
+      background: "#D45D44",
+      color: "white",
+      border: "none",
+      borderRadius: "4px",
+      cursor: "pointer",
+      fontSize: "13px",
+      fontWeight: 500
+    },
+    benchCard: {
+      padding: "8px 12px",
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      borderLeft: `3px solid ${isDark ? "#E85D4D" : "#D45D44"}`,
+      borderRadius: "4px",
+      background: isDark ? "#1f2937" : "#fff",
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px"
+    },
+    benchHeader: {
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "baseline",
+      justifyContent: "space-between",
+      gap: "6px 12px"
+    },
+    benchTitle: {
+      fontSize: "13px",
+      fontWeight: 600,
+      color: isDark ? "#e5e7eb" : "inherit"
+    },
+    benchVersion: {
+      fontSize: "11px",
+      color: isDark ? "#9ca3af" : "#6b7280"
+    },
+    benchHeaderRight: {
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: "6px 10px",
+      flexShrink: 0
+    },
+    benchChipRow: {
+      display: "flex",
+      alignItems: "center",
+      gap: "6px",
+      flexWrap: "wrap",
+      margin: "2px 0 8px"
+    },
+    benchChip: {
+      padding: "2px 10px",
+      fontSize: "12px",
+      cursor: "pointer",
+      border: `1px solid ${isDark ? "#4b5563" : "#d1d5db"}`,
+      borderRadius: "4px",
+      background: isDark ? "#1f2937" : "#fff",
+      color: isDark ? "#e5e7eb" : "#374151",
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace"
+    },
+    benchChipActive: {
+      background: "#D45D44",
+      color: "white",
+      borderColor: "#D45D44"
+    },
+    benchBlock: {
+      border: `1px solid ${isDark ? "#374151" : "#e5e7eb"}`,
+      borderRadius: "4px",
+      padding: "8px 10px",
+      background: isDark ? "#111827" : "#fafafa"
+    },
+    benchBlockTitle: {
+      fontSize: "11px",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.04em",
+      color: isDark ? "#9ca3af" : "#6b7280",
+      marginBottom: "4px"
+    },
+    benchWorkload: {
+      fontSize: "11px",
+      fontStyle: "italic",
+      color: isDark ? "#9ca3af" : "#6b7280",
+      marginBottom: "6px",
+      lineHeight: "1.3"
+    },
+    benchRow: {
+      display: "flex",
+      justifyContent: "space-between",
+      fontSize: "12px",
+      padding: "2px 0"
+    },
+    benchKey: {
+      color: isDark ? "#9ca3af" : "#6b7280"
+    },
+    benchVal: {
+      color: isDark ? "#e5e7eb" : "#111827",
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+      fontWeight: 500
+    },
+    benchNotes: {
+      fontSize: "11px",
+      fontStyle: "italic",
+      color: isDark ? "#9ca3af" : "#6b7280"
+    },
+    benchLegend: {
+      fontSize: "10px",
+      fontStyle: "italic",
+      color: isDark ? "#6b7280" : "#9ca3af",
+      marginTop: "6px",
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace"
+    },
+    benchEmpty: {
+      fontSize: "12px",
+      fontStyle: "italic",
+      color: isDark ? "#9ca3af" : "#6b7280"
+    },
+    benchTable: {
+      display: "grid",
+      columnGap: 0,
+      rowGap: "3px",
+      marginTop: "4px",
+      alignItems: "baseline"
+    },
+    benchTableHead: {
+      textAlign: "right",
+      fontWeight: 500,
+      fontSize: "11px",
+      color: isDark ? "#9ca3af" : "#6b7280",
+      paddingLeft: "16px",
+      paddingBottom: "4px",
+      whiteSpace: "nowrap"
+    },
+    benchTableCornerHead: {
+      paddingBottom: "4px"
+    },
+    benchTableSeparator: {
+      gridColumn: "1 / -1",
+      height: "1px",
+      background: isDark ? "#374151" : "#e5e7eb",
+      marginTop: "-3px"
+    },
+    benchTableLabel: {
+      textAlign: "left",
+      fontSize: "12px",
+      color: isDark ? "#9ca3af" : "#6b7280",
+      whiteSpace: "nowrap"
+    },
+    benchTableValue: {
+      textAlign: "right",
+      fontSize: "12px",
+      color: isDark ? "#e5e7eb" : "#111827",
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+      fontWeight: 500,
+      paddingLeft: "16px",
+      whiteSpace: "nowrap"
+    },
+    benchTableValueMissing: {
+      color: isDark ? "#6b7280" : "#9ca3af"
+    }
+  });
+  const DIMENSIONS = ["hw", "variant", "quant", "strategy", "nodes"];
+  const findCell = (cells, sel) => cells.find(c => DIMENSIONS.every(d => c.match[d] === sel[d]));
+  const findBenchmark = (list, sel) => (list || []).find(b => DIMENSIONS.every(d => b.match[d] === sel[d])) || null;
+  const normalizeSpeed = speed => {
+    if (!speed) return [];
+    return Array.isArray(speed) ? speed : [speed];
+  };
+  const effectiveAccuracy = (entry, sel) => entry ? {
+    ...config.defaultAccuracy && config.defaultAccuracy[sel.variant] || ({}),
+    ...entry.accuracy || ({})
+  } : {};
+  const benchmarkIsEmpty = (entry, accuracy) => {
+    for (const m of normalizeSpeed(entry && entry.speed)) {
+      if (m && typeof m === "object") {
+        for (const [key, v] of Object.entries(m)) {
+          if (key === "workload") continue;
+          if (v !== null && v !== undefined) return false;
+        }
+      }
+    }
+    if (accuracy && typeof accuracy === "object") {
+      for (const v of Object.values(accuracy)) {
+        if (v !== null && v !== undefined) return false;
+      }
+    }
+    return true;
+  };
+  const isOptionAvailable = (cells, sel, dim, value) => {
+    const idx = DIMENSIONS.indexOf(dim);
+    const higher = DIMENSIONS.slice(0, idx);
+    return cells.some(c => c.match[dim] === value && higher.every(d => c.match[d] === sel[d]));
+  };
+  const snapToValidCell = (cells, sel, dim, value) => {
+    const idx = DIMENSIONS.indexOf(dim);
+    const higher = DIMENSIONS.slice(0, idx);
+    const lower = DIMENSIONS.slice(idx + 1);
+    let best = null, bestLowerMatches = -1;
+    for (const c of cells) {
+      if (c.match[dim] !== value) continue;
+      if (!higher.every(d => c.match[d] === sel[d])) continue;
+      let s = 0;
+      for (const d of lower) if (c.match[d] === sel[d]) s++;
+      if (s > bestLowerMatches) {
+        bestLowerMatches = s;
+        best = c;
+      }
+    }
+    if (!best) return sel;
+    const next = {
+      ...sel,
+      [dim]: value
+    };
+    for (const d of lower) next[d] = best.match[d];
+    return next;
+  };
+  const validateSelection = (cells, parsed) => {
+    const valid = {};
+    for (const dim of DIMENSIONS) {
+      const want = parsed[dim];
+      const works = cells.some(c => c.match[dim] === want && DIMENSIONS.slice(0, DIMENSIONS.indexOf(dim)).every(d => c.match[d] === valid[d]));
+      if (works) {
+        valid[dim] = want;
+      } else {
+        const fallback = cells.find(c => DIMENSIONS.slice(0, DIMENSIONS.indexOf(dim)).every(d => c.match[d] === valid[d]));
+        valid[dim] = fallback ? fallback.match[dim] : want;
+      }
+    }
+    return valid;
+  };
+  const resolveModelName = sel => {
+    const triple = `${sel.hw}|${sel.variant}|${sel.quant}`;
+    const pair = `${sel.variant}|${sel.quant}`;
+    return (config.modelNames[triple] ?? config.modelNames[pair]) ?? "";
+  };
+  const interpolate = (text, env, modelName) => text.replace(/{{(\w+)}}/g, (_, key) => key === "MODEL_NAME" ? modelName : env[key] ?? `{{${key}}}`);
+  const parseNnodes = id => {
+    if (id === "single") return 1;
+    const m = (/^multi-(\d+)$/).exec(id);
+    return m ? parseInt(m[1], 10) : 1;
+  };
+  const renderCommand = (cell, sel, envValues, mode = "python") => {
+    if (!cell) return "# No command available for the current selection.";
+    const modelName = resolveModelName(sel);
+    const nnodes = parseNnodes(sel.nodes);
+    const multinode = nnodes > 1;
+    const cellEnv = cell.env || [];
+    const flags = [...cell.flags || []];
+    if (multinode) {
+      const PARALLELISM_ANCHORS = ["--enable-dp-attention", "--dp", "--tp"];
+      let i = -1;
+      for (const anchor of PARALLELISM_ANCHORS) {
+        i = flags.findIndex(f => f.split(/[\s=]/)[0] === anchor);
+        if (i !== -1) break;
+      }
+      if (i === -1) i = flags.findIndex(f => f.startsWith("--model-path"));
+      flags.splice(i + 1, 0, `--nnodes ${nnodes}`, `--node-rank {{NODE_RANK}}`, `--dist-init-addr {{NODE0_IP}}:20000`);
+    }
+    let cmd;
+    if (mode === "docker") {
+      const di = config.dockerImages || ({});
+      const image = di[`${sel.hw}|${sel.quant}`] || di[sel.hw] || "lmsysorg/sglang:dev";
+      const portFlag = flags.find(x => x.split(/[\s=]/)[0] === "--port");
+      const servePort = portFlag ? portFlag.slice(("--port").length).trim() : "{{PORT}}";
+      const vendorOf = hwId => {
+        for (const [vendor, list] of Object.entries(HARDWARE_CATALOG)) {
+          if (list.some(h => h.id === hwId)) return vendor;
+        }
+        const extra = (config.hardware || []).find(h => h.id === hwId);
+        return extra && extra.vendor || "nvidia";
+      };
+      const gpuAccessLines = vendorOf(sel.hw) === "amd" ? ["docker run", "  --device=/dev/kfd --device=/dev/dri", "  --group-add video", "  --cap-add=SYS_PTRACE --security-opt seccomp=unconfined", "  --shm-size 32g"] : ["docker run --gpus all", "  --shm-size 32g"];
+      const dockerLines = [...gpuAccessLines, multinode ? "  --network host" : `  -p ${servePort}:${servePort}`, "  -v ~/.cache/huggingface:/root/.cache/huggingface", ...config.placeholders && config.placeholders.HF_TOKEN ? [`  --env "HF_TOKEN={{HF_TOKEN}}"`] : [], ...cellEnv.map(e => `  --env ${e}`), "  --ipc=host", `  ${image}`, "  sglang serve", ...flags.map(f => "    " + f)];
+      cmd = dockerLines.join(" \\\n");
+    } else {
+      const flagBlock = flags.map(f => "  " + f).join(" \\\n");
+      const envBlock = cellEnv.length ? cellEnv.join(" \\\n") + " \\\n" : "";
+      cmd = `${envBlock}sglang serve \\\n${flagBlock}`;
+    }
+    if (multinode && config.multiNodeHints && config.multiNodeHints[sel.hw]) {
+      const hint = config.multiNodeHints[sel.hw].map(line => line.length ? "# " + line : "#").join("\n");
+      cmd = `${hint}\n${cmd}`;
+    }
+    cmd = interpolate(cmd, envValues, modelName);
+    if (multinode) {
+      const header = `# Multi-node (${nnodes} nodes). Run the same command on every node with:\n` + `#   <node-rank> = 0 on the head node, 1..${nnodes - 1} on the others\n` + `#   <node0-ip>  = IP of the head node (reachable from all others)`;
+      cmd = `${header}\n${cmd}`;
+    }
+    return cmd;
+  };
+  const ACCURACY_LABELS = config.accuracyLabels || [];
+  const renderBenchmarkCard = entry => {
+    const SPEED_LABELS = [["ttft_ms", "TTFT", "ms"], ["tpot_ms", "TPOT", "ms"], ["tokens_per_sec_per_gpu", "tokens/sec/GPU", ""], ["interactivity", "interactivity", "tok/s", m => m.tpot_ms != null && m.tpot_ms !== 0 ? Math.round(1000 / m.tpot_ms * 10) / 10 : null]];
+    const WORKLOAD_KEYS = ["dataset", "isl", "osl", "max_concurrency"];
+    const fmt = (val, unit) => {
+      if (val === null || val === undefined) return null;
+      return `${val}${unit ? " " + unit : ""}`;
+    };
+    const formatWorkloadParts = (workload, keys) => {
+      if (!workload) return "";
+      const parts = [];
+      if (keys.has("dataset") && workload.dataset) parts.push(workload.dataset);
+      if (keys.has("isl") || keys.has("osl")) {
+        if (workload.isl != null || workload.osl != null) {
+          parts.push(`in/out=${workload.isl != null ? workload.isl : "?"}/${workload.osl != null ? workload.osl : "?"}`);
+        }
+      }
+      if (keys.has("max_concurrency") && workload.max_concurrency != null) {
+        parts.push(`max-concurrency=${workload.max_concurrency}`);
+      }
+      return parts.join(", ");
+    };
+    const ALWAYS_PER_COLUMN = new Set(["max_concurrency"]);
+    const partitionWorkload = measurements => {
+      const shared = new Set();
+      const differing = new Set();
+      for (const k of WORKLOAD_KEYS) {
+        const seen = new Set();
+        let anyPresent = false;
+        for (const m of measurements) {
+          const v = m && m.workload ? m.workload[k] : undefined;
+          if (v != null) anyPresent = true;
+          seen.add(v);
+        }
+        if (!anyPresent) continue;
+        if (ALWAYS_PER_COLUMN.has(k) || seen.size > 1) differing.add(k); else shared.add(k);
+      }
+      return {
+        shared,
+        differing
+      };
+    };
+    const renderBenchTable = ({title, sharedText, colHeaders, rows, colCount, legend}) => {
+      if (rows.length === 0) return null;
+      const showColHeaders = colHeaders.length > 0 && colHeaders.some(h => h !== "");
+      return <div style={s.benchBlock}>
+          <div style={s.benchBlockTitle}>{title}</div>
+          {sharedText && <div style={s.benchWorkload}>{sharedText}</div>}
+          <div style={{
+        ...s.benchTable,
+        gridTemplateColumns: `max-content repeat(${colCount}, minmax(0, 1fr))`
+      }}>
+            {showColHeaders && <div key="corner" style={s.benchTableCornerHead}></div>}
+            {showColHeaders && colHeaders.map((h, i) => <div key={`hdr-${i}`} style={s.benchTableHead}>{h}</div>)}
+            {showColHeaders && <div key="sep" style={s.benchTableSeparator}></div>}
+            {rows.map(r => [<div key={`lbl-${r.label}`} style={s.benchTableLabel}>{r.label}</div>, ...r.values.map((v, i) => <div key={`val-${r.label}-${i}`} style={v === null ? {
+        ...s.benchTableValue,
+        ...s.benchTableValueMissing
+      } : s.benchTableValue}>
+                  {v !== null ? v : "—"}
+                </div>)])}
+          </div>
+          {legend && <div style={s.benchLegend}>{legend}</div>}
+        </div>;
+    };
+    const buildSpeedTable = measurements => {
+      if (measurements.length === 0) return null;
+      const {shared, differing} = partitionWorkload(measurements);
+      const sharedText = formatWorkloadParts(measurements[0] && measurements[0].workload, shared);
+      const colHeaders = measurements.map(m => formatWorkloadParts(m && m.workload, differing));
+      const rows = SPEED_LABELS.map(tup => {
+        const [key, label, unit, compute] = tup;
+        const values = measurements.map(m => {
+          const raw = compute ? compute(m) : m[key];
+          return fmt(raw, unit);
+        });
+        return {
+          label,
+          values
+        };
+      });
+      return {
+        title: "Speed",
+        sharedText,
+        colHeaders,
+        rows,
+        colCount: measurements.length,
+        legend: "interactivity = 1000 / TPOT(ms)"
+      };
+    };
+    const buildAccuracyTable = accuracy => {
+      if (!accuracy) return null;
+      const rows = ACCURACY_LABELS.map(([key, label, unit]) => {
+        const v = fmt(accuracy[key], unit);
+        if (v === null) return null;
+        return {
+          label,
+          values: [v]
+        };
+      }).filter(r => r !== null);
+      if (rows.length === 0) return null;
+      return {
+        title: "Accuracy",
+        sharedText: null,
+        colHeaders: [],
+        rows,
+        colCount: 1
+      };
+    };
+    const accuracy = effectiveAccuracy(entry, sel);
+    const isEmpty = benchmarkIsEmpty(entry, accuracy);
+    const measurements = !isEmpty ? normalizeSpeed(entry && entry.speed) : [];
+    const accuracyTable = !isEmpty ? buildAccuracyTable(accuracy) : null;
+    const speedTable = !isEmpty ? buildSpeedTable(measurements) : null;
+    const hasBenchCmds = !isEmpty && buildBenchCommands(entry, sel) !== null;
+    return <div style={s.benchCard}>
+        <div style={s.benchHeader}>
+          <div style={s.benchTitle}>Benchmark</div>
+          <div style={s.benchHeaderRight}>
+            {!isEmpty && entry && entry.sglang_version && <div style={s.benchVersion}>measured on sglang <code>{entry.sglang_version}</code></div>}
+            {hasBenchCmds && <button style={s.iconButton} onClick={() => setModal("bench")}>⚡ Reproduce</button>}
+          </div>
+        </div>
+        {isEmpty ? <div style={s.benchEmpty}>
+            Benchmark data pending for this combination — submit yours via the Playground's Submit ↗ button.
+          </div> : <>
+            {accuracyTable && renderBenchTable(accuracyTable)}
+            {speedTable && renderBenchTable(speedTable)}
+            {entry && entry.notes && <div style={s.benchNotes}>{entry.notes}</div>}
+          </>}
+      </div>;
+  };
+  const buildBenchCommands = (entry, sel) => {
+    const bc = config.benchmarkCommands;
+    if (!bc) return null;
+    const acc = effectiveAccuracy(entry, sel);
+    const accuracy = [];
+    if (bc.accuracy) {
+      for (const [key, label] of ACCURACY_LABELS) {
+        if (acc[key] == null) continue;
+        const tmpl = bc.accuracy[key];
+        const resolved = typeof tmpl === "string" ? tmpl : tmpl && tmpl[sel.variant] || null;
+        if (resolved) accuracy.push({
+          key,
+          label,
+          template: resolved
+        });
+      }
+    }
+    let speed = null;
+    if (bc.speed && entry) {
+      const ms = normalizeSpeed(entry.speed).filter(m => m && m.workload && m.workload.max_concurrency != null);
+      const concurrencies = [...new Set(ms.map(m => m.workload.max_concurrency))].sort((a, b) => a - b);
+      if (concurrencies.length) {
+        speed = {
+          template: bc.speed,
+          concurrencies,
+          workload: ms[0].workload,
+          numPromptsOf: c => {
+            const m = ms.find(x => x.workload.max_concurrency === c);
+            if (m && m.workload.num_prompts != null) return m.workload.num_prompts;
+            const tbl = bc.numPromptsByConc;
+            if (tbl && tbl[c] != null) return tbl[c];
+            return Math.max(c * 2, 200);
+          }
+        };
+      }
+    }
+    if (accuracy.length === 0 && !speed) return null;
+    return {
+      accuracy,
+      speed
+    };
+  };
+  const buildHardwareGroups = () => {
+    const supported = new Set(config.supportedHardware);
+    const catalog = {};
+    for (const [vendor, list] of Object.entries(HARDWARE_CATALOG)) catalog[vendor] = [...list];
+    for (const hw of config.hardware || []) {
+      const vendor = hw.vendor || "nvidia";
+      const list = catalog[vendor] || (catalog[vendor] = []);
+      const entry = {
+        id: hw.id,
+        label: hw.label,
+        vram: hw.vram
+      };
+      const i = list.findIndex(x => x.id === hw.id);
+      if (i >= 0) list[i] = entry; else list.push(entry);
+    }
+    const groups = [];
+    for (const [vendor, list] of Object.entries(catalog)) {
+      const items = list.filter(hw => supported.has(hw.id)).map(hw => ({
+        id: hw.id,
+        label: hw.label,
+        subtitle: hw.vram
+      }));
+      if (items.length) groups.push({
+        label: vendor.toUpperCase(),
+        items
+      });
+    }
+    return groups;
+  };
+  const initialSelectionFromCells = () => {
+    const first = config.cells[0];
+    if (!first) return Object.fromEntries(DIMENSIONS.map(d => [d, ""]));
+    return {
+      hw: first.match.hw,
+      variant: first.match.variant,
+      quant: first.match.quant,
+      strategy: first.match.strategy,
+      nodes: first.match.nodes
+    };
+  };
+  const placeholderDefaults = schema => {
+    const out = {};
+    for (const [k, v] of Object.entries(schema || ({}))) out[k] = v.default ?? "";
+    return out;
+  };
+  const [isDark, setIsDark] = useState(false);
+  useEffect(() => {
+    const check = () => {
+      const html = document.documentElement;
+      setIsDark(html.classList.contains("dark") || html.getAttribute("data-theme") === "dark" || html.style.colorScheme === "dark");
+    };
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme", "style"]
+    });
+    return () => observer.disconnect();
+  }, []);
+  const STORAGE_KEY = "sglang-deploy-env";
+  const [env, setEnv] = useState(() => placeholderDefaults(config.placeholders));
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setEnv({
+          ...placeholderDefaults(config.placeholders),
+          ...parsed
+        });
+      }
+    } catch {}
+  }, []);
+  const saveEnv = next => {
+    setEnv(next);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {}
+  };
+  const [sel, setSel] = useState(() => initialSelectionFromCells());
+  useEffect(() => {
+    const hydrate = () => {
+      const raw = window.location.hash.replace(/^#/, "");
+      if (!raw) return;
+      const params = new URLSearchParams(raw);
+      const initial = initialSelectionFromCells();
+      const parsed = {
+        ...initial
+      };
+      let touched = false;
+      params.forEach((value, key) => {
+        if ((key in parsed)) {
+          parsed[key] = value;
+          touched = true;
+        }
+      });
+      if (!touched) return;
+      setSel(validateSelection(config.cells, parsed));
+      const el = document.getElementById("deployment") || document.getElementById("deploy");
+      if (el) el.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+      });
+    };
+    hydrate();
+    window.addEventListener("hashchange", hydrate);
+    return () => window.removeEventListener("hashchange", hydrate);
+  }, []);
+  useEffect(() => {
+    const target = "#" + new URLSearchParams(sel).toString();
+    if (window.location.hash !== target) {
+      window.history.replaceState(null, "", target);
+    }
+    window.dispatchEvent(new CustomEvent("sglang-deploy-sel", {
+      detail: sel
+    }));
+  }, [sel]);
+  const [modal, setModal] = useState(null);
+  useEffect(() => {
+    if (modal === null) return;
+    const onKey = e => {
+      if (e.key === "Escape") setModal(null);
+    };
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [modal]);
+  const [copied, setCopied] = useState(false);
+  const [curlCopied, setCurlCopied] = useState(false);
+  const [envDraft, setEnvDraft] = useState(env);
+  const [benchConc, setBenchConc] = useState(null);
+  const [benchAcc, setBenchAcc] = useState(null);
+  const [benchCopied, setBenchCopied] = useState(null);
+  const [runMode, setRunMode] = useState("python");
+  useEffect(() => {
+    if (modal === "env") setEnvDraft(env);
+  }, [modal, env]);
+  const s = makeStyles(isDark);
+  const cell = findCell(config.cells, sel);
+  const command = renderCommand(cell, sel, env, runMode);
+  const mtpHint = !!cell && (cell.flags || []).some(f => f.split(/[\s=]/)[0] === "--speculative-algorithm") && !(cell.flags || []).some(f => f.split(/[\s=]/)[0] === "--max-running-requests");
+  const modelName = resolveModelName(sel);
+  const curlText = interpolate(config.curl || "", env, modelName);
+  const hwGroups = buildHardwareGroups();
+  const benchEntry = benchmarks ? findBenchmark(benchmarks, sel) : null;
+  const isEnabled = (dim, value) => isOptionAvailable(config.cells, sel, dim, value);
+  const handleSelect = (dim, value) => {
+    setSel(prev => snapToValidCell(config.cells, prev, dim, value));
+  };
+  const handleCopy = () => {
+    navigator.clipboard.writeText(command);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+  const copyCurl = () => {
+    navigator.clipboard.writeText(curlText);
+    setCurlCopied(true);
+    setTimeout(() => setCurlCopied(false), 1200);
+  };
+  const copyBench = (key, text) => {
+    navigator.clipboard.writeText(text);
+    setBenchCopied(key);
+    setTimeout(() => setBenchCopied(null), 1200);
+  };
+  const placeholderGroups = (() => {
+    const out = {
+      command: [],
+      curl: []
+    };
+    for (const [key, meta] of Object.entries(config.placeholders || ({}))) {
+      (out[meta.target] || (out[meta.target] = [])).push({
+        key,
+        ...meta
+      });
+    }
+    return out;
+  })();
+  const renderButton = (item, dim, selectedId) => {
+    const checked = selectedId === item.id;
+    const disabled = !isEnabled(dim, item.id);
+    return <label key={item.id} style={{
+      ...s.labelBase,
+      ...checked ? s.checked : {},
+      ...disabled ? s.disabled : {}
+    }} title={disabled ? "Not supported for current selection" : ""} onClick={e => {
+      if (disabled) {
+        e.preventDefault();
+        return;
+      }
+      handleSelect(dim, item.id);
+    }}>
+        <input type="radio" checked={checked} disabled={disabled} readOnly style={{
+      display: "none"
+    }} />
+        <span>{item.label}</span>
+        {item.subtitle && <small style={{
+      ...s.subtitle,
+      color: checked ? "rgba(255,255,255,0.85)" : "inherit"
+    }}>
+            {item.subtitle}
+          </small>}
+      </label>;
+  };
+  const renderFlatSection = (title, options, dim, selectedId) => <div style={s.card}>
+      <div style={s.title}>{title}</div>
+      <div style={s.itemsGrid(options.length)}>
+        {options.map(item => renderButton(item, dim, selectedId))}
+      </div>
+    </div>;
+  const maxHwCols = Math.max(...hwGroups.map(x => x.items.length));
+  return <div style={s.container} className="not-prose">
+      {}
+      <div style={s.cardColumn}>
+        <div style={{
+    ...s.title,
+    marginBottom: "2px"
+  }}>Hardware Platform</div>
+        {hwGroups.map(g => <div key={g.label} style={s.vendorRow}>
+            <div style={s.vendorLabel}>{g.label}</div>
+            <div style={s.itemsGrid(maxHwCols)}>
+              {g.items.map(item => renderButton(item, "hw", sel.hw))}
+              {Array.from({
+    length: maxHwCols - g.items.length
+  }).map((_, i) => <div key={`pad-${i}`} />)}
+            </div>
+          </div>)}
+      </div>
+
+      {renderFlatSection("Model Variant", config.variants, "variant", sel.variant)}
+      {renderFlatSection("Quantization", config.quantizations, "quant", sel.quant)}
+      {renderFlatSection("Strategy", config.strategies, "strategy", sel.strategy)}
+      {renderFlatSection("Nodes", config.nodesOptions, "nodes", sel.nodes)}
+
+      {}
+      <div style={s.card}>
+        <div style={s.title}>Run this Command:</div>
+        <div style={s.commandWrap}>
+          <div style={s.commandHeader}>
+            <div style={s.headerLeft}>
+              <div style={s.badge(Boolean(cell && cell.verified))}>
+                <span style={s.badgeDot(Boolean(cell && cell.verified))} />
+                {cell && cell.verified ? "Verified" : "Not Verified"}
+              </div>
+              <div style={s.runModeWrap} role="tablist" aria-label="Output format">
+                <span style={s.runModeChip(runMode === "python")} onClick={() => setRunMode("python")} role="tab" aria-selected={runMode === "python"}>
+                  Python
+                </span>
+                <span style={s.runModeChipLast(runMode === "docker")} onClick={() => setRunMode("docker")} role="tab" aria-selected={runMode === "docker"}>
+                  Docker
+                </span>
+              </div>
+            </div>
+            <div style={s.iconRow}>
+              <button style={s.iconButton} onClick={handleCopy}>
+                {copied ? "✓ Copied" : "⧉ Copy"}
+              </button>
+              <button style={s.iconButton} onClick={() => setModal("curl")}>$ cURL</button>
+              <button style={s.iconButton} onClick={() => setModal("env")}>⚙ Env</button>
+            </div>
+          </div>
+          <pre style={s.commandPre}>{command}</pre>
+          {mtpHint && <div style={s.mtpWarn}>
+              ⚠️ Speculative decoding (MTP) is on — SGLang resets <code>--max-running-requests</code> to <strong>48</strong> when it isn't set. Add <code>--max-running-requests &lt;N&gt;</code> sized for your target concurrency.
+            </div>}
+        </div>
+      </div>
+
+      {}
+      {benchmarks && cell && renderBenchmarkCard(benchEntry)}
+
+      {}
+      <div style={{
+    padding: "6px 12px",
+    fontSize: "12px",
+    color: isDark ? "#9ca3af" : "#6b7280",
+    display: "flex",
+    alignItems: "center",
+    gap: "6px"
+  }}>
+        <span>Need to go beyond the verified matrix?</span>
+        <button type="button" onClick={() => {
+    const el = document.getElementById("playground");
+    if (el) el.scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    });
+  }} style={{
+    background: "transparent",
+    border: "none",
+    padding: 0,
+    color: isDark ? "#FDBA74" : "#C2410C",
+    cursor: "pointer",
+    fontSize: "12px",
+    fontWeight: 600,
+    textDecoration: "underline",
+    textUnderlineOffset: "2px"
+  }}>
+          Open the Playground →
+        </button>
+      </div>
+
+      {}
+      {modal === "curl" && <div style={s.modalBackdrop} onClick={() => setModal(null)}>
+          <div style={s.modalBox} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <div style={s.modalTitle}>cURL example</div>
+              <button style={s.modalCloseBtn} onClick={() => setModal(null)} aria-label="Close">×</button>
+            </div>
+            <div style={s.commandWrap}>
+              <div style={s.commandHeader}>
+                <div style={{
+    fontSize: 11,
+    opacity: 0.7
+  }}>
+                  Model: <code>{modelName || "(unresolved)"}</code>
+                </div>
+                <button style={s.iconButton} onClick={copyCurl}>
+                  {curlCopied ? "✓ Copied" : "⧉ Copy"}
+                </button>
+              </div>
+              <pre style={s.commandPre}>{curlText}</pre>
+            </div>
+            <p style={{
+    fontSize: 11,
+    opacity: 0.7,
+    marginTop: 8
+  }}>
+              Edit <code>CURL_HOST</code> / <code>CURL_PORT</code> in the Env panel.
+            </p>
+          </div>
+        </div>}
+
+      {}
+      {modal === "env" && <div style={s.modalBackdrop} onClick={() => setModal(null)}>
+          <div style={s.modalBox} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <div style={s.modalTitle}>Env / placeholder values</div>
+              <button style={s.modalCloseBtn} onClick={() => setModal(null)} aria-label="Close">×</button>
+            </div>
+            {placeholderGroups.curl.length > 0 && <div>
+                <div style={s.sectionHeading}>cURL placeholders</div>
+                {placeholderGroups.curl.map(({key, label}) => <div key={key} style={s.formField}>
+                    <label style={s.formLabel}>
+                      {label} <code style={{
+    opacity: 0.6
+  }}>{`{{${key}}}`}</code>
+                    </label>
+                    <input style={s.formInput} value={envDraft[key] ?? ""} onChange={e => setEnvDraft({
+    ...envDraft,
+    [key]: e.target.value
+  })} />
+                  </div>)}
+              </div>}
+            {placeholderGroups.command.length > 0 && <div>
+                <div style={s.sectionHeading}>Command placeholders</div>
+                {placeholderGroups.command.map(({key, label}) => <div key={key} style={s.formField}>
+                    <label style={s.formLabel}>
+                      {label} <code style={{
+    opacity: 0.6
+  }}>{`{{${key}}}`}</code>
+                    </label>
+                    <input style={s.formInput} value={envDraft[key] ?? ""} onChange={e => setEnvDraft({
+    ...envDraft,
+    [key]: e.target.value
+  })} />
+                  </div>)}
+              </div>}
+            <div style={{
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 16
+  }}>
+              <button style={{
+    ...s.iconButton,
+    padding: "6px 14px"
+  }} onClick={() => setModal(null)}>Cancel</button>
+              <button style={s.primaryBtn} onClick={() => {
+    saveEnv(envDraft);
+    setModal(null);
+  }}>Save</button>
+            </div>
+            <p style={{
+    fontSize: 11,
+    opacity: 0.7,
+    marginTop: 10
+  }}>
+              Values persist in localStorage and are reused the next time you visit any cookbook.
+            </p>
+          </div>
+        </div>}
+
+      {}
+      {modal === "bench" && benchEntry && (() => {
+    const bc = buildBenchCommands(benchEntry, sel);
+    if (!bc) return null;
+    const selSummary = `${sel.hw.toUpperCase()} · ${sel.variant} · ${sel.quant.toUpperCase()} · ${sel.strategy} · ${sel.nodes}`;
+    let selConc = null;
+    let speedCmd = null;
+    if (bc.speed) {
+      selConc = bc.speed.concurrencies.includes(benchConc) ? benchConc : bc.speed.concurrencies[0];
+      const w = bc.speed.workload;
+      speedCmd = interpolate(bc.speed.template, {
+        ...env,
+        DATASET: w.dataset,
+        ISL: w.isl,
+        OSL: w.osl,
+        MAX_CONCURRENCY: selConc,
+        NUM_PROMPTS: bc.speed.numPromptsOf(selConc)
+      }, modelName);
+    }
+    let selAcc = null;
+    let accCmd = null;
+    if (bc.accuracy.length > 0) {
+      selAcc = bc.accuracy.find(a => a.key === benchAcc) || bc.accuracy[0];
+      accCmd = interpolate(selAcc.template, env, modelName);
+    }
+    return <div style={s.modalBackdrop} onClick={() => setModal(null)}>
+            <div style={s.modalBox} onClick={e => e.stopPropagation()}>
+              <div style={s.modalHeader}>
+                <div style={s.modalTitle}>Benchmark commands</div>
+                <button style={s.modalCloseBtn} onClick={() => setModal(null)} aria-label="Close">×</button>
+              </div>
+              <p style={{
+      fontSize: 11,
+      opacity: 0.7,
+      margin: "0 0 12px"
+    }}>
+                For <code>{selSummary}</code>. Start the server with the Deploy command above, then run these against it.
+              </p>
+
+              {selAcc && <div>
+                  <div style={s.sectionHeading}>Accuracy</div>
+                  {bc.accuracy.length > 1 && <div style={s.benchChipRow}>
+                      <span style={{
+      fontSize: 11,
+      opacity: 0.7
+    }}>benchmark:</span>
+                      {bc.accuracy.map(a => <button key={a.key} style={{
+      ...s.benchChip,
+      ...a.key === selAcc.key ? s.benchChipActive : {}
+    }} onClick={() => setBenchAcc(a.key)}>
+                          {a.label}
+                        </button>)}
+                    </div>}
+                  <div style={{
+      ...s.commandWrap,
+      marginBottom: 6
+    }}>
+                    <div style={s.commandHeader}>
+                      <div style={{
+      fontSize: 11,
+      opacity: 0.7
+    }}>{selAcc.label}</div>
+                      <button style={s.iconButton} onClick={() => copyBench("acc", accCmd)}>
+                        {benchCopied === "acc" ? "✓ Copied" : "⧉ Copy"}
+                      </button>
+                    </div>
+                    <pre style={s.commandPre}>{accCmd}</pre>
+                  </div>
+                  {bc.accuracy.length > 1 && <p style={{
+      fontSize: 11,
+      opacity: 0.7,
+      margin: "0 0 4px"
+    }}>
+                      Switch the benchmark chip to see each eval's command.
+                    </p>}
+                </div>}
+
+              {bc.speed && <div>
+                  <div style={s.sectionHeading}>Speed</div>
+                  {bc.speed.concurrencies.length > 1 && <div style={s.benchChipRow}>
+                      <span style={{
+      fontSize: 11,
+      opacity: 0.7
+    }}>max-concurrency:</span>
+                      {bc.speed.concurrencies.map(c => <button key={c} style={{
+      ...s.benchChip,
+      ...c === selConc ? s.benchChipActive : {}
+    }} onClick={() => setBenchConc(c)}>
+                          {c}
+                        </button>)}
+                    </div>}
+                  <div style={{
+      ...s.commandWrap,
+      marginBottom: 6
+    }}>
+                    <div style={s.commandHeader}>
+                      <div style={{
+      fontSize: 11,
+      opacity: 0.7
+    }}>max-concurrency = {selConc}</div>
+                      <button style={s.iconButton} onClick={() => copyBench("speed", speedCmd)}>
+                        {benchCopied === "speed" ? "✓ Copied" : "⧉ Copy"}
+                      </button>
+                    </div>
+                    <pre style={s.commandPre}>{speedCmd}</pre>
+                  </div>
+                  <p style={{
+      fontSize: 11,
+      opacity: 0.7,
+      margin: "0 0 4px"
+    }}>
+                    One command — switch the concurrency chip (or edit <code>--max-concurrency</code>) to reproduce each Speed column.
+                  </p>
+                </div>}
+
+              <p style={{
+      fontSize: 11,
+      opacity: 0.7,
+      marginTop: 12
+    }}>
+                Edit <code>CURL_HOST</code> / <code>CURL_PORT</code> in the Env panel.
+              </p>
+            </div>
+          </div>;
+  })()}
+    </div>;
+};
 
 ## Deployment
 
 <a id="install" />
 
 <Accordion title="Install SGLang">
+  For all methods and hardware platforms, see the [official SGLang installation guide](../../../docs/get-started/install). The two paths below match the **Python / Docker** toggle in the command panel.
 
-For all methods and hardware platforms, see the [official SGLang installation guide](../../../docs/get-started/install). The two paths below match the **Python / Docker** toggle in the command panel.
+  <Tabs>
+    <Tab title="Python (pip / uv)">
+      ```bash Command theme={null}
+      pip install --upgrade pip
+      pip install uv
+      uv pip install sglang
+      ```
 
-<Tabs>
+      Then run the **Python** output of the command panel below in that environment.
+    </Tab>
 
-<Tab title="Python (pip / uv)">
+    <Tab title="Docker">
+      ```bash Command theme={null}
+      docker pull lmsysorg/sglang:latest
+      ```
 
-```bash Command
-pip install --upgrade pip
-pip install uv
-uv pip install sglang
-```
-
-Then run the **Python** output of the command panel below in that environment.
-
-</Tab>
-
-<Tab title="Docker">
-
-```bash Command
-docker pull lmsysorg/sglang:latest
-```
-
-For how to launch the image, see [Install → Method 3: Using Docker](../../../docs/get-started/install#method-3-using-docker). Substitute the inner `sglang serve ...` with what the command generator below produces.
-
-</Tab>
-
-</Tabs>
-
+      For how to launch the image, see [Install → Method 3: Using Docker](../../../docs/get-started/install#method-3-using-docker). Substitute the inner `sglang serve ...` with what the command generator below produces.
+    </Tab>
+  </Tabs>
 </Accordion>
 
 Pick your hardware + recipe to generate the launch command. The three serving strategies cover the common operating points:
 
-- **Low-Latency** — fastest reply for a single user. Pick for chat.
-- **Balanced** — good speed with several users at once. Use for typical multi-user serving.
-- **High-Throughput** — most tokens per second across many users. Best for batch jobs.
-
-import { Deployment } from "/src/snippets/_deployment.jsx";
-import { config }     from "/src/snippets/configs/zai-org/glm-5.2.jsx";
-import { benchmarks } from "/src/snippets/configs/zai-org/glm-5.2-benchmarks.jsx";
+* **Low-Latency** — fastest reply for a single user. Pick for chat.
+* **Balanced** — good speed with several users at once. Use for typical multi-user serving.
+* **High-Throughput** — most tokens per second across many users. Best for batch jobs.
 
 <Deployment config={config} benchmarks={benchmarks} />
 
@@ -64,13 +4718,11 @@ import { benchmarks } from "/src/snippets/configs/zai-org/glm-5.2-benchmarks.jsx
 
 The Playground is where you experiment with **SGLang features beyond the verified matrix**. The Deploy panel above only emits combinations the SGLang team has signed off on; the Playground lets you turn on additional knobs on top of whichever cell the Deploy panel is currently showing.
 
-import { Playground } from "/src/snippets/_playground.jsx";
-
 <Playground config={config} />
 
 ## 1. Model Introduction
 
-**GLM-5.2** is Z.ai's flagship Mixture-of-Experts model built on **DeepSeek Sparse Attention (DSA)**: a lightning indexer selects a sparse set of key tokens per query (top-2048), so attention cost stays near-constant as context grows. It ships in two precisions — **FP8** (`zai-org/GLM-5.2-FP8`) and full **BF16** (`zai-org/GLM-5.2`) — both with **78 transformer layers**, **256 routed experts** (8 active per token), a **1M-token context window**, and a single **MTP (Multi-Token Prediction)** layer for built-in EAGLE-style speculative decoding. FP8 is the recommended deployment; BF16 (~1.5 TB) needs an 8×B300 node or a multi-node setup. For Blackwell, NVIDIA also publishes an **NVFP4** build (`nvidia/GLM-5.2-NVFP4`) that quantizes only the MoE experts' linear weights and activations to 4-bit (the shared expert stays unquantized), holding accuracy within ~1 point of the FP8 baseline on GPQA Diamond, SciCode, and IFBench.
+**GLM-5.2** is Z.ai's flagship Mixture-of-Experts model built on **DeepSeek Sparse Attention (DSA)**: a lightning indexer selects a sparse set of key tokens per query (top-2048), so attention cost stays near-constant as context grows. It ships in two precisions — **FP8** (`zai-org/GLM-5.2-FP8`) and full **BF16** (`zai-org/GLM-5.2`) — both with **78 transformer layers**, **256 routed experts** (8 active per token), a **1M-token context window**, and a single **MTP (Multi-Token Prediction)** layer for built-in EAGLE-style speculative decoding. FP8 is the recommended deployment; BF16 (\~1.5 TB) needs an 8×B300 node or a multi-node setup. For Blackwell, NVIDIA also publishes an **NVFP4** build (`nvidia/GLM-5.2-NVFP4`) that quantizes only the MoE experts' linear weights and activations to 4-bit (the shared expert stays unquantized), holding accuracy within \~1 point of the FP8 baseline on GPQA Diamond, SciCode, and IFBench.
 
 <table style={{width: "100%", borderCollapse: "collapse", tableLayout: "fixed"}}>
   <thead>
@@ -80,17 +4732,20 @@ import { Playground } from "/src/snippets/_playground.jsx";
       <th style={{textAlign: "left",  padding: "10px 12px", fontWeight: 700}}>Context</th>
     </tr>
   </thead>
+
   <tbody>
     <tr>
       <td style={{padding: "9px 12px"}}><strong><a href="https://huggingface.co/zai-org/GLM-5.2-FP8">GLM-5.2-FP8</a></strong></td>
       <td style={{padding: "9px 12px"}}>MoE · DSA · 256 experts (top-8) · MTP · FP8</td>
       <td style={{padding: "9px 12px", textAlign: "right"}}>1,048,576</td>
     </tr>
+
     <tr>
       <td style={{padding: "9px 12px"}}><strong><a href="https://huggingface.co/zai-org/GLM-5.2">GLM-5.2</a></strong></td>
       <td style={{padding: "9px 12px"}}>MoE · DSA · 256 experts (top-8) · MTP · BF16</td>
       <td style={{padding: "9px 12px", textAlign: "right"}}>1,048,576</td>
     </tr>
+
     <tr>
       <td style={{padding: "9px 12px"}}><strong><a href="https://huggingface.co/nvidia/GLM-5.2-NVFP4">GLM-5.2-NVFP4</a></strong></td>
       <td style={{padding: "9px 12px"}}>MoE · DSA · 256 experts (top-8) · MTP · NVFP4</td>
@@ -105,22 +4760,29 @@ import { Playground } from "/src/snippets/_playground.jsx";
 
 ## 2. Configuration Tips
 
-- **DeepSeek Sparse Attention (DSA).** GLM-5.2 uses the `glm_moe_dsa` architecture; SGLang auto-selects the DSA attention backends (`flashmla_sparse` prefill, `fa3` decode, `sgl-kernel` indexer topk). No attention-backend flag is needed on the supported hardware. SGLang also auto-selects the KV-cache dtype for DSA models — `fp8_e4m3` on Blackwell (B200/GB300/B300, which then routes DSA through the TensorRT-LLM backend) and `bf16` on Hopper (H200) — so no `--kv-cache-dtype` flag is required.
-- **MTP / speculative decoding.** The checkpoint ships one nextn layer. Enable EAGLE MTP for lower latency (`--speculative-algorithm EAGLE --speculative-num-steps 5 --speculative-eagle-topk 1 --speculative-num-draft-tokens 6` for low-latency; `1-1-2` for balanced). The config's `index_share_for_mtp_iteration` reuses the DSA indexer's topk across draft steps (effective only at `--speculative-eagle-topk 1`). **Tune the draft length to the accept length.** GLM-5.2's MTP head is strong — accept length runs high (4+ in many workloads, near-saturating at 5–6 in low-latency runs). Watch the server's reported **accept length** and adjust `--speculative-num-steps` / `--speculative-num-draft-tokens` accordingly: while accept length stays close to the draft-token count there is headroom to push them higher (more accepted tokens per step); if it falls well below, lower them — every rejected draft token is wasted verification compute.
-- **Context Parallelism (CP) for long prefill.** DSA prefill CP splits the long-prefill attention across `--attn-cp-size` ranks. On **Hopper (H200)** this gives a large prefill-latency win at long context — e.g. round-robin CP (`--tp 8 --attn-cp-size 8 --enable-dsa-prefill-context-parallel --dsa-prefill-cp-mode round-robin-split`) cut 64K-token prefill TTFT roughly **2.5–2.8×** vs. plain TP8 in our testing. Trade-offs: CP partitions the KV pool (lower max context at the same `--mem-fraction-static`) and adds some decode-side overhead, so it pays off only for long sequences. **CP is currently verified on Hopper only** — the Blackwell (sm100) DSA-CP FP8 rope kernel is not yet adapted, so leave CP off on B200/B300/GB300.
-- **Memory.** The FP8 weights are large (MoE total, not active params). Start around `--mem-fraction-static 0.8` on H200 (TP8) and tune up; raise it for the 4-GPU GB300 single-node layout (TP4).
-- **DP-Attention + DeepEP** for the balanced/high-throughput strategies spreads attention across data-parallel ranks and routes MoE through DeepEP.
-- **BF16 weights need more GPUs.** The full-precision build (`zai-org/GLM-5.2`, ~1.5 TB) does not fit a single 8×H200 / 8×B200 / 4×GB300 node. It fits single-node on **8×B300** (TP8, ~2.1 TB HBM) — **verified**; on the smaller GPUs it needs a **multi-node** layout (e.g. 2×8×H200 or 2×8×B200 at TP16, 2×4×GB300 at TP8), and those **multi-node BF16 recipes are still proposed/inferred** (`verified: false`). FP8 is the recommended deployment. Use the same DSA / MTP / chunked-prefill guidance as FP8. On B300, BF16 low-latency matches FP8 (the sm103 FP8 path is not yet optimized), but FP8 wins at the balanced/high-throughput points.
-- **PD Disaggregation (prefill/decode).** GLM-5.2 is a DSA model and runs under prefill/decode disaggregation — toggle the **PD Disagg** card in the [Playground above](#playground) (pick a Prefill/Decode role + transfer backend, then front the roles with `sglang_router.launch_router --pd-disaggregation`). The Mooncake backend **auto-detects the InfiniBand HCA**, so no device flag is needed by default; only add `--disaggregation-ib-device mlx5_0` (your NIC) if auto-detection picks the wrong device or KV transfer fails to connect. On H200 Docker, expose the IB HCAs to the container (`--privileged --ulimit memlock=-1`, or `--device /dev/infiniband:/dev/infiniband --cap-add IPC_LOCK`) — without IB exposure Mooncake silently falls back to TCP.
-- **Chunked-prefill size is regime-dependent.** At long input (8K+) the default `--chunked-prefill-size 2048` is too small and leaves the balanced point prefill-bound (queueing dominates TTFT). Raising it to `--chunked-prefill-size 32768` on the balanced recipe gave roughly **+34–78% output throughput and −39–59% TTFT** on 8×H200 and 8×B200 (8K-in / 1K-out) in our testing. It is **neutral for high-throughput** (decode-bound there) — keep the default. `--max-running-requests` tracks KV capacity, not a tuning free-for-all: ~60–90 concurrent 8K+1K FP8 requests fit on a single 8-GPU node, so pin balanced near `--max-running-requests 80` and let high-throughput run wider.
+* **DeepSeek Sparse Attention (DSA).** GLM-5.2 uses the `glm_moe_dsa` architecture; SGLang auto-selects the DSA attention backends (`flashmla_sparse` prefill, `fa3` decode, `sgl-kernel` indexer topk). No attention-backend flag is needed on the supported hardware. SGLang also auto-selects the KV-cache dtype for DSA models — `fp8_e4m3` on Blackwell (B200/GB300/B300, which then routes DSA through the TensorRT-LLM backend) and `bf16` on Hopper (H200) — so no `--kv-cache-dtype` flag is required.
 
-- **AMD GPUs (MI300X / MI325X / MI355X).** FP8 (`zai-org/GLM-5.2-FP8`) runs single-node at `tp=8` on all three. BF16 (`zai-org/GLM-5.2`, ~1.51 TB) only fits single-node on **MI325X** (2 TB HBM) and **MI355X** (2.3 TB); **MI300X** (1.5 TB) cannot hold the BF16 weights plus KV cache on one node, so use FP8 there (or a multi-node BF16 layout once validated). Use the DSA tilelang backend (`--dsa-prefill-backend tilelang --dsa-decode-backend tilelang`) and add `--chunked-prefill-size 131072` plus `--watchdog-timeout 1200` (20 min for weight loading). FP8 uses about half the memory of BF16 (~89 GB/GPU vs ~175 GB/GPU). GLM-5.2 and DeepSeek-V3.2 share the same model structure; for other DSA / HiSparse tips see the [DeepSeek-V3.2 cookbook](../DeepSeek/DeepSeek-V3_2).
+* **MTP / speculative decoding.** The checkpoint ships one nextn layer. Enable EAGLE MTP for lower latency (`--speculative-algorithm EAGLE --speculative-num-steps 5 --speculative-eagle-topk 1 --speculative-num-draft-tokens 6` for low-latency; `1-1-2` for balanced). The config's `index_share_for_mtp_iteration` reuses the DSA indexer's topk across draft steps (effective only at `--speculative-eagle-topk 1`). **Tune the draft length to the accept length.** GLM-5.2's MTP head is strong — accept length runs high (4+ in many workloads, near-saturating at 5–6 in low-latency runs). Watch the server's reported **accept length** and adjust `--speculative-num-steps` / `--speculative-num-draft-tokens` accordingly: while accept length stays close to the draft-token count there is headroom to push them higher (more accepted tokens per step); if it falls well below, lower them — every rejected draft token is wasted verification compute.
+
+* **Context Parallelism (CP) for long prefill.** DSA prefill CP splits the long-prefill attention across `--attn-cp-size` ranks. On **Hopper (H200)** this gives a large prefill-latency win at long context — e.g. round-robin CP (`--tp 8 --attn-cp-size 8 --enable-dsa-prefill-context-parallel --dsa-prefill-cp-mode round-robin-split`) cut 64K-token prefill TTFT roughly **2.5–2.8×** vs. plain TP8 in our testing. Trade-offs: CP partitions the KV pool (lower max context at the same `--mem-fraction-static`) and adds some decode-side overhead, so it pays off only for long sequences. **CP is currently verified on Hopper only** — the Blackwell (sm100) DSA-CP FP8 rope kernel is not yet adapted, so leave CP off on B200/B300/GB300.
+
+* **Memory.** The FP8 weights are large (MoE total, not active params). Start around `--mem-fraction-static 0.8` on H200 (TP8) and tune up; raise it for the 4-GPU GB300 single-node layout (TP4).
+
+* **DP-Attention + DeepEP** for the balanced/high-throughput strategies spreads attention across data-parallel ranks and routes MoE through DeepEP.
+
+* **BF16 weights need more GPUs.** The full-precision build (`zai-org/GLM-5.2`, \~1.5 TB) does not fit a single 8×H200 / 8×B200 / 4×GB300 node. It fits single-node on **8×B300** (TP8, \~2.1 TB HBM) — **verified**; on the smaller GPUs it needs a **multi-node** layout (e.g. 2×8×H200 or 2×8×B200 at TP16, 2×4×GB300 at TP8), and those **multi-node BF16 recipes are still proposed/inferred** (`verified: false`). FP8 is the recommended deployment. Use the same DSA / MTP / chunked-prefill guidance as FP8. On B300, BF16 low-latency matches FP8 (the sm103 FP8 path is not yet optimized), but FP8 wins at the balanced/high-throughput points.
+
+* **PD Disaggregation (prefill/decode).** GLM-5.2 is a DSA model and runs under prefill/decode disaggregation — toggle the **PD Disagg** card in the [Playground above](#playground) (pick a Prefill/Decode role + transfer backend, then front the roles with `sglang_router.launch_router --pd-disaggregation`). The Mooncake backend **auto-detects the InfiniBand HCA**, so no device flag is needed by default; only add `--disaggregation-ib-device mlx5_0` (your NIC) if auto-detection picks the wrong device or KV transfer fails to connect. On H200 Docker, expose the IB HCAs to the container (`--privileged --ulimit memlock=-1`, or `--device /dev/infiniband:/dev/infiniband --cap-add IPC_LOCK`) — without IB exposure Mooncake silently falls back to TCP.
+
+* **Chunked-prefill size is regime-dependent.** At long input (8K+) the default `--chunked-prefill-size 2048` is too small and leaves the balanced point prefill-bound (queueing dominates TTFT). Raising it to `--chunked-prefill-size 32768` on the balanced recipe gave roughly **+34–78% output throughput and −39–59% TTFT** on 8×H200 and 8×B200 (8K-in / 1K-out) in our testing. It is **neutral for high-throughput** (decode-bound there) — keep the default. `--max-running-requests` tracks KV capacity, not a tuning free-for-all: \~60–90 concurrent 8K+1K FP8 requests fit on a single 8-GPU node, so pin balanced near `--max-running-requests 80` and let high-throughput run wider.
+
+* **AMD GPUs (MI300X / MI325X / MI355X).** FP8 (`zai-org/GLM-5.2-FP8`) runs single-node at `tp=8` on all three. BF16 (`zai-org/GLM-5.2`, \~1.51 TB) only fits single-node on **MI325X** (2 TB HBM) and **MI355X** (2.3 TB); **MI300X** (1.5 TB) cannot hold the BF16 weights plus KV cache on one node, so use FP8 there (or a multi-node BF16 layout once validated). Use the DSA tilelang backend (`--dsa-prefill-backend tilelang --dsa-decode-backend tilelang`) and add `--chunked-prefill-size 131072` plus `--watchdog-timeout 1200` (20 min for weight loading). FP8 uses about half the memory of BF16 (\~89 GB/GPU vs \~175 GB/GPU). GLM-5.2 and DeepSeek-V3.2 share the same model structure; for other DSA / HiSparse tips see the [DeepSeek-V3.2 cookbook](../DeepSeek/DeepSeek-V3_2).
 
 <Note>
-**gfx950 block-FP8 accuracy: fixed as of the pinned MI355X image (`v0.5.13.post1-rocm720-mi35x-20260618`).** Earlier SGLang ROCm images miscompiled AMD aiter's `gemm_a8w8_blockscale_bpreshuffle` GEMM on gfx950 (ROCm 7.2): the error was small per layer but compounded across all 78 layers and silently corrupted output — in-context reasoning broke (GSM8K ≈ 0) while short factual prompts still looked fine. The root cause was a gfx950/ROCm-7.2 miscompile of the CK kernel (a packed illegal-type FMA that relied on an LLVM coercion pass removed in ROCm 7.2; non-deterministic wrong rows near tile boundaries). This is resolved in the pinned image and newer: GLM-5.2-FP8 on MI350X/MI355X (gfx950) was re-validated at TP4 and TP8 — **GSM8K ≈ 0.96 (0% invalid)** and **15/15 needle-in-haystack retrieval to ~118K tokens**. **MI300X / MI325X (gfx942) were never affected.** If you must run an older image, treat gfx950 FP8 output as unverified. Background: [sgl-project/sglang#28685](https://github.com/sgl-project/sglang/issues/28685) (analysis) and the upstream CK fix [ROCm/rocm-libraries#8639](https://github.com/ROCm/rocm-libraries/pull/8639) (scalar FMA + accumulator anchor; restores correctness and determinism at -O3).
+  **gfx950 block-FP8 accuracy: fixed as of the pinned MI355X image (`v0.5.13.post1-rocm720-mi35x-20260618`).** Earlier SGLang ROCm images miscompiled AMD aiter's `gemm_a8w8_blockscale_bpreshuffle` GEMM on gfx950 (ROCm 7.2): the error was small per layer but compounded across all 78 layers and silently corrupted output — in-context reasoning broke (GSM8K ≈ 0) while short factual prompts still looked fine. The root cause was a gfx950/ROCm-7.2 miscompile of the CK kernel (a packed illegal-type FMA that relied on an LLVM coercion pass removed in ROCm 7.2; non-deterministic wrong rows near tile boundaries). This is resolved in the pinned image and newer: GLM-5.2-FP8 on MI350X/MI355X (gfx950) was re-validated at TP4 and TP8 — **GSM8K ≈ 0.96 (0% invalid)** and **15/15 needle-in-haystack retrieval to \~118K tokens**. **MI300X / MI325X (gfx942) were never affected.** If you must run an older image, treat gfx950 FP8 output as unverified. Background: [sgl-project/sglang#28685](https://github.com/sgl-project/sglang/issues/28685) (analysis) and the upstream CK fix [ROCm/rocm-libraries#8639](https://github.com/ROCm/rocm-libraries/pull/8639) (scalar FMA + accumulator anchor; restores correctness and determinism at -O3).
 </Note>
 
-- **MTP / EAGLE speculative decoding** is disabled for AMD in the Deploy panel. The block-FP8 accuracy bug that previously degraded it is now fixed (see note above), but MTP on gfx950 still depends on the spec-decode draft kernel, which is not yet validated on this hardware (and at `--speculative-num-steps > 3` hits a separate build issue). Until MTP is validated on gfx950, omit the `--speculative-*` flags and serve without MTP.
+* **MTP / EAGLE speculative decoding** is disabled for AMD in the Deploy panel. The block-FP8 accuracy bug that previously degraded it is now fixed (see note above), but MTP on gfx950 still depends on the spec-decode draft kernel, which is not yet validated on this hardware (and at `--speculative-num-steps > 3` hits a separate build issue). Until MTP is validated on gfx950, omit the `--speculative-*` flags and serve without MTP.
 
 ## 3. Advanced Usage
 
@@ -130,44 +4792,40 @@ GLM-5.2 is a hybrid-reasoning model. Enable the `glm45` reasoning parser (toggle
 
 **Reasoning effort.** Pass `chat_template_kwargs: {"reasoning_effort": ...}` to inject a `Reasoning Effort: <level>` system line (only while thinking is on). **The template wires only two effective levels — `Max` and `High` — and if you don't pass `reasoning_effort` at all you get `Max`, the highest.** `"high"` is the *only* value that lowers effort; every other value (including `"low"` and `"medium"`) falls through to `Max`:
 
-| `reasoning_effort` | Injected system line | Effect |
-|---|---|---|
-| *(not passed / unset)* | `Reasoning Effort: Max` | **default — highest reasoning** |
-| `"high"` | `Reasoning Effort: High` | dials reasoning **down** |
-| `"low"`, `"medium"`, any other value | `Reasoning Effort: Max` | falls through to `Max` (not a distinct level) |
+| `reasoning_effort`                   | Injected system line     | Effect                                        |
+| ------------------------------------ | ------------------------ | --------------------------------------------- |
+| *(not passed / unset)*               | `Reasoning Effort: Max`  | **default — highest reasoning**               |
+| `"high"`                             | `Reasoning Effort: High` | dials reasoning **down**                      |
+| `"low"`, `"medium"`, any other value | `Reasoning Effort: Max`  | falls through to `Max` (not a distinct level) |
 
 <Accordion title="Reasoning Example (Python)">
+  ```python Example theme={null}
+  from openai import OpenAI
 
-```python Example
-from openai import OpenAI
-
-client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
-resp = client.chat.completions.create(
-    model="zai-org/GLM-5.2-FP8",
-    messages=[{"role": "user", "content": "What is 15% of 240?"}],
-    extra_body={"chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": "high"}},
-)
-msg = resp.choices[0].message
-print("Reasoning:", getattr(msg, "reasoning_content", None))
-print("Answer:", msg.content)
-```
-
+  client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
+  resp = client.chat.completions.create(
+      model="zai-org/GLM-5.2-FP8",
+      messages=[{"role": "user", "content": "What is 15% of 240?"}],
+      extra_body={"chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": "high"}},
+  )
+  msg = resp.choices[0].message
+  print("Reasoning:", getattr(msg, "reasoning_content", None))
+  print("Answer:", msg.content)
+  ```
 </Accordion>
 
 <Accordion title="Example Output">
+  ```text Output theme={null}
+  Reasoning: 1.  **Identify the core question:** The user wants to find 15% of 240.
+  2.  **Convert the percentage to a decimal:** 15% = 0.15
+  3.  **Multiply by the total:** 0.15 * 240 = 36
+      (Quick mental math: 10% of 240 = 24; 5% = 12; 24 + 12 = 36.)
 
-```text Output
-Reasoning: 1.  **Identify the core question:** The user wants to find 15% of 240.
-2.  **Convert the percentage to a decimal:** 15% = 0.15
-3.  **Multiply by the total:** 0.15 * 240 = 36
-    (Quick mental math: 10% of 240 = 24; 5% = 12; 24 + 12 = 36.)
+  Answer: 15% of 240 is **36**.
 
-Answer: 15% of 240 is **36**.
-
-Here is how you can calculate it:
-0.15 × 240 = 36
-```
-
+  Here is how you can calculate it:
+  0.15 × 240 = 36
+  ```
 </Accordion>
 
 ### 3.2 Tool Calling
@@ -175,49 +4833,45 @@ Here is how you can calculate it:
 Enable the `glm47` tool-call parser (toggle **Tool Call Parser** in the **Parsers** card of the [Playground above](#playground)) to surface structured tool calls via `message.tool_calls`. GLM-5.2 emits the newer `<tool_call>…<arg_key>…<arg_value>…` format, so it needs the **`glm47`** parser — the older `glm45` parser does not parse it (the call would be left as raw text in `content`). On thinking mode the turn also fills `reasoning_content`, so print both fields.
 
 <Accordion title="Tool Calling Example (Python)">
+  ```python Example theme={null}
+  from openai import OpenAI
 
-```python Example
-from openai import OpenAI
-
-client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
-tools = [{
-    "type": "function",
-    "function": {
-        "name": "get_weather",
-        "description": "Get the current weather for a city",
-        "parameters": {
-            "type": "object",
-            "properties": {"city": {"type": "string"}},
-            "required": ["city"],
-        },
-    },
-}]
-resp = client.chat.completions.create(
-    model="zai-org/GLM-5.2-FP8",
-    messages=[{"role": "user", "content": "What's the weather in Paris?"}],
-    tools=tools,
-)
-msg = resp.choices[0].message
-print("Reasoning:", getattr(msg, "reasoning_content", None))
-print("Tool calls:", msg.tool_calls)
-```
-
+  client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
+  tools = [{
+      "type": "function",
+      "function": {
+          "name": "get_weather",
+          "description": "Get the current weather for a city",
+          "parameters": {
+              "type": "object",
+              "properties": {"city": {"type": "string"}},
+              "required": ["city"],
+          },
+      },
+  }]
+  resp = client.chat.completions.create(
+      model="zai-org/GLM-5.2-FP8",
+      messages=[{"role": "user", "content": "What's the weather in Paris?"}],
+      tools=tools,
+  )
+  msg = resp.choices[0].message
+  print("Reasoning:", getattr(msg, "reasoning_content", None))
+  print("Tool calls:", msg.tool_calls)
+  ```
 </Accordion>
 
 <Accordion title="Example Output">
+  ```text Output theme={null}
+  Reasoning: The user wants to know the weather in Paris. I'll call the get_weather function with "Paris" as the city.
 
-```text Output
-Reasoning: The user wants to know the weather in Paris. I'll call the get_weather function with "Paris" as the city.
-
-Tool calls: [
-  {
-    "id": "call_13fcd52146934b7781d06d4a",
-    "type": "function",
-    "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}
-  }
-]
-```
-
+  Tool calls: [
+    {
+      "id": "call_13fcd52146934b7781d06d4a",
+      "type": "function",
+      "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}
+    }
+  ]
+  ```
 </Accordion>
 
 ### 3.3 HiCache (Hierarchical KV Caching)
@@ -228,7 +4882,7 @@ For long-context, prefix-heavy workloads, enable hierarchical KV caching to spil
 
 GLM-5.2's strong reasoning + tool-calling makes it a good backend for [Claude Code](https://code.claude.com/docs/en/overview), Anthropic's agentic CLI. SGLang exposes the Anthropic-compatible `/v1/messages` endpoint on every server, so Claude Code can talk to a GLM-5.2 server with only environment variables — no code change. Launch the server with `--reasoning-parser glm45 --tool-call-parser glm47` (any recipe from the Deployment panel above works), then:
 
-```bash Command
+```bash Command theme={null}
 export ANTHROPIC_BASE_URL="http://127.0.0.1:30000"
 export ANTHROPIC_AUTH_TOKEN="dummy"
 export API_TIMEOUT_MS="3000000"
@@ -243,7 +4897,7 @@ claude
 
 Two of these matter specifically for GLM-5.2:
 
-- **`CLAUDE_CODE_ATTRIBUTION_HEADER=0`** — Claude Code prepends a per-request attribution block to the system prompt. GLM-5.2's chat template renders `tools` **before** `system`, so that per-request hash is the first token to diverge between turns and the radix prefix cache re-prefills the whole system + history every turn. This env removes the block and restores prefix-cache reuse.
-- **`glm-5.2[1m]`** as the model name — the `[1m]` suffix is the client-side hint that enables Claude Code's 1M-context beta, matching GLM-5.2's 1,048,576-token window. Without it, context is capped well below 1M. SGLang does not validate the `model` field, so any name is accepted server-side.
+* **`CLAUDE_CODE_ATTRIBUTION_HEADER=0`** — Claude Code prepends a per-request attribution block to the system prompt. GLM-5.2's chat template renders `tools` **before** `system`, so that per-request hash is the first token to diverge between turns and the radix prefix cache re-prefills the whole system + history every turn. This env removes the block and restores prefix-cache reuse.
+* **`glm-5.2[1m]`** as the model name — the `[1m]` suffix is the client-side hint that enables Claude Code's 1M-context beta, matching GLM-5.2's 1,048,576-token window. Without it, context is capped well below 1M. SGLang does not validate the `model` field, so any name is accepted server-side.
 
-For the full setup (streaming, tool-use, count_tokens, persisting env in `~/.claude/settings.json`, troubleshooting), see [Anthropic-Compatible API](../../../docs/basic_usage/anthropic_api).
+For the full setup (streaming, tool-use, count\_tokens, persisting env in `~/.claude/settings.json`, troubleshooting), see [Anthropic-Compatible API](../../../docs/basic_usage/anthropic_api).
