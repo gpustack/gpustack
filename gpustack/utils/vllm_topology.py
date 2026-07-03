@@ -99,13 +99,6 @@ def validate_multinode_topology(  # noqa: C901
         raise ValueError(
             f"vLLM multi-node: --tensor-parallel-size {tp} must be positive."
         )
-    for idx, cnt in enumerate(gpu_per_node):
-        if cnt % tp != 0:
-            raise ValueError(
-                f"vLLM multi-node: --tensor-parallel-size {tp} cannot divide "
-                f"worker[{idx}] {cnt} GPUs (vLLM requires each TP unit fit "
-                f"inside one node)."
-            )
 
     workers_per_dp = tp * pp
 

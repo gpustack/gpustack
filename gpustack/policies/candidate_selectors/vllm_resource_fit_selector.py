@@ -777,9 +777,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
     def _validate_mp_multinode_arguments(self):
         """
         Sanity-check user-provided MP multi-node parallelism arguments
-        before worker selection. Cross-node-topology invariants (TP divides
-        every node's GPU count, ``workers_per_dp`` fits the cluster, etc.)
-        are enforced later in :func:`cal_multinode_topology` once the
+        before worker selection. Cross-node-topology invariants
+        (``workers_per_dp`` fits the cluster, homogeneous cross-node layout,
+        etc.) are enforced later in :func:`cal_multinode_topology` once the
         deployment metadata is known; here we only catch contradictions
         detectable from backend_parameters alone.
         """
