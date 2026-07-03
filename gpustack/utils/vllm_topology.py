@@ -35,6 +35,10 @@ class MultinodeUserParallelism:
     pp: Optional[int] = None
     dp: Optional[int] = None
     dpl: Optional[int] = None
+    # Prefill context parallel: multiplies the per-DP-group world like tp/pp
+    # (vLLM world_size = pp * tp * pcp). Decode CP is deliberately absent — it
+    # reuses the TP group's GPUs and never widens the topology.
+    pcp: Optional[int] = None
 
 
 @dataclass
@@ -67,29 +71,44 @@ def validate_multinode_topology(  # noqa: C901
     start time) get the same diagnostic ``ValueError`` so error messages are
     maintained in one place.
 
-    Pivot: ``workers_per_dp = tp * pp`` versus per-node GPU count decides
+    Pivot: ``workers_per_dp = tp * pp * pcp`` versus per-node GPU count decides
     whether a single DP rank fits in one node (``dp_only``) or must span
     multiple nodes (``mp_only`` / ``nested``).
     """
     user = user or MultinodeUserParallelism()
     nnodes = len(gpu_per_node)
 
+    # Reject non-positive parallelism before ``... or 1`` silently swaps a 0 for
+    # 1 or a negative value corrupts workers_per_dp. Shared choke point for both
+    # the scheduler selector and the worker's cal_multinode_topology; tp is
+    # validated after its derivation below.
+    for name, value in (
+        ("pipeline-parallel-size", user.pp),
+        ("prefill-context-parallel-size", user.pcp),
+        ("data-parallel-size", user.dp),
+        ("data-parallel-size-local", user.dpl),
+    ):
+        if value is not None and value <= 0:
+            raise ValueError(f"vLLM multi-node: --{name} {value} must be positive.")
+
     pp = user.pp or 1
+    pcp = user.pcp or 1
     if user.tp is not None:
         tp = user.tp
     elif user.dp is not None:
-        # vLLM constraint: tp * pp * dp == sum(gpu_per_node). When the user
-        # pins dp (and optionally pp), we can solve for tp instead of falling
-        # back to gcd(gpu_per_node) — which would ignore the user's intent
+        # vLLM constraint: tp * pp * pcp * dp == sum(gpu_per_node). When the user
+        # pins dp (and optionally pp / prefill-CP), we can solve for tp instead of
+        # falling back to gcd(gpu_per_node) — which would ignore the user's intent
         # and almost always conflict with their dp later.
         total_gpus = sum(gpu_per_node)
-        denom = user.dp * pp
+        denom = user.dp * pp * pcp
         if denom == 0 or total_gpus % denom != 0:
             raise ValueError(
                 f"vLLM multi-node: cannot infer --tensor-parallel-size from "
-                f"--data-parallel-size {user.dp} and --pipeline-parallel-size "
-                f"{pp}: total GPUs {total_gpus} is not a multiple of "
-                f"{user.dp} * {pp} = {denom}."
+                f"--data-parallel-size {user.dp}, --pipeline-parallel-size {pp} "
+                f"and --prefill-context-parallel-size {pcp}: total GPUs "
+                f"{total_gpus} is not a multiple of {user.dp} * {pp} * {pcp} "
+                f"= {denom}."
             )
         tp = total_gpus // denom
     else:
@@ -107,7 +126,7 @@ def validate_multinode_topology(  # noqa: C901
                 f"inside one node)."
             )
 
-    workers_per_dp = tp * pp
+    workers_per_dp = tp * pp * pcp
 
     if workers_per_dp <= min(gpu_per_node):
         # dp_only: every DP rank fits in one node.
@@ -194,6 +213,9 @@ def parse_user_parallelism(
         pp=find_int_parameter(backend_parameters, ["pipeline-parallel-size", "pp"]),
         dp=find_int_parameter(backend_parameters, ["data-parallel-size", "dp"]),
         dpl=find_int_parameter(backend_parameters, ["data-parallel-size-local", "dpl"]),
+        pcp=find_int_parameter(
+            backend_parameters, ["prefill-context-parallel-size", "pcp"]
+        ),
     )
 
 
