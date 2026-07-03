@@ -1,1 +1,52 @@
+---
+title: DeepSeek-V4-Flash
+description: "Deploy DeepSeek-V4-Flash with SGLang — Z.ai's DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model with MTP speculative decoding and 1M context, on H20."
+tag: NEW
+---
+
+# Deploying DeepSeek-V4-Flash with GPUStack and SGLang
+
+This tutorial guides you through setting up **DeepSeek-V4-Flash**—a high-performance Mixture-of-Experts (MoE) model with massive long-context capabilities—using **SGLang (v0.5.14)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `lmsysorg/sglang:v0.5.14`
+* **Hardware Requirements**: H20 (8x GPUs for Tensor/Context Parallelism)
+
+### 2. Model Weights Source
+* **Model Name**: `DeepSeek-V4-Flash`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/deepseek-ai/DeepSeek-V4-Flash`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `DeepSeek-V4-Flash`
+* **Container Image**: `lmsysorg/sglang:v0.5.14`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+You can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--trust-remote-code
+--tp-size 8
+--enable-nsa-prefill-context-parallel
+--nsa-prefill-cp-mode round-robin-split
+--moe-runner-backend marlin
+--speculative-algorithm EAGLE
+--speculative-num-steps 3
+--speculative-eagle-topk 1
+--reasoning-parser deepseek-v4
+--tool-call-parser deepseekv4
+--attn-cp-size 8
+--context-length 1000000
+--mem-fraction-static 0.8
+--speculative-num-draft-tokens 4
+```
 
