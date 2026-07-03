@@ -858,7 +858,8 @@ class VLLMServer(InferenceServer):
                 raise ValueError(
                     "vLLM external-LB requires exactly one DP rank per node "
                     f"(this node hosts {topology.dpl}); tensor-parallel-size * "
-                    "pipeline-parallel-size must equal the node's GPU count."
+                    "pipeline-parallel-size * prefill-context-parallel-size must "
+                    "equal the node's GPU count."
                 )
             return [("--data-parallel-rank", str(topology.start_rank)), *args]
         return [("--data-parallel-start-rank", str(topology.start_rank)), *args]

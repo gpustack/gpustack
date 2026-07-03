@@ -120,6 +120,50 @@ def test_world_size_no_parallelism():
     assert strategies is None
 
 
+def test_world_size_5612_prefill_cp_multiplies_decode_cp_does_not():
+    """Regression #5612: MiniMax on 16 GPUs with TP=8 DP=1 DCP=1 PCP=2.
+    Prefill CP spins up extra ranks (world_size *= pcp); decode CP reuses the
+    TP group and must NOT size, so world_size = 8 * 2 * 1 = 16 matches the 16
+    selected GPUs instead of the old 8."""
+    params = [
+        "--tensor-parallel-size",
+        "8",
+        "--data-parallel-size",
+        "1",
+        "--decode-context-parallel-size",
+        "1",
+        "--prefill-context-parallel-size",
+        "2",
+    ]
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
+    )
+    assert world_size == 16
+    assert strategies == ["tp", "pcp", "dp"]
+
+
+def test_world_size_prefill_cp_short_alias():
+    """-pcp is the vLLM short alias for --prefill-context-parallel-size."""
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(
+            _model(["-tp", "4", "-pcp", "2"])
+        )
+    )
+    assert world_size == 8
+    assert strategies == ["tp", "pcp"]
+
+
+def test_world_size_decode_cp_alone_does_not_size():
+    """Decode CP alone reuses TP GPUs and never triggers world sizing."""
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(
+            _model(["-dcp", "2"])
+        )
+    )
+    assert world_size is None
+    assert strategies is None
+
+
 def test_world_size_hybrid_lb_sizes_by_dpl():
     """Legacy hybrid-LB (one deployment per node, distributed inference off):
     --data-parallel-size is global; local world sizes by dpl."""
@@ -476,6 +520,26 @@ def test_mp_only_pp_across_two_nodes_follower():
     assert out.is_follower is True
 
 
+def test_mp_only_prefill_cp_across_two_nodes():
+    """#5612: TP=8 PCP=2 on 2x8 GPU → workers_per_dp = 8*1*2 = 16 > 8 → the DP
+    group spans both nodes (mp_only, dp=1), just like PP would."""
+    inst = _instance(8, 8)
+    out = cal_multinode_topology(
+        inst, _meta("leader"), MultinodeUserParallelism(tp=8, pcp=2)
+    )
+    assert out == MultinodeTopology(
+        shape="mp_only",
+        tp=8,
+        pp=1,
+        dp=1,
+        dpl=1,
+        nnodes=2,
+        node_rank=0,
+        start_rank=0,
+        is_follower=False,
+    )
+
+
 def test_mp_only_pp_three_nodes():
     """TP=4 PP=3 on 3x4 GPU."""
     inst = _instance(4, 4, 4)
@@ -673,6 +737,10 @@ def test_validate_nested():
             MultinodeUserParallelism(tp=8, pp=2, dpl=2),
             "must be 1",
         ),
+        # Non-positive parallelism must be rejected, not silently coerced by
+        # ``... or 1`` (negative would corrupt workers_per_dp; 0 would become 1).
+        ([8, 8], MultinodeUserParallelism(pcp=-2), "must be positive"),
+        ([8, 8], MultinodeUserParallelism(pp=0), "must be positive"),
     ],
 )
 def test_validate_rejects(gpu_per_node, user, expected_match):
