@@ -31,6 +31,15 @@ logger = logging.getLogger(__name__)
 # syntactically valid URL.
 _BASE_URL = "https://gpustack-operator/apis"
 
+# aiohttp's default session timeout is ``ClientTimeout(total=300)`` — a 5-minute
+# overall deadline that starts at connect and fires regardless of whether data
+# is flowing. That is fine for the short request/response helpers, but a watch
+# stream is meant to stay open indefinitely, so the total deadline tears a
+# healthy stream down every 5 minutes (surfacing as a ``TimeoutError`` on
+# ``readline``). Drop the overall deadline for streaming requests; keep the
+# bounded connect timeout so a broken socket still fails fast and reconnects.
+_WATCH_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30)
+
 _unix_path: Optional[str] = None
 
 
@@ -204,7 +213,9 @@ async def _stream(path: str, params: list[tuple[str, str]]) -> AsyncIterator[str
     downstream clients can consume both kinds of streams uniformly.
     """
     async with _session() as session:
-        async with session.get(f"{_BASE_URL}{path}", params=params) as resp:
+        async with session.get(
+            f"{_BASE_URL}{path}", params=params, timeout=_WATCH_TIMEOUT
+        ) as resp:
             resp.raise_for_status()
             while True:
                 line = await resp.content.readline()
