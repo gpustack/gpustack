@@ -59,3 +59,7 @@ MTP / speculative decoding. The checkpoint ships one nextn layer. Enable EAGLE M
 Context Parallelism (CP) for long prefill. DSA prefill CP splits the long-prefill attention across --attn-cp-size ranks. On Hopper (H200) this gives a large prefill-latency win at long context — e.g. round-robin CP (--tp 8 --attn-cp-size 8 --enable-dsa-prefill-context-parallel --dsa-prefill-cp-mode round-robin-split) cut 64K-token prefill TTFT roughly 2.5–2.8× vs. plain TP8 in our testing. Trade-offs: CP partitions the KV pool (lower max context at the same --mem-fraction-static) and adds some decode-side overhead, so it pays off only for long sequences. CP is currently verified on Hopper only — the Blackwell (sm100) DSA-CP FP8 rope kernel is not yet adapted, so leave CP off on B200/B300/GB300.
 
 Memory. The FP8 weights are large (MoE total, not active params). Start around --mem-fraction-static 0.8 on H20 (TP8) and tune up
+
+### 3. more config
+
+https://docs.sglang.io/cookbook/autoregressive/GLM/GLM-5.2#hw=gb300&variant=default&quant=fp8&strategy=low-latency&nodes=single
