@@ -34,7 +34,6 @@ Navigate to your GPUStack admin dashboard, go to **Models** -> **Add Model**, an
 You can directly copy and paste the following parameters into the **Backend Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
 
 ```text
---model /data/models/ZhipuAI/GLM-5.2-FP8
 --tp-size 8
 --enable-nsa-prefill-context-parallel
 --nsa-prefill-cp-mode round-robin-split
@@ -48,3 +47,6 @@ You can directly copy and paste the following parameters into the **Backend Argu
 --cuda-graph-max-bs 32
 --ep 8
 --max-running-requests 30
+```
+
+
