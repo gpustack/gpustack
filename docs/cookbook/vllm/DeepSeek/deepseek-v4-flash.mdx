@@ -1,1 +1,55 @@
+---
+title: DeepSeek-V4-Flash (vLLM)
+description: "Deploy DeepSeek-V4-Flash with vLLM — DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model with native MTP speculative config and 1M context, on H20."
+tag: NEW
+---
+
+# Deploying DeepSeek-V4-Flash with GPUStack and vLLM
+
+This tutorial guides you through setting up **DeepSeek-V4-Flash**—a high-performance Mixture-of-Experts (MoE) model with massive long-context capabilities—using **vLLM (v0.24.0)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `vllm/vllm-openai:v0.24.0-cu129`
+* **Hardware Requirements**: H20 (8x GPUs for Tensor & Expert Parallelism)
+
+### 2. Model Weights Source
+* **Model Name**: `DeepSeek-V4-Flash`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/deepseek-ai/DeepSeek-V4-Flash`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `DeepSeek-V4-Flash`
+* **Container Image**: `vllm/vllm-openai:v0.24.0-cu129`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+Based on the UI screenshot `image_de6826.png`, you can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--max-model-len=1024000
+--speculative_config '{"method":"mtp","num_speculative_tokens":1}'
+--reasoning-parser deepseek_v4
+--enable-auto-tool-choice
+--tool-call-parser deepseek_v4
+--tokenizer-mode deepseek_v4
+--tensor-parallel-size 8
+--enable-expert-parallel
+--block-size 256
+--trust-remote-code
+--enable-prefix-caching
+--kv-cache-dtype fp8
+--performance-mode=throughput
+--default-chat-template-kwargs={"enable_thinking":false}
+```
+### 3. more config
+
+https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash
 
