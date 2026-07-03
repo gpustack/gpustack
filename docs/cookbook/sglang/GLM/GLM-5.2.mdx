@@ -4,8 +4,6 @@ description: "Deploy GLM-5.2 with SGLang — Z.ai's DeepSeek-Sparse-Attention (D
 tag: NEW
 ---
 
-## Deployment
-
 ---
 title: Deploy GLM-5.2 (W4AFP8 Quantized) via GPUStack and SGLang Container
 sidebar_label: GLM-5.2 Deployment (SGLang)
@@ -16,7 +14,7 @@ description: A step-by-step guide to deploying the highly optimized GLM-5.2 quan
 
 This tutorial guides you through setting up **GLM-5.2-W4AFP8**—a quantized model with massive long-context capabilities—using **SGLang (v0.5.14)** in the **GPUStack** Custom Container mode. 
 
-The configuration leverages advanced optimizations derived from your parameters in image_dbb9ee.png, including an 800k ultra-long context window, EAGLE speculative decoding, and NSA (Native Sparse Attention) prefill context parallelism for low-latency production environments.
+The configuration leverages advanced optimizations derived from your parameters, including an 800k ultra-long context window, EAGLE speculative decoding, and NSA (Native Sparse Attention) prefill context parallelism for low-latency production environments.
 
 ---
 
@@ -24,7 +22,7 @@ The configuration leverages advanced optimizations derived from your parameters 
 
 ### 1. Base Image
 * **Image Name**: `lmsysorg/sglang:v0.5.14`
-* **Hardware Requirements**: Given `--tp-size 8` and `--attn-cp-size 8`, an **8-GPU cluster interconnected with NVLink or RoCEv2** (e.g., 8x H20 or 8x 910B) is highly recommended.
+* **Hardware Requirements**: H20
 
 ### 2. Model Weights Source
 * **Model Name**: `GLM-5.2-W4AFP8`
@@ -40,8 +38,25 @@ Navigate to your GPUStack admin dashboard, go to **Models** -> **Add Model**, an
 * **Model Name**: `GLM-5.2-W4AFP8`
 * **Container Image**: `lmsysorg/sglang:v0.5.14`
 
-### 2. Environment Variables
-To fetch the weights at high speed from ModelScope, inject the following environment variables or use a setup script within the container:
-```env
-export MODELSCOPE_CACHE=/data/models
-python3 -c "from modelscope import snapshot_download; snapshot_download('PhalaCloud/GLM-5.2-W4AFP8')"
+### 2. Backend Arguments (Multi-line Format for UI Input)
+You can directly copy and paste the following parameters into the **Backend Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--model-path /data/models/PhalaCloud/GLM-5.2-W4AFP8
+--quantization w4afp8
+--context-length 800000
+--disable-shared-experts-fusion
+--tp-size 8
+--kv-cache-dtype fp8_e4m3
+--reasoning-parser glm45
+--tool-call-parser glm47
+--mem-fraction-static 0.8
+--trust-remote-code
+--speculative-algorithm EAGLE
+--speculative-num-steps 5
+--speculative-eagle-topk 1
+--speculative-num-draft-tokens 6
+--cuda-graph-max-bs 32
+--enable-nsa-prefill-context-parallel
+--nsa-prefill-cp-mode round-robin-split
+--attn-cp-size 8
