@@ -34,19 +34,21 @@ Navigate to your GPUStack admin dashboard, go to **Models** -> **Add Model**, an
 You can directly copy and paste the following parameters into the **Backend Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
 
 ```text
---tp-size 8
---enable-nsa-prefill-context-parallel
---nsa-prefill-cp-mode round-robin-split
+--tensor-parallel-size 8
 --speculative-config.method mtp
 --speculative-config.num_speculative_tokens 5
---mem-fraction-static 0.9
+--gpu-memory-utilization 0.8
 --reasoning-parser glm45
 --tool-call-parser glm47
 --context-length 800000
---kv-cache-dtype fp8_e4m3
+--kv-cache-dtype fp8
 --cuda-graph-max-bs 32
---ep 8
---max-running-requests 30
+--enable-expert-parallel
+--max-num-seqs 30
 ```
+
+### 3. more config
+
+https://recipes.vllm.ai/zai-org/GLM-5.2?strategy=single_node_tep
 
 
