@@ -1,0 +1,50 @@
+---
+title: GLM-5.2 (vLLM)
+description: "Deploy GLM-5.2 with vLLM — Z.ai's DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model with MTP speculative decoding and 800K context, on H20."
+tag: NEW
+---
+
+# Deploying GLM-5.2-FP8 with GPUStack and vLLM
+
+This tutorial guides you through setting up **GLM-5.2-FP8**—the official unquantized/FP8 Mixture-of-Experts model with massive long-context capabilities—using **vLLM (v0.24.0)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `swr.cn-south-1.myhuaweicloud.com/gpustack/vllm-openai:v0.24.0-cu129`
+* **Hardware Requirements**: H20
+
+### 2. Model Weights Source
+* **Model Name**: `GLM-5.2-FP8`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/ZhipuAI/GLM-5.2-FP8`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **Add Model**, and select the **Custom Container** / **vLLM Backend** mode.
+
+### 1. Basic Information
+* **Model Name**: `GLM-5.2-FP8`
+* **Container Image**: `swr.cn-south-1.myhuaweicloud.com/gpustack/vllm-openai:v0.24.0-cu129`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+You can directly copy and paste the following parameters into the **Backend Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--model /data/models/ZhipuAI/GLM-5.2-FP8
+--tp-size 8
+--enable-nsa-prefill-context-parallel
+--nsa-prefill-cp-mode round-robin-split
+--speculative-config.method mtp
+--speculative-config.num_speculative_tokens 5
+--mem-fraction-static 0.9
+--reasoning-parser glm45
+--tool-call-parser glm47
+--context-length 800000
+--kv-cache-dtype fp8_e4m3
+--cuda-graph-max-bs 32
+--ep 8
+--max-running-requests 30
