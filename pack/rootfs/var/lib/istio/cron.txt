@@ -1,1 +1,6 @@
 0 * * * * /usr/sbin/logrotate /etc/logrotate.d/higress-logrotate
+# Delete old embedded-Postgres logs (default 30d retention). Postgres'
+# logging_collector rotates but never deletes, so without this its logs grow
+# unbounded (#5774). The script resolves the log dir itself so a custom
+# --data-dir is honoured; override the window via POSTGRES_LOG_RETENTION_DAYS.
+0 2 * * * /etc/s6-overlay/scripts/postgres-log-cleanup.sh
