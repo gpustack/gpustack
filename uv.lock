@@ -1510,7 +1510,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.2.3.post5" },
-    { name = "gpustack-runner", specifier = "==0.1.26.post5" },
+    { name = "gpustack-runner", specifier = "==0.1.27" },
     { name = "gpustack-runtime", specifier = "==0.2.0.post5" },
     { name = "hf-xet", specifier = ">=1.3.1,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -1601,16 +1601,16 @@ wheels = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.26.post5"
+version = "0.1.27"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/62/c2/a524f0035c8113576fe400edb358470c3cdad8b8665149fa26a342d5e475/gpustack_runner-0.1.26.post5.tar.gz", hash = "sha256:1c60abf93c8ec0d4573cd8cc4420140206174df685995fc7442e4ba7905d24d0", size = 13451327, upload-time = "2026-06-11T12:44:39.648Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/54/818b047c5cc6e74aa47ea3393ec3a270afdd7b3f1a1b0f648a27b1e333ac/gpustack_runner-0.1.27.tar.gz", hash = "sha256:d4d6d51f9a5454fc41eb8106a5a200a16c1471e938ce36dc60b48135df228588", size = 13455430, upload-time = "2026-07-06T08:05:26.003Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/5f/d87f5f268a289733139ba08de9e49c991d2aa84a2de3a943655f8dce5b45/gpustack_runner-0.1.26.post5-py3-none-any.whl", hash = "sha256:f465fa9be481c7b372e6a469e6880801ecca56b315c3c210fbe5de1ef9bc23d4", size = 29500, upload-time = "2026-06-11T12:44:38.01Z" },
+    { url = "https://files.pythonhosted.org/packages/78/7d/2e4baf61fdf4022dca298bb0662d90bce3633c6c704c6cdab91f84c793bf/gpustack_runner-0.1.27-py3-none-any.whl", hash = "sha256:0ae4c619d7ee01b3125a2defbb42242599130757d024734fc4d8e58a1742a78d", size = 29792, upload-time = "2026-07-06T08:05:24.552Z" },
 ]
 
 [[package]]
