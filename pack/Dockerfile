@@ -507,16 +507,8 @@ RUN --mount=type=cache,target=/root/.cache \
         && make build
 
     # Install GPUStack.
-    # FIXME: There is no linux/arm64 vLLM prebuilt wheel,
-    #        so we only install the all wheel for linux/amd64.
-    if [ "${TARGETARCH}" == "amd64" ]; then
-        WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[all]";
-    else
-        WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]";
-    fi
-
     uv pip install --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu/ \
-        ${WHEEL_PACKAGE}
+        /workspace/gpustack/dist/*.whl
 
     # Download tools
     gpustack download-tools
