@@ -10,11 +10,40 @@ from threading import Lock
 from functools import cache
 from huggingface_hub import HfFileSystem
 from huggingface_hub.utils import validate_repo_id
-from modelscope.hub.api import HubApi
-from modelscope.hub.snapshot_download import (
+
+# Neutralize modelscope 1.33+'s global monkey-patch of
+# `transformers.dynamic_module_utils.get_class_from_dynamic_module` before any
+# `from modelscope import <Auto class>` runs (see get_pretrained_config below).
+# Upstream tracking: https://github.com/modelscope/modelscope/issues/1751
+#
+# `modelscope/utils/hf_util/patcher.py::_patch_pretrained_class` fires the
+# first time anything touches a class off the `modelscope` LazyImportModule
+# and replaces transformers' `get_class_from_dynamic_module` with a wrapper
+# that snapshot-downloads the whole repo from ModelScope for every
+# `trust_remote_code=True` load. On a server that serves both HuggingFace and
+# ModelScope sourced models this reroutes subsequent HF `AutoConfig.from_pretrained`
+# calls through `modelscope.snapshot_download(<hf_repo_id>)` — the HF repo id
+# usually does not exist on modelscope.cn, so config loads either 404 or fetch
+# the wrong content.
+#
+# The patcher gates its install with
+# `if not hasattr(dmu, "origin_get_class_from_dynamic_module")`, so seeding
+# that sentinel here turns the whole global patch into a no-op while leaving
+# the real transformers function intact. Our ModelScope code path below
+# downloads the snapshot itself and calls `AutoConfig.from_pretrained` on the
+# local directory, so it does not depend on the modelscope wrapper. Any code
+# that actually needs modelscope-backed HF routing can still call
+# `modelscope.utils.hf_util.patch_hub()` explicitly.
+import transformers.dynamic_module_utils as _dmu
+
+if not hasattr(_dmu, "origin_get_class_from_dynamic_module"):
+    _dmu.origin_get_class_from_dynamic_module = _dmu.get_class_from_dynamic_module
+
+from modelscope.hub.api import HubApi  # noqa: E402
+from modelscope.hub.snapshot_download import (  # noqa: E402
     snapshot_download as modelscope_snapshot_download,
 )
-from transformers import PretrainedConfig
+from transformers import PretrainedConfig  # noqa: E402
 from huggingface_hub import HfApi
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
 from requests.exceptions import HTTPError
