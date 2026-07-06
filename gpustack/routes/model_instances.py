@@ -1,10 +1,14 @@
 import asyncio
 import json
-from typing import List, Optional, Tuple
+from typing import AsyncIterator, Dict, List, Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Request, status, HTTPException
-from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
-from urllib.parse import urlencode
+from fastapi.responses import (
+    PlainTextResponse,
+    StreamingResponse,
+    RedirectResponse,
+)
+from urllib.parse import quote, urlencode
 
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
@@ -43,6 +47,7 @@ from gpustack.schemas.models import (
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.config.config import get_global_config
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack.utils.tabular_export import stream_zip
 
 router = APIRouter()
 
@@ -273,20 +278,13 @@ async def get_serving_logs(  # noqa: C901
 
         worker = await fetch_worker(session, target_worker_id)
 
-        params = {
-            "tail": log_options.tail,
-            "follow": log_options.follow,
-            "model_instance_name": model_instance.name,
-            "previous": log_options.previous,
-        }
-        if container_name:
-            params["container_name"] = container_name
-        if (
-            model_instance.state != ModelInstanceStateEnum.RUNNING
-            and model_instance.model_files
-            and model_instance.model_files[0].state != ModelFileStateEnum.READY
-        ):
-            params["model_file_id"] = model_instance.model_files[0].id
+        params = _build_serve_log_params(
+            model_instance,
+            tail=log_options.tail,
+            follow=log_options.follow,
+            previous=log_options.previous,
+            container_name=container_name,
+        )
 
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
 
@@ -327,6 +325,262 @@ async def get_serving_logs(  # noqa: C901
         return PlainTextResponse(
             content=body.decode() if body else "", status_code=resp.status
         )
+
+
+@router.get(
+    "/{id}/logs/download",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Plain text for one log stream, a zip archive for several.",
+            "content": {"text/plain": {}, "application/zip": {}},
+        }
+    },
+)
+async def download_serving_logs(
+    request: Request,
+    ctx: TenantContextDep,
+    id: int,
+):
+    """Download a model instance's complete current logs as a file.
+
+    Collects every worker (main + subordinates) and every container per worker
+    (the default main workload plus Ray-style sidecars). A single log stream
+    downloads as a plain-text .log; multiple streams as a flat zip with one file
+    per worker/container. Always the full current logs (no tail/follow/previous).
+    Both shapes stream, so neither a log nor the archive is ever buffered whole.
+    """
+    # Session released before streaming so a download doesn't hold a connection.
+    async with async_session() as session:
+        model_instance = await fetch_model_instance(session, ctx, id)
+        targets = await resolve_instance_log_worker_targets(session, model_instance)
+
+    # Discover every (worker, container) log stream once (one options call/worker).
+    streams = await _plan_log_streams(request, model_instance, targets)
+
+    # A dead end has to fail before streaming fixes the status. Only structural
+    # ones qualify: a failed discovery still falls back to the main workload.
+    if all(stream["worker"] is None for stream in streams):
+        detail = "; ".join(
+            f"{stream['worker_label']}: {stream['error']}" for stream in streams
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch logs from all workers: {detail}",
+        )
+
+    if len(streams) == 1:
+        return _stream_single_worker_log(request, model_instance, streams[0])
+    return _stream_zipped_worker_logs(request, model_instance, streams)
+
+
+def _stream_single_worker_log(
+    request: Request,
+    model_instance: ModelInstance,
+    stream: dict,
+) -> StreamingResponse:
+    """Stream one worker/container's logs straight through, without buffering."""
+    filename = _sanitize_filename(f"{model_instance.name or model_instance.id}.log")
+    return StreamingResponse(
+        _worker_log_chunks(request, model_instance, stream),
+        media_type="text/plain; charset=utf-8",
+        headers=_attachment_headers(filename),
+    )
+
+
+def _stream_zipped_worker_logs(
+    request: Request,
+    model_instance: ModelInstance,
+    streams: List[dict],
+) -> StreamingResponse:
+    """Stream a flat zip with one member per log; peak memory is one chunk."""
+    zip_name = _sanitize_filename(
+        f"{model_instance.name or model_instance.id}.logs.zip"
+    )
+    return StreamingResponse(
+        stream_zip(_zip_members(request, model_instance, streams)),
+        media_type="application/zip",
+        headers=_attachment_headers(zip_name),
+    )
+
+
+async def _zip_members(
+    request: Request,
+    model_instance: ModelInstance,
+    streams: List[dict],
+) -> AsyncIterator[Tuple[str, AsyncIterator[bytes]]]:
+    """Name each stream, suffixing a repeated worker/container label."""
+    seen: set[str] = set()
+    for stream in streams:
+        label = f"{stream['worker_label']}.{stream['container_display']}"
+        name = _sanitize_filename(f"{label}.log")
+        index = 1
+        while name in seen:
+            name = _sanitize_filename(f"{label}.{index}.log")
+            index += 1
+        seen.add(name)
+        yield name, _worker_log_chunks(request, model_instance, stream)
+
+
+async def _worker_log_chunks(
+    request: Request,
+    model_instance: ModelInstance,
+    stream: dict,
+) -> AsyncIterator[bytes]:
+    """One stream's complete logs; its own failures become file content."""
+    worker = stream["worker"]
+    if worker is None:
+        yield f"Failed to fetch logs: {stream['error']}\n".encode()
+        return
+
+    # Discovery failed but the fallback still reads the main workload. Say so,
+    # or a sidecar log missing from the archive looks like it never existed.
+    if stream["error"]:
+        yield (
+            f"Note: container discovery failed ({stream['error']}); "
+            "this log covers the main workload only.\n"
+        ).encode()
+
+    params = _build_serve_log_params(
+        model_instance, container_name=stream["container_internal"]
+    )
+    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
+    try:
+        async for chunk, _, status_code in stream_to_worker(
+            worker=worker,
+            method="GET",
+            path=f"serveLogs/{model_instance.id}",
+            proxy_client=request.app.state.http_client,
+            no_proxy_client=request.app.state.http_client_no_proxy,
+            params=params,
+            timeout=timeout,
+            raw=True,
+        ):
+            payload = chunk if isinstance(chunk, bytes) else chunk.encode()
+            # Label an error body so it can't be read as real log output.
+            if status_code >= 400:
+                yield f"Failed to fetch logs: HTTP {status_code}: ".encode() + payload
+                return
+            yield payload
+    except Exception as e:
+        yield f"\nFailed to fetch logs: {e}\n".encode()
+
+
+def _sanitize_filename(name: str) -> str:
+    """Make a name safe as a download filename / zip entry name.
+
+    Non-ASCII stays: zip entries are UTF-8, and the header percent-encodes it.
+    """
+    cleaned = name.replace("/", "_").replace("\\", "_").replace('"', "_")
+    cleaned = "".join(ch for ch in cleaned if ch.isprintable()).strip(". ")
+    return cleaned or "logs"
+
+
+def _attachment_headers(filename: str) -> Dict[str, str]:
+    """A Content-Disposition that survives a non-ASCII filename (RFC 6266).
+
+    Starlette encodes headers as latin-1, so a CJK name needs ``filename*``.
+    """
+    quoted = quote(filename, safe="")
+    if quoted == filename:
+        return {"Content-Disposition": f'attachment; filename="{filename}"'}
+    ascii_filename = "".join(
+        ch if ch.isascii() and ch.isprintable() else "_" for ch in filename
+    )
+    return {
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{quoted}'
+        )
+    }
+
+
+def _build_serve_log_params(
+    model_instance: ModelInstance,
+    tail: int = -1,
+    follow: bool = False,
+    previous: bool = False,
+    container_name: Optional[str] = None,
+) -> dict:
+    """Proxy params for one container's logs; defaults to a full, non-follow read."""
+    params = {
+        "tail": tail,
+        "follow": follow,
+        "model_instance_name": model_instance.name,
+        "previous": previous,
+    }
+    if container_name:
+        params["container_name"] = container_name
+    if (
+        model_instance.state != ModelInstanceStateEnum.RUNNING
+        and model_instance.model_files
+        and model_instance.model_files[0].state != ModelFileStateEnum.READY
+    ):
+        params["model_file_id"] = model_instance.model_files[0].id
+    return params
+
+
+async def _discover_worker_containers(
+    request: Request, worker: Worker, model_instance_id: int
+) -> Tuple[List[str], Optional[str]]:
+    """Internal container names for one worker, plus any discovery error.
+
+    A failed discovery still falls back to ["default"] (the main workload logs).
+    """
+    try:
+        payload = await fetch_serve_log_options_from_worker(
+            request, worker, model_instance_id
+        )
+    except Exception as e:
+        return ["default"], str(e)
+    current = next((entry for entry in payload.restarts if not entry.previous), None)
+    containers = current.containers if current else []
+    return list(containers) or ["default"], None
+
+
+async def _plan_log_streams(
+    request: Request,
+    model_instance: ModelInstance,
+    targets: List[Tuple[int, str, Optional[Worker]]],
+) -> List[dict]:
+    """Discover every (worker, container) log stream, one options call per worker.
+
+    Returns flat stream descriptors {"worker_label", "worker", "container_internal",
+    "container_display", "error"}. A worker missing from the DB still yields one
+    placeholder stream so its absence is reported instead of silently dropped.
+    """
+
+    async def per_worker(target: Tuple[int, str, Optional[Worker]]) -> List[dict]:
+        worker_id, worker_name, worker = target
+        label = worker_name or f"worker-{worker_id}"
+        if worker is None:
+            return [
+                {
+                    "worker_label": label,
+                    "worker": None,
+                    "container_internal": "default",
+                    "container_display": "default",
+                    "error": "Worker not found in database",
+                }
+            ]
+        is_main = worker_id == model_instance.worker_id
+        containers, error = await _discover_worker_containers(
+            request, worker, model_instance.id
+        )
+        return [
+            {
+                "worker_label": label,
+                "worker": worker,
+                "container_internal": container_internal,
+                "container_display": _map_container_display_name(
+                    container_internal, model_instance, is_main
+                ),
+                "error": error,
+            }
+            for container_internal in containers
+        ]
+
+    grouped = await asyncio.gather(*[per_worker(t) for t in targets])
+    return [stream for group in grouped for stream in group]
 
 
 async def resolve_instance_log_worker_targets(
