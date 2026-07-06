@@ -209,14 +209,14 @@ def test_user_list_params_sort_by_full_name_maps_to_display_name():
     assert params.order_by == [("display_name", "asc")]
 
 
-def test_user_list_params_sort_by_name_still_works_directly():
-    params = users_route.UserListParams(sort_by="name")
-    assert params.order_by == [("name", "asc")]
+def test_user_list_params_rejects_storage_sort_field_name():
+    with pytest.raises(InvalidException, match="not sortable"):
+        users_route.UserListParams(sort_by="name")
 
 
-def test_user_list_params_sort_by_display_name_still_works():
-    params = users_route.UserListParams(sort_by="display_name")
-    assert params.order_by == [("display_name", "asc")]
+def test_user_list_params_rejects_storage_sort_field_display_name():
+    with pytest.raises(InvalidException, match="not sortable"):
+        users_route.UserListParams(sort_by="display_name")
 
 
 def test_user_list_params_rejects_unknown_sort_field():

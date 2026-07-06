@@ -179,10 +179,8 @@ class UserActivationUpdate(SQLModel):
 
 class UserListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
-        "name",
         "username",
         "is_admin",
-        "display_name",
         "full_name",
         "source",
         "is_active",
@@ -192,7 +190,7 @@ class UserListParams(ListParams):
 
     # Wire-level field names that map to different DB column names.
     # Key = wire name (from API / UI), value = DB column name.
-    _WIRE_TO_DB_SORT_MAP: dict[str, str] = {
+    _WIRE_TO_DB_SORT_MAP: ClassVar[dict[str, str]] = {
         "username": "name",
         "full_name": "display_name",
     }
