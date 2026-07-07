@@ -1224,7 +1224,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.2.3.post5" },
-    { name = "gpustack-runner", specifier = "==0.1.27" },
+    { name = "gpustack-runner", specifier = "==0.1.27.post1" },
     { name = "gpustack-runtime", specifier = "==0.2.1" },
     { name = "hf-xet", specifier = ">=1.3.1,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -1305,16 +1305,17 @@ wheels = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.27"
+version = "0.1.27.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
+    { name = "packaging" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/54/818b047c5cc6e74aa47ea3393ec3a270afdd7b3f1a1b0f648a27b1e333ac/gpustack_runner-0.1.27.tar.gz", hash = "sha256:d4d6d51f9a5454fc41eb8106a5a200a16c1471e938ce36dc60b48135df228588", size = 13455430, upload-time = "2026-07-06T08:05:26.003Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/11/9c9a0eb063882fd65cb3651a15b5f5f11370a25891e737733a4e78c8f6af/gpustack_runner-0.1.27.post1.tar.gz", hash = "sha256:127eb578e368d1dc67c9a31c6667816104b9deb0b9cfb2032a83c0cd014bcd20", size = 13457370, upload-time = "2026-07-07T06:09:39.961Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/78/7d/2e4baf61fdf4022dca298bb0662d90bce3633c6c704c6cdab91f84c793bf/gpustack_runner-0.1.27-py3-none-any.whl", hash = "sha256:0ae4c619d7ee01b3125a2defbb42242599130757d024734fc4d8e58a1742a78d", size = 29792, upload-time = "2026-07-06T08:05:24.552Z" },
+    { url = "https://files.pythonhosted.org/packages/70/63/d680a4f5c4254f7baed55e8acedd669553672f4582da5b2853acc88fa4ea/gpustack_runner-0.1.27.post1-py3-none-any.whl", hash = "sha256:b4e75bf7a5bc265ca48fe9ea4d3ae6006b2edcf24f11df58fad1a1181bcd874b", size = 30540, upload-time = "2026-07-07T06:09:38.245Z" },
 ]
 
 [[package]]
