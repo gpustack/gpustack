@@ -12,8 +12,8 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.tenant import (
     bypass_tenant_filter,
-    assert_cluster_resource_visible,
-    cluster_resource_visibility_conditions,
+    assert_resource_visible,
+    tenant_list_conditions,
     cluster_scoped_system,
     scoped_cluster_row_visible,
 )
@@ -45,8 +45,6 @@ def _make_model_file_visibility_filter(ctx):
             and org_id is not None
             and org_id == ctx.current_principal_id
         ):
-            return True
-        if getattr(m, "cluster_id", None) in ctx.accessible_cluster_ids:
             return True
         return False
 
@@ -111,7 +109,7 @@ async def get_model_files(
             media_type="text/event-stream",
         )
 
-    extra_conditions = list(cluster_resource_visibility_conditions(ctx, ModelFile))
+    extra_conditions = list(tenant_list_conditions(ctx, ModelFile))
     if search:
         extra_conditions.append(_model_file_search_clause(search))
 
@@ -155,7 +153,7 @@ def search_model_file_filter(data: ModelFile, search: str) -> bool:
 @router.get("/{id}", response_model=ModelFilePublic)
 async def get_model_file(session: SessionDep, ctx: TenantContextDep, id: int):
     model_file = await ModelFile.one_by_id(session, id)
-    assert_cluster_resource_visible(
+    assert_resource_visible(
         ctx, model_file, not_found_message=f"Model file {id} not found"
     )
     return model_file
@@ -233,7 +231,7 @@ async def update_model_file(
     model_file_in: ModelFileUpdate,
 ):
     model_file = await ModelFile.one_by_id(session, id)
-    assert_cluster_resource_visible(
+    assert_resource_visible(
         ctx, model_file, not_found_message=f"Model file {id} not found"
     )
 
@@ -257,7 +255,7 @@ async def delete_model_file(
     model_file = await ModelFile.one_by_id(
         session, id, options=[selectinload(ModelFile.instances)]
     )
-    assert_cluster_resource_visible(
+    assert_resource_visible(
         ctx, model_file, not_found_message=f"Model file {id} not found"
     )
 
@@ -285,7 +283,7 @@ async def delete_model_file(
 )
 async def reset_model_file(session: SessionDep, ctx: TenantContextDep, id: int):
     model_file = await ModelFile.one_by_id(session, id)
-    assert_cluster_resource_visible(
+    assert_resource_visible(
         ctx, model_file, not_found_message=f"Model file {id} not found"
     )
 

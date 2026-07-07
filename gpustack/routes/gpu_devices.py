@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from gpustack.api.tenant import (
     bypass_tenant_filter,
-    assert_cluster_resource_visible,
-    cluster_resource_visibility_conditions,
+    assert_resource_visible,
+    tenant_list_conditions,
+    cluster_scoped_system,
+    scoped_cluster_row_visible,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import async_session
@@ -71,9 +73,11 @@ async def get_gpus(
     if cluster_id:
         fields["cluster_id"] = cluster_id
 
-    extra_conditions = cluster_resource_visibility_conditions(ctx, GPUDevice)
+    extra_conditions = tenant_list_conditions(ctx, GPUDevice)
 
     def _gpu_visible(g) -> bool:
+        if cluster_scoped_system(ctx):
+            return scoped_cluster_row_visible(ctx, g)
         if bypass_tenant_filter(ctx):
             return True
         org_id = getattr(g, "owner_principal_id", None)
@@ -82,8 +86,6 @@ async def get_gpus(
             and org_id is not None
             and org_id == ctx.current_principal_id
         ):
-            return True
-        if getattr(g, "cluster_id", None) in ctx.accessible_cluster_ids:
             return True
         return False
 
@@ -122,7 +124,5 @@ async def get_gpus(
 @router.get("/{id}", response_model=GPUDevicePublic)
 async def get_gpu(session: SessionDep, ctx: TenantContextDep, id: str):
     model = await GPUDevice.one_by_id(session, id)
-    assert_cluster_resource_visible(
-        ctx, model, not_found_message="GPU device not found"
-    )
+    assert_resource_visible(ctx, model, not_found_message="GPU device not found")
     return to_gpu_device_public(model, await _lookup_vram_allocated(model.worker_id))

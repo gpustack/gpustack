@@ -2308,8 +2308,8 @@ async def new_workers_from_pool(
             cluster=pool.cluster,
             worker_pool=pool,
             provider=pool.cluster.provider,
-            # Denormalize from cluster so cluster_resource_visibility_conditions
-            # can match without joining clusters. Mirrors the worker registration
+            # Denormalize from cluster so tenant_list_conditions can match
+            # without joining clusters. Mirrors the worker registration
             # path in routes/workers.update_worker_data.
             owner_principal_id=pool.cluster.owner_principal_id,
             name=f"pool-{pool.id}-"
