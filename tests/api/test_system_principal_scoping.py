@@ -8,10 +8,8 @@ import pytest
 from gpustack.api.exceptions import NotFoundException
 from gpustack.api.tenant import (
     TenantContext,
-    assert_cluster_resource_visible,
     assert_cluster_visible,
     assert_resource_visible,
-    cluster_resource_visibility_conditions,
     cluster_scoped_system,
     cluster_visibility_conditions,
     scoped_cluster_row_visible,
@@ -75,12 +73,6 @@ def test_tenant_list_conditions_scopes_cluster_bound_system():
     assert tenant_list_conditions(_system_ctx(), Model) == []
 
 
-def test_cluster_resource_visibility_conditions_scoped():
-    scoped = cluster_resource_visibility_conditions(_system_ctx(cluster_id=3), Model)
-    assert len(scoped) == 1
-    assert cluster_resource_visibility_conditions(_system_ctx(), Model) == []
-
-
 def test_cluster_visibility_conditions_scoped_to_own_cluster():
     scoped = cluster_visibility_conditions(_system_ctx(cluster_id=3), Cluster)
     assert len(scoped) == 1
@@ -97,13 +89,6 @@ def test_assert_resource_visible_scoped():
         assert_resource_visible(ctx, SimpleNamespace(cluster_id=4))
     # Legacy SYSTEM principal still sees everything.
     assert_resource_visible(_system_ctx(), SimpleNamespace(cluster_id=4))
-
-
-def test_assert_cluster_resource_visible_scoped():
-    ctx = _system_ctx(cluster_id=3)
-    assert_cluster_resource_visible(ctx, SimpleNamespace(cluster_id=3))
-    with pytest.raises(NotFoundException):
-        assert_cluster_resource_visible(ctx, SimpleNamespace(cluster_id=4))
 
 
 def test_assert_cluster_visible_scoped():

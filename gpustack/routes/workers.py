@@ -22,9 +22,11 @@ from gpustack.api.exceptions import (
 from gpustack.config.config import get_global_config
 from gpustack.api.tenant import (
     bypass_tenant_filter,
-    assert_cluster_resource_visible,
+    assert_resource_visible,
     assert_org_owned_writable,
-    cluster_resource_visibility_conditions,
+    tenant_list_conditions,
+    cluster_scoped_system,
+    scoped_cluster_row_visible,
 )
 from gpustack.server.deps import (
     SessionDep,
@@ -151,10 +153,13 @@ async def _inject_allocated_into_event(event: Event):
 
 
 def _make_worker_visibility_filter(ctx):
-    """Return a row-level visibility predicate matching the SQL filter
-    produced by ``cluster_resource_visibility_conditions``."""
+    """Return a row-level visibility predicate mirroring the SQL filter
+    produced by ``tenant_list_conditions``: cluster-scoped SYSTEM accounts
+    are narrowed to their own cluster, everyone else is owner-only."""
 
     def _visible(w) -> bool:
+        if cluster_scoped_system(ctx):
+            return scoped_cluster_row_visible(ctx, w)
         if bypass_tenant_filter(ctx):
             return True
         org_id = getattr(w, "owner_principal_id", None)
@@ -163,8 +168,6 @@ def _make_worker_visibility_filter(ctx):
             and org_id is not None
             and org_id == ctx.current_principal_id
         ):
-            return True
-        if getattr(w, "cluster_id", None) in ctx.accessible_cluster_ids:
             return True
         return False
 
@@ -209,10 +212,10 @@ async def get_workers(
 ):
     fields, fuzzy_fields = _build_worker_list_filters(name, uuid, cluster_id, search)
 
-    # Worker carries denormalized owner_principal_id (synced from cluster) so
-    # tenant filtering can use the same OR-of-{own-Org, cluster_access} rule
-    # as cluster_resource_visibility_conditions.
-    extra_conditions = cluster_resource_visibility_conditions(ctx, Worker)
+    # Worker carries denormalized owner_principal_id (synced from cluster), so
+    # tenant filtering scopes the list to the caller's own Org — a shared
+    # cluster does not expose the owner's workers to the grantee.
+    extra_conditions = tenant_list_conditions(ctx, Worker)
     visible = _make_worker_visibility_filter(ctx)
 
     if params.watch:
@@ -260,7 +263,7 @@ async def get_worker(
     id: int,
 ):
     worker = await Worker.one_by_id(session, id)
-    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
+    assert_resource_visible(ctx, worker, not_found_message="worker not found")
     me = user.worker is not None and user.worker.id == worker.id
     return to_worker_public(worker, me, await _lookup_allocated(worker.id))
 
@@ -273,7 +276,7 @@ async def get_worker_dashboard(
     request: Request,
 ):
     worker = await Worker.one_by_id(session, id)
-    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
+    assert_resource_visible(ctx, worker, not_found_message="worker not found")
 
     cfg = get_global_config()
     if not cfg.get_grafana_url() or not cfg.grafana_worker_dashboard_uid:
@@ -713,7 +716,7 @@ async def update_worker(
     worker = await Worker.one_by_id(session, id)
     if worker is not None and worker.deleted_at is not None:
         worker = None
-    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
+    assert_resource_visible(ctx, worker, not_found_message="worker not found")
     assert_org_owned_writable(ctx, worker, resource_label="worker")
 
     patch = worker_in.model_dump()
@@ -734,7 +737,7 @@ async def delete_worker(ctx: TenantContextDep, session: SessionDep, id: int):
     worker = await Worker.one_by_id(session, id)
     if worker is not None and worker.deleted_at is not None:
         worker = None
-    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
+    assert_resource_visible(ctx, worker, not_found_message="worker not found")
     assert_org_owned_writable(ctx, worker, resource_label="worker")
     try:
         soft = worker.external_id is not None
@@ -787,7 +790,7 @@ async def get_worker_privatekey(
     worker = await Worker.one_by_id(session, id)
     if worker is not None and worker.deleted_at is not None:
         worker = None
-    assert_cluster_resource_visible(ctx, worker, not_found_message="worker not found")
+    assert_resource_visible(ctx, worker, not_found_message="worker not found")
     # Private key is a write-class secret (anyone holding it can SSH into the
     # host) — gate with the writable check, same as the cluster registration
     # token endpoint in routes/clusters.py.
