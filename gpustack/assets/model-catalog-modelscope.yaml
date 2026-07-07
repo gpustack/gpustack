@@ -1566,6 +1566,53 @@ model_sets:
         - --max-model-len=65536
         - --tokenizer-mode=deepseek_v32
         - --reasoning-parser=deepseek_v3
+- name: MiniMax-M3
+  description: MiniMax-M3 is MiniMax's flagship native-multimodal MoE model with 428B total parameters (23B activated), featuring a 1M context window with MSA sparse attention, adaptive reasoning modes, tool use, and frontier coding performance.
+  home: https://www.minimax.io
+  icon: /static/catalog_icons/minimax.png
+  size: 428
+  activated_size: 23
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - reasoning
+    - vision
+    - tools
+  licenses:
+    - minimax-community
+  release_date: "2026-06-01"
+  specs:
+    # NVIDIA Hopper+ (vLLM, MXFP8 — ~50% VRAM reduction)
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-M3-MXFP8
+      backend: vLLM
+      # Hopper+ runs MXFP8; Blackwell (B200/B300) preferred for native MX tensor core throughput
+      backend_parameters:
+        - --block-size=128
+        - --tool-call-parser=minimax_m3
+        - --reasoning-parser=minimax_m3
+        - --enable-auto-tool-choice
+        - --max-model-len=65536
+        - --trust-remote-code
+    # Standard fallback (BF16, vLLM)
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-M3
+      backend: vLLM
+      backend_parameters:
+        - --block-size=128
+        - --tool-call-parser=minimax_m3
+        - --reasoning-parser=minimax_m3
+        - --enable-auto-tool-choice
+        - --max-model-len=65536
+        - --trust-remote-code
 - name: MiniMax-M2.1
   description: MiniMax-M2.1 is a high-performance agentic model, optimized for robustness in coding, tool use, instruction following, and long-horizon planning. It excels in multilingual software development and complex multi-step workflows.
   home: https://www.minimax.io
@@ -1742,6 +1789,35 @@ model_sets:
         - --max-model-len=65536
         - --mm-encoder-tp-mode=data
         - --tool-call-parser=kimi_k2
+        - --reasoning-parser=kimi_k2
+        - --trust-remote-code
+- name: Kimi-K2.7-Code
+  description: Kimi-K2.7-Code is a coding-specialized member of Moonshot AI's Kimi-K2 multimodal MoE family, with 1T total parameters (32B activated), native INT4 quantization, vision support, and long-horizon agentic reasoning.
+  home: https://www.moonshot.ai
+  icon: /static/catalog_icons/kimi.png
+  size: 1
+  size_unit: T
+  activated_size: 32
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - vision
+    - tools
+  licenses:
+    - modified-mit
+  release_date: "2026-06-12"
+  specs:
+    - mode: standard
+      quantization: INT4
+      source: model_scope
+      model_scope_model_id: MoonshotAI/Kimi-K2.7-Code
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --mm-encoder-tp-mode=data
+        - --tool-call-parser=kimi_k2
+        - --enable-auto-tool-choice
         - --reasoning-parser=kimi_k2
         - --trust-remote-code
 - name: Step-3.5-Flash
@@ -2982,6 +3058,37 @@ model_sets:
       backend_parameters:
         - --max-model-len=65536
         - --trust-remote-code
+- name: DiffusionGemma-26B-A4B-it
+  description: DiffusionGemma 26B-A4B-it is a 26B MoE (4B activated) instruction-tuned multimodal model from Google's Gemma family that generates text via block-diffusion (256-token blocks) rather than autoregressive decoding, with vision, reasoning, and tool-use support.
+  home: https://deepmind.google/technologies/gemma
+  icon: /static/catalog_icons/google.png
+  size: 26
+  activated_size: 4
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - vision
+    - reasoning
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-06-10"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: google/diffusiongemma-26B-A4B-it
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --max-num-seqs=4
+        - --gpu-memory-utilization=0.85
+        - '--mm-processor-kwargs={"max_soft_tokens": 1120}'
+        - '--limit-mm-per-prompt={"image": 7}'
+        - --enable-auto-tool-choice
+        - --tool-call-parser=gemma4
+        - --reasoning-parser=gemma4
 - name: MiMo-V2.5
   description: MiMo-V2.5 is Xiaomi's flagship multimodal model with the mimo_v2 architecture, supporting vision/audio/video understanding, long-context, and agentic workflows.
   home: https://github.com/XiaomiMiMo
