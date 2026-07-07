@@ -422,8 +422,9 @@ def _build_distributed_follower_instance(backend_parameters):
     model_instance.huggingface_repo_id = "Qwen/Qwen2.5-0.5B-Instruct"
     model_instance.worker_ip = "10.0.0.1"
     model_instance.port = 8000
-    # ports[0] is the serving port, identical on every node (bound to each
-    # worker's own IP); the rest are DP/master/connecting ports.
+    # ports[0] is the leader's serving port; the rest are DP/master/connecting
+    # ports. Each API-serving subordinate allocates its own per-node serving
+    # port (subordinate_workers[].ports), here 9000 on worker 2.
     model_instance.ports = [8000, 8001, 8002, 8003]
     model_instance.distributed_servers = DistributedServers(
         mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
@@ -432,6 +433,7 @@ def _build_distributed_follower_instance(backend_parameters):
                 worker_id=2,
                 worker_name="worker-2",
                 worker_ip="10.0.0.2",
+                ports=[9000],
                 state=ModelInstanceStateEnum.RUNNING,
             )
         ],
@@ -465,7 +467,7 @@ def _drive_follower_event(manager, model_instance, model):
 
 def test_hybrid_lb_follower_is_cached_for_routing():
     """A hybrid-LB follower serves its own API, so the follower worker must
-    track the instance by id and resolve its local serving port (ports[0])."""
+    track the instance by id and resolve its own per-node serving port."""
     manager, _clients = _build_serve_manager(worker_id=2)
     model_instance, model = _build_distributed_follower_instance(
         [
@@ -480,12 +482,12 @@ def test_hybrid_lb_follower_is_cached_for_routing():
     _drive_follower_event(manager, model_instance, model)
 
     assert model_instance.id in manager._model_instance_by_instance_id
-    assert manager.get_instance_port_by_model_instance_id(model_instance.id) == 8000
+    assert manager.get_instance_port_by_model_instance_id(model_instance.id) == 9000
 
 
 def test_external_lb_follower_is_cached_for_routing():
     """An external-LB follower also serves its own API, so it must be tracked
-    by id and resolve its local serving port, same as hybrid-LB."""
+    by id and resolve its own per-node serving port, same as hybrid-LB."""
     manager, _clients = _build_serve_manager(worker_id=2)
     model_instance, model = _build_distributed_follower_instance(
         [
@@ -500,7 +502,81 @@ def test_external_lb_follower_is_cached_for_routing():
     _drive_follower_event(manager, model_instance, model)
 
     assert model_instance.id in manager._model_instance_by_instance_id
-    assert manager.get_instance_port_by_model_instance_id(model_instance.id) == 8000
+    assert manager.get_instance_port_by_model_instance_id(model_instance.id) == 9000
+
+
+def test_assign_subordinate_serving_port_allocates_on_own_host():
+    """A hybrid-LB subordinate allocates its own serving port on its own host
+    and records it on the subordinate entry, instead of reusing the leader's."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._config.service_port_range = (40000, 41000)
+    model_instance, _model = _build_distributed_follower_instance(
+        ["--data-parallel-hybrid-lb", "--data-parallel-size", "2"]
+    )
+    subordinate_worker = model_instance.distributed_servers.subordinate_workers[0]
+    subordinate_worker.ports = []  # not yet allocated
+
+    with patch(
+        "gpustack.worker.serve_manager.network.get_free_port", return_value=9000
+    ) as get_free_port:
+        manager._assign_subordinate_serving_port(model_instance, subordinate_worker)
+
+    get_free_port.assert_called_once()
+    assert get_free_port.call_args.kwargs["host"] == "10.0.0.2"
+    assert subordinate_worker.ports == [9000]
+
+
+def test_assign_subordinate_serving_port_reuses_free_port_on_restart():
+    """On restart the subordinate reuses its previously allocated port when it's
+    still free and not held by another instance, without re-allocating."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    model_instance, _model = _build_distributed_follower_instance(
+        ["--data-parallel-hybrid-lb", "--data-parallel-size", "2"]
+    )
+    subordinate_worker = model_instance.distributed_servers.subordinate_workers[0]
+    subordinate_worker.ports = [9000]
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.network.is_port_available",
+            return_value=True,
+        ),
+        patch("gpustack.worker.serve_manager.network.get_free_port") as get_free_port,
+    ):
+        manager._assign_subordinate_serving_port(model_instance, subordinate_worker)
+
+    get_free_port.assert_not_called()
+    assert subordinate_worker.ports == [9000]
+    assert 9000 in manager._assigned_ports[model_instance.id]
+
+
+def test_assign_subordinate_serving_port_avoids_other_instance_port():
+    """The reuse fast-path must not reuse a stale port another instance on this
+    worker already reserved (worker leads one instance, serves another), even
+    when the OS reports it free — it re-allocates instead."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._config.service_port_range = (40000, 41000)
+    model_instance, _model = _build_distributed_follower_instance(
+        ["--data-parallel-hybrid-lb", "--data-parallel-size", "2"]
+    )
+    subordinate_worker = model_instance.distributed_servers.subordinate_workers[0]
+    subordinate_worker.ports = [9000]  # stale port from a previous run
+    manager._assigned_ports[999] = {9000}  # another instance already holds it
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.network.is_port_available",
+            return_value=True,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.network.get_free_port", return_value=9500
+        ) as get_free_port,
+    ):
+        manager._assign_subordinate_serving_port(model_instance, subordinate_worker)
+
+    get_free_port.assert_called_once()
+    assert 9000 in get_free_port.call_args.kwargs["unavailable_ports"]
+    assert subordinate_worker.ports == [9500]
 
 
 def test_headless_follower_is_not_cached_for_routing():
@@ -569,8 +645,8 @@ def test_resolve_inference_health_probe_leader_uses_own_endpoint():
 
 
 def test_resolve_inference_health_probe_subordinate_uses_own_endpoint():
-    # On the subordinate worker, the probe targets this node's own
-    # worker_ip:ports[0], not the leader, and a failure flips this worker's
+    # On the subordinate worker, the probe targets this node's own worker_ip and
+    # its own per-node port, not the leader, and a failure flips this worker's
     # subordinate entry to ERROR — resolved by worker_id, not a captured index.
     manager, _clients = _build_serve_manager(worker_id=2)
     model_instance, model = _build_distributed_follower_instance(
@@ -580,7 +656,7 @@ def test_resolve_inference_health_probe_subordinate_uses_own_endpoint():
     probe = manager._resolve_inference_health_probe(model_instance, model)
     assert probe is not None
     host, port, on_failure = probe
-    assert (host, port) == ("10.0.0.2", 8000)
+    assert (host, port) == ("10.0.0.2", 9000)
 
     with patch.object(
         manager, "_update_subordinate_worker_state"

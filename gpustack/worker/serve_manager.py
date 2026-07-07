@@ -589,10 +589,10 @@ class ServeManager:
 
         Returns (probe_host, probe_port, on_failure). The leader probes its own
         worker_ip:port. An API-serving subordinate (hybrid-LB / external-LB)
-        probes its own worker_ip:ports[0]; on failure it marks its subordinate
-        entry ERROR so _get_main_worker_distributed_state takes the instance
-        down. Within one worker an instance id maps to a single role, so the
-        instance id alone keys the failure counters.
+        probes its own worker_ip and its own per-node port; on failure it marks
+        its subordinate entry ERROR so _get_main_worker_distributed_state takes
+        the instance down. Within one worker an instance id maps to a single
+        role, so the instance id alone keys the failure counters.
         """
         if model_instance.worker_id == self._worker_id:
 
@@ -628,7 +628,11 @@ class ServeManager:
             # skip instead of silently probing the wrong host.
             return None
         probe_port = (
-            model_instance.ports[0] if model_instance.ports else model_instance.port
+            subordinate_worker.ports[0]
+            if subordinate_worker.ports
+            else (
+                model_instance.ports[0] if model_instance.ports else model_instance.port
+            )
         )
 
         def on_failure():
@@ -657,7 +661,8 @@ class ServeManager:
         Each RUNNING instance hosted here is probed on the endpoint this worker
         actually serves: the leader on its own worker_ip:port, or — for an API
         serving subordinate (hybrid-LB / external-LB) — this subordinate's own
-        worker_ip:ports[0]. Headless followers serve nothing and are skipped.
+        worker_ip and per-node port. Headless followers serve nothing and are
+        skipped.
         """
         now = time.time()
 
@@ -800,9 +805,8 @@ class ServeManager:
             # Subordinates that serve their own API (hybrid-LB / external-LB)
             # have no --headless, so the server's proxy/gateway may route
             # inference traffic here. Track the instance in the by-id map so the
-            # routing header resolves to this worker's local serving port via
-            # get_instance_port_by_model_instance_id (ports[0] is the same number
-            # on every node, each bound to its own worker IP). Other distributed
+            # routing header resolves to this worker's own per-node serving port
+            # via get_instance_port_by_model_instance_id. Other distributed
             # followers stay headless and out of the map so they never receive
             # direct traffic.
             follower_model = self._get_model(mi)
@@ -1309,6 +1313,8 @@ class ServeManager:
             backend = get_backend(model)
 
             self._assign_ports(mi, model, backend)
+            if not is_main_worker and subordinates_serve_api(model.backend_parameters):
+                self._assign_subordinate_serving_port(mi, sw)
 
             logger.debug(
                 f"Starting model instance {mi.name}"
@@ -1483,6 +1489,43 @@ class ServeManager:
                 unavailable_ports.add(connecting_port)
 
             self._assigned_ports[mi.id] = set(mi.ports)
+
+    def _assign_subordinate_serving_port(
+        self, mi: ModelInstance, sw: ModelInstanceSubordinateWorker
+    ) -> None:
+        """Allocate this subordinate's own serving port on its own host.
+
+        hybrid-LB / external-LB subordinates each serve their own API, so the
+        port must be free on this worker rather than reusing the leader's
+        ports[0]. It is reported back via the subordinate patch in
+        _start_model_instance and read by registration / routing / health.
+        """
+        with _port_lock:
+            # Ports reserved for other instances on this worker (it may lead one
+            # instance and serve as a subordinate for another); both the reuse
+            # fast-path and a fresh allocation must avoid them, not just rely on
+            # OS-level availability of a not-yet-bound port.
+            reserved_by_others = {
+                port
+                for instance_id, ports in self._assigned_ports.items()
+                if instance_id != mi.id
+                for port in ports
+            }
+            if (
+                sw.ports
+                and sw.ports[0] not in reserved_by_others
+                and network.is_port_available(sw.ports[0], host=sw.worker_ip)
+            ):
+                # Reuse the previously allocated port on restart when still free.
+                self._assigned_ports.setdefault(mi.id, set()).update(sw.ports)
+                return
+            port = network.get_free_port(
+                port_range=self._config.service_port_range,
+                unavailable_ports=reserved_by_others,
+                host=sw.worker_ip,
+            )
+            sw.ports = [port]
+            self._assigned_ports.setdefault(mi.id, set()).add(port)
 
     def _restart_model_instance(self, mi: ModelInstance):
         """
@@ -1744,16 +1787,21 @@ class ServeManager:
         instance = self._model_instance_by_instance_id.get(
             model_instance_id
         )  # Ensure the model instance is cached.
-        # ports[0] is the serving port and carries the same number on every node
-        # of a distributed instance (each bound to its own worker IP), so this
-        # resolves correctly whether this worker hosts the leader or an
-        # API-serving subordinate (hybrid-LB / external-LB) — the worker proxy
+        if not (instance and instance.state == ModelInstanceStateEnum.RUNNING):
+            return None
+        # An API-serving subordinate (hybrid-LB / external-LB) serves on its own
+        # per-node port; the leader uses the instance ports. The worker proxy
         # forwards to this worker's own IP:port.
-        return (
-            instance.ports[0]
-            if instance and instance.state == ModelInstanceStateEnum.RUNNING
-            else None
-        )
+        if instance.worker_id != self._worker_id and instance.distributed_servers:
+            for subordinate_worker in (
+                instance.distributed_servers.subordinate_workers or []
+            ):
+                if (
+                    subordinate_worker.worker_id == self._worker_id
+                    and subordinate_worker.ports
+                ):
+                    return subordinate_worker.ports[0]
+        return instance.ports[0] if instance.ports else instance.port
 
 
 def is_ready(

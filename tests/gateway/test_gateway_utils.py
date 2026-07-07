@@ -1,5 +1,6 @@
 from gpustack.gateway import generic_proxy_router_spec_diff
 import re
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -12,11 +13,13 @@ from gpustack.gateway.utils import (
     generate_model_ingress,
     generic_proxy_router_diff_spec,
     get_instance_id_from_header,
+    get_subordinate_index_from_header,
     instance_registries,
     lora_registry_name_suffix,
     model_instance_registry,
     model_instances_registry_list,
     provider_registry,
+    resolve_instance_address_from_model_header,
     router_header_key,
 )
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
@@ -531,16 +534,19 @@ def test_model_instances_registry_list_threads_suffix():
 
 
 def _hybrid_lb_instance(subordinate_ips, subordinate_states=None):
-    """Hybrid-LB distributed instance: leader + N subordinate workers, all
-    serving on ports[0] (8000) bound to their own worker IP. Subordinates
-    default to RUNNING, since only a RUNNING node is registered as an upstream."""
+    """Hybrid-LB distributed instance: leader on ports[0] (8000) plus N
+    subordinate workers, each serving on its own per-node port (9000 + index)
+    bound to its own worker IP. Subordinates default to RUNNING, since only a
+    RUNNING node is registered as an upstream."""
     if subordinate_states is None:
         subordinate_states = [ModelInstanceStateEnum.RUNNING] * len(subordinate_ips)
     instance = ModelInstance(id=12, model_id=5, worker_ip="10.0.0.1", port=8000)
     instance.ports = [8000, 8001, 8002, 8003]
     instance.distributed_servers = DistributedServers(
         subordinate_workers=[
-            ModelInstanceSubordinateWorker(worker_id=100 + i, worker_ip=ip, state=state)
+            ModelInstanceSubordinateWorker(
+                worker_id=100 + i, worker_ip=ip, ports=[9000 + i], state=state
+            )
             for i, (ip, state) in enumerate(zip(subordinate_ips, subordinate_states))
         ],
     )
@@ -573,11 +579,11 @@ def test_instance_registries_hybrid_lb_direct_registers_each_node():
         "model-5-12-sub0",
         "model-5-12-sub1",
     ]
-    # DIRECT addressing: each node reachable at its own IP on the shared port.
+    # DIRECT addressing: each node reachable at its own IP on its own per-node port.
     assert [r.domain for r in registries] == [
         "10.0.0.1:8000",
-        "10.0.0.2:8000",
-        "10.0.0.3:8000",
+        "10.0.0.2:9000",
+        "10.0.0.3:9001",
     ]
     assert all(r.type == "static" for r in registries)
 
@@ -607,6 +613,27 @@ def test_instance_registries_subordinate_uses_its_own_proxy_mode():
     assert sub.domain == "10.0.0.2:10150"
 
 
+def test_instance_registries_direct_subordinate_prefers_advertise_address():
+    # DIRECT subordinate must honor the worker's advertise address (NAT/overlay),
+    # mirroring the leader; otherwise only subordinate traffic 503s on worker_ip.
+    instance = _hybrid_lb_instance(["10.0.0.2"])
+    sub_worker = Worker(
+        id=100,
+        name="worker-100",
+        ip="10.0.0.2",
+        advertise_address="203.0.113.2",
+        port=10150,
+        proxy_mode=ModelInstanceProxyModeEnum.DIRECT,
+    )
+    registries = instance_registries(
+        instance, subordinates_serve=True, workers={100: sub_worker}
+    )
+    sub = registries[1]
+    assert sub.name == "model-5-12-sub0"
+    # Advertise address + the subordinate's own per-node port.
+    assert sub.domain == "203.0.113.2:9000"
+
+
 def test_instance_registries_skips_non_running_subordinate():
     # A subordinate that isn't RUNNING (e.g. marked ERROR by the health check)
     # must not be re-registered as an upstream; the index keeps -sub names stable.
@@ -620,9 +647,9 @@ def test_instance_registries_skips_non_running_subordinate():
     registries = instance_registries(
         instance, subordinates_serve=True, workers=_direct_workers(instance)
     )
-    # sub0 (ERROR) is skipped; sub1 keeps its index-based name.
+    # sub0 (ERROR) is skipped; sub1 keeps its index-based name and per-node port.
     assert [r.name for r in registries] == ["model-5-12", "model-5-12-sub1"]
-    assert [r.domain for r in registries] == ["10.0.0.1:8000", "10.0.0.3:8000"]
+    assert [r.domain for r in registries] == ["10.0.0.1:8000", "10.0.0.3:9001"]
 
 
 def test_instance_registries_skips_subordinate_when_worker_missing():
@@ -660,3 +687,55 @@ def test_get_instance_id_from_header_subordinate_alias():
     assert (
         get_instance_id_from_header({router_header_key: "model-5-12-sub0.static"}) == 12
     )
+
+
+def test_get_subordinate_index_from_header():
+    header = router_header_key
+    # Leader / LoRA-only targets have no subordinate index.
+    assert get_subordinate_index_from_header({header: "model-5-12.static"}) is None
+    assert (
+        get_subordinate_index_from_header({header: "model-5-12-labc123.static"}) is None
+    )
+    assert get_subordinate_index_from_header({}) is None
+    # -sub<idx>, alone or combined with a LoRA alias, resolves to its index.
+    assert get_subordinate_index_from_header({header: "model-5-12-sub0.static"}) == 0
+    assert get_subordinate_index_from_header({header: "model-5-12-sub3.dns"}) == 3
+    assert (
+        get_subordinate_index_from_header({header: "model-5-12-sub2-labc123.static"})
+        == 2
+    )
+
+
+class _FakeAsyncSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_resolve_instance_address_routes_subordinate_to_own_endpoint():
+    instance = _hybrid_lb_instance(["10.0.0.2", "10.0.0.3"])
+    service = MagicMock()
+    service.get_by_id = AsyncMock(return_value=instance)
+    with (
+        patch(
+            "gpustack.gateway.utils.async_session",
+            return_value=_FakeAsyncSession(),
+        ),
+        patch("gpustack.gateway.utils.ModelInstanceService", return_value=service),
+    ):
+        # Leader header → leader endpoint.
+        assert await resolve_instance_address_from_model_header(
+            {router_header_key: "model-5-12.static"}
+        ) == ("10.0.0.1", 8000)
+        # Subordinate header → that node's own worker_ip and per-node port.
+        assert await resolve_instance_address_from_model_header(
+            {router_header_key: "model-5-12-sub1.static"}
+        ) == ("10.0.0.3", 9001)
+        # Subordinate with no per-node port yet → fall back to the leader.
+        instance.distributed_servers.subordinate_workers[0].ports = []
+        assert await resolve_instance_address_from_model_header(
+            {router_header_key: "model-5-12-sub0.static"}
+        ) == ("10.0.0.1", 8000)

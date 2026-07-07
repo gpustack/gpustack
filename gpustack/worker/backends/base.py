@@ -650,14 +650,26 @@ class InferenceServer(ABC):
         """
         Get the (main) serving port for the model instance.
 
+        An API-serving subordinate (hybrid-LB / external-LB) serves on its own
+        per-node port; the leader and headless followers use the instance ports.
+
         Returns:
             The (main) serving port for the model instance.
         """
-        return (
-            self._model_instance.ports[0]
-            if self._model_instance.ports
-            else self._model_instance.port
-        )
+        model_instance = self._model_instance
+        if (
+            model_instance.distributed_servers
+            and self._worker.id != model_instance.worker_id
+        ):
+            for subordinate_worker in (
+                model_instance.distributed_servers.subordinate_workers or []
+            ):
+                if (
+                    subordinate_worker.worker_id == self._worker.id
+                    and subordinate_worker.ports
+                ):
+                    return subordinate_worker.ports[0]
+        return model_instance.ports[0] if model_instance.ports else model_instance.port
 
     @staticmethod
     def _get_serving_command_script(env: dict[str, str]) -> Optional[str]:

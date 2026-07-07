@@ -653,23 +653,6 @@ class VLLMServer(InferenceServer):
             ("--served-model-name", self._model_instance.model_name),
         )
 
-        # An API-serving subordinate (hybrid-LB / external-LB) binds ports[0] on
-        # its own IP, but that port number is chosen on the leader node and never
-        # re-checked here, so it may already be taken on this worker. Fail fast
-        # with a clear message instead of letting vLLM crash on bind.
-        if (
-            subordinates_serve_api(self._model.backend_parameters)
-            and ctx.topology is not None
-            and ctx.topology.is_follower
-            and not network.is_port_available(ctx.port, host=self._worker.ip)
-        ):
-            raise ValueError(
-                f"vLLM subordinate serving port {ctx.port} is already in use on "
-                f"worker {self._worker.ip}. The port is selected on the leader node "
-                "and shared across nodes but was not verified free here; free it on "
-                "this worker, then redeploy."
-            )
-
         injected = self._get_injected_backend_parameters(
             arguments, user_backend_parameters, entrypoint
         )
