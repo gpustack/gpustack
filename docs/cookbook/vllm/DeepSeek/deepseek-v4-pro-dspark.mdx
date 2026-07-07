@@ -1,0 +1,58 @@
+---
+title: DeepSeek-V4-Pro (vLLM)
+description: "Deploy DeepSeek-V4-Pro-Dspark with vLLM — DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model with native MTP speculative config, CUDA graphs, and 200K context, on H20."
+tag: NEW
+---
+
+# Deploying DeepSeek-V4-Pro-Dspark with GPUStack and vLLM
+
+This tutorial guides you through setting up **DeepSeek-V4-Pro-Dspark**—a flagship Mixture-of-Experts (MoE) model featuring advanced optimization frameworks—using **vLLM (v0.24.0)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `vllm/vllm-openai:nightly`
+* **Hardware Requirements**: H20 (8x GPUs for Parallelism execution)
+
+### 2. Model Weights Source
+* **Model Name**: `DeepSeek-V4-Pro-Dspark`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/deepseek-ai/DeepSeek-V4-Pro-DSpark`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `DeepSeek-V4-Pro-DSpark`
+* **Container Image**: `vllm/vllm-openai:nightly`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+Based on the UI screenshot `image_de705f.png`, you can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+  --trust-remote-code 
+  --kv-cache-dtype fp8 
+  --block-size 256 
+  --enable-expert-parallel 
+  --tensor-parallel-size 8 
+  --max-num-seqs 16 
+  --max-num-batched-tokens 16384 
+  --no-enable-flashinfer-autotune 
+  --compilation-config '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}' 
+  --gpu-memory-utilization 0.95 
+  --max-model-len 200000 
+  --tokenizer-mode deepseek_v4 
+  --tool-call-parser deepseek_v4 
+  --enable-auto-tool-choice 
+  --reasoning-parser deepseek_v4 
+  --served-model-name deepseek-v4-pro-dspark 
+  --prefill-context-parallel-size 8 
+  --speculative-config '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
+```
+### 2. more config
+
+https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Pro
