@@ -1,6 +1,6 @@
-"""v2.2.1 database changes
+"""v2.2.2 database changes
 
-Bundles the pre-release schema tweaks for v2.2.1:
+Bundles the pre-release schema tweaks for v2.2.2:
 
 1. ``principals.source`` (and ``principal_memberships.source``) goes
    from the ``authproviderenum`` enum to ``VARCHAR(64)``, opening it
