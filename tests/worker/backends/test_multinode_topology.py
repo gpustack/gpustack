@@ -120,6 +120,50 @@ def test_world_size_no_parallelism():
     assert strategies is None
 
 
+def test_world_size_5612_prefill_cp_multiplies_decode_cp_does_not():
+    """Regression #5612: MiniMax on 16 GPUs with TP=8 DP=1 DCP=1 PCP=2.
+    Prefill CP spins up extra ranks (world_size *= pcp); decode CP reuses the
+    TP group and must NOT size, so world_size = 8 * 2 * 1 = 16 matches the 16
+    selected GPUs instead of the old 8."""
+    params = [
+        "--tensor-parallel-size",
+        "8",
+        "--data-parallel-size",
+        "1",
+        "--decode-context-parallel-size",
+        "1",
+        "--prefill-context-parallel-size",
+        "2",
+    ]
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
+    )
+    assert world_size == 16
+    assert strategies == ["tp", "pcp", "dp"]
+
+
+def test_world_size_prefill_cp_short_alias():
+    """-pcp is the vLLM short alias for --prefill-context-parallel-size."""
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(
+            _model(["-tp", "4", "-pcp", "2"])
+        )
+    )
+    assert world_size == 8
+    assert strategies == ["tp", "pcp"]
+
+
+def test_world_size_decode_cp_alone_does_not_size():
+    """Decode CP alone reuses TP GPUs and never triggers world sizing."""
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(
+            _model(["-dcp", "2"])
+        )
+    )
+    assert world_size is None
+    assert strategies is None
+
+
 def test_world_size_hybrid_lb_sizes_by_dpl():
     """Legacy hybrid-LB (one deployment per node, distributed inference off):
     --data-parallel-size is global; local world sizes by dpl."""
@@ -442,13 +486,6 @@ def test_dp_only_heterogeneous_rejects_uniform_dpl():
         )
 
 
-def test_dp_only_heterogeneous_tp_must_divide_every_node():
-    with pytest.raises(ValueError, match=r"worker\[1\] 4 GPUs"):
-        cal_multinode_topology(
-            _instance(8, 4), _meta("leader"), MultinodeUserParallelism(tp=8)
-        )
-
-
 # ---------------------------------------------------------------------------
 # shape == "mp_only" — PP/TP spans multiple nodes, dp == 1
 # ---------------------------------------------------------------------------
@@ -481,6 +518,26 @@ def test_mp_only_pp_across_two_nodes_follower():
     assert out.shape == "mp_only"
     assert out.node_rank == 1
     assert out.is_follower is True
+
+
+def test_mp_only_prefill_cp_across_two_nodes():
+    """#5612: TP=8 PCP=2 on 2x8 GPU → workers_per_dp = 8*1*2 = 16 > 8 → the DP
+    group spans both nodes (mp_only, dp=1), just like PP would."""
+    inst = _instance(8, 8)
+    out = cal_multinode_topology(
+        inst, _meta("leader"), MultinodeUserParallelism(tp=8, pcp=2)
+    )
+    assert out == MultinodeTopology(
+        shape="mp_only",
+        tp=8,
+        pp=1,
+        dp=1,
+        dpl=1,
+        nnodes=2,
+        node_rank=0,
+        start_rank=0,
+        is_follower=False,
+    )
 
 
 def test_mp_only_pp_three_nodes():
@@ -566,11 +623,15 @@ def test_nested_rejects_non_divisible_nnodes():
 # ---------------------------------------------------------------------------
 
 
-def test_tp_not_divisor():
-    with pytest.raises(ValueError, match=r"worker\[0\] 8 GPUs"):
-        cal_multinode_topology(
-            _instance(8, 8), _meta("leader"), MultinodeUserParallelism(tp=3)
-        )
+def test_tp_non_divisor_now_allowed():
+    """TP that doesn't divide a node's GPU count is no longer blocked: the node
+    packs floor(gpu/tp) TP groups and leaves the remainder idle.
+    [8,8] + tp=3 → per-node dpl=2 (6 GPUs used, 2 idle), dp=4."""
+    out = cal_multinode_topology(
+        _instance(8, 8), _meta("leader"), MultinodeUserParallelism(tp=3)
+    )
+    assert out.shape == "dp_only"
+    assert (out.tp, out.dp, out.dpl, out.start_rank) == (3, 4, 2, 0)
 
 
 def test_dp_only_dp_mismatch():
@@ -660,8 +721,6 @@ def test_validate_nested():
 @pytest.mark.parametrize(
     "gpu_per_node,user,expected_match",
     [
-        # tp doesn't divide a node's GPU count.
-        ([8, 8], MultinodeUserParallelism(tp=3), r"worker\[0\] 8 GPUs"),
         # User pins both tp and dp inconsistently.
         ([8, 8], MultinodeUserParallelism(tp=8, dp=5), "does not match"),
         # Heterogeneous cross-node TP/PP.
@@ -678,6 +737,10 @@ def test_validate_nested():
             MultinodeUserParallelism(tp=8, pp=2, dpl=2),
             "must be 1",
         ),
+        # Non-positive parallelism must be rejected, not silently coerced by
+        # ``... or 1`` (negative would corrupt workers_per_dp; 0 would become 1).
+        ([8, 8], MultinodeUserParallelism(pcp=-2), "must be positive"),
+        ([8, 8], MultinodeUserParallelism(pp=0), "must be positive"),
     ],
 )
 def test_validate_rejects(gpu_per_node, user, expected_match):
@@ -809,11 +872,12 @@ def test_create_candidate_returns_none_on_topology_failure():
     assert "homogeneous" in reason
 
 
-def test_create_candidate_tp_unfittable_returns_reason():
-    """Cluster=[1,1] + tp=2 → vLLM forbids cross-node TP; reason surfaces it.
+def test_create_candidate_cross_node_tp_allowed():
+    """Cluster=[1,1] + tp=2 → cross-node TP is now allowed; GPUStack builds the
+    candidate and leaves the launch-time go/no-go to vLLM.
 
-    Regression: this is the user-reported scenario where the UI used to show
-    "no suitable workers" without explaining the parameter is impossible.
+    Previously GPUStack pre-emptively rejected TP that spans nodes; that guard
+    was removed so users can opt into cross-node TP.
     """
     from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
         _create_candidate,
@@ -822,8 +886,8 @@ def test_create_candidate_tp_unfittable_returns_reason():
     model = _mock_model(["--distributed-executor-backend", "mp", "--tp", "2"])
     workers = [_mock_worker("a", 1), _mock_worker("b", 1)]
     candidate, reason = _create_candidate(model, workers)
-    assert candidate is None
-    assert "cannot divide" in reason
+    assert candidate is not None
+    assert reason is None
 
 
 def test_create_candidate_returns_candidate_when_topology_fits():

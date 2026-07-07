@@ -469,3 +469,43 @@ async def test_update_user_me_allows_password_for_local_user(monkeypatch):
     body = users_route.UserSelfUpdate(password="StrongPassw0rd!")
     await users_route.update_user_me(session=session, user=user, user_in=body)
     set_password_mock.assert_awaited_once()
+
+
+# ── UserListParams sort field mapping ──────────────────────────────
+
+
+def test_user_list_params_sort_by_username_maps_to_name():
+    """Frontend sends sort_by=username; backend maps to DB column name."""
+    params = users_route.UserListParams(sort_by="username")
+    assert params.order_by == [("name", "asc")]
+
+
+def test_user_list_params_sort_by_username_descending():
+    params = users_route.UserListParams(sort_by="-username")
+    assert params.order_by == [("name", "desc")]
+
+
+def test_user_list_params_sort_by_full_name_maps_to_display_name():
+    """Form full_name (UI), field full_name (API) → DB column display_name."""
+    params = users_route.UserListParams(sort_by="full_name")
+    assert params.order_by == [("display_name", "asc")]
+
+
+def test_user_list_params_rejects_storage_sort_field_name():
+    with pytest.raises(InvalidException, match="not sortable"):
+        users_route.UserListParams(sort_by="name")
+
+
+def test_user_list_params_rejects_storage_sort_field_display_name():
+    with pytest.raises(InvalidException, match="not sortable"):
+        users_route.UserListParams(sort_by="display_name")
+
+
+def test_user_list_params_rejects_unknown_sort_field():
+    with pytest.raises(InvalidException, match="not sortable"):
+        users_route.UserListParams(sort_by="unknown_column")
+
+
+def test_user_list_params_no_sort_by_returns_none():
+    params = users_route.UserListParams()
+    assert params.order_by is None
