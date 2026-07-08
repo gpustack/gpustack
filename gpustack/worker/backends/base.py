@@ -966,7 +966,7 @@ exec "$@"
                 backend_variant = "910b"
 
         logger.info(
-            f"_resolve_image query: backend={backend}, backend_variant={backend_variant}, service={service}, service_version={service_version}, platform={platform.system_arch()}"
+            f"_resolve_image query: backend={backend}, backend_variant={backend_variant}, service={service}, service_version={service_version}, platform={platform.system_arch()}, runtime_version={runtime_version}"
         )
 
         runners = list_backend_runners(
@@ -1033,13 +1033,25 @@ exec "$@"
                         backend_versioned_runner
                     )
                     return get_docker_image(backend_versioned_runner), service_version
+            # Every runner is newer than the host runtime. Same-major minor
+            # version compatibility holds even on consumer GPUs, but cross-major
+            # (e.g. 12.x host -> 13.x) does not; prefer the newest runner sharing
+            # the host major, and fall back to the oldest only if none matches.
+            host_major = _major_version(backend_version)
+            fallback_runner = next(
+                (
+                    candidate
+                    for candidate in backend_versioned_runners
+                    if _major_version(candidate.version) == host_major
+                ),
+                backend_versioned_runners[-1],
+            )
+        else:
+            # Failed to detect host runtime version: fall back to the latest.
+            fallback_runner = backend_versioned_runners[0]
 
-        # Return the first(latest) backend version of selected runner
-        # if failed to detect host backend version or no backend version matched.
-        service_version = _get_service_version_from_versioned_runner(
-            backend_versioned_runners[0]
-        )
-        return get_docker_image(backend_versioned_runners[0]), service_version
+        service_version = _get_service_version_from_versioned_runner(fallback_runner)
+        return get_docker_image(fallback_runner), service_version
 
     def _update_model_backend_service_version(
         self, service_version: Optional[str]
@@ -1122,6 +1134,13 @@ def _get_service_version_from_versioned_runner(
             f"Failed to get service version from backend versioned runner: {e}"
         )
         return None
+
+
+def _major_version(version: Optional[str]) -> Optional[str]:
+    """Extract the major version segment, e.g. '12' from 'v12.8'."""
+    if not version:
+        return None
+    return version.removeprefix("v").split(".", 1)[0]
 
 
 def is_ascend_310p(devices: GPUDevicesStatus) -> bool:
