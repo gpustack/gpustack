@@ -30,7 +30,7 @@ python3 hack/perf/run_model_benchmark.py \
 Run only a subset of runs:
 
 ```bash
-python3 hack/perf/benchmark_serving.py \
+python3 hack/perf/run_model_benchmark.py \
   --config .../qwen_3.5_9b.yaml \
   --profile .../profiles_config.yaml \
   --gpustack-url https://YOUR_GPUSTACK \
@@ -42,7 +42,7 @@ python3 hack/perf/benchmark_serving.py \
 Override test cases or request rates from the profile:
 
 ```bash
-python3 hack/perf/benchmark_serving.py \
+python3 hack/perf/run_model_benchmark.py \
   --config .../qwen_3.5_122b_a10b_fp8.yaml \
   --profile .../profiles_config.yaml \
   --gpustack-url https://YOUR_GPUSTACK \
