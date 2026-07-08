@@ -223,7 +223,7 @@ class ActiveRecordMixin:
     async def all_by_fields(
         cls,
         session: AsyncSession,
-        fields: dict = {},
+        fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
         extra_conditions: Optional[List] = None,
         options: Optional[List] = None,
@@ -232,7 +232,8 @@ class ActiveRecordMixin:
         Return all objects with the given fields and values.
         Return an empty list if not found.
         """
-
+        if fields is None:
+            fields = {}
         statement = select(cls)
         for key, value in fields.items():
             statement = statement.where(getattr(cls, key) == value)
@@ -423,7 +424,7 @@ class ActiveRecordMixin:
                     f"COALESCE(jsonb_array_length(({column_name}->{json_path_str})::jsonb), 0)"
                 )
             else:
-                # Build PGSQL JSON path like '(status#>>{"memory","utilization_rate"})::numeric'
+                # Build PGSQL JSON path like '(status#>>{\"/memory\","utilization_rate"})::numeric'
                 json_path_str = ",".join([f'"{part}"' for part in json_path_parts])
                 if not cast_type:
                     cast_type = "numeric"
@@ -564,13 +565,14 @@ class ActiveRecordMixin:
     async def count_by_fields(
         cls,
         session: AsyncSession,
-        fields: dict = {},
+        fields: Optional[dict] = None,
         extra_conditions: Optional[List] = None,
     ) -> int:
         """
         Return the number of records matching the given fields and conditions.
         """
-
+        if fields is None:
+            fields = {}
         statement = select(func.count(cls.id))
         for key, value in fields.items():
             statement = statement.where(getattr(cls, key) == value)
@@ -890,7 +892,8 @@ class ActiveRecordMixin:
                 if formatted is not None:
                     yield formatted
         except asyncio.CancelledError:
-            pass
+            # Re-raise to ensure proper structured concurrency cancellation state
+            raise
         except Exception as e:
             logger.error(f"Error in streaming {cls.__name__}: {e}")
 
