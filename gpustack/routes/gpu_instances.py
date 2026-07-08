@@ -347,11 +347,11 @@ async def _validate_create_obj(
                 "name": volume.persistent.name,
             },
         )
-        if pv is None:
+        if pv is None or pv.is_deleting():
             raise InvalidException(
                 message=(
                     f"GPU instance persistent volume "
-                    f"'{volume.persistent.name}' not found"
+                    f"'{volume.persistent.name}' not found or is being deleted"
                 ),
             )
         return pv.id
@@ -378,11 +378,11 @@ async def _validate_create_obj(
             owner_principal_id=create_obj.owner_principal_id,
             name=template.spec.type_,
         )
-        if pvt is None:
+        if pvt is None or pvt.is_deleting():
             raise InvalidException(
                 message=(
                     f"GPU instance persistent volume type "
-                    f"'{template.spec.type_}' not found"
+                    f"'{template.spec.type_}' not found or is being deleted"
                 ),
             )
 

@@ -27,8 +27,8 @@ from gpustack.schemas import (
     GPUInstancePersistentVolumeTypesPublic,
     GPUInstancePersistentVolumeTypeCreate,
     GPUInstancePersistentVolumeTypeStatus,
+    GPUInstancePersistentVolumeTypePhase,
 )
-from gpustack.schemas.gpu_instances import GPUInstancePhase
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
@@ -153,7 +153,7 @@ async def create_gpu_instance_persistent_volume_type(
     source: dict = create_obj.model_dump()
     source["creator_id"] = ctx.user.id
     source["status"] = GPUInstancePersistentVolumeTypeStatus(
-        phase=GPUInstancePhase.READY,
+        phase=GPUInstancePersistentVolumeTypePhase.READY,
     )
     async with handle_error(
         message="Failed to create GPU instance persistent volume type",
@@ -299,7 +299,7 @@ def _build_delete_phase_source(existing: GPUInstancePersistentVolumeType) -> dic
     return {
         "status": base.model_copy(
             update={
-                "phase": GPUInstancePhase.DELETING,
+                "phase": GPUInstancePersistentVolumeTypePhase.DELETING,
                 "phase_message": None,
             },
         ),

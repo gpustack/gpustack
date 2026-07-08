@@ -1,10 +1,11 @@
 """E4a: GPUInstancePersistentVolumeController finalizes soft-deleted PVs.
 
-Finalize enumerates every cluster, probes the downstream PV CR, deletes it where
-present, records the still-holding clusters in ``status.finalizing``, and
-hard-deletes the row once none remain. A PV still referenced by an active
-GPUInstance waits. The cluster enumeration + downstream ops are mocked; the DB is
-a real in-memory sqlite so the ORM queries / delete run for real.
+Finalize enumerates every cluster and issues an idempotent, namespace-scoped
+delete of the downstream PV CR; the delete reports whether it still existed, so
+the clusters still holding it are recorded in ``status.finalizing`` and the row
+is hard-deleted once none remain. A PV still referenced by an active GPUInstance
+waits. The cluster enumeration + downstream ops are mocked; the DB is a real
+in-memory sqlite so the ORM queries / delete run for real.
 """
 
 from types import SimpleNamespace
@@ -29,23 +30,20 @@ NAMESPACE = "gpustack-acme"
 
 
 class FakeOps:
-    """Stands in for ClusterOps: an async context manager exposing the two PV
-    methods the PV controller touches. ``items`` is the all-namespace list."""
+    """Stands in for ClusterOps: an async context manager whose
+    ``delete_persistent_volume`` is idempotent and returns whether the object
+    still existed on this cluster (``present``) — the finalizer's "still
+    holding it" signal."""
 
-    def __init__(self, items=None, org_namespace: str = NAMESPACE):
+    def __init__(self, present: bool = False, org_namespace: str = NAMESPACE):
         self.org_namespace = org_namespace
-        self.list_persistent_volumes = AsyncMock(return_value=list(items or []))
-        self.delete_persistent_volume = AsyncMock()
+        self.delete_persistent_volume = AsyncMock(return_value=present)
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *a):
         return False
-
-
-def _pv_item(name="pv-1", namespace=NAMESPACE):
-    return {"metadata": {"name": name, "namespace": namespace}}
 
 
 @pytest_asyncio.fixture
@@ -121,14 +119,15 @@ def _mock_clusters(monkeypatch, controller, ops_by_cluster):
 @pytest.mark.asyncio
 async def test_absent_downstream_hard_deletes_row(engine, controller, monkeypatch):
     await _seed(engine)
-    ops = {10: FakeOps(items=[]), 20: FakeOps(items=[])}
+    ops = {10: FakeOps(present=False), 20: FakeOps(present=False)}
     _mock_clusters(monkeypatch, controller, ops)
 
     await controller._finalize(1)
 
-    assert await _get_pv(engine) is None  # hard-deleted
+    assert await _get_pv(engine) is None  # nothing still downstream → hard-deleted
     for o in ops.values():
-        o.delete_persistent_volume.assert_not_called()
+        # Probed by an idempotent delete (returns False = already gone).
+        o.delete_persistent_volume.assert_awaited_once_with("pv-1")
 
 
 @pytest.mark.asyncio
@@ -136,17 +135,17 @@ async def test_present_downstream_records_finalizing_and_requeues(
     engine, controller, monkeypatch
 ):
     await _seed(engine)
-    ops = {10: FakeOps(items=[_pv_item()]), 20: FakeOps(items=[])}
+    ops = {10: FakeOps(present=True), 20: FakeOps(present=False)}
     _mock_clusters(monkeypatch, controller, ops)
 
     await controller._finalize(1)
 
     ops[10].delete_persistent_volume.assert_awaited_once_with("pv-1")
-    ops[20].delete_persistent_volume.assert_not_called()
+    ops[20].delete_persistent_volume.assert_awaited_once_with("pv-1")  # gone here
     pv = await _get_pv(engine)
     assert pv is not None  # retained until downstream clears
     assert pv.status.phase == "Deleting"
-    assert pv.status.finalizing == [10]
+    assert pv.status.finalizing == [10]  # only cluster 10 still held it
     assert len(controller._queue._delayed) == 1  # re-probe scheduled
 
 
@@ -155,7 +154,7 @@ async def test_active_instance_reference_blocks_finalize(
     engine, controller, monkeypatch
 ):
     await _seed(engine, instance_ref=True)
-    ops = {10: FakeOps(items=[_pv_item()])}
+    ops = {10: FakeOps(present=True)}
     _mock_clusters(monkeypatch, controller, ops)
 
     await controller._finalize(1)
@@ -169,22 +168,9 @@ async def test_active_instance_reference_blocks_finalize(
 
 
 @pytest.mark.asyncio
-async def test_probe_ignores_other_namespace(engine, controller, monkeypatch):
-    await _seed(engine)
-    # A same-named PV, but in a different Org's namespace → not ours.
-    other = FakeOps(items=[_pv_item(namespace="gpustack-other")])
-    _mock_clusters(monkeypatch, controller, {10: other})
-
-    await controller._finalize(1)
-
-    other.delete_persistent_volume.assert_not_called()
-    assert await _get_pv(engine) is None  # nothing ours downstream → hard-deleted
-
-
-@pytest.mark.asyncio
 async def test_unchanged_finalizing_skips_db_write(engine, controller, monkeypatch):
     await _seed(engine, finalizing=[10])  # already recorded last round
-    ops = {10: FakeOps(items=[_pv_item()])}
+    ops = {10: FakeOps(present=True)}
     _mock_clusters(monkeypatch, controller, ops)
 
     calls = []
@@ -203,12 +189,65 @@ async def test_unchanged_finalizing_skips_db_write(engine, controller, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_finalizing_order_normalized_skips_db_write(
+    engine, controller, monkeypatch
+):
+    # finalizing is compared order-insensitively: clusters probed in a different
+    # order than stored (Cluster.all has no ORDER BY) must not trip a DB write.
+    await _seed(engine, finalizing=[10, 20])
+    # _mock_clusters preserves dict order, so these probe as [20, 10] — the
+    # reverse of the stored [10, 20].
+    ops = {20: FakeOps(present=True), 10: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    calls = []
+    original = GPUInstancePersistentVolume.update
+
+    async def _counting_update(self, *a, **k):
+        calls.append(1)
+        return await original(self, *a, **k)
+
+    monkeypatch.setattr(GPUInstancePersistentVolume, "update", _counting_update)
+
+    await controller._finalize(1)
+
+    assert calls == []  # [20, 10] normalizes to [10, 20] == stored → no write
+    assert len(controller._queue._delayed) == 1
+
+
+@pytest.mark.asyncio
 async def test_non_deleting_row_is_noop(engine, controller, monkeypatch):
     await _seed(engine, phase=None)
-    ops = {10: FakeOps(items=[_pv_item()])}
+    ops = {10: FakeOps(present=True)}
     _mock_clusters(monkeypatch, controller, ops)
 
     await controller._finalize(1)
 
     ops[10].delete_persistent_volume.assert_not_called()
     assert await _get_pv(engine) is not None  # untouched
+
+
+@pytest.mark.asyncio
+async def test_missing_principal_hard_deletes_row(engine, controller, monkeypatch):
+    # A soft-deleted PV whose owning principal is gone can never run cluster
+    # ops, so the finalizer must hard-delete it instead of stranding it in
+    # Deleting forever.
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        s.add(
+            GPUInstancePersistentVolume(
+                id=1,
+                name="pv-1",
+                owner_principal_id=404,  # no such principal
+                persistent_volume_type_id=2,
+                spec=GPUInstancePersistentVolumeSpec(type_="t"),
+                status=GPUInstancePersistentVolumeStatus(phase="Deleting"),
+            )
+        )
+        await s.commit()
+    clusters = AsyncMock(return_value=[])
+    monkeypatch.setattr(Cluster, "all", clusters)
+
+    await controller._finalize(1)
+
+    assert await _get_pv(engine) is None  # hard-deleted, not stranded
+    clusters.assert_not_awaited()  # short-circuited before cluster enumeration

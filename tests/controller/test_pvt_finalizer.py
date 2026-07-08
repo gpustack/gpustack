@@ -1,9 +1,10 @@
 """E4b: GPUInstancePersistentVolumeTypeController finalizes soft-deleted PVTs.
 
 PV before PVT: a PVT with any referencing PV row waits (the PV->PVT FK is ON
-DELETE RESTRICT). Otherwise finalize enumerates every cluster, probes the
-cluster-scoped downstream PVT (matched by its owner-folded name), deletes it
-where present, and hard-deletes the row once none remain. Cluster enumeration +
+DELETE RESTRICT). Otherwise finalize enumerates every cluster and issues an
+idempotent delete of the cluster-scoped downstream PVT by its owner-folded name;
+the delete reports whether it still existed, so the still-holding clusters are
+recorded and the row is hard-deleted once none remain. Cluster enumeration +
 downstream ops are mocked; the DB is a real in-memory sqlite.
 """
 
@@ -36,22 +37,18 @@ CLUSTER_NAME = get_persistent_volume_type_name("pvt-1", principal_identifier="ac
 
 
 class FakeOps:
-    """Stands in for ClusterOps: the two PVT methods the controller touches.
-    ``items`` is the cluster-scoped PVT list result."""
+    """Stands in for ClusterOps: ``delete_persistent_volume_type`` is idempotent
+    and returns whether the object still existed on this cluster (``present``) —
+    the finalizer's "still holding it" signal."""
 
-    def __init__(self, items=None):
-        self.list_persistent_volume_types = AsyncMock(return_value=list(items or []))
-        self.delete_persistent_volume_type = AsyncMock()
+    def __init__(self, present: bool = False):
+        self.delete_persistent_volume_type = AsyncMock(return_value=present)
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *a):
         return False
-
-
-def _pvt_item(name=CLUSTER_NAME):
-    return {"metadata": {"name": name}}
 
 
 @pytest_asyncio.fixture
@@ -125,14 +122,14 @@ def _mock_clusters(monkeypatch, controller, ops_by_cluster):
 @pytest.mark.asyncio
 async def test_absent_downstream_hard_deletes_row(engine, controller, monkeypatch):
     await _seed(engine)
-    ops = {10: FakeOps(items=[]), 20: FakeOps(items=[])}
+    ops = {10: FakeOps(present=False), 20: FakeOps(present=False)}
     _mock_clusters(monkeypatch, controller, ops)
 
     await controller._finalize(1)
 
-    assert await _get_pvt(engine) is None  # hard-deleted
+    assert await _get_pvt(engine) is None  # nothing still downstream → hard-deleted
     for o in ops.values():
-        o.delete_persistent_volume_type.assert_not_called()
+        o.delete_persistent_volume_type.assert_awaited_once_with(CLUSTER_NAME)
 
 
 @pytest.mark.asyncio
@@ -140,24 +137,24 @@ async def test_present_downstream_records_finalizing_and_requeues(
     engine, controller, monkeypatch
 ):
     await _seed(engine)
-    ops = {10: FakeOps(items=[_pvt_item()]), 20: FakeOps(items=[])}
+    ops = {10: FakeOps(present=True), 20: FakeOps(present=False)}
     _mock_clusters(monkeypatch, controller, ops)
 
     await controller._finalize(1)
 
     ops[10].delete_persistent_volume_type.assert_awaited_once_with(CLUSTER_NAME)
-    ops[20].delete_persistent_volume_type.assert_not_called()
+    ops[20].delete_persistent_volume_type.assert_awaited_once_with(CLUSTER_NAME)
     pvt = await _get_pvt(engine)
     assert pvt is not None
     assert pvt.status.phase == "Deleting"
-    assert pvt.status.finalizing == [10]
+    assert pvt.status.finalizing == [10]  # only cluster 10 still held it
     assert len(controller._queue._delayed) == 1
 
 
 @pytest.mark.asyncio
 async def test_referencing_pv_blocks_finalize(engine, controller, monkeypatch):
     await _seed(engine, pv_ref=True)
-    ops = {10: FakeOps(items=[_pvt_item()])}
+    ops = {10: FakeOps(present=True)}
     _mock_clusters(monkeypatch, controller, ops)
 
     await controller._finalize(1)
@@ -168,16 +165,3 @@ async def test_referencing_pv_blocks_finalize(engine, controller, monkeypatch):
     assert pvt.status.phase == "Deleting"
     assert pvt.status.phase_message is not None
     assert len(controller._queue._delayed) == 1
-
-
-@pytest.mark.asyncio
-async def test_probe_ignores_other_type_name(engine, controller, monkeypatch):
-    await _seed(engine)
-    # A different owner's PVT sharing the cluster → different folded name.
-    other = FakeOps(items=[_pvt_item(name="instance-pv-type.other.pvt-1")])
-    _mock_clusters(monkeypatch, controller, {10: other})
-
-    await controller._finalize(1)
-
-    other.delete_persistent_volume_type.assert_not_called()
-    assert await _get_pvt(engine) is None  # nothing ours downstream → hard-deleted

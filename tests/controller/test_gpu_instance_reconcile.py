@@ -27,9 +27,16 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.gpu_instances.controllers import GPUInstanceController
 from gpustack.schemas.gpu_instances import (
     GPUInstance,
+    GPUInstancePersistentVolumeReference,
     GPUInstancePhase,
     GPUInstanceSpec,
     GPUInstanceStatus,
+    GPUInstanceVolume,
+)
+from gpustack.schemas.gpu_instance_persistent_volumes import (
+    GPUInstancePersistentVolume,
+    GPUInstancePersistentVolumeSpec,
+    GPUInstancePersistentVolumeStatus,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.server.workqueue import WorkEvent, WorkEventType
@@ -69,6 +76,7 @@ async def engine():
     e = create_async_engine("sqlite+aiosqlite://")
     async with e.begin() as conn:
         await conn.run_sync(GPUInstance.__table__.create)
+        await conn.run_sync(GPUInstancePersistentVolume.__table__.create)
     yield e
     await e.dispose()
 
@@ -145,6 +153,38 @@ async def test_creating_failure_records_create_failed(engine, controller):
     row = await _get(engine)
     assert row.status.phase == GPUInstancePhase.CREATE_FAILED
     ops.read_instance.assert_not_awaited()  # stopped before observe
+
+
+@pytest.mark.asyncio
+async def test_creating_rejects_deleting_pv(engine, controller):
+    # A soft-deleted (Deleting) PV must not be provisioned against: the create
+    # fails with PV_CREATE_FAILED rather than racing the PV finalizer.
+    spec = GPUInstanceSpec(
+        type_="gpu",
+        image="busybox",
+        volume=GPUInstanceVolume(
+            persistent=GPUInstancePersistentVolumeReference(name="pv-1")
+        ),
+    )
+    await _seed(engine, phase=None, spec=spec)
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        s.add(
+            GPUInstancePersistentVolume(
+                id=1,
+                name="pv-1",
+                owner_principal_id=1,
+                persistent_volume_type_id=2,
+                spec=GPUInstancePersistentVolumeSpec(type_="pvt-1"),
+                status=GPUInstancePersistentVolumeStatus(phase="Deleting"),
+            )
+        )
+        await s.commit()
+    ops = _with_ops(controller, FakeOps())
+
+    await controller._reconcile_instance(1, {})
+
+    assert (await _get(engine)).status.phase == GPUInstancePhase.PV_CREATE_FAILED
+    ops.create_instance.assert_not_awaited()  # never provisioned the instance CR
 
 
 @pytest.mark.asyncio
@@ -467,3 +507,30 @@ async def test_process_resets_backoff_on_success(controller, monkeypatch):
 
     forget.assert_called_once_with((1,))
     rate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ready_sweep_reenqueues_only_ready_rows(engine, controller):
+    # The opt-in Ready sweep re-observes settled Ready rows only; transitioning
+    # rows already self-requeue and terminal rows no-op, so they are skipped.
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        for iid, phase in (
+            (1, GPUInstancePhase.READY),
+            (2, GPUInstancePhase.STOPPED),
+            (3, GPUInstancePhase.STARTING),
+        ):
+            s.add(
+                GPUInstance(
+                    id=iid,
+                    name=f"gi-{iid}",
+                    owner_principal_id=1,
+                    cluster_id=2,
+                    spec=GPUInstanceSpec(type_="gpu", image="busybox"),
+                    status=GPUInstanceStatus(phase=phase, namespace=NAMESPACE),
+                )
+            )
+        await s.commit()
+
+    await controller._sweep_ready_once()
+
+    assert set(controller._queue._pending.keys()) == {(1,)}  # only the Ready row

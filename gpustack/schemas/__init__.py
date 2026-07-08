@@ -154,6 +154,7 @@ from gpustack.schemas.gpu_instance_persistent_volume_types import (
     GPUInstancePersistentVolumeTypePublic,
     GPUInstancePersistentVolumeTypesPublic,
     GPUInstancePersistentVolumeTypeStatus,
+    GPUInstancePersistentVolumeTypePhase,
 )
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolume,
@@ -163,6 +164,7 @@ from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolumePublic,
     GPUInstancePersistentVolumesPublic,
     GPUInstancePersistentVolumeStatus,
+    GPUInstancePersistentVolumePhase,
 )
 from gpustack.schemas.gpu_instance_ssh_public_keys import (
     GPUInstanceSSHPublicKey,
@@ -319,6 +321,7 @@ __all__ = [
     "GPUInstancePersistentVolumeTypePublic",
     "GPUInstancePersistentVolumeTypesPublic",
     "GPUInstancePersistentVolumeTypeStatus",
+    "GPUInstancePersistentVolumeTypePhase",
     "GPUInstancePersistentVolume",
     "GPUInstancePersistentVolumeListParams",
     "GPUInstancePersistentVolumeCreate",
@@ -326,6 +329,7 @@ __all__ = [
     "GPUInstancePersistentVolumePublic",
     "GPUInstancePersistentVolumesPublic",
     "GPUInstancePersistentVolumeStatus",
+    "GPUInstancePersistentVolumePhase",
     "GPUInstanceSSHPublicKey",
     "GPUInstanceSSHPublicKeyListParams",
     "GPUInstanceSSHPublicKeyCreate",

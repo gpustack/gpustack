@@ -29,6 +29,7 @@ from gpustack.schemas.gpu_instances import (
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolume,
     GPUInstancePersistentVolumeStatus,
+    GPUInstancePersistentVolumePhase,
 )
 from gpustack.schemas.gpu_instance_persistent_volume_types import (
     GPUInstancePersistentVolumeType,
@@ -136,6 +137,9 @@ class GPUInstanceController:
         # Downstream watcher: consumes the operator's Instance watch stream and
         # pushes changes back onto ``_queue`` (leader-only, like this controller).
         self._watch_task: Optional[asyncio.Task] = None
+        # Optional low-frequency Ready-row sweep (see ``_ready_sweep``); only
+        # started when the interval env is > 0.
+        self._sweep_task: Optional[asyncio.Task] = None
         # Mechanism-X cache: ``namespace -> owner_principal_id`` so the label-absent
         # fallback doesn't hit the DB for every downstream event of a known org.
         self._ns_owner_cache: TTLCache = TTLCache(maxsize=2048, ttl=600)
@@ -145,10 +149,14 @@ class GPUInstanceController:
         self._transitioning_interval: float = max(
             1, envs.GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL
         )
+        # Opt-in fallback: re-observe Ready rows every N seconds (0 disables).
+        self._ready_sweep_interval: int = max(0, envs.GPU_INSTANCE_READY_SWEEP_INTERVAL)
 
     async def start(self):
         self._dispatch_task = asyncio.create_task(self._dispatch())
         self._watch_task = asyncio.create_task(self._watch_downstream())
+        if self._ready_sweep_interval > 0:
+            self._sweep_task = asyncio.create_task(self._ready_sweep())
         try:
             async for event in GPUInstance.subscribe(source="gpu_instance_controller"):
                 if event.type == EventType.HEARTBEAT or event.data is None:
@@ -163,7 +171,7 @@ class GPUInstanceController:
                 self._enqueue(event)
         finally:
             tasks: List[asyncio.Task] = []
-            for task in (self._dispatch_task, self._watch_task):
+            for task in (self._dispatch_task, self._watch_task, self._sweep_task):
                 if task is not None:
                     task.cancel()
                     tasks.append(task)
@@ -234,6 +242,9 @@ class GPUInstanceController:
             await self._reconcile(event.object)
             # Success — reset the per-keys backoff counter.
             self._queue.forget(keys)
+        except asyncio.CancelledError:
+            # Shutdown/cancel must propagate, not be treated as a failure.
+            raise
         except Exception:
             logger.exception(f"Failed to reconcile GPU instance {keys[0]}")
             # Failure — retry with a capped exponential backoff.
@@ -270,6 +281,38 @@ class GPUInstanceController:
                 )
             # Stream ended or errored — back off briefly before reconnecting.
             await asyncio.sleep(_WATCH_RECONNECT_INTERVAL)
+
+    async def _ready_sweep(self):
+        """Opt-in low-frequency fallback: re-observe settled Ready rows.
+
+        With the Ready-row reconfirm chain retired, a settled Ready row's
+        worker-side drift flows back only via the downstream watch. The watch
+        has no resourceVersion resume, so an event that lands during a reconnect
+        gap is dropped until the next unrelated event. When enabled
+        (``GPU_INSTANCE_READY_SWEEP_INTERVAL`` > 0) this periodically re-enqueues
+        Ready rows (id-only stubs) so their drift is eventually re-observed;
+        transitioning rows already self-requeue and terminal rows no-op, so only
+        Ready rows need it.
+        """
+        while True:
+            await asyncio.sleep(self._ready_sweep_interval)
+            try:
+                await self._sweep_ready_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("GPU instance ready sweep failed")
+
+    async def _sweep_ready_once(self):
+        """One sweep pass: re-enqueue every Ready row (id-only stub) so its
+        worker-side drift is re-observed by the phase state machine."""
+        async with async_session() as session:
+            rows = await GPUInstance.all(session)
+        for row in rows:
+            if row.id is not None and row.is_ready():
+                self._enqueue(
+                    Event(type=EventType.UPDATED, data=GPUInstance(id=row.id))
+                )
 
     async def _on_downstream_event(self, line: str):
         """Map one downstream ``WorkerEvent`` line onto an upstream reconcile.
@@ -370,8 +413,11 @@ class GPUInstanceController:
             )
             owner_principal_id = principal.id if principal is not None else None
 
-        if owner_principal_id is not None:
-            self._ns_owner_cache[namespace] = owner_principal_id
+        # Cache the resolution — including ``None`` — so an unresolvable
+        # namespace (a foreign system component, a deleted org) does not re-hit
+        # the DB on every downstream event. The cache TTL bounds staleness if an
+        # org later appears under a name that previously did not resolve.
+        self._ns_owner_cache[namespace] = owner_principal_id
         return owner_principal_id
 
     # ======================================================================= #
@@ -431,26 +477,26 @@ class GPUInstanceController:
                     "name": pv_name,
                 },
             )
-            if pv is None:
+            if pv is None or pv.is_deleting():
                 logger.error(
-                    f"Failed to find server-side pv for {fresh.name} with pv name {pv_name}"
+                    f"No active server-side pv for {fresh.name} with pv name {pv_name}"
                 )
                 raise _InstanceAssetsError(
                     self.PHASE_PV_CREATE_FAILED,
-                    f"Not found server-side persistent volume: {pv_name}",
+                    f"Not found or deleting server-side persistent volume: {pv_name}",
                 )
 
             pvt_name = pv.spec.type_
             pvt = await GPUInstancePersistentVolumeType.one_by_id(
                 session, pv.persistent_volume_type_id
             )
-            if pvt is None:
+            if pvt is None or pvt.is_deleting():
                 logger.error(
-                    f"Failed to find server-side pv type for {fresh.name} with pvt name {pvt_name}"
+                    f"No active server-side pv type for {fresh.name} with pvt name {pvt_name}"
                 )
                 raise _InstanceAssetsError(
                     self.PHASE_PV_TYPE_CREATE_FAILED,
-                    f"Not found server-side persistent volume type: {pvt_name}",
+                    f"Not found or deleting server-side persistent volume type: {pvt_name}",
                 )
 
             pvt_cluster_name = get_persistent_volume_type_name(
@@ -843,13 +889,14 @@ class GPUInstanceController:
             session,
             fields={"owner_principal_id": owner_principal_id, "name": name},
         )
-        if pv is None or (
-            pv.status is not None and pv.status.phase == GPUInstancePhase.DELETING
-        ):
+        if pv is None or pv.is_deleting():
             return
         base = pv.status or GPUInstancePersistentVolumeStatus()
         updated = base.model_copy(
-            update={"phase": GPUInstancePhase.DELETING, "phase_message": None}
+            update={
+                "phase": GPUInstancePersistentVolumePhase.DELETING,
+                "phase_message": None,
+            }
         )
         await pv.update(session, source={"status": updated})
 
@@ -945,8 +992,15 @@ class _PersistentVolumeFinalizeController:
 
     def __init__(self, cfg: Config):
         self._config = cfg
+        # Generic work queue keyed by ``(row_id,)``. The default coalescer is
+        # latest-wins + DELETED-sticky; the consumer always re-fetches the row,
+        # so a superseded event's stale snapshot is harmless. Per-keys backoff
+        # (``add_rate_limited`` / ``forget``) is driven from ``_process``.
         self._queue: WorkQueue = WorkQueue()
+        # In-flight per-keys worker tasks, tracked so shutdown can cancel them.
+        # The queue guarantees at most one in-flight task per keys.
         self._inflight: Dict[Any, asyncio.Task] = {}
+        # Consumes ``_queue`` and fans out one worker task per keys.
         self._dispatch_task: Optional[asyncio.Task] = None
         # Cadence for re-probing a still-finalizing row via an in-memory requeue
         # (no DB write). Clamped to >= 1s so a misconfigured 0 can't turn
@@ -966,7 +1020,7 @@ class _PersistentVolumeFinalizeController:
                 if event.type == EventType.DELETED:
                     continue
                 row = event.data
-                if row.status and row.status.phase == GPUInstancePhase.DELETING:
+                if row.is_deleting():
                     self._enqueue(event)
         finally:
             tasks: List[asyncio.Task] = []
@@ -1010,6 +1064,9 @@ class _PersistentVolumeFinalizeController:
             await self._reconcile(event.object)
             # Success — reset the per-keys backoff counter.
             self._queue.forget(keys)
+        except asyncio.CancelledError:
+            # Shutdown/cancel must propagate, not be treated as a failure.
+            raise
         except Exception:
             logger.exception("Failed to finalize %s %s", self.SOURCE, keys[0])
             # Failure — retry with a capped exponential backoff.
@@ -1028,20 +1085,22 @@ class _PersistentVolumeFinalizeController:
     async def _finalize(self, row_id: int):
         async with async_session() as session:
             row = await self.MODEL.one_by_id(session, row_id)
-            if row is None or not (
-                row.status and row.status.phase == GPUInstancePhase.DELETING
-            ):
+            if row is None or not row.is_deleting():
                 # Already hard-deleted, or no longer marked for deletion.
                 return
 
             principal = await Principal.one_by_id(session, row.owner_principal_id)
             if principal is None:
+                # No principal -> no namespace -> cluster ops are impossible, so
+                # the row can never finalize normally. Hard-delete it rather than
+                # strand it in Deleting forever.
                 logger.warning(
-                    "%s %s references missing principal %s",
+                    "%s %s references missing principal %s, hard-deleting row",
                     self.SOURCE,
                     row.name,
                     row.owner_principal_id,
                 )
+                await self._hard_delete(session, row)
                 return
             owner_identifier = principal_namespace_identifier(principal)
 
@@ -1080,7 +1139,10 @@ class _PersistentVolumeFinalizeController:
                     row.name,
                 )
                 finalizing.append(cluster.id)
-        return finalizing
+        # Normalize order: ``Cluster.all`` has no ORDER BY, so the same set of
+        # ids in a different row order must not trip the change-gated status
+        # write (a spurious DB write + bus event every finalize round).
+        return sorted(finalizing)
 
     def _build_ops(self, cluster: Cluster, owner_identifier: str) -> ClusterOps:
         return ClusterOps(
@@ -1124,6 +1186,11 @@ class _PersistentVolumeFinalizeController:
                 row.name,
             )
             self._requeue_after(row, self._finalize_interval)
+            # The failed transaction leaves the session unusable; roll back to
+            # release locks/resources before it is returned to the pool. Done
+            # last: rollback expires ``row``, and the log/requeue above still
+            # need its attributes.
+            await session.rollback()
 
     # -- subclass hooks ----------------------------------------------------- #
 
@@ -1163,18 +1230,11 @@ class GPUInstancePersistentVolumeController(_PersistentVolumeFinalizeController)
     async def _probe_and_delete(
         self, ops: ClusterOps, row, owner_identifier: str
     ) -> bool:
-        # PV is namespaced; list across all namespaces (ClusterOps._list) and
-        # match our own name + namespace so a same-named PV in another Org's
-        # namespace is never touched.
-        for item in await ops.list_persistent_volumes():
-            metadata = item.get("metadata") or {}
-            if (
-                metadata.get("name") == row.name
-                and metadata.get("namespace") == ops.org_namespace
-            ):
-                await ops.delete_persistent_volume(row.name)
-                return True
-        return False
+        # PV is namespaced; deleting by name is scoped to our own org_namespace
+        # (a same-named PV in another Org's namespace is never touched) and is
+        # idempotent. The return reports whether it still existed — i.e. this
+        # cluster is still finalizing — in a single O(1) call (no list + scan).
+        return await ops.delete_persistent_volume(row.name)
 
 
 class GPUInstancePersistentVolumeTypeController(_PersistentVolumeFinalizeController):
@@ -1201,12 +1261,10 @@ class GPUInstancePersistentVolumeTypeController(_PersistentVolumeFinalizeControl
         self, ops: ClusterOps, row, owner_identifier: str
     ) -> bool:
         # PVT is cluster-scoped; its downstream name folds in the owner
-        # identifier, so match that computed name against the cluster list.
+        # identifier. Deleting by that exact name is idempotent; the return
+        # reports whether it still existed — i.e. this cluster is still
+        # finalizing — in a single O(1) call (no list + scan).
         cluster_name = get_persistent_volume_type_name(
             row.name, principal_identifier=owner_identifier
         )
-        for item in await ops.list_persistent_volume_types():
-            if (item.get("metadata") or {}).get("name") == cluster_name:
-                await ops.delete_persistent_volume_type(cluster_name)
-                return True
-        return False
+        return await ops.delete_persistent_volume_type(cluster_name)

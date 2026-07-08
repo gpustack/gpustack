@@ -137,6 +137,7 @@ The **Applies to** column indicates where the environment variable should be set
 | Variable                                               | Description                                                                                                                                                                                               | Default | Applies to |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
 | `GPUSTACK_GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL` | Interval in seconds at which the controller re-observes a still-transitioning (non-settled) GPU instance via an in-memory requeue; the PV / PVT finalize controllers reuse it to re-probe a still-finalizing instance. Ready-row drift is picked up by the downstream watch instead. Clamped to a minimum of `1` second. | `15`    | Server     |
+| `GPUSTACK_GPU_INSTANCE_READY_SWEEP_INTERVAL`           | Interval in seconds for an opt-in low-frequency sweep that re-observes settled Ready GPU instances, a fallback for worker-side drift that the downstream watch could miss across a reconnect gap. `0` (default) disables it; set a low frequency only if such a coverage hole is observed.                            | `0`     | Server     |
 
 ### Worker and Model Configuration
 

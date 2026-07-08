@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Optional, ClassVar, List
 
 from pydantic import ConfigDict, BaseModel
@@ -34,6 +35,19 @@ class GPUInstancePersistentVolumeSpec(BaseModel):
     Capacity of the GPU instance persistent volume,
     such as "20Gi".
     """
+
+
+class GPUInstancePersistentVolumePhase(str, Enum):
+    """Lifecycle phase of a persistent volume row.
+
+    Managed entirely server-side (unlike GPUInstance phases, which mirror
+    worker CR phases): a row is active while its status phase is unset, ``Ready``
+    once created, and ``Deleting`` from soft-delete until the finalizer
+    hard-deletes it.
+    """
+
+    READY = "Ready"
+    DELETING = "Deleting"
 
 
 class GPUInstancePersistentVolumeStatus(BaseModel):
@@ -179,6 +193,13 @@ class GPUInstancePersistentVolume(
     Status of the GPU instance persistent volume, including the soft-delete
     phase and the clusters still being finalized.
     """
+
+    def is_deleting(self) -> bool:
+        """Whether the volume is soft-deleted and awaiting finalization."""
+        return (
+            self.status is not None
+            and self.status.phase == GPUInstancePersistentVolumePhase.DELETING
+        )
 
 
 class GPUInstancePersistentVolumeUpdate(GPUInstancePersistentVolumeBase):
