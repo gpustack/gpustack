@@ -145,7 +145,7 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 ### 部署模型
 
 1.  在 GPUStack 用户界面中导航到 `Catalog` 页面。
-2.  从可用模型列表中选择 `Qwen3 0.6B` 模型。
+2.  从可用模型列表中选择 `Qwen3.5-0.8B` 模型。
 
 ![从目录部署 qwen3](docs/assets/quick-start/quick-start-qwen3.png)
 
@@ -155,7 +155,7 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 ![模型运行中](docs/assets/quick-start/model-running.png)
 
-5.  点击导航菜单中的 `Playground - Chat`，检查右上角 `Model` 下拉菜单中是否选中了 `qwen3-0.6b` 模型。现在您可以在 UI  playground 中与模型聊天了。
+5.  点击导航菜单中的 `Playground - Chat`，检查右上角 `Model` 下拉菜单中是否选中了 `qwen3.5-0.8b` 模型。现在您可以在 UI  playground 中与模型聊天了。
 
 ![快速聊天](docs/assets/quick-start/quick-chat.png)
 
@@ -174,7 +174,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "qwen3-0.6b",
+    "model": "qwen3.5-0.8b",
     "messages": [
       {
         "role": "system",
