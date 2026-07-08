@@ -15,6 +15,9 @@ on:
       - "**.jpg"
       - "**.gif"
 
+permissions:
+  contents: read
+
 jobs:
   linux-build:
     timeout-minutes: 20
