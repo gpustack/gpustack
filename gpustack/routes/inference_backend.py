@@ -1101,9 +1101,22 @@ async def _redirect_global_edit_to_org_row(
     # extends: an Org-scoped vLLM is still vLLM (a BUILT_IN backend),
     # not a freshly invented custom backend. That keeps suffix-validation
     # and other built-in-aware code paths firing identically.
+    #
+    # version_configs also inherits the Platform row's versions, with the
+    # payload layered on top. A bare "enable" carries no versions, so the
+    # catalog versions (community rows keep them here, tagged with
+    # built_in_frameworks) would otherwise be lost — leaving the Org row
+    # empty and its version blank in the uncollapsed "All" view, where the
+    # disabled Platform row is filtered out and can't fill the gap.
+    seed_version_configs = VersionConfigDict(
+        root={
+            **(backend.version_configs.root if backend.version_configs else {}),
+            **(backend_in.version_configs.root if backend_in.version_configs else {}),
+        }
+    ).model_copy(deep=True)
     new_row = InferenceBackend(
         backend_name=backend_in.backend_name,
-        version_configs=backend_in.version_configs,
+        version_configs=seed_version_configs,
         default_version=backend_in.default_version,
         default_backend_param=backend_in.default_backend_param,
         default_run_command=backend_in.default_run_command,
