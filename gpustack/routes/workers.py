@@ -375,8 +375,10 @@ def _matches_fuzzy_fields(worker: Worker, fuzzy_fields: Dict[str, str]) -> bool:
 def filter_workers_by_fields(
     workers: List[Worker],
     fields: Optional[Dict[str, Any]],
-    fuzzy_fields: Dict[str, str] = {},
+    fuzzy_fields: Optional[Dict[str, str]] = None,
 ) -> List[Worker]:
+    if fuzzy_fields is None:
+        fuzzy_fields = {}
     if not fields and not fuzzy_fields:
         return workers
 
