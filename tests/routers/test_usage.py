@@ -126,7 +126,8 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
     # user 12 still exists → not deleted; the NULL-id legacy row is deleted.
     assert response.filters.users[0].label == "alice"
     assert response.filters.users[0].deleted is False
-    assert response.filters.users[1].label == "alice (Deleted)"
+    # Label is the pure name; deletion is carried by the ``deleted`` flag.
+    assert response.filters.users[1].label == "alice"
     assert response.filters.users[1].deleted is True
     assert response.filters.api_keys[0].label == "alice / test"
     assert response.filters.api_keys[0].identity.value.access_key == "abcd1234"
@@ -138,7 +139,7 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
     assert response.filters.routes[0].label == "qwen-route"
     assert response.filters.routes[0].deleted is False
     assert response.filters.routes[0].identity.current.route_id == 21
-    assert response.filters.routes[1].label == "legacy-route (Deleted)"
+    assert response.filters.routes[1].label == "legacy-route"
     assert response.filters.routes[1].deleted is True
     assert response.filters.routes[1].identity.current is None
     assert response.filters.routes[2].label == "Untracked"
@@ -608,7 +609,8 @@ async def test_get_usage_breakdown_flags_deleted_user_by_live_existence():
     assert response.items[0].user.deleted is False
     # id retained for attribution/filtering even though the principal is gone.
     assert response.items[0].user.identity.current.user_id == 12
-    assert response.items[1].user.label == "bob (Deleted)"
+    # Label stays the pure name; ``deleted`` + the retained id carry the state.
+    assert response.items[1].user.label == "bob"
     assert response.items[1].user.deleted is True
     assert response.items[1].user.identity.current.user_id == 99
 
@@ -690,10 +692,10 @@ async def test_get_usage_breakdown_flags_deleted_route_and_api_key_by_live_exist
     assert response.items[0].api_key.label == "alice / live-key"
     assert response.items[0].api_key.deleted is False
     # gone route/key keep their id but are tagged deleted.
-    assert response.items[1].route.label == "gone-route (Deleted)"
+    assert response.items[1].route.label == "gone-route"
     assert response.items[1].route.deleted is True
     assert response.items[1].route.identity.current.route_id == 88
-    assert response.items[1].api_key.label == "alice / gone-key (Deleted)"
+    assert response.items[1].api_key.label == "alice / gone-key"
     assert response.items[1].api_key.deleted is True
     assert response.items[1].api_key.identity.current.api_key_id == 99
 
