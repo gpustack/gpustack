@@ -62,6 +62,8 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
                     SimpleNamespace(group_user_name="alice", group_user_id=None),
                 ]
             ),
+            # _existing_principal_ids: user 12 still exists (13 would be gone).
+            _mock_exec_result([12]),
             _mock_exec_result(
                 [
                     SimpleNamespace(
@@ -82,6 +84,8 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
                     ),
                 ]
             ),
+            # api_key existence: both 34 and 35 still exist.
+            _mock_exec_result([34, 35]),
             _mock_exec_result(
                 [
                     SimpleNamespace(
@@ -98,6 +102,8 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
                     ),
                 ]
             ),
+            # route existence: route 21 still exists.
+            _mock_exec_result([21]),
         ]
     )
     user = User(id=1, name="admin", is_admin=True)
@@ -117,7 +123,11 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
         "total_tokens",
         "api_requests",
     ]
+    # user 12 still exists → not deleted; the NULL-id legacy row is deleted.
+    assert response.filters.users[0].label == "alice"
+    assert response.filters.users[0].deleted is False
     assert response.filters.users[1].label == "alice (Deleted)"
+    assert response.filters.users[1].deleted is True
     assert response.filters.api_keys[0].label == "alice / test"
     assert response.filters.api_keys[0].identity.value.access_key == "abcd1234"
     assert response.filters.api_keys[0].identity.value.api_key_is_custom is False
@@ -135,7 +145,10 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
     assert response.filters.routes[2].deleted is False
     assert [item.key for item in response.granularities] == ["day", "week", "month"]
 
-    api_key_statement = str(session.exec.call_args_list[1].args[0])
+    # exec order: user options / user existence / api_key options / ...
+    # call_args_list[1] is the user-existence lookup, so the api_key options
+    # query is at index 2.
+    api_key_statement = str(session.exec.call_args_list[2].args[0])
     assert "api_key_name IS NOT NULL" in api_key_statement
     assert "access_key IS NOT NULL" in api_key_statement
 
@@ -157,6 +170,9 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
                     )
                 ]
             ),
+            # api_key existence: key 34 still exists.
+            _mock_exec_result([34]),
+            # route options: none in scope (empty → no existence query follows).
             _mock_exec_result([]),
         ]
     )
@@ -385,6 +401,8 @@ async def test_get_usage_breakdown_returns_paginated_route_items():
                     ),
                 ]
             ),
+            # route existence: both routes still exist.
+            _mock_exec_result([21, 22]),
         ]
     )
     user = User(id=1, name="admin", is_admin=True)
@@ -482,6 +500,10 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
                     ),
                 ]
             ),
+            # Existence lookups, in dimension order user / route / api_key.
+            _mock_exec_result([12]),  # user 12 exists
+            _mock_exec_result([11, 12]),  # routes 11 & 12 exist
+            _mock_exec_result([34]),  # api_key 34 exists
         ]
     )
     user = User(id=1, name="admin", is_admin=True)
@@ -517,6 +539,163 @@ async def test_get_usage_breakdown_returns_multidimensional_export_rows_with_no_
     assert "LIMIT" in items_sql
     assert "api_key_name IS NOT NULL" not in count_sql
     assert "access_key IS NOT NULL" not in count_sql
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_flags_deleted_user_by_live_existence():
+    """``user_id`` is FK-less, so a deleted user keeps its (dangling) id on the
+    row instead of nulling out. The breakdown must resolve deletion by live
+    principal existence — the gone user is tagged ``(Deleted)`` while the
+    surviving user (with the same login-name snapshot) is not."""
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=0,
+                        output_tokens=0,
+                        input_cached_tokens=0,
+                        total_tokens=0,
+                        api_requests=0,
+                        models_called=0,
+                    ),
+                ]
+            ),
+            _mock_exec_result([2]),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        group_user_name="alice",
+                        group_user_id=12,
+                        input_tokens=300,
+                        output_tokens=120,
+                        total_tokens=420,
+                        api_requests=5,
+                        models_called=1,
+                        api_keys_used=1,
+                        last_active=date(2026, 4, 1),
+                    ),
+                    SimpleNamespace(
+                        group_user_name="bob",
+                        group_user_id=99,
+                        input_tokens=100,
+                        output_tokens=40,
+                        total_tokens=140,
+                        api_requests=2,
+                        models_called=1,
+                        api_keys_used=1,
+                        last_active=date(2026, 4, 2),
+                    ),
+                ]
+            ),
+            # _existing_principal_ids: only user 12 survives; 99 was deleted.
+            _mock_exec_result([12]),
+        ]
+    )
+    user = User(id=1, name="admin", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["user"],
+    )
+
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
+
+    assert response.items[0].user.label == "alice"
+    assert response.items[0].user.deleted is False
+    # id retained for attribution/filtering even though the principal is gone.
+    assert response.items[0].user.identity.current.user_id == 12
+    assert response.items[1].user.label == "bob (Deleted)"
+    assert response.items[1].user.deleted is True
+    assert response.items[1].user.identity.current.user_id == 99
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_flags_deleted_route_and_api_key_by_live_existence():
+    """route / api_key are FK-less too — a deleted route or key keeps its
+    dangling id, so the breakdown resolves deletion by live existence and tags
+    the gone ones ``(Deleted)`` while the surviving ones are not."""
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=0,
+                        output_tokens=0,
+                        input_cached_tokens=0,
+                        total_tokens=0,
+                        api_requests=0,
+                        models_called=0,
+                    ),
+                ]
+            ),
+            _mock_exec_result([2]),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        group_user_name="alice",
+                        group_api_key_name="live-key",
+                        group_access_key="live1234",
+                        group_api_key_is_custom=False,
+                        group_user_id=12,
+                        group_api_key_id=34,
+                        group_model_route_name="live-route",
+                        group_model_route_id=21,
+                        input_tokens=300,
+                        output_tokens=120,
+                        total_tokens=420,
+                        api_requests=5,
+                        last_active=date(2026, 4, 1),
+                    ),
+                    SimpleNamespace(
+                        group_user_name="alice",
+                        group_api_key_name="gone-key",
+                        group_access_key="gone1234",
+                        group_api_key_is_custom=False,
+                        group_user_id=12,
+                        group_api_key_id=99,
+                        group_model_route_name="gone-route",
+                        group_model_route_id=88,
+                        input_tokens=100,
+                        output_tokens=40,
+                        total_tokens=140,
+                        api_requests=2,
+                        last_active=date(2026, 4, 2),
+                    ),
+                ]
+            ),
+            # Existence lookups, dimension order route / api_key: only the
+            # "live" ids survive; 88 (route) and 99 (key) were deleted.
+            _mock_exec_result([21]),
+            _mock_exec_result([34]),
+        ]
+    )
+    user = User(id=1, name="admin", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["api_key", "route"],
+    )
+
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
+
+    assert response.items[0].route.label == "live-route"
+    assert response.items[0].route.deleted is False
+    assert response.items[0].api_key.label == "alice / live-key"
+    assert response.items[0].api_key.deleted is False
+    # gone route/key keep their id but are tagged deleted.
+    assert response.items[1].route.label == "gone-route (Deleted)"
+    assert response.items[1].route.deleted is True
+    assert response.items[1].route.identity.current.route_id == 88
+    assert response.items[1].api_key.label == "alice / gone-key (Deleted)"
+    assert response.items[1].api_key.deleted is True
+    assert response.items[1].api_key.identity.current.api_key_id == 99
 
 
 @pytest.mark.asyncio

@@ -53,14 +53,14 @@ def test_build_model_usage_snapshot_includes_user_and_api_key_fields():
     assert snapshot["api_key_is_custom"] is False
 
 
-def test_model_usage_foreign_keys_use_set_null():
-    foreign_keys = {
-        tuple(column.name for column in constraint.columns): constraint
+def test_model_usage_is_fully_fk_less():
+    # model_usages carries NO foreign keys — it is an attribution / audit table
+    # (like model_usage_details / metered_usage) whose rows must outlive every
+    # entity they reference. Ids are kept (dangling) on parent delete instead of
+    # nulled/cascaded; the read path resolves existence live to tag ``(Deleted)``.
+    foreign_keys = [
+        constraint
         for constraint in ModelUsage.__table__.constraints
         if isinstance(constraint, ForeignKeyConstraint)
-    }
-
-    assert foreign_keys[("model_id",)].elements[0].ondelete == "SET NULL"
-    assert foreign_keys[("user_id",)].elements[0].ondelete == "SET NULL"
-    assert foreign_keys[("provider_id",)].elements[0].ondelete == "SET NULL"
-    assert foreign_keys[("api_key_id",)].elements[0].ondelete == "SET NULL"
+    ]
+    assert foreign_keys == []
