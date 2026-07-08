@@ -171,8 +171,9 @@ async def test_user_grouping_resolves_principal_name(session):
         ),
         metric_keys=["gpu_hours"],
     )
-    # creator_id 7 → principal display name "Alice"
-    assert any(i.get("key") == "Alice" for i in out["items"])
+    # creator_id 7 → principal login name "alice" (not display name), matching
+    # the Tokens tab which groups users by login name.
+    assert any(i.get("key") == "alice" for i in out["items"])
 
 
 @pytest.mark.asyncio
@@ -627,14 +628,45 @@ async def test_resource_meta_lists_creators_instances_volumes(session):
 
     out = await resource_meta(session, USER, CTX, scope="all")
     labels = {c["id"]: c["label"] for c in out["creators"]}
-    # creator_id 7 → principal display name "Alice"
-    assert labels.get(7) == "Alice"
+    # creator_id 7 → principal login name "alice" (not display name)
+    assert labels.get(7) == "alice"
     # instances / volumes resolve their snapshot names
     assert {i["id"]: i["label"] for i in out["instances"]} == {
         501: "gpu-1",
         502: "gpu-2",
     }
     assert {v["id"]: v["label"] for v in out["volumes"]} == {88: "pv-models"}
+
+
+@pytest.mark.asyncio
+async def test_resource_meta_deleted_creator_falls_back_to_snapshot_name(session):
+    """A creator whose principal row is gone shows the ``creator_name`` login
+    snapshot (marked deleted), not a bare ``User <id>``."""
+    from gpustack.routes.resource_usage import resource_meta
+
+    # creator_id 99 has no Principal row; its metered_usage rows carry the
+    # login-name snapshot captured at event time.
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=777,
+            resource_name="gpu-x",
+            creator_id=99,
+            creator_name="bob",
+            sku="a100x1",
+            quantity=3600,
+            unit="seconds",
+        )
+    )
+    await session.commit()
+
+    out = await resource_meta(session, USER, CTX, scope="all")
+    creators = {c["id"]: c for c in out["creators"]}
+    assert creators[99]["label"] == "bob"
+    assert creators[99]["deleted"] is True
+    # the live creator (7) is not flagged deleted
+    assert creators[7]["deleted"] is False
 
 
 @pytest.mark.asyncio
