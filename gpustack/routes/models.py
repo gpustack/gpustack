@@ -14,6 +14,8 @@ from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
     BadRequestException,
+    ForbiddenException,
+    NotFoundException,
 )
 from gpustack.schemas.common import Pagination
 from gpustack.schemas.inference_backend import is_custom_backend
@@ -26,7 +28,9 @@ from gpustack.schemas.models import (
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.api.tenant import (
+    TenantContext,
     bypass_tenant_filter,
+    assert_cluster_visible,
     assert_resource_visible,
     cluster_scoped_system,
     scoped_cluster_row_visible,
@@ -575,6 +579,40 @@ async def validate_distributed_vllm_limit_per_worker(
             )
 
 
+async def assert_cluster_belongs_to_org(
+    ctx: TenantContext,
+    session: AsyncSession,
+    cluster_id: Optional[int],
+    owner_principal_id: int,
+    cluster: Optional[Cluster] = None,
+):
+    """Ensure a chosen cluster is visible to the caller and owned by the
+    given Org.
+
+    A model runs on infrastructure owned by its Org, so its cluster must
+    belong to that Org — otherwise a tenant could target the platform's
+    (or another Org's) cluster, stamping a cross-tenant model. A cluster the
+    caller can't see is reported as missing (404), so cross-tenant cluster
+    ids can't be probed via a 403-vs-404 difference; a visible cluster owned
+    by another Org is a 403. No cluster chosen (``cluster_id is None``)
+    leaves default-cluster resolution to pick the Org's own cluster.
+
+    ``cluster`` may be passed pre-fetched to avoid a duplicate lookup.
+    """
+    if cluster_id is None:
+        return
+    if cluster is None:
+        cluster = await Cluster.one_by_id(session, cluster_id)
+    not_found = f"Cluster {cluster_id} not found"
+    assert_cluster_visible(ctx, cluster, not_found_message=not_found)
+    if cluster.deleted_at is not None:
+        raise NotFoundException(message=not_found)
+    if cluster.owner_principal_id != owner_principal_id:
+        raise ForbiddenException(
+            message="The selected cluster does not belong to the current organization."
+        )
+
+
 @router.post(
     "",
     response_model=ModelPublic,
@@ -589,12 +627,26 @@ async def create_model(
     # front keeps them in sync so the pre-check actually catches a
     # collision in the Org the model will land in.
     target_org_id = ctx.current_principal_id
+    cluster = None
     if target_org_id is None and model_in.cluster_id is not None:
+        # Admin "All" mode has no principal context; derive the owning Org
+        # from the chosen cluster. Reused by the check below to avoid a
+        # second lookup. Under an Org context the helper does the single
+        # lookup itself.
         cluster = await Cluster.one_by_id(session, model_in.cluster_id)
-        if cluster is not None:
-            target_org_id = cluster.owner_principal_id
+        if cluster is None:
+            raise NotFoundException(message=f"Cluster {model_in.cluster_id} not found")
+        target_org_id = cluster.owner_principal_id
     if target_org_id is None:
         target_org_id = platform_principal_id()
+
+    # The chosen cluster must exist, be visible to the caller, and be owned
+    # by the target Org. In admin "All" mode target_org_id was derived from
+    # the cluster above, so the ownership check is trivially satisfied and
+    # this mainly rejects a missing/deleted or non-visible cluster_id.
+    await assert_cluster_belongs_to_org(
+        ctx, session, model_in.cluster_id, target_org_id, cluster=cluster
+    )
 
     # Model & ModelRoute names are unique within their Org. Two Orgs
     # can each have a "llama3" without colliding.
@@ -711,6 +763,13 @@ async def update_model(
 ):
     model = await Model.one_by_id(session, id)
     assert_resource_visible(ctx, model, not_found_message="Model not found")
+
+    # Block re-pointing a model at another Org's (e.g. the Default org's
+    # shared) or a non-visible cluster: its cluster must stay owned by the
+    # model's Org.
+    await assert_cluster_belongs_to_org(
+        ctx, session, model_in.cluster_id, model.owner_principal_id
+    )
 
     await validate_model_in(session, model_in)
 

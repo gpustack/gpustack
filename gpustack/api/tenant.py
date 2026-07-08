@@ -611,7 +611,7 @@ def assert_org_owned_writable(
         raise OrgRoleError(
             message=(
                 f"{resource_label.capitalize()} does not belong to "
-                "current organization"
+                "the current organization"
             )
         )
     # Platform admin acting-as the Org passes the role check unconditionally.
