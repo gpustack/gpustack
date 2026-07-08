@@ -153,9 +153,9 @@ Open your browser and navigate to `http://your_host_ip` to access the GPUStack U
 
 2. Select the `Qwen3 0.6B` model from the list of available models.
 
-3. After the deployment compatibility checks pass, click the `Save` button to deploy the model.
-
 ![deploy qwen3 from catalog](docs/assets/quick-start/quick-start-qwen3.png)
+
+3. After the deployment compatibility checks pass, click the `Save` button to deploy the model.
 
 4. GPUStack will start downloading the model files and deploying the model. When the deployment status shows `Running`, the model has been deployed successfully.
 
@@ -167,7 +167,7 @@ Open your browser and navigate to `http://your_host_ip` to access the GPUStack U
 
 ### Use the model via API
 
-1. Hover over the user avatar and navigate to the `API Keys` page, then click the `New API Key` button.
+1. Navigate to the `Access Control` > `API Keys` page, then click the `New API Key` button.
 
 2. Fill in the `Name` and click the `Save` button.
 

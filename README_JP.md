@@ -146,9 +146,9 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 2. 利用可能なモデルのリストから`Qwen3 0.6B`モデルを選択します。
 
-3. デプロイ互換性チェックが通過した後、`Save`ボタンをクリックしてモデルをデプロイします。
-
 ![カタログからqwen3をデプロイ](docs/assets/quick-start/quick-start-qwen3.png)
+
+3. デプロイ互換性チェックが通過した後、`Save`ボタンをクリックしてモデルをデプロイします。
 
 4. GPUStackはモデルファイルのダウンロードとモデルのデプロイを開始します。デプロイステータスが`Running`と表示されたら、モデルは正常にデプロイされています。
 
@@ -160,7 +160,7 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 ### API経由でモデルを使用
 
-1. ユーザーアバターにカーソルを合わせて`API Keys`ページに移動し、`New API Key`ボタンをクリックします。
+1. `Access Control` > `API Keys`ページに移動し、`New API Key`ボタンをクリックします。
 
 2. `Name`を入力し、`Save`ボタンをクリックします。
 
