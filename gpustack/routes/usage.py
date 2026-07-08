@@ -8,9 +8,11 @@ from sqlmodel import func, or_, select
 
 from gpustack import envs
 from gpustack.api.exceptions import ForbiddenException, InvalidException
+from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.model_routes import ModelRoute
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.users import User
-from gpustack.schemas.principals import OrgRole
+from gpustack.schemas.principals import OrgRole, Principal
 from gpustack.schemas.usage import (
     USAGE_GRANULARITY_MONTH,
     USAGE_GRANULARITY_DAY,
@@ -244,7 +246,41 @@ def _coerce_date(value: Any) -> date:
     return value
 
 
-def _row_dimension(group_by: str, row: Any) -> UsageBreakdownDimension:
+# Dimension → the model whose live row proves the referenced entity still
+# exists. model_usages is now fully FK-less, so a deleted entity keeps its
+# (dangling) id on the row; the read path checks existence here to tag such
+# rows ``(Deleted)``. ``model_id`` / ``provider_id`` aren't listed — they have
+# no display dimension.
+_DIMENSION_ENTITY_MODEL = {
+    USAGE_GROUP_BY_USER: Principal,
+    USAGE_GROUP_BY_ROUTE: ModelRoute,
+    USAGE_GROUP_BY_API_KEY: ApiKey,
+}
+
+# Dimension → the aggregated row attribute holding that entity's id, used to
+# collect ids for the existence lookup in the breakdown handler.
+_DIMENSION_ROW_ID_ATTR = {
+    USAGE_GROUP_BY_USER: "group_user_id",
+    USAGE_GROUP_BY_ROUTE: "group_model_route_id",
+    USAGE_GROUP_BY_API_KEY: "group_api_key_id",
+}
+
+
+def _identity_entity_id(group_by: str, identity: UsageIdentity) -> Optional[int]:
+    """The entity id this identity is keyed on (``None`` when unresolvable)."""
+    current = identity.current
+    if current is None:
+        return None
+    if group_by == USAGE_GROUP_BY_USER:
+        return current.user_id
+    if group_by == USAGE_GROUP_BY_ROUTE:
+        return current.route_id
+    return current.api_key_id
+
+
+def _row_dimension(
+    group_by: str, row: Any, existing_ids: Optional[set] = None
+) -> UsageBreakdownDimension:
     if group_by == USAGE_GROUP_BY_API_KEY and not getattr(
         row, "group_api_key_name", None
     ):
@@ -253,11 +289,11 @@ def _row_dimension(group_by: str, row: Any) -> UsageBreakdownDimension:
             label="-",
             deleted=False,
         )
-    # NULL route_id collapses to "Untracked" — exclusively pre-upgrade
-    # historical rollup rows once the ingest invariant (every request
-    # carries model_route_id) is enforced. Marked deleted=False so the
-    # bucket isn't tagged "(Deleted)" — its NULL has a structural cause,
-    # not a reference loss.
+    # NULL route_id + NULL name collapses to "Untracked" — exclusively
+    # pre-upgrade historical rollup rows once the ingest invariant (every
+    # request carries model_route_id) is enforced. Marked deleted=False so the
+    # bucket isn't tagged "(Deleted)" — its NULL has a structural cause, not a
+    # reference loss.
     if (
         group_by == USAGE_GROUP_BY_ROUTE
         and getattr(row, "group_model_route_id", None) is None
@@ -269,18 +305,32 @@ def _row_dimension(group_by: str, row: Any) -> UsageBreakdownDimension:
             deleted=False,
         )
     identity = _row_identity(group_by, row)
+    deleted = _identity_deleted(group_by, identity, existing_ids)
     return UsageBreakdownDimension(
         identity=identity,
-        label=_identity_label(group_by, identity),
-        deleted=_identity_deleted(identity),
+        label=_identity_label(group_by, identity, deleted),
+        deleted=deleted,
     )
 
 
-def _identity_deleted(identity: UsageIdentity) -> bool:
-    return identity.current is None
+def _identity_deleted(
+    group_by: str, identity: UsageIdentity, existing_ids: Optional[set] = None
+) -> bool:
+    # Every id column on model_usages is FK-less, so a deleted user / route /
+    # api_key keeps its (now dangling) id on the row rather than nulling out.
+    # Resolve deletion by live existence: gone if the id isn't among the
+    # entities that still exist. ``existing_ids is None`` means the caller
+    # didn't resolve existence, so fall back to the id-present heuristic. A
+    # ``None`` id is a legacy SET NULL row whose parent is gone → deleted.
+    entity_id = _identity_entity_id(group_by, identity)
+    if entity_id is None:
+        return True
+    if existing_ids is None:
+        return False
+    return entity_id not in existing_ids
 
 
-def _identity_label(group_by: str, identity: UsageIdentity) -> str:
+def _identity_label(group_by: str, identity: UsageIdentity, deleted: bool) -> str:
     value = identity.value
     if group_by == USAGE_GROUP_BY_USER:
         label = format_usage_user_label(value.user_name)
@@ -292,9 +342,34 @@ def _identity_label(group_by: str, identity: UsageIdentity) -> str:
             api_key_name=value.api_key_name,
         )
 
-    if _identity_deleted(identity):
+    if deleted:
         label = f"{label} (Deleted)"
     return label
+
+
+async def _existing_entity_ids(session, model, ids) -> set:
+    """The subset of ``ids`` that still resolve to a live ``model`` row.
+
+    model_usages ids are FK-less (kept on parent delete for attribution), so a
+    gone entity no longer nulls out — the read path checks existence here to
+    tag such rows ``(Deleted)`` while keeping them attributable / filterable.
+    Existence is by raw id (no soft-delete filter), matching the old FK
+    ``SET NULL`` behavior which only fired on hard delete.
+    """
+    unique = {i for i in ids if i is not None}
+    if not unique:
+        return set()
+    rows = await _get_rows(session, select(model.id).where(model.id.in_(unique)))
+    return set(rows)
+
+
+async def _existing_ids_for_dimension(session, group_by: str, ids) -> Optional[set]:
+    """Resolve which ``ids`` still exist for a display dimension, or ``None``
+    for a dimension with no backing entity (e.g. date)."""
+    model = _DIMENSION_ENTITY_MODEL.get(group_by)
+    if model is None:
+        return None
+    return await _existing_entity_ids(session, model, ids)
 
 
 def _filter_condition(group_by: str, item: UsageFilterItem):
@@ -481,7 +556,9 @@ def _summary_from_row(row: Any) -> UsageSummary:
     )
 
 
-def _option_from_identity(group_by: str, identity: UsageIdentity) -> UsageFilterOption:
+def _option_from_identity(
+    group_by: str, identity: UsageIdentity, existing_ids: Optional[set] = None
+) -> UsageFilterOption:
     # Match the breakdown row's "Untracked" treatment so the filter option
     # list and the row labels stay consistent. NULL route_id + NULL
     # route_name is structural (pre-upgrade data), not a deletion.
@@ -495,10 +572,11 @@ def _option_from_identity(group_by: str, identity: UsageIdentity) -> UsageFilter
             label="Untracked",
             deleted=False,
         )
+    deleted = _identity_deleted(group_by, identity, existing_ids)
     return UsageFilterOption(
         identity=identity,
-        label=_identity_label(group_by, identity),
-        deleted=_identity_deleted(identity),
+        label=_identity_label(group_by, identity, deleted),
+        deleted=deleted,
     )
 
 
@@ -517,8 +595,18 @@ async def _get_filter_options(
         .distinct()
         .order_by(*group_columns),
     )
+    identities = [_row_identity(group_by, row) for row in rows]
+    # Resolve which referenced entities still exist so gone ones are tagged
+    # ``(Deleted)`` — every id is FK-less now, so it no longer nulls out on
+    # delete. ``None`` for dimensions with no backing entity.
+    existing_ids = await _existing_ids_for_dimension(
+        session,
+        group_by,
+        [_identity_entity_id(group_by, idt) for idt in identities],
+    )
     return [
-        _option_from_identity(group_by, _row_identity(group_by, row)) for row in rows
+        _option_from_identity(group_by, identity, existing_ids)
+        for identity in identities
     ]
 
 
@@ -639,8 +727,12 @@ def _breakdown_bucket_granularity(request: UsageBreakdownRequest) -> str:
 
 
 def _build_breakdown_item(
-    group_bys: List[str], row: Any, granularity: str
+    group_bys: List[str],
+    row: Any,
+    granularity: str,
+    existing_ids_by_dim: Optional[Dict[str, set]] = None,
 ) -> UsageBreakdownItem:
+    existing_ids_by_dim = existing_ids_by_dim or {}
     api_requests = int(getattr(row, USAGE_METRIC_API_REQUESTS, 0) or 0)
     total_tokens = int(getattr(row, USAGE_METRIC_TOTAL_TOKENS, 0) or 0)
     breakdown_item = UsageBreakdownItem(
@@ -655,11 +747,19 @@ def _build_breakdown_item(
     if USAGE_GROUP_BY_DATE in group_bys:
         breakdown_item.date = _row_date_dimension(row, granularity)
     if USAGE_GROUP_BY_USER in group_bys:
-        breakdown_item.user = _row_dimension(USAGE_GROUP_BY_USER, row)
+        breakdown_item.user = _row_dimension(
+            USAGE_GROUP_BY_USER, row, existing_ids_by_dim.get(USAGE_GROUP_BY_USER)
+        )
     if USAGE_GROUP_BY_API_KEY in group_bys:
-        breakdown_item.api_key = _row_dimension(USAGE_GROUP_BY_API_KEY, row)
+        breakdown_item.api_key = _row_dimension(
+            USAGE_GROUP_BY_API_KEY,
+            row,
+            existing_ids_by_dim.get(USAGE_GROUP_BY_API_KEY),
+        )
     if USAGE_GROUP_BY_ROUTE in group_bys:
-        breakdown_item.route = _row_dimension(USAGE_GROUP_BY_ROUTE, row)
+        breakdown_item.route = _row_dimension(
+            USAGE_GROUP_BY_ROUTE, row, existing_ids_by_dim.get(USAGE_GROUP_BY_ROUTE)
+        )
 
     if _single_group_by(group_bys, USAGE_GROUP_BY_USER):
         breakdown_item.models_called = int(
@@ -769,6 +869,16 @@ async def get_usage_breakdown(
         )
     item_rows = await _get_rows(session, items_statement)
 
+    # Resolve which referenced entities still exist so gone ones are tagged
+    # ``(Deleted)`` — every id is FK-less now, so a deleted entity keeps its
+    # (dangling) id on the row rather than nulling out.
+    existing_ids_by_dim: Dict[str, set] = {}
+    for dim, id_attr in _DIMENSION_ROW_ID_ATTR.items():
+        if dim in request.group_by:
+            existing_ids_by_dim[dim] = await _existing_ids_for_dimension(
+                session, dim, [getattr(r, id_attr, None) for r in item_rows]
+            )
+
     return UsageBreakdownResponse(
         summary=_summary_from_row(summary_row),
         group_by=request.group_by,
@@ -784,7 +894,9 @@ async def get_usage_breakdown(
             ),
         ),
         items=[
-            _build_breakdown_item(request.group_by, row, granularity)
+            _build_breakdown_item(
+                request.group_by, row, granularity, existing_ids_by_dim
+            )
             for row in item_rows
         ],
     )
