@@ -424,7 +424,7 @@ class ActiveRecordMixin:
                     f"COALESCE(jsonb_array_length(({column_name}->{json_path_str})::jsonb), 0)"
                 )
             else:
-                # Build PGSQL JSON path like '(status#>>{\"/memory\","utilization_rate"})::numeric'
+                # Build PGSQL JSON path like '(status#>>'{"memory","utilization_rate"}')::numeric'
                 json_path_str = ",".join([f'"{part}"' for part in json_path_parts])
                 if not cast_type:
                     cast_type = "numeric"
