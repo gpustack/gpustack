@@ -308,7 +308,7 @@ def _row_dimension(
     deleted = _identity_deleted(group_by, identity, existing_ids)
     return UsageBreakdownDimension(
         identity=identity,
-        label=_identity_label(group_by, identity, deleted),
+        label=_identity_label(group_by, identity),
         deleted=deleted,
     )
 
@@ -330,21 +330,20 @@ def _identity_deleted(
     return entity_id not in existing_ids
 
 
-def _identity_label(group_by: str, identity: UsageIdentity, deleted: bool) -> str:
+def _identity_label(group_by: str, identity: UsageIdentity) -> str:
+    # Pure display name — deletion is carried by the ``deleted`` field and the
+    # entity id by ``identity.current``. The client composes any "(Deleted)"
+    # marker itself so it stays localizable and so row keys / de-duplication key
+    # off the id rather than the (non-unique) name text.
     value = identity.value
     if group_by == USAGE_GROUP_BY_USER:
-        label = format_usage_user_label(value.user_name)
-    elif group_by == USAGE_GROUP_BY_ROUTE:
-        label = format_usage_route_label(value.route_name)
-    else:
-        label = format_usage_api_key_label(
-            user_name=value.user_name,
-            api_key_name=value.api_key_name,
-        )
-
-    if deleted:
-        label = f"{label} (Deleted)"
-    return label
+        return format_usage_user_label(value.user_name)
+    if group_by == USAGE_GROUP_BY_ROUTE:
+        return format_usage_route_label(value.route_name)
+    return format_usage_api_key_label(
+        user_name=value.user_name,
+        api_key_name=value.api_key_name,
+    )
 
 
 async def _existing_entity_ids(session, model, ids) -> set:
@@ -575,7 +574,7 @@ def _option_from_identity(
     deleted = _identity_deleted(group_by, identity, existing_ids)
     return UsageFilterOption(
         identity=identity,
-        label=_identity_label(group_by, identity, deleted),
+        label=_identity_label(group_by, identity),
         deleted=deleted,
     )
 
