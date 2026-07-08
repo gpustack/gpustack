@@ -361,7 +361,12 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:
                 principals = (
                     await session.exec(select(Principal).where(Principal.id.in_(ids)))
                 ).all()
-                names = {p.id: (p.display_name or p.name) for p in principals}
+                # Show the login name (``name``), not ``display_name`` — the
+                # Tokens tab groups users by login name too, so both usage
+                # surfaces stay consistent. Resolving live (by id) reflects a
+                # rename; rows whose principal is gone keep the snapshot
+                # ``creator_name`` (also a login name) set as ``key`` above.
+                names = {p.id: p.name for p in principals}
                 existing = set(names)
             else:
                 model = GPUInstance if gb == "instance" else GPUInstancePersistentVolume
@@ -967,6 +972,36 @@ async def resource_events(
     }
 
 
+async def _creator_name_snapshots(session, ids: Set[int]) -> Dict[int, str]:
+    """Login-name snapshot per creator id, for creators whose principal row is
+    gone.
+
+    Unions the ``creator_name`` snapshots on ``metered_usage`` and
+    ``resource_events`` — mirroring the id union that builds the creator set —
+    and keeps any one non-null value per id. These snapshots are login names
+    (resolved from ``Principal.name`` at event time), so the fallback stays
+    consistent with the live-resolved labels.
+    """
+    if not ids:
+        return {}
+    out: Dict[int, str] = {}
+    for col_id, col_name in (
+        (MeteredUsage.creator_id, MeteredUsage.creator_name),
+        (ResourceEvent.creator_id, ResourceEvent.creator_name),
+    ):
+        rows = (
+            await session.exec(
+                select(col_id, col_name)
+                .where(col_id.in_(ids), col_name.isnot(None))
+                .distinct()
+            )
+        ).all()
+        for cid, cname in rows:
+            if cid is not None and cname and cid not in out:
+                out[cid] = cname
+    return out
+
+
 @router.get("/resource/meta")
 async def resource_meta(
     session: SessionDep,
@@ -1015,13 +1050,21 @@ async def resource_meta(
         principals = (
             await session.exec(select(Principal).where(Principal.id.in_(ids)))
         ).all()
-        name_by_id = {p.id: (p.display_name or p.name) for p in principals}
+        # Login name (``name``), not ``display_name`` — keeps the resource
+        # filter consistent with the breakdown labels and the Tokens tab.
+        name_by_id = {p.id: p.name for p in principals}
+        # Snapshot login-name fallback for creators whose principal is gone,
+        # so a since-deleted user still shows their name instead of a bare id
+        # (the breakdown does the same via the ``creator_name`` snapshot).
+        snapshot_by_id = await _creator_name_snapshots(session, ids - set(name_by_id))
         # A creator id that no longer resolves to a principal was deleted —
         # flag it so the filter shows a "(Deleted)" tag (same as the Tokens tab).
         creators = [
             {
                 "id": cid,
-                "label": name_by_id.get(cid) or f"User {cid}",
+                "label": name_by_id.get(cid)
+                or snapshot_by_id.get(cid)
+                or f"User {cid}",
                 "deleted": cid not in name_by_id,
             }
             for cid in ids
