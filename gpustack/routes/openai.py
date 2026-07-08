@@ -34,7 +34,10 @@ from gpustack.schemas.model_routes import (
 )
 from gpustack.schemas.principals import Principal, platform_principal_id
 from gpustack.schemas.workers import Worker
-from gpustack.routes.model_routes import _my_model_visibility_sql
+from gpustack.routes.model_routes import (
+    _model_route_grant_conditions,
+    _my_model_visibility_sql,
+)
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, CurrentUserDep, TenantContextDep
 from gpustack.server.services import (
@@ -116,6 +119,13 @@ async def list_models(
         vis = _my_model_visibility_sql(ctx)
         if vis is not None:
             statement = statement.where(vis)
+    else:
+        # Admin act-as: mirror what a member of the current Org would see
+        # (own + PUBLIC/AUTHED + cross-tenant grants) rather than the whole
+        # ModelRoute table. Admin "All" mode (no current_principal_id) yields
+        # no conditions, so every ready route stays visible there.
+        for condition in _model_route_grant_conditions(ctx):
+            statement = statement.where(condition)
 
     if categories:
         conditions = build_category_conditions(session, target_class, categories)
