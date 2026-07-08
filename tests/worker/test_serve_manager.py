@@ -17,12 +17,40 @@ from gpustack_runtime.deployer import WorkloadStatusStateEnum
 from tests.utils.model import new_model, new_model_instance
 
 
-def _fake_stop_event():
-    """A never-set stop event whose wait() returns instantly, so the log
-    persistence loop is driven purely by the get_workload state sequence."""
+def _fake_stop_event(max_waits: int = 100):
+    """A stop event whose wait() returns instantly (tests aren't driven by real
+    time) and stays unset, so the log persistence loop is driven purely by the
+    get_workload state sequence. It auto-sets after max_waits waits so a
+    mis-sized mock or a runaway loop fails the test fast instead of hanging CI."""
+    state = {"waits": 0, "stopped": False}
+
+    def is_set():
+        return state["stopped"]
+
+    def wait(timeout=None):
+        state["waits"] += 1
+        if state["waits"] >= max_waits:
+            state["stopped"] = True
+        return state["stopped"]
+
     stop_event = MagicMock()
-    stop_event.is_set.return_value = False
+    stop_event.is_set.side_effect = is_set
+    stop_event.wait.side_effect = wait
     return stop_event
+
+
+def _get_workload_sequence(states):
+    """side_effect for a patched get_workload. The recovery grace-poll queries
+    get_workload several times per stream EOF, so once the sequence reaches its
+    terminal state it must keep returning it: a list that runs dry would raise
+    IndexError, which _container_still_running treats as "still alive", spinning
+    the reconnect loop forever."""
+    remaining = list(states)
+
+    def next_state(name):
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    return next_state
 
 
 def _build_serve_manager(worker_id: int = 1):
@@ -129,6 +157,9 @@ def test_restart_model_instance_preserves_transient_backoff_count():
     with (
         patch.object(manager, "_is_provisioning", return_value=False),
         patch.object(manager, "_start_model_instance"),
+        # _stop_model_instance runs for real to exercise clear_restart_backoff=
+        # False, but its delete_workload side effect would hit the runtime socket.
+        patch("gpustack.worker.serve_manager.delete_workload"),
     ):
         manager._restart_model_instance(model_instance)
 
@@ -274,7 +305,7 @@ def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):
         ),
         patch(
             "gpustack.worker.serve_manager.get_workload",
-            side_effect=lambda name: states.pop(0),
+            side_effect=_get_workload_sequence(states),
         ),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())
@@ -330,7 +361,7 @@ def test_persist_container_logs_resets_when_anchor_rotated(tmp_path: Path):
         ),
         patch(
             "gpustack.worker.serve_manager.get_workload",
-            side_effect=lambda name: states.pop(0),
+            side_effect=_get_workload_sequence(states),
         ),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())
@@ -362,7 +393,7 @@ def test_persist_container_logs_empty_reconnect_keeps_history(tmp_path: Path):
         ),
         patch(
             "gpustack.worker.serve_manager.get_workload",
-            side_effect=lambda name: states.pop(0),
+            side_effect=_get_workload_sequence(states),
         ),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())
@@ -396,7 +427,7 @@ def test_persist_container_logs_window_anchor_ignores_repeated_line(
         ),
         patch(
             "gpustack.worker.serve_manager.get_workload",
-            side_effect=lambda name: states.pop(0),
+            side_effect=_get_workload_sequence(states),
         ),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())

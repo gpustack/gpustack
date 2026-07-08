@@ -22,6 +22,7 @@ from gpustack_runtime.deployer import (
 )
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
+from gpustack import envs
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
 from gpustack.config import registration
@@ -65,11 +66,14 @@ from gpustack.schemas.models import (
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 
-
 logger = logging.getLogger(__name__)
 
 # Inference health check error message
 _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
+
+# One health-check cycle (+2s margin) to let a container return after a stream
+# EOF; beyond that gpustack marks it ERROR and takes over recovery.
+LOG_RECONNECT_GRACE_SECONDS = envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL + 2
 
 # Global lock for port assignment to avoid pickle serialization issues
 _port_lock = threading.Lock()
@@ -843,8 +847,10 @@ class ServeManager:
 
         Reconnects on stream EOF while the workload is still alive, resuming by
         skipping already-written history (matched by an anchor window of the
-        last lines written). Exits once the workload has terminated or is
-        deleted.
+        last lines written). A manual/runtime restart briefly looks terminated
+        at EOF, so it waits a grace window for the container to return before
+        giving up. Exits only if the container stays terminated for that whole
+        window or the thread is asked to stop.
 
         Args:
             workload_name: Name of the container workload
@@ -910,8 +916,10 @@ class ServeManager:
                         first_connect = True
                         anchor_window.clear()
 
-                if stop_event.is_set() or not self._container_still_running(
-                    workload_name
+                # A restart briefly looks terminated at EOF; wait for the
+                # container to return before giving up, so logs aren't dropped.
+                if stop_event.is_set() or not self._wait_for_container_recovery(
+                    workload_name, stop_event
                 ):
                     break
                 logger.debug(
@@ -944,6 +952,27 @@ class ServeManager:
             WorkloadStatusStateEnum.INITIALIZING,
             WorkloadStatusStateEnum.RUNNING,
         )
+
+    def _wait_for_container_recovery(
+        self,
+        workload_name: str,
+        stop_event: threading.Event,
+        grace_seconds: float = LOG_RECONNECT_GRACE_SECONDS,
+        poll_interval: float = 1.0,
+    ) -> bool:
+        """Poll until the workload is alive again (True -> reconnect) or the
+        grace window elapses / stop_event fires (False -> give up). A restart
+        momentarily looks terminated at EOF, which a single check can't tell
+        apart from a real termination.
+        """
+        attempts = max(1, int(grace_seconds / poll_interval))
+        for _ in range(attempts):
+            if stop_event.is_set():
+                return False
+            if self._container_still_running(workload_name):
+                return True
+            stop_event.wait(timeout=poll_interval)
+        return False
 
     def _discover_sidecar_logs(
         self,
