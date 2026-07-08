@@ -1048,3 +1048,56 @@ def test_round_up_vllm_lora_rank():
     assert _round_up_vllm_lora_rank(64) == 64
     assert _round_up_vllm_lora_rank(200) == 256
     assert _round_up_vllm_lora_rank(1024) == 1024  # beyond known set: pass through
+
+
+def _make_versioned_runner(backend_version, docker_image):
+    """Build a minimal BackendVersionedRunner-shaped stub for _resolve_image."""
+    platform_entry = types.SimpleNamespace(docker_image=docker_image)
+    service_version = types.SimpleNamespace(
+        version="0.10.2", platforms=[platform_entry]
+    )
+    service = types.SimpleNamespace(versions=[service_version])
+    variant = types.SimpleNamespace(services=[service])
+    return types.SimpleNamespace(version=backend_version, variants=[variant])
+
+
+@pytest.mark.parametrize(
+    "runtime_version, expected_image",
+    [
+        # Host runtime matches a runner exactly: pick it.
+        ("12.8", "gpustack/runner:cuda12.8-vllm0.10.2"),
+        # Host runtime lower than every runner: never cross major, fall back to
+        # the newest runner sharing the host major (12.9, not the oldest 12.8).
+        ("12.6", "gpustack/runner:cuda12.9-vllm0.10.2"),
+        # No runner shares the host major: fall back to the oldest available.
+        ("11.5", "gpustack/runner:cuda12.8-vllm0.10.2"),
+        # Host runtime is higher than all: pick the newest that is <= it.
+        ("13.5", "gpustack/runner:cuda13.0-vllm0.10.2"),
+        # Runtime version undetectable: fall back to the latest.
+        (None, "gpustack/runner:cuda13.0-vllm0.10.2"),
+    ],
+)
+def test_resolve_image_fallback_matches_host_major(
+    runtime_version, expected_image, monkeypatch
+):
+    import gpustack.worker.backends.base as base_module
+
+    # gpustack-runner returns backend versions newest-first.
+    runner = types.SimpleNamespace(
+        versions=[
+            _make_versioned_runner("13.0", "gpustack/runner:cuda13.0-vllm0.10.2"),
+            _make_versioned_runner("12.9", "gpustack/runner:cuda12.9-vllm0.10.2"),
+            _make_versioned_runner("12.8", "gpustack/runner:cuda12.8-vllm0.10.2"),
+        ]
+    )
+    monkeypatch.setattr(base_module, "list_backend_runners", lambda **_: [runner])
+
+    server = VLLMServer.__new__(VLLMServer)
+    server._model = types.SimpleNamespace(
+        image_name=None, backend="vllm", backend_version=None
+    )
+    server.inference_backend = None
+    server._get_device_info = lambda: ("cuda", runtime_version, None)
+
+    image_name, _ = server._resolve_image()
+    assert image_name == expected_image
