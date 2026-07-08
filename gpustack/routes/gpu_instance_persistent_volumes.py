@@ -29,8 +29,8 @@ from gpustack.schemas import (
     GPUInstancePersistentVolumesPublic,
     GPUInstancePersistentVolumeCreate,
     GPUInstancePersistentVolumeStatus,
+    GPUInstancePersistentVolumePhase,
 )
-from gpustack.schemas.gpu_instances import GPUInstancePhase
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
@@ -237,11 +237,11 @@ async def _validate_create_obj(
         owner_principal_id=create_obj.owner_principal_id,
         name=create_obj.spec.type_,
     )
-    if pvt is None:
+    if pvt is None or pvt.is_deleting():
         raise InvalidException(
             message=(
                 f"GPU instance persistent volume type "
-                f"'{create_obj.spec.type_}' not found"
+                f"'{create_obj.spec.type_}' not found or is being deleted"
             ),
         )
 
@@ -302,7 +302,7 @@ def _build_create_source(
     source["creator_id"] = creator_id
     source["persistent_volume_type_id"] = persistent_volume_type_id
     source["status"] = GPUInstancePersistentVolumeStatus(
-        phase=GPUInstancePhase.READY,
+        phase=GPUInstancePersistentVolumePhase.READY,
     )
     return source
 
@@ -316,7 +316,7 @@ def _build_delete_phase_source(existing: GPUInstancePersistentVolume) -> dict:
     return {
         "status": base.model_copy(
             update={
-                "phase": GPUInstancePhase.DELETING,
+                "phase": GPUInstancePersistentVolumePhase.DELETING,
                 "phase_message": None,
             },
         ),

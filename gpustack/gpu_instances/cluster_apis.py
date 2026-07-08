@@ -3,7 +3,7 @@ from __future__ import annotations
 import http
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 from kubernetes_asyncio import client
 
@@ -332,7 +332,9 @@ class ClusterOps:
                 return None
             raise
 
-    async def _delete(self, spec: _CRDSpec, name: str) -> None:
+    async def _delete(self, spec: _CRDSpec, name: str) -> bool:
+        """Delete the object by name. Returns whether it existed (``True`` when
+        a delete was issued, ``False`` when it was already gone / a 404)."""
         crd = self._crd()
         try:
             if spec.namespaced:
@@ -356,31 +358,11 @@ class ClusterOps:
                 name,
                 self.cluster_id,
             )
+            return True
         except client.exceptions.ApiException as e:
             if e.status == http.HTTPStatus.NOT_FOUND:
-                return
+                return False
             raise
-
-    async def _list(self, spec: _CRDSpec) -> List[dict]:
-        """List all objects of ``spec`` in the cluster.
-
-        Always uses the cluster-scoped list endpoint: for a cluster-scoped CRD
-        (e.g. ``_PV_TYPE``) that is the natural list, and for a namespaced CRD
-        (e.g. ``_PV``) it returns objects across **all** namespaces — both are
-        what the finalizer controllers need. A missing CRD yields ``[]``.
-        """
-        crd = self._crd()
-        try:
-            result = await crd.list_cluster_custom_object(
-                group=_GROUP,
-                version=_VERSION,
-                plural=spec.plural,
-            )
-        except client.exceptions.ApiException as e:
-            if e.status == http.HTTPStatus.NOT_FOUND:
-                return []
-            raise
-        return (result or {}).get("items", []) or []
 
     #
     # Namespace Operations
@@ -411,18 +393,19 @@ class ClusterOps:
                 return
             raise
 
-    async def delete_namespace(self, name: str):
+    async def delete_namespace(self, name: str) -> bool:
         """
         Delete the namespace in the cluster if it exists.
-        If the namespace does not exist, do nothing.
+        Returns whether it existed (``False`` when already gone / a 404).
         """
         core = client.CoreV1Api(self.api_client)
         try:
             await core.delete_namespace(name=name)
             logger.info("Deleted namespace %s in cluster %s", name, self.cluster_id)
+            return True
         except client.exceptions.ApiException as e:
             if e.status == http.HTTPStatus.NOT_FOUND:
-                return
+                return False
             raise
 
     async def ensure_org_namespace(self):
@@ -453,12 +436,12 @@ class ClusterOps:
             _SSH_PUBLIC_KEY, {"metadata": {"name": name}, "spec": spec}
         )
 
-    async def delete_ssh_public_key(self, name: str):
+    async def delete_ssh_public_key(self, name: str) -> bool:
         """
         Delete the instance ssh public key in the cluster if it exists.
-        If the instance ssh public key does not exist, do nothing.
+        Returns whether it existed (``False`` when already gone / a 404).
         """
-        await self._delete(_SSH_PUBLIC_KEY, name)
+        return await self._delete(_SSH_PUBLIC_KEY, name)
 
     #
     # Persistent Volume Type Operations
@@ -470,10 +453,6 @@ class ClusterOps:
         If the persistent volume type does not exist, return None.
         """
         return await self._read(_PV_TYPE, name)
-
-    async def list_persistent_volume_types(self) -> List[dict]:
-        """List all persistent volume types in the cluster (cluster-scoped)."""
-        return await self._list(_PV_TYPE)
 
     async def create_persistent_volume_type(
         self, name: str, spec: dict, ignore_existed: bool = True
@@ -488,12 +467,12 @@ class ClusterOps:
             _PV_TYPE, {"metadata": {"name": name}, "spec": spec}, ignore_existed
         )
 
-    async def delete_persistent_volume_type(self, name: str):
+    async def delete_persistent_volume_type(self, name: str) -> bool:
         """
         Delete the persistent volume type in the cluster if it exists.
-        If the persistent volume type does not exist, do nothing.
+        Returns whether it existed (``False`` when already gone / a 404).
         """
-        await self._delete(_PV_TYPE, name)
+        return await self._delete(_PV_TYPE, name)
 
     #
     # Persistent Volume Operations
@@ -505,10 +484,6 @@ class ClusterOps:
         If the persistent volume does not exist, return None.
         """
         return await self._read(_PV, name)
-
-    async def list_persistent_volumes(self) -> List[dict]:
-        """List all persistent volumes in the cluster across all namespaces."""
-        return await self._list(_PV)
 
     async def create_persistent_volume(
         self, name: str, spec: dict, ignore_existed: bool = True
@@ -523,12 +498,12 @@ class ClusterOps:
             _PV, {"metadata": {"name": name}, "spec": spec}, ignore_existed
         )
 
-    async def delete_persistent_volume(self, name: str):
+    async def delete_persistent_volume(self, name: str) -> bool:
         """
         Delete the persistent volume in the cluster if it exists.
-        If the persistent volume does not exist, do nothing.
+        Returns whether it existed (``False`` when already gone / a 404).
         """
-        await self._delete(_PV, name)
+        return await self._delete(_PV, name)
 
     #
     # Instance Types
@@ -578,9 +553,9 @@ class ClusterOps:
         """
         return await self._patch_spec(_INSTANCE, name, {"stop": None})
 
-    async def delete_instance(self, name: str):
+    async def delete_instance(self, name: str) -> bool:
         """
         Delete the instance in the cluster if it exists.
-        If the instance does not exist, do nothing.
+        Returns whether it existed (``False`` when already gone / a 404).
         """
-        await self._delete(_INSTANCE, name)
+        return await self._delete(_INSTANCE, name)

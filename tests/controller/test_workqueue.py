@@ -136,6 +136,20 @@ async def test_add_after_promotes_after_delay():
 
 
 @pytest.mark.asyncio
+async def test_add_after_last_schedule_wins_per_key():
+    # Re-scheduling the same key via add_after cancels the earlier delayed entry
+    # so only the newest event (payload + delay) survives — no stale replay.
+    q = WorkQueue()
+    q.add_after(_ev("a", obj="old"), 10)  # far future, must be cancelled
+    q.add_after(_ev("a", obj="new"), 0.05)  # supersedes it
+
+    event = await asyncio.wait_for(q.get(), timeout=1)  # must not wait ~10s
+    assert event.object == "new"
+    with pytest.raises(asyncio.TimeoutError):  # no stale "old" left behind
+        await asyncio.wait_for(q.get(), timeout=0.1)
+
+
+@pytest.mark.asyncio
 async def test_immediate_beats_delayed():
     q = WorkQueue()
     q.add_after(_ev("late"), 0.08)
@@ -207,6 +221,26 @@ async def test_dedup_max_wait_caps_window():
     assert event.object == "v"
     assert elapsed < 1.0  # nowhere near the 10s window
     assert elapsed >= 0.06
+
+
+@pytest.mark.asyncio
+async def test_added_bypass_does_not_resurrect_stale_debounced_event():
+    # An ADDED arriving mid-window bypasses the debounce and is promoted
+    # immediately; the leftover debounced snapshot must NOT resurrect a stale
+    # payload once its deadline passes (``_pending`` is authoritative).
+    q = WorkQueue(dedup_window=0.05)
+    q.add(_ev("a", WorkEventType.MODIFIED, obj="stale"))  # debounced
+    q.add(_ev("a", WorkEventType.ADDED, obj="fresh"))  # bypasses the window
+
+    event = await asyncio.wait_for(q.get(), timeout=0.2)
+    assert event.object == "fresh"  # promoted immediately, latest payload
+    q.done(("a",))
+
+    # Let the stale debounce deadline pass; nothing must surface.
+    await asyncio.sleep(0.1)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(q.get(), timeout=0.1)
+    assert len(q) == 0
 
 
 # --------------------------------------------------------------------------- #

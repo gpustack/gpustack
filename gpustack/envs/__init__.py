@@ -79,6 +79,15 @@ WORKER_UNREACHABLE_CHECK_MODE = os.getenv(
 GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL = int(
     os.getenv("GPUSTACK_GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL", 15)
 )  # in seconds
+# Optional low-frequency fallback sweep: with the Ready-row reconfirm chain
+# retired, a settled Ready row's worker-side drift flows back only via the
+# downstream watch. If the watch misses an event across a reconnect gap, this
+# opt-in sweep periodically re-observes Ready rows so the drift is eventually
+# reconciled. 0 (default) disables it; set a low frequency (seconds) only if a
+# watch-gap coverage hole is observed.
+GPU_INSTANCE_READY_SWEEP_INTERVAL = int(
+    os.getenv("GPUSTACK_GPU_INSTANCE_READY_SWEEP_INTERVAL", 0)
+)  # in seconds
 
 # Model instance configuration
 MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(

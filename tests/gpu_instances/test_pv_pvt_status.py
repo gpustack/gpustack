@@ -67,3 +67,42 @@ def test_pv_carries_status_instance():
     )
     assert pv.status.phase == "Deleting"
     assert pv.status.finalizing == [3]
+
+
+def test_pv_is_deleting():
+    def _pv(status):
+        return GPUInstancePersistentVolume(
+            id=1,
+            name="pv-1",
+            owner_principal_id=1,
+            persistent_volume_type_id=2,
+            spec=GPUInstancePersistentVolumeSpec(type_="t"),
+            status=status,
+        )
+
+    assert _pv(None).is_deleting() is False  # no status = active
+    assert _pv(GPUInstancePersistentVolumeStatus(phase="Ready")).is_deleting() is False
+    assert (
+        _pv(GPUInstancePersistentVolumeStatus(phase="Deleting")).is_deleting() is True
+    )
+
+
+def test_pvt_is_deleting():
+    def _pvt(status):
+        return GPUInstancePersistentVolumeType(
+            id=1,
+            name="pvt-1",
+            owner_principal_id=1,
+            spec=GPUInstancePersistentVolumeTypeSpec(),
+            status=status,
+        )
+
+    assert _pvt(None).is_deleting() is False
+    assert (
+        _pvt(GPUInstancePersistentVolumeTypeStatus(phase="Ready")).is_deleting()
+        is False
+    )
+    assert (
+        _pvt(GPUInstancePersistentVolumeTypeStatus(phase="Deleting")).is_deleting()
+        is True
+    )

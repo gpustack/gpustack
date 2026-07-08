@@ -175,10 +175,16 @@ class WorkQueue:
         self._add(event, now=time.monotonic())
 
     def add_after(self, event: WorkEvent, delay: float) -> None:
-        """Enqueue after ``delay`` seconds (no backoff). requeueAfter."""
+        """Enqueue after ``delay`` seconds (no backoff). requeueAfter.
+
+        Last-schedule-wins per keys: any existing delayed entry for the same
+        keys is cancelled first, so a re-scheduled requeue never fires a stale
+        event alongside the newest one.
+        """
         if delay <= 0:
             self.add(event)
             return
+        self._cancel_delayed(event.keys)
         heapq.heappush(
             self._delayed, (time.monotonic() + delay, next(self._seq), event)
         )
@@ -314,12 +320,14 @@ class WorkQueue:
                 k for k, (deadline, _, _) in self._debounce.items() if deadline <= now
             ]
             for keys in expired:
-                _, _, event = self._debounce.pop(keys)
-                # Re-add without re-entering the debounce buffer.
+                # ``_pending[keys]`` already holds the latest coalesced payload
+                # (``_add`` keeps it current, including events that bypassed the
+                # window). The debounced tuple is a stale snapshot, so just drop
+                # it and promote whatever is pending now; skip when the key was
+                # already consumed (nothing left to promote).
+                self._debounce.pop(keys, None)
                 if keys in self._pending:
-                    event = self._coalesce(self._pending[keys], event)
-                self._pending[keys] = event
-                self._promote_to_ready(keys, front=False)
+                    self._promote_to_ready(keys, front=False)
 
     def _has_due(self, now: float) -> bool:
         if self._delayed and self._delayed[0][0] <= now:
