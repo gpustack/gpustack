@@ -532,6 +532,13 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env_bool("EXTERNAL_AUTH_DEFAULT_INACTIVE"),
     )
     server_group.add_argument(
+        "--external-auth-insecure-skip-tls-verify",
+        action=OptionalBoolAction,
+        help="Skip TLS verification for the external-auth IdP handshake "
+        "(OIDC/CAS). Testing against self-signed IdPs only; never in production.",
+        default=get_gpustack_env_bool("EXTERNAL_AUTH_INSECURE_SKIP_TLS_VERIFY"),
+    )
+    server_group.add_argument(
         "--external-auth-post-logout-redirect-key",
         type=str,
         help="Generic key for post-logout redirection across IdPs.",
@@ -828,6 +835,7 @@ def set_server_options(args, config_data: dict):
         "external_auth_full_name",
         "external_auth_avatar_url",
         "external_auth_default_inactive",
+        "external_auth_insecure_skip_tls_verify",
         "oidc_issuer",
         "oidc_client_id",
         "oidc_client_secret",

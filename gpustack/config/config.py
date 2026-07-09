@@ -175,6 +175,9 @@ class Config(WorkerConfig, BaseSettings):
     external_auth_full_name: Optional[str] = None  # external auth full name
     external_auth_avatar_url: Optional[str] = None  # external auth avatar url
     external_auth_default_inactive: bool = False  # external auth default inactive
+    # Skip TLS verification for the external-auth IdP handshake (OIDC/CAS).
+    # Testing against self-signed IdPs only; never enable in production.
+    external_auth_insecure_skip_tls_verify: bool = False
     # Group sync. ``external_auth_groups`` is the OIDC claim name or
     # SAML AttributeStatement key that carries the user's group list.
     # Sane defaults are provider-specific (OIDC usually emits
@@ -696,7 +699,10 @@ class Config(WorkerConfig, BaseSettings):
     def init_auth(self):
         if self.oidc_issuer:
             self.external_auth_type = AuthProviderEnum.OIDC
-            self.openid_configuration = get_openid_configuration(self.oidc_issuer)
+            self.openid_configuration = get_openid_configuration(
+                self.oidc_issuer,
+                insecure_skip_tls_verify=self.external_auth_insecure_skip_tls_verify,
+            )
         elif self.saml_idp_server_url:
             self.external_auth_type = AuthProviderEnum.SAML
         elif self.cas_server_url:
@@ -978,12 +984,14 @@ def get_cluster_image_name(
     )
 
 
-def get_openid_configuration(issuer: str) -> dict:
+def get_openid_configuration(
+    issuer: str, insecure_skip_tls_verify: bool = False
+) -> dict:
     """Fetch OpenID configuration from the issuer."""
     url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
     try:
         use_proxy_env = use_proxy_env_for_url(url)
-        verify = make_ssl_context()
+        verify = False if insecure_skip_tls_verify else make_ssl_context()
         with httpx.Client(timeout=10, verify=verify, trust_env=use_proxy_env) as client:
             resp = client.get(url)
             resp.raise_for_status()

@@ -254,6 +254,12 @@ class Server:
     async def start(self):
         logger.info("Starting GPUStack server.")
 
+        if self._config.external_auth_insecure_skip_tls_verify:
+            logger.warning(
+                "external_auth_insecure_skip_tls_verify is enabled: TLS "
+                "verification is DISABLED for the external-auth IdP handshake."
+            )
+
         add_signal_handlers_in_loop()
 
         self._run_migrations()

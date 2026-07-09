@@ -820,7 +820,9 @@ async def oidc_callback(request: Request, session: SessionDep):
     }
     token_endpoint = config.openid_configuration["token_endpoint"]
     use_proxy_env = use_proxy_env_for_url(token_endpoint)
-    verify = make_ssl_context()
+    verify = (
+        False if config.external_auth_insecure_skip_tls_verify else make_ssl_context()
+    )
     async with httpx.AsyncClient(
         timeout=timeout, verify=verify, trust_env=use_proxy_env
     ) as client:
@@ -1097,7 +1099,9 @@ async def cas_callback(request: Request, session: SessionDep):
 
     service = _cas_service_url(request, config)
     use_proxy_env = use_proxy_env_for_url(config.cas_server_url)
-    verify = make_ssl_context()
+    verify = (
+        False if config.external_auth_insecure_skip_tls_verify else make_ssl_context()
+    )
     async with httpx.AsyncClient(
         timeout=timeout, verify=verify, trust_env=use_proxy_env
     ) as client:
