@@ -222,6 +222,7 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
             "external_auth_full_name": None,
             "external_auth_avatar_url": None,
             "external_auth_default_inactive": False,
+            "external_auth_insecure_skip_tls_verify": False,
             # Group sync defaults to False; this test exercises the
             # trust-store path, not group sync.
             "external_auth_group_sync": False,
