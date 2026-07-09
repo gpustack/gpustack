@@ -52,6 +52,189 @@ async def test_get_current_user_accepts_x_api_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_authenticate_request_reuses_provided_session(monkeypatch):
+    """``authenticate_request(..., session=<provided>)`` must reuse the
+    caller's session (not open a fresh one) and still populate
+    ``request.state.user`` / ``request.state.api_key``. Covers the
+    session-reuse path used by ``/token-auth``."""
+    from gpustack.api.auth import authenticate_request
+
+    provided_session = object()
+    request = _make_request()
+
+    expected_user = type("User", (), {"is_active": True})()
+    expected_key = object()
+
+    captured = {}
+
+    async def fake_get_user_from_api_token(session, token):
+        captured["session"] = session
+        captured["token"] = token
+        return expected_user, expected_key
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token", fake_get_user_from_api_token
+    )
+
+    # If a fresh session were opened, this fires — proving the provided one
+    # is reused instead. (A plain object() as the session also means any
+    # attempt to close it would AttributeError, so this doubles as a
+    # "caller's session is not closed" assertion.)
+    def _no_fresh_session(*args, **kwargs):
+        raise AssertionError(
+            "async_session() must not be called when a session is provided"
+        )
+
+    monkeypatch.setattr("gpustack.api.auth.async_session", _no_fresh_session)
+
+    user = await authenticate_request(
+        request, x_api_key="sk_test_value", session=provided_session
+    )
+
+    assert user is expected_user
+    assert captured["session"] is provided_session
+    assert captured["token"] == "sk_test_value"
+    assert request.state.user is expected_user
+    assert request.state.api_key is expected_key
+
+
+def _api_token_double(**overrides):
+    fields = {
+        "hashed_secret_key": "stored-hash",
+        "expires_at": None,
+        "user_id": 7,
+        "access_key": "abcd1234",
+    }
+    fields.update(overrides)
+    return type("ApiKey", (), fields)()
+
+
+class _RollbackRecordingSession:
+    def __init__(self, events):
+        self._events = events
+
+    async def rollback(self):
+        self._events.append("rollback")
+
+
+@pytest.mark.asyncio
+async def test_get_user_from_api_token_skips_verify_for_expired_key(monkeypatch):
+    """An expired key must be rejected *before* the argon2 verify runs."""
+    from datetime import datetime, timedelta, timezone
+
+    from gpustack.api.auth import get_user_from_api_token
+
+    expired = _api_token_double(
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+    )
+
+    async def fake_get_by_access_key(self, candidate):
+        return expired
+
+    verify_calls = {"n": 0}
+
+    def fake_verify(hashed, secret):
+        verify_calls["n"] += 1
+        return True
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.verify_hashed_secret", fake_verify)
+
+    session = _RollbackRecordingSession([])
+    user, api_key = await get_user_from_api_token(
+        session, "gpustack_abcd1234_c11c75ed6334ea9505da4ad9"
+    )
+
+    assert user is None and api_key is None
+    assert verify_calls["n"] == 0  # argon2 skipped for expired key
+
+
+@pytest.mark.asyncio
+async def test_get_user_from_api_token_rollback_before_verify_via_thread(monkeypatch):
+    """Valid key: the pooled connection is released (``rollback``) *before*
+    the argon2 verify, and the verify runs off the event loop via
+    ``asyncio.to_thread``."""
+    import gpustack.api.auth as auth_module
+    from gpustack.api.auth import get_user_from_api_token
+
+    events = []
+    valid = _api_token_double()
+    expected_user = type("User", (), {"is_active": True, "id": 7})()
+
+    async def fake_get_by_access_key(self, candidate):
+        return valid
+
+    async def fake_get_by_id(self, user_id):
+        assert user_id == 7
+        return expected_user
+
+    def fake_verify(hashed, secret):
+        events.append("verify")
+        assert hashed == "stored-hash"
+        return True
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr("gpustack.api.auth.verify_hashed_secret", fake_verify)
+
+    real_to_thread = auth_module.asyncio.to_thread
+    used_thread = {"n": 0}
+
+    async def spy_to_thread(fn, *args, **kwargs):
+        used_thread["n"] += 1
+        return await real_to_thread(fn, *args, **kwargs)
+
+    monkeypatch.setattr(auth_module.asyncio, "to_thread", spy_to_thread)
+
+    session = _RollbackRecordingSession(events)
+    user, api_key = await get_user_from_api_token(
+        session, "gpustack_abcd1234_c11c75ed6334ea9505da4ad9"
+    )
+
+    assert user is expected_user
+    assert api_key is valid
+    assert events == ["rollback", "verify"]  # connection released before argon2
+    assert used_thread["n"] == 1  # argon2 ran via asyncio.to_thread
+
+
+@pytest.mark.asyncio
+async def test_get_user_from_api_token_rejects_wrong_secret(monkeypatch):
+    """A key whose secret fails argon2 verification yields no user."""
+    from gpustack.api.auth import get_user_from_api_token
+
+    valid = _api_token_double()
+
+    async def fake_get_by_access_key(self, candidate):
+        return valid
+
+    get_by_id_calls = {"n": 0}
+
+    async def fake_get_by_id(self, user_id):
+        get_by_id_calls["n"] += 1
+        return type("User", (), {"is_active": True, "id": 7})()
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr(
+        "gpustack.api.auth.verify_hashed_secret", lambda hashed, secret: False
+    )
+
+    session = _RollbackRecordingSession([])
+    user, api_key = await get_user_from_api_token(
+        session, "gpustack_abcd1234_c11c75ed6334ea9505da4ad9"
+    )
+
+    assert user is None and api_key is None
+    assert get_by_id_calls["n"] == 0  # never resolve a user for a bad secret
+
+
+@pytest.mark.asyncio
 async def test_worker_auth_accepts_x_api_key():
     request = type("Request", (), {})()
     request.headers = {"X-Higress-Llm-Model": "claude-sonnet"}
