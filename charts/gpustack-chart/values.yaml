@@ -207,7 +207,7 @@ operator:
   image:
     # Operator image repository including namespace (no registry).
     # Final reference: {global.hub}/{operator.image.repository}:{operator.image.tag}
-    # Default tag is v0.3.0 — automatically patched by CI from __operator_version__
+    # Default tag is v0.5.4 — automatically patched by CI from __operator_version__
     # in gpustack/__init__.py at build time.
     repository: gpustack/gpustack-operator
     tag: null
