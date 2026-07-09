@@ -157,6 +157,46 @@ async def test_gpu_instances_by_instance_carries_sku(session):
 
 
 @pytest.mark.asyncio
+async def test_instance_grouping_carries_creator_resource_type_omits(session):
+    """Resource-dimension groupings carry the owner (constant per resource);
+    coarser groupings that can span multiple creators omit it entirely rather
+    than emit a MAX(id)/MAX(name) mismatch."""
+    from sqlalchemy import and_
+
+    gpu_filter = and_(
+        MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+        MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+    )
+    by_instance = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance"),
+        base_filter=gpu_filter,
+        metric_keys=["gpu_hours"],
+    )
+    # every seeded row is creator 7 → each per-instance row carries that owner
+    assert by_instance["items"]
+    for i in by_instance["items"]:
+        assert i["creator_id"] == 7
+        assert "creator_name" in i
+
+    by_type = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("resource_type"),
+        base_filter=None,
+        metric_keys=["instance_hours"],
+    )
+    # non-resource grouping (a group may span many creators) → fields absent
+    assert by_type["items"]
+    for i in by_type["items"]:
+        assert "creator_id" not in i
+        assert "creator_name" not in i
+
+
+@pytest.mark.asyncio
 async def test_user_grouping_resolves_principal_name(session):
     from sqlalchemy import and_
 
