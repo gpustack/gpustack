@@ -19,7 +19,7 @@ from gpustack.api.auth import (
     basic_auth,
     cookie_auth,
     bearer_auth,
-    get_current_user,
+    authenticate_request,
     credentials_exception,
     gateway_token_auth,
     inference_scope,
@@ -81,12 +81,13 @@ async def server_auth(
     cookie_token = await cookie_auth(request)
     x_api_key = await api_key_header_auth(request)
     try:
-        user = await get_current_user(
+        user = await authenticate_request(
             request=request,
             basic_credentials=await basic_auth(request),
             bearer_token=await bearer_auth(request),
             x_api_key=x_api_key,
             cookie_token=cookie_token,
+            session=session,
         )
         api_key = getattr(request.state, "api_key", None)
         access_key = None if api_key is None else api_key.access_key
