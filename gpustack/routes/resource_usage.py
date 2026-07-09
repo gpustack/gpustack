@@ -517,7 +517,7 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
             }
 
 
-async def _run_breakdown(
+async def _run_breakdown(  # noqa: C901
     session,
     *,
     user,
@@ -611,6 +611,21 @@ async def _run_breakdown(
         # show their Instance Type / Storage Type even when grouped by resource.
         func.max(MeteredUsage.sku).label("sku"),
     ]
+    # Carry the owner only when a per-entity dimension is grouped on: one
+    # instance/volume is created by a single principal, so within such a group
+    # ``creator_id`` / ``creator_name`` are constant and MAX collapses to that
+    # one row's pair (same trick as ``sku``). For coarser groupings (``date``,
+    # ``instance_type``, ``type``/``sku``, ``resource_type``) a single group
+    # spans many creators, and taking MAX of id and name *independently* would
+    # pair one user's id with another's name — so those groupings omit the
+    # fields entirely rather than emit a mismatched owner. ``user`` grouping
+    # already carries the creator as the group key/id, so it doesn't need them.
+    carries_creator = any(gb in ("instance", "volume") for gb in request.group_by)
+    if carries_creator:
+        agg_cols += [
+            func.max(MeteredUsage.creator_id).label("creator_id"),
+            func.max(MeteredUsage.creator_name).label("creator_name"),
+        ]
     grouped = base.with_only_columns(*select_cols, *agg_cols).group_by(*group_cols)
 
     order_key = request.order_by or (metric_keys[0] if metric_keys else None)
@@ -674,6 +689,15 @@ async def _run_breakdown(
         if hasattr(row, "group_sku_count"):
             item["_sku_count"] = getattr(row, "group_sku_count", None)
         item["sku"] = getattr(row, "sku", None)
+        # Owner of the resource, present only for resource-dimension groupings
+        # (see ``carries_creator``) so per-instance / per-volume (and
+        # date+instance) rows show their creator without a ``user`` grouping.
+        # Coarser groupings omit these columns entirely, so the row won't carry
+        # them — guard on presence rather than emit a misleading null/mismatch.
+        # ``creator_name`` is the metering-time snapshot.
+        if carries_creator:
+            item["creator_id"] = getattr(row, "creator_id", None)
+            item["creator_name"] = getattr(row, "creator_name", None)
         # max(bucket_start) is a UTC instant → show it in the rollup tz, aware
         # (carries an offset) so the API is self-describing and the UI renders
         # the rollup wall clock via parseZone without re-converting.
