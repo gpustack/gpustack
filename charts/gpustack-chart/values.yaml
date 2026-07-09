@@ -136,6 +136,8 @@ higress-core:
     hub: ""
     image: gpustack/mirrored-higress-pilot
 higressPlugins:
+  # Number of higress-plugins deployment replicas.
+  replicas: 1
   image:
     # Image repository including namespace (no registry); final reference is `{global.hub}/{repository}:{tag}`.
     repository: gpustack/higress-plugins
