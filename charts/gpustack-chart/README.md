@@ -127,8 +127,9 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | higress-core.controller.imagePullSecrets | [gpustack-image-pull-secret]      | Controller pull secrets; pre-populated to pick up the auto-created Secret |
 | higress-core.pilot.hub                   | null                              | Image hub override for the pilot component                                |
 | higress-core.pilot.image                 | gpustack/mirrored-higress-pilot   | Pilot image name (with namespace)                                         |
+| higressPlugins.replicas                  | 1                                 | Number of higress-plugins deployment replicas                             |
 | higressPlugins.image.repository          | gpustack/higress-plugins          | Image repo with namespace; see note below                                 |
-| higressPlugins.image.tag                 | "0.2.2-post1"                     | Higress plugins image tag; CI overrides from uv.lock at package time      |
+| higressPlugins.image.tag                 | "0.2.3.post5"                     | Higress plugins image tag; CI overrides from uv.lock at package time      |
 | higressPlugins.image.pullPolicy          | IfNotPresent                      | Higress plugins image pull policy                                         |
 | worker.gpuVendors                        | [nvidia]                          | List of GPU vendors; `[]` disables worker DaemonSet                       |
 | worker.nodeSelector                      | {}                                | Base worker nodeSelector; replaces `global.nodeSelector` when non-empty   |
