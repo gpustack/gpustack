@@ -149,7 +149,10 @@ nav:
           - Installation via Helm: installation/helm.md
           - Air-Gapped Installation: installation/air-gapped.md
           - Uninstallation: installation/uninstallation.md
-      - Upgrade: upgrade.md
+      - Upgrade:
+          - Upgrade via Docker: upgrade/docker.md
+          - Upgrade via Helm: upgrade/helm.md
+          - Upgrade a Cluster Deployment: upgrade/cluster.md
       - Migration: migration.md
       - User Guide:
           - Playground:
