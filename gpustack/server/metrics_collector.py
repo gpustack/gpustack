@@ -525,6 +525,15 @@ def _build_metric_snapshot(
     # provides the active tenant via the wire-format
     # ``organization_id`` header — parse it back to int so the row
     # carries its Org scope.
+    #
+    # ``organization_id`` must already reference a real principal by the time
+    # it reaches here (``model_usages.consumer_principal_id`` FKs ``principals``,
+    # and a dangling id would blow up the batch ``commit()``). The two producers
+    # guarantee that: the gateway path only ever hits this branch behind an
+    # api_key whose owner already set ``consumer_principal_id`` above, so the
+    # header is ignored there; the direct (cookie) path validates the header
+    # against ``get_tenant_context`` before stamping the metric (see
+    # ``_resolve_direct_consumer_org`` in ``api/middlewares.py``).
     if "consumer_principal_id" not in snapshot and metric.organization_id:
         try:
             snapshot["consumer_principal_id"] = int(metric.organization_id)
