@@ -2,7 +2,7 @@ import logging
 import secrets
 from sqlalchemy import true
 from sqlalchemy.orm import selectinload
-from sqlmodel import col, func, or_, select
+from sqlmodel import and_, col, func, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from typing import Any, Callable, List, Optional, Set, Tuple, Union, Dict
 from fastapi import APIRouter, Depends, Query
@@ -55,8 +55,10 @@ from gpustack.server.services import (
     revoke_model_access_cache,
 )
 from gpustack.routes.model_common import (
+    ModelStateFilterEnum,
     build_category_conditions,
     categories_filter,
+    state_stream_filter,
 )
 
 logger = logging.getLogger(__name__)
@@ -253,11 +255,33 @@ def _model_route_grant_predicate(
     return _ok
 
 
+def _state_conditions(
+    target_class: Union[ModelRoute, MyModel],
+    state: Optional[ModelStateFilterEnum],
+) -> list:
+    """Route readiness mirrors Model state: a route is READY when at least
+    one target is ready, NOT_READY when it has targets but none ready, and
+    STOPPED when it has no targets at all."""
+    if state == ModelStateFilterEnum.READY:
+        return [col(target_class.ready_targets) > 0]
+    if state == ModelStateFilterEnum.NOT_READY:
+        return [
+            and_(
+                col(target_class.ready_targets) == 0,
+                col(target_class.targets) > 0,
+            )
+        ]
+    if state == ModelStateFilterEnum.STOPPED:
+        return [col(target_class.targets) == 0]
+    return []
+
+
 async def _get_model_routes(
     params: ModelRouteListParams,
     name: str = None,
     search: str = None,
     categories: Optional[List[str]] = None,
+    state: Optional[ModelStateFilterEnum] = None,
     user_id: Optional[int] = None,
     owner_principal_id: Optional[int] = None,
     target_class: Union[ModelRoute, MyModel] = ModelRoute,
@@ -307,14 +331,30 @@ async def _get_model_routes(
             ctx, target_class, include_grants
         )
 
+        stream_predicates = [
+            p
+            for p in (
+                my_model_stream_filter,
+                route_grant_stream_filter,
+                (
+                    (
+                        lambda d: state_stream_filter(
+                            d, state, "ready_targets", "targets"
+                        )
+                    )
+                    if state is not None
+                    else None
+                ),
+                (lambda d: categories_filter(d, categories)) if categories else None,
+            )
+            if p is not None
+        ]
+
         def _stream_filter(data: Any) -> bool:
-            if my_model_stream_filter is not None and not my_model_stream_filter(data):
-                return False
-            if route_grant_stream_filter is not None and not route_grant_stream_filter(
-                data
-            ):
-                return False
-            return categories_filter(data, categories)
+            for p in stream_predicates:
+                if not p(data):
+                    return False
+            return True
 
         return StreamingResponse(
             target_class.streaming(
@@ -342,6 +382,8 @@ async def _get_model_routes(
         if categories:
             conditions = build_category_conditions(session, target_class, categories)
             extra_conditions.append(or_(*conditions))
+
+        extra_conditions.extend(_state_conditions(target_class, state))
 
         result = await target_class.paginated_by_query(
             session=session,
@@ -1487,6 +1529,10 @@ async def add_model_authorization(
 async def get_my_models(
     ctx: TenantContextDep,
     params: ModelRouteListParams = Depends(),
+    state: Optional[ModelStateFilterEnum] = Query(
+        default=None,
+        description="Filter by model state.",
+    ),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
 ):
@@ -1517,6 +1563,7 @@ async def get_my_models(
         params=params,
         search=search,
         categories=categories,
+        state=state,
         target_class=target_class,
         user_id=user_id,
         ctx=ctx,
