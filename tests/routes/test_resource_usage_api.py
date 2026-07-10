@@ -197,6 +197,73 @@ async def test_instance_grouping_carries_creator_resource_type_omits(session):
 
 
 @pytest.mark.asyncio
+async def test_instance_creator_deleted_flag(session):
+    """Per-instance rows flag whether the owner principal still exists so the
+    UI can tag a since-deleted creator '(Deleted)', keeping the snapshot name."""
+    from sqlalchemy import and_
+
+    from gpustack.schemas.principals import Principal
+
+    # gpu-3 is owned by creator 99, which has no Principal row (deleted user).
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=503,
+            resource_name="gpu-3",
+            sku="a100x1",
+            quantity=3600,
+            unit="seconds",
+            creator_id=99,
+            creator_name="bob",
+        )
+    )
+    # gpu-4 is owned by creator 8, whose principal row still exists but is
+    # soft-deleted (``deleted_at`` set) — must flag deleted just like a gone id.
+    session.add(
+        Principal(id=8, kind="user", name="carol", display_name="Carol", deleted_at=NOW)
+    )
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=504,
+            resource_name="gpu-4",
+            sku="a100x1",
+            quantity=3600,
+            unit="seconds",
+            creator_id=8,
+            creator_name="carol",
+        )
+    )
+    await session.commit()
+
+    # scope="all" so creator 99's row isn't clamped out by the self filter.
+    req = ResourceBreakdownRequest(
+        scope="all", start_date=D, end_date=D, group_by=["instance"]
+    )
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=req,
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["gpu_hours"],
+    )
+    by_name = {i["key"]: i for i in out["items"]}
+    # creator 7 (alice) still exists → not deleted
+    assert by_name["gpu-1"]["creator_deleted"] is False
+    # creator 99 has no principal → flagged deleted, snapshot name preserved
+    assert by_name["gpu-3"]["creator_deleted"] is True
+    assert by_name["gpu-3"]["creator_name"] == "bob"
+    # creator 8 exists but is soft-deleted → also flagged deleted
+    assert by_name["gpu-4"]["creator_deleted"] is True
+
+
+@pytest.mark.asyncio
 async def test_user_grouping_resolves_principal_name(session):
     from sqlalchemy import and_
 
