@@ -383,6 +383,37 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:
                 i["key"] = names[rid]
             i["deleted"] = rid not in existing
 
+    # Per-entity rows carry their owner (``creator_id``/``creator_name``); flag
+    # whether that principal still exists so the UI can tag a since-deleted
+    # owner "(Deleted)", the same treatment the ``user`` grouping gives via
+    # ``deleted`` above. Only instance/volume rows carry a creator (see
+    # ``carries_creator`` in ``_run_breakdown``); the snapshot ``creator_name``
+    # is kept as the label regardless, so a gone owner still shows a name.
+    if gb in ("instance", "volume"):
+        creator_ids = {
+            i["creator_id"] for i in items if i.get("creator_id") is not None
+        }
+        existing_creators: set[int] = set()
+        if creator_ids:
+            # Exclude soft-deleted principals (``deleted_at`` set) — they're
+            # "deleted" everywhere else (see organization_members), so a
+            # soft-deleted owner must flag ``creator_deleted`` too, not just a
+            # hard-deleted / never-existed id.
+            existing_creators = set(
+                (
+                    await session.exec(
+                        select(Principal.id).where(
+                            Principal.id.in_(creator_ids),
+                            Principal.deleted_at.is_(None),
+                        )
+                    )
+                ).all()
+            )
+        for i in items:
+            cid = i.get("creator_id")
+            if cid is not None:
+                i["creator_deleted"] = cid not in existing_creators
+
     await _attach_dimensions(session, gb, items)
 
 
