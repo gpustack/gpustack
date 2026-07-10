@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,7 +9,9 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.api.tenant import TenantContext
+from gpustack.routes import models as models_route
 from gpustack.routes.models import create_model, update_model
+from gpustack.routes.model_common import ModelStateFilterEnum
 from gpustack.schemas.models import ModelCreate, ModelUpdate, SourceEnum
 from gpustack.schemas.principals import PrincipalType, platform_principal_id
 
@@ -232,3 +235,39 @@ async def test_update_model_hides_non_visible_cluster_as_missing(monkeypatch):
 async def test_update_model_rejects_missing_cluster(monkeypatch):
     with pytest.raises(NotFoundException):
         await _run_update(monkeypatch, _ctx(CUSTOM_ORG_ID), None)
+
+
+@pytest.mark.parametrize(
+    "ready, replicas, state, expected",
+    [
+        (2, 3, ModelStateFilterEnum.READY, True),
+        (0, 3, ModelStateFilterEnum.READY, False),
+        (0, 3, ModelStateFilterEnum.NOT_READY, True),
+        (2, 3, ModelStateFilterEnum.NOT_READY, False),
+        (0, 0, ModelStateFilterEnum.STOPPED, True),
+        (0, 3, ModelStateFilterEnum.STOPPED, False),
+        (0, 3, None, True),
+    ],
+)
+def test_model_watch_filter_applies_state(
+    monkeypatch, ready, replicas, state, expected
+):
+    """The /models watch stream honors ``state`` via replica counts."""
+    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
+
+    visible = models_route._make_model_watch_filter(
+        ctx=None, categories=None, state=state
+    )
+    data = SimpleNamespace(ready_replicas=ready, replicas=replicas)
+    assert visible(data) is expected
+
+
+def test_model_watch_filter_passes_id_only_delete_events(monkeypatch):
+    """ID-only DELETED payloads lack replica counts and must not be dropped
+    by the state filter, else watch clients hold stale rows."""
+    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
+
+    visible = models_route._make_model_watch_filter(
+        ctx=None, categories=None, state=ModelStateFilterEnum.READY
+    )
+    assert visible({"id": 7}) is True

@@ -8,7 +8,6 @@ from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy.orm import selectinload
 from sqlmodel import and_, or_
 from sqlmodel.ext.asyncio.session import AsyncSession
-from enum import Enum
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -77,8 +76,10 @@ from gpustack.policies.utils import manual_distributed_from_env
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
 from gpustack.routes.model_common import (
+    ModelStateFilterEnum,
     build_category_conditions,
     categories_filter,
+    state_stream_filter,
 )
 from gpustack.config.config import get_global_config
 from gpustack.utils.grafana import resolve_grafana_base_url
@@ -89,20 +90,26 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-class ModelStateFilterEnum(str, Enum):
-    READY = "ready"
-    NOT_READY = "not_ready"
-    STOPPED = "stopped"
-
-
-def _make_model_watch_filter(ctx, categories):
+def _make_model_watch_filter(ctx, categories, state=None):
     """Watch-stream visibility: cluster-bound service accounts only see
-    their own cluster's models; everyone keeps the categories filter."""
+    their own cluster's models; everyone keeps the categories and state
+    filters. Predicates are pre-built so inactive filters cost nothing on
+    the per-event hot path."""
+    predicates = []
+    if cluster_scoped_system(ctx):
+        predicates.append(lambda data: scoped_cluster_row_visible(ctx, data))
+    if state is not None:
+        predicates.append(
+            lambda data: state_stream_filter(data, state, "ready_replicas", "replicas")
+        )
+    if categories:
+        predicates.append(lambda data: categories_filter(data, categories))
 
     def _visible(data) -> bool:
-        if cluster_scoped_system(ctx) and not scoped_cluster_row_visible(ctx, data):
-            return False
-        return categories_filter(data, categories)
+        for p in predicates:
+            if not p(data):
+                return False
+        return True
 
     return _visible
 
@@ -145,7 +152,7 @@ async def get_models(
             Model.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=_make_model_watch_filter(ctx, categories),
+                filter_func=_make_model_watch_filter(ctx, categories, state),
             ),
             media_type="text/event-stream",
         )
