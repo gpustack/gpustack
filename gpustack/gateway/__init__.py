@@ -619,7 +619,7 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-token-usage"
     expected_spec = WasmPluginSpec(
         defaultConfig={
-            'realIPToHeader': "X-GPUStack-Real-IP",
+            'realIPHeader': "X-GPUStack-Real-IP",
             'endpoint': {
                 "path": "/v2/usage/gateway-metrics",
                 "service_name": registry.get_service_name(),
@@ -633,7 +633,7 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         failStrategy="FAIL_OPEN",
         imagePullPolicy="UNSPECIFIED_POLICY",
         matchRules=[],
-        phase="UNSPECIFIED_PHASE",
+        phase="AUTHN",
         priority=400,
         url=get_plugin_url_with_name_and_version(
             name="gpustack-token-usage", version="1.1.0", cfg=cfg
