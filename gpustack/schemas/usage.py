@@ -22,6 +22,10 @@ USAGE_GROUP_BY_DATE = "date"
 USAGE_GROUP_BY_USER = "user"
 USAGE_GROUP_BY_API_KEY = "api_key"
 USAGE_GROUP_BY_ROUTE = "route"
+# Groups by the consumer principal (``consumer_principal_id`` — the
+# API-key owner Org). Reserved for the platform-wide "All" view (admin
+# in cross-org context); enforced in the route handler.
+USAGE_GROUP_BY_ORGANIZATION = "organization"
 
 USAGE_GRANULARITY_DAY = "day"
 USAGE_GRANULARITY_WEEK = "week"
@@ -44,6 +48,7 @@ USAGE_GROUP_BYS = {
     USAGE_GROUP_BY_USER,
     USAGE_GROUP_BY_API_KEY,
     USAGE_GROUP_BY_ROUTE,
+    USAGE_GROUP_BY_ORGANIZATION,
 }
 USAGE_GRANULARITIES = {
     USAGE_GRANULARITY_DAY,
@@ -75,12 +80,22 @@ class UsageIdentityValue(BaseModel):
     access_key: Optional[str] = None
     api_key_is_custom: Optional[bool] = None
     route_name: Optional[str] = None
+    # ``organization_name`` — consumer Org display name (snapshotted on
+    # model_usages at ingest, with a live fallback for pre-upgrade rows);
+    # ``organization_kind`` — the consumer principal's kind (``org`` / ``user``
+    # / ``group``) so the client can tag a personal (USER) row; ``group_name``
+    # — user-group display name (filter-only dimension).
+    organization_name: Optional[str] = None
+    organization_kind: Optional[str] = None
+    group_name: Optional[str] = None
 
 
 class UsageIdentityCurrent(BaseModel):
     user_id: Optional[int] = None
     api_key_id: Optional[int] = None
     route_id: Optional[int] = None
+    organization_id: Optional[int] = None
+    group_id: Optional[int] = None
 
 
 class UsageIdentity(BaseModel):
@@ -101,6 +116,10 @@ class UsageFilters(BaseModel):
     users: List[UsageFilterOption] = Field(default_factory=list)
     api_keys: List[UsageFilterOption] = Field(default_factory=list)
     routes: List[UsageFilterOption] = Field(default_factory=list)
+    # Platform-wide "All" view only. ``organizations`` — consumer Orgs
+    # with usage; ``user_groups`` — groups whose members can be filtered on.
+    organizations: List[UsageFilterOption] = Field(default_factory=list)
+    user_groups: List[UsageFilterOption] = Field(default_factory=list)
 
 
 class UsageMetaResponse(BaseModel):
@@ -114,6 +133,11 @@ class UsageFilterRequest(BaseModel):
     users: List[UsageFilterItem] = Field(default_factory=list)
     api_keys: List[UsageFilterItem] = Field(default_factory=list)
     routes: List[UsageFilterItem] = Field(default_factory=list)
+    # Consumer-Org filter (``consumer_principal_id``) and user-group
+    # filter (expanded to the group's direct USER members). Both are
+    # platform-admin-only; enforced in the route handler.
+    organizations: List[UsageFilterItem] = Field(default_factory=list)
+    user_groups: List[UsageFilterItem] = Field(default_factory=list)
 
 
 class UsageBaseRequest(BaseModel):
@@ -250,6 +274,7 @@ class UsageBreakdownItem(BaseModel):
     user: Optional[UsageBreakdownDimension] = None
     api_key: Optional[UsageBreakdownDimension] = None
     route: Optional[UsageBreakdownDimension] = None
+    organization: Optional[UsageBreakdownDimension] = None
     input_tokens: int = 0
     output_tokens: int = 0
     input_cached_tokens: int = 0

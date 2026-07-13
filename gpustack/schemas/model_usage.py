@@ -52,6 +52,15 @@ class ModelUsage(SQLModel, ActiveRecordMixin, table=True):
     consumer_principal_id: Optional[int] = Field(
         default=None, sa_column=Column(Integer)
     )
+    # Display-name + kind snapshot of the consumer principal, captured at
+    # ingest so the Organization breakdown keeps showing the real name / can
+    # tag personal (USER-kind) rows even after the principal is hard-deleted —
+    # the same denormalization the ``*_name`` columns give the other
+    # dimensions. ``kind`` is the ``PrincipalType`` value (``org`` / ``user`` /
+    # ``group``). NULL on pre-upgrade rows (no backfill); the read path falls
+    # back to a live principal lookup then.
+    consumer_name: Optional[str] = Field(default=None)
+    consumer_principal_kind: Optional[str] = Field(default=None)
     date: date
     prompt_token_count: int = Field(
         default=..., sa_column=Column(BigInteger, nullable=False)

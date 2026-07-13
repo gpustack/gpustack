@@ -104,18 +104,48 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
             ),
             # route existence: route 21 still exists.
             _mock_exec_result([21]),
+            # user-group options: one non-reserved group + one reserved
+            # (filtered out).
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        id=50, name="engineering", display_name="Engineering"
+                    ),
+                    SimpleNamespace(
+                        id=51, name="system/authenticated", display_name="All"
+                    ),
+                ]
+            ),
+            # organization options: distinct consumer ids (NULL dropped).
+            _mock_exec_result(
+                [
+                    SimpleNamespace(group_organization_id=7),
+                    SimpleNamespace(group_organization_id=None),
+                ]
+            ),
+            # org name resolution: principal 7 → name "acme" (not display_name).
+            _mock_exec_result(
+                [SimpleNamespace(id=7, display_name="Acme", name="acme", kind="org")]
+            ),
         ]
     )
     user = User(id=1, name="admin", is_admin=True)
 
     response = await get_usage_meta(session=session, user=user, ctx=_ctx_for(user))
 
+    # Platform-wide admin (no current Org) also gets the Organization dimension.
     assert [item.key for item in response.group_bys] == [
         "date",
         "user",
         "api_key",
         "route",
+        "organization",
     ]
+    # Reserved groups are hidden; the org filter drops the NULL-consumer row.
+    assert [g.label for g in response.filters.user_groups] == ["Engineering"]
+    assert response.filters.user_groups[0].identity.current.group_id == 50
+    assert [o.label for o in response.filters.organizations] == ["acme"]
+    assert response.filters.organizations[0].identity.current.organization_id == 7
     assert [item.key for item in response.metrics] == [
         "input_tokens",
         "output_tokens",
@@ -189,6 +219,51 @@ async def test_get_usage_meta_hides_admin_only_options_for_regular_user():
     assert response.filters.users == []
     assert response.filters.routes == []
     assert response.filters.api_keys[0].label == "alice / test"
+
+
+@pytest.mark.asyncio
+async def test_get_usage_meta_hides_org_and_group_for_admin_pinned_to_org():
+    # A platform admin who has pinned a single Org (current_principal_id set)
+    # is NOT platform-wide: the Organization group-by and BOTH the org and
+    # user-group filters are hidden (cross-Org views are meaningless inside
+    # one tenant). Only user/api_key/route options are queried.
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            # user options (scope=all) + existence.
+            _mock_exec_result(
+                [SimpleNamespace(group_user_name="alice", group_user_id=12)]
+            ),
+            _mock_exec_result([12]),
+            # api_key options + existence.
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        group_user_name="alice",
+                        group_api_key_name="k",
+                        group_access_key="abcd1234",
+                        group_api_key_is_custom=False,
+                        group_user_id=12,
+                        group_api_key_id=34,
+                    )
+                ]
+            ),
+            _mock_exec_result([34]),
+            # route options (empty → no existence query follows).
+            _mock_exec_result([]),
+        ]
+    )
+    user = User(id=1, name="admin", is_admin=True)
+    ctx = _ctx_for(user)
+    ctx.current_principal_id = 5  # pinned to a specific Org
+
+    response = await get_usage_meta(session=session, user=user, ctx=ctx)
+
+    # Organization is absent from the group-by list, and neither the org nor
+    # the user-group filter options are returned.
+    assert "organization" not in [item.key for item in response.group_bys]
+    assert response.filters.organizations == []
+    assert response.filters.user_groups == []
 
 
 def test_self_scope_personal_includes_null_consumer_rows():
@@ -908,3 +983,299 @@ async def test_get_usage_breakdown_rejects_regular_user_user_group():
         await get_usage_breakdown(
             session=session, user=user, ctx=_ctx_for(user), request=request
         )
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_groups_by_organization_for_admin():
+    # Platform-wide admin can group by organization; the consumer principal
+    # id is resolved to a display name live, and a gone principal is deleted.
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=500,
+                        output_tokens=200,
+                        input_cached_tokens=120,
+                        total_tokens=700,
+                        api_requests=9,
+                        models_called=3,
+                    ),
+                ]
+            ),
+            _mock_exec_result([2]),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        group_organization_id=7,
+                        input_tokens=400,
+                        output_tokens=160,
+                        input_cached_tokens=100,
+                        total_tokens=560,
+                        api_requests=6,
+                        models_called=2,
+                        api_keys_used=3,
+                        last_active=date(2026, 4, 2),
+                    ),
+                    SimpleNamespace(
+                        group_organization_id=8,
+                        input_tokens=100,
+                        output_tokens=40,
+                        input_cached_tokens=20,
+                        total_tokens=140,
+                        api_requests=3,
+                        models_called=1,
+                        api_keys_used=1,
+                        last_active=date(2026, 4, 1),
+                    ),
+                ]
+            ),
+            # org name resolution: principal 7 → name "acme"; 8 is gone → deleted.
+            _mock_exec_result(
+                [SimpleNamespace(id=7, display_name="Acme", name="acme", kind="org")]
+            ),
+        ]
+    )
+    user = User(id=1, name="admin", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["organization"],
+        sort_by="-total_tokens",
+        page=1,
+        perPage=20,
+    )
+
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
+
+    assert response.group_by == ["organization"]
+    assert len(response.items) == 2
+    acme = response.items[0]
+    assert acme.organization.identity.current.organization_id == 7
+    assert acme.organization.identity.value.organization_name == "acme"
+    assert acme.organization.label == "acme"
+    assert acme.organization.deleted is False
+    assert acme.models_called == 2
+    assert acme.api_keys_used == 3
+    gone = response.items[1]
+    assert gone.organization.identity.current.organization_id == 8
+    assert gone.organization.deleted is True
+    assert gone.organization.label == "Unknown Organization"
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_rejects_organization_group_by_for_non_admin():
+    session = MagicMock()
+    user = User(id=2, name="alice", is_admin=False)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["organization"],
+    )
+    with pytest.raises(ForbiddenException):
+        await get_usage_breakdown(
+            session=session, user=user, ctx=_ctx_for(user), request=request
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_rejects_organization_filter_for_non_admin():
+    session = MagicMock()
+    user = User(id=2, name="alice", is_admin=False)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["route"],
+        filters=UsageFilterRequest(
+            organizations=[
+                UsageFilterItem(
+                    identity=UsageIdentity(value={}, current={"organization_id": 7})
+                )
+            ]
+        ),
+    )
+    with pytest.raises(ForbiddenException):
+        await get_usage_breakdown(
+            session=session, user=user, ctx=_ctx_for(user), request=request
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_rejects_user_group_filter_in_self_scope():
+    # A regular user is forced to self scope; the user-group filter is a
+    # cross-user surface and must be rejected there (mirrors the user filter).
+    session = MagicMock()
+    user = User(id=2, name="alice", is_admin=False)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["route"],
+        filters=UsageFilterRequest(
+            user_groups=[
+                UsageFilterItem(
+                    identity=UsageIdentity(value={}, current={"group_id": 50})
+                )
+            ]
+        ),
+    )
+    with pytest.raises(ForbiddenException):
+        await get_usage_breakdown(
+            session=session, user=user, ctx=_ctx_for(user), request=request
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_expands_user_group_filter_to_members():
+    # The user-group filter is expanded to the group's direct USER members
+    # (first query) and applied as a user_id membership on every usage query.
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            # group member expansion → users 12 and 13.
+            _mock_exec_result([12, 13]),
+            # summary.
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=300,
+                        output_tokens=100,
+                        input_cached_tokens=60,
+                        total_tokens=400,
+                        api_requests=5,
+                        models_called=2,
+                    ),
+                ]
+            ),
+            _mock_exec_result([1]),
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        group_model_route_name="qwen-route",
+                        group_model_route_id=21,
+                        input_tokens=300,
+                        output_tokens=100,
+                        input_cached_tokens=60,
+                        total_tokens=400,
+                        api_requests=5,
+                        models_called=1,
+                        api_keys_used=2,
+                        last_active=date(2026, 4, 2),
+                    ),
+                ]
+            ),
+            _mock_exec_result([21]),
+        ]
+    )
+    user = User(id=1, name="admin", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["route"],
+        filters=UsageFilterRequest(
+            user_groups=[
+                UsageFilterItem(
+                    identity=UsageIdentity(value={}, current={"group_id": 50})
+                )
+            ]
+        ),
+    )
+
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
+
+    # First query expands the group membership.
+    group_sql = str(session.exec.call_args_list[0].args[0])
+    assert "principal_memberships" in group_sql
+    # The summary query filters usage rows to the resolved member user ids.
+    summary_sql = str(session.exec.call_args_list[1].args[0])
+    assert "model_usages.user_id IN" in summary_sql
+    assert len(response.items) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_organization_uses_snapshot_name_and_kind():
+    # The consumer name / kind snapshot on the row (group_organization_name /
+    # _kind) is preferred over the live lookup: a hard-deleted Org keeps its
+    # real name (not "Unknown") and a personal (USER) consumer is tagged.
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result(
+                [
+                    SimpleNamespace(
+                        input_tokens=100,
+                        output_tokens=40,
+                        input_cached_tokens=0,
+                        total_tokens=140,
+                        api_requests=2,
+                        models_called=1,
+                    )
+                ]
+            ),
+            _mock_exec_result([2]),
+            _mock_exec_result(
+                [
+                    # Hard-deleted Org (id 8 absent from principals) but the row
+                    # snapshotted its name + kind at ingest.
+                    SimpleNamespace(
+                        group_organization_id=8,
+                        group_organization_name="GoneCorp",
+                        group_organization_kind="org",
+                        input_tokens=80,
+                        output_tokens=30,
+                        input_cached_tokens=0,
+                        total_tokens=110,
+                        api_requests=1,
+                        models_called=1,
+                        api_keys_used=1,
+                        last_active=date(2026, 4, 2),
+                    ),
+                    # Personal (USER) consumer — still live.
+                    SimpleNamespace(
+                        group_organization_id=11,
+                        group_organization_name="g1",
+                        group_organization_kind="user",
+                        input_tokens=20,
+                        output_tokens=10,
+                        input_cached_tokens=0,
+                        total_tokens=30,
+                        api_requests=1,
+                        models_called=1,
+                        api_keys_used=1,
+                        last_active=date(2026, 4, 1),
+                    ),
+                ]
+            ),
+            # Live principal lookup: only 11 (g1, user) exists; 8 is gone.
+            _mock_exec_result(
+                [SimpleNamespace(id=11, display_name=None, name="g1", kind="user")]
+            ),
+        ]
+    )
+    user = User(id=1, name="admin", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["organization"],
+    )
+
+    response = await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
+
+    by_id = {
+        it.organization.identity.current.organization_id: it.organization
+        for it in response.items
+    }
+    # Deleted Org keeps its snapshot name (not "Unknown Organization").
+    assert by_id[8].label == "GoneCorp"
+    assert by_id[8].deleted is True
+    assert by_id[8].identity.value.organization_kind == "org"
+    # Personal consumer is tagged via kind for the client "Personal" label.
+    assert by_id[11].label == "g1"
+    assert by_id[11].deleted is False
+    assert by_id[11].identity.value.organization_kind == "user"

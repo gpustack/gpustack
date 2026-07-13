@@ -9,6 +9,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from gpustack.api.exceptions import ForbiddenException
 from gpustack.routes.resource_usage import (
     ResourceBreakdownRequest,
     _phase_message_of,
@@ -97,7 +98,7 @@ async def _seed(session):
 
 @pytest_asyncio.fixture
 async def session():
-    from gpustack.schemas.principals import Principal
+    from gpustack.schemas.principals import Principal, PrincipalMembership
     from gpustack.schemas.gpu_instances import GPUInstance
     from gpustack.schemas.gpu_instance_persistent_volumes import (
         GPUInstancePersistentVolume,
@@ -110,6 +111,7 @@ async def session():
             MeteredUsage.__table__,
             ModelUsage.__table__,
             Principal.__table__,
+            PrincipalMembership.__table__,
             GPUInstance.__table__,
             GPUInstancePersistentVolume.__table__,
             ResourceEvent.__table__,
@@ -1157,3 +1159,258 @@ async def test_breakdown_range_boundary_includes_shifted_edge(session, monkeypat
         metric_keys=["gpu_hours"],
     )
     assert "edge-sku" in {i.get("key") for i in out["items"]}
+
+
+@pytest.mark.asyncio
+async def test_breakdown_groups_by_organization_for_admin(session):
+    # Two consumer Orgs; the consumer principal id is resolved to a display
+    # name live, and a gone principal (no Principal row) is flagged deleted.
+    from gpustack.schemas.principals import Principal
+
+    session.add(Principal(id=100, kind="org", name="acme", display_name="Acme"))
+    # org 200 intentionally left unseeded → since-deleted.
+    session.add_all(
+        [
+            _mu(
+                meter_key=METER_INSTANCE_UPTIME,
+                resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+                resource_id=701,
+                resource_name="org-a-gpu",
+                sku="h100x1",
+                sku_count=1,
+                quantity=3600,
+                unit="seconds",
+                consumer_principal_id=100,
+                creator_id=7,
+            ),
+            _mu(
+                meter_key=METER_INSTANCE_UPTIME,
+                resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+                resource_id=702,
+                resource_name="org-b-gpu",
+                sku="h100x1",
+                sku_count=1,
+                quantity=3600,
+                unit="seconds",
+                consumer_principal_id=200,
+                creator_id=7,
+            ),
+        ]
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,  # admin, cross-org (current_principal_id=None)
+        request=ResourceBreakdownRequest(
+            scope="all", start_date=D, end_date=D, group_by=["organization"]
+        ),
+        base_filter=(MeteredUsage.meter_key == METER_INSTANCE_UPTIME),
+        metric_keys=["gpu_hours"],
+    )
+    by_id = {i["id"]: i for i in out["items"]}
+    assert by_id[100]["key"] == "acme"
+    assert by_id[100]["deleted"] is False
+    assert by_id[200]["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_breakdown_filters_by_organization(session):
+    session.add_all(
+        [
+            _mu(
+                meter_key=METER_INSTANCE_UPTIME,
+                resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+                resource_id=711,
+                resource_name="org-a-gpu",
+                sku="h100x1",
+                sku_count=1,
+                quantity=3600,
+                unit="seconds",
+                consumer_principal_id=100,
+                creator_id=7,
+            ),
+            _mu(
+                meter_key=METER_INSTANCE_UPTIME,
+                resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+                resource_id=712,
+                resource_name="org-b-gpu",
+                sku="h100x1",
+                sku_count=1,
+                quantity=3600,
+                unit="seconds",
+                consumer_principal_id=200,
+                creator_id=7,
+            ),
+        ]
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=ResourceBreakdownRequest(
+            scope="all",
+            start_date=D,
+            end_date=D,
+            group_by=["instance"],
+            organization_ids=[100],
+        ),
+        base_filter=(MeteredUsage.meter_key == METER_INSTANCE_UPTIME),
+        metric_keys=["gpu_hours"],
+    )
+    names = {i["key"] for i in out["items"]}
+    assert "org-a-gpu" in names
+    assert "org-b-gpu" not in names
+
+
+@pytest.mark.asyncio
+async def test_breakdown_filters_by_user_group_members(session):
+    # Group 50 has one direct user member (creator 7); a row from creator 9
+    # must be excluded when filtering by that group.
+    from gpustack.schemas.principals import Principal, PrincipalMembership
+
+    session.add(Principal(id=50, kind="group", name="eng", display_name="Eng"))
+    session.add(Principal(id=9, kind="user", name="bob", display_name="Bob"))
+    session.add(PrincipalMembership(parent_principal_id=50, member_principal_id=7))
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=721,
+            resource_name="bob-gpu",
+            sku="h100x1",
+            sku_count=1,
+            quantity=3600,
+            unit="seconds",
+            creator_id=9,
+        )
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=ResourceBreakdownRequest(
+            scope="all",
+            start_date=D,
+            end_date=D,
+            group_by=["user"],
+            user_group_ids=[50],
+        ),
+        base_filter=(MeteredUsage.meter_key == METER_INSTANCE_UPTIME),
+        metric_keys=["gpu_hours"],
+    )
+    creator_ids = {i["id"] for i in out["items"]}
+    assert creator_ids == {7}  # only the group member; bob (9) excluded
+
+
+@pytest.mark.asyncio
+async def test_breakdown_rejects_organization_group_by_for_non_admin(session):
+    regular = SimpleNamespace(id=7, is_admin=False)
+    with pytest.raises(ForbiddenException):
+        await _run_breakdown(
+            session,
+            user=regular,
+            ctx=SimpleNamespace(
+                current_principal_id=1,
+                org_role=None,
+                current_is_personal_scope=False,
+            ),
+            request=ResourceBreakdownRequest(
+                scope="all", start_date=D, end_date=D, group_by=["organization"]
+            ),
+            base_filter=None,
+            metric_keys=["gpu_hours"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_breakdown_rejects_user_group_filter_in_self_scope(session):
+    regular = SimpleNamespace(id=7, is_admin=False)
+    with pytest.raises(ForbiddenException):
+        await _run_breakdown(
+            session,
+            user=regular,
+            ctx=SimpleNamespace(
+                current_principal_id=1,
+                org_role=None,
+                current_is_personal_scope=False,
+            ),
+            request=ResourceBreakdownRequest(
+                scope="self",
+                start_date=D,
+                end_date=D,
+                group_by=["user"],
+                user_group_ids=[50],
+            ),
+            base_filter=None,
+            metric_keys=["gpu_hours"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_resource_meta_lists_organizations_and_user_groups(session):
+    from gpustack.routes.resource_usage import resource_meta
+    from gpustack.schemas.principals import Principal
+
+    session.add(Principal(id=100, kind="org", name="acme", display_name="Acme"))
+    session.add(Principal(id=50, kind="group", name="eng", display_name="Eng"))
+    session.add(
+        Principal(id=51, kind="group", name="system/authenticated", display_name="All")
+    )
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=731,
+            resource_name="org-a-gpu",
+            sku="h100x1",
+            sku_count=1,
+            quantity=3600,
+            unit="seconds",
+            consumer_principal_id=100,
+            creator_id=7,
+        )
+    )
+    await session.commit()
+
+    out = await resource_meta(session, USER, CTX, scope="all")
+    assert [g["label"] for g in out["user_groups"]] == ["Eng"]  # reserved hidden
+    assert [o["id"] for o in out["organizations"]] == [100]
+    assert out["organizations"][0]["label"] == "acme"
+
+
+@pytest.mark.asyncio
+async def test_resource_meta_hides_org_and_group_when_pinned_to_org(session):
+    # An admin pinned to a single Org (current_principal_id set) is NOT
+    # platform-wide: both the org and the user-group filter sources are empty
+    # (cross-Org filtering is meaningless within one tenant).
+    from gpustack.routes.resource_usage import resource_meta
+    from gpustack.schemas.principals import Principal
+
+    session.add(Principal(id=100, kind="org", name="acme", display_name="Acme"))
+    session.add(Principal(id=50, kind="group", name="eng", display_name="Eng"))
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=741,
+            resource_name="org-a-gpu",
+            sku="h100x1",
+            sku_count=1,
+            quantity=3600,
+            unit="seconds",
+            consumer_principal_id=100,
+            creator_id=7,
+        )
+    )
+    await session.commit()
+
+    pinned_ctx = SimpleNamespace(current_principal_id=100)
+    out = await resource_meta(session, USER, pinned_ctx, scope="all")
+    assert out["organizations"] == []
+    assert out["user_groups"] == []

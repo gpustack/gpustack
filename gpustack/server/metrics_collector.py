@@ -561,6 +561,47 @@ def _build_metric_snapshot(
     return snapshot
 
 
+async def _resolve_consumer_info_by_id(
+    session, api_keys, all_metrics, users
+) -> Dict[int, tuple]:
+    """``consumer_principal_id → (name, kind)`` for every consumer referenced by
+    the batch.
+
+    The consumer is the API-key owner Org, a personal USER-principal, or the
+    cookie-auth ``X-Organization-Id`` header. Snapshotting the display name +
+    kind onto ``ModelUsage`` lets the Organization breakdown keep the real name
+    after a hard-delete and tag personal (USER) rows — parity with the other
+    ``*_name`` denorms. ``name`` (slug) is used, NOT display_name, so the token
+    and resource tabs stay consistent.
+    """
+    consumer_ids: set = {
+        k.owner_principal_id for k in api_keys if k.owner_principal_id is not None
+    }
+    # ``organization_id`` comes from the ``X-Organization-Id`` wire header, so it
+    # may be a non-numeric / empty string — coerce defensively (mirrors the
+    # guarded parse in _build_metric_snapshot) rather than crashing the batch.
+    for m in all_metrics:
+        org = getattr(m, "organization_id", None)
+        if not org:
+            continue
+        try:
+            consumer_ids.add(int(org))
+        except (TypeError, ValueError):
+            continue
+    consumer_ids |= {u.id for u in users}
+    if not consumer_ids:
+        return {}
+    consumer_principals = await Principal.all_by_fields(
+        session=session,
+        fields={},
+        extra_conditions=[Principal.id.in_(consumer_ids)],
+    )
+    return {
+        p.id: (p.name, p.kind.value if hasattr(p.kind, "value") else p.kind)
+        for p in consumer_principals
+    }
+
+
 async def store_usage_metrics(
     metrics: List[ModelUsageMetrics],
     detail_metrics: Optional[List[ModelUsageMetrics]] = None,
@@ -655,6 +696,10 @@ async def store_usage_metrics(
             cluster_names_by_id = {c.id: c.name for c in clusters}
             provider_by_id = {p.id: p for p in providers}
 
+            consumer_info_by_id = await _resolve_consumer_info_by_id(
+                session, api_keys, all_metrics, users
+            )
+
             for metric in metrics:
                 if not _validate_usage_metric(
                     metric,
@@ -679,6 +724,14 @@ async def store_usage_metrics(
                     metric, model_by_id.get(metric.model_id)
                 )
                 metric_date, _ = _resolve_metric_datetime(metric)
+                # Consumer display-name + kind snapshot (ModelUsage-only; kept
+                # out of the shared snapshot so the detail table isn't touched).
+                consumer_id = snapshot.get("consumer_principal_id")
+                consumer_info = (
+                    consumer_info_by_id.get(consumer_id)
+                    if consumer_id is not None
+                    else None
+                )
                 model_usage = ModelUsage(
                     date=metric_date,
                     prompt_token_count=prompt_tokens,
@@ -686,6 +739,10 @@ async def store_usage_metrics(
                     prompt_cached_token_count=metric.input_cached_token,
                     request_count=metric.request_count,
                     operation=metric.operation,
+                    consumer_name=consumer_info[0] if consumer_info else None,
+                    consumer_principal_kind=(
+                        consumer_info[1] if consumer_info else None
+                    ),
                     **snapshot,
                 )
                 await create_or_update_model_usage(
