@@ -111,6 +111,8 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | server.apiPort                           | 30080                             | API service port                                                          |
 | server.metricsPort                       | 10161                             | Metrics port                                                              |
 | server.environmentConfig                 | {}                                | Extra environment variables for GPUStack server                           |
+| server.extraVolumeMounts                 | []                                | Extra volume mounts appended to the server container                      |
+| server.extraVolumes                      | []                                | Extra volumes appended to the server StatefulSet                          |
 | server.nodeSelector                      | {}                                | Server pod nodeSelector; replaces `global.nodeSelector` when non-empty    |
 | gateway.ingressClassname                 | higress                           | Higress IngressClass name; enables in-cluster mode when found             |
 | higress-core.enabled                     | true                              | Deploy Higress gateway as a sub-chart; disable if already installed       |
