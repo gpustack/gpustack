@@ -93,7 +93,6 @@ from gpustack.schemas.users import (
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.cache import delete_cache_by_key
 from gpustack.utils.model_source import get_draft_model_source
-from gpustack.policies.utils import manual_distributed_from_env
 from gpustack import envs
 from gpustack.server.db import async_session
 from gpustack.server.services import (
@@ -144,9 +143,8 @@ class ModelController:
         self._config = cfg
         self._k8s_config = get_async_k8s_config(cfg=cfg)
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
-        # Model ids whose manual-distributed upstreams are already cleared, so
-        # steady-state reconciles don't re-issue the Higress DELETE every tick.
-        self._manual_distributed_cleared: set[int] = set()
+
+        pass
 
     async def start(self):
         """
@@ -167,30 +165,6 @@ class ModelController:
     ):
         if self._disable_gateway:
             return
-        if manual_distributed_from_env(model.env):
-            # Manual-distributed models manage gateway/LB externally; clear any
-            # previously-registered upstreams (avoid orphans) and skip registration.
-            # Dedup so a steady-state manual model isn't re-DELETED every reconcile.
-            if (
-                event_type != EventType.DELETED
-                and model.id in self._manual_distributed_cleared
-            ):
-                return
-            await mcp_handler.ensure_model_mcp_bridge(
-                event_type=EventType.DELETED,
-                model_id=model.id,
-                model_instances=[],
-                networking_higress_api=self._higress_network_api,
-                namespace=self._config.gateway_namespace,
-                cluster_id=model.cluster_id,
-            )
-            if event_type == EventType.DELETED:
-                self._manual_distributed_cleared.discard(model.id)
-            else:
-                self._manual_distributed_cleared.add(model.id)
-            return
-        # Not manual-distributed (anymore): let a later manual transition clear again.
-        self._manual_distributed_cleared.discard(model.id)
         model_instances = await ModelInstance.all_by_fields(
             session,
             fields={"model_id": model.id, "deleted_at": None},
@@ -1242,9 +1216,6 @@ async def calculate_model_destinations(
     becomes a self-map (skipped at sync_model_route_mapper), letting the
     LoRA module name reach vLLM intact.
     """
-    if manual_distributed_from_env(model.env):
-        # Opt out of gateway routing; the user manages the LB externally.
-        return []
     downstream_model_name = overridden_model_name or model.name
     # LoRA targets share the base model's instances; route them to a per-LoRA
     # aliased service (same address, distinct name) registered in ensure_model_mcp_bridge

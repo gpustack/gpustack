@@ -991,12 +991,6 @@ class Server:
             session=session,
             fields={"deleted_at": None},
         )
-        # Needed so cleanup can tell which instances serve their subordinates'
-        # own API (hybrid/external-LB) and which LoRA aliases to keep.
-        models = await Model.all_by_fields(
-            session=session,
-            fields={"deleted_at": None},
-        )
         fallback_route_ids = [
             ep.route_id
             for ep in route_targets
@@ -1054,7 +1048,6 @@ class Server:
             namespace=self.config.gateway_namespace,
             model_instances=model_instances,
             workers=workers,
-            models=models,
             k8s_config=k8s_config,
         )
 
