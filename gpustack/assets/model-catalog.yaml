@@ -984,6 +984,44 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=glm45
         - --max-model-len=65536
+- name: Hy3
+  description: Hy3 is Tencent Hunyuan's open-weight Mixture-of-Experts model (295B total, 21B active) built for reasoning and agentic tasks, with strong tool use, coding, and long-context retrieval and a 256K-token context window.
+  home: https://github.com/Tencent-Hunyuan/Hy3
+  icon: /static/catalog_icons/hunyuan.png
+  size: 295
+  activated_size: 21
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - reasoning
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-07-06"
+  specs:
+    # Throughput (vLLM, FP8)
+    - mode: throughput
+      quantization: FP8
+      source: huggingface
+      huggingface_repo_id: tencent/Hy3-FP8
+      backend: vLLM
+      backend_parameters:
+        - --tool-call-parser=hy_v3
+        - --reasoning-parser=hy_v3
+        - --enable-auto-tool-choice
+        - --max-model-len=65536
+    # Standard (BF16, vLLM)
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: tencent/Hy3
+      backend: vLLM
+      backend_parameters:
+        - --tool-call-parser=hy_v3
+        - --reasoning-parser=hy_v3
+        - --enable-auto-tool-choice
+        - --max-model-len=65536
 - name: GLM-5.2
   description: GLM-5.2 is Z.ai's flagship Mixture-of-Experts model built on the glm_moe_dsa architecture (DeepSeek Sparse Attention), with strong agentic, reasoning, and coding capabilities and a 1M-token context window.
   home: https://z.ai
