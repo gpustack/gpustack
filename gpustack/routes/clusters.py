@@ -766,13 +766,24 @@ async def get_cluster_manifests(
     if not k8s_options.operator_image:
         k8s_options.operator_image = cfg.operator_image
 
-    config = TemplateConfig(
-        registration=get_registration_from_cluster(request, cluster),
-        cluster_owner_principal_identifier=principal_namespace_identifier(principal),
-        runtimes=runtime,
-        k8s_options=k8s_options,
-        system_default_container_registry=cluster.system_default_container_registry,
-    )
+    # Only forward worker ports when the cluster explicitly overrides them;
+    # otherwise let TemplateConfig fall back to its own defaults rather than
+    # duplicating the default constants here.
+    worker_config = cluster.worker_config
+    config_kwargs = {
+        "registration": get_registration_from_cluster(request, cluster),
+        "cluster_owner_principal_identifier": principal_namespace_identifier(principal),
+        "runtimes": runtime,
+        "k8s_options": k8s_options,
+        "system_default_container_registry": cluster.system_default_container_registry,
+    }
+    if worker_config:
+        if worker_config.worker_port is not None:
+            config_kwargs["worker_port"] = worker_config.worker_port
+        if worker_config.worker_metrics_port is not None:
+            config_kwargs["worker_metrics_port"] = worker_config.worker_metrics_port
+
+    config = TemplateConfig(**config_kwargs)
     yaml_content = config.render()
     return Response(
         content=yaml_content,

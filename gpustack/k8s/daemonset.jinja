@@ -30,6 +30,10 @@ spec:
         - env:
             - name: GPUSTACK_SERVER_URL
               value: {{ config.server_url }}
+            - name: GPUSTACK_WORKER_PORT
+              value: "{{ config.worker_port }}"
+            - name: GPUSTACK_WORKER_METRICS_PORT
+              value: "{{ config.worker_metrics_port }}"
             - name: GPUSTACK_WORKER_NAME
               valueFrom:
                 fieldRef:
@@ -139,10 +143,10 @@ spec:
             {%- endif %}
           ports:
             - name: api
-              containerPort: 10150
+              containerPort: {{ config.worker_port }}
               protocol: TCP
             - name: metrics
-              containerPort: 10151
+              containerPort: {{ config.worker_metrics_port }}
               protocol: TCP
           readinessProbe:
             httpGet:
