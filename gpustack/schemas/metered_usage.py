@@ -151,6 +151,9 @@ class MeteredUsage(SQLModel, BaseModelMixin, table=True):
         default=None, sa_column=Column(Integer)
     )
     consumer_name: Optional[str] = Field(default=None)
+    # Consumer principal kind (``org`` / ``user`` / ``group``) snapshot, so the
+    # Organization breakdown can tag personal (USER) consumers. NULL pre-upgrade.
+    consumer_principal_kind: Optional[str] = Field(default=None)
     creator_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
     creator_name: Optional[str] = Field(default=None)
     cluster_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
@@ -259,6 +262,9 @@ class MeteredUsageArchive(SQLModel, BaseModelMixin, table=True):
         default=None, sa_column=Column(Integer)
     )
     consumer_name: Optional[str] = Field(default=None)
+    # Consumer principal kind (``org`` / ``user`` / ``group``) snapshot, so the
+    # Organization breakdown can tag personal (USER) consumers. NULL pre-upgrade.
+    consumer_principal_kind: Optional[str] = Field(default=None)
     creator_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
     creator_name: Optional[str] = Field(default=None)
     cluster_id: Optional[int] = Field(default=None, sa_column=Column(Integer))

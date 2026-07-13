@@ -41,6 +41,14 @@ Bundles the pre-release schema tweaks for v2.2.2:
    ``phase=Deleting`` and the finalizer controllers track downstream CR
    cleanup in ``finalizing`` before the row is hard-deleted.
 
+6. Snapshot the consumer principal name / kind onto the usage tables for the
+   Organization breakdown: ``model_usages`` gains ``consumer_name`` +
+   ``consumer_principal_kind`` (it had neither), while ``metered_usage`` /
+   ``resource_events`` (+archives) — which already carry ``consumer_name`` —
+   gain just ``consumer_principal_kind``. All nullable, no backfill; the read
+   path resolves the name live for pre-upgrade rows and only relies on the
+   snapshot for hard-deleted principals.
+
 Revision ID: c4d7e8f9a0b1
 Revises: b2c3d4e5f6a7
 Create Date: 2026-06-24 11:00:00.000000
@@ -51,6 +59,7 @@ from typing import Optional, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+import sqlmodel
 import gpustack
 
 
@@ -210,10 +219,62 @@ def upgrade() -> None:
             sa.Column('status', gpustack.schemas.common.JSON(), nullable=True)
         )
 
+    # Part 6: snapshot the consumer principal name / kind onto the usage tables
+    # so the Organization breakdown keeps a deleted org's name and can tag a
+    # personal (USER) consumer — parity with the other ``*_name`` denorms.
+    # ``model_usages`` never carried a consumer name, so it gets both columns;
+    # ``metered_usage`` / ``resource_events`` (+archives) already carry
+    # ``consumer_name`` from their create migration, so they only add the kind.
+    # All nullable, no backfill: pre-upgrade rows resolve the name via a live
+    # principals lookup at read time.
+    with op.batch_alter_table('model_usages', schema=None) as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                'consumer_name',
+                sqlmodel.sql.sqltypes.AutoString(),
+                nullable=True,
+            )
+        )
+        batch_op.add_column(
+            sa.Column(
+                'consumer_principal_kind',
+                sqlmodel.sql.sqltypes.AutoString(),
+                nullable=True,
+            )
+        )
+
+    for table in (
+        'metered_usage',
+        'metered_usage_archive',
+        'resource_events',
+        'resource_events_archive',
+    ):
+        with op.batch_alter_table(table, schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    'consumer_principal_kind',
+                    sqlmodel.sql.sqltypes.AutoString(),
+                    nullable=True,
+                )
+            )
+
 
 def downgrade() -> None:
     bind = op.get_bind()
     dialect = bind.dialect.name
+
+    # Revert part 6: drop the consumer name / kind snapshot columns.
+    for table in (
+        'resource_events_archive',
+        'resource_events',
+        'metered_usage_archive',
+        'metered_usage',
+    ):
+        with op.batch_alter_table(table, schema=None) as batch_op:
+            batch_op.drop_column('consumer_principal_kind')
+    with op.batch_alter_table('model_usages', schema=None) as batch_op:
+        batch_op.drop_column('consumer_principal_kind')
+        batch_op.drop_column('consumer_name')
 
     # Revert part 5: drop the pv/pvt status column.
     with op.batch_alter_table(
