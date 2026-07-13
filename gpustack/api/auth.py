@@ -86,9 +86,20 @@ def client_ip_getter(request: Request) -> str:
     if request.app.state.server_config.gateway_mode != GatewayModeEnum.disabled:
         try:
             gateway_token_auth(request)
-            real_ip = request.headers.get("X-GPUStack-Real-IP")
+            # Prefer X-Real-IP: the edge proxy (Higress/Envoy) sets it to the
+            # immediate downstream connection address, which the client cannot
+            # spoof.
+            real_ip = request.headers.get("X-Real-IP")
             if real_ip:
                 return real_ip
+            # Fall back to X-Forwarded-For "client, proxy1, proxy2". Take the
+            # rightmost entry (the address the trusted edge proxy observed) to
+            # avoid trusting client-supplied leftmost values.
+            xff = request.headers.get("X-Forwarded-For")
+            if xff:
+                real_ip = xff.split(",")[-1].strip()
+                if real_ip:
+                    return real_ip
         except UnauthorizedException:
             pass
     return request.client.host if request.client else ""

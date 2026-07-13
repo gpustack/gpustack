@@ -4,8 +4,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
-from gpustack.api.auth import get_current_user, worker_auth
+from gpustack.api.auth import (
+    GATEWAY_AUTH_TOKEN_HEADER,
+    client_ip_getter,
+    get_current_user,
+    worker_auth,
+)
 from gpustack.api.exceptions import UnauthorizedException
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.routes import auth as auth_route
 from gpustack.routes.auth import oidc_callback
 
@@ -945,3 +951,74 @@ async def test_saml_callback_unsigned_escape_hatch_skips_toolkit(monkeypatch, ca
         and "production" in rec.message.lower()
         for rec in caplog.records
     )
+
+
+def _build_client_ip_request(headers, *, gateway_mode, gateway_token="tok"):
+    request = type("Request", (), {})()
+    request.headers = headers
+    request.client = type("Client", (), {"host": "10.0.0.1"})()
+    request.app = type("App", (), {})()
+    request.app.state = type("State", (), {})()
+    request.app.state.server_config = type(
+        "Config",
+        (),
+        {
+            "gateway_mode": gateway_mode,
+            "get_derived_gateway_token": lambda self: gateway_token,
+        },
+    )()
+    return request
+
+
+def test_client_ip_getter_prefers_x_real_ip():
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "tok",
+            "X-Real-IP": "1.2.3.4",
+            "X-Forwarded-For": "9.9.9.9, 5.6.7.8",
+        },
+        gateway_mode=GatewayModeEnum.embedded,
+    )
+
+    assert client_ip_getter(request) == "1.2.3.4"
+
+
+def test_client_ip_getter_falls_back_to_rightmost_xff():
+    # No X-Real-IP: use the rightmost XFF entry (what the trusted edge proxy
+    # observed), not the spoofable leftmost one.
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "tok",
+            "X-Forwarded-For": "1.1.1.1, 5.6.7.8",
+        },
+        gateway_mode=GatewayModeEnum.embedded,
+    )
+
+    assert client_ip_getter(request) == "5.6.7.8"
+
+
+def test_client_ip_getter_ignores_headers_without_valid_gateway_token():
+    # Invalid gateway token: the forwarded IP headers must not be trusted;
+    # fall back to the peer connection address.
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "wrong",
+            "X-Real-IP": "1.2.3.4",
+            "X-Forwarded-For": "1.1.1.1, 5.6.7.8",
+        },
+        gateway_mode=GatewayModeEnum.embedded,
+    )
+
+    assert client_ip_getter(request) == "10.0.0.1"
+
+
+def test_client_ip_getter_ignores_headers_when_gateway_disabled():
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "tok",
+            "X-Real-IP": "1.2.3.4",
+        },
+        gateway_mode=GatewayModeEnum.disabled,
+    )
+
+    assert client_ip_getter(request) == "10.0.0.1"
