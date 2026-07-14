@@ -1224,7 +1224,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.2.3.post5" },
-    { name = "gpustack-runner", specifier = "==0.1.27.post2" },
+    { name = "gpustack-runner", specifier = "==0.1.27.post3" },
     { name = "gpustack-runtime", specifier = "==0.2.1" },
     { name = "hf-xet", specifier = ">=1.3.1,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -1305,7 +1305,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.27.post2"
+version = "0.1.27.post3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -1313,9 +1313,9 @@ dependencies = [
     { name = "packaging" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3e/39/bf3c4c5aad9f08a26d6c11bfba4f11c017fdd397f9528ccda48bcd3da3b9/gpustack_runner-0.1.27.post2.tar.gz", hash = "sha256:869b18e32c75af8391ec9eb903d3d9981f06a0165dbb3000c3097c3be10b172b", size = 13457368, upload-time = "2026-07-08T08:30:01.824Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/67/8d/be5b23689b9a57aeed91f0b88e615fd96ec39bf6ba6ea154d52660c7a4b5/gpustack_runner-0.1.27.post3.tar.gz", hash = "sha256:9de1c83513093cbb59b9f1f2c578c5a70f4a4d68de2d6ff3996ed95fe0923a7d", size = 13458033, upload-time = "2026-07-14T08:16:03.411Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/75/0f347ba59cb917fbe06ab909fbcaa45627484abc37bfa38c9ed1522592cb/gpustack_runner-0.1.27.post2-py3-none-any.whl", hash = "sha256:1d912d3c865ad0f651dd3d5a23bb26b2236991520e845d210dc41b0180d5b594", size = 30533, upload-time = "2026-07-08T08:30:00.085Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/61/d296236a149bee05778a3ffc3eabb55890609cad6f8eff77dc14646a62be/gpustack_runner-0.1.27.post3-py3-none-any.whl", hash = "sha256:ad191f90350df2e2df7eb192ba6052f765a2e2f54d1eb19a4704569668c26bf6", size = 30688, upload-time = "2026-07-14T08:16:02.102Z" },
 ]
 
 [[package]]
