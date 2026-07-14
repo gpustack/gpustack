@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.24.0/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.25.0/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 # NOTE: entries are only added/renamed here, never removed, so that older vLLM
 # versions and other backends (SGLang, Ascend MindIE) keep recognizing them.
@@ -246,6 +246,7 @@ _CROSS_ENCODER_MODELS = [
     "ErnieForTokenClassification",
     "ErnieForSequenceClassification",
     "Qwen3ASRForcedAlignerForTokenClassification",
+    "OpenAIPrivacyFilterForTokenClassification",
     "JinaForRanking",
 ]
 
@@ -263,6 +264,7 @@ _MULTIMODAL_MODELS = [
     "DeepseekVLV2ForCausalLM",
     "DeepseekOCRForCausalLM",
     "DeepseekOCR2ForCausalLM",
+    "UnlimitedOCRForCausalLM",
     "DotsOCRForCausalLM",
     "Eagle2_5_VLForConditionalGeneration",
     "Ernie4_5_VLMoeForConditionalGeneration",
@@ -299,6 +301,7 @@ _MULTIMODAL_MODELS = [
     "LlavaNextForConditionalGeneration",
     "LlavaNextVideoForConditionalGeneration",
     "LlavaOnevisionForConditionalGeneration",
+    "LlavaOnevision2ForConditionalGeneration",
     "MantisForConditionalGeneration",
     "MiDashengLMModel",
     "MossAudioModel",
@@ -359,6 +362,7 @@ _MULTIMODAL_MODELS = [
     "MiMoV2OmniForCausalLM",
     "MiniCPMV4_6ForConditionalGeneration",
     "MoonshotKimiaForCausalLM",
+    "MossTranscribeDiarizeForConditionalGeneration",
     "NemotronH_Nano_Omni_Reasoning_V3",
     "NemotronH_Super_Omni_Reasoning_V3",
     "OpenCUAForConditionalGeneration",
