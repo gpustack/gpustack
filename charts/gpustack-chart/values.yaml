@@ -81,6 +81,27 @@ server:
     size: 100Gi
   apiPort: 30080
   metricsPort: 10161
+  # Shared initial admin password across server replicas. Creates a Secret so
+  # every replica bootstraps the same admin password behind the load balancer.
+  # Only needed for multi-replica (HA) setups; single-node installs generate a
+  # per-node password without it. Enterprise enables this by default.
+  bootstrapPasswordSecret:
+    enabled: false
+    # Pin a known initial password. When set, it is injected into every replica
+    # as GPUSTACK_BOOTSTRAP_PASSWORD and treated as operator-chosen: no forced
+    # first-login change and no password-retrieval guide (same behavior as
+    # --bootstrap-password on CLI/Docker).
+    #
+    # Leave null to auto-generate a random password instead. The random value is
+    # mounted as a shared file on every replica so all of them show the same
+    # first-login retrieval guide, and forces a first-login change.
+    #
+    # GitOps note (auto-generated case only): the random value is kept stable
+    # across upgrades via Helm's `lookup`, which cannot read the cluster during
+    # template rendering (ArgoCD/Flux, `helm template`). In those environments a
+    # new random value is produced on every sync; set a static `password` here
+    # to pin it.
+    password: null
   environmentConfig: {}
   # Extra volume mounts for the server container. Use together with
   # `extraVolumes` to mount additional files into the server pod, e.g. a
