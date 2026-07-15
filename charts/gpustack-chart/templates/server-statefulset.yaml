@@ -47,7 +47,7 @@ spec:
             - name: GPUSTACK_DISABLE_WORKER
               value: 'true'
             - name: GPUSTACK_SERVICE_DISCOVERY_NAME
-              value: "{{ .Release.Name }}-server"
+              value: "{{ .Release.Name }}-server-cluster-ip"
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
