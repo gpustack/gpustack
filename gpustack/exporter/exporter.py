@@ -22,7 +22,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from fastapi import FastAPI, Response
 
-
 logger = logging.getLogger(__name__)
 
 # Prometheus label name pattern
@@ -42,8 +41,17 @@ class MetricExporter(Collector):
 
     async def generate_metrics_cache(self):
         while True:
-            async with async_session() as session:
-                self._cache_metrics = await self._collect_metrics(session)
+            try:
+                async with async_session() as session:
+                    self._cache_metrics = await self._collect_metrics(session)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A transient DB error here (e.g. a pool-exhaustion timeout)
+                # must not escape the loop -- an unhandled exception propagates
+                # through the server's asyncio.gather and takes the whole
+                # process down. Keep the last cache, log, and retry next tick.
+                logger.exception("Failed to refresh metrics cache")
             await asyncio.sleep(3)
 
     async def _collect_metrics(self, session: AsyncSession):
