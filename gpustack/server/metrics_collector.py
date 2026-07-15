@@ -333,7 +333,15 @@ async def flush_gateway_metrics():
 async def flush_gateway_metrics_to_db():
     while True:
         await asyncio.sleep(FLUSH_INTERVAL_SECONDS)
-        await flush_gateway_metrics()
+        try:
+            await flush_gateway_metrics()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never let a flush error escape this loop -- an unhandled
+            # exception propagates through the server's asyncio.gather and
+            # crashes the whole process. Log and retry on the next tick.
+            logger.exception("Error in gateway metrics flush loop")
 
 
 async def create_or_update_model_usage(
