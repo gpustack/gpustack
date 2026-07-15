@@ -361,6 +361,11 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         action='append',
         help='HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: --allow-headers Authorization --allow-headers X-API-Key --allow-headers Content-Type. Default: ["Authorization", "Content-Type", "X-API-Key"].',
     )
+    server_group.add_argument(
+        "--trusted-hosts",
+        action='append',
+        help='Host names allowed in the X-Forwarded-Host header when GPUStack is behind a reverse proxy. Specify the flag multiple times for multiple hosts. Use "*" to trust any forwarded host (legacy behavior, not recommended). When unset, the allowlist is derived from --server-external-url; if that is also unset, X-Forwarded-Host is ignored.',
+    )
 
     # OIDC settings
     server_group.add_argument(
@@ -831,6 +836,7 @@ def set_server_options(args, config_data: dict):
         "allow_credentials",
         "allow_methods",
         "allow_headers",
+        "trusted_hosts",
         "external_auth_name",
         "external_auth_full_name",
         "external_auth_avatar_url",

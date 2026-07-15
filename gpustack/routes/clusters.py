@@ -81,14 +81,23 @@ router = APIRouter()
 
 
 def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
-    """Construct the server URL based on request headers or fallback to default."""
+    """Resolve the worker-facing server URL.
+
+    Never derive it from the (client-controllable) request Host: a forged
+    X-Forwarded-Host would otherwise point new workers at an attacker. Prefer
+    the cluster override, then server_external_url, then the server's own
+    advertised address.
+    """
     if cluster_override:
         return cluster_override.rstrip("/")
-    url = get_global_config().server_external_url
+    cfg = get_global_config()
+    url = cfg.server_external_url
     if not url:
-        url = f"{request.url.scheme}://{request.url.hostname}"
-        if request.url.port:
-            url += f":{request.url.port}"
+        scheme = "https" if (cfg.ssl_certfile and cfg.ssl_keyfile) else "http"
+        address = cfg.get_advertise_address()
+        if ":" in address and not address.startswith("["):
+            address = f"[{address}]"  # bracket IPv6 literals
+        url = f"{scheme}://{address}:{cfg.api_port}"
     return url.rstrip("/")
 
 
