@@ -447,7 +447,7 @@ async def test_get_auth_config_advertises_cas_external_auth():
     request = _request_with_config(
         _auth_config(external_auth_type=AuthProviderEnum.CAS)
     )
-    result = await auth_route.get_auth_config(request=request)
+    result = await auth_route.get_auth_config(request=request, session=None)
     assert result["external_auth"] == {
         "type": AuthProviderEnum.CAS,
         "login_url": "/auth/cas/login",
@@ -466,7 +466,7 @@ async def test_get_auth_config_advertises_oidc_external_auth():
     request = _request_with_config(
         _auth_config(external_auth_type=AuthProviderEnum.OIDC)
     )
-    result = await auth_route.get_auth_config(request=request)
+    result = await auth_route.get_auth_config(request=request, session=None)
     assert result["external_auth"] == {
         "type": AuthProviderEnum.OIDC,
         "login_url": "/auth/oidc/login",
@@ -571,7 +571,7 @@ def test_cas_service_url_falls_back_to_request_when_neither_set():
 @pytest.mark.asyncio
 async def test_get_auth_config_returns_null_external_auth_when_local():
     request = _request_with_config(_auth_config(external_auth_type=None))
-    result = await auth_route.get_auth_config(request=request)
+    result = await auth_route.get_auth_config(request=request, session=None)
     assert result["external_auth"] is None
     assert result["is_oidc"] is False
     assert result["is_saml"] is False

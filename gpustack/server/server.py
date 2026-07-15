@@ -41,7 +41,6 @@ from gpustack.security import (
     get_secret_hash,
     API_KEY_PREFIX,
 )
-from gpustack.routes.auth import remove_initial_password_file_if_exists
 from gpustack.server.app import create_app
 from gpustack.server.passwords import set_password
 from gpustack.server.services import provision_bootstrap_admin_orgs
@@ -778,25 +777,47 @@ class Server:
         if existing_admin:
             return
 
-        # Drop any stale initial password file from a prior bootstrap before
-        # generating a new one, so the login page does not show an outdated
-        # "retrieve initial password" hint.
-        remove_initial_password_file_if_exists(self._config)
-
+        # A machine-generated bootstrap password forces a first-login change
+        # and surfaces the retrieval guide; an operator-supplied one does not.
+        # The machine-generated password lives in the ``initial_admin_password``
+        # file under ``data_dir``: in HA the Helm chart mounts a shared Secret
+        # there so every replica reads the same value, and single-node installs
+        # generate it locally and write it there. An explicit
+        # ``--bootstrap-password`` takes precedence and is not force-changed.
         bootstrap_password = self._config.bootstrap_password
         require_password_change = False
+        password_file = os.path.join(self._config.data_dir, "initial_admin_password")
         if not bootstrap_password:
             require_password_change = True
-            bootstrap_password = generate_secure_password()
-            bootstrap_password_file = os.path.join(
-                self._config.data_dir, "initial_admin_password"
-            )
-            with open(bootstrap_password_file, "w") as file:
-                file.write(bootstrap_password + "\n")
-            logger.info(
-                "Generated initial admin password. "
-                f"You can get it from {bootstrap_password_file}"
-            )
+            if os.path.exists(password_file):
+                try:
+                    with open(password_file, encoding="utf-8") as file:
+                        bootstrap_password = file.read().strip()
+                except (OSError, ValueError) as e:
+                    # ValueError covers UnicodeDecodeError on a corrupted /
+                    # non-UTF-8 file, which is not an OSError.
+                    logger.warning(
+                        f"Failed to read initial admin password from {password_file}: {e}"
+                    )
+            # An empty / whitespace-only / unreadable file (interrupted write,
+            # empty Secret mount, permission issue) must never yield an empty
+            # admin password — fall back to a freshly generated one.
+            if bootstrap_password:
+                logger.info(f"Using initial admin password from {password_file}.")
+            else:
+                bootstrap_password = generate_secure_password()
+                try:
+                    with open(password_file, "w", encoding="utf-8") as file:
+                        file.write(bootstrap_password + "\n")
+                    logger.info(
+                        "Generated initial admin password. "
+                        f"You can get it from {password_file}"
+                    )
+                except OSError as e:
+                    logger.warning(
+                        "Generated initial admin password but could not persist it "
+                        f"to {password_file}: {e}"
+                    )
 
         user = User(
             name="admin",

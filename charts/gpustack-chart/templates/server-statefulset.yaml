@@ -1,3 +1,12 @@
+{{- /*
+Bootstrap admin password delivery. A pinned password is injected as an env var
+(the same channel as --bootstrap-password), so the server treats it as
+operator-chosen — no forced first-login change, no retrieval guide. An
+auto-generated password is mounted as a shared file so every replica surfaces
+the same first-login retrieval guide regardless of round-robin routing.
+*/ -}}
+{{- $bootstrapPinned := and .Values.server.bootstrapPasswordSecret.enabled .Values.server.bootstrapPasswordSecret.password -}}
+{{- $bootstrapFile := and .Values.server.bootstrapPasswordSecret.enabled (not .Values.server.bootstrapPasswordSecret.password) -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -57,6 +66,13 @@ spec:
               value: {{ include "gpustack.hub" . }}
             - name: GPUSTACK_IMAGE_NAME_OVERRIDE
               value: {{ include "gpustack.image" . }}:{{ include "gpustack.imageTag" . }}
+            {{- if $bootstrapPinned }}
+            - name: GPUSTACK_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-server-bootstrap-password
+                  key: password
+            {{- end }}
           envFrom:
             {{- if .Values.worker.enabled }}
             - secretRef:
@@ -102,6 +118,15 @@ spec:
           volumeMounts:
             - mountPath: /var/lib/gpustack
               name: gpustack-data-dir
+            {{- if $bootstrapFile }}
+            # Machine-generated shared initial admin password, mounted so every
+            # replica shows the same first-login retrieval guide regardless of
+            # round-robin routing.
+            - mountPath: /var/lib/gpustack/initial_admin_password
+              name: bootstrap-password
+              subPath: password
+              readOnly: true
+            {{- end }}
             {{- with .Values.server.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -129,8 +154,13 @@ spec:
                   app: {{ .Release.Name }}-server
       {{- end }}
       {{- end }}
-      {{- if or .Values.server.dataVolume.hostPath .Values.server.extraVolumes }}
+      {{- if or $bootstrapFile .Values.server.dataVolume.hostPath .Values.server.extraVolumes }}
       volumes:
+        {{- if $bootstrapFile }}
+        - name: bootstrap-password
+          secret:
+            secretName: {{ .Release.Name }}-server-bootstrap-password
+        {{- end }}
         {{- if .Values.server.dataVolume.hostPath }}
         - name: gpustack-data-dir
           hostPath:
