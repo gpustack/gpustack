@@ -237,6 +237,9 @@ class Config(WorkerConfig, BaseSettings):
     cas_full_name_attribute: Optional[str] = None
     cas_avatar_attribute: Optional[str] = None
     server_external_url: Optional[str] = None
+    # Allowlist for the X-Forwarded-Host header behind a reverse proxy;
+    # ["*"] trusts any host. Unset -> derived from server_external_url.
+    trusted_hosts: Optional[List[str]] = None
     # custom post-logout redirection key for compatibility with different IdPs.
     external_auth_post_logout_redirect_key: Optional[str] = None
     # Number of concurrent connections for the embedded gateway.
@@ -861,6 +864,21 @@ class Config(WorkerConfig, BaseSettings):
             return None
         except Exception:
             return hostname
+
+    def get_trusted_hosts(self) -> List[str]:
+        """Resolve the allowlist gating X-Forwarded-Host rewriting.
+
+        A non-empty trusted_hosts wins (including the ["*"] opt-out). An empty
+        or unset trusted_hosts derives the host from server_external_url; when
+        that is also unset, return [] so the middleware ignores
+        X-Forwarded-Host. Port/bracket normalization is left to the middleware.
+        """
+        if self.trusted_hosts:
+            return [host for host in self.trusted_hosts if host and host.strip()]
+        if self.server_external_url:
+            hostname = urlparse(self.server_external_url).hostname
+            return [hostname] if hostname else []
+        return []
 
     def get_tls_secret_name(self) -> Optional[str]:
         if not self.ssl_certfile or not self.ssl_keyfile:

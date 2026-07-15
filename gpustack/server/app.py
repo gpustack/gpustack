@@ -49,7 +49,9 @@ def create_app(cfg: Config) -> FastAPI:
         openapi_url=None if (cfg and cfg.disable_openapi_docs) else "/openapi.json",
     )
     patch_docs(app, Path(__file__).parents[1] / "ui" / "static")
-    app.add_middleware(ForwardedHostPortMiddleware)
+    app.add_middleware(
+        ForwardedHostPortMiddleware, trusted_hosts=cfg.get_trusted_hosts()
+    )
     app.add_middleware(middlewares.RequestTimeMiddleware)
     app.add_middleware(middlewares.ModelUsageMiddleware)
     app.add_middleware(middlewares.RefreshTokenMiddleware)
