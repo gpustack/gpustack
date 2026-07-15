@@ -775,7 +775,8 @@ async def get_cluster_manifests(
         "cluster_owner_principal_identifier": principal_namespace_identifier(principal),
         "runtimes": runtime,
         "k8s_options": k8s_options,
-        "system_default_container_registry": cluster.system_default_container_registry,
+        "system_default_container_registry": cluster.system_default_container_registry
+        or cfg.system_default_container_registry,
     }
     if worker_config:
         if worker_config.worker_port is not None:
