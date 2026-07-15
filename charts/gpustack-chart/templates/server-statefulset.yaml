@@ -103,6 +103,20 @@ spec:
       nodeSelector:
         {{- nindent 8 . }}
       {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- else }}
+      {{- if gt (int .Values.server.replicas) 1 }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: {{ .Release.Name }}-server
+      {{- end }}
+      {{- end }}
       {{- if or .Values.server.dataVolume.hostPath .Values.server.extraVolumes }}
       volumes:
         {{- if .Values.server.dataVolume.hostPath }}
