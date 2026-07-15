@@ -76,6 +76,18 @@ spec:
             - containerPort: {{ .Values.server.metricsPort }}
               name: metrics
               protocol: TCP
+          {{- with .Values.server.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           image: {{ include "gpustack.image" . }}:{{ include "gpustack.imageTag" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           name: {{ .Release.Name }}-server
@@ -107,7 +119,7 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- else }}
-      {{- if gt (int .Values.server.replicas) 1 }}
+      {{- if gt (int (.Values.server.replicas | default 1)) 1 }}
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
