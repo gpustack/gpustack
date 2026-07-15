@@ -24,7 +24,7 @@ class RoundRobinStrategy(LoadBalancingStrategy):
         if len(instances) == 0:
             raise Exception("No instances available")
         model_id = instances[0].model_id
-        current_ids = [i.id for i in instances]
+        current_ids = sorted([i.id for i in instances])
         if (
             model_id not in self._iterators
             or self._instance_ids[model_id] != current_ids

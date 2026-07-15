@@ -179,3 +179,69 @@ class TestRoundRobinStrategy:
         inst = await strategy.select_instance(instances_v2)
         assert inst.id == 2
         assert inst.port == 8001
+
+    @pytest.mark.asyncio
+    async def test_reordered_instance_list_does_not_reset_iterator(self, strategy):
+        """
+        When the same instances are passed in a different order (e.g. due to
+        no ORDER BY in the DB query), the iterator should NOT reset.
+        This is the regression test for the DB ordering issue.
+        """
+        instances_v1 = [
+            ModelInstance(id=1, model_id=10, worker_ip="10.0.0.1", port=8000),
+            ModelInstance(id=2, model_id=10, worker_ip="10.0.0.2", port=8000),
+            ModelInstance(id=3, model_id=10, worker_ip="10.0.0.3", port=8000),
+        ]
+
+        # First call: should return id=1 (sorted order)
+        inst = await strategy.select_instance(instances_v1)
+        assert inst.id == 1
+
+        # Second call with instances in reversed order — should NOT reset
+        instances_reversed = [
+            ModelInstance(id=3, model_id=10, worker_ip="10.0.0.3", port=8000),
+            ModelInstance(id=2, model_id=10, worker_ip="10.0.0.2", port=8000),
+            ModelInstance(id=1, model_id=10, worker_ip="10.0.0.1", port=8000),
+        ]
+        inst = await strategy.select_instance(instances_reversed)
+        assert inst.id == 2
+
+        # Third call with original order again
+        inst = await strategy.select_instance(instances_v1)
+        assert inst.id == 3
+
+    @pytest.mark.asyncio
+    async def test_round_robin_survives_random_ordering(self, strategy):
+        """
+        Simulate realistic DB behavior where instances come back in arbitrary
+        order. Round-robin should still cycle through all instances correctly.
+        """
+
+        def make_instances(order):
+            base = {
+                1: ("10.0.0.1", 8000),
+                2: ("10.0.0.2", 8000),
+                3: ("10.0.0.3", 8000),
+            }
+            return [
+                ModelInstance(
+                    id=idx, model_id=10, worker_ip=base[idx][0], port=base[idx][1]
+                )
+                for idx in order
+            ]
+
+        selected_ids = []
+        orders = [
+            [1, 2, 3],
+            [3, 1, 2],
+            [2, 3, 1],
+            [1, 3, 2],
+            [3, 2, 1],
+            [2, 1, 3],
+        ]
+        for order in orders:
+            inst = await strategy.select_instance(make_instances(order))
+            selected_ids.append(inst.id)
+
+        # Should cycle 1, 2, 3 regardless of input order
+        assert selected_ids == [1, 2, 3, 1, 2, 3]
