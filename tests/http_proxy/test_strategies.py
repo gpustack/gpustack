@@ -152,3 +152,30 @@ class TestRoundRobinStrategy:
         # Iterator should NOT reset; next should be id=2
         inst = await strategy.select_instance(instances_v2)
         assert inst.id == 2
+
+    @pytest.mark.asyncio
+    async def test_returns_fresh_instance_on_updated_attributes(self, strategy):
+        """
+        When instance attributes change (e.g. port, worker_ip), the strategy
+        should return the fresh object from the input list, not a stale cached
+        one. This is the regression test for the Gemini review comment.
+        """
+        instances_v1 = [
+            ModelInstance(id=1, model_id=10, worker_ip="10.0.0.1", port=8000),
+            ModelInstance(id=2, model_id=10, worker_ip="10.0.0.2", port=8000),
+        ]
+
+        inst = await strategy.select_instance(instances_v1)
+        assert inst.id == 1
+        assert inst.port == 8000
+
+        # Create a new list with the same IDs but updated port
+        instances_v2 = [
+            ModelInstance(id=1, model_id=10, worker_ip="10.0.0.1", port=8001),
+            ModelInstance(id=2, model_id=10, worker_ip="10.0.0.2", port=8001),
+        ]
+
+        # Next round-robin pick should be id=2 with the updated port
+        inst = await strategy.select_instance(instances_v2)
+        assert inst.id == 2
+        assert inst.port == 8001

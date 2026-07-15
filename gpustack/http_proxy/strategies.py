@@ -30,7 +30,8 @@ class RoundRobinStrategy(LoadBalancingStrategy):
             or self._instance_ids[model_id] != current_ids
         ):
             logger.debug(f"Creating new iterator for model {model_id}")
-            self._iterators[model_id] = itertools.cycle(instances)
+            self._iterators[model_id] = itertools.cycle(current_ids)
             self._instance_ids[model_id] = current_ids
 
-        return next(self._iterators[model_id])
+        next_id = next(self._iterators[model_id])
+        return next(inst for inst in instances if inst.id == next_id)
