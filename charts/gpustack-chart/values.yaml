@@ -99,6 +99,45 @@ server:
   # `global.nodeSelector` entirely (no merging). Leave empty/null to fall
   # back to `global.nodeSelector`.
   nodeSelector: {}
+  # Affinity for the server pod. When non-empty, REPLACES the built-in default
+  # entirely (no merging). Leave empty/null to use the default: when
+  # `replicas > 1`, a hard (required) podAntiAffinity by `kubernetes.io/hostname`
+  # spreads replicas across nodes so a single node failure only takes down one
+  # replica. NOTE: the hard rule requires at least as many schedulable nodes as
+  # replicas, otherwise extra replicas stay Pending; override this knob (e.g.
+  # with a `preferred` rule) for smaller clusters.
+  affinity: {}
+  # Server pod probes. Each is rendered verbatim when non-empty; set to null/{}
+  # to disable a probe. The server only starts serving HTTP after DB migrations
+  # and init complete, so the startupProbe (up to ~300s here) guards the
+  # slow-start window before livenessProbe takes over — increase its
+  # `failureThreshold` for slow/remote databases. Ports refer to the container's
+  # named `http` port.
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 30
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 5
+    successThreshold: 1
 clusterDomain: cluster.local
 gateway:
   # IngressClass name for the Higress gateway; GPUStack checks if it exists in the cluster to enable in-cluster gateway mode
