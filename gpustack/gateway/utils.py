@@ -46,6 +46,8 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstancePublic,
+    ModelInstanceStateEnum,
+    ModelInstanceSubordinateWorker,
 )
 from gpustack.schemas.model_provider import (
     ModelProvider,
@@ -59,6 +61,11 @@ from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
 from gpustack.policies.utils import manual_distributed_from_env
+from gpustack.utils.vllm_topology import subordinates_serve_api
+from gpustack.utils.lora_model_source import (
+    lora_route_name_for,
+    normalized_lora_list,
+)
 from gpustack.utils.network import is_ipaddress
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException, V1IngressTLS
@@ -784,23 +791,129 @@ def hamilton_calculate_weight(
     return [info['floor_quota'] for info in instances_info]
 
 
+def model_instance_subordinate_registry(
+    model_instance: Union[ModelInstance, ModelInstancePublic],
+    subordinate_worker: ModelInstanceSubordinateWorker,
+    index: int,
+    subordinate_worker_obj: Optional[Worker] = None,
+    name_suffix: Optional[str] = None,
+) -> Optional[McpBridgeRegistry]:
+    """Build a registry for a subordinate worker that serves its own API
+    (hybrid-LB / external-LB). The ``-sub{index}`` suffix keeps it a distinct
+    Higress upstream while
+    ``get_instance_id_from_header`` still parses the instance id (the regex
+    treats it as an alias segment). Address selection mirrors the leader and
+    branches on the subordinate's own proxy mode.
+    """
+    name = f"{model_instance_prefix(model_instance)}-sub{index}"
+    if name_suffix:
+        name = f"{name}-{name_suffix}"
+    if subordinate_worker_obj is not None:
+        if subordinate_worker_obj.proxy_mode == ModelInstanceProxyModeEnum.WORKER:
+            return _worker_reserve_proxy_registry(subordinate_worker_obj, name)
+        if subordinate_worker_obj.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL:
+            return _worker_tunnel_proxy_registry(subordinate_worker_obj, name)
+    elif subordinate_worker.worker_id is not None:
+        # Worker row not yet synced, so its proxy mode is unknown — don't fabricate
+        # a static DIRECT upstream (TUNNEL/WORKER clusters can't reach the worker IP
+        # and would 503). Skip; reconcile re-adds it once the worker appears.
+        return None
+    # DIRECT (or no managed worker): connect straight to the follower vLLM. Each
+    # node serves on its own per-node port (subordinate_worker.ports[0]); fall back
+    # to the instance ports for older instances. Prefer the worker's advertise
+    # address (mirrors the leader) so NAT/overlay clusters stay reachable.
+    address = (
+        subordinate_worker_obj.advertise_address if subordinate_worker_obj else None
+    ) or subordinate_worker.worker_ip
+    port = (
+        subordinate_worker.ports[0]
+        if subordinate_worker.ports
+        else (model_instance.ports[0] if model_instance.ports else model_instance.port)
+    )
+    if address is None or address == "" or port is None:
+        return None
+    if is_ipaddress(address):
+        return McpBridgeRegistry(
+            domain=f"{address}:{port}",
+            port=80,
+            name=name,
+            protocol="http",
+            type="static",
+        )
+    return McpBridgeRegistry(
+        domain=address, port=port, name=name, protocol="http", type="dns"
+    )
+
+
+def instance_registries(
+    model_instance: Union[ModelInstance, ModelInstancePublic],
+    leader_worker: Optional[Worker] = None,
+    workers: Optional[Dict[int, Worker]] = None,
+    subordinates_serve: bool = False,
+    name_suffix: Optional[str] = None,
+) -> List[McpBridgeRegistry]:
+    """All gateway registries for one instance: the leader, plus each subordinate
+    that serves its own API (hybrid-LB / external-LB). When subordinates don't
+    serve, followers stay headless and are not registered, so they never receive
+    routed traffic.
+    """
+    registries: List[McpBridgeRegistry] = []
+    leader = model_instance_registry(
+        model_instance, worker=leader_worker, name_suffix=name_suffix
+    )
+    if leader is not None:
+        registries.append(leader)
+    if (
+        subordinates_serve
+        and model_instance.distributed_servers
+        and model_instance.distributed_servers.subordinate_workers
+    ):
+        for index, subordinate_worker in enumerate(
+            model_instance.distributed_servers.subordinate_workers
+        ):
+            # Skip subordinates that aren't RUNNING so a known-bad node isn't
+            # re-registered as an upstream. The index still tracks each
+            # subordinate's position, keeping -sub{index} names stable.
+            if subordinate_worker.state != ModelInstanceStateEnum.RUNNING:
+                continue
+            subordinate_worker_obj = (
+                (workers or {}).get(subordinate_worker.worker_id)
+                if subordinate_worker.worker_id
+                else None
+            )
+            registry = model_instance_subordinate_registry(
+                model_instance,
+                subordinate_worker,
+                index,
+                subordinate_worker_obj=subordinate_worker_obj,
+                name_suffix=name_suffix,
+            )
+            if registry is not None:
+                registries.append(registry)
+    return registries
+
+
 def model_instances_registry_list(
     model_instances: List[Union[ModelInstance, ModelInstancePublic]],
     workers: Optional[Dict[int, Worker]] = None,
     downstream_model_name: Optional[str] = None,
     registry_name_suffix: Optional[str] = None,
+    subordinates_serve: bool = False,
 ) -> DestinationTupleList:
     registries: DestinationTupleList = []
     for model_instance in model_instances:
-        worker = (
+        leader_worker = (
             (workers or {}).get(model_instance.worker_id)
             if model_instance.worker_id
             else None
         )
-        registry = model_instance_registry(
-            model_instance, worker=worker, name_suffix=registry_name_suffix
-        )
-        if registry is not None:
+        for registry in instance_registries(
+            model_instance,
+            leader_worker=leader_worker,
+            workers=workers,
+            subordinates_serve=subordinates_serve,
+            name_suffix=registry_name_suffix,
+        ):
             registries.append(
                 (1, downstream_model_name or model_instance.model_name, registry)
             )
@@ -1040,6 +1153,41 @@ async def cleanup_ingresses(
         logger.error(f"Error cleaning up {reason} model ingresses: {e}")
 
 
+def build_model_instance_registries(
+    model_instances: List[Union[ModelInstance, ModelInstancePublic]],
+    workers: Optional[Dict[int, Worker]] = None,
+    lora_route_names: Optional[List[str]] = None,
+    subordinates_serve: bool = False,
+) -> List[McpBridgeRegistry]:
+    """Desired gateway registries for one model's instances: the leader, plus each
+    serving subordinate when ``subordinates_serve`` (hybrid/external-LB), each also
+    aliased per LoRA (``-l<hash>``). Single source of truth for reconcile and
+    orphan cleanup so the two never drift — an alias missing here gets wrongly
+    deleted at startup.
+    """
+    name_suffixes = [None] + [
+        lora_registry_name_suffix(name) for name in lora_route_names or []
+    ]
+    desired: List[McpBridgeRegistry] = []
+    for model_instance in model_instances:
+        leader_worker = (
+            (workers or {}).get(model_instance.worker_id)
+            if model_instance.worker_id
+            else None
+        )
+        for name_suffix in name_suffixes:
+            desired.extend(
+                instance_registries(
+                    model_instance,
+                    leader_worker=leader_worker,
+                    workers=workers,
+                    subordinates_serve=subordinates_serve,
+                    name_suffix=name_suffix,
+                )
+            )
+    return desired
+
+
 async def ensure_model_mcp_bridge(
     event_type: EventType,
     model_id: int,
@@ -1049,28 +1197,19 @@ async def ensure_model_mcp_bridge(
     cluster_id: int,
     workers: Optional[Dict[int, Worker]] = None,
     lora_route_names: Optional[List[str]] = None,
+    subordinates_serve: bool = False,
 ) -> List[McpBridgeRegistry]:
-    desired_registry: List[McpBridgeRegistry] = []
     to_delete_prefix: Optional[str] = model_prefix(model_id)
-    # Each LoRA gets its own registry aliasing the same instance address under a
-    # distinct service name, so the gateway can weight traffic across LoRAs and the
-    # model-mapper can rewrite per LoRA (both key on service). See calculate_model_destinations.
-    name_suffixes = [None] + [
-        lora_registry_name_suffix(name) for name in lora_route_names or []
-    ]
-    if event_type != EventType.DELETED:
-        for model_instance in model_instances:
-            worker = (
-                (workers or {}).get(model_instance.worker_id)
-                if model_instance.worker_id
-                else None
-            )
-            for name_suffix in name_suffixes:
-                registry = model_instance_registry(
-                    model_instance, worker=worker, name_suffix=name_suffix
-                )
-                if registry is not None:
-                    desired_registry.append(registry)
+    desired_registry: List[McpBridgeRegistry] = (
+        []
+        if event_type == EventType.DELETED
+        else build_model_instance_registries(
+            model_instances,
+            workers=workers,
+            lora_route_names=lora_route_names,
+            subordinates_serve=subordinates_serve,
+        )
+    )
     await ensure_mcp_bridge(
         client=networking_higress_api,
         namespace=namespace,
@@ -1479,9 +1618,9 @@ async def cleanup_mcpbridge_registry(
         desired_proxies=desired_proxies,
         to_delete_proxies_prefix=provider_id_prefix,
     )
-    # cleanup model instances
-    # Group instances per model so per-model policy can hook in here; instances
-    # whose model is gone are orphans and skipped so their upstreams clean up.
+    # Rebuild the desired set per model exactly as reconcile does, so startup
+    # cleanup never deletes -sub / -l upstreams it would immediately re-create.
+    # Instances whose model is gone are orphans — skip so their upstreams clean up.
     desired_registries = []
     to_delete_prefix = model_id_prefix
     instances_by_model: Dict[int, List[ModelInstance]] = defaultdict(list)
@@ -1496,11 +1635,18 @@ async def cleanup_mcpbridge_registry(
             # their registries lets the prefix-diff clear them, matching the
             # reconcile path (_ensure_model_mcp_bridge) instead of fighting it.
             continue
-        for instance in instances:
-            worker = worker_by_id.get(instance.worker_id)
-            registry = model_instance_registry(instance, worker=worker)
-            if registry is not None:
-                desired_registries.append(registry)
+        lora_route_names = [
+            lora_route_name_for(model.name, entry.lora_name)
+            for entry in normalized_lora_list(model)
+        ]
+        desired_registries.extend(
+            build_model_instance_registries(
+                instances,
+                workers=worker_by_id,
+                lora_route_names=lora_route_names,
+                subordinates_serve=subordinates_serve_api(model.backend_parameters),
+            )
+        )
     await ensure_mcp_bridge(
         client=networking_higress_api,
         namespace=namespace,
@@ -1531,14 +1677,20 @@ def ai_proxy_diff_spec(
     return current_spec
 
 
+# model-<model_id>-<instance_id>[-<alias>].<type> — the optional alias segment
+# carries subordinate (-sub<index>) and/or LoRA (-l<hash>) markers, e.g.
+# "model-5-12-sub0-labcdef12.static". group(1) is the instance id, group(2) the
+# raw alias (or None).
+_MODEL_DESTINATION_RE = re.compile(r'^model-\d+-(\d+)(?:-([^.]+))?\..+')
+
+
 def get_instance_id_from_header(headers: Mapping[str, str]) -> int:
     """Parse the model instance ID from the ``x-gpustack-model-instance`` routing header.
 
     The header value follows the pattern
-    ``model-<model_id>-<instance_id>[-l<lora>].<type>`` injected by the API
-    gateway. The instance ID is the second numeric segment; LoRA targets append
-    an extra ``-l<hash>`` alias segment (see ``lora_registry_name_suffix``) which
-    must be skipped.
+    ``model-<model_id>-<instance_id>[-<alias>].<type>`` injected by the API
+    gateway. The instance ID is the second numeric segment; the alias segment
+    (``-sub<index>`` and/or ``-l<hash>``) is skipped here.
 
     Raises:
         HTTPException (400): if the header is absent.
@@ -1552,15 +1704,49 @@ def get_instance_id_from_header(headers: Mapping[str, str]) -> int:
             status_code=400, detail=f"Missing {router_header_key} header"
         )
 
-    # Match pattern: model-<model_id>-<instance_id>[-<alias>].<type>
-    # instance_id is the second numeric segment, optionally followed by a LoRA alias.
-    match = re.match(r'^model-\d+-(\d+)(?:-[^.]+)?\..+', model_destination)
+    match = _MODEL_DESTINATION_RE.match(model_destination)
     if not match:
         raise NotFoundException(
             message=f"Invalid model destination format: {model_destination}"
         )
 
     return int(match.group(1))
+
+
+def get_subordinate_index_from_header(headers: Mapping[str, str]) -> Optional[int]:
+    """Parse the subordinate index from the routing header's alias segment
+    (``...-sub<index>[-l<hash>]``), or None for a leader / non-subordinate
+    target. Never raises; get_instance_id_from_header already validates the header.
+    """
+    if not isinstance(headers, Headers):
+        headers = Headers(headers)
+    model_destination = headers.get(router_header_key)
+    if model_destination is None:
+        return None
+    match = _MODEL_DESTINATION_RE.match(model_destination)
+    if not (match and match.group(2)):
+        return None
+    sub_match = re.match(r'sub(\d+)', match.group(2))
+    return int(sub_match.group(1)) if sub_match else None
+
+
+def _subordinate_endpoint(
+    model_instance: ModelInstance, index: int
+) -> Optional[Tuple[str, int]]:
+    """The (worker_ip, per-node serving port) of the subordinate at ``index``,
+    or None when it can't be resolved (missing entry / IP / port) so the caller
+    falls back to the leader. The ``-sub<index>`` upstream is positional, so the
+    index maps directly to subordinate_workers[index]."""
+    distributed_servers = model_instance.distributed_servers
+    subordinate_workers = (
+        distributed_servers.subordinate_workers if distributed_servers else None
+    )
+    if not subordinate_workers or index >= len(subordinate_workers):
+        return None
+    subordinate_worker = subordinate_workers[index]
+    if not (subordinate_worker.worker_ip and subordinate_worker.ports):
+        return None
+    return subordinate_worker.worker_ip, subordinate_worker.ports[0]
 
 
 async def resolve_instance_address_from_model_header(
@@ -1572,6 +1758,11 @@ async def resolve_instance_address_from_model_header(
     to extract the model instance ID, then queries the database for that
     instance's worker IP and inference port.
 
+    An API-serving subordinate (hybrid-LB / external-LB) is a distinct tunnel
+    target: a ``-sub<index>`` header resolves to that node's own worker_ip and
+    per-node port, and the connection manager tunnels to it by IP. Falls back to
+    the leader when the subordinate can't be resolved.
+
     Used as the ``header_router`` callback of ``HTTPSProxyServer`` in tunnel
     proxy mode so the proxy knows which instance address to forward each request to.
 
@@ -1580,6 +1771,7 @@ async def resolve_instance_address_from_model_header(
     """
     try:
         instance_id = get_instance_id_from_header(headers)
+        subordinate_index = get_subordinate_index_from_header(headers)
     except HTTPException as e:
         logger.trace(f"direct proxying request as: {e}")
         return None, 0
@@ -1599,6 +1791,10 @@ async def resolve_instance_address_from_model_header(
                 f"Model instance with ID {instance_id} do not get scheduled yet."
             )
             return None, 0
+        if subordinate_index is not None:
+            endpoint = _subordinate_endpoint(model_instance, subordinate_index)
+            if endpoint is not None:
+                return endpoint
         return model_instance.worker_ip, model_instance.ports[0]
 
 

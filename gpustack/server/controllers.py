@@ -93,6 +93,7 @@ from gpustack.schemas.users import (
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.cache import delete_cache_by_key
 from gpustack.utils.model_source import get_draft_model_source
+from gpustack.utils.vllm_topology import subordinates_serve_api
 from gpustack.policies.utils import manual_distributed_from_env
 from gpustack import envs
 from gpustack.server.db import async_session
@@ -199,6 +200,21 @@ class ModelController:
         worker_ids = {
             instance.worker_id for instance in model_instances if instance.worker_id
         }
+        # Hybrid-LB / external-LB subordinate workers also serve an API and need
+        # their own gateway registries, so fetch them too (WORKER/TUNNEL modes
+        # resolve the agent address from the Worker object).
+        subordinates_serve = subordinates_serve_api(model.backend_parameters)
+        if subordinates_serve:
+            for instance in model_instances:
+                if (
+                    instance.distributed_servers
+                    and instance.distributed_servers.subordinate_workers
+                ):
+                    worker_ids.update(
+                        sw.worker_id
+                        for sw in instance.distributed_servers.subordinate_workers
+                        if sw.worker_id
+                    )
         if worker_ids:
             workers = await Worker.all_by_fields(
                 session,
@@ -221,6 +237,7 @@ class ModelController:
             cluster_id=model.cluster_id,
             workers=worker_by_id,
             lora_route_names=lora_route_names,
+            subordinates_serve=subordinates_serve,
         )
 
     async def _reconcile(self, event: Event):
@@ -1267,21 +1284,31 @@ async def calculate_model_destinations(
         and instance.worker_ip != ""
         and instance.state == ModelInstanceStateEnum.RUNNING
     ]
+    subordinates_serve = subordinates_serve_api(model.backend_parameters)
+    worker_ids = {
+        instance.worker_id for instance in instances if instance.worker_id is not None
+    }
+    # Hybrid-LB / external-LB subordinates serve their own API, so they become
+    # weighted destinations too; pull their Worker objects for WORKER/TUNNEL
+    # addressing.
+    if subordinates_serve:
+        for instance in instances:
+            if (
+                instance.distributed_servers
+                and instance.distributed_servers.subordinate_workers
+            ):
+                worker_ids.update(
+                    sw.worker_id
+                    for sw in instance.distributed_servers.subordinate_workers
+                    if sw.worker_id
+                )
     worker_list = await Worker.all_by_fields(
         session=session,
         fields={
             "cluster_id": model.cluster_id,
             "deleted_at": None,
         },
-        extra_conditions=[
-            Worker.id.in_(
-                [
-                    instance.worker_id
-                    for instance in instances
-                    if instance.worker_id is not None
-                ]
-            )
-        ],
+        extra_conditions=[Worker.id.in_(list(worker_ids))],
     )
     workers = {worker.id: worker for worker in worker_list}
     return mcp_handler.model_instances_registry_list(
@@ -1289,6 +1316,7 @@ async def calculate_model_destinations(
         workers,
         downstream_model_name=downstream_model_name,
         registry_name_suffix=registry_name_suffix,
+        subordinates_serve=subordinates_serve,
     )
 
 
