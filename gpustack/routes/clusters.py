@@ -83,21 +83,20 @@ router = APIRouter()
 def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
     """Resolve the worker-facing server URL.
 
-    Never derive it from the (client-controllable) request Host: a forged
-    X-Forwarded-Host would otherwise point new workers at an attacker. Prefer
-    the cluster override, then server_external_url, then the server's own
-    advertised address.
+    Priority:
+    1. cluster override
+    2. server_external_url
+    3. request host (scheme + netloc). ForwardedHostPortMiddleware only gates
+       X-Forwarded-Host rewriting by trusted_hosts; a directly supplied Host
+       header still flows into request.url, so this is not full host-injection
+       protection unless the server is reachable only via a trusted proxy.
     """
     if cluster_override:
         return cluster_override.rstrip("/")
     cfg = get_global_config()
-    url = cfg.server_external_url
+    url = cfg.server_external_url if cfg else None
     if not url:
-        scheme = "https" if (cfg.ssl_certfile and cfg.ssl_keyfile) else "http"
-        address = cfg.get_advertise_address()
-        if ":" in address and not address.startswith("["):
-            address = f"[{address}]"  # bracket IPv6 literals
-        url = f"{scheme}://{address}:{cfg.api_port}"
+        url = f"{request.url.scheme}://{request.url.netloc}"
     return url.rstrip("/")
 
 

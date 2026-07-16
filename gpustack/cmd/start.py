@@ -364,7 +364,7 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     server_group.add_argument(
         "--trusted-hosts",
         action='append',
-        help='Host names allowed in the X-Forwarded-Host header when GPUStack is behind a reverse proxy. Specify the flag multiple times for multiple hosts. Use "*" to trust any forwarded host (legacy behavior, not recommended). When unset, the allowlist is derived from --server-external-url; if that is also unset, X-Forwarded-Host is ignored.',
+        help='Allowlist for the X-Forwarded-Host header behind a reverse proxy. Specify the flag multiple times for multiple hosts. When unset, derived from --server-external-url. If both are unset, it defaults to "*" to trust any host (not recommended unless the server is only reachable via a trusted proxy).',
     )
 
     # OIDC settings

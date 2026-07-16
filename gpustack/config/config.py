@@ -237,8 +237,10 @@ class Config(WorkerConfig, BaseSettings):
     cas_full_name_attribute: Optional[str] = None
     cas_avatar_attribute: Optional[str] = None
     server_external_url: Optional[str] = None
-    # Allowlist for the X-Forwarded-Host header behind a reverse proxy;
-    # ["*"] trusts any host. Unset -> derived from server_external_url.
+    # Allowlist for the X-Forwarded-Host header behind a reverse proxy. When
+    # unset, derived from server_external_url. If both are unset, it defaults to
+    # ["*"] (trust any host), which is not recommended unless the server is only
+    # reachable via a trusted proxy.
     trusted_hosts: Optional[List[str]] = None
     # custom post-logout redirection key for compatibility with different IdPs.
     external_auth_post_logout_redirect_key: Optional[str] = None
@@ -868,17 +870,26 @@ class Config(WorkerConfig, BaseSettings):
     def get_trusted_hosts(self) -> List[str]:
         """Resolve the allowlist gating X-Forwarded-Host rewriting.
 
-        A non-empty trusted_hosts wins (including the ["*"] opt-out). An empty
-        or unset trusted_hosts derives the host from server_external_url; when
-        that is also unset, return [] so the middleware ignores
-        X-Forwarded-Host. Port/bracket normalization is left to the middleware.
+        Priority:
+        1. non-empty trusted_hosts (incl. ["*"] opt-out)
+        2. host derived from server_external_url
+        3. ["*"] — trust any host (protection is opt-in via trusted_hosts)
+
+        Port/bracket normalization is left to the middleware.
         """
         if self.trusted_hosts:
-            return [host for host in self.trusted_hosts if host and host.strip()]
+            # Blank/whitespace entries are dropped; a list left with no valid
+            # host falls through so ["", " "] behaves like the empty list.
+            hosts = [
+                host.strip() for host in self.trusted_hosts if host and host.strip()
+            ]
+            if hosts:
+                return hosts
         if self.server_external_url:
             hostname = urlparse(self.server_external_url).hostname
-            return [hostname] if hostname else []
-        return []
+            if hostname:
+                return [hostname]
+        return ["*"]
 
     def get_tls_secret_name(self) -> Optional[str]:
         if not self.ssl_certfile or not self.ssl_keyfile:
