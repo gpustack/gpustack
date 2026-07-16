@@ -10,8 +10,8 @@ def _request(url):
     return SimpleNamespace(url=url)
 
 
-def _url(scheme="http", hostname="127.0.0.1", port=None):
-    return SimpleNamespace(scheme=scheme, hostname=hostname, port=port)
+def _url(scheme="http", netloc="127.0.0.1"):
+    return SimpleNamespace(scheme=scheme, netloc=netloc)
 
 
 def test_get_server_url_strips_trailing_slash_from_cluster_override():
@@ -38,43 +38,22 @@ def test_get_server_url_strips_trailing_slash_from_external_url():
     )
 
 
-def _fallback_config(**overrides):
-    config = SimpleNamespace(
-        server_external_url=None,
-        ssl_certfile=None,
-        ssl_keyfile=None,
-        api_port=30080,
-        get_advertise_address=lambda: "10.0.0.5",
-    )
-    for key, value in overrides.items():
-        setattr(config, key, value)
-    return config
-
-
-def test_get_server_url_ignores_forged_request_host():
-    # Security: a forged X-Forwarded-Host (reflected in request.url) must never
-    # leak into the worker-facing URL. Fall back to the advertise address.
+def test_get_server_url_falls_back_to_request_host():
+    # When server_external_url is unset, use the request host (scheme + netloc)
+    # as-is. Injection protection is opt-in: ForwardedHostPortMiddleware gates
+    # X-Forwarded-Host by trusted_hosts before the handler sees request.url, so
+    # anything reaching here is either trusted or the unconfigured pass-through.
+    config = SimpleNamespace(server_external_url=None)
     with patch(
         "gpustack.routes.clusters.get_global_config",
-        return_value=_fallback_config(),
+        return_value=config,
     ):
         server_url = get_server_url(
-            _request(_url(scheme="https", hostname="evil.example", port=8443)),
+            _request(_url(scheme="https", netloc="proxy.example:8443")),
             None,
         )
 
-    assert server_url == "http://10.0.0.5:30080"
-    assert "evil.example" not in server_url
-
-
-def test_get_server_url_fallback_uses_https_when_tls_configured():
-    with patch(
-        "gpustack.routes.clusters.get_global_config",
-        return_value=_fallback_config(ssl_certfile="cert.pem", ssl_keyfile="key.pem"),
-    ):
-        server_url = get_server_url(_request(_url()), None)
-
-    assert server_url == "https://10.0.0.5:30080"
+    assert server_url == "https://proxy.example:8443"
 
 
 def test_cluster_update_normalizes_server_url():
@@ -107,8 +86,20 @@ def test_get_trusted_hosts_resolution(tmp_path):
     )
     assert empty.get_trusted_hosts() == ["gpustack.example"]
 
-    # Neither set -> empty (middleware ignores X-Forwarded-Host).
-    assert Config(data_dir=data_dir).get_trusted_hosts() == []
+    # Blank/whitespace-only entries drop out and fall through like the empty list.
+    blank = Config(
+        data_dir=data_dir,
+        trusted_hosts=["", "   "],
+        server_external_url="https://gpustack.example:30080",
+    )
+    assert blank.get_trusted_hosts() == ["gpustack.example"]
+
+    # Surrounding whitespace on a real host is trimmed.
+    padded = Config(data_dir=data_dir, trusted_hosts=[" a.example "])
+    assert padded.get_trusted_hosts() == ["a.example"]
+
+    # Neither set -> ["*"] (trust any host; protection is opt-in).
+    assert Config(data_dir=data_dir).get_trusted_hosts() == ["*"]
 
 
 def test_config_normalizes_server_external_url(monkeypatch, tmp_path):
