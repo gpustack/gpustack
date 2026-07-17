@@ -629,7 +629,7 @@ def _worker_service(docs):
     return next(
         d
         for d in docs
-        if d.get("kind") == "Service" and d["metadata"]["name"] == "worker"
+        if d.get("kind") == "Service" and d["metadata"]["name"] == "gpustack-worker"
     )
 
 
