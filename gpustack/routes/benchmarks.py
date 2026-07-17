@@ -465,24 +465,26 @@ async def delete_benchmark(session: SessionDep, ctx: TenantContextDep, id: int):
 @router.get("/{id}/logs")
 async def get_benchmark_logs(  # noqa: C901
     request: Request,
-    session: SessionDep,
     ctx: TenantContextDep,
     id: int,
     log_options: LogOptionsDep,
 ):
-    benchmark = await Benchmark.one_by_id(session, id)
-    assert_resource_visible(ctx, benchmark, not_found_message="Benchmark not found")
+    # Inline session released after the initial lookups so a long-lived
+    # follow-log stream doesn't hold a database connection for its duration.
+    async with async_session() as session:
+        benchmark = await Benchmark.one_by_id(session, id)
+        assert_resource_visible(ctx, benchmark, not_found_message="Benchmark not found")
 
-    worker = await Worker.one_by_id(session, benchmark.worker_id)
-    if not worker:
-        raise NotFoundException(message="Benchmark's worker not found")
+        worker = await Worker.one_by_id(session, benchmark.worker_id)
+        if not worker:
+            raise NotFoundException(message="Benchmark's worker not found")
 
-    if benchmark.state in [
-        BenchmarkStateEnum.ERROR,
-        BenchmarkStateEnum.STOPPED,
-        BenchmarkStateEnum.COMPLETED,
-    ]:
-        log_options.follow = False
+        if benchmark.state in [
+            BenchmarkStateEnum.ERROR,
+            BenchmarkStateEnum.STOPPED,
+            BenchmarkStateEnum.COMPLETED,
+        ]:
+            log_options.follow = False
 
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
 

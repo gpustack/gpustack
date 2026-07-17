@@ -227,55 +227,59 @@ async def fetch_worker(session, worker_id):
 @router.get("/{id}/logs")
 async def get_serving_logs(  # noqa: C901
     request: Request,
-    session: SessionDep,
     id: int,
     log_options: LogOptionsDep,
     worker_id: Optional[int] = None,
     container_name: Optional[str] = None,
 ):
-    model_instance = await fetch_model_instance(session, id)
+    # Inline session released after the initial lookups so a long-lived
+    # follow-log stream doesn't hold a database connection for its duration.
+    async with async_session() as session:
+        model_instance = await fetch_model_instance(session, id)
 
-    # Reverse-map: convert UI display name back to internal container name.
-    if container_name:
-        is_main = (worker_id or model_instance.worker_id) == model_instance.worker_id
-        container_name = _unmap_container_display_name(
-            container_name, model_instance, is_main
-        )
+        # Reverse-map: convert UI display name back to internal container name.
+        if container_name:
+            is_main = (
+                worker_id or model_instance.worker_id
+            ) == model_instance.worker_id
+            container_name = _unmap_container_display_name(
+                container_name, model_instance, is_main
+            )
 
-    # Build valid worker IDs (main worker + subordinate workers for distributed instances)
-    valid_worker_ids = {model_instance.worker_id}
-    if (
-        model_instance.distributed_servers
-        and model_instance.distributed_servers.subordinate_workers
-    ):
-        valid_worker_ids.update(
-            sw.worker_id
-            for sw in model_instance.distributed_servers.subordinate_workers
-        )
+        # Build valid worker IDs (main worker + subordinate workers for distributed instances)
+        valid_worker_ids = {model_instance.worker_id}
+        if (
+            model_instance.distributed_servers
+            and model_instance.distributed_servers.subordinate_workers
+        ):
+            valid_worker_ids.update(
+                sw.worker_id
+                for sw in model_instance.distributed_servers.subordinate_workers
+            )
 
-    # Determine target worker ID
-    target_worker_id = worker_id or model_instance.worker_id
-    if target_worker_id not in valid_worker_ids:
-        raise NotFoundException(
-            message=f"Worker {target_worker_id} not found for model instance {id}"
-        )
+        # Determine target worker ID
+        target_worker_id = worker_id or model_instance.worker_id
+        if target_worker_id not in valid_worker_ids:
+            raise NotFoundException(
+                message=f"Worker {target_worker_id} not found for model instance {id}"
+            )
 
-    worker = await fetch_worker(session, target_worker_id)
+        worker = await fetch_worker(session, target_worker_id)
 
-    params = {
-        "tail": log_options.tail,
-        "follow": log_options.follow,
-        "model_instance_name": model_instance.name,
-        "previous": log_options.previous,
-    }
-    if container_name:
-        params["container_name"] = container_name
-    if (
-        model_instance.state != ModelInstanceStateEnum.RUNNING
-        and model_instance.model_files
-        and model_instance.model_files[0].state != ModelFileStateEnum.READY
-    ):
-        params["model_file_id"] = model_instance.model_files[0].id
+        params = {
+            "tail": log_options.tail,
+            "follow": log_options.follow,
+            "model_instance_name": model_instance.name,
+            "previous": log_options.previous,
+        }
+        if container_name:
+            params["container_name"] = container_name
+        if (
+            model_instance.state != ModelInstanceStateEnum.RUNNING
+            and model_instance.model_files
+            and model_instance.model_files[0].state != ModelFileStateEnum.READY
+        ):
+            params["model_file_id"] = model_instance.model_files[0].id
 
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
 

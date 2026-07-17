@@ -7,7 +7,7 @@ import pytest
 from gpustack.api.exceptions import ForbiddenException, InvalidException
 from gpustack.api.tenant import (
     _resolve_requested_principal_id,
-    get_tenant_context,
+    resolve_tenant_context,
     require_org_role,
     require_platform_admin,
 )
@@ -152,7 +152,7 @@ async def test_platform_admin_without_header_has_no_org_filter():
     request = _request()
     session = _session_returning()  # no DB calls expected
 
-    ctx = await get_tenant_context(
+    ctx = await resolve_tenant_context(
         request=request,
         session=session,
         user=user,
@@ -177,7 +177,7 @@ async def test_member_uses_team_org_via_header():
         _principal(id=5, kind=PrincipalType.ORG),  # org existence check
     )
 
-    ctx = await get_tenant_context(
+    ctx = await resolve_tenant_context(
         request=request,
         session=session,
         user=user,
@@ -207,7 +207,7 @@ async def test_member_inherits_role_via_group_membership():
         _principal(id=5, kind=PrincipalType.ORG),
     )
 
-    ctx = await get_tenant_context(
+    ctx = await resolve_tenant_context(
         request=request,
         session=session,
         user=user,
@@ -230,7 +230,7 @@ async def test_personal_scope_short_circuits():
         _cluster_rows(),  # _accessible_clusters
     )
 
-    ctx = await get_tenant_context(
+    ctx = await resolve_tenant_context(
         request=request,
         session=session,
         user=user,
@@ -250,7 +250,7 @@ async def test_non_member_request_to_other_org_is_rejected():
     session = _session_returning([])  # union: no membership at all
 
     with pytest.raises(ForbiddenException):
-        await get_tenant_context(
+        await resolve_tenant_context(
             request=request,
             session=session,
             user=user,
@@ -269,7 +269,7 @@ async def test_platform_admin_can_act_in_org_without_membership():
         _principal(id=7, kind=PrincipalType.ORG),
     )
 
-    ctx = await get_tenant_context(
+    ctx = await resolve_tenant_context(
         request=request,
         session=session,
         user=user,
@@ -292,7 +292,7 @@ async def test_api_key_overrides_header():
         _principal(id=42, kind=PrincipalType.ORG),
     )
 
-    ctx = await get_tenant_context(
+    ctx = await resolve_tenant_context(
         request=request,
         session=session,
         user=user,

@@ -30,7 +30,7 @@ from sqlalchemy.orm import aliased
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from gpustack.api.auth import get_current_user
+from gpustack.api.auth import _optional_session, get_current_user
 from gpustack.api.exceptions import (
     ForbiddenException,
     InvalidException,
@@ -47,8 +47,6 @@ from gpustack.schemas.principals import (
     get_authenticated_principal_id,
 )
 from gpustack.schemas.users import User
-from gpustack.server.db import get_session
-
 
 PlatformAdminError = ForbiddenException
 OrgRoleError = ForbiddenException
@@ -279,14 +277,34 @@ def _resolve_requested_principal_id(
 
 async def get_tenant_context(
     request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
     x_organization_id: Annotated[Optional[str], Header()] = None,
+) -> TenantContext:
+    """FastAPI entry point for the per-request TenantContext.
+
+    Resolves the context without holding a ``Depends(get_session)``
+    connection, so it can front a long-lived StreamingResponse (SSE watch,
+    streaming inference proxy) without pinning a pooled connection
+    idle-in-transaction for the whole stream.
+    """
+    return await resolve_tenant_context(
+        request, user, x_organization_id=x_organization_id
+    )
+
+
+async def resolve_tenant_context(
+    request: Request,
+    user: User,
+    x_organization_id: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
 ) -> TenantContext:
     """Resolve the per-request TenantContext.
 
     Result is cached on `request.state.tenant_context` so multiple downstream
-    dependencies in the same request share one resolution.
+    dependencies in the same request share one resolution. The DB session is
+    scoped to just this resolution and returned to the pool before any
+    streaming response begins; callers that already hold a session may pass
+    it in.
     """
     if hasattr(request.state, "tenant_context"):
         return request.state.tenant_context
@@ -307,57 +325,60 @@ async def get_tenant_context(
         # resolve. Group grants still apply (the user's groups are
         # principals in their own right), so include them in the
         # cluster_access lookup.
-        if current_principal_id == user.id:
-            current_is_personal_scope = True
-            group_ids = await _user_group_principal_ids(session, user.id)
-            (
-                accessible_cluster_ids,
-                accessible_cluster_owner_ids,
-            ) = await _accessible_clusters(
-                session,
-                user.id,
-                None,
-                group_ids,
-            )
-        else:
-            org_role = await _resolve_effective_org_role(
-                session, user.id, current_principal_id
-            )
-            if org_role is None and not is_platform_admin:
-                # Non-admin users cannot operate as a principal they are
-                # not a member of (directly or via a Group).
-                raise ForbiddenException(
-                    message=(f"Not a member of organization " f"{current_principal_id}")
+        async with _optional_session(session) as session:
+            if current_principal_id == user.id:
+                current_is_personal_scope = True
+                group_ids = await _user_group_principal_ids(session, user.id)
+                (
+                    accessible_cluster_ids,
+                    accessible_cluster_owner_ids,
+                ) = await _accessible_clusters(
+                    session,
+                    user.id,
+                    None,
+                    group_ids,
+                )
+            else:
+                org_role = await _resolve_effective_org_role(
+                    session, user.id, current_principal_id
+                )
+                if org_role is None and not is_platform_admin:
+                    # Non-admin users cannot operate as a principal they are
+                    # not a member of (directly or via a Group).
+                    raise ForbiddenException(
+                        message=(
+                            f"Not a member of organization " f"{current_principal_id}"
+                        )
+                    )
+
+                group_ids = await _user_group_principal_ids(session, user.id)
+                (
+                    accessible_cluster_ids,
+                    accessible_cluster_owner_ids,
+                ) = await _accessible_clusters(
+                    session,
+                    user.id,
+                    current_principal_id,
+                    group_ids,
                 )
 
-            group_ids = await _user_group_principal_ids(session, user.id)
-            (
-                accessible_cluster_ids,
-                accessible_cluster_owner_ids,
-            ) = await _accessible_clusters(
-                session,
-                user.id,
-                current_principal_id,
-                group_ids,
-            )
-
-            # Validate the org-principal exists and isn't soft-deleted
-            # before letting the request continue. Org soft-delete is
-            # "removed for users" — block context resolution against it
-            # so the membership row (still present, since CASCADE
-            # doesn't fire on soft delete) can't be used to keep
-            # operating in a logically-removed Org.
-            org_row = await Principal.first_by_field(
-                session, "id", current_principal_id
-            )
-            if (
-                org_row is None
-                or org_row.deleted_at is not None
-                or org_row.kind != PrincipalType.ORG
-            ):
-                raise NotFoundException(
-                    message=(f"Organization {current_principal_id} not found")
+                # Validate the org-principal exists and isn't soft-deleted
+                # before letting the request continue. Org soft-delete is
+                # "removed for users" — block context resolution against it
+                # so the membership row (still present, since CASCADE
+                # doesn't fire on soft delete) can't be used to keep
+                # operating in a logically-removed Org.
+                org_row = await Principal.first_by_field(
+                    session, "id", current_principal_id
                 )
+                if (
+                    org_row is None
+                    or org_row.deleted_at is not None
+                    or org_row.kind != PrincipalType.ORG
+                ):
+                    raise NotFoundException(
+                        message=(f"Organization {current_principal_id} not found")
+                    )
 
     # Resolve the cluster a SYSTEM service account belongs to. The
     # ``worker`` / ``cluster`` back-references are eager-loaded by
