@@ -26,6 +26,12 @@ class BusMetricsCollector(Collector):
     gauges — which is what "is a consumer backpressuring?" cares about — and
     the sum for cumulative event counts. ``bus_subscribers`` additionally gains
     a ``source`` dimension so the collapsed subscriber count stays visible.
+
+    The event counter sum spans both live subscribers and the bus-level
+    ``retired_event_counts`` accumulator (counts of already-unsubscribed
+    subscribers). Without the retired term, a short-lived source's series
+    would drop as streams close and Prometheus would read the drop as a
+    counter reset, so ``bus_events_total`` stays monotonic.
     """
 
     def collect(self) -> Iterator[Metric]:
@@ -86,7 +92,12 @@ class BusMetricsCollector(Collector):
         full: Dict[Tuple[str, str], bool] = {}
         saturation_max: Dict[Tuple[str, str], float] = {}
         latest_keys_max: Dict[Tuple[str, str], int] = {}
-        events_sum: Dict[Tuple[str, str, str, str], int] = {}
+        # Seed with the counts of already-unsubscribed subscribers so the
+        # counter never drops when a subscriber departs. list() copies in
+        # case unsubscribe folds a new entry in mid-collection.
+        events_sum: Dict[Tuple[str, str, str, str], int] = dict(
+            list(event_bus.retired_event_counts.items())
+        )
 
         for topic, subs in snapshot.items():
             for sub in subs:

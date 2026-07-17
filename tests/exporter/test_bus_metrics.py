@@ -241,6 +241,55 @@ async def test_subscribers_sharing_source_collapse_to_one_series():
 
 
 @pytest.mark.asyncio
+async def test_bus_events_total_stays_monotonic_across_unsubscribe():
+    """A departing subscriber's counts must not drop the summed counter.
+
+    Short-lived source="streaming" subscribers unsubscribe when their watch
+    stream closes; folding their counts into the bus-level accumulator keeps
+    bus_events_total monotonic so rate()/increase() stay correct.
+    """
+    topic = "_test_bus_metrics_monotonic"
+    sub_a = event_bus.subscribe(topic, source="streaming")
+    sub_b = event_bus.subscribe(topic, source="streaming")
+    sub_c = None
+
+    def enqueued_total():
+        return _sample_for(
+            list(BusMetricsCollector().collect()),
+            "gpustack:bus_events",
+            {
+                "topic": topic,
+                "source": "streaming",
+                "kind": EventCountKind.ENQUEUED.value,
+                "event_type": EventType.CREATED.name,
+            },
+        ).value
+
+    try:
+        await sub_a.enqueue(Event(type=EventType.CREATED, data={"id": 1}, id=1))
+        await sub_a.enqueue(Event(type=EventType.CREATED, data={"id": 2}, id=2))
+        await sub_b.enqueue(Event(type=EventType.CREATED, data={"id": 3}, id=3))
+
+        before = enqueued_total()
+        assert before == 3  # 2 from sub_a + 1 from sub_b
+
+        # Closing one stream must not lower the counter.
+        event_bus.unsubscribe(topic, sub_a)
+        after = enqueued_total()
+        assert after == before == 3
+
+        # A new stream keeps accumulating on top of the retired total.
+        sub_c = event_bus.subscribe(topic, source="streaming")
+        await sub_c.enqueue(Event(type=EventType.CREATED, data={"id": 4}, id=4))
+        assert enqueued_total() == 4
+    finally:
+        for sub in (sub_a, sub_b, sub_c):
+            if sub is not None:
+                event_bus.unsubscribe(topic, sub)
+        event_bus.retired_event_counts.clear()
+
+
+@pytest.mark.asyncio
 async def test_bus_metrics_collector_reports_backpressure_and_queue_full():
     topic = "_test_bus_metrics_qfull"
     sub = Subscriber(topic=topic, source="slow", queue_size=1)
