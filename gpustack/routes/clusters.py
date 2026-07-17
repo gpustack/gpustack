@@ -81,14 +81,23 @@ router = APIRouter()
 
 
 def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
-    """Construct the server URL based on request headers or fallback to default."""
+    """Resolve the worker-facing server URL.
+
+    Never derive it from the (client-controllable) request Host: a forged
+    X-Forwarded-Host would otherwise point new workers at an attacker. Prefer
+    the cluster override, then server_external_url, then the server's own
+    advertised address.
+    """
     if cluster_override:
         return cluster_override.rstrip("/")
-    url = get_global_config().server_external_url
+    cfg = get_global_config()
+    url = cfg.server_external_url
     if not url:
-        url = f"{request.url.scheme}://{request.url.hostname}"
-        if request.url.port:
-            url += f":{request.url.port}"
+        scheme = "https" if (cfg.ssl_certfile and cfg.ssl_keyfile) else "http"
+        address = cfg.get_advertise_address()
+        if ":" in address and not address.startswith("["):
+            address = f"[{address}]"  # bracket IPv6 literals
+        url = f"{scheme}://{address}:{cfg.api_port}"
     return url.rstrip("/")
 
 
@@ -766,13 +775,25 @@ async def get_cluster_manifests(
     if not k8s_options.operator_image:
         k8s_options.operator_image = cfg.operator_image
 
-    config = TemplateConfig(
-        registration=get_registration_from_cluster(request, cluster),
-        cluster_owner_principal_identifier=principal_namespace_identifier(principal),
-        runtimes=runtime,
-        k8s_options=k8s_options,
-        system_default_container_registry=cluster.system_default_container_registry,
-    )
+    # Only forward worker ports when the cluster explicitly overrides them;
+    # otherwise let TemplateConfig fall back to its own defaults rather than
+    # duplicating the default constants here.
+    worker_config = cluster.worker_config
+    config_kwargs = {
+        "registration": get_registration_from_cluster(request, cluster),
+        "cluster_owner_principal_identifier": principal_namespace_identifier(principal),
+        "runtimes": runtime,
+        "k8s_options": k8s_options,
+        "system_default_container_registry": cluster.system_default_container_registry
+        or cfg.system_default_container_registry,
+    }
+    if worker_config:
+        if worker_config.worker_port is not None:
+            config_kwargs["worker_port"] = worker_config.worker_port
+        if worker_config.worker_metrics_port is not None:
+            config_kwargs["worker_metrics_port"] = worker_config.worker_metrics_port
+
+    config = TemplateConfig(**config_kwargs)
     yaml_content = config.render()
     return Response(
         content=yaml_content,

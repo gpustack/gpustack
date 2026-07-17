@@ -1,5 +1,7 @@
+import asyncio
 import re
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
 import aiohttp
@@ -8,7 +10,7 @@ from fastapi import Depends, Request, WebSocket
 from starlette.datastructures import Headers
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
-from gpustack.server.db import get_session, async_session
+from gpustack.server.db import async_session
 from typing import Annotated, Optional, Tuple, List, Dict
 from fastapi.security import (
     APIKeyCookie,
@@ -84,17 +86,37 @@ def client_ip_getter(request: Request) -> str:
     if request.app.state.server_config.gateway_mode != GatewayModeEnum.disabled:
         try:
             gateway_token_auth(request)
-            real_ip = request.headers.get("X-GPUStack-Real-IP")
+            # Prefer X-Real-IP: the edge proxy (Higress/Envoy) sets it to the
+            # immediate downstream connection address, which the client cannot
+            # spoof.
+            real_ip = request.headers.get("X-Real-IP")
             if real_ip:
                 return real_ip
+            # Fall back to X-Forwarded-For "client, proxy1, proxy2". Take the
+            # rightmost entry (the address the trusted edge proxy observed) to
+            # avoid trusting client-supplied leftmost values.
+            xff = request.headers.get("X-Forwarded-For")
+            if xff:
+                real_ip = xff.split(",")[-1].strip()
+                if real_ip:
+                    return real_ip
         except UnauthorizedException:
             pass
     return request.client.host if request.client else ""
 
 
+@asynccontextmanager
+async def _optional_session(session: Optional[AsyncSession]):
+    """Yield the caller-provided session as-is, or open (and close) a fresh one."""
+    if session is not None:
+        yield session  # caller owns it, don't close here
+    else:
+        async with async_session() as s:
+            yield s  # opened here, closed on exit
+
+
 async def get_current_user(
     request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
     basic_credentials: Annotated[
         Optional[HTTPBasicCredentials], Depends(basic_auth)
     ] = None,
@@ -103,6 +125,27 @@ async def get_current_user(
     ] = None,
     x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
     cookie_token: Annotated[Optional[str], Depends(cookie_auth)] = None,
+) -> User:
+    # FastAPI dependency entry point. Keep the signature free of any
+    # non-``Depends`` parameter (e.g. ``session``) -- FastAPI would try to
+    # build a Pydantic field for it and fail route registration. Callers that
+    # already hold a session should call ``authenticate_request`` directly.
+    return await authenticate_request(
+        request,
+        basic_credentials=basic_credentials,
+        bearer_token=bearer_token,
+        x_api_key=x_api_key,
+        cookie_token=cookie_token,
+    )
+
+
+async def authenticate_request(
+    request: Request,
+    basic_credentials: Optional[HTTPBasicCredentials] = None,
+    bearer_token: Optional[HTTPAuthorizationCredentials] = None,
+    x_api_key: Optional[str] = None,
+    cookie_token: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
 ) -> User:
     if hasattr(request.state, "user"):
         user: User = getattr(request.state, "user")
@@ -113,15 +156,26 @@ async def get_current_user(
         server_config: Config = request.app.state.server_config
         if basic_credentials and is_system_user(basic_credentials.username):
             user = await authenticate_system_principal(server_config, basic_credentials)
-        elif basic_credentials:
-            user = await authenticate_basic_user(session, basic_credentials)
-        elif cookie_token:
-            jwt_manager: JWTManager = request.app.state.jwt_manager
-            user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
-        elif bearer_token or x_api_key:
-            token = (bearer_token.credentials if bearer_token else None) or x_api_key
-            if token is not None:
-                user, api_key = await get_user_from_api_token(session, token)
+        elif basic_credentials or cookie_token or bearer_token or x_api_key:
+            # Scoped to just the auth lookup (not Depends(get_session)) so the
+            # connection/transaction isn't held open for the lifetime of the
+            # request -- otherwise a long-lived StreamingResponse (SSE watch,
+            # streaming inference proxy) leaves it idle-in-transaction until
+            # the stream ends, which can be hours. See #5678.
+            async with _optional_session(session) as session:
+                if basic_credentials:
+                    user = await authenticate_basic_user(session, basic_credentials)
+                elif cookie_token:
+                    jwt_manager: JWTManager = request.app.state.jwt_manager
+                    user = await get_user_from_jwt_token(
+                        session, jwt_manager, cookie_token
+                    )
+                elif bearer_token or x_api_key:
+                    token = (
+                        bearer_token.credentials if bearer_token else None
+                    ) or x_api_key
+                    if token is not None:
+                        user, api_key = await get_user_from_api_token(session, token)
 
         if user:
             if not user.is_active:
@@ -289,19 +343,34 @@ async def get_user_from_api_token(
         if len(access_key) == 32 and "" not in access_keys:
             # this means it is custom key or legacy worker token, we should also try to find api key with empty access key for backward compatibility
             access_keys.append("")
-        for access_key in access_keys:
-            api_key: ApiKey = await APIKeyService(session).get_by_access_key(access_key)
+        api_key: Optional[ApiKey] = None
+        for candidate in access_keys:
+            api_key = await APIKeyService(session).get_by_access_key(candidate)
             if api_key:
-                logger.trace(f"Found API key for access key: {access_key}")
+                logger.trace(f"Found API key for access key: {candidate}")
                 break
-        if (
-            api_key is not None
-            and verify_hashed_secret(api_key.hashed_secret_key, secret_key)
-            and (
-                api_key.expires_at is None
-                or api_key.expires_at > datetime.now(timezone.utc)
-            )
+        if api_key is None:
+            return None, None
+        if api_key.expires_at is not None and api_key.expires_at <= datetime.now(
+            timezone.utc
         ):
+            return None, None
+
+        # ``get_by_access_key`` returns a detached ApiKey with all columns
+        # already loaded, so reading its fields no longer needs the DB
+        # connection. Hand the pooled connection back *before* the argon2
+        # verify: the verify is deliberately expensive and CPU-bound, and
+        # holding a connection idle across it starves the pool under load.
+        # rollback() is safe -- this lookup is read-only.
+        await session.rollback()
+
+        # argon2 verification is synchronous and CPU-bound; run it off the
+        # event loop so concurrent requests keep flowing instead of serializing
+        # behind each hash.
+        verified = await asyncio.to_thread(
+            verify_hashed_secret, api_key.hashed_secret_key, secret_key
+        )
+        if verified:
             user: Optional[User] = await UserService(session).get_by_id(
                 user_id=api_key.user_id,
             )

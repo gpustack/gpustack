@@ -107,6 +107,7 @@ class _OpenWindow:
     owner_name: Optional[str]
     consumer_principal_id: Optional[int]
     consumer_name: Optional[str]
+    consumer_principal_kind: Optional[str]
     creator_id: Optional[int]
     creator_name: Optional[str]
     cluster_id: Optional[int]
@@ -114,6 +115,10 @@ class _OpenWindow:
     window_start: datetime
     sku: str
     gpu_count: int
+    # Unit multiplier billed for this instance: GPU card count for GPU
+    # instances, base-flavor unit count (e.g. 2 for a 2c4g instance on a 1c2g
+    # flavor) for CPU instances. Stored as ``metered_usage.sku_count``.
+    sku_count: int
     dimensions: Dict[str, Any]
     settled_through: Optional[datetime] = field(default=None)
 
@@ -147,6 +152,28 @@ def _clamped_seconds(
     return seconds if seconds > 0 else 0
 
 
+def _resolve_sku_count(
+    gpu_count: int,
+    cpu_milli: int,
+    mem_mib: int,
+    unit_cpu_milli: Optional[int],
+    unit_memory_mib: Optional[int],
+) -> int:
+    """Unit multiplier billed for an instance (``metered_usage.sku_count``).
+
+    GPU instances bill per accelerator card (``gpu_count``). CPU instances bill
+    per base-flavor unit: a 2c4g instance on a 1c2g flavor is 2 units. Derive it
+    from the instance totals over the flavor's per-unit spec, preferring CPU and
+    falling back to memory, then to 1 when the unit spec is unknown (legacy
+    flavors with no ``unitResources`` descriptor)."""
+    if gpu_count and gpu_count > 0:
+        return gpu_count
+    for total, unit in ((cpu_milli, unit_cpu_milli), (mem_mib, unit_memory_mib)):
+        if total and unit and unit > 0:
+            return max(1, round(total / unit))
+    return 1
+
+
 def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
     """Build an ``_OpenWindow`` from a ``phase_to_metered`` event row."""
     if evt.resource_id is None:
@@ -161,6 +188,21 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
     # model_dump may serialize the field by name (``type_``) or alias
     # (``type``) depending on by_alias — read both for robustness.
     instance_type = spec.get("type_") or spec.get("type")
+
+    # A phase_to_metered event with no usable spec (empty / NULL snapshot — e.g.
+    # seed rows or a malformed event) carries neither resources nor a type.
+    # Metering it would mint a bogus "0 vCPU / 0 GB" window (sku "cpu-0vcpu-0g")
+    # that pollutes the Instance Types breakdown and, for GPU instances (the
+    # resource_type is inherited from the event), leaks into GPU-Hours. Skip it.
+    if not resources and not instance_type:
+        logger.warning(
+            "resource_usage_collector: skipping metering for resource_id=%s "
+            "(%s) — event has no spec resources/type (empty snapshot)",
+            evt.resource_id,
+            evt.resource_type,
+        )
+        return None
+
     gpu_type, _ = parse_gpu_type(instance_type)
     gpu_count = parse_accelerator_count(resources.get("accelerator"))
     cpu_milli = parse_quantity_to_millicores(resources.get("cpu"))
@@ -200,6 +242,14 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
     if descriptor.get("unit_memory_mib"):
         dimensions["unit_memory_mib"] = descriptor["unit_memory_mib"]
 
+    sku_count = _resolve_sku_count(
+        gpu_count,
+        cpu_milli,
+        mem_mib,
+        descriptor.get("unit_cpu_milli"),
+        descriptor.get("unit_memory_mib"),
+    )
+
     return _OpenWindow(
         resource_id=evt.resource_id,
         resource_type=evt.resource_type,
@@ -209,6 +259,7 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         owner_name=evt.owner_name,
         consumer_principal_id=evt.consumer_principal_id,
         consumer_name=evt.consumer_name,
+        consumer_principal_kind=getattr(evt, "consumer_principal_kind", None),
         creator_id=evt.creator_id,
         creator_name=evt.creator_name,
         cluster_id=evt.cluster_id,
@@ -216,6 +267,7 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         window_start=_naive_utc(evt.occurred_at),
         sku=instance_sku(instance_type, gpu_type, gpu_count, cpu_milli, mem_mib),
         gpu_count=gpu_count,
+        sku_count=sku_count,
         dimensions=dimensions,
     )
 
@@ -471,7 +523,7 @@ class ResourceUsageCollector:
         ):
             window.settled_through = end_ts
 
-    async def _upsert_bucket(
+    async def _upsert_bucket(  # noqa: C901
         self,
         session,
         window: _OpenWindow,
@@ -519,12 +571,14 @@ class ResourceUsageCollector:
                 row.owner_name = window.owner_name
             if window.consumer_name is not None:
                 row.consumer_name = window.consumer_name
+            if window.consumer_principal_kind is not None:
+                row.consumer_principal_kind = window.consumer_principal_kind
             if window.creator_name is not None:
                 row.creator_name = window.creator_name
             if window.cluster_name is not None:
                 row.cluster_name = window.cluster_name
             row.sku = window.sku or row.sku
-            row.sku_count = window.gpu_count or 1
+            row.sku_count = window.sku_count
             row.dimensions = window.dimensions
             session.add(row)
             return
@@ -537,6 +591,7 @@ class ResourceUsageCollector:
                 owner_name=window.owner_name,
                 consumer_principal_id=window.consumer_principal_id,
                 consumer_name=window.consumer_name,
+                consumer_principal_kind=window.consumer_principal_kind,
                 creator_id=window.creator_id,
                 creator_name=window.creator_name,
                 cluster_id=window.cluster_id,
@@ -547,7 +602,7 @@ class ResourceUsageCollector:
                 resource_name=window.resource_name or "",
                 resource_display_name=window.resource_display_name,
                 sku=window.sku,
-                sku_count=window.gpu_count or 1,
+                sku_count=window.sku_count,
                 dimensions=window.dimensions,
                 bucket_start=bucket_start,
                 quantity=add_seconds,

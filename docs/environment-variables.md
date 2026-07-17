@@ -100,6 +100,7 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_USAGE_EVENTS_RETENTION_MONTHS`           | Retention window for `resource_events` (the resource lifecycle / audit log). Rows older than this are moved to `resource_events_archive` by the leader-only archiver.                                                                              | `13`         | Server     |
 | `GPUSTACK_USAGE_EVENTS_ARCHIVE_CRON`               | Cron expression (UTC) for the resource-events archiver's recurring sweep. The archiver also runs once on server startup regardless of this schedule.                                                                                               | `30 3 * * *` | Server     |
 | `GPUSTACK_USAGE_EVENTS_ARCHIVE_BATCH_SIZE`         | Per-batch row count for resource-events archival moves.                                                                                                                                                                                            | `5000`       | Server     |
+| `GPUSTACK_USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS`  | Max buckets an unpaginated (`page=-1`) breakdown may return; trend charts and exports fetch the whole series at once. A request exceeding it is rejected (HTTP 400), not silently truncated. Raise for wide dashboards, lower to cap memory.       | `50000`      | Server     |
 
 !!! note "`GPUSTACK_USAGE_ROLLUP_TIMEZONE` scope & DST"
 
@@ -130,6 +131,13 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE`    | Scale-down max contribution for status scorer (normalized).                 | `100`   | Server     |
 | `GPUSTACK_SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE`   | Scale-down max contribution for offload scorer (normalized).                | `10`    | Server     |
 | `GPUSTACK_SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE` | Scale-down max contribution for placement scorer (normalized).              | `1`     | Server     |
+
+### GPU Instance Configuration
+
+| Variable                                               | Description                                                                                                                                                                                               | Default | Applies to |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL` | Interval in seconds at which the controller re-observes a still-transitioning (non-settled) GPU instance via an in-memory requeue; the PV / PVT finalize controllers reuse it to re-probe a still-finalizing instance. Ready-row drift is picked up by the downstream watch instead. Clamped to a minimum of `1` second. | `15`    | Server     |
+| `GPUSTACK_GPU_INSTANCE_READY_SWEEP_INTERVAL`           | Interval in seconds for an opt-in low-frequency sweep that re-observes settled Ready GPU instances, a fallback for worker-side drift that the downstream watch could miss across a reconnect gap. `0` (default) disables it; set a low frequency only if such a coverage hole is observed.                            | `0`     | Server     |
 
 ### Worker and Model Configuration
 

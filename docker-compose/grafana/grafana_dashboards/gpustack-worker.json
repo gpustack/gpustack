@@ -495,7 +495,7 @@
             "uid": "P1809F7CD0C75ACF3"
           },
           "editorMode": "code",
-          "expr": "avg(gpustack:worker_node_memory_total_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
+          "expr": "sum(gpustack:worker_node_memory_total_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -571,7 +571,7 @@
             "uid": "P1809F7CD0C75ACF3"
           },
           "editorMode": "code",
-          "expr": "avg(gpustack:worker_node_cpu_cores{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
+          "expr": "sum(gpustack:worker_node_cpu_cores{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,

@@ -464,6 +464,7 @@ class VLLMServer(InferenceServer):
         # see https://docs.vllm.ai/en/stable/configuration/env_vars.html.
         env["VLLM_HOST_IP"] = self._worker.ip
 
+        ports = self._model_instance.ports or []
         executor_backend = resolve_executor_backend(
             self._model.backend_parameters, self._model.backend_version
         )
@@ -476,10 +477,16 @@ class VLLMServer(InferenceServer):
                 if deployment_metadata is not None
                 else None
             )
-            if shape in ("dp_only", "nested"):
-                env["VLLM_DP_MASTER_PORT"] = str(self._model_instance.ports[-1])
+            if shape in ("dp_only", "nested") and ports:
+                env["VLLM_DP_MASTER_PORT"] = str(ports[-1])
+            # Pin vLLM's internal init port to a reserved one so get_open_port()
+            # can't grab a kernel-stealable ephemeral port (#5657). Needs the
+            # runner patch that makes get_open_port() honor VLLM_PORT.
+            if len(ports) > 3:
+                env["VLLM_PORT"] = str(ports[3])
         else:
-            env["VLLM_PORT"] = str(self._model_instance.ports[-1])
+            if ports:
+                env["VLLM_PORT"] = str(ports[-1])
             env["RAY_LOG_TO_STDERR"] = env.pop("RAY_LOG_TO_STDERR", "0")
             env["RAY_BACKEND_LOG_LEVEL"] = env.pop("RAY_BACKEND_LOG_LEVEL", "warning")
 

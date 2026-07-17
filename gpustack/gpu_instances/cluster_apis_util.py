@@ -9,7 +9,6 @@ from gpustack.schemas.principals import (
 )
 
 from gpustack.schemas import (
-    GPUInstance,
     GPUInstancePersistentVolume,
     GPUInstancePersistentVolumeType,
 )
@@ -27,43 +26,6 @@ def _hoist_meta(spec: dict, owner) -> dict:
         spec["displayName"] = owner.display_name
     if getattr(owner, "description") is not None:
         spec["description"] = owner.description
-    return spec
-
-
-def spec_instance(instance: GPUInstance) -> dict:
-    """Convert a :class:`GPUInstance` row into the dict shape expected by
-    the ``worker.gpustack.ai/v1`` Instance CRD's ``spec`` field, suitable
-    for handing to :meth:`ClusterOps.create_instance`.
-
-    Field names follow the Go CRD's camelCase convention via the
-    pydantic ``alias_generator`` already configured on
-    :class:`GPUInstanceSpec`, so ``model_dump(by_alias=True)`` produces
-    the on-wire keys directly — no manual snake→camel mapping is needed.
-
-    Transforms applied:
-
-    1. ``displayName`` and ``description``, which live on the row in
-       Python but on ``InstanceSpec`` in Go, are hoisted into the spec
-       dict so the CRD sees them in the expected place.
-    2. ``volume.persistentTemplate`` collapses into ``volume.persistent``.
-       Only the ``name`` survives; ``spec`` and ``releaseWithInstance``
-       drive server-side provisioning and are not part of the CRD.
-    3. ``sshPublicKeys`` (list) collapses into ``sshPublicKey`` (singular
-       ``LocalObjectReference``) to match the Go field.
-       The name of the referenced SSH key is the same as the instance name.
-    """
-    spec = instance.spec.model_dump(by_alias=True, exclude_none=True)
-    _hoist_meta(spec, instance)
-
-    volume = spec.get("volume")
-    if volume is not None:
-        tmpl = volume.pop("persistentTemplate", None)
-        if tmpl is not None:
-            volume["persistent"] = {"name": tmpl["name"]}
-
-    spec.pop("sshPublicKeys", None)
-    spec["sshPublicKey"] = {"name": instance.name}
-
     return spec
 
 

@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 import contextlib
 from datetime import datetime, timezone
 import multiprocessing
@@ -21,6 +22,7 @@ from gpustack_runtime.deployer import (
 )
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
+from gpustack import envs
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
 from gpustack.config import registration
@@ -64,11 +66,14 @@ from gpustack.schemas.models import (
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 
-
 logger = logging.getLogger(__name__)
 
 # Inference health check error message
 _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
+
+# One health-check cycle (+2s margin) to let a container return after a stream
+# EOF; beyond that gpustack marks it ERROR and takes over recovery.
+LOG_RECONNECT_GRACE_SECONDS = envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL + 2
 
 # Global lock for port assignment to avoid pickle serialization issues
 _port_lock = threading.Lock()
@@ -838,10 +843,14 @@ class ServeManager:
         stop_event: threading.Event,
         token: Optional[str] = None,
     ):
-        """Persist container logs to local file.
+        """Persist container logs to local file (runs in a separate thread).
 
-        This is a blocking operation that runs in a separate thread.
-        Retries indefinitely until container is created.
+        Reconnects on stream EOF while the workload is still alive, resuming by
+        skipping already-written history (matched by an anchor window of the
+        last lines written). A manual/runtime restart briefly looks terminated
+        at EOF, so it waits a grace window for the container to return before
+        giving up. Exits only if the container stays terminated for that whole
+        window or the thread is asked to stop.
 
         Args:
             workload_name: Name of the container workload
@@ -851,6 +860,10 @@ class ServeManager:
                 If None, logs from the default (index=0) container are fetched.
         """
         retry_count = 0
+        first_connect = True
+        # Anchor: a window of the last lines written. Matching a run of lines
+        # (not one) avoids false-matching a repeated line during replay.
+        anchor_window = deque(maxlen=5)
 
         while not stop_event.is_set():
             try:
@@ -862,18 +875,58 @@ class ServeManager:
                 )
 
                 if hasattr(log_stream, '__iter__'):
-                    with open(log_path, 'w', buffering=1, encoding='utf-8') as f:
+                    # On reconnect the runtime replays history from the start;
+                    # skip it until the anchor window matches.
+                    anchor = list(anchor_window)
+                    skip_until_anchor = not first_connect and bool(anchor)
+                    replayed = deque(maxlen=len(anchor)) if anchor else None
+                    received_lines = False
+                    with open(
+                        log_path,
+                        'w' if first_connect else 'a',
+                        buffering=1,
+                        encoding='utf-8',
+                    ) as f:
+                        first_connect = False
                         for line in log_stream:
+                            received_lines = True
                             if stop_event.is_set():
                                 break
 
                             if isinstance(line, bytes):
-                                f.write(line.decode('utf-8', errors='replace'))
+                                line = line.decode('utf-8', errors='replace')
                             else:
-                                f.write(str(line))
-                            f.flush()
+                                line = str(line)
 
-                break
+                            if skip_until_anchor:
+                                replayed.append(line)
+                                if list(replayed) == anchor:
+                                    skip_until_anchor = False
+                                continue
+
+                            f.write(line)
+                            f.flush()
+                            anchor_window.append(line)
+                    retry_count = 0
+
+                    # Anchor never matched -> rotated out; restart fresh. An
+                    # empty reconnect must NOT reset, or the next round reopens
+                    # in 'w' and truncates the saved log.
+                    if skip_until_anchor and received_lines:
+                        first_connect = True
+                        anchor_window.clear()
+
+                # A restart briefly looks terminated at EOF; wait for the
+                # container to return before giving up, so logs aren't dropped.
+                if stop_event.is_set() or not self._wait_for_container_recovery(
+                    workload_name, stop_event
+                ):
+                    break
+                logger.debug(
+                    f"Log stream for {workload_name} ended while workload still "
+                    f"running; reconnecting"
+                )
+                stop_event.wait(timeout=1)
 
             except Exception as e:
                 if stop_event.is_set():
@@ -886,6 +939,40 @@ class ServeManager:
                 stop_event.wait(timeout=2)
 
         logger.debug(f"Log persistence thread for {workload_name} exiting")
+
+    def _container_still_running(self, workload_name: str) -> bool:
+        """Whether the workload is still alive (a dead stream should reconnect
+        rather than exit)."""
+        try:
+            workload = get_workload(workload_name)
+        except Exception:
+            return True  # transient query failure: reconnect, don't drop logs
+        return bool(workload) and workload.state in (
+            WorkloadStatusStateEnum.PENDING,
+            WorkloadStatusStateEnum.INITIALIZING,
+            WorkloadStatusStateEnum.RUNNING,
+        )
+
+    def _wait_for_container_recovery(
+        self,
+        workload_name: str,
+        stop_event: threading.Event,
+        grace_seconds: float = LOG_RECONNECT_GRACE_SECONDS,
+        poll_interval: float = 1.0,
+    ) -> bool:
+        """Poll until the workload is alive again (True -> reconnect) or the
+        grace window elapses / stop_event fires (False -> give up). A restart
+        momentarily looks terminated at EOF, which a single check can't tell
+        apart from a real termination.
+        """
+        attempts = max(1, int(grace_seconds / poll_interval))
+        for _ in range(attempts):
+            if stop_event.is_set():
+                return False
+            if self._container_still_running(workload_name):
+                return True
+            stop_event.wait(timeout=poll_interval)
+        return False
 
     def _discover_sidecar_logs(
         self,
@@ -1303,26 +1390,42 @@ class ServeManager:
             mi.ports = [mi.port]
             unavailable_ports.add(mi.port)
 
-            # Additional ports for distributed servers.
-            #
-            # ports[0]: HTTP API (always).
-            # Native (mp) path — both reserved unconditionally, dp_only uses
-            # ports[1], mp_only uses ports[2], nested uses both:
+            # Additional ports for distributed servers (mp path allocates all):
+            #   ports[0]: HTTP API (always)
             #   ports[1]: --data-parallel-rpc-port (DP coordinator ZMQ)
-            #   ports[2]: --master-port (PyTorch torch.distributed TCP store)
-            # Ray path: ports[1] = DP RPC when user-specified dp > 1.
-            # ports[-1]: subordinate workers' connecting port.
+            #   ports[2]: --master-port (PyTorch distributed TCP store)
+            #   ports[3]: env VLLM_PORT
+            #   ports[-1]: connecting port (= VLLM_DP_MASTER_PORT for dp_only/nested)
+            # Ray path: only ports[1] (DP RPC), when user dp > 1.
             if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
+                # Allocate first so we can fence off the 10-port band vLLM reserves
+                # around VLLM_DP_MASTER_PORT (= connecting port), keeping the cross
+                # ports (incl. VLLM_PORT) outside it.
+                connecting_port = network.get_free_port(
+                    port_range=self._config.service_port_range,
+                    unavailable_ports=unavailable_ports,
+                    host=mi.worker_ip,
+                )
+                unavailable_ports.add(connecting_port)
+
+                cross_ports: List[int] = []
                 if backend == BackendEnum.VLLM:
                     executor_backend = resolve_executor_backend(
                         model.backend_parameters, model.backend_version
                     )
                     if executor_backend == "mp":
-                        # Pre-allocate both DP RPC and PyTorch master ports;
-                        # the two channels use different protocols (ZMQ vs
-                        # TCPStore) and can't share one port in the nested
-                        # shape, so reserving both keeps the layout stable.
-                        cross_port_count = 2
+                        # DP RPC + PyTorch master + VLLM_PORT. Clamp the band to
+                        # service_port_range; out-of-range ports would inflate
+                        # get_free_port's exhaustion count.
+                        _, end_port = network.parse_port_range(
+                            self._config.service_port_range
+                        )
+                        unavailable_ports |= set(
+                            range(
+                                connecting_port, min(connecting_port + 10, end_port + 1)
+                            )
+                        )
+                        cross_port_count = 3
                     else:
                         dps = find_int_parameter(
                             model.backend_parameters,
@@ -1335,17 +1438,11 @@ class ServeManager:
                             unavailable_ports=unavailable_ports,
                             host=mi.worker_ip,
                         )
-                        mi.ports.append(cross_port)
+                        cross_ports.append(cross_port)
                         unavailable_ports.add(cross_port)
 
-                # Connecting port for subordinate workers communication
-                connecting_port = network.get_free_port(
-                    port_range=self._config.service_port_range,
-                    unavailable_ports=unavailable_ports,
-                    host=mi.worker_ip,
-                )
+                mi.ports.extend(cross_ports)
                 mi.ports.append(connecting_port)
-                unavailable_ports.add(connecting_port)
 
             self._assigned_ports[mi.id] = set(mi.ports)
 

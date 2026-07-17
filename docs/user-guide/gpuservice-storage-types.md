@@ -68,5 +68,4 @@ Click `Delete` on a storage type and confirm. The storage type is then removed f
 
 !!! warning
 
-    - Before deleting a storage type, first delete any [GPU Service Storage](gpuservice-storage.md) created from it.
-    - Deletion of the cluster-side `StorageClass` is currently deferred. After deleting a storage type, avoid recreating one with the same `Name` (not `Display Name`); a leftover `StorageClass` could otherwise overwrite the new definition. This limitation will be addressed in a future release.
+    Before deleting a storage type, first delete any [GPU Service Storage](gpuservice-storage.md) created from it.

@@ -16,7 +16,11 @@ from gpustack.schemas.model_routes import ModelRoute
 from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.model_usage_details import ModelUsageDetails
 from gpustack.schemas.models import Model, is_embedding_model, is_reranker_model
-from gpustack.schemas.principals import Principal
+from gpustack.schemas.principals import (
+    Principal,
+    PrincipalType,
+    platform_principal_id,
+)
 from gpustack.server.db import async_session
 from gpustack.utils.rollup_tz import resolve_rollup_tz
 from gpustack.utils.usage_snapshots import build_model_usage_snapshot
@@ -520,15 +524,82 @@ def _build_metric_snapshot(
     # cookie-authed traffic (no api_key) the gateway plugin still
     # provides the active tenant via the wire-format
     # ``organization_id`` header — parse it back to int so the row
-    # carries its Org scope. Direct-to-gpustack cookie calls don't
-    # populate this field and land NULL; that's by design (no Org
-    # context known at that path).
+    # carries its Org scope.
+    #
+    # ``organization_id`` must already reference a real principal by the time
+    # it reaches here (``model_usages.consumer_principal_id`` FKs ``principals``,
+    # and a dangling id would blow up the batch ``commit()``). The two producers
+    # guarantee that: the gateway path only ever hits this branch behind an
+    # api_key whose owner already set ``consumer_principal_id`` above, so the
+    # header is ignored there; the direct (cookie) path validates the header
+    # against ``get_tenant_context`` before stamping the metric (see
+    # ``_resolve_direct_consumer_org`` in ``api/middlewares.py``).
     if "consumer_principal_id" not in snapshot and metric.organization_id:
         try:
             snapshot["consumer_principal_id"] = int(metric.organization_id)
         except (TypeError, ValueError):
             pass
+    # Fallback for cookie-authed traffic with no Org header — the Enterprise
+    # UI sends ``X-Organization-Id`` (parsed above), but the OSS UI omits it
+    # since there's a single Org. Attribute to the caller's tenant the same
+    # way ownership is resolved everywhere else (``current_principal_id or
+    # platform_principal_id()``): a regular user consumes as themselves, a
+    # platform admin as the default/platform Org. This mirrors the read side
+    # (a regular user's self-scope filters ``consumer_principal_id ==
+    # user.id``) so the user sees their own usage, and keeps NULL off new
+    # rows. Enterprise is unaffected — ``organization_id`` is set there, so
+    # this branch never runs. SYSTEM callers (worker-proxied inference) are
+    # left unattributed.
+    if (
+        "consumer_principal_id" not in snapshot
+        and user is not None
+        and user.kind == PrincipalType.USER
+    ):
+        snapshot["consumer_principal_id"] = (
+            platform_principal_id() if user.is_admin else user.id
+        )
     return snapshot
+
+
+async def _resolve_consumer_info_by_id(
+    session, api_keys, all_metrics, users
+) -> Dict[int, tuple]:
+    """``consumer_principal_id → (name, kind)`` for every consumer referenced by
+    the batch.
+
+    The consumer is the API-key owner Org, a personal USER-principal, or the
+    cookie-auth ``X-Organization-Id`` header. Snapshotting the display name +
+    kind onto ``ModelUsage`` lets the Organization breakdown keep the real name
+    after a hard-delete and tag personal (USER) rows — parity with the other
+    ``*_name`` denorms. ``name`` (slug) is used, NOT display_name, so the token
+    and resource tabs stay consistent.
+    """
+    consumer_ids: set = {
+        k.owner_principal_id for k in api_keys if k.owner_principal_id is not None
+    }
+    # ``organization_id`` comes from the ``X-Organization-Id`` wire header, so it
+    # may be a non-numeric / empty string — coerce defensively (mirrors the
+    # guarded parse in _build_metric_snapshot) rather than crashing the batch.
+    for m in all_metrics:
+        org = getattr(m, "organization_id", None)
+        if not org:
+            continue
+        try:
+            consumer_ids.add(int(org))
+        except (TypeError, ValueError):
+            continue
+    consumer_ids |= {u.id for u in users}
+    if not consumer_ids:
+        return {}
+    consumer_principals = await Principal.all_by_fields(
+        session=session,
+        fields={},
+        extra_conditions=[Principal.id.in_(consumer_ids)],
+    )
+    return {
+        p.id: (p.name, p.kind.value if hasattr(p.kind, "value") else p.kind)
+        for p in consumer_principals
+    }
 
 
 async def store_usage_metrics(
@@ -625,6 +696,10 @@ async def store_usage_metrics(
             cluster_names_by_id = {c.id: c.name for c in clusters}
             provider_by_id = {p.id: p for p in providers}
 
+            consumer_info_by_id = await _resolve_consumer_info_by_id(
+                session, api_keys, all_metrics, users
+            )
+
             for metric in metrics:
                 if not _validate_usage_metric(
                     metric,
@@ -649,6 +724,14 @@ async def store_usage_metrics(
                     metric, model_by_id.get(metric.model_id)
                 )
                 metric_date, _ = _resolve_metric_datetime(metric)
+                # Consumer display-name + kind snapshot (ModelUsage-only; kept
+                # out of the shared snapshot so the detail table isn't touched).
+                consumer_id = snapshot.get("consumer_principal_id")
+                consumer_info = (
+                    consumer_info_by_id.get(consumer_id)
+                    if consumer_id is not None
+                    else None
+                )
                 model_usage = ModelUsage(
                     date=metric_date,
                     prompt_token_count=prompt_tokens,
@@ -656,6 +739,10 @@ async def store_usage_metrics(
                     prompt_cached_token_count=metric.input_cached_token,
                     request_count=metric.request_count,
                     operation=metric.operation,
+                    consumer_name=consumer_info[0] if consumer_info else None,
+                    consumer_principal_kind=(
+                        consumer_info[1] if consumer_info else None
+                    ),
                     **snapshot,
                 )
                 await create_or_update_model_usage(

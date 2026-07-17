@@ -22,6 +22,10 @@ USAGE_GROUP_BY_DATE = "date"
 USAGE_GROUP_BY_USER = "user"
 USAGE_GROUP_BY_API_KEY = "api_key"
 USAGE_GROUP_BY_ROUTE = "route"
+# Groups by the consumer principal (``consumer_principal_id`` — the
+# API-key owner Org). Reserved for the platform-wide "All" view (admin
+# in cross-org context); enforced in the route handler.
+USAGE_GROUP_BY_ORGANIZATION = "organization"
 
 USAGE_GRANULARITY_DAY = "day"
 USAGE_GRANULARITY_WEEK = "week"
@@ -44,6 +48,7 @@ USAGE_GROUP_BYS = {
     USAGE_GROUP_BY_USER,
     USAGE_GROUP_BY_API_KEY,
     USAGE_GROUP_BY_ROUTE,
+    USAGE_GROUP_BY_ORGANIZATION,
 }
 USAGE_GRANULARITIES = {
     USAGE_GRANULARITY_DAY,
@@ -75,12 +80,22 @@ class UsageIdentityValue(BaseModel):
     access_key: Optional[str] = None
     api_key_is_custom: Optional[bool] = None
     route_name: Optional[str] = None
+    # ``organization_name`` — consumer Org display name (snapshotted on
+    # model_usages at ingest, with a live fallback for pre-upgrade rows);
+    # ``organization_kind`` — the consumer principal's kind (``org`` / ``user``
+    # / ``group``) so the client can tag a personal (USER) row; ``group_name``
+    # — user-group display name (filter-only dimension).
+    organization_name: Optional[str] = None
+    organization_kind: Optional[str] = None
+    group_name: Optional[str] = None
 
 
 class UsageIdentityCurrent(BaseModel):
     user_id: Optional[int] = None
     api_key_id: Optional[int] = None
     route_id: Optional[int] = None
+    organization_id: Optional[int] = None
+    group_id: Optional[int] = None
 
 
 class UsageIdentity(BaseModel):
@@ -101,6 +116,10 @@ class UsageFilters(BaseModel):
     users: List[UsageFilterOption] = Field(default_factory=list)
     api_keys: List[UsageFilterOption] = Field(default_factory=list)
     routes: List[UsageFilterOption] = Field(default_factory=list)
+    # Platform-wide "All" view only. ``organizations`` — consumer Orgs
+    # with usage; ``user_groups`` — groups whose members can be filtered on.
+    organizations: List[UsageFilterOption] = Field(default_factory=list)
+    user_groups: List[UsageFilterOption] = Field(default_factory=list)
 
 
 class UsageMetaResponse(BaseModel):
@@ -114,6 +133,11 @@ class UsageFilterRequest(BaseModel):
     users: List[UsageFilterItem] = Field(default_factory=list)
     api_keys: List[UsageFilterItem] = Field(default_factory=list)
     routes: List[UsageFilterItem] = Field(default_factory=list)
+    # Consumer-Org filter (``consumer_principal_id``) and user-group
+    # filter (expanded to the group's direct USER members). Both are
+    # platform-admin-only; enforced in the route handler.
+    organizations: List[UsageFilterItem] = Field(default_factory=list)
+    user_groups: List[UsageFilterItem] = Field(default_factory=list)
 
 
 class UsageBaseRequest(BaseModel):
@@ -186,11 +210,25 @@ class UsageBreakdownRequest(UsageBaseRequest):
                 )
         return value
 
-    @field_validator("page", "perPage")
+    @field_validator("perPage")
     @classmethod
-    def validate_positive_int(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("page and perPage must be positive")
+    def validate_per_page(cls, value: int) -> int:
+        # Generous ceiling (abuse cap only). Kept at 10000 for backward compat
+        # with older UIs that fetch the whole set via perPage=10000; new callers
+        # use page=-1. Lowering it would 400 cached old UIs on upgrade.
+        if value < 1 or value > 10000:
+            raise ValueError("perPage must be between 1 and 10000")
+        return value
+
+    @field_validator("page")
+    @classmethod
+    def validate_page(cls, value: int) -> int:
+        # ``-1`` is the no-pagination sentinel (return all buckets); otherwise a
+        # positive page. Reject 0 and any other negative so a stray value can't
+        # slip through as "no pagination" and get echoed back as a bogus
+        # ``pagination.page`` (e.g. "page -42 of 1").
+        if value != -1 and value < 1:
+            raise ValueError("page must be a positive number or -1 (no pagination)")
         return value
 
     @computed_field
@@ -236,6 +274,7 @@ class UsageBreakdownItem(BaseModel):
     user: Optional[UsageBreakdownDimension] = None
     api_key: Optional[UsageBreakdownDimension] = None
     route: Optional[UsageBreakdownDimension] = None
+    organization: Optional[UsageBreakdownDimension] = None
     input_tokens: int = 0
     output_tokens: int = 0
     input_cached_tokens: int = 0

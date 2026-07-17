@@ -1,3 +1,4 @@
+import logging
 from typing import List, Tuple
 from fastapi.responses import StreamingResponse
 from fastapi import status
@@ -8,6 +9,8 @@ from gpustack.api.exceptions import (
     OpenAIAPIErrorResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class StreamingResponseWithStatusCode(StreamingResponse):
     '''
@@ -17,6 +20,7 @@ class StreamingResponseWithStatusCode(StreamingResponse):
     '''
 
     async def stream_response(self, send: Send) -> None:
+        started = False
         try:
             first_chunk_content, headers, self.status_code = (
                 await self.body_iterator.__anext__()
@@ -36,6 +40,7 @@ class StreamingResponseWithStatusCode(StreamingResponse):
                     "headers": asgi_headers,
                 }
             )
+            started = True
             await send(
                 {
                     "type": "http.response.body",
@@ -83,18 +88,23 @@ class StreamingResponseWithStatusCode(StreamingResponse):
                 }
             )
         except Exception as e:
-            self.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": self.status_code,
-                    "headers": self.raw_headers,
-                }
-            )
+            logger.error(f"Error while streaming response: {e}", exc_info=True)
+            # Only start the response if streaming has not begun; once the first
+            # chunk is sent the ASGI response has started and sending
+            # http.response.start again crashes the server.
+            if not started:
+                self.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": self.status_code,
+                        "headers": self.raw_headers,
+                    }
+                )
 
             error_response = OpenAIAPIErrorResponse(
                 error=OpenAIAPIError(
-                    message=str(e),
+                    message="Internal server error.",
                     code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     type="InternalServerError",
                 ),

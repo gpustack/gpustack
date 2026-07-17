@@ -111,6 +111,8 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | server.apiPort                           | 30080                             | API service port                                                          |
 | server.metricsPort                       | 10161                             | Metrics port                                                              |
 | server.environmentConfig                 | {}                                | Extra environment variables for GPUStack server                           |
+| server.extraVolumeMounts                 | []                                | Extra volume mounts appended to the server container                      |
+| server.extraVolumes                      | []                                | Extra volumes appended to the server StatefulSet                          |
 | server.nodeSelector                      | {}                                | Server pod nodeSelector; replaces `global.nodeSelector` when non-empty    |
 | gateway.ingressClassname                 | higress                           | Higress IngressClass name; enables in-cluster mode when found             |
 | higress-core.enabled                     | true                              | Deploy Higress gateway as a sub-chart; disable if already installed       |
@@ -127,8 +129,9 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | higress-core.controller.imagePullSecrets | [gpustack-image-pull-secret]      | Controller pull secrets; pre-populated to pick up the auto-created Secret |
 | higress-core.pilot.hub                   | null                              | Image hub override for the pilot component                                |
 | higress-core.pilot.image                 | gpustack/mirrored-higress-pilot   | Pilot image name (with namespace)                                         |
+| higressPlugins.replicas                  | 1                                 | Number of higress-plugins deployment replicas                             |
 | higressPlugins.image.repository          | gpustack/higress-plugins          | Image repo with namespace; see note below                                 |
-| higressPlugins.image.tag                 | "0.2.2-post1"                     | Higress plugins image tag; CI overrides from uv.lock at package time      |
+| higressPlugins.image.tag                 | "0.2.3.post5"                     | Higress plugins image tag; CI overrides from uv.lock at package time      |
 | higressPlugins.image.pullPolicy          | IfNotPresent                      | Higress plugins image pull policy                                         |
 | worker.gpuVendors                        | [nvidia]                          | List of GPU vendors; `[]` disables worker DaemonSet                       |
 | worker.nodeSelector                      | {}                                | Base worker nodeSelector; replaces `global.nodeSelector` when non-empty   |

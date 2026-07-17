@@ -108,21 +108,6 @@ class TenantContext:
         if self.org_role is None or self.org_role not in allowed:
             raise OrgRoleError(message="Insufficient organization role")
 
-    def target_principal_id_for_write(self) -> Optional[int]:
-        """Resolve the principal a CREATE / write request should land in.
-
-        Reads happily honor the platform-admin "no current_principal_id
-        = all-orgs" mode, but writes need an actual principal to stamp
-        on the new row. When the request didn't pin a context (no
-        header on an admin request, or a built-in client like the OSS
-        host that never sends ``X-Organization-Id``), fall back to the
-        user's own USER-principal — guaranteed non-null by schema —
-        instead of failing.
-        """
-        if self.current_principal_id is not None:
-            return self.current_principal_id
-        return self.user.id
-
 
 async def _resolve_effective_org_role(
     session: AsyncSession,
@@ -556,74 +541,6 @@ def cluster_visibility_conditions(
     return [or_(*or_clauses)]
 
 
-def cluster_resource_visibility_conditions(
-    ctx: TenantContext,
-    model: Any,
-) -> List[Any]:
-    """Visibility filter for resources that carry BOTH ``owner_principal_id``
-    (denormalized from cluster) AND ``cluster_id`` — Worker, ModelFile,
-    Benchmark, ModelEvaluation, etc.
-
-    A row is visible if:
-    - it's owned by the caller's current principal
-      (``owner_principal_id`` match), OR
-    - its cluster is granted via ``cluster_access`` (``cluster_id`` ∈
-      ``accessible_cluster_ids``).
-
-    NULL ``owner_principal_id`` rows live on global clusters; they're
-    only visible through the second branch (cluster_access) for
-    non-admin.
-    """
-    from sqlalchemy import or_
-
-    if cluster_scoped_system(ctx):
-        return _scoped_cluster_conditions(ctx, model)
-    if bypass_tenant_filter(ctx):
-        return []
-
-    or_clauses = []
-    if ctx.current_principal_id is not None and hasattr(model, "owner_principal_id"):
-        or_clauses.append(model.owner_principal_id == ctx.current_principal_id)
-    if ctx.accessible_cluster_ids and hasattr(model, "cluster_id"):
-        or_clauses.append(model.cluster_id.in_(ctx.accessible_cluster_ids))
-
-    if not or_clauses:
-        # No access path; force empty result rather than leak.
-        anchor = getattr(model, "cluster_id", None) or getattr(model, "id", None)
-        return [anchor == -1]
-    return [or_(*or_clauses)]
-
-
-def assert_cluster_resource_visible(
-    ctx: TenantContext,
-    resource: Any,
-    *,
-    not_found_message: str = "Resource not found",
-) -> None:
-    """Single-row mirror of ``cluster_resource_visibility_conditions``."""
-    if resource is None:
-        raise NotFoundException(message=not_found_message)
-    if cluster_scoped_system(ctx):
-        if scoped_cluster_row_visible(ctx, resource):
-            return
-        raise NotFoundException(message=not_found_message)
-    if bypass_tenant_filter(ctx):
-        return
-
-    owner = getattr(resource, "owner_principal_id", None)
-    cluster_id = getattr(resource, "cluster_id", None)
-
-    if (
-        ctx.current_principal_id is not None
-        and owner is not None
-        and owner == ctx.current_principal_id
-    ):
-        return
-    if cluster_id is not None and cluster_id in ctx.accessible_cluster_ids:
-        return
-    raise NotFoundException(message=not_found_message)
-
-
 def assert_cluster_visible(
     ctx: TenantContext,
     cluster: Any,
@@ -694,7 +611,7 @@ def assert_org_owned_writable(
         raise OrgRoleError(
             message=(
                 f"{resource_label.capitalize()} does not belong to "
-                "current organization"
+                "the current organization"
             )
         )
     # Platform admin acting-as the Org passes the role check unconditionally.

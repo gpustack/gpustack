@@ -13,6 +13,8 @@ defaults:
 
 on:
   workflow_dispatch: {}
+  repository_dispatch:
+    types: [ui-built]
   push:
     branches:
       - "main"

@@ -28,12 +28,13 @@ working unchanged.
 
 import re
 from datetime import datetime
-from typing import ClassVar, List, Optional
+from typing import ClassVar, List, Optional, Tuple
 
 from pydantic import (
     AliasChoices,
     ConfigDict,
     Field as PField,
+    computed_field,
     field_validator,
 )
 from sqlalchemy import Text
@@ -47,7 +48,6 @@ from gpustack.schemas.principals import (  # noqa: F401  re-exports
     Principal,
     PrincipalType,
 )
-
 
 # ``User`` aliases the unified :class:`Principal` so that code which
 # constructs / queries the user-shaped surface continues to work
@@ -135,6 +135,20 @@ class UserCreate(UserBase):
 
 class UserUpdate(UserBase):
     password: Optional[str] = None
+    # Overrides ``UserBase.source`` on two axes.
+    #
+    # Default ``None`` (vs. ``UserBase``'s ``"Local"``): an omitted
+    # ``source`` must mean "leave as-is". Inheriting the ``Local``
+    # default would silently flip every existing SSO user back to
+    # Local the first time an admin saved an unrelated field via a
+    # client that didn't send the key.
+    #
+    # Tighter type (``AuthProviderEnum`` vs. free-form ``str``):
+    # ``_resolve_external_user`` needs an exact match on the next
+    # login, so a garbage value like ``"banana"`` would lock the
+    # user out with no error at write time. Pydantic rejects
+    # anything outside the enum at 422.
+    source: Optional[AuthProviderEnum] = None
 
 
 class UserSelfUpdate(SQLModel):
@@ -179,14 +193,30 @@ class UserActivationUpdate(SQLModel):
 
 class UserListParams(ListParams):
     sortable_fields: ClassVar[List[str]] = [
-        "name",
+        "username",
         "is_admin",
-        "display_name",
+        "full_name",
         "source",
         "is_active",
         "created_at",
         "updated_at",
     ]
+
+    # Wire-level field names that map to different DB column names.
+    # Key = wire name (from API / UI), value = DB column name.
+    _WIRE_TO_DB_SORT_MAP: ClassVar[dict[str, str]] = {
+        "username": "name",
+        "full_name": "display_name",
+    }
+
+    @computed_field
+    @property
+    def order_by(self) -> Optional[List[Tuple[str, str]]]:
+        """Override to map wire-level sort field names to DB column names."""
+        raw = super().order_by
+        if raw is None:
+            return None
+        return [(self._WIRE_TO_DB_SORT_MAP.get(f, f), d) for f, d in raw]
 
 
 class UserPublic(UserBase):

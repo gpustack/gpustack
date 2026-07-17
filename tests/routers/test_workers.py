@@ -203,7 +203,7 @@ def _ctx(*, is_platform_admin=False, current_principal_id=None, org_role=None):
 
     The handlers only consult ``is_platform_admin`` / ``current_principal_id`` /
     ``org_role`` (via ``assert_org_owned_writable`` and
-    ``assert_cluster_resource_visible``), so a SimpleNamespace is enough.
+    ``assert_resource_visible``), so a SimpleNamespace is enough.
     """
     from gpustack.schemas.principals import PrincipalType
 
@@ -419,3 +419,32 @@ async def test_get_worker_privatekey_for_soft_deleted_worker_returns_not_found()
     with _patch_worker_one_by_id(worker):
         with pytest.raises(NotFoundException):
             await get_worker_privatekey(ctx=ctx, session=session, id=worker.id)
+
+
+def test_worker_visibility_filter_scopes_cluster_bound_system():
+    """The watch-stream row filter must narrow a cluster-bound SYSTEM
+    account to its own cluster — the plain SYSTEM bypass would otherwise
+    leak every cluster's workers."""
+    from gpustack.routes.workers import _make_worker_visibility_filter
+    from gpustack.schemas.principals import PrincipalType
+
+    scoped = SimpleNamespace(
+        user=SimpleNamespace(kind=PrincipalType.SYSTEM),
+        is_platform_admin=False,
+        current_principal_id=None,
+        scoped_cluster_id=3,
+    )
+    visible = _make_worker_visibility_filter(scoped)
+    assert visible(SimpleNamespace(cluster_id=3, owner_principal_id=None))
+    assert not visible(SimpleNamespace(cluster_id=4, owner_principal_id=None))
+
+    # Legacy SYSTEM principal (no cluster linkage) keeps the full bypass.
+    legacy = SimpleNamespace(
+        user=SimpleNamespace(kind=PrincipalType.SYSTEM),
+        is_platform_admin=False,
+        current_principal_id=None,
+        scoped_cluster_id=None,
+    )
+    assert _make_worker_visibility_filter(legacy)(
+        SimpleNamespace(cluster_id=4, owner_principal_id=None)
+    )

@@ -599,6 +599,8 @@ async def test_has_supported_runners_with_list_service_runners():
             assert call_kwargs["backend"] == "cuda"
             assert call_kwargs["service"] == "vllm"
             assert call_kwargs["with_deprecated"] is False
+            # Runtime (CUDA) version is no longer used to gate runners.
+            assert "backend_version" not in call_kwargs
 
 
 @pytest.mark.asyncio
@@ -648,13 +650,16 @@ async def test_cpu_worker_with_built_in_cpu_support():
 
 
 @pytest.mark.asyncio
-async def test_cuda_version_incompatibility():
+async def test_low_cuda_runtime_no_longer_filtered():
     """
-    Test 14: Worker with CUDA 12.4 should be filtered out when runner only supports CUDA 12.8.
+    issue #5674: a worker whose driver only reports CUDA 12.4 must NOT be
+    filtered out when requesting a newer backend version. Runner selection is
+    no longer gated by the detected GPU runtime (CUDA) version, so the worker
+    passes as long as a runner exists for its GPU type.
     """
     model = create_model(backend="vLLM", backend_version="0.13.0")
 
-    # Create a worker with CUDA 12.4 runtime
+    # Worker reports only CUDA 12.4 (a "too old" driver under the old logic).
     worker = linux_nvidia_4_4080_16gx4()
     if worker.status and worker.status.gpu_devices:
         for gpu in worker.status.gpu_devices:
@@ -665,7 +670,7 @@ async def test_cuda_version_incompatibility():
     filter_instance = BackendFrameworkFilter(model)
 
     async def mock_session_exec(statement):
-        # Return None for backend (no version configs in database)
+        # No version configs in database.
         mock_result = MagicMock()
         mock_result.first.return_value = None
         return mock_result
@@ -679,16 +684,65 @@ async def test_cuda_version_incompatibility():
 
         with patch(
             'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
-            return_value=[],
-        ):
+            return_value=[{"version": "0.13.0", "backend": "cuda"}],
+        ) as mock_list:
             filtered_workers, messages = await filter_instance.filter(workers)
 
-        # Worker should be filtered out because available runners don't support CUDA 12.4
-        # (real list_service_runners will return runners with 12.4 and 12.8,
-        # but 12.8 > 12.4 means no backward compatible runner)
-        assert len(filtered_workers) == 0
-        assert len(messages) == 1
-        assert "host-4-4080" in messages[0]
+        # Worker passes: the low CUDA runtime no longer gates runner selection.
+        assert len(filtered_workers) == 1
+        assert filtered_workers[0].name == "host-4-4080"
+        assert len(messages) == 0
+
+        # The detected runtime (CUDA) version must not be passed as a filter.
+        assert mock_list.call_count > 0
+        for call in mock_list.call_args_list:
+            assert "backend_version" not in call.kwargs
+
+
+@pytest.mark.asyncio
+async def test_non_cuda_runtime_no_longer_gated():
+    """
+    issue #5674: runner selection is no longer gated by the detected runtime
+    version for any GPU type, ROCm included — backend_version is not passed to
+    list_service_runners.
+    """
+    model = create_model(backend="vLLM", backend_version=None)
+
+    worker = linux_nvidia_4_4080_16gx4()
+    if worker.status and worker.status.gpu_devices:
+        for gpu in worker.status.gpu_devices:
+            gpu.type = "rocm"
+            gpu.vendor = "amd"
+            gpu.runtime_version = "6.2"
+
+    workers = [worker]
+
+    filter_instance = BackendFrameworkFilter(model)
+
+    async def mock_session_exec(statement):
+        mock_result = MagicMock()
+        mock_result.first.return_value = None
+        return mock_result
+
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
+        with patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[{"version": "0.11.0", "backend": "rocm"}],
+        ) as mock_list:
+            filtered_workers, messages = await filter_instance.filter(workers)
+
+        # ROCm worker passes and the detected runtime version is NOT used as a
+        # filter — backend_version must be absent.
+        assert len(filtered_workers) == 1
+        assert mock_list.call_count > 0
+        for call in mock_list.call_args_list:
+            assert "backend_version" not in call.kwargs
 
 
 @pytest.mark.asyncio

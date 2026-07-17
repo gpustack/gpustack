@@ -6,7 +6,6 @@ from sqlmodel import Field, SQLModel, Text, JSON, Relationship
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import ListParams, PaginatedList, UTCDateTime
-from gpustack.schemas.principals import _platform_principal_id
 
 if TYPE_CHECKING:
     from gpustack.schemas.principals import Principal
@@ -58,12 +57,19 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
     access_key: str = Field(unique=True, index=True)
     hashed_secret_key: str = Field(unique=True)
     user_id: int = Field(foreign_key='principals.id', nullable=False)
-    owner_principal_id: int = Field(
-        default_factory=_platform_principal_id,
+    # ``owner_principal_id`` is the tenant the key acts as. Nullable
+    # because an admin-created "All" mode key (no Org context) must
+    # fall through to ``bypass_tenant_filter`` — pinning such keys to
+    # any specific principal would leave USER-personal and cross-Org
+    # resources outside their reach. ``_resolve_requested_principal_id``
+    # only consumes this when non-None, so NULL keys inherit the
+    # caller's user-based resolution (admin → None → bypass).
+    owner_principal_id: Optional[int] = Field(
+        default=None,
         sa_column=Column(
             Integer,
             ForeignKey("principals.id", ondelete="CASCADE"),
-            nullable=False,
+            nullable=True,
         ),
     )
     expires_at: Optional[datetime] = Field(sa_column=Column(UTCDateTime), default=None)
@@ -102,13 +108,11 @@ class ApiKeyPublic(ApiKeyBase):
     masked_value: Optional[str] = None  # partial characters for identification
     is_custom: bool
     # The owning Org. Server-set on create from the caller's tenant
-    # context (the DB column is NOT NULL — every key lives in exactly
-    # one Org), so it intentionally stays out of ApiKeyCreate / Update
-    # — but readers (list / get responses) need it to render which Org
-    # owns the key, hence the explicit declaration here. Typed as a
-    # plain `int` so the generated OpenAPI / TS clients treat it as
-    # required and non-nullable.
-    owner_principal_id: int
+    # context, intentionally outside ApiKeyCreate / Update. ``None``
+    # marks an admin-created "All" mode key with no tenant pinning —
+    # the wire/UI typically renders this as "Global" or "All
+    # Organizations".
+    owner_principal_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     expires_at: Optional[datetime] = None

@@ -144,23 +144,23 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 1. GPUStack UIの`Catalog`ページに移動します。
 
-2. 利用可能なモデルのリストから`Qwen3 0.6B`モデルを選択します。
-
-3. デプロイ互換性チェックが通過した後、`Save`ボタンをクリックしてモデルをデプロイします。
+2. 利用可能なモデルのリストから`Qwen3.5-0.8B`モデルを選択します。
 
 ![カタログからqwen3をデプロイ](docs/assets/quick-start/quick-start-qwen3.png)
+
+3. デプロイ互換性チェックが通過した後、`Save`ボタンをクリックしてモデルをデプロイします。
 
 4. GPUStackはモデルファイルのダウンロードとモデルのデプロイを開始します。デプロイステータスが`Running`と表示されたら、モデルは正常にデプロイされています。
 
 ![モデルが実行中](docs/assets/quick-start/model-running.png)
 
-5. ナビゲーションメニューで`Playground - Chat`をクリックし、右上の`Model`ドロップダウンからモデル`qwen3-0.6b`が選択されていることを確認します。これでUIプレイグラウンドでモデルとチャットできるようになります。
+5. ナビゲーションメニューで`Playground - Chat`をクリックし、右上の`Model`ドロップダウンからモデル`qwen3.5-0.8b`が選択されていることを確認します。これでUIプレイグラウンドでモデルとチャットできるようになります。
 
 ![クイックチャット](docs/assets/quick-start/quick-chat.png)
 
 ### API経由でモデルを使用
 
-1. ユーザーアバターにカーソルを合わせて`API Keys`ページに移動し、`New API Key`ボタンをクリックします。
+1. `Access Control` > `API Keys`ページに移動し、`New API Key`ボタンをクリックします。
 
 2. `Name`を入力し、`Save`ボタンをクリックします。
 
@@ -176,7 +176,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "qwen3-0.6b",
+    "model": "qwen3.5-0.8b",
     "messages": [
       {
         "role": "system",

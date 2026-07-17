@@ -361,6 +361,11 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         action='append',
         help='HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: --allow-headers Authorization --allow-headers X-API-Key --allow-headers Content-Type. Default: ["Authorization", "Content-Type", "X-API-Key"].',
     )
+    server_group.add_argument(
+        "--trusted-hosts",
+        action='append',
+        help='Host names allowed in the X-Forwarded-Host header when GPUStack is behind a reverse proxy. Specify the flag multiple times for multiple hosts. Use "*" to trust any forwarded host (legacy behavior, not recommended). When unset, the allowlist is derived from --server-external-url; if that is also unset, X-Forwarded-Host is ignored.',
+    )
 
     # OIDC settings
     server_group.add_argument(
@@ -530,6 +535,13 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         action=OptionalBoolAction,
         help="Set newly created externally authenticated users inactive by default.",
         default=get_gpustack_env_bool("EXTERNAL_AUTH_DEFAULT_INACTIVE"),
+    )
+    server_group.add_argument(
+        "--external-auth-insecure-skip-tls-verify",
+        action=OptionalBoolAction,
+        help="Skip TLS verification for the external-auth IdP handshake "
+        "(OIDC/CAS). Testing against self-signed IdPs only; never in production.",
+        default=get_gpustack_env_bool("EXTERNAL_AUTH_INSECURE_SKIP_TLS_VERIFY"),
     )
     server_group.add_argument(
         "--external-auth-post-logout-redirect-key",
@@ -824,10 +836,12 @@ def set_server_options(args, config_data: dict):
         "allow_credentials",
         "allow_methods",
         "allow_headers",
+        "trusted_hosts",
         "external_auth_name",
         "external_auth_full_name",
         "external_auth_avatar_url",
         "external_auth_default_inactive",
+        "external_auth_insecure_skip_tls_verify",
         "oidc_issuer",
         "oidc_client_id",
         "oidc_client_secret",

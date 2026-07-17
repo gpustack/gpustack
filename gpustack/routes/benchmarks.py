@@ -15,8 +15,8 @@ from gpustack.api.exceptions import (
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.api.tenant import (
     bypass_tenant_filter,
-    assert_cluster_resource_visible,
-    cluster_resource_visibility_conditions,
+    assert_resource_visible,
+    tenant_list_conditions,
     cluster_scoped_system,
     scoped_cluster_row_visible,
 )
@@ -142,8 +142,6 @@ def _make_benchmark_visibility_filter(ctx):
             and org_id == ctx.current_principal_id
         ):
             return True
-        if getattr(b, "cluster_id", None) in ctx.accessible_cluster_ids:
-            return True
         return False
 
     return _visible
@@ -170,7 +168,7 @@ async def _get_benchmarks(
     if dataset_name:
         fields["dataset_name"] = dataset_name
 
-    extra_conditions = list(cluster_resource_visibility_conditions(ctx, Benchmark))
+    extra_conditions = list(tenant_list_conditions(ctx, Benchmark))
     if gpu_summary:
         extra_conditions.append(
             func.lower(Benchmark.gpu_summary).like(f"%{gpu_summary.lower()}%")
@@ -235,7 +233,7 @@ async def get_benchmark(
     id: int,
 ):
     benchmark = await Benchmark.one_by_id(session, id)
-    assert_cluster_resource_visible(
+    assert_resource_visible(
         ctx, benchmark, not_found_message=f"Benchmark {id} not found"
     )
     return benchmark
@@ -350,9 +348,7 @@ async def update_benchmark(
     benchmark_in: BenchmarkUpdate,
 ):
     benchmark = await Benchmark.one_by_id(session, id)
-    assert_cluster_resource_visible(
-        ctx, benchmark, not_found_message="Benchmark not found"
-    )
+    assert_resource_visible(ctx, benchmark, not_found_message="Benchmark not found")
     try:
         await benchmark.update(session, benchmark_in)
     except Exception as e:
@@ -372,9 +368,7 @@ async def update_benchmark_state(
     state_update: BenchmarkStateUpdate,
 ):
     benchmark = await Benchmark.one_by_id(session, id)
-    assert_cluster_resource_visible(
-        ctx, benchmark, not_found_message="Benchmark not found"
-    )
+    assert_resource_visible(ctx, benchmark, not_found_message="Benchmark not found")
 
     if (
         state_update.state is not None
@@ -444,9 +438,7 @@ async def update_benchmark_metrics(
     session: SessionDep, ctx: TenantContextDep, id: int, metrics: BenchmarkMetrics
 ):
     benchmark = await Benchmark.one_by_id(session, id)
-    assert_cluster_resource_visible(
-        ctx, benchmark, not_found_message="Benchmark not found"
-    )
+    assert_resource_visible(ctx, benchmark, not_found_message="Benchmark not found")
     try:
         await benchmark.update(session, metrics)
     except Exception as e:
@@ -462,9 +454,7 @@ async def update_benchmark_metrics(
 )
 async def delete_benchmark(session: SessionDep, ctx: TenantContextDep, id: int):
     benchmark = await Benchmark.one_by_id(session, id)
-    assert_cluster_resource_visible(
-        ctx, benchmark, not_found_message="Benchmark not found"
-    )
+    assert_resource_visible(ctx, benchmark, not_found_message="Benchmark not found")
 
     try:
         await benchmark.delete(session)
@@ -481,9 +471,7 @@ async def get_benchmark_logs(  # noqa: C901
     log_options: LogOptionsDep,
 ):
     benchmark = await Benchmark.one_by_id(session, id)
-    assert_cluster_resource_visible(
-        ctx, benchmark, not_found_message="Benchmark not found"
-    )
+    assert_resource_visible(ctx, benchmark, not_found_message="Benchmark not found")
 
     worker = await Worker.one_by_id(session, benchmark.worker_id)
     if not worker:
@@ -575,7 +563,7 @@ async def export_benchmarks(
     ]
     extra_conditions = [
         col(Benchmark.id).in_(ids),
-        *cluster_resource_visibility_conditions(ctx, Benchmark),
+        *tenant_list_conditions(ctx, Benchmark),
     ]
     benchmarks: Sequence[Benchmark] = await Benchmark.all_by_fields(
         session, fields={}, extra_conditions=extra_conditions

@@ -1,4 +1,5 @@
-from typing import List, Optional, Union
+from enum import Enum
+from typing import Any, List, Optional, Union
 from sqlalchemy import bindparam, cast
 from sqlmodel import func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -11,6 +12,41 @@ category_classes = Union[
     ModelRoute,
     MyModel,
 ]
+
+
+class ModelStateFilterEnum(str, Enum):
+    READY = "ready"
+    NOT_READY = "not_ready"
+    STOPPED = "stopped"
+
+
+def state_stream_filter(
+    data: Any,
+    state: Optional[ModelStateFilterEnum],
+    ready_attr: str,
+    total_attr: str,
+) -> bool:
+    """Python-side mirror of the SQL readiness filter for watch streams.
+
+    ``ready_attr``/``total_attr`` name the readiness counters that differ
+    per resource (``ready_replicas``/``replicas`` for a Model,
+    ``ready_targets``/``targets`` for a route)."""
+    if state is None:
+        return True
+    ready = getattr(data, ready_attr, None)
+    total = getattr(data, total_attr, None)
+    # Partial payloads (e.g. ID-only DELETED events shaped ``{"id": ...}``)
+    # don't carry readiness counters. Let them through so watch clients can
+    # still drop the row by ID instead of holding a stale copy forever.
+    if ready is None or total is None:
+        return True
+    if state == ModelStateFilterEnum.READY:
+        return ready > 0
+    if state == ModelStateFilterEnum.NOT_READY:
+        return ready == 0 and total > 0
+    if state == ModelStateFilterEnum.STOPPED:
+        return total == 0
+    return True
 
 
 def build_pg_category_condition(target_class: category_classes, category: str):
@@ -48,6 +84,12 @@ def build_category_conditions(session, target_class: category_classes, categorie
 
 def categories_filter(data: category_classes, categories: Optional[List[str]]):
     if not categories:
+        return True
+
+    # Partial payloads (e.g. ID-only DELETED events shaped ``{"id": ...}``)
+    # don't carry categories. Let them through so watch clients can drop the
+    # row by ID instead of the stream erroring on a missing attribute.
+    if not hasattr(data, "categories"):
         return True
 
     data_categories = data.categories or []

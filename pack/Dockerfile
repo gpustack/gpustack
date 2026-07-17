@@ -22,7 +22,7 @@
 # - HIGRESS_APISERVER_VERSION: Version of Higress API server to use.
 ARG PYTHON_VERSION=3.11
 ARG GPUSTACK_BASE_IMAGE=base
-ARG GPUSTACK_OPERATOR_VERSION=v0.5.1
+ARG GPUSTACK_OPERATOR_VERSION=v0.5.4
 ARG GPUSTACK_RUNTIME_ROCM_VERSION=7.0.2
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 ARG HIGRESS_VERSION=2.1.9
@@ -341,13 +341,18 @@ RUN <<EOF
         && gosu postgres echo "host  all  root  ::1/128       trust" >> /etc/postgresql/main/pg_hba.conf \
         && gosu postgres echo "host  all  all   0.0.0.0/0     scram-sha-256" >> /etc/postgresql/main/pg_hba.conf
 
+    # Logging: emit one file per calendar day with a readable date name and
+    # disable size-based rotation so a busy day stays in a single file.
+    # Postgres' own rotation never deletes old logs (that is what let them
+    # grow to 18GB, issue #5774) — retention is enforced out-of-band by the
+    # supercronic cleanup job in /var/lib/istio/cron.txt.
     gosu postgres sed -i "s/^data_directory/#data_directory/" "$PGCONFIG_FILE" \
         && gosu postgres sed -i "s/^hba_file/#hba_file/" "$PGCONFIG_FILE" \
         && gosu postgres sed -i "s/^#log_destination/log_destination/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^#log_min_messages = warning/log_min_messages = info/" "$PGCONFIG_FILE" \
         && gosu postgres sed -i "s/^#logging_collector = off/logging_collector = on/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^#log_filename/log_filename/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^#log_rotation_size/log_rotation_size/" "$PGCONFIG_FILE"
+        && gosu postgres sed -i "s|^[# ]*log_filename.*|log_filename = 'postgresql-%Y-%m-%d.log'|" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s|^[# ]*log_rotation_age.*|log_rotation_age = 1d|" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s|^[# ]*log_rotation_size.*|log_rotation_size = 0|" "$PGCONFIG_FILE"
 
     # Cleanup
     rm -rf /var/tmp/* \
@@ -507,16 +512,8 @@ RUN --mount=type=cache,target=/root/.cache \
         && make build
 
     # Install GPUStack.
-    # FIXME: There is no linux/arm64 vLLM prebuilt wheel,
-    #        so we only install the all wheel for linux/amd64.
-    if [ "${TARGETARCH}" == "amd64" ]; then
-        WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[all]";
-    else
-        WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]";
-    fi
-
     uv pip install --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu/ \
-        ${WHEEL_PACKAGE}
+        /workspace/gpustack/dist/*.whl
 
     # Download tools
     gpustack download-tools

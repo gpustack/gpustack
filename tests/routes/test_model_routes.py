@@ -11,6 +11,11 @@ from sqlalchemy import true
 from gpustack.api.exceptions import InvalidException
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import model_routes
+from gpustack.routes.model_common import (
+    ModelStateFilterEnum,
+    categories_filter,
+    state_stream_filter,
+)
 from gpustack.schemas.common import Pagination
 from gpustack.schemas.model_routes import (
     AccessPolicyEnum,
@@ -90,6 +95,149 @@ async def test_get_model_routes_filters_categories_on_target_class(monkeypatch):
     assert captured["categories"] == ["image"]
     assert captured["fields"]["user_id"] == 123
     assert captured["extra_conditions"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_class", [MyModel, ModelRoute])
+@pytest.mark.parametrize(
+    "state, expected_fragments",
+    [
+        (ModelStateFilterEnum.READY, ["ready_targets > 0"]),
+        (ModelStateFilterEnum.NOT_READY, ["ready_targets = 0", "targets > 0"]),
+        (ModelStateFilterEnum.STOPPED, ["targets = 0"]),
+    ],
+)
+async def test_get_model_routes_filters_state_on_target_class(
+    monkeypatch, target_class, state, expected_fragments
+):
+    """The ``state`` filter mirrors Model readiness against a route's
+    target counts, on both the MyModel view and the ModelRoute table."""
+    captured = {}
+
+    @asynccontextmanager
+    async def fake_async_session():
+        yield object()
+
+    async def fake_paginated_by_query(**kwargs):
+        captured["extra_conditions"] = kwargs["extra_conditions"]
+        return ModelRoutesPublic(
+            items=[],
+            pagination=Pagination(page=1, perPage=24, total=0, totalPage=0),
+        )
+
+    monkeypatch.setattr(model_routes, "async_session", fake_async_session)
+    monkeypatch.setattr(target_class, "paginated_by_query", fake_paginated_by_query)
+
+    await model_routes._get_model_routes(
+        params=ModelRouteListParams(page=1, perPage=24),
+        state=state,
+        target_class=target_class,
+    )
+
+    rendered = " ".join(_compile(c) for c in captured["extra_conditions"])
+    for fragment in expected_fragments:
+        assert fragment in rendered
+
+
+@pytest.mark.asyncio
+async def test_get_model_routes_without_state_adds_no_readiness_condition(monkeypatch):
+    """Omitting ``state`` leaves the query unconstrained by target counts."""
+    captured = {}
+
+    @asynccontextmanager
+    async def fake_async_session():
+        yield object()
+
+    async def fake_paginated_by_query(**kwargs):
+        captured["extra_conditions"] = kwargs["extra_conditions"]
+        return ModelRoutesPublic(
+            items=[],
+            pagination=Pagination(page=1, perPage=24, total=0, totalPage=0),
+        )
+
+    monkeypatch.setattr(model_routes, "async_session", fake_async_session)
+    monkeypatch.setattr(MyModel, "paginated_by_query", fake_paginated_by_query)
+
+    await model_routes._get_model_routes(
+        params=ModelRouteListParams(page=1, perPage=24),
+        target_class=MyModel,
+        user_id=123,
+    )
+
+    rendered = " ".join(_compile(c) for c in captured["extra_conditions"])
+    assert "ready_targets" not in rendered
+    assert "targets >" not in rendered
+    assert "targets =" not in rendered
+
+
+@pytest.mark.parametrize(
+    "ready, total, state, expected",
+    [
+        (2, 3, ModelStateFilterEnum.READY, True),
+        (0, 3, ModelStateFilterEnum.READY, False),
+        (0, 3, ModelStateFilterEnum.NOT_READY, True),
+        (2, 3, ModelStateFilterEnum.NOT_READY, False),
+        (0, 0, ModelStateFilterEnum.NOT_READY, False),
+        (0, 0, ModelStateFilterEnum.STOPPED, True),
+        (0, 3, ModelStateFilterEnum.STOPPED, False),
+        (0, 3, None, True),
+    ],
+)
+def test_state_stream_filter_matches_sql_semantics(ready, total, state, expected):
+    """The watch-path predicate agrees with the SQL branch for routes."""
+    data = SimpleNamespace(ready_targets=ready, targets=total)
+    assert state_stream_filter(data, state, "ready_targets", "targets") is expected
+
+
+def test_state_stream_filter_passes_id_only_delete_events():
+    """ID-only DELETED payloads carry no target counts; the filter must let
+    them through so watch clients drop the row instead of going stale."""
+    assert (
+        state_stream_filter(
+            {"id": 9}, ModelStateFilterEnum.READY, "ready_targets", "targets"
+        )
+        is True
+    )
+
+
+def test_categories_filter_matches_and_passes_id_only_events():
+    """Categories match against ``data.categories``; ID-only payloads that
+    lack the attribute pass through rather than erroring the stream."""
+    assert categories_filter(SimpleNamespace(categories=["image"]), ["image"]) is True
+    assert categories_filter(SimpleNamespace(categories=["text"]), ["image"]) is False
+    assert categories_filter(SimpleNamespace(categories=None), [""]) is True
+    # No categories requested is always a match, regardless of payload shape.
+    assert categories_filter({"id": 9}, None) is True
+    # ID-only DELETED payload with an active category filter must not raise.
+    assert categories_filter({"id": 9}, ["image"]) is True
+
+
+@pytest.mark.asyncio
+async def test_get_model_routes_stream_applies_state_filter(monkeypatch):
+    """The watch/streaming branch honors ``state`` too, not just the
+    paginated query."""
+    captured = {}
+
+    def fake_streaming(**kwargs):
+        captured["filter_func"] = kwargs["filter_func"]
+
+        async def _gen():
+            return
+            yield
+
+        return _gen()
+
+    monkeypatch.setattr(MyModel, "streaming", fake_streaming)
+
+    await model_routes._get_model_routes(
+        params=ModelRouteListParams(page=1, perPage=24, watch=True),
+        state=ModelStateFilterEnum.READY,
+        target_class=MyModel,
+    )
+
+    filter_func = captured["filter_func"]
+    assert filter_func(SimpleNamespace(ready_targets=1, targets=1)) is True
+    assert filter_func(SimpleNamespace(ready_targets=0, targets=1)) is False
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,14 @@ DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
 DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 30))
 DB_MAX_OVERFLOW = int(os.getenv("GPUSTACK_DB_MAX_OVERFLOW", 20))
 DB_POOL_TIMEOUT = int(os.getenv("GPUSTACK_DB_POOL_TIMEOUT", 30))
+# Backstop against leaked/long-held sessions accumulating as Postgres
+# "idle in transaction" connections and exhausting the pool (#5678). Only
+# fires while a transaction is open and idle -- an actively-running query,
+# however long, is never affected. 0 disables it. Ignored for non-Postgres
+# backends.
+DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS = int(
+    os.getenv("GPUSTACK_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS", 8 * 3600)
+)
 
 # Proxy configuration
 PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
@@ -61,12 +69,24 @@ WORKER_UNREACHABLE_CHECK_MODE = os.getenv(
 ).lower()
 
 # GPU instance configuration
-# Interval at which the server re-confirms the worker-side status of Ready
-# GPU instances. The reconciler is event-driven and stops touching a row once
-# it is fully Ready, so without this periodic sweep a worker-side change after
-# Ready would never be synced back. A value <= 0 disables the sweep.
-GPU_INSTANCE_RECONFIRM_INTERVAL = int(
-    os.getenv("GPUSTACK_GPU_INSTANCE_RECONFIRM_INTERVAL", 60)
+# Interval at which the controller re-observes a still-transitioning (non-
+# settled) GPU instance via an in-memory requeue, instead of writing its own
+# status back to the DB to self-trigger the next poll. Ready-row drift is
+# picked up by the downstream watch, so only transitioning rows re-observe on
+# this cadence. The PV / PVT finalize controllers reuse this cadence to re-probe
+# a still-finalizing row, which is just another transitioning row. Clamped to
+# >= 1s at use to avoid a busy loop.
+GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL = int(
+    os.getenv("GPUSTACK_GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL", 15)
+)  # in seconds
+# Optional low-frequency fallback sweep: with the Ready-row reconfirm chain
+# retired, a settled Ready row's worker-side drift flows back only via the
+# downstream watch. If the watch misses an event across a reconnect gap, this
+# opt-in sweep periodically re-observes Ready rows so the drift is eventually
+# reconciled. 0 (default) disables it; set a low frequency (seconds) only if a
+# watch-gap coverage hole is observed.
+GPU_INSTANCE_READY_SWEEP_INTERVAL = int(
+    os.getenv("GPUSTACK_GPU_INSTANCE_READY_SWEEP_INTERVAL", 0)
 )  # in seconds
 
 # Model instance configuration
@@ -249,3 +269,14 @@ BENCHMARK_DATASET_SHAREGPT_PATH = os.getenv(
 BENCHMARK_REQUEST_TIMEOUT = int(
     os.getenv("GPUSTACK_BENCHMARK_REQUEST_TIMEOUT", 3600)  # 1 hour
 )  # in seconds
+
+# Usage breakdown configuration
+# Upper bound on the number of buckets a single no-pagination (page=-1)
+# breakdown request may return — the trend charts and exports fetch the whole
+# series unpaginated. A request whose grouping × date range would exceed this
+# is rejected (HTTP 400) rather than silently truncated, so the caller narrows
+# the range or adds filters. Tune up for very wide dashboards, or down to cap
+# memory/payload more aggressively.
+USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS = int(
+    os.getenv("GPUSTACK_USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS", 50000)
+)

@@ -30,7 +30,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Per-endpoint request rate. Lines that stay close together indicate balanced load; a persistent gap means one endpoint is taking more traffic.",
+      "description": "Per-endpoint request rate. Lines that stay close together indicate balanced load; a persistent gap means one endpoint is taking more traffic.\n\nEndpoint is the upstream registry name: `model-<modelId>-<instanceId>` (a model instance) or `cluster-<clusterId>-worker-<workerId>` (a worker proxy); a trailing `-l<hash>` marks a LoRA adapter alias of the same instance. Look up the numeric IDs in the GPUStack UI to map them back to the model / instance / worker.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -79,7 +79,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Share of total requests handled by each endpoint over the selected time range. The closer the slices are to equal, the more balanced the load.",
+      "description": "Share of total requests handled by each endpoint over the selected time range. The closer the slices are to equal, the more balanced the load.\n\nEndpoint is the upstream registry name: `model-<modelId>-<instanceId>` (a model instance) or `cluster-<clusterId>-worker-<workerId>` (a worker proxy); a trailing `-l<hash>` marks a LoRA adapter alias of the same instance. Look up the numeric IDs in the GPUStack UI to map them back to the model / instance / worker.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -102,7 +102,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "sum by (endpoint) (\n  label_replace(\n    increase(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__range]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n)",
+          "expr": "sum by (endpoint) (\n  label_replace(\n    increase(route_upstream_model_consumer_metric_llm_duration_count{ai_route=~\"$ai_route\", ai_cluster=~\"$ai_cluster\", ai_model=~\"$ai_model\", ai_consumer=~\"$ai_consumer\"}[$__range]),\n    \"endpoint\", \"$1\", \"ai_cluster\", \"outbound\\\\|[0-9]+\\\\|\\\\|(.+)\\\\.static\"\n  )\n) > 0",
           "legendFormat": "{{endpoint}}",
           "instant": true,
           "range": false,
@@ -193,7 +193,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Current per-endpoint request rate as horizontal bars - a quick visual read of relative load.",
+      "description": "Current per-endpoint request rate as horizontal bars - a quick visual read of relative load.\n\nEndpoint is the upstream registry name: `model-<modelId>-<instanceId>` (a model instance) or `cluster-<clusterId>-worker-<workerId>` (a worker proxy); a trailing `-l<hash>` marks a LoRA adapter alias of the same instance. Look up the numeric IDs in the GPUStack UI to map them back to the model / instance / worker.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "continuous-GrYlRd" },
@@ -238,7 +238,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Average LLM duration per endpoint (llm_service_duration / llm_duration_count). Useful to confirm a balanced request count is not hiding uneven latency.",
+      "description": "Average LLM duration per endpoint (llm_service_duration / llm_duration_count). Useful to confirm a balanced request count is not hiding uneven latency.\n\nEndpoint is the upstream registry name: `model-<modelId>-<instanceId>` (a model instance) or `cluster-<clusterId>-worker-<workerId>` (a worker proxy); a trailing `-l<hash>` marks a LoRA adapter alias of the same instance. Look up the numeric IDs in the GPUStack UI to map them back to the model / instance / worker.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -287,7 +287,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Per-endpoint totals over the selected range with each endpoint's share of total traffic.",
+      "description": "Per-endpoint totals over the selected range with each endpoint's share of total traffic.\n\nEndpoint is the upstream registry name: `model-<modelId>-<instanceId>` (a model instance) or `cluster-<clusterId>-worker-<workerId>` (a worker proxy); a trailing `-l<hash>` marks a LoRA adapter alias of the same instance. Look up the numeric IDs in the GPUStack UI to map them back to the model / instance / worker.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },

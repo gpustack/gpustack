@@ -145,22 +145,23 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 ### 部署模型
 
 1.  在 GPUStack 用户界面中导航到 `Catalog` 页面。
-2.  从可用模型列表中选择 `Qwen3 0.6B` 模型。
-3.  部署兼容性检查通过后，点击 `Save` 按钮部署模型。
+2.  从可用模型列表中选择 `Qwen3.5-0.8B` 模型。
 
 ![从目录部署 qwen3](docs/assets/quick-start/quick-start-qwen3.png)
+
+3.  部署兼容性检查通过后，点击 `Save` 按钮部署模型。
 
 4.  GPUStack 将开始下载模型文件并部署模型。当部署状态显示为 `Running` 时，表示模型已成功部署。
 
 ![模型运行中](docs/assets/quick-start/model-running.png)
 
-5.  点击导航菜单中的 `Playground - Chat`，检查右上角 `Model` 下拉菜单中是否选中了 `qwen3-0.6b` 模型。现在您可以在 UI  playground 中与模型聊天了。
+5.  点击导航菜单中的 `Playground - Chat`，检查右上角 `Model` 下拉菜单中是否选中了 `qwen3.5-0.8b` 模型。现在您可以在 UI  playground 中与模型聊天了。
 
 ![快速聊天](docs/assets/quick-start/quick-chat.png)
 
 ### 通过 API 使用模型
 
-1.  将鼠标悬停在用户头像上，导航到 `API Keys` 页面，然后点击 `New API Key` 按钮。
+1.  导航到 `Access Control` > `API Keys` 页面，然后点击 `New API Key` 按钮。
 2.  填写 `Name` 并点击 `Save` 按钮。
 3.  复制生成的 API 密钥并将其保存在安全的地方。请注意，该密钥仅在创建时可见一次。
 4.  您现在可以使用该 API 密钥访问 GPUStack 提供的 OpenAI 兼容 API 端点。例如，使用 curl 如下所示：
@@ -173,7 +174,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "qwen3-0.6b",
+    "model": "qwen3.5-0.8b",
     "messages": [
       {
         "role": "system",

@@ -66,6 +66,7 @@ class _OpenVolume:
     owner_name: Optional[str]
     consumer_principal_id: Optional[int]
     consumer_name: Optional[str]
+    consumer_principal_kind: Optional[str]
     creator_id: Optional[int]
     creator_name: Optional[str]
     window_start: datetime
@@ -94,6 +95,7 @@ def _open_volume_from_event(evt: ResourceEvent) -> Optional[_OpenVolume]:
         owner_name=evt.owner_name,
         consumer_principal_id=evt.consumer_principal_id,
         consumer_name=evt.consumer_name,
+        consumer_principal_kind=getattr(evt, "consumer_principal_kind", None),
         creator_id=evt.creator_id,
         creator_name=evt.creator_name,
         window_start=_naive_utc(evt.occurred_at),
@@ -330,7 +332,7 @@ class StorageUsageCollector:
         if vol.settled_through is None or end_ts > vol.settled_through:
             vol.settled_through = end_ts
 
-    async def _upsert_bucket(
+    async def _upsert_bucket(  # noqa: C901
         self,
         session,
         vol: _OpenVolume,
@@ -383,6 +385,8 @@ class StorageUsageCollector:
                 row.owner_name = vol.owner_name
             if vol.consumer_name is not None:
                 row.consumer_name = vol.consumer_name
+            if vol.consumer_principal_kind is not None:
+                row.consumer_principal_kind = vol.consumer_principal_kind
             if vol.creator_name is not None:
                 row.creator_name = vol.creator_name
             row.sku = sku
@@ -398,6 +402,7 @@ class StorageUsageCollector:
                 owner_name=vol.owner_name,
                 consumer_principal_id=vol.consumer_principal_id,
                 consumer_name=vol.consumer_name,
+                consumer_principal_kind=vol.consumer_principal_kind,
                 creator_id=vol.creator_id,
                 creator_name=vol.creator_name,
                 cluster_id=None,

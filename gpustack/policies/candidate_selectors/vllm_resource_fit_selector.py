@@ -110,16 +110,23 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
     def get_world_size_from_backend_parameters(
         model: Model,
     ) -> Tuple[Optional[int], Optional[List[str]]]:
-        tp = find_int_parameter(
-            model.backend_parameters, ["tensor-parallel-size", "tp"]
-        )
-        pp = find_int_parameter(
-            model.backend_parameters, ["pipeline-parallel-size", "pp"]
-        )
-        dp = find_int_parameter(model.backend_parameters, ["data-parallel-size", "dp"])
-        dpl = find_int_parameter(
-            model.backend_parameters, ["data-parallel-size-local", "dpl"]
-        )
+        parallelism = parse_user_parallelism(model.backend_parameters)
+        tp = parallelism.tp
+        pp = parallelism.pp
+        dp = parallelism.dp
+        dpl = parallelism.dpl
+        pcp = parallelism.pcp
+
+        # A non-positive value would silently yield a zero/negative world_size below.
+        for name, value in (
+            ("tensor-parallel-size", tp),
+            ("pipeline-parallel-size", pp),
+            ("prefill-context-parallel-size", pcp),
+            ("data-parallel-size", dp),
+            ("data-parallel-size-local", dpl),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"vLLM: --{name} {value} must be positive.")
 
         # Hybrid-LB: --data-parallel-size is a GLOBAL count spanning separate
         # deployments (e.g. one per node), so it must NOT size this deployment's
@@ -134,18 +141,18 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 return None, None
             dp = dpl
 
-        if tp or pp or dp:
+        # Each parallel dimension multiplies the world size in a fixed order
+        # (tp, pp, pcp, dp).
+        # DP-Local is a strategy label only — its ranks live inside the dp
+        # world, so it never multiplies.
+        world_dimensions = (("tp", tp), ("pp", pp), ("pcp", pcp), ("dp", dp))
+        if any(value for _, value in world_dimensions):
             world_size = 1
             strategies = []
-            if tp:
-                strategies.append("tp")
-                world_size *= tp
-            if pp:
-                strategies.append("pp")
-                world_size *= pp
-            if dp:
-                strategies.append("dp")
-                world_size *= dp
+            for name, value in world_dimensions:
+                if value:
+                    strategies.append(name)
+                    world_size *= value
 
             # In hybrid-lb, dp already carries the dpl value above, so the "dp"
             # strategy already reflects the local world; don't double-count dpl.
@@ -767,9 +774,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
     def _validate_mp_multinode_arguments(self):
         """
         Sanity-check user-provided MP multi-node parallelism arguments
-        before worker selection. Cross-node-topology invariants (TP divides
-        every node's GPU count, ``workers_per_dp`` fits the cluster, etc.)
-        are enforced later in :func:`cal_multinode_topology` once the
+        before worker selection. Cross-node-topology invariants
+        (``workers_per_dp`` fits the cluster, homogeneous cross-node layout,
+        etc.) are enforced later in :func:`cal_multinode_topology` once the
         deployment metadata is known; here we only catch contradictions
         detectable from backend_parameters alone.
         """
@@ -780,14 +787,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             self._model.backend_parameters, ["data-parallel-size-local", "dpl"]
         )
 
-        if dp is not None and dp <= 0:
-            raise ValueError(
-                f"vLLM multi-node: --data-parallel-size {dp} must be positive."
-            )
-        if dpl is not None and dpl <= 0:
-            raise ValueError(
-                f"vLLM multi-node: --data-parallel-size-local {dpl} must be positive."
-            )
+        # Positivity of dp/dpl is already enforced at construction time by
+        # get_world_size_from_backend_parameters (all backends), so here we only
+        # check the cross-argument relationship.
         if dp is not None and dpl is not None and dp % dpl != 0:
             raise ValueError(
                 f"vLLM multi-node: --data-parallel-size {dp} must be a multiple "

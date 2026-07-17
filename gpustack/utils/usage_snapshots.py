@@ -49,6 +49,20 @@ def format_usage_route_label(route_name: Optional[str]) -> str:
     return route_name or "Untracked"
 
 
+def format_usage_organization_label(organization_name: Optional[str]) -> str:
+    # The Org (consumer principal) name is now denormalized onto model_usages
+    # (``consumer_name``) — like user / route / api_key — with a live
+    # principals lookup as the fallback for pre-upgrade rows. When neither
+    # resolves (a hard-deleted principal on a pre-upgrade row) fall back to a
+    # generic label; the ``(Deleted)`` marker is carried by the dimension's
+    # ``deleted`` flag, composed client-side.
+    return organization_name or "Unknown Organization"
+
+
+def format_usage_user_group_label(group_name: Optional[str]) -> str:
+    return group_name or "Unknown Group"
+
+
 def format_usage_api_key_label(
     user_name: Optional[str] = None,
     api_key_name: Optional[str] = None,

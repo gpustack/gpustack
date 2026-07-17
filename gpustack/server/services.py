@@ -106,7 +106,13 @@ class UserService:
         self.session.expunge(result)
         return result
 
-    async def update(self, user: User, source: Union[dict, SQLModel, None] = None):
+    async def update(
+        self,
+        user: User,
+        source: Union[dict, SQLModel, None] = None,
+        *,
+        auto_commit: bool = True,
+    ):
         old_name = user.name
         result = await user.update(self.session, source, auto_commit=False)
         # Refresh denormalized ``user_name`` snapshots on usage rows so
@@ -115,13 +121,34 @@ class UserService:
         # both. See :func:`propagate_user_rename` for scope notes.
         if user.name != old_name:
             await propagate_user_rename(self.session, user.id, user.name)
-        await self.session.commit()
+        # ``auto_commit=False`` defers the commit to the caller so
+        # this write can share a transaction with other writes; the
+        # caller is then also responsible for invoking
+        # :meth:`invalidate_cache` *after* it commits. Invalidating
+        # here would evict the entry while the row write is still
+        # uncommitted, letting a concurrent read refill the cache
+        # from the pre-commit row and leave stale data past the commit.
+        if auto_commit:
+            await self.session.commit()
+            await self.invalidate_cache(user, old_name=old_name)
+        return result
+
+    async def invalidate_cache(
+        self, user: User, *, old_name: Optional[str] = None
+    ) -> None:
+        """Drop this user's read-through cache entries.
+
+        Meant to run after a commit; :meth:`update` calls it inline
+        when ``auto_commit=True``, otherwise the caller invokes it
+        once its enclosing transaction has committed. Accepts the
+        pre-update ``old_name`` so a rename can drop the entry keyed
+        by the previous username too.
+        """
         await delete_cache_by_key(self.get_by_id, user.id)
         await delete_cache_by_key(self.get_user_accessible_model_names, user.id)
         await delete_cache_by_key(self.get_by_username, user.name)
-        if old_name != user.name:
+        if old_name and old_name != user.name:
             await delete_cache_by_key(self.get_by_username, old_name)
-        return result
 
     async def delete(self, user: User):
         apikeys = await APIKeyService(self.session).get_by_user_id(user.id)

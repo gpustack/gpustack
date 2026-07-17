@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Optional, ClassVar, List, Literal
 
 from pydantic import (
@@ -5,7 +6,6 @@ from pydantic import (
     BaseModel,
     AliasChoices,
     Field as PField,
-    model_validator,
 )
 from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
 from sqlmodel import SQLModel, Field
@@ -397,12 +397,17 @@ class GPUInstanceDevicesAllocationGroup(BaseModel):
     """
 
 
-class GPUInstancePhase:
+class GPUInstancePhase(str, Enum):
     """Canonical phase strings written to :class:`GPUInstanceStatus.phase`.
 
     Defined here (not on the controller) so the route layer can reference
     them without importing controllers, which would create a circular
     dependency.
+
+    A ``str`` subclass enum (``StrEnum`` is 3.11+ only; this repo supports
+    3.10). Members compare equal to their string value and support ``str``
+    methods, and ``GPUInstanceStatus.phase`` (typed ``Optional[str]``) stores
+    the coerced plain-string value, so serialization stays ``"Ready"`` etc.
     """
 
     # GPUStack-specific phases:
@@ -424,6 +429,45 @@ class GPUInstancePhase:
     READY = "Ready"
 
 
+# The GPUStack-defined failure phases, enumerated for user-action gating / UX
+# (e.g. which lifecycle actions are allowed from a given phase). This is the
+# narrow, known set — distinct from ``GPUInstance.is_failed()``, which uses the
+# broad ``endswith("Failed")`` because the worker side may report failure
+# phases outside this enum.
+FAILED_PHASES = frozenset(
+    {
+        GPUInstancePhase.CREATE_FAILED,
+        GPUInstancePhase.SSH_KEY_CREATE_FAILED,
+        GPUInstancePhase.PV_TYPE_CREATE_FAILED,
+        GPUInstancePhase.PV_CREATE_FAILED,
+        GPUInstancePhase.INITIALIZE_FAILED,
+    }
+)
+
+
+# Phases where the instance is mid-transition between settled states. User
+# lifecycle actions (e.g. /stop) are gated off these until it settles.
+TRANSITIONING_PHASES = frozenset(
+    {
+        GPUInstancePhase.DELETING,
+        GPUInstancePhase.STOPPING,
+        GPUInstancePhase.STARTING,
+        GPUInstancePhase.NOT_READY,
+    }
+)
+
+
+# Phases where execution is intentionally halted but resumable (e.g. /start
+# from Stopped).
+INTERRUPTED_PHASES = frozenset({GPUInstancePhase.STOPPED})
+
+
+# Label stamped on the worker CR's ``metadata.labels`` carrying the GPUStack
+# ``GPUInstance.id``. The downstream watcher resolves a CR back to its row by
+# reading this label first (falling back to namespace parsing).
+KUBERES_INSTANCE_ID_LABEL = "gpustack.ai/instance-id"
+
+
 class GPUInstanceStatus(BaseModel):
     """
     Represents the status of a GPU instance, including any relevant state information.
@@ -433,11 +477,6 @@ class GPUInstanceStatus(BaseModel):
         alias_generator=pydantic_camel_case_generator,
         populate_by_name=True,
     )
-
-    count: int = 0
-    """
-    Counting the same phase occurrences.
-    """
 
     namespace: str = ""
     """
@@ -492,28 +531,6 @@ class GPUInstanceStatus(BaseModel):
     """
     Optional list of allocated accelerator devices for the GPU instance, grouped by manufacturer and type.
     """
-
-
-class GPUInstanceStatusPublic(GPUInstanceStatus):
-    """
-    Identical to :class:`GPUInstanceStatus` except ``count``
-    is excluded from serialization, so the count never leaves the
-    server in API responses. Inputs (create/update) continue to bind
-    against :class:`GPUInstanceStatus`.
-    """
-
-    count: Optional[int] = Field(default=None, exclude=True)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_parent_instance(cls, value):
-        # Pydantic v2 rejects parent-class instances when validating
-        # against a child model. The ORM row stores ``GPUInstanceStatus``
-        # while the public response expects ``GPUInstanceStatusPublic``,
-        # so dump the parent to a dict and let it re-validate as the child.
-        if isinstance(value, GPUInstanceStatus) and not isinstance(value, cls):
-            return value.model_dump()
-        return value
 
 
 class GPUInstanceBase(SQLModel):
@@ -640,6 +657,127 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
     Status of the GPU instance, including phase, host IPs, ports, etc.
     """
 
+    # -- phase predicates -------------------------------------------------- #
+    # Single source of truth for phase semantics, so the controller and routes
+    # stop re-deriving them with ad-hoc ``== PHASE_*`` / ``endswith`` checks.
+
+    def _phase(self) -> Optional[str]:
+        return (self.status or GPUInstanceStatus()).phase
+
+    def is_creating(self) -> bool:
+        """Brand-new instance whose phase has not been set yet (pre-create)."""
+        return self._phase() is None
+
+    def is_ready(self) -> bool:
+        """Ready *and* fully populated.
+
+        Phase is ``Ready`` and every status field the spec implies is present:
+        access addresses and ports when the spec exposes ports, and device
+        allocations when it requests an accelerator. A Ready-but-incomplete row
+        still needs reconciling, so phase ``Ready`` alone is not enough.
+        """
+        if self._phase() != GPUInstancePhase.READY:
+            return False
+        fields: List[str] = []
+        if self.spec.ports:
+            fields.extend(["access_addresses", "ports"])
+        if self.spec.resources and self.spec.resources.accelerator:
+            fields.append("allocations")
+        return all(getattr(self.status, field) for field in fields)
+
+    def is_starting(self) -> bool:
+        return self._phase() == GPUInstancePhase.STARTING
+
+    def is_stopping(self) -> bool:
+        return self._phase() == GPUInstancePhase.STOPPING
+
+    def is_stopped(self) -> bool:
+        return self._phase() == GPUInstancePhase.STOPPED
+
+    def is_deleting(self) -> bool:
+        return self._phase() == GPUInstancePhase.DELETING
+
+    def is_failed(self) -> bool:
+        """Any failure phase, including worker-side ones outside this enum.
+
+        The worker CR may report failure phases GPUStack does not define, so
+        this uses the broad ``endswith("Failed")`` rather than membership in
+        :data:`FAILED_PHASES` (which enumerates only the GPUStack-defined
+        failure phases for user-action gating).
+        """
+        phase = self._phase()
+        return phase is not None and phase.endswith("Failed")
+
+    def is_transitioning(self) -> bool:
+        """Whether the instance is mid-transition and still needs re-polling.
+
+        Settled states (ready, stopped, failed) are done; everything else —
+        pre-create (``phase is None``), starting, stopping, deleting, unknown,
+        not-ready, and Ready-but-incomplete — is still reconciling.
+        """
+        return not (self.is_ready() or self.is_stopped() or self.is_failed())
+
+    # -- downstream CR (de)serialization ----------------------------------- #
+
+    def convert_to_kuberes(self) -> dict:
+        """Full ``worker.gpustack.ai/v1`` Instance CR body: ``metadata`` + ``spec``.
+
+        The ops layer (:class:`ClusterOps`) fills the cluster-plumbing bits the
+        schema can't know — ``apiVersion`` / ``kind`` / ``metadata.namespace``.
+
+        Field names follow the Go CRD's camelCase via the ``alias_generator``
+        on :class:`GPUInstanceSpec`, so ``model_dump(by_alias=True)`` produces
+        the on-wire keys directly. Spec transforms (identical to the former
+        ``cluster_apis_util.spec_instance``):
+
+        1. ``displayName`` / ``description`` live on the row in Python but on
+           ``InstanceSpec`` in Go, so they are hoisted into the spec dict.
+        2. ``volume.persistentTemplate`` collapses into ``volume.persistent``
+           (name only; ``spec`` / ``releaseWithInstance`` drive server-side
+           provisioning and are not part of the CRD).
+        3. ``sshPublicKeys`` (list) collapses into ``sshPublicKey`` (singular
+           ``LocalObjectReference`` named after the instance).
+        """
+        spec = self.spec.model_dump(by_alias=True, exclude_none=True)
+
+        if self.display_name is not None:
+            spec["displayName"] = self.display_name
+        if self.description is not None:
+            spec["description"] = self.description
+
+        volume = spec.get("volume")
+        if volume is not None:
+            tmpl = volume.pop("persistentTemplate", None)
+            if tmpl is not None:
+                volume["persistent"] = {"name": tmpl["name"]}
+
+        spec.pop("sshPublicKeys", None)
+        spec["sshPublicKey"] = {"name": self.name}
+
+        return {
+            "metadata": {
+                "name": self.name,
+                "labels": {KUBERES_INSTANCE_ID_LABEL: str(self.id)},
+            },
+            "spec": spec,
+        }
+
+    def merge_from_kuberes(self, downstream: dict) -> GPUInstanceStatus:
+        """Map a downstream worker CR dict into a :class:`GPUInstanceStatus`.
+
+        Pure merge — **no** concurrency guards (DELETING sticky,
+        ``session.refresh``) and no mutation of ``self``; those stay in the
+        controller's write path (``_write_status``).
+
+        The k8s ``namespace`` is taken from the CR's ``metadata.namespace``
+        (authoritative), so callers don't stamp it separately.
+        """
+        payload = dict(downstream.get("status") or {})
+        namespace = (downstream.get("metadata") or {}).get("namespace")
+        if namespace is not None:
+            payload["namespace"] = namespace
+        return GPUInstanceStatus.model_validate(payload)
+
 
 class GPUInstanceUpdate(GPUInstanceBase):
     """
@@ -700,7 +838,7 @@ class GPUInstancePublic(GPUInstanceCreate, PublicFields):
     Reference to the principal who created the GPU instance.
     """
 
-    status: Optional[GPUInstanceStatusPublic] = None
+    status: Optional[GPUInstanceStatus] = None
     """
     Status of the GPU instance, including phase, host IPs, ports, etc.
     """

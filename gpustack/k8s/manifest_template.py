@@ -95,6 +95,13 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
     # image registry prefix and the GPUSTACK_CONTAINER_REGISTRY env var
     # surfaced to the operator at runtime.
     system_default_container_registry: Optional[str] = None
+    # Worker listen/metrics ports, sourced from ``cluster.worker_config``
+    # (``worker_port``/``worker_metrics_port``). Threaded into the worker
+    # container env (so the worker binds these ports), the DaemonSet
+    # containerPorts, and the Service ports + prometheus scrape annotation.
+    # Fall back to the built-in defaults when the cluster doesn't override them.
+    worker_port: int = 10150
+    worker_metrics_port: int = 10151
     workers: List[WorkerRenderSpec] = []
     # Pre-computed Secret render data, one per K8sOptions.image_credentials
     # entry. Both image_pull_secrets.jinja (Secret resource) and the

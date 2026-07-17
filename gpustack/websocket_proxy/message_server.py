@@ -271,8 +271,12 @@ class MessageServerHandler:
             self._authenticator.inject_headers(headers)
             websocket = await ws_connect(ws_uri, additional_headers=headers)
 
-            # Get peer info from response headers
-            peer_info = ServerInfo.from_headers(dict(websocket.response.headers))
+            # websockets handshake responses can carry duplicate `Date` headers;
+            # `dict(Headers)` uses the mapping protocol and raises
+            # MultipleValuesError on any repeated key. ServerInfo.from_headers
+            # accepts any object with a `.get(key)` method, so pass the raw
+            # Headers through.
+            peer_info = ServerInfo.from_headers(websocket.response.headers)
             if not peer_info:
                 logger.debug("[Server] Peer did not provide valid registration headers")
                 await websocket.close()

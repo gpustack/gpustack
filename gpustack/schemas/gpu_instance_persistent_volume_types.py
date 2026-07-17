@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Optional, ClassVar, List
 
 from pydantic import ConfigDict, BaseModel
@@ -188,6 +189,47 @@ class GPUInstancePersistentVolumeTypeSpecPublic(GPUInstancePersistentVolumeTypeS
     s3: Optional[GPUInstancePersistentVolumeS3Public] = None
 
 
+class GPUInstancePersistentVolumeTypePhase(str, Enum):
+    """Lifecycle phase of a persistent volume type row.
+
+    Managed entirely server-side (unlike GPUInstance phases, which mirror
+    worker CR phases): a row is active while its status phase is unset, ``Ready``
+    once created, and ``Deleting`` from soft-delete until the finalizer
+    hard-deletes it.
+    """
+
+    READY = "Ready"
+    DELETING = "Deleting"
+
+
+class GPUInstancePersistentVolumeTypeStatus(BaseModel):
+    """
+    Represents the status of a GPU instance persistent volume type.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    phase: Optional[str] = None
+    """
+    The current phase, e.g. "Deleting" during finalizer-driven soft delete;
+    None means the type is active.
+    """
+
+    phase_message: Optional[str] = None
+    """
+    Optional message with detail about the current phase (e.g. why finalize is waiting).
+    """
+
+    finalizing: Optional[List[int]] = None
+    """
+    Cluster ids whose downstream object is not yet cleaned up; the row is
+    hard-deleted once this is empty.
+    """
+
+
 class GPUInstancePersistentVolumeTypeBase(SQLModel):
     """
     Base model for GPU instance persistent volume types, containing common fields.
@@ -279,6 +321,22 @@ class GPUInstancePersistentVolumeType(
     Specification for the GPU instance persistent volume type, including NFS or S3 configuration.
     """
 
+    status: Optional[GPUInstancePersistentVolumeTypeStatus] = Field(
+        sa_type=pydantic_column_type(GPUInstancePersistentVolumeTypeStatus),
+        default=None,
+    )
+    """
+    Status of the GPU instance persistent volume type, including the soft-delete
+    phase and the clusters still being finalized.
+    """
+
+    def is_deleting(self) -> bool:
+        """Whether the volume type is soft-deleted and awaiting finalization."""
+        return (
+            self.status is not None
+            and self.status.phase == GPUInstancePersistentVolumeTypePhase.DELETING
+        )
+
 
 class GPUInstancePersistentVolumeTypeUpdate(GPUInstancePersistentVolumeTypeBase):
     """
@@ -318,6 +376,11 @@ class GPUInstancePersistentVolumeTypePublic(
     creator_id: Optional[int] = None
     """
     Reference to the principal who created the GPU instance persistent volume type.
+    """
+
+    status: Optional[GPUInstancePersistentVolumeTypeStatus] = None
+    """
+    Status of the GPU instance persistent volume type (soft-delete phase, finalizing clusters).
     """
 
 
