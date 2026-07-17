@@ -948,7 +948,7 @@ async def test_buckets_and_last_active_use_rollup_tz(session, monkeypatch):
     from gpustack import envs
     from sqlalchemy import and_
 
-    monkeypatch.setattr(envs, "USAGE_ROLLUP_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setattr(envs, "TIMEZONE", "Asia/Shanghai")
 
     session.add(
         _mu(
@@ -1024,7 +1024,7 @@ async def test_resource_events_filter_uses_rollup_tz_day(session, monkeypatch):
     from gpustack.routes.resource_usage import resource_events
     from gpustack.schemas.resource_events import EVENT_TYPE_CREATED, ResourceEvent
 
-    monkeypatch.setattr(envs, "USAGE_ROLLUP_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setattr(envs, "TIMEZONE", "Asia/Shanghai")
     session.add(
         ResourceEvent(
             occurred_at=datetime(2026, 5, 26, 20, 0, 0),
@@ -1076,7 +1076,7 @@ async def test_buckets_use_negative_offset_rollup_tz(session, monkeypatch):
     from gpustack import envs
     from sqlalchemy import and_
 
-    monkeypatch.setattr(envs, "USAGE_ROLLUP_TIMEZONE", "America/Bogota")
+    monkeypatch.setattr(envs, "TIMEZONE", "America/Bogota")
     session.add(
         _mu(
             meter_key=METER_INSTANCE_UPTIME,
@@ -1125,7 +1125,7 @@ async def test_breakdown_range_boundary_includes_shifted_edge(session, monkeypat
     from gpustack import envs
     from sqlalchemy import and_
 
-    monkeypatch.setattr(envs, "USAGE_ROLLUP_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setattr(envs, "TIMEZONE", "Asia/Shanghai")
     session.add(
         _mu(
             meter_key=METER_INSTANCE_UPTIME,
