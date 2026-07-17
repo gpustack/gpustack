@@ -73,6 +73,16 @@ WORKER_UNREACHABLE_CHECK_MODE = os.getenv(
     "GPUSTACK_WORKER_UNREACHABLE_CHECK_MODE", "auto"
 ).lower()
 
+# Opt-in (default off): drop a runner image's bundled cuda-compat and use the host
+# driver so consumer GPUs can run images built for a newer CUDA minor (same major).
+# Overridable per-model via the same env name in the model's env.
+ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV = (
+    "GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY"
+)
+ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY = os.getenv(
+    ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV, "false"
+).lower() in ["true", "1"]
+
 # GPU instance configuration
 # Interval at which the controller re-observes a still-transitioning (non-
 # settled) GPU instance via an in-memory requeue, instead of writing its own
