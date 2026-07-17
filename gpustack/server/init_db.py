@@ -2,6 +2,7 @@ import asyncio
 import logging
 import threading
 import time
+import traceback
 import re
 from urllib.parse import urlparse, parse_qs, urlunparse
 from sqlalchemy.ext.asyncio import (
@@ -199,6 +200,37 @@ def listen_events(engine: AsyncEngine):
 def count_query(conn, cursor, statement, parameters, context, executemany):
     """Increment the global query counter for each query executed."""
     increment_query_count_sync()
+    _maybe_trace_sql(statement)
+
+
+# Distinct call sites already logged, so a query that fires thousands of times
+# is attributed once per caller rather than flooding the log.
+_traced_call_sites = set()
+
+
+def _maybe_trace_sql(statement: str):
+    """When GPUSTACK_DB_TRACE_SQL_SUBSTR matches ``statement``, log the Python
+    call stack once per distinct call site. Used to attribute a high-frequency
+    query seen in DB_ECHO to the code that issues it."""
+    substr = envs.DB_TRACE_SQL_SUBSTR
+    if not substr or substr not in statement:
+        return
+    stack = traceback.extract_stack()
+    frames = [
+        f
+        for f in stack
+        if "/gpustack/" in f.filename and "server/init_db.py" not in f.filename
+    ][-8:]
+    sig = tuple((f.filename, f.lineno) for f in frames)
+    if sig in _traced_call_sites:
+        return
+    _traced_call_sites.add(sig)
+    logger.info(
+        "[DB TRACE] matched %r; new call site:\n%s\nSQL: %s",
+        substr,
+        "".join(traceback.format_list(frames)),
+        statement,
+    )
 
 
 def setup_sqlite_pragmas(conn, record):
