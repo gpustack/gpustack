@@ -247,10 +247,6 @@ class ServeManager:
         - If everything is fine, update the model instance state to RUNNING.
         """
 
-        # Get all model instances assigned to this worker.
-        #
-        # FIXME(thxCode): This may cause performance issues when there are many model instances in the system.
-        #                 A mechanism is needed to improve efficiency here.
         # Snapshot local state BEFORE the list call. Reversing this order
         # races with CREATED events and reaps freshly-assigned instances.
         local_assigned_ids = {
@@ -259,26 +255,42 @@ class ServeManager:
             if mi.get_deployment_metadata(self._worker_id) is not None
         }
 
-        # page=-1 returns all rows — needed because the default perPage=100
-        # would have the reap below missing workloads on page 2+.
-        response = self._clientset.model_instances.list(
-            params={"page": -1},
-            use_cache=False,
-        )
+        # Read from the watch-backed cache. It holds the full set, so the
+        # common (nothing-to-reap) path stays O(1) with no server/DB round
+        # trip and scales independently of worker count — a direct per-worker
+        # poll here is one SELECT over model_instances per worker every few
+        # seconds, which does not scale to hundreds of workers.
+        response = self._clientset.model_instances.list()
         all_items = response.items or []
-
-        # Reap entries the server no longer reports — watch streams can drop
-        # DELETED events on disconnect, and when the user stops every model
-        # the server legitimately reports zero instances. list() raises on
-        # API failure rather than returning empty, so an empty result is
-        # authoritative — local_assigned_ids - ∅ = local_assigned_ids and
-        # everything still tracked locally is correctly reaped.
-        authoritative_ids: Set[int] = {
+        reap_ids = local_assigned_ids - {
             mi.id
             for mi in all_items
             if mi.get_deployment_metadata(self._worker_id) is not None
         }
-        for stale_id in local_assigned_ids - authoritative_ids:
+
+        # Reaping tears down live workloads, so it must act on an authoritative
+        # snapshot. The cache is not one at every instant: awatch clears it and
+        # flips _watch_started before the replay snapshot arrives, so a read
+        # during a reconnect window can see an empty-but-"authoritative" cache
+        # and surface healthy instances as stale. So confirm any reap candidates
+        # against a fresh, unpaginated, uncached fetch — this only touches the
+        # DB when something actually looks reapable.
+        if reap_ids:
+            response = self._clientset.model_instances.list(
+                params={"page": -1},
+                use_cache=False,
+            )
+            all_items = response.items or []
+            reap_ids = local_assigned_ids - {
+                mi.id
+                for mi in all_items
+                if mi.get_deployment_metadata(self._worker_id) is not None
+            }
+
+        # An empty authoritative result is legitimate (user stopped every
+        # model); list() raises on API failure rather than returning empty, so
+        # local_assigned_ids - ∅ correctly reaps everything still tracked.
+        for stale_id in reap_ids:
             stale = self._model_instance_by_instance_id.get(stale_id)
             if stale is None:
                 continue
