@@ -1105,7 +1105,6 @@ def validate_provider_model_name(
     "", response_model=ModelRouteTargetsPublic, response_model_exclude_none=True
 )
 async def get_model_route_targets(
-    session: SessionDep,
     params: ModelRouteTargetListParams = Depends(),
     name: str = None,
     search: str = None,
@@ -1135,14 +1134,15 @@ async def get_model_route_targets(
             media_type="text/event-stream",
         )
 
-    return await ModelRouteTarget.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=params.order_by,
-    )
+    async with async_session() as session:
+        return await ModelRouteTarget.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=params.order_by,
+        )
 
 
 @target_router.put(

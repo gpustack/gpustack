@@ -21,7 +21,6 @@ from gpustack.worker.log_sources import (
     LogSourceChain,
     MainLogSource,
 )
-from gpustack.server.deps import SessionDep
 
 router = APIRouter()
 
@@ -581,7 +580,6 @@ async def get_serve_log_options(request: Request, id: int):
 @router.get("/serveLogs/{id}")
 async def get_serve_logs(
     request: Request,
-    session: SessionDep,
     id: int,
     log_options: LogOptionsDep,
     model_instance_name: str = Query(default=""),
@@ -614,7 +612,6 @@ async def get_serve_logs(
 @router.get("/benchmark_logs/{id}")
 async def get_benchmark_logs(
     request: Request,
-    session: SessionDep,
     id: int,
     log_options: LogOptionsDep,
     benchmark_name: str = Query(default=""),
