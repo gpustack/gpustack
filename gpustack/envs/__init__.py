@@ -4,6 +4,11 @@ import os
 
 # Database configuration
 DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
+# Diagnostic: when non-empty, every executed SQL whose text contains this
+# substring gets its Python call stack logged once per distinct call site
+# (deduplicated), so a high-frequency query can be attributed to its caller
+# without drowning the log. Empty (default) disables the check entirely.
+DB_TRACE_SQL_SUBSTR = os.getenv("GPUSTACK_DB_TRACE_SQL_SUBSTR", "")
 DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 30))
 DB_MAX_OVERFLOW = int(os.getenv("GPUSTACK_DB_MAX_OVERFLOW", 20))
 DB_POOL_TIMEOUT = int(os.getenv("GPUSTACK_DB_POOL_TIMEOUT", 30))
