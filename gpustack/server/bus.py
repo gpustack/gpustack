@@ -214,6 +214,16 @@ class EventBus:
         # doesn't reap them mid-execution (Python's create_task only
         # holds a weak reference to the task it returns).
         self._pending_tasks: Set[asyncio.Task] = set()
+        # Event counts of unsubscribed subscribers, folded in on unsubscribe
+        # and never decremented. ``BusMetricsCollector`` adds these to the
+        # live subscribers' counts so ``bus_events_total`` stays monotonic
+        # even for short-lived sources (notably source="streaming", one
+        # subscriber per open watch stream): without this, a stream closing
+        # would drop the summed series and Prometheus would read it as a
+        # counter reset, mis-counting rate()/increase(). Keyed by
+        # ``(topic, source, kind, event_type)`` — a bounded label space, so
+        # this dict cannot grow without limit.
+        self.retired_event_counts: Dict[Tuple[str, str, str, str], int] = {}
 
     def _spawn(self, coro) -> asyncio.Task:
         """``asyncio.create_task`` plus retain-and-discard bookkeeping."""
@@ -433,14 +443,28 @@ class EventBus:
         unwind. Without this, ``_pending_tasks`` would retain those tasks —
         and through them the subscriber + its 1024 queued events — forever.
         """
+        removed = False
         if topic in self.subscribers:
             try:
                 self.subscribers[topic].remove(subscriber)
+                removed = True
             except ValueError:
                 # Defensive: tolerate double-unsubscribe.
                 pass
             if not self.subscribers[topic]:
                 del self.subscribers[topic]
+        # Fold this subscriber's counts into the bus-level accumulator so
+        # bus_events_total keeps the departed subscriber's contribution
+        # instead of dropping it. Only on the first (successful) removal, so
+        # a double-unsubscribe can't double-count. list() copies in case an
+        # in-flight enqueue is still bumping the dict.
+        if removed:
+            source = subscriber.source or ""
+            for (kind, event_type_name), count in list(subscriber.event_counts.items()):
+                key = (topic, source, kind.value, event_type_name)
+                self.retired_event_counts[key] = (
+                    self.retired_event_counts.get(key, 0) + count
+                )
         subscriber.close()
 
     async def publish(self, topic: str, event: Event):
