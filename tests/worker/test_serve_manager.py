@@ -278,6 +278,67 @@ def test_reap_stale_instance_purges_logs(tmp_path: Path):
     assert not log.exists()
 
 
+def test_reap_confirmation_skips_when_authoritative_fetch_still_has_instance():
+    """A cache read momentarily missing an instance (e.g. mid-reconnect, before
+    the watch replay repopulates) must not reap it: the authoritative
+    confirmation fetch still lists it, so it is a false positive and the live
+    workload is left alone."""
+    manager, clientset = _build_serve_manager(worker_id=1)
+    mi = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[mi.id] = mi
+    # First (cache) read misses it -> reap candidate; the authoritative
+    # confirmation fetch still has it -> not stale.
+    clientset.model_instances.list.side_effect = [
+        SimpleNamespace(items=[]),
+        SimpleNamespace(items=[mi]),
+    ]
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.INITIALIZING),
+        ),
+    ):
+        manager.sync_model_instances_state()
+
+    stop_model_instance.assert_not_called()
+    # Cache read plus exactly one authoritative confirmation fetch.
+    assert clientset.model_instances.list.call_count == 2
+    confirm_call = clientset.model_instances.list.call_args_list[1]
+    assert confirm_call.kwargs.get("params") == {"page": -1}
+    assert confirm_call.kwargs.get("use_cache") is False
+
+
+def test_reap_confirmation_reaps_when_missing_from_authoritative_fetch():
+    """When an instance is absent from both the cache read and the authoritative
+    confirmation fetch, it is genuinely gone and gets reaped."""
+    manager, clientset = _build_serve_manager(worker_id=1)
+    stale = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[stale.id] = stale
+    clientset.model_instances.list.side_effect = [
+        SimpleNamespace(items=[]),
+        SimpleNamespace(items=[]),
+    ]
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+        patch.object(manager, "_is_provisioning", return_value=False),
+    ):
+        manager.sync_model_instances_state()
+
+    stop_model_instance.assert_called_once_with(stale, delete_logs=True)
+    # Cache read plus the authoritative confirmation fetch before reaping.
+    assert clientset.model_instances.list.call_count == 2
+
+
 def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):
     """On stream EOF while the workload is still running, reconnect and resume
     by skipping already-written history (anchor), appending only new lines."""

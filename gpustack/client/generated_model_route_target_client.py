@@ -52,6 +52,15 @@ class ModelRouteTargetClient:
             cached = self._list_from_cache(params)
             if cached is not None:
                 return cached
+            # Cache was eligible but not authoritative (watch not started /
+            # mid-reconnect). The caller expects the full set the cache would
+            # have returned, so fetch unpaginated -- otherwise the server's
+            # default perPage=100 silently truncates this fallback.
+            logger.debug(
+                "model-route-targets cache not authoritative; "
+                "fetching unpaginated from API"
+            )
+            params = {**(params or {}), "page": -1}
 
         # Fall back to API call
         response = self._client.get_httpx_client().get(self._url, params=params)
