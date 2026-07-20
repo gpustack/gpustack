@@ -78,6 +78,11 @@ Bundles the pre-release schema changes for v2.3.0:
    the metering read path derives the value on the fly for soft-deleted rows,
    which are never re-LISTed.
 
+7. ``model_instances.dp_rank`` for the vLLM data-parallel node-per-instance
+   path: every DP node becomes a standalone ``ModelInstance`` carrying its own
+   rank. Nullable and additive — NULL for every non-DP instance. See
+   :func:`_upgrade_model_instance_dp_rank`.
+
 Revision ID: 367a3982fcde
 Revises: c4d7e8f9a0b1
 Create Date: 2026-07-15 16:00:00.000000
@@ -362,6 +367,8 @@ def upgrade() -> None:
                 )
             )
 
+    _upgrade_model_instance_dp_rank()
+
     # Data-only and idempotent: it deletes orphans, so a replay finds none.
     _cleanup_orphan_system_principals()
 
@@ -369,6 +376,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     _downgrade_metering_sku_shape()
     _downgrade_benchmark_load_curves()
+    _downgrade_model_instance_dp_rank()
 
     # The orphan principal cleanup is data-only — the deleted rows (and their
     # credentials) can't be reconstructed, so there is nothing to undo for it.
@@ -679,6 +687,24 @@ def _downgrade_benchmark_load_curves() -> None:
         with op.batch_alter_table('benchmarks') as batch_op:
             for name in present:
                 batch_op.drop_column(name)
+
+
+def _upgrade_model_instance_dp_rank() -> None:
+    """``model_instances.dp_rank`` for the vLLM data-parallel node-per-instance
+    path: each DP node is a standalone ``ModelInstance`` carrying its own rank
+    (0 = coordinator). NULL for every other instance, so the column is fully
+    backward compatible."""
+    if column_exists('model_instances', 'dp_rank'):
+        return
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('dp_rank', sa.Integer(), nullable=True))
+
+
+def _downgrade_model_instance_dp_rank() -> None:
+    if not column_exists('model_instances', 'dp_rank'):
+        return
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.drop_column('dp_rank')
 
 
 def _cleanup_orphan_system_principals() -> None:
