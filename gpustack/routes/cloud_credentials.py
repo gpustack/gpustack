@@ -1,10 +1,11 @@
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from functools import partial
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    BadRequestException,
     InternalServerErrorException,
     NotFoundException,
 )
@@ -173,7 +174,30 @@ async def proxy_cluster_provider_api(
     provider = factory.get(credential.provider, None)
     if provider is None:
         raise NotFoundException(message=f"Provider {credential.provider} not found")
-    url = urljoin(provider[0].get_api_endpoint(), path)
+    endpoint = provider[0].get_api_endpoint()
+    # The request carries the credential's auth header, so it must stay on
+    # the provider host. Require a strictly relative path first: an
+    # absolute, scheme-relative, or backslash-bearing path can be parsed
+    # differently by urlparse and by the HTTP client (parser confusion),
+    # so rejecting it up front is more reliable than only inspecting the
+    # joined URL.
+    parsed_path = urlparse(path)
+    if (
+        "\\" in path
+        or path.startswith("//")
+        or parsed_path.scheme
+        or parsed_path.netloc
+    ):
+        raise BadRequestException(message="Invalid provider API path")
+    url = urljoin(endpoint, path)
+    # Defense in depth: the joined URL must still resolve to the provider host.
+    endpoint_parts = urlparse(endpoint)
+    url_parts = urlparse(url)
+    if (url_parts.scheme, url_parts.netloc) != (
+        endpoint_parts.scheme,
+        endpoint_parts.netloc,
+    ):
+        raise BadRequestException(message="Invalid provider API path")
     if request.query_params:
         url = f"{url}?{str(request.query_params)}"
     options = {
