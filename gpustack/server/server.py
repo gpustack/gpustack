@@ -87,6 +87,7 @@ from gpustack.schemas.metered_usage import MeteredUsage, MeteredUsageArchive
 from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
+from gpustack.utils.platform import is_inside_kubernetes
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
@@ -1218,21 +1219,32 @@ class Server:
                     )
 
     async def _prepare_jwt_secret_key(self):
-        """Enforce that distributed deployments use an explicit JWT secret.
+        """Enforce that in-cluster distributed deployments use an explicit JWT secret.
 
         ``Config`` auto-generates a local ``jwt_secret_key`` file during init
         so early startup paths (e.g. ``initialize_gateway``) have a usable key.
-        That auto-generated value is safe only in single-node mode; distributed
-        instances must share the SAME secret or JWTs signed by one instance
-        won't verify on another. We rely on the ``_jwt_secret_key_user_provided``
-        flag (set from --jwt-secret-key / GPUSTACK_JWT_SECRET_KEY / config file)
-        rather than the current value, since the value is always populated by
-        the time this runs.
+        That auto-generated value is safe only when a single instance owns the
+        secret; distributed instances must share the SAME secret or JWTs signed
+        by one instance won't verify on another. We rely on the
+        ``_jwt_secret_key_user_provided`` flag (set from --jwt-secret-key /
+        GPUSTACK_JWT_SECRET_KEY / config file) rather than the current value,
+        since the value is always populated by the time this runs.
+
+        A single-container deployment (e.g. a plain ``docker run`` against an
+        external database) still selects a distributed coordinator, but it owns
+        the secret alone: the persisted ``<data_dir>/jwt_secret_key`` stays
+        stable across restarts on a mounted volume, so the auto-generated key is
+        safe and we don't force one. Only in-cluster deployments run instances
+        that each own an ephemeral ``data_dir``, so the explicit secret is
+        required there.
         """
         if self._config._jwt_secret_key_user_provided:
             return
 
         if isinstance(self._coordinator, LocalCoordinator):
+            return
+
+        if not is_inside_kubernetes():
             return
 
         raise RuntimeError(
