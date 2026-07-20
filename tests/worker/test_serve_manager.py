@@ -7,6 +7,8 @@ from gpustack.schemas.models import (
     BackendEnum,
     DistributedServerCoordinateModeEnum,
     DistributedServers,
+    Model,
+    ModelInstance,
     ModelInstanceSubordinateWorker,
     ModelInstanceStateEnum,
     SourceEnum,
@@ -496,3 +498,105 @@ def test_persist_container_logs_window_anchor_ignores_repeated_line(
     # Window [A,B,A,B] matches only at the end; single-line 'B' would match
     # index 1 and duplicate A,B.
     assert Path(log_path).read_text(encoding="utf-8") == "A\nB\nA\nB\nC\n"
+
+
+# ---------------------------------------------------------------------------
+# vLLM DP node-per-instance path
+# ---------------------------------------------------------------------------
+
+_A_PRIME_PARAMS = [
+    "--data-parallel-external-lb",
+    "--distributed-executor-backend",
+    "mp",
+]
+
+
+def _a_prime_model():
+    return Model(
+        name="m",
+        backend=BackendEnum.VLLM,
+        backend_parameters=_A_PRIME_PARAMS,
+        distributed_inference_across_workers=True,
+    )
+
+
+def _a_prime_instance(iid, dp_rank, **kwargs):
+    return ModelInstance(
+        id=iid,
+        name=f"m-{dp_rank}",
+        model_id=1,
+        model_name="m",
+        dp_rank=dp_rank,
+        **kwargs,
+    )
+
+
+def test_assign_ports_dp_node_per_instance():
+    """rank-0 gets [serving, dp_rpc, dp_master, vllm_port]; members get just
+    [serving, vllm_port], and the coordinator's dp_master reserves a 10-port band
+    its other ports steer clear of."""
+    cfg = SimpleNamespace(service_port_range="40000-41000", log_dir="/tmp")
+    manager = ServeManager(lambda: 1, lambda: MagicMock(), cfg)
+    model = _a_prime_model()
+
+    coordinator = _a_prime_instance(10, 0, worker_ip="127.0.0.1")
+    manager._assign_ports(coordinator, model, BackendEnum.VLLM)
+    assert len(coordinator.ports) == 4
+
+    member = _a_prime_instance(11, 1, worker_ip="127.0.0.1")
+    manager._assign_ports(member, model, BackendEnum.VLLM)
+    assert len(member.ports) == 2
+
+    band = set(range(coordinator.ports[2], coordinator.ports[2] + 10))
+    assert coordinator.ports[1] not in band
+    assert coordinator.ports[3] not in band
+
+
+def test_dp_member_waits_for_coordinator():
+    """A member holds until its rank-0 coordinator is up (INITIALIZING/STARTING/
+    RUNNING) with the shared coordinator ports assigned; rank 0 itself never
+    waits."""
+    manager, clientset = _build_serve_manager()
+    model = _a_prime_model()
+    member = _a_prime_instance(11, 1)
+
+    def siblings(*items):
+        clientset.model_instances.list.return_value = SimpleNamespace(items=list(items))
+
+    # Coordinator absent, then up but ports not yet assigned -> keep waiting.
+    siblings(member)
+    assert manager._dp_member_should_wait(member, model) is True
+    siblings(
+        _a_prime_instance(
+            10, 0, state=ModelInstanceStateEnum.STARTING, ports=[8000, 8001]
+        ),
+        member,
+    )
+    assert manager._dp_member_should_wait(member, model) is True
+
+    # Coordinator INITIALIZING with its coordinator ports -> proceed. A DP-node-per-instance
+    # coordinator sits in INITIALIZING (it never passes through STARTING) and can
+    # only reach RUNNING once the whole DP group is up, so waiting for anything
+    # later here deadlocks the coordinator and member against each other.
+    siblings(
+        _a_prime_instance(
+            10,
+            0,
+            state=ModelInstanceStateEnum.INITIALIZING,
+            ports=[8000, 8001, 8002, 8003],
+        ),
+        member,
+    )
+    assert manager._dp_member_should_wait(member, model) is False
+
+    # Coordinator STARTING with its mp coordinator ports -> proceed.
+    siblings(
+        _a_prime_instance(
+            10, 0, state=ModelInstanceStateEnum.STARTING, ports=[8000, 8001, 8002, 8003]
+        ),
+        member,
+    )
+    assert manager._dp_member_should_wait(member, model) is False
+
+    # The coordinator itself never waits.
+    assert manager._dp_member_should_wait(_a_prime_instance(10, 0), model) is False

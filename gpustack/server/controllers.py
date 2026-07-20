@@ -3,6 +3,7 @@ import random
 import string
 import asyncio
 import yaml
+from datetime import datetime, timedelta, timezone
 from importlib.resources import files
 from functools import partial
 from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
@@ -55,6 +56,7 @@ from gpustack.schemas.models import (
     ModelInstanceSubordinateWorker,
     SourceEnum,
     get_backend,
+    is_dp_node_per_instance,
 )
 from gpustack.schemas.links import (
     ModelInstanceModelFileLink,
@@ -93,6 +95,7 @@ from gpustack.schemas.users import (
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.cache import delete_cache_by_key
 from gpustack.utils.model_source import get_draft_model_source
+from gpustack.policies.utils import manual_distributed_from_env
 from gpustack import envs
 from gpustack.server.db import async_session
 from gpustack.server.services import (
@@ -143,8 +146,9 @@ class ModelController:
         self._config = cfg
         self._k8s_config = get_async_k8s_config(cfg=cfg)
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
-
-        pass
+        # Model ids whose manual-distributed upstreams are already cleared, so
+        # steady-state reconciles don't re-issue the Higress DELETE every tick.
+        self._manual_distributed_cleared: set[int] = set()
 
     async def start(self):
         """
@@ -165,10 +169,46 @@ class ModelController:
     ):
         if self._disable_gateway:
             return
+        if manual_distributed_from_env(model.env):
+            # Manual-distributed models manage gateway/LB externally; clear any
+            # previously-registered upstreams (avoid orphans) and skip registration.
+            # Dedup so a steady-state manual model isn't re-DELETED every reconcile.
+            if (
+                event_type != EventType.DELETED
+                and model.id in self._manual_distributed_cleared
+            ):
+                return
+            await mcp_handler.ensure_model_mcp_bridge(
+                event_type=EventType.DELETED,
+                model_id=model.id,
+                model_instances=[],
+                networking_higress_api=self._higress_network_api,
+                namespace=self._config.gateway_namespace,
+                cluster_id=model.cluster_id,
+            )
+            if event_type == EventType.DELETED:
+                self._manual_distributed_cleared.discard(model.id)
+            else:
+                self._manual_distributed_cleared.add(model.id)
+            return
+        # Not manual-distributed (anymore): let a later manual transition clear again.
+        self._manual_distributed_cleared.discard(model.id)
         model_instances = await ModelInstance.all_by_fields(
             session,
             fields={"model_id": model.id, "deleted_at": None},
         )
+        # vLLM DP node-per-instance gang gate: an external/hybrid-LB DP cluster
+        # only serves correctly once every node is up — serving an incomplete cluster
+        # hits cross-rank all-to-all (MoE/EP) and hangs. Register nothing until the
+        # whole group is RUNNING; a node dropping out likewise unregisters all.
+        if is_dp_node_per_instance(model):
+            running_nodes = sum(
+                1
+                for instance in model_instances
+                if instance.state == ModelInstanceStateEnum.RUNNING
+            )
+            if running_nodes < model.replicas:
+                model_instances = []
         worker_by_id = None
         worker_ids = {
             instance.worker_id for instance in model_instances if instance.worker_id
@@ -212,6 +252,12 @@ class ModelController:
                 await self._ensure_model_mcp_bridge(session, event.type, model)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
+
+
+# vLLM DP node-per-instance group-failover cooldown: collapse the burst of
+# errors from one node failure into a single whole-group restart, and keep it from
+# fighting the worker-side per-instance restart backoff (max 300s).
+_DP_GROUP_RESTART_COOLDOWN = timedelta(seconds=120)
 
 
 class ModelInstanceController:
@@ -274,6 +320,20 @@ class ModelInstanceController:
                 if model_deleting:
                     return
 
+                # vLLM DP node-per-instance group failover: one node failing
+                # breaks the whole DP cluster, so restart the entire group.
+                if (
+                    event.type == EventType.UPDATED
+                    and "state" in (event.changed_fields or {})
+                    and model_instance.state
+                    in (
+                        ModelInstanceStateEnum.ERROR,
+                        ModelInstanceStateEnum.UNREACHABLE,
+                    )
+                    and is_dp_node_per_instance(model)
+                ):
+                    await self._restart_dp_group(session, model, model_instance)
+
                 should_cleanup_lora_routes = event.type == EventType.DELETED or (
                     event.type == EventType.UPDATED
                     and "state" in (event.changed_fields or {})
@@ -296,6 +356,61 @@ class ModelInstanceController:
                 f"Failed to reconcile model instance {model_instance.name}: {e}"
             )
 
+    async def _restart_dp_group(
+        self, session: AsyncSession, model: Model, failed_instance: ModelInstance
+    ):
+        """Restart the whole DP group after one node fails.
+
+        A DP cluster with a missing node can't serve — the surviving nodes hang in
+        cross-rank all-to-all rather than erroring, so they won't self-heal. Pull
+        every still-alive sibling back to SCHEDULED to force an in-place restart; the
+        coordinator (rank 0) comes back first and members wait on it (Phase 3 gate).
+
+        A cooldown collapses the burst of errors from one failure into a single group
+        restart and keeps it from fighting the worker-side per-instance backoff.
+        """
+        siblings = await ModelInstance.all_by_field(
+            session, "model_id", model.id, for_update=True
+        )
+        now = datetime.now(timezone.utc)
+        last_restart = None
+        for sibling in siblings:
+            stamp = sibling.last_restart_time
+            if stamp is None:
+                continue
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            if last_restart is None or stamp > last_restart:
+                last_restart = stamp
+        if last_restart is not None and now - last_restart < _DP_GROUP_RESTART_COOLDOWN:
+            logger.debug(
+                f"Skipping DP group restart for model {model.name}: within cooldown."
+            )
+            return
+
+        restarted = []
+        for sibling in siblings:
+            # Nodes already re-queued for placement are left alone; only the alive
+            # (possibly hung) or errored siblings are pulled back together.
+            if sibling.state in (
+                ModelInstanceStateEnum.PENDING,
+                ModelInstanceStateEnum.SCHEDULED,
+            ):
+                continue
+            sibling.state = ModelInstanceStateEnum.SCHEDULED
+            sibling.state_message = (
+                f"Restarting DP group after node {failed_instance.name} failed."
+            )
+            sibling.last_restart_time = now
+            sibling.restart_count = (sibling.restart_count or 0) + 1
+            await ModelInstanceService(session).update(sibling)
+            restarted.append(sibling.name)
+        if restarted:
+            logger.info(
+                f"Restarting DP group for model {model.name} after node "
+                f"{failed_instance.name} failed: {restarted}"
+            )
+
 
 async def sync_replicas(session: AsyncSession, model: Model):
     """
@@ -310,8 +425,22 @@ async def sync_replicas(session: AsyncSession, model: Model):
     model = fresh_model
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
+    # For the vLLM DP node-per-instance path each replica is a DP node with
+    # its own dp_rank; assign the lowest free rank in [0, replicas). Deleting the
+    # highest rank on scale-down keeps the rank set a dense permutation, so a freed
+    # low rank is naturally refilled here on rebuild.
+    is_dp_per_instance = is_dp_node_per_instance(model)
+    used_dp_ranks = {
+        instance.dp_rank for instance in instances if instance.dp_rank is not None
+    }
     if len(instances) < model.replicas:
         for _ in range(model.replicas - len(instances)):
+            dp_rank = None
+            if is_dp_per_instance:
+                dp_rank = next(
+                    rank for rank in range(model.replicas) if rank not in used_dp_ranks
+                )
+                used_dp_ranks.add(dp_rank)
             name_prefix = ''.join(
                 random.choices(string.ascii_lowercase + string.digits, k=5)
             )
@@ -334,6 +463,7 @@ async def sync_replicas(session: AsyncSession, model: Model):
                 draft_model_source=get_draft_model_source(model),
                 backend=get_backend(model),
                 backend_version=model.backend_version,
+                dp_rank=dp_rank,
             )
 
             await ModelInstanceService(session).create(instance)
@@ -777,6 +907,20 @@ async def find_scale_down_candidates(
     total_max_score: Optional[float] = None,
 ) -> List[ModelInstanceScore]:
     try:
+        if is_dp_node_per_instance(model):
+            # DP-node-per-instance: drop the highest dp_rank nodes first and always keep rank 0
+            # (the DP coordinator). Instances still lacking a rank are the least
+            # complete, so drop them ahead of everything. Deleting from the top of
+            # a dense [0, replicas) leaves survivors densely packed at
+            # [0, new_replicas), so no rank re-densification is needed.
+            def scale_down_order(instance: ModelInstance):
+                if instance.dp_rank is None:
+                    return (0, 0)
+                return (1, -instance.dp_rank)
+
+            ordered = sorted(instances, key=scale_down_order)
+            return [ModelInstanceScore(model_instance=instance) for instance in ordered]
+
         if status_max_score is None:
             status_max_score = envs.SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE
         if offload_max_score is None:
@@ -1216,6 +1360,9 @@ async def calculate_model_destinations(
     becomes a self-map (skipped at sync_model_route_mapper), letting the
     LoRA module name reach vLLM intact.
     """
+    if manual_distributed_from_env(model.env):
+        # Opt out of gateway routing; the user manages the LB externally.
+        return []
     downstream_model_name = overridden_model_name or model.name
     # LoRA targets share the base model's instances; route them to a per-LoRA
     # aliased service (same address, distinct name) registered in ensure_model_mcp_bridge

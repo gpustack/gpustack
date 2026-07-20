@@ -1,6 +1,9 @@
 import pytest
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
-from gpustack.policies.utils import should_skip_gpu_count_check
+from gpustack.policies.utils import (
+    manual_distributed_from_env,
+    should_skip_gpu_count_check,
+)
 from gpustack.scheduler.evaluator import evaluate_model_metadata
 from tests.utils.model import make_model, new_model
 from gpustack.scheduler.scheduler import (
@@ -254,6 +257,16 @@ _TP8_DP2_DPL1 = [
         ("manual_env_0", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "0"}, False),
         ("manual_env_false", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "false"}, False),
         ("manual_env_empty", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": ""}, False),
+        # GPUSTACK_MANUAL_DISTRIBUTED implies the bypass, but still only when
+        # GPUs are manually selected (the gpu_selector guard stays in front).
+        ("manual_distributed_on", True, {"GPUSTACK_MANUAL_DISTRIBUTED": "1"}, True),
+        (
+            "manual_distributed_no_selector",
+            False,
+            {"GPUSTACK_MANUAL_DISTRIBUTED": "1"},
+            False,
+        ),
+        ("manual_distributed_off", True, {"GPUSTACK_MANUAL_DISTRIBUTED": "0"}, False),
     ],
 )
 def test_should_skip_gpu_count_check(case_name, manual_select, env, expected):
@@ -264,6 +277,22 @@ def test_should_skip_gpu_count_check(case_name, manual_select, env, expected):
         env=env,
     )
     assert should_skip_gpu_count_check(model) is expected, f"case '{case_name}' failed"
+
+
+@pytest.mark.parametrize(
+    "case_name, env, expected",
+    [
+        ("no_env", None, False),
+        ("on_1", {"GPUSTACK_MANUAL_DISTRIBUTED": "1"}, True),
+        ("on_true", {"GPUSTACK_MANUAL_DISTRIBUTED": "TRUE"}, True),
+        ("on_yes", {"GPUSTACK_MANUAL_DISTRIBUTED": "yes"}, True),
+        ("off_0", {"GPUSTACK_MANUAL_DISTRIBUTED": "0"}, False),
+        ("off_empty", {"GPUSTACK_MANUAL_DISTRIBUTED": ""}, False),
+        ("other_key", {"OTHER": "1"}, False),
+    ],
+)
+def test_manual_distributed_from_env(case_name, env, expected):
+    assert manual_distributed_from_env(env) is expected, f"case '{case_name}' failed"
 
 
 @pytest.mark.parametrize(
@@ -320,3 +349,34 @@ def test_set_gpu_count_mismatch_bypassed():
     selector._set_gpu_count(world_size=16, strategies=["tp", "dp"])
     # Keeps the manual selection count instead of overwriting with world_size.
     assert selector._gpu_count == 8
+
+
+def test_should_schedule_dp_node_per_instance_gates_members():
+    """DP-node-per-instance: only the rank-0 coordinator enqueues for scheduling. Members (dp_rank > 0)
+    are gated out — they get their worker from the coordinator's fan-out, not by
+    racing for their own — while rank 0 and other instances schedule normally."""
+    from datetime import datetime, timezone
+    from gpustack.scheduler.scheduler import Scheduler
+    from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
+
+    scheduler = object.__new__(Scheduler)
+    now = datetime.now(timezone.utc)
+
+    def instance(dp_rank):
+        mi = ModelInstance(
+            name="m",
+            model_id=1,
+            model_name="m",
+            dp_rank=dp_rank,
+            worker_id=None,
+            state=ModelInstanceStateEnum.PENDING,
+        )
+        mi.created_at = now
+        mi.updated_at = now
+        return mi
+
+    assert scheduler._should_schedule(instance(2)) is False  # member gated out
+    assert scheduler._should_schedule(instance(0)) is True  # coordinator schedules
+    assert (
+        scheduler._should_schedule(instance(None)) is True
+    )  # other instances unaffected

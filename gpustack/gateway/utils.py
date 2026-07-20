@@ -3,6 +3,7 @@ import hashlib
 import logging
 import copy
 import math
+from collections import defaultdict
 from urllib.parse import urlparse
 from dataclasses import dataclass
 from functools import partial
@@ -42,6 +43,7 @@ from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
     get_ingress_fallback_envoyfilter,
 )
 from gpustack.schemas.models import (
+    Model,
     ModelInstance,
     ModelInstancePublic,
 )
@@ -56,6 +58,7 @@ from gpustack.server.services import ModelInstanceService, WorkerService
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
+from gpustack.policies.utils import manual_distributed_from_env
 from gpustack.utils.network import is_ipaddress
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException, V1IngressTLS
@@ -1449,10 +1452,12 @@ async def cleanup_mcpbridge_registry(
     providers: List[ModelProvider],
     model_instances: List[ModelInstance],
     workers: List[Worker],
+    models: List[Model],
     namespace: str,
     k8s_config: k8s_client.Configuration,
 ):
     worker_by_id = {worker.id: worker for worker in workers}
+    model_by_id = {model.id: model for model in models}
     networking_higress_api = NetworkingHigressIoV1Api(k8s_client.ApiClient(k8s_config))
     # cleanup providers
     desired_registries = []
@@ -1475,13 +1480,27 @@ async def cleanup_mcpbridge_registry(
         to_delete_proxies_prefix=provider_id_prefix,
     )
     # cleanup model instances
+    # Group instances per model so per-model policy can hook in here; instances
+    # whose model is gone are orphans and skipped so their upstreams clean up.
     desired_registries = []
     to_delete_prefix = model_id_prefix
+    instances_by_model: Dict[int, List[ModelInstance]] = defaultdict(list)
     for instance in model_instances:
-        worker = worker_by_id.get(instance.worker_id)
-        registry = model_instance_registry(instance, worker=worker)
-        if registry is not None:
-            desired_registries.append(registry)
+        instances_by_model[instance.model_id].append(instance)
+    for model_id, instances in instances_by_model.items():
+        model = model_by_id.get(model_id)
+        if model is None:
+            continue
+        if manual_distributed_from_env(model.env):
+            # Manual-distributed models manage gateway/LB externally; not adding
+            # their registries lets the prefix-diff clear them, matching the
+            # reconcile path (_ensure_model_mcp_bridge) instead of fighting it.
+            continue
+        for instance in instances:
+            worker = worker_by_id.get(instance.worker_id)
+            registry = model_instance_registry(instance, worker=worker)
+            if registry is not None:
+                desired_registries.append(registry)
     await ensure_mcp_bridge(
         client=networking_higress_api,
         namespace=namespace,

@@ -12,7 +12,11 @@ from functools import reduce
 from math import gcd
 from typing import List, Literal, Optional
 
-from gpustack.utils.command import find_int_parameter
+from gpustack.utils.command import (
+    find_int_parameter,
+    find_bool_parameter,
+    find_parameter,
+)
 
 
 MultinodeShape = Literal["dp_only", "mp_only", "nested"]
@@ -206,3 +210,101 @@ def parse_user_parallelism(
             backend_parameters, ["prefill-context-parallel-size", "pcp"]
         ),
     )
+
+
+def resolve_data_parallel_load_balance_mode(
+    backend_parameters: Optional[List[str]],
+) -> str:
+    """Resolve the effective vLLM data-parallel load-balance mode from the
+    user-supplied backend parameters.
+
+    ``--data-parallel-hybrid-lb`` -> ``"hybrid"``; ``--data-parallel-external-lb``
+    or a pinned ``--data-parallel-rank`` -> ``"external"`` (vLLM implies
+    external-LB then). Defaults to ``"internal"``.
+    """
+    if find_bool_parameter(backend_parameters, ["data-parallel-hybrid-lb"]):
+        return "hybrid"
+    if (
+        find_bool_parameter(backend_parameters, ["data-parallel-external-lb"])
+        or find_parameter(backend_parameters, ["data-parallel-rank"]) is not None
+    ):
+        return "external"
+    return "internal"
+
+
+def subordinates_serve_api(backend_parameters: Optional[List[str]]) -> bool:
+    """Whether each subordinate worker runs its own API server (non-headless) and
+    must be registered as an independent gateway backend. True for any non-internal
+    load-balance mode (hybrid-LB / external-LB; see
+    ``resolve_data_parallel_load_balance_mode``); internal-LB followers stay
+    ``--headless`` so only the leader serves.
+    """
+    return resolve_data_parallel_load_balance_mode(backend_parameters) != "internal"
+
+
+def derive_dp_node_count(
+    backend_parameters: Optional[List[str]],
+) -> Optional[int]:
+    """Number of DP nodes derivable from the data-parallel flags alone.
+
+    external-LB serves one rank per node -> nodes == --data-parallel-size;
+    hybrid-LB packs ``dpl`` ranks per node -> nodes == dp // dpl. Returns
+    ``None`` for internal-LB / no LB flag. Raises ``ValueError`` when the flags
+    are missing or inconsistent to derive a count.
+    """
+    load_balance_mode = resolve_data_parallel_load_balance_mode(backend_parameters)
+    if load_balance_mode not in ("external", "hybrid"):
+        return None
+
+    parallelism = parse_user_parallelism(backend_parameters)
+    dp = parallelism.dp
+    dpl = parallelism.dpl
+
+    if dp is None or dp <= 1:
+        got = "omitted, vLLM defaults to 1" if dp is None else dp
+        raise ValueError(
+            f"vLLM {load_balance_mode} load-balance requires --data-parallel-size "
+            f"> 1 (got {got}); each node serves its own DP rank(s)."
+        )
+
+    if load_balance_mode == "external":
+        # external-LB pins exactly one DP rank per node (dpl == 1).
+        return dp
+
+    # hybrid-LB: dpl ranks per node, so nodes == dp // dpl. Without dpl the
+    # per-node fan-out is topology-derived and can't be known from params alone.
+    if dpl is None:
+        raise ValueError(
+            "vLLM hybrid load-balance requires --data-parallel-size-local so "
+            "GPUStack can derive replicas (nodes = --data-parallel-size // "
+            "--data-parallel-size-local)."
+        )
+    if dp % dpl != 0:
+        raise ValueError(
+            f"vLLM multi-node: --data-parallel-size {dp} must be a multiple of "
+            f"--data-parallel-size-local {dpl}."
+        )
+    return dp // dpl
+
+
+_MANUAL_DISTRIBUTED_PARAMS = [
+    "data-parallel-address",
+    "data-parallel-start-rank",
+    "node-rank",
+    "data-parallel-rank",
+]
+
+
+def matched_manual_distributed_params(
+    backend_parameters: Optional[List[str]],
+) -> List[str]:
+    """The manual DP-wiring flags (``--data-parallel-address`` / ``--node-rank`` /
+    rank) actually present in backend_parameters, as ``--flag`` strings. A non-empty
+    result signals the user manages distribution themselves rather than letting
+    GPUStack orchestrate it; empty means none are set.
+    """
+    return [
+        f"--{param}"
+        for param in _MANUAL_DISTRIBUTED_PARAMS
+        if find_parameter(backend_parameters, [param]) is not None
+    ]

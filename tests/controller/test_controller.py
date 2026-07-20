@@ -7,7 +7,10 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
 )
 from gpustack.schemas.workers import WorkerStateEnum
-from gpustack.server.controllers import find_scale_down_candidates
+from gpustack.server.controllers import (
+    calculate_model_destinations,
+    find_scale_down_candidates,
+)
 from tests.fixtures.workers.fixtures import (
     linux_nvidia_19_4090_24gx2,
     linux_nvidia_2_4080_16gx2,
@@ -126,6 +129,22 @@ async def test_find_scale_down_candidates():
         compare_candidates(candidates, expected_candidates)
 
 
+@pytest.mark.asyncio
+async def test_calculate_model_destinations_manual_distributed_returns_empty():
+    # Manual-distributed models opt out of gateway routing, so destinations must
+    # be empty (no route points at an unregistered upstream). The early return
+    # precedes any session access, so None is safe here.
+    model = new_model(
+        1,
+        "manual-dp",
+        1,
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        env={"GPUSTACK_MANUAL_DISTRIBUTED": "1"},
+    )
+    destinations = await calculate_model_destinations(session=None, model=model)
+    assert destinations == []
+
+
 def compare_candidates(candidates: List[ModelInstanceScore], expected_candidates):
     for i, expected in enumerate(expected_candidates):
         candidate = candidates[i]
@@ -139,3 +158,30 @@ def compare_candidates(candidates: List[ModelInstanceScore], expected_candidates
 
         if "score" in expected:
             assert str(candidate.score)[:5] == str(expected["score"])[:5]
+
+
+@pytest.mark.asyncio
+async def test_find_scale_down_candidates_dp_node_per_instance():
+    """DP-node-per-instance scale-down drops the highest dp_rank first and always keeps rank 0; nodes
+    still lacking a rank go first. The DP-node-per-instance branch returns before the scorer chain, so
+    no session/worker mocking is needed."""
+    from gpustack.schemas.models import Model, BackendEnum
+
+    model = Model(
+        name="m",
+        backend=BackendEnum.VLLM,
+        backend_parameters=["--data-parallel-external-lb"],
+        distributed_inference_across_workers=True,
+        replicas=3,
+    )
+    instances = []
+    for iid, rank in [(1, 0), (2, 1), (3, 2), (4, None)]:
+        mi = new_model_instance(
+            iid, f"m-{iid}", 1, state=ModelInstanceStateEnum.RUNNING
+        )
+        mi.dp_rank = rank
+        instances.append(mi)
+
+    candidates = await find_scale_down_candidates(instances, model)
+    order = [c.model_instance.dp_rank for c in candidates]
+    assert order == [None, 2, 1, 0]  # deleted front-first; rank 0 preserved last

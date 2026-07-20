@@ -499,6 +499,11 @@ class ModelInstanceDeploymentMetadata:
     Index of the follower in distributed mode.
     It is None for leader or non-distributed mode.
     """
+    dp_rank: Optional[int] = None
+    """
+    Data-parallel rank for the vLLM DP node-per-instance path.
+    It is None for other instances.
+    """
 
 
 class ModelInstanceBase(SQLModel, ModelSource):
@@ -512,6 +517,10 @@ class ModelInstanceBase(SQLModel, ModelSource):
     # FIXME: Migrate to ports.
     port: Optional[int] = None
     ports: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
+    # Data-parallel rank for the vLLM DP node-per-instance path: each DP node
+    # is a standalone ModelInstance carrying its own rank (0 = coordinator).
+    # None for other instances; `dp_rank is not None` is the DP-node-per-instance marker.
+    dp_rank: Optional[int] = None
     download_progress: Optional[float] = None
     resolved_path: Optional[str] = None
     draft_model_source: Optional[ModelSource] = Field(
@@ -581,6 +590,22 @@ class ModelInstanceBase(SQLModel, ModelSource):
             The deployment metadata,
             or None if the model instance is not handling by the given `worker_id` worker.
         """
+
+        # vLLM DP node-per-instance: each DP node is a standalone ModelInstance
+        # carrying its own dp_rank, served by its own worker, with no subordinate_workers.
+        # Mark it distributed so the multinode arg path triggers; leader/follower derive
+        # from dp_rank. The name is not mutated because each DP node name is unique.
+        if self.dp_rank is not None:
+            if self.worker_id != worker_id:
+                return None
+            return ModelInstanceDeploymentMetadata(
+                name=self.name,
+                distributed=True,
+                distributed_leader=self.dp_rank == 0,
+                distributed_follower=self.dp_rank > 0,
+                distributed_follower_index=None,
+                dp_rank=self.dp_rank,
+            )
 
         dservers = self.distributed_servers
         subworkers = (
@@ -878,6 +903,25 @@ def get_backend(model: Model) -> str:
         return BackendEnum.CUSTOM
 
     return BackendEnum.VLLM
+
+
+def is_dp_node_per_instance(model: Model) -> bool:
+    """Whether the model uses the vLLM data-parallel node-per-instance path:
+    each DP node is a standalone ModelInstance carrying its own dp_rank,
+    registered as its own peer gateway backend.
+
+    True only for vLLM external-LB / hybrid-LB distributed deployments, where each
+    subordinate serves its own API. internal-LB, Ray executor, Ascend MindIE and
+    SGLang multi-node paths keep the single-leader + subordinate_workers[] model
+    and are deliberately excluded.
+    """
+    from gpustack.utils.vllm_topology import subordinates_serve_api
+
+    return (
+        get_backend(model) == BackendEnum.VLLM
+        and subordinates_serve_api(model.backend_parameters)
+        and bool(model.distributed_inference_across_workers)
+    )
 
 
 def get_mmproj_filename(model: Union[Model, ModelSource]) -> Optional[str]:
