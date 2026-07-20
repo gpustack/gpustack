@@ -104,6 +104,56 @@ async def test_authenticate_request_reuses_provided_session(monkeypatch):
     assert request.state.api_key is expected_key
 
 
+@pytest.mark.asyncio
+async def test_captcha_disables_ordinary_user_basic_auth(monkeypatch):
+    from fastapi.security import HTTPBasicCredentials
+
+    from gpustack.api.auth import authenticate_request
+
+    request = _make_request()
+    request.app.state.server_config.enable_login_captcha = True
+    basic_auth_mock = AsyncMock()
+    monkeypatch.setattr("gpustack.api.auth.authenticate_basic_user", basic_auth_mock)
+
+    def no_database_session():
+        raise AssertionError("Rejected Basic auth must not open a database session")
+
+    monkeypatch.setattr("gpustack.api.auth.async_session", no_database_session)
+
+    with pytest.raises(UnauthorizedException) as exc_info:
+        await authenticate_request(
+            request,
+            basic_credentials=HTTPBasicCredentials(
+                username="admin", password="guessed-password"
+            ),
+        )
+
+    assert "HTTP Basic is disabled" in exc_info.value.message
+    basic_auth_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_captcha_keeps_system_principal_basic_auth():
+    from fastapi.security import HTTPBasicCredentials
+
+    from gpustack.api.auth import authenticate_request
+    from gpustack.schemas.principals import PrincipalType
+
+    request = _make_request()
+    request.app.state.server_config.enable_login_captcha = True
+    request.app.state.server_config.token = "server-token"
+
+    principal = await authenticate_request(
+        request,
+        basic_credentials=HTTPBasicCredentials(
+            username="system/worker/abc", password="server-token"
+        ),
+    )
+
+    assert principal.kind == PrincipalType.SYSTEM
+    assert principal.name == "system/worker/abc"
+
+
 def _api_token_double(**overrides):
     fields = {
         "hashed_secret_key": "stored-hash",

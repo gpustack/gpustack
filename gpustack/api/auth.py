@@ -157,6 +157,13 @@ async def authenticate_request(
         if basic_credentials and is_system_user(basic_credentials.username):
             user = await authenticate_system_principal(server_config, basic_credentials)
         elif basic_credentials or cookie_token or bearer_token or x_api_key:
+            if basic_credentials and server_config.enable_login_captcha:
+                raise UnauthorizedException(
+                    message=(
+                        "Password authentication via HTTP Basic is disabled "
+                        "while login CAPTCHA is enabled; use an API key"
+                    )
+                )
             # Scoped to just the auth lookup (not Depends(get_session)) so the
             # connection/transaction isn't held open for the lifetime of the
             # request -- otherwise a long-lived StreamingResponse (SSE watch,

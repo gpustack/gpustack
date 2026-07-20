@@ -459,6 +459,18 @@ wheels = [
 ]
 
 [[package]]
+name = "captcha"
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b4/65/8e186bb798f33ba390eab897c995b0fcee92bc030e0f40cb8ea01f34dd07/captcha-0.7.1.tar.gz", hash = "sha256:a1b462bcc633a64d8db5efa7754548a877c698d98f87716c620a707364cabd6b", size = 226561, upload-time = "2025-03-01T05:00:13.395Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/da/ff/3f0982ecd37c2d6a7266c22e7ea2e47d0773fe449984184c5316459d2776/captcha-0.7.1-py3-none-any.whl", hash = "sha256:8b73b5aba841ad1e5bdb856205bf5f09560b728ee890eb9dae42901219c8c599", size = 147606, upload-time = "2025-03-01T05:00:10.433Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.6.17"
 source = { registry = "https://pypi.org/simple" }
@@ -1127,6 +1139,7 @@ dependencies = [
     { name = "attrs" },
     { name = "blobfile" },
     { name = "cachetools" },
+    { name = "captcha" },
     { name = "certifi" },
     { name = "colorama" },
     { name = "cryptography" },
@@ -1217,6 +1230,7 @@ requires-dist = [
     { name = "attrs", specifier = ">=24.2.0" },
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "cachetools", specifier = ">=6.0.0" },
+    { name = "captcha", specifier = ">=0.7.1,<0.8.0" },
     { name = "certifi", specifier = ">=2024.0.0" },
     { name = "colorama", specifier = ">=0.4.6" },
     { name = "cryptography", specifier = ">=43.0.0" },
