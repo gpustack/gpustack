@@ -705,6 +705,13 @@ class ModelRouteService:
                 # try the literal name (handles edge cases like a route
                 # called "literal/with/slashes" before the prefix
                 # convention existed).
+        # A raw (unprefixed) name is the platform Org's namespace by the
+        # effective-route-name scheme; non-platform Orgs are addressed only
+        # via their `<owner-name>/<route>` prefix. Scope an unprefixed lookup
+        # to platform-owned routes so a raw name resolves within the platform
+        # Org rather than a same-named route in another Org.
+        if owner_principal_id is None:
+            owner_principal_id = platform_principal_id()
         target_fields = {
             "route_name": raw_name,
             "state": TargetStateEnum.ACTIVE,
@@ -714,10 +721,9 @@ class ModelRouteService:
             self.session,
             fields=target_fields,
         )
-        # When a principal name prefix was parsed, narrow to that
-        # owner's route by joining through the parent ModelRoute's
-        # ``owner_principal_id``. Avoids an extra round-trip when the
-        # route name is globally unique (the typical single-Org case).
+        # Narrow to the resolved owner's route (the parsed prefix owner, or
+        # the platform Org for a raw name) by joining through the parent
+        # ModelRoute's ``owner_principal_id``.
         if owner_principal_id is not None and len(targets) > 0:
             route_ids = {t.route_id for t in targets if t.route_id is not None}
             owner_routes = await ModelRoute.all_by_fields(
@@ -767,7 +773,13 @@ class ModelRouteService:
                     )
                     if route is not None:
                         return route
-        return await ModelRoute.one_by_field(self.session, "name", name)
+        # An unprefixed name is the platform Org's namespace, matching
+        # resolve_route_targets — so attribution resolves to the same route
+        # the request was actually routed to.
+        return await ModelRoute.one_by_fields(
+            self.session,
+            {"name": name, "owner_principal_id": platform_principal_id()},
+        )
 
     async def update(
         self,
