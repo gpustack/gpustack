@@ -1248,6 +1248,7 @@ class Server:
             namespace=self.config.gateway_namespace,
             model_instances=model_instances,
             workers=workers,
+            models=models,
             k8s_config=k8s_config,
         )
 

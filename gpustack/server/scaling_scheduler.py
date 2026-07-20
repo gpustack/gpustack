@@ -8,7 +8,7 @@ from croniter import croniter
 from sqlmodel import col
 
 from gpustack import envs
-from gpustack.schemas.models import Model, ScalingSchedule
+from gpustack.schemas.models import Model, ScalingSchedule, is_dp_node_per_instance
 from gpustack.server.db import async_session
 from gpustack.server.services import ModelService
 from gpustack.utils.rollup_tz import resolve_rollup_tz
@@ -138,6 +138,11 @@ class ScalingScheduler:
         for model in models:
             schedule = model.scaling_schedule
             if not schedule or not schedule.enabled:
+                continue
+            if is_dp_node_per_instance(model):
+                # replicas is the DP node count fixed by --data-parallel-size;
+                # driving it off a timetable would leave the surviving nodes
+                # waiting on ranks that no longer exist.
                 continue
             desired = compute_desired_replicas(schedule, now)
             if desired is None or desired == model.replicas:
