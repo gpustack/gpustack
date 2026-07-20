@@ -147,9 +147,15 @@ def build_model_usage_snapshot(
                 "api_key_name": api_key.name,
                 "access_key": api_key.access_key,
                 "api_key_is_custom": api_key.is_custom,
-                "consumer_principal_id": api_key.owner_principal_id,
             }
         )
+        # A key with a non-NULL owner pins the consumer to that tenant (an
+        # Org, or a user's own personal principal). An admin "All"-mode key
+        # carries ``owner_principal_id = NULL`` — leave the field unset so the
+        # collector's no-Org fallback attributes the usage to the caller's
+        # personal domain rather than writing a NULL consumer row.
+        if api_key.owner_principal_id is not None:
+            snapshot["consumer_principal_id"] = api_key.owner_principal_id
     if model_route_id is not None:
         snapshot["model_route_id"] = model_route_id
         snapshot["model_route_name"] = model_route_name

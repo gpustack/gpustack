@@ -53,6 +53,45 @@ def test_build_model_usage_snapshot_includes_user_and_api_key_fields():
     assert snapshot["api_key_is_custom"] is False
 
 
+def test_build_model_usage_snapshot_org_key_pins_consumer():
+    # A key with a non-NULL owner (an Org or a personal principal) pins the
+    # consumer principal.
+    model = new_model(1, "qwen3.5-9b", huggingface_repo_id="Qwen/Qwen3.5-9B")
+    api_key = ApiKey(
+        id=5,
+        name="test",
+        user_id=2,
+        access_key="abcd1234",
+        hashed_secret_key="secret",
+        owner_principal_id=42,
+    )
+
+    snapshot = build_model_usage_snapshot(model, api_key=api_key)
+
+    assert snapshot["consumer_principal_id"] == 42
+
+
+def test_build_model_usage_snapshot_null_owner_key_omits_consumer():
+    # An admin "All"-mode key has a NULL owner — the snapshot must NOT stamp
+    # a NULL consumer_principal_id. Leaving it unset lets the collector's
+    # no-Org fallback attribute the usage to the caller's personal domain.
+    model = new_model(1, "qwen3.5-9b", huggingface_repo_id="Qwen/Qwen3.5-9B")
+    api_key = ApiKey(
+        id=5,
+        name="test",
+        user_id=2,
+        access_key="abcd1234",
+        hashed_secret_key="secret",
+        owner_principal_id=None,
+    )
+
+    snapshot = build_model_usage_snapshot(model, api_key=api_key)
+
+    assert "consumer_principal_id" not in snapshot
+    # api_key metadata is still recorded even when the owner is NULL.
+    assert snapshot["api_key_id"] == 5
+
+
 def test_model_usage_is_fully_fk_less():
     # model_usages carries NO foreign keys — it is an attribution / audit table
     # (like model_usage_details / metered_usage) whose rows must outlive every
