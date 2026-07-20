@@ -18,7 +18,11 @@ PASSWORD_FILE = "initial_admin_password"
 
 
 def _request(tmp_path):
-    config = SimpleNamespace(external_auth_type=None, data_dir=str(tmp_path))
+    config = SimpleNamespace(
+        external_auth_type=None,
+        data_dir=str(tmp_path),
+        enable_login_captcha=False,
+    )
     return SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(server_config=config))
     )

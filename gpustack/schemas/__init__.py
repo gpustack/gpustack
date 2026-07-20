@@ -146,6 +146,7 @@ from gpustack.schemas.cluster_access import (
     ClusterAccessPublic,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink  # noqa: F401
+from gpustack.schemas.login_captcha import LoginCaptchaNonce  # noqa: F401
 from gpustack.schemas.gpu_instance_persistent_volume_types import (
     GPUInstancePersistentVolumeType,
     GPUInstancePersistentVolumeTypeListParams,
@@ -325,6 +326,7 @@ __all__ = [
     "UserGroupMembershipPublic",
     "ClusterAccess",
     "ClusterAccessPublic",
+    "LoginCaptchaNonce",
     "GPUInstancePersistentVolumeType",
     "GPUInstancePersistentVolumeTypeListParams",
     "GPUInstancePersistentVolumeTypeCreate",

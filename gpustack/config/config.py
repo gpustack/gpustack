@@ -17,7 +17,7 @@ from gpustack_runtime.detector import (
     available_manufacturers,
     available_backends,
 )
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
@@ -120,6 +120,9 @@ class Config(WorkerConfig, BaseSettings):
         allow_credentials: Indicate that cookies should be supported for cross-origin requests.
         allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
+        enable_login_captcha: Require a graphic CAPTCHA on the local
+            username/password login form. Off by default.
+        login_captcha_length: Number of CAPTCHA characters, from 4 to 6. Default is 4.
         server_external_url: Specified external URL for the server.
         system_default_container_registry: Default registry for container images (server and inference images).
         image_name_override: Force override of the image name.
@@ -236,6 +239,14 @@ class Config(WorkerConfig, BaseSettings):
     cas_username_attribute: Optional[str] = None
     cas_full_name_attribute: Optional[str] = None
     cas_avatar_attribute: Optional[str] = None
+    # Graphic CAPTCHA on the local username/password login form. Off by
+    # default so existing deployments are unaffected; enabling it adds a
+    # challenge image to the login page and requires the solved code on
+    # ``POST /auth/login``. Only guards local login — SSO callbacks are
+    # unaffected.
+    enable_login_captcha: bool = False
+    # Keep the challenge legible while preventing invalid or oversized images.
+    login_captcha_length: int = Field(default=4, ge=4, le=6)
     server_external_url: Optional[str] = None
     # Allowlist for the X-Forwarded-Host header behind a reverse proxy. When
     # unset, derived from server_external_url. If both are unset, it defaults to

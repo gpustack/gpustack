@@ -88,6 +88,11 @@ InvalidException = http_exception_factory(
 BadRequestException = http_exception_factory(
     status.HTTP_400_BAD_REQUEST, "BadRequest", "Bad request"
 )
+TooManyRequestsException = http_exception_factory(
+    status.HTTP_429_TOO_MANY_REQUESTS,
+    "TooManyRequests",
+    "Too many requests",
+)
 InternalServerErrorException = http_exception_factory(
     status.HTTP_500_INTERNAL_SERVER_ERROR,
     "InternalServerError",
@@ -179,6 +184,7 @@ error_responses = {
     403: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
     400: {"model": ErrorResponse},
+    429: {"model": ErrorResponse},
     500: {"model": ErrorResponse},
     503: {"model": ErrorResponse},
 }
@@ -202,6 +208,7 @@ openai_api_error_responses = {
     403: {"model": OpenAIAPIErrorResponse},
     422: {"model": OpenAIAPIErrorResponse},
     400: {"model": OpenAIAPIErrorResponse},
+    429: {"model": OpenAIAPIErrorResponse},
     500: {"model": OpenAIAPIErrorResponse},
     503: {"model": OpenAIAPIErrorResponse},
 }
