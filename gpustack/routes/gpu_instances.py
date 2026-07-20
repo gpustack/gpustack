@@ -50,6 +50,7 @@ from gpustack.api.tenant import (
 )
 from gpustack.gpu_instances import validate_k8s_object_name
 from gpustack.routes.gpu_instance_persistent_volumes import resolve_pv_type_for_ctx
+from gpustack.routes.models import assert_cluster_belongs_to_org
 
 from gpustack.schemas import (
     GPUInstance,
@@ -143,6 +144,12 @@ async def create_gpu_instance(
         ctx,
         resource_label="GPU instance",
         allow_member=True,
+    )
+
+    # A GPU instance runs on infrastructure owned by its Org, so the chosen
+    # cluster must be visible to the caller and owned by the instance's Org.
+    await assert_cluster_belongs_to_org(
+        ctx, session, create_obj.cluster_id, create_obj.owner_principal_id
     )
 
     persistent_volume_id = await _validate_create_obj(session, ctx, create_obj)
