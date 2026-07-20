@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
 from dataclasses import dataclass
 
 from captcha.audio import AudioCaptcha
@@ -22,6 +23,7 @@ _TOKEN_KEY_CONTEXT = b"gpustack-login-captcha-token-v1"
 _IMAGE_WIDTH = 160
 _IMAGE_HEIGHT = 60
 _IMAGE_FONT_SIZES = (36, 42, 48)
+_generators = threading.local()
 
 
 class InvalidCaptchaToken(ValueError):
@@ -48,12 +50,7 @@ def generate_code(length: int = 4) -> str:
 def generate_captcha(length: int = 4) -> tuple[str, bytes]:
     """Generate a CAPTCHA and return its code with PNG image bytes."""
     code = generate_code(length)
-    generator = ImageCaptcha(
-        width=_IMAGE_WIDTH,
-        height=_IMAGE_HEIGHT,
-        font_sizes=_IMAGE_FONT_SIZES,
-    )
-    image = generator.generate(code, format="png")
+    image = _get_image_generator().generate(code, format="png")
     return code, image.getvalue()
 
 
@@ -63,7 +60,27 @@ def generate_audio(code: str) -> bytes:
         raise ValueError("Invalid CAPTCHA code length")
     if any(char.upper() not in CAPTCHA_ALPHABET for char in code):
         raise ValueError("Invalid CAPTCHA code")
-    return bytes(AudioCaptcha().generate(code.upper()))
+    return bytes(_get_audio_generator().generate(code.upper()))
+
+
+def _get_image_generator() -> ImageCaptcha:
+    generator = getattr(_generators, "image", None)
+    if generator is None:
+        generator = ImageCaptcha(
+            width=_IMAGE_WIDTH,
+            height=_IMAGE_HEIGHT,
+            font_sizes=_IMAGE_FONT_SIZES,
+        )
+        _generators.image = generator
+    return generator
+
+
+def _get_audio_generator() -> AudioCaptcha:
+    generator = getattr(_generators, "audio", None)
+    if generator is None:
+        generator = AudioCaptcha()
+        _generators.audio = generator
+    return generator
 
 
 def encrypt_challenge(secret_key: str, code: str, nonce: str, binding: str) -> str:

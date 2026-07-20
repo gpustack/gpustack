@@ -13,7 +13,6 @@ import logging
 import jwt
 from jwt.algorithms import RSAAlgorithm
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import delete
 from gpustack.config.config import Config
 from gpustack.utils import captcha as captcha_util
 from typing import Annotated, Dict, List, Optional
@@ -69,6 +68,7 @@ _captcha_issue_limiter = KeyedRateLimiter(max_requests=30, window_seconds=60)
 _captcha_audio_limiter = KeyedRateLimiter(max_requests=10, window_seconds=60)
 _login_ip_limiter = KeyedRateLimiter(max_requests=30, window_seconds=5 * 60)
 _login_account_limiter = KeyedRateLimiter(max_requests=10, window_seconds=5 * 60)
+_DEFAULT_ORIGIN_PORTS = {"http": 80, "https": 443}
 
 
 def _issue_captcha(request: Request, length: int, binding: str) -> Dict[str, str]:
@@ -114,9 +114,6 @@ async def _consume_captcha_nonce(nonce: str) -> None:
     now = datetime.now(timezone.utc)
     nonce_hash = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
     async with async_session() as session:
-        await session.exec(
-            delete(LoginCaptchaNonce).where(LoginCaptchaNonce.expires_at <= now)
-        )
         session.add(
             LoginCaptchaNonce(
                 nonce_hash=nonce_hash,
@@ -188,20 +185,76 @@ def _enforce_rate_limit(limiter: KeyedRateLimiter, key: str) -> None:
         )
 
 
-def _validate_login_origin(request: Request) -> None:
+def _canonical_http_origin(
+    value: str, *, allow_path: bool = False
+) -> Optional[tuple[str, str, int]]:
+    """Return a normalized HTTP origin, or ``None`` for malformed input."""
+    try:
+        parsed = urlparse(value)
+        scheme = parsed.scheme.casefold()
+        if scheme not in _DEFAULT_ORIGIN_PORTS:
+            return None
+        if (
+            not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+        if (
+            (not allow_path and parsed.path not in ("", "/"))
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, UnicodeError, ValueError):
+        return None
+
+    if not hostname:
+        return None
+    try:
+        normalized_host = hostname.rstrip(".").encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    if not normalized_host:
+        return None
+    return (
+        scheme,
+        normalized_host.casefold(),
+        port or _DEFAULT_ORIGIN_PORTS[scheme],
+    )
+
+
+def _validate_login_origin(request: Request, config: Config) -> None:
     """Reject browser cross-site form posts while allowing non-browser clients."""
     if request.headers.get("sec-fetch-site", "").casefold() == "cross-site":
         raise BadRequestException(message="Cross-site login requests are not allowed")
     origin = request.headers.get("origin")
     if not origin:
         return
-    parsed = urlparse(origin)
-    request_host = request.headers.get("host", "").casefold()
-    if (
-        parsed.scheme.casefold() != request.url.scheme.casefold()
-        or not parsed.netloc
-        or parsed.netloc.casefold() != request_host
-    ):
+
+    supplied_origin = _canonical_http_origin(origin)
+    expected_origins = set()
+    request_host = request.headers.get("host", "")
+    request_origin = _canonical_http_origin(
+        f"{request.url.scheme}://{request_host}", allow_path=True
+    )
+    if request_origin:
+        expected_origins.add(request_origin)
+
+    # ``server_external_url`` is authoritative when TLS terminates at a
+    # reverse proxy. Raw X-Forwarded-* headers are deliberately not read here;
+    # Uvicorn and ForwardedHostPortMiddleware already apply trusted values.
+    if config.server_external_url:
+        external_origin = _canonical_http_origin(
+            config.server_external_url, allow_path=True
+        )
+        if external_origin:
+            expected_origins.add(external_origin)
+
+    if supplied_origin is None or supplied_origin not in expected_origins:
         raise BadRequestException(message="Cross-site login requests are not allowed")
 
 
@@ -1384,7 +1437,7 @@ async def login(
 ):
     config: Config = request.app.state.server_config
     if config.enable_login_captcha:
-        _validate_login_origin(request)
+        _validate_login_origin(request, config)
         client_ip = client_ip_getter(request)
         username_hash = hashlib.sha256(
             username.strip().casefold().encode("utf-8")
