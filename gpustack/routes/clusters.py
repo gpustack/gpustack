@@ -736,6 +736,7 @@ async def get_registration_token(
 async def get_cluster_manifests(
     request: Request,
     session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
     runtime: Optional[List[ManufacturerEnum]] = Query(
         None,
@@ -750,6 +751,9 @@ async def get_cluster_manifests(
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
+    # The manifest embeds the cluster registration token, a write-class
+    # secret — gate it the same way as the registration-token endpoint.
+    assert_cluster_writable(ctx, cluster)
     if cluster.provider != ClusterProvider.Kubernetes:
         raise InvalidException(
             message=f"Cannot get manifests for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
@@ -857,6 +861,7 @@ _CLUSTER_PROXY_REQUEST_HEADER_SKIP = {
 )
 async def cluster_apiserver_proxy(
     request: Request,
+    ctx: TenantContextDep,
     id: int,
     path: str,
 ):
@@ -873,6 +878,9 @@ async def cluster_apiserver_proxy(
         cluster = await Cluster.one_by_id(session, id)
         if not cluster or cluster.deleted_at is not None:
             raise NotFoundException(message=f"cluster {id} not found")
+        assert_cluster_visible(
+            ctx, cluster, not_found_message=f"cluster {id} not found"
+        )
         if cluster.provider != ClusterProvider.Kubernetes:
             raise InvalidException(
                 message=(
