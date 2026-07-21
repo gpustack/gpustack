@@ -3,9 +3,9 @@ from __future__ import annotations
 import http
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import AsyncIterator, Optional
 
-from kubernetes_asyncio import client
+from kubernetes_asyncio import client, watch
 
 from .cluster_apis_util import (
     get_namespace_name,
@@ -47,6 +47,11 @@ _PV = _CRDSpec(
 _INSTANCE_TYPE = _CRDSpec(
     plural="instancetypes",
     kind="InstanceType",
+    namespaced=False,
+)
+_INSTANCE_TYPE_FLAVOR = _CRDSpec(
+    plural="instancetypeflavors",
+    kind="InstanceTypeFlavor",
     namespaced=False,
 )
 _INSTANCE = _CRDSpec(
@@ -130,6 +135,71 @@ class ClusterOps:
             if e.status == http.HTTPStatus.NOT_FOUND:
                 return None
             raise
+
+    async def _list(
+        self, spec: _CRDSpec, resource_version: Optional[str] = None
+    ) -> dict:
+        """List CRD objects. When ``resource_version`` is given it is passed
+        through to the Kubernetes list call (e.g. resume/consistency hints)."""
+        crd = self._crd()
+        kwargs = {}
+        if resource_version is not None:
+            kwargs["resource_version"] = resource_version
+        if spec.namespaced:
+            return await crd.list_namespaced_custom_object(
+                group=_GROUP,
+                version=_VERSION,
+                plural=spec.plural,
+                namespace=self.org_namespace,
+                **kwargs,
+            )
+        return await crd.list_cluster_custom_object(
+            group=_GROUP,
+            version=_VERSION,
+            plural=spec.plural,
+            **kwargs,
+        )
+
+    async def _watch(
+        self, spec: _CRDSpec, resource_version: Optional[str] = None
+    ) -> AsyncIterator[dict]:
+        """Watch CRD objects, yielding native ``kubernetes_asyncio`` watch
+        events (dicts with ``type`` and ``raw_object`` keys). Namespaced vs
+        cluster-scoped is selected by ``spec``, mirroring :meth:`_list`.
+
+        ``Watch`` sets ``watch=True`` on the same ``list_*_custom_object`` call
+        :meth:`_list` uses, so it streams change notifications instead of
+        returning a page. A watch ``ERROR`` / expired ``resource_version``
+        surfaces as an ``ApiException`` (e.g. ``410 Gone``) raised from the
+        stream rather than yielded — there is no built-in retry, so the caller
+        decides whether to re-establish the watch. The ``Watch`` is closed when
+        the generator exits or is cancelled; ``self.api_client`` stays owned by
+        :class:`ClusterOps`.
+        """
+        crd = self._crd()
+        kwargs = {}
+        if resource_version is not None:
+            kwargs["resource_version"] = resource_version
+        async with watch.Watch() as w:
+            if spec.namespaced:
+                stream = w.stream(
+                    crd.list_namespaced_custom_object,
+                    group=_GROUP,
+                    version=_VERSION,
+                    plural=spec.plural,
+                    namespace=self.org_namespace,
+                    **kwargs,
+                )
+            else:
+                stream = w.stream(
+                    crd.list_cluster_custom_object,
+                    group=_GROUP,
+                    version=_VERSION,
+                    plural=spec.plural,
+                    **kwargs,
+                )
+            async for evt in stream:
+                yield evt
 
     def _envelope(self, spec: _CRDSpec, body: dict) -> dict:
         """Complete a caller-supplied CR body (``metadata`` + ``spec``) with the
@@ -506,7 +576,7 @@ class ClusterOps:
         return await self._delete(_PV, name)
 
     #
-    # Instance Types
+    # Instance Types Operations
     #
 
     async def read_instance_type(self, name: str) -> Optional[dict]:
@@ -515,6 +585,78 @@ class ClusterOps:
         If the instance type does not exist, return None.
         """
         return await self._read(_INSTANCE_TYPE, name)
+
+    async def list_instance_types(self, resource_version: Optional[str] = None) -> dict:
+        """
+        List the instance types in the cluster.
+        """
+        return await self._list(_INSTANCE_TYPE, resource_version)
+
+    def watch_instance_types(
+        self, resource_version: Optional[str] = None
+    ) -> AsyncIterator[dict]:
+        """Watch the cluster-scoped instance types as native watch events;
+        see :meth:`_watch`."""
+        return self._watch(_INSTANCE_TYPE, resource_version)
+
+    async def create_instance_type(
+        self, name: str, spec: dict, ignore_existed: bool = True
+    ) -> dict:
+        """
+        Create the instance type in the cluster.
+
+        Returns the created object, or the existing one when
+        ``ignore_existed`` is true and the resource already exists.
+        """
+        return await self._create(
+            _INSTANCE_TYPE, {"metadata": {"name": name}, "spec": spec}, ignore_existed
+        )
+
+    async def update_instance_type(self, name: str, spec: dict) -> Optional[dict]:
+        """Update the editable fields of an instance type by merge-patching its
+        spec. The immutable fields (unit resources, local storage) are absent
+        from ``spec`` — the update schema omits them — so a merge-patch leaves
+        them untouched.
+
+        Returns the server-acknowledged object, or ``None`` if the instance
+        type is gone.
+        """
+        return await self._patch_spec(_INSTANCE_TYPE, name, spec)
+
+    async def delete_instance_type(self, name: str) -> bool:
+        """
+        Delete the instance type in the cluster if it exists.
+        Returns whether it existed (``False`` when already gone / a 404).
+        """
+        return await self._delete(_INSTANCE_TYPE, name)
+
+    async def deactivate_instance_type(self, name: str) -> Optional[dict]:
+        """Deactivate the instance type by patching ``spec.inactive=true``.
+
+        Returns the server-acknowledged object, or ``None`` if the
+        instance type is gone.
+        """
+        return await self._patch_spec(_INSTANCE_TYPE, name, {"inactive": True})
+
+    async def activate_instance_type(self, name: str) -> Optional[dict]:
+        """Reactivate the instance type by patching ``spec.inactive=false``.
+
+        Returns the server-acknowledged object, or ``None`` if the
+        instance type is gone.
+        """
+        return await self._patch_spec(_INSTANCE_TYPE, name, {"inactive": False})
+
+    #
+    # Instance Types Flavor Operations
+    #
+
+    async def list_instance_type_flavors(
+        self, resource_version: Optional[str] = None
+    ) -> dict:
+        """
+        List the instance type flavors in the cluster.
+        """
+        return await self._list(_INSTANCE_TYPE_FLAVOR, resource_version)
 
     #
     # Instance Operations
@@ -545,13 +687,23 @@ class ClusterOps:
         """
         return await self._patch_spec(_INSTANCE, name, {"stop": True})
 
-    async def start_instance(self, name: str) -> Optional[dict]:
-        """Resume the instance by removing ``spec.stop`` via merge-patch null.
+    async def start_instance(
+        self, name: str, spec: Optional[dict] = None
+    ) -> Optional[dict]:
+        """Resume the instance by patching ``spec.stop=false``.
+
+        When ``spec`` is given (the instance CR spec from
+        :meth:`GPUInstance.convert_to_kuberes`), its fields are re-applied in the
+        same merge-patch so a config edit made while the instance was Stopped
+        takes effect on resume. Merge-patch semantics mean any of those
+        re-applied fields left at ``None`` is untouched rather than cleared;
+        ``stop`` itself is always written explicitly as ``false``.
 
         Returns the server-acknowledged object, or ``None`` if the
         instance is gone.
         """
-        return await self._patch_spec(_INSTANCE, name, {"stop": None})
+        body = {**spec, "stop": False} if spec is not None else {"stop": False}
+        return await self._patch_spec(_INSTANCE, name, body)
 
     async def delete_instance(self, name: str) -> bool:
         """

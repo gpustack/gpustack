@@ -134,13 +134,9 @@ async def subscribe_worker(
     gvk: Optional[list[tuple[str, str, str]]] = None,
 ) -> None:
     """POST /apis/workers — subscribe a worker cluster to the gateway."""
-    if gvk is None:
-        gvk = [
-            ("worker.gpustack.ai", "v1", "InstanceType"),
-        ]
     async with _session() as session:
         params = _query(clusters=[cluster], token=token, force=force)
-        body = {"gvks": [f"{g}/{v}/{k}" if g else f"{v}/{k}" for g, v, k in gvk]}
+        body = {"gvks": [f"{g}/{v}/{k}" if g else f"{v}/{k}" for g, v, k in gvk or []]}
         async with session.post(
             f"{_BASE_URL}/workers", params=params, json=body
         ) as resp:
@@ -155,6 +151,26 @@ async def unsubscribe_worker(
         params = _query(clusters=[cluster])
         async with session.delete(f"{_BASE_URL}/workers", params=params) as resp:
             resp.raise_for_status()
+
+
+async def list_instance_type_flavors(
+    clusters: Optional[list[str]] = None,
+    aggregated: bool = False,
+) -> dict[str, Any]:
+    """GET /apis/instancetypeflavors — list InstanceTypeFlavors across one or more clusters."""
+    return await _get_json(
+        "/instancetypeflavors", _query(clusters=clusters, aggregated=aggregated)
+    )
+
+
+async def watch_instance_type_flavors(
+    clusters: Optional[list[str]] = None,
+    aggregated: bool = False,
+) -> AsyncIterator[str]:
+    """GET /apis/instancetypeflavors?watch=true — stream InstanceTypeFlavor change events."""
+    params = _query(clusters=clusters, aggregated=aggregated, watch=True)
+    async for evt in _stream("/instancetypeflavors", params):
+        yield evt
 
 
 async def list_instance_types(
