@@ -111,6 +111,16 @@ MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(
 MODEL_INSTANCE_HEALTH_CHECK_INTERVAL = int(
     os.getenv("GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL", 3)
 )
+# Period, in seconds, for forcing an authoritative (uncached) DB reconciliation
+# of locally-tracked model instances in the worker state sync. 0 disables it,
+# leaving the sync purely cache-backed. It exists only as a backstop for a
+# watch cache that silently diverged from DB truth without a reconnect (e.g. a
+# coordinator dropping a DELETED on a live stream); enabling it reintroduces one
+# uncached full SELECT per worker per period, so keep it well above the health
+# check interval when set.
+MODEL_INSTANCE_STATE_RECONCILE_INTERVAL = int(
+    os.getenv("GPUSTACK_MODEL_INSTANCE_STATE_RECONCILE_INTERVAL", 0)
+)
 DISABLE_OS_FILELOCK = os.getenv("GPUSTACK_DISABLE_OS_FILELOCK", "false").lower() in [
     "true",
     "1",
