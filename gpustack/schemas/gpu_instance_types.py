@@ -1,9 +1,15 @@
+import hashlib
+import json
 from typing import Optional, List
 
 from pydantic import ConfigDict, BaseModel
+from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
+from sqlmodel import SQLModel, Field
 
+from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import (
     pydantic_camel_case_generator,
+    pydantic_column_type,
     ItemList,
 )
 
@@ -428,6 +434,86 @@ class GPUInstanceTypeStatus(BaseModel):
     """
     The CPU once max request resource of the candidate, e.g. "4", "8".
     """
+
+
+class GPUInstanceType(SQLModel, BaseModelMixin, table=True):
+    """
+    Server-side projection of a cluster's ``worker.gpustack.ai/v1`` InstanceType.
+
+    Populated exclusively by ``GPUInstanceTypeController`` from the operator watch
+    stream (never by tenant input); it backs instance-type validation and the
+    snapshot stamped onto a ``GPUInstance`` at create/update time.
+    """
+
+    __tablename__ = "gpu_instance_types"
+    __table_args__ = (
+        # ``snapshot`` encodes (cluster_id, name, spec), so it is the row's
+        # global identity: enforcing its uniqueness de-duplicates identical
+        # types and backs the controller's query-first upsert / revive.
+        UniqueConstraint("snapshot", name="uq_gpu_instance_type_snapshot"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    cluster_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("clusters.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+    )
+    """
+    Reference to the cluster this instance type belongs to. Cluster-scoped, not
+    tenant-scoped: the table mirrors the cluster catalog, so there is no owner
+    principal.
+    """
+
+    name: str
+    """
+    Name of the instance type within its cluster (the CR's ``metadata.name``).
+    """
+
+    spec: GPUInstanceTypeSpec = Field(
+        sa_type=pydantic_column_type(GPUInstanceTypeSpec),
+    )
+    """
+    Specification mirrored from the operator InstanceType.
+    """
+
+    snapshot: str
+    """
+    Stable identity hash (``sha1:<hexdigest>``) over ``(cluster_id, name, spec)``
+    with the mutable ``display_name`` excluded, unique per row. See
+    ``compute_snapshot``.
+    """
+
+    def is_deleted(self) -> bool:
+        """Whether the type row is soft-deleted (``deleted_at`` set)."""
+        return self.deleted_at is not None
+
+    def compute_snapshot(self) -> str:
+        """Return this type's stable identity snapshot as ``sha1:<hexdigest>``.
+
+        Identity is the cluster-scoped name plus the definitional spec — the
+        spec now holds only definitional fields (observed hardware lives on
+        ``status.detail``) — with the mutable ``display_name`` dropped. So two
+        definitions that differ only by display name share a snapshot, while a
+        change to a definitional field (e.g. ``unit_resources``) diverges it.
+        """
+        # ``exclude_none`` keeps identity stable across additive schema
+        # evolution: an unset optional field must not enter the payload, so
+        # introducing a new optional definitional field later does not churn the
+        # snapshot of existing types the operator never set it on.
+        spec = self.spec.model_dump(mode="json", exclude_none=True)
+        spec.pop("display_name", None)
+        payload = json.dumps(
+            {"cluster_id": self.cluster_id, "name": self.name, "spec": spec},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+        return f"sha1:{digest}"
 
 
 class GPUInstanceTypeBase(BaseModel):
