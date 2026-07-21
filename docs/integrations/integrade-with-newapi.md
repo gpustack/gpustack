@@ -62,6 +62,8 @@ NewAPI can integrate with GPUStack to aggregate locally deployed LLMs, embedding
 
 1. Go to the `api keys` page in NewAPI, click `create api key`
 
+* note: api key must select group same with channels config group , or you can not access the model
+
 2. Copy the newly generated NewAPI key (starts with `sk-`).
 
 3. You can now access all GPUStack-backed models via NewAPI's unified endpoint:
