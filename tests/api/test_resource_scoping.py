@@ -323,6 +323,11 @@ async def test_gpu_instance_create_allows_granted_cluster(monkeypatch):
     monkeypatch.setattr(
         gpu_instances_route, "_validate_create_obj", AsyncMock(return_value=None)
     )
+    # The create flow stamps the resolved instance-type snapshot onto the
+    # instance; resolution is covered elsewhere, so stub it out here.
+    monkeypatch.setattr(
+        gpu_instances_route, "_resolve_type_snapshot", AsyncMock(return_value=None)
+    )
     monkeypatch.setattr(
         gpu_instances_route.GPUInstance,
         "exist_by_fields",
@@ -337,6 +342,7 @@ async def test_gpu_instance_create_allows_granted_cluster(monkeypatch):
         owner_principal_id=CALLER_PRINCIPAL,
         cluster_id=2,
         name="x",
+        spec=SimpleNamespace(type_=None),
         model_dump=lambda: {"cluster_id": 2, "name": "x"},
     )
     ctx = _user_ctx()
