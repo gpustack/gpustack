@@ -259,6 +259,22 @@ async def test_start_failure_message_is_stable_across_errors(engine, controller)
     assert "boom" not in (first or "")
 
 
+@pytest.mark.asyncio
+async def test_starting_reapplies_spec_on_resume(engine, controller):
+    # A config edit made while Stopped is re-applied to the worker CR on resume:
+    # start_instance carries the full row spec, not just the un-stop patch, so
+    # the edit takes effect instead of silently no-op-ing.
+    spec = GPUInstanceSpec(type_="gpu", image="busybox:edited")
+    await _seed(engine, phase=GPUInstancePhase.STARTING, spec=spec)
+    ops = _with_ops(controller, FakeOps(read_return=_read(GPUInstancePhase.NOT_READY)))
+
+    await controller._reconcile_instance(1, {})
+
+    ops.start_instance.assert_awaited_once()
+    sent_spec = ops.start_instance.await_args.kwargs["spec"]
+    assert sent_spec["image"] == "busybox:edited"
+
+
 # --- stopping -------------------------------------------------------------- #
 
 

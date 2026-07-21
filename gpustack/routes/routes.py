@@ -46,6 +46,7 @@ from gpustack.routes import (
     gpu_instance_persistent_volume_types,
     gpu_instance_persistent_volumes,
     gpu_instance_types,
+    gpu_instance_type_flavors,
     gpu_instances,
 )
 
@@ -222,6 +223,11 @@ model_routers = [
         "router": gpu_instance_types.router,
         "prefix": "/gpu-instance-types",
         "tags": ["GPU Instance Types"],
+    },
+    {
+        "router": gpu_instance_type_flavors.router,
+        "prefix": "/gpu-instance-type-flavors",
+        "tags": ["GPU Instance Type Flavors"],
     },
     {
         "router": gpu_instances.router,
