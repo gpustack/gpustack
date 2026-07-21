@@ -11,7 +11,7 @@ import jwt
 from jwt.algorithms import RSAAlgorithm
 from gpustack.config.config import Config
 from typing import Annotated, Dict, List, Optional
-from fastapi import APIRouter, Form, Request, Response
+from fastapi import APIRouter, Depends, Form, Request, Response
 from gpustack.api.exceptions import (
     ConflictException,
     InvalidException,
@@ -434,6 +434,41 @@ def _saml_settings(config: Config, *, xml_bytes: Optional[bytes] = None) -> Dict
     }
 
 
+def _provider_gate(provider: AuthProviderEnum):
+    """Build a FastAPI dependency that rejects a request with 400 unless
+    ``provider`` is the active auth provider.
+
+    Attached at the sub-router level (see ``oidc_router`` / ``saml_router``
+    / ``cas_router``) so every current *and future* route under it is
+    gated without the handler having to remember — the check can't be
+    accidentally dropped when a new SSO route is added.
+
+    ``Config.init_auth`` resolves ``external_auth_type`` to at most one
+    provider (OIDC → SAML → CAS precedence), so gating each route group
+    on its own provider closes it on every other deployment. This
+    matters because the callbacks parse attacker-supplied IdP payloads
+    (a SAML ``SAMLResponse``, an OIDC token exchange, a CAS service
+    ticket) — leaving them live where the provider was never enabled is
+    needless attack surface.
+    """
+
+    def _dependency(request: Request) -> None:
+        config: Config = request.app.state.server_config
+        if config.external_auth_type != provider:
+            raise BadRequestException(message=f"{provider.value} is not configured")
+
+    return _dependency
+
+
+# One sub-router per external provider, each gated by ``_provider_gate``
+# so the whole provider's route group is closed unless that provider is
+# the configured active one. Included into ``router`` at the bottom of
+# the module.
+oidc_router = APIRouter(dependencies=[Depends(_provider_gate(AuthProviderEnum.OIDC))])
+saml_router = APIRouter(dependencies=[Depends(_provider_gate(AuthProviderEnum.SAML))])
+cas_router = APIRouter(dependencies=[Depends(_provider_gate(AuthProviderEnum.CAS))])
+
+
 async def init_saml_auth(request: Request):
     """
     Initialize SAML authentication configuration.
@@ -452,13 +487,13 @@ async def init_saml_auth(request: Request):
 # SAML login and callback endpoints
 
 
-@router.get("/saml/login")
+@saml_router.get("/saml/login")
 async def saml_login(request: Request):
     auth = await init_saml_auth(request)
     return RedirectResponse(url=auth.login())
 
 
-@router.api_route("/saml/callback", methods=["GET", "POST"])
+@saml_router.api_route("/saml/callback", methods=["GET", "POST"])
 @_sso_callback_errors_to_redirect
 async def saml_callback(request: Request, session: SessionDep):
     logger.debug("Invoke saml callback.")
@@ -635,7 +670,7 @@ async def saml_callback(request: Request, session: SessionDep):
     return response
 
 
-@router.api_route("/saml/logout/callback", methods=["GET", "POST"])
+@saml_router.api_route("/saml/logout/callback", methods=["GET", "POST"])
 async def saml_logout_callback(request: Request):
     try:
         auth = await init_saml_auth(request)
@@ -766,7 +801,7 @@ def _coerce_group_claim(raw) -> List[str]:
 # OIDC login and callback endpoints
 
 
-@router.get("/oidc/login")
+@oidc_router.get("/oidc/login")
 async def oidc_login(request: Request):
     config: Config = request.app.state.server_config
     authorization_endpoint = config.openid_configuration["authorization_endpoint"]
@@ -794,7 +829,7 @@ async def oidc_login(request: Request):
     return response
 
 
-@router.get("/oidc/callback")
+@oidc_router.get("/oidc/callback")
 @_sso_callback_errors_to_redirect
 async def oidc_callback(request: Request, session: SessionDep):
     logger.debug("Invoke oidc callback.")
@@ -1075,23 +1110,19 @@ async def validate_cas_ticket(
     return user_data
 
 
-@router.get("/cas/login")
+@cas_router.get("/cas/login")
 async def cas_login(request: Request):
     config: Config = request.app.state.server_config
-    if not config.cas_server_url:
-        raise BadRequestException(message="CAS is not configured")
     service = _cas_service_url(request, config)
     base = config.cas_server_url.rstrip("/")
     return RedirectResponse(url=f"{base}/login?service={quote(service, safe='')}")
 
 
-@router.get("/cas/callback")
+@cas_router.get("/cas/callback")
 @_sso_callback_errors_to_redirect
 async def cas_callback(request: Request, session: SessionDep):
     logger.debug("Invoke CAS callback.")
     config: Config = request.app.state.server_config
-    if not config.cas_server_url:
-        raise BadRequestException(message="CAS is not configured")
 
     ticket = request.query_params.get("ticket")
     if not ticket:
@@ -1374,3 +1405,11 @@ def remove_initial_password_file_if_exists(config: Config) -> None:
         initial_password_file.unlink(missing_ok=True)
     except OSError as e:
         logger.debug(f"Left initial password file in place: {e}")
+
+
+# Mount the per-provider sub-routers. Each carries a ``_provider_gate``
+# dependency, so their routes stay closed unless that provider is the
+# configured active one.
+router.include_router(oidc_router)
+router.include_router(saml_router)
+router.include_router(cas_router)
