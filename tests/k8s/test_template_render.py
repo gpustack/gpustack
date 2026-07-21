@@ -614,3 +614,74 @@ def test_operator_env_vars_absent_when_not_set():
     env_names = {e["name"] for e in env}
     assert "MY_VAR" not in env_names
     assert "OTHER_VAR" not in env_names
+
+
+# ---------------------------------------------------------------------------
+# Worker ports — worker_port / worker_metrics_port from the cluster config
+# must flow into the worker container (env, so prerun binds them), the
+# DaemonSet containerPorts, and the Service ports + prometheus scrape
+# annotation. Otherwise a cluster overriding the defaults renders a Service
+# that routes to the wrong port and a worker that binds the defaults.
+# ---------------------------------------------------------------------------
+
+
+def _worker_service(docs):
+    return next(
+        d
+        for d in docs
+        if d.get("kind") == "Service" and d["metadata"]["name"] == "gpustack-worker"
+    )
+
+
+def _worker_container(ds):
+    return _pod_spec(ds)["containers"][0]
+
+
+def _container_env_map(container):
+    return {e["name"]: e.get("value") for e in container.get("env", []) if "value" in e}
+
+
+def _container_port_map(container):
+    return {p["name"]: p["containerPort"] for p in container.get("ports", [])}
+
+
+def test_worker_ports_default_to_10150_10151():
+    """With no override, the worker api/metrics ports fall back to the
+    built-in defaults across the Service, containerPorts, env, and the
+    prometheus annotation."""
+    docs = _render_docs()
+
+    svc = _worker_service(docs)
+    port_by_name = {
+        p["name"]: (p["port"], p["targetPort"]) for p in svc["spec"]["ports"]
+    }
+    assert port_by_name["api"] == (10150, 10150)
+    assert port_by_name["metrics"] == (10151, 10151)
+    assert svc["metadata"]["annotations"]["prometheus.io/port"] == "10151"
+
+    container = _worker_container(_daemonsets(docs)[WORKER_DS_BASENAME])
+    assert _container_port_map(container) == {"api": 10150, "metrics": 10151}
+    env = _container_env_map(container)
+    assert env["GPUSTACK_WORKER_PORT"] == "10150"
+    assert env["GPUSTACK_WORKER_METRICS_PORT"] == "10151"
+
+
+def test_worker_ports_override_propagates_everywhere():
+    """A cluster overriding worker_port/worker_metrics_port renders those
+    ports into the Service, containerPorts, worker env, and the prometheus
+    annotation — so routing and the worker's own bind agree."""
+    docs = _render_docs(worker_port=10152, worker_metrics_port=10153)
+
+    svc = _worker_service(docs)
+    port_by_name = {
+        p["name"]: (p["port"], p["targetPort"]) for p in svc["spec"]["ports"]
+    }
+    assert port_by_name["api"] == (10152, 10152)
+    assert port_by_name["metrics"] == (10153, 10153)
+    assert svc["metadata"]["annotations"]["prometheus.io/port"] == "10153"
+
+    container = _worker_container(_daemonsets(docs)[WORKER_DS_BASENAME])
+    assert _container_port_map(container) == {"api": 10152, "metrics": 10153}
+    env = _container_env_map(container)
+    assert env["GPUSTACK_WORKER_PORT"] == "10152"
+    assert env["GPUSTACK_WORKER_METRICS_PORT"] == "10153"

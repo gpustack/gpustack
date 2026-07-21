@@ -27,6 +27,28 @@ Bundles the pre-release schema tweaks for v2.2.2:
    batches and Python-side so it is dialect-agnostic. GPU rows already stored
    the count, so in practice only CPU rows change.
 
+4. Drop every foreign key on ``model_usages``, making the table fully FK-less
+   (mirroring ``model_usage_details`` / ``metered_usage``). A usage row is an
+   attribution / audit record that must outlive the entities it references;
+   the previous ``ON DELETE SET NULL`` erased which user / tenant / model /
+   route / key the usage belonged to on parent delete. Ids are now kept
+   (dangling) and the read path resolves existence live, tagging gone
+   entities ``(Deleted)``. Targets PostgreSQL and MySQL (SQLite unsupported).
+
+5. Add a nullable ``status`` (phase, finalizing) JSON column to
+   ``gpu_instance_persistent_volumes`` and
+   ``gpu_instance_persistent_volume_types``. The soft-delete flow stamps
+   ``phase=Deleting`` and the finalizer controllers track downstream CR
+   cleanup in ``finalizing`` before the row is hard-deleted.
+
+6. Snapshot the consumer principal name / kind onto the usage tables for the
+   Organization breakdown: ``model_usages`` gains ``consumer_name`` +
+   ``consumer_principal_kind`` (it had neither), while ``metered_usage`` /
+   ``resource_events`` (+archives) — which already carry ``consumer_name`` —
+   gain just ``consumer_principal_kind``. All nullable, no backfill; the read
+   path resolves the name live for pre-upgrade rows and only relies on the
+   snapshot for hard-deleted principals.
+
 Revision ID: c4d7e8f9a0b1
 Revises: b2c3d4e5f6a7
 Create Date: 2026-06-24 11:00:00.000000
@@ -37,6 +59,8 @@ from typing import Optional, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+import sqlmodel
+import gpustack
 
 
 # revision identifiers, used by Alembic.
@@ -55,6 +79,20 @@ _ENUM_VALUES = ('Local', 'OIDC', 'SAML')
 _UPTIME_METER = 'instance.uptime'
 _METERED_TABLES = ('metered_usage', 'metered_usage_archive')
 _BATCH = 1000
+
+
+# --- model_usages FK drop (part 4) ---
+# (column, referred table) for every FK the table used to carry, all
+# ``ON DELETE SET NULL``. Used to recreate them on downgrade.
+_MODEL_USAGES_FKS = (
+    ('user_id', 'principals'),
+    ('owner_principal_id', 'principals'),
+    ('consumer_principal_id', 'principals'),
+    ('model_id', 'models'),
+    ('model_route_id', 'model_routes'),
+    ('provider_id', 'model_providers'),
+    ('api_key_id', 'api_keys'),
+)
 
 
 def _coerce_dims(value) -> dict:
@@ -158,10 +196,121 @@ def upgrade() -> None:
     # Part 3: backfill sku_count (all dialects).
     _backfill_sku_count(bind)
 
+    # Part 4: drop every FK on model_usages — the table becomes fully FK-less.
+    # Constraint names are resolved by reflection (the ``user_id`` FK kept its
+    # pre-rename name ``fk_model_usages_user_id_users`` after users→principals,
+    # while the rest follow ``fk_model_usages_<col>_<referred>``).
+    for fk in sa.inspect(bind).get_foreign_keys('model_usages'):
+        if fk.get('name'):
+            op.drop_constraint(fk['name'], 'model_usages', type_='foreignkey')
+
+    # Part 5: add a nullable status column to the pv/pvt tables.
+    with op.batch_alter_table(
+        'gpu_instance_persistent_volume_types', schema=None
+    ) as batch_op:
+        batch_op.add_column(
+            sa.Column('status', gpustack.schemas.common.JSON(), nullable=True)
+        )
+
+    with op.batch_alter_table(
+        'gpu_instance_persistent_volumes', schema=None
+    ) as batch_op:
+        batch_op.add_column(
+            sa.Column('status', gpustack.schemas.common.JSON(), nullable=True)
+        )
+
+    # Part 6: snapshot the consumer principal name / kind onto the usage tables
+    # so the Organization breakdown keeps a deleted org's name and can tag a
+    # personal (USER) consumer — parity with the other ``*_name`` denorms.
+    # ``model_usages`` never carried a consumer name, so it gets both columns;
+    # ``metered_usage`` / ``resource_events`` (+archives) already carry
+    # ``consumer_name`` from their create migration, so they only add the kind.
+    # All nullable, no backfill: pre-upgrade rows resolve the name via a live
+    # principals lookup at read time.
+    with op.batch_alter_table('model_usages', schema=None) as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                'consumer_name',
+                sqlmodel.sql.sqltypes.AutoString(),
+                nullable=True,
+            )
+        )
+        batch_op.add_column(
+            sa.Column(
+                'consumer_principal_kind',
+                sqlmodel.sql.sqltypes.AutoString(),
+                nullable=True,
+            )
+        )
+
+    for table in (
+        'metered_usage',
+        'metered_usage_archive',
+        'resource_events',
+        'resource_events_archive',
+    ):
+        with op.batch_alter_table(table, schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    'consumer_principal_kind',
+                    sqlmodel.sql.sqltypes.AutoString(),
+                    nullable=True,
+                )
+            )
+
 
 def downgrade() -> None:
     bind = op.get_bind()
     dialect = bind.dialect.name
+
+    # Revert part 6: drop the consumer name / kind snapshot columns.
+    for table in (
+        'resource_events_archive',
+        'resource_events',
+        'metered_usage_archive',
+        'metered_usage',
+    ):
+        with op.batch_alter_table(table, schema=None) as batch_op:
+            batch_op.drop_column('consumer_principal_kind')
+    with op.batch_alter_table('model_usages', schema=None) as batch_op:
+        batch_op.drop_column('consumer_principal_kind')
+        batch_op.drop_column('consumer_name')
+
+    # Revert part 5: drop the pv/pvt status column.
+    with op.batch_alter_table(
+        'gpu_instance_persistent_volumes', schema=None
+    ) as batch_op:
+        batch_op.drop_column('status')
+
+    with op.batch_alter_table(
+        'gpu_instance_persistent_volume_types', schema=None
+    ) as batch_op:
+        batch_op.drop_column('status')
+
+    # Revert part 4: recreate the model_usages foreign keys as ON DELETE SET
+    # NULL, pointing at the (post-rename) parent tables.
+    #
+    # While FK-less (the upgraded state), deleting a parent left its id dangling
+    # on model_usages. PostgreSQL / MySQL validate existing rows when a FK is
+    # added, so ADD CONSTRAINT would fail on those orphaned references — NULL
+    # them out first (exactly what ON DELETE SET NULL would have done) so the
+    # constraint can be created.
+    for column, referred in _MODEL_USAGES_FKS:
+        bind.execute(
+            sa.text(
+                f"UPDATE model_usages SET {column} = NULL "
+                f"WHERE {column} IS NOT NULL "
+                f"AND {column} NOT IN (SELECT id FROM {referred})"
+            )
+        )
+        op.create_foreign_key(
+            f'fk_model_usages_{column}_{referred}',
+            'model_usages',
+            referred,
+            [column],
+            ['id'],
+            ondelete='SET NULL',
+        )
 
     # NULL ``api_keys.owner_principal_id`` rows on the new schema
     # represent admin "All" mode keys. The pre-migration column was

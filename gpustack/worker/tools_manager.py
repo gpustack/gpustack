@@ -16,7 +16,7 @@ from gpustack.worker.backend_dependency_manager import BackendDependencyManager
 logger = logging.getLogger(__name__)
 
 
-BUILTIN_GGUF_PARSER_VERSION = "v0.24.1"
+BUILTIN_GGUF_PARSER_VERSION = "v0.25.0"
 
 
 class ToolsManager:

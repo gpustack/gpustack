@@ -11,7 +11,12 @@ from gpustack.schemas.inference_backend import (
 )
 from gpustack.schemas.models import BackendEnum
 from gpustack.utils.config import apply_registry_override_to_image
-from gpustack.worker.backends.base import InferenceServer, read_lora_max_rank
+from gpustack.envs import ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV as _KNOB
+from gpustack.worker.backends.base import (
+    InferenceServer,
+    read_lora_max_rank,
+    _parse_image_cuda_version,
+)
 from gpustack.worker.backends.custom import CustomServer
 from gpustack.worker.backends.sglang import (
     SGLangServer,
@@ -1048,3 +1053,224 @@ def test_round_up_vllm_lora_rank():
     assert _round_up_vllm_lora_rank(64) == 64
     assert _round_up_vllm_lora_rank(200) == 256
     assert _round_up_vllm_lora_rank(1024) == 1024  # beyond known set: pass through
+
+
+def _make_versioned_runner(backend_version, docker_image):
+    """Build a minimal BackendVersionedRunner-shaped stub for _resolve_image."""
+    platform_entry = types.SimpleNamespace(docker_image=docker_image)
+    service_version = types.SimpleNamespace(
+        version="0.10.2", platforms=[platform_entry]
+    )
+    service = types.SimpleNamespace(versions=[service_version])
+    variant = types.SimpleNamespace(services=[service])
+    return types.SimpleNamespace(version=backend_version, variants=[variant])
+
+
+@pytest.mark.parametrize(
+    "runtime_version, expected_image",
+    [
+        # Host runtime matches a runner exactly: pick it.
+        ("12.8", "gpustack/runner:cuda12.8-vllm0.10.2"),
+        # Host runtime lower than every runner: never cross major, fall back to
+        # the newest runner sharing the host major (12.9, not the oldest 12.8).
+        ("12.6", "gpustack/runner:cuda12.9-vllm0.10.2"),
+        # No runner shares the host major: fall back to the oldest available.
+        ("11.5", "gpustack/runner:cuda12.8-vllm0.10.2"),
+        # Host runtime is higher than all: pick the newest that is <= it.
+        ("13.5", "gpustack/runner:cuda13.0-vllm0.10.2"),
+        # Runtime version undetectable: fall back to the latest.
+        (None, "gpustack/runner:cuda13.0-vllm0.10.2"),
+    ],
+)
+def test_resolve_image_fallback_matches_host_major(
+    runtime_version, expected_image, monkeypatch
+):
+    import gpustack.worker.backends.base as base_module
+
+    # gpustack-runner returns backend versions newest-first.
+    runner = types.SimpleNamespace(
+        versions=[
+            _make_versioned_runner("13.0", "gpustack/runner:cuda13.0-vllm0.10.2"),
+            _make_versioned_runner("12.9", "gpustack/runner:cuda12.9-vllm0.10.2"),
+            _make_versioned_runner("12.8", "gpustack/runner:cuda12.8-vllm0.10.2"),
+        ]
+    )
+    monkeypatch.setattr(base_module, "list_backend_runners", lambda **_: [runner])
+
+    server = VLLMServer.__new__(VLLMServer)
+    server._model = types.SimpleNamespace(
+        image_name=None, backend="vllm", backend_version=None
+    )
+    server.inference_backend = None
+    server._get_device_info = lambda: ("cuda", runtime_version, None)
+
+    image_name, _ = server._resolve_image()
+    assert image_name == expected_image
+
+
+class _StubServer(InferenceServer):
+    """Concrete InferenceServer so base methods can be exercised in isolation."""
+
+    def start(self):  # pragma: no cover - not used by these tests
+        raise NotImplementedError
+
+
+@pytest.mark.parametrize(
+    "image,expected",
+    [
+        ("gpustack/runner:cuda12.9-vllm0.10.2", "12.9"),
+        (
+            "registry.example.com/gpustack/runner:cuda12.8-vllm0.10.2-linux-amd64",
+            "12.8",
+        ),
+        (
+            "registry.example.com/cuda11.8/gpustack/runner:cuda12.8-vllm0.10.2-linux-amd64",
+            "12.8",
+        ),
+        ("gpustack/runner:cuda13.0-sglang0.4", "13.0"),
+        ("gpustack/runner:rocm6.2-vllm0.10.2", None),
+        ("myregistry/custom-vllm:latest", None),
+        ("", None),
+    ],
+)
+def test_parse_image_cuda_version(image, expected):
+    assert _parse_image_cuda_version(image) == expected
+
+
+def _make_cuda_compat_server(host_cuda, image, backend="cuda", model_env=None):
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(env=model_env)
+    server._get_device_info = lambda: (backend, host_cuda, None)
+    server._resolve_image = lambda: (image, None)
+    return server
+
+
+@pytest.mark.parametrize(
+    "host_cuda,image,backend,expected",
+    [
+        # Image minor higher than host driver, same major -> route through MVC.
+        ("12.8", "gpustack/runner:cuda12.9-vllm0.10.2", "cuda", True),
+        # Equal minor: cuda-compat is never activated, nothing to do.
+        ("12.8", "gpustack/runner:cuda12.8-vllm0.10.2", "cuda", False),
+        # Host newer than image: plain backward compatibility, nothing to do.
+        ("12.8", "gpustack/runner:cuda12.6-vllm0.10.2", "cuda", False),
+        # Cross major is not MVC-safe; must not trigger.
+        ("12.8", "gpustack/runner:cuda13.0-vllm0.10.2", "cuda", False),
+        # Non-CUDA vendor.
+        ("6.2", "gpustack/runner:rocm6.3-vllm0.10.2", "rocm", False),
+        # Host CUDA version undetected.
+        (None, "gpustack/runner:cuda12.9-vllm0.10.2", "cuda", False),
+        # Custom image whose tag does not encode a CUDA version.
+        ("12.8", "myregistry/custom:latest", "cuda", False),
+    ],
+)
+def test_should_disable_cuda_compat(monkeypatch, host_cuda, image, backend, expected):
+    # This case matrix exercises the version condition; force the opt-in switch on.
+    monkeypatch.setattr("gpustack.envs.ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY", True)
+    server = _make_cuda_compat_server(host_cuda, image, backend)
+    assert server._should_disable_cuda_compat() is expected
+
+
+@pytest.mark.parametrize(
+    "global_enabled,model_env,expected",
+    [
+        # Enabled globally, no model override -> triggers.
+        (True, None, True),
+        # Disabled globally (the default), no model override -> off.
+        (False, None, False),
+        # Model-level override wins over the global default (opt in this model).
+        (False, {_KNOB: "true"}, True),
+        # Model-level override wins over the global default (opt out this model).
+        (True, {_KNOB: "false"}, False),
+    ],
+)
+def test_cuda_compat_switch_is_multi_level(
+    monkeypatch, global_enabled, model_env, expected
+):
+    # Host/image are fixed to a triggering pair so only the switch varies.
+    monkeypatch.setattr(
+        "gpustack.envs.ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY", global_enabled
+    )
+    server = _make_cuda_compat_server(
+        "12.8",
+        "gpustack/runner:cuda12.9-vllm0.10.2",
+        model_env=model_env,
+    )
+    assert server._should_disable_cuda_compat() is expected
+
+
+def _script_server(should_disable_compat):
+    server = _StubServer.__new__(_StubServer)
+    server._should_disable_cuda_compat = lambda: should_disable_compat
+    return server
+
+
+def test_serving_command_script_bakes_in_compat_removal():
+    script = _script_server(True)._get_serving_command_script({})
+    assert script is not None
+    assert "rm -rf /usr/local/cuda/compat" in script
+    assert "ldconfig" in script
+    # Non-root containers can't remove compat; the script warns instead of failing silently.
+    assert "Warning: failed to remove /usr/local/cuda/compat" in script
+    assert script.rstrip().endswith('exec "$@"')
+
+
+def test_serving_command_script_none_without_triggers():
+    assert _script_server(False)._get_serving_command_script({}) is None
+    # Explicit opt-out wins even when compat removal was requested.
+    assert (
+        _script_server(True)._get_serving_command_script(
+            {"GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED": "1"}
+        )
+        is None
+    )
+
+
+def test_serving_command_script_pypi_has_no_compat_block():
+    script = _script_server(False)._get_serving_command_script(
+        {"PYPI_PACKAGES_INSTALL": "some-package"}
+    )
+    assert script is not None
+    assert "PYPI_PACKAGES_INSTALL" in script
+    assert "/usr/local/cuda/compat" not in script
+
+
+def test_configured_env_injects_disable_require_only(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(env=None)
+    server._should_disable_cuda_compat = lambda: True
+
+    env = server._get_configured_env()
+
+    assert env["NVIDIA_DISABLE_REQUIRE"] == "1"
+    assert "GPUSTACK_DISABLE_CUDA_COMPAT" not in env
+
+
+def test_configured_env_respects_user_override(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _StubServer.__new__(_StubServer)
+    # User explicitly pins NVIDIA_DISABLE_REQUIRE; we must not clobber it.
+    server._model = types.SimpleNamespace(env={"NVIDIA_DISABLE_REQUIRE": "0"})
+    server._should_disable_cuda_compat = lambda: True
+
+    env = server._get_configured_env()
+
+    assert env["NVIDIA_DISABLE_REQUIRE"] == "0"
+
+
+def test_configured_env_no_injection_when_not_triggered(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(env=None)
+    server._should_disable_cuda_compat = lambda: False
+
+    env = server._get_configured_env()
+
+    assert "NVIDIA_DISABLE_REQUIRE" not in env

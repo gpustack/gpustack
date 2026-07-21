@@ -109,7 +109,7 @@ If GPUStack needs to communicate with services that use certificates issued by a
 
 !!! note
 
-    The certificate file must have a `.crt` extension. You can mount multiple CA certificates by adding additional `--volume` flags.
+    The CA certificate must be PEM-encoded with a `.crt` extension. You can mount multiple CA certificates by adding additional `--volume` flags.
 
 ## Installation via Docker Compose
 

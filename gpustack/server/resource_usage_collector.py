@@ -107,6 +107,7 @@ class _OpenWindow:
     owner_name: Optional[str]
     consumer_principal_id: Optional[int]
     consumer_name: Optional[str]
+    consumer_principal_kind: Optional[str]
     creator_id: Optional[int]
     creator_name: Optional[str]
     cluster_id: Optional[int]
@@ -258,6 +259,7 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         owner_name=evt.owner_name,
         consumer_principal_id=evt.consumer_principal_id,
         consumer_name=evt.consumer_name,
+        consumer_principal_kind=getattr(evt, "consumer_principal_kind", None),
         creator_id=evt.creator_id,
         creator_name=evt.creator_name,
         cluster_id=evt.cluster_id,
@@ -521,7 +523,7 @@ class ResourceUsageCollector:
         ):
             window.settled_through = end_ts
 
-    async def _upsert_bucket(
+    async def _upsert_bucket(  # noqa: C901
         self,
         session,
         window: _OpenWindow,
@@ -569,6 +571,8 @@ class ResourceUsageCollector:
                 row.owner_name = window.owner_name
             if window.consumer_name is not None:
                 row.consumer_name = window.consumer_name
+            if window.consumer_principal_kind is not None:
+                row.consumer_principal_kind = window.consumer_principal_kind
             if window.creator_name is not None:
                 row.creator_name = window.creator_name
             if window.cluster_name is not None:
@@ -587,6 +591,7 @@ class ResourceUsageCollector:
                 owner_name=window.owner_name,
                 consumer_principal_id=window.consumer_principal_id,
                 consumer_name=window.consumer_name,
+                consumer_principal_kind=window.consumer_principal_kind,
                 creator_id=window.creator_id,
                 creator_name=window.creator_name,
                 cluster_id=window.cluster_id,

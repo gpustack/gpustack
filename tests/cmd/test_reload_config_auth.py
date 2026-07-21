@@ -1,11 +1,15 @@
 import argparse
+from types import SimpleNamespace
+
+import pytest
 
 from gpustack.api.auth import SESSION_COOKIE_NAME
 from gpustack.cmd.local_auth import (
     mint_admin_jwt,
     read_local_jwt_secret,
 )
-from gpustack.cmd.reload_config import resolve_scope_headers
+from gpustack.cmd import reload_config
+from gpustack.cmd.reload_config import apply_runtime_updates, resolve_scope_headers
 from gpustack.security import JWTManager
 
 
@@ -96,6 +100,56 @@ def test_api_key_falls_back_for_worker_when_no_token(tmp_path):
 
 def test_no_credentials_yields_empty(tmp_path):
     assert resolve_scope_headers(_args(tmp_path)) == {}
+
+
+# ---------------------------------------------------------------------------
+# apply_runtime_updates — endpoint fallback behavior
+# ---------------------------------------------------------------------------
+
+
+def test_apply_runtime_updates_ignores_unauthorized_endpoint_after_worker_success(
+    monkeypatch,
+):
+    calls = []
+
+    monkeypatch.setattr(
+        reload_config,
+        "resolve_scope_headers",
+        lambda args: {
+            "server": {"Authorization": "Bearer admin"},
+            "worker": {"Authorization": "Bearer worker"},
+        },
+    )
+
+    def fake_put(url, json, headers, timeout):
+        calls.append((url, headers))
+        if ":30080" in url:
+            return SimpleNamespace(status_code=401)
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(reload_config.requests, "put", fake_put)
+
+    apply_runtime_updates({"debug": True}, argparse.Namespace())
+
+    assert len(calls) == 2
+
+
+def test_apply_runtime_updates_still_fails_when_only_endpoint_is_unauthorized(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        reload_config,
+        "resolve_scope_headers",
+        lambda args: {"server": {"Authorization": "Bearer admin"}},
+    )
+    monkeypatch.setattr(
+        reload_config.requests,
+        "put",
+        lambda url, json, headers, timeout: SimpleNamespace(status_code=401),
+    )
+
+    with pytest.raises(Exception, match="HTTP 401"):
+        apply_runtime_updates({"debug": True}, argparse.Namespace())
 
 
 # ---------------------------------------------------------------------------

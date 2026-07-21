@@ -31,7 +31,7 @@ from gpustack.api.auth import (
     authenticate_user,
 )
 from gpustack.server.deps import CurrentUserDep, SessionDep
-from gpustack.server.passwords import change_password
+from gpustack.server.passwords import change_password, is_password_change_required
 from gpustack.server.services import sync_user_group_memberships
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
@@ -820,7 +820,9 @@ async def oidc_callback(request: Request, session: SessionDep):
     }
     token_endpoint = config.openid_configuration["token_endpoint"]
     use_proxy_env = use_proxy_env_for_url(token_endpoint)
-    verify = make_ssl_context()
+    verify = (
+        False if config.external_auth_insecure_skip_tls_verify else make_ssl_context()
+    )
     async with httpx.AsyncClient(
         timeout=timeout, verify=verify, trust_env=use_proxy_env
     ) as client:
@@ -1097,7 +1099,9 @@ async def cas_callback(request: Request, session: SessionDep):
 
     service = _cas_service_url(request, config)
     use_proxy_env = use_proxy_env_for_url(config.cas_server_url)
-    verify = make_ssl_context()
+    verify = (
+        False if config.external_auth_insecure_skip_tls_verify else make_ssl_context()
+    )
     async with httpx.AsyncClient(
         timeout=timeout, verify=verify, trust_env=use_proxy_env
     ) as client:
@@ -1275,7 +1279,7 @@ _EXTERNAL_AUTH_PROVIDERS = (
 
 
 @router.get("/config")
-async def get_auth_config(request: Request):
+async def get_auth_config(request: Request, session: SessionDep):
     config: Config = request.app.state.server_config
 
     external_auth = None
@@ -1298,22 +1302,52 @@ async def get_auth_config(request: Request):
         "is_saml": auth_type == AuthProviderEnum.SAML,
     }
 
-    initial_password_file = Path(config.data_dir) / "initial_admin_password"
-    if initial_password_file.exists():
-        req_dict["first_time_setup"] = True
-        req_dict["get_initial_password_command"] = _get_initial_password_command(
-            initial_password_file
-        )
+    # First-login state is keyed off the shared DB ``require_password_change``
+    # flag on the bootstrap admin, so every replica reports it consistently
+    # behind a load balancer — a file check would not, since the password file
+    # only exists on replicas where it was written / mounted. The retrieval
+    # command is only advertised while that password file is still present.
+    #
+    # Scope the lookup to the default ``admin`` account that bootstrap creates,
+    # not any admin: extra admins added later must not resurface the guide, and
+    # once the default admin is renamed (only possible after logging in) the
+    # first-login window is over.
+    #
+    # FastAPI always injects a session for real requests; direct (non-FastAPI)
+    # callers that only need the external-auth config pass ``session=None`` and
+    # skip the first-login lookup.
+    if session is None:
+        return req_dict
+
+    admin = await User.first_by_fields(
+        session=session,
+        fields={
+            "name": "admin",
+            "is_admin": True,
+            "kind": PrincipalType.USER,
+            "is_active": True,
+        },
+    )
+    if admin and await is_password_change_required(session, admin.id):
+        command = _get_initial_password_command(config)
+        if command:
+            req_dict["first_time_setup"] = True
+            req_dict["get_initial_password_command"] = command
 
     return req_dict
 
 
-def _get_initial_password_command(initial_password_file: Path) -> str:
+def _get_initial_password_command(config: Config) -> Optional[str]:
+    """Command an operator runs to retrieve the machine-generated initial admin
+    password, or ``None`` when the password file is no longer present.
+
+    In HA the Helm chart mounts a shared Secret at this path on every replica;
+    single-node installs write it there when generating the password.
     """
-    Get the command to retrieve the initial admin password.
-    """
+    initial_password_file = Path(config.data_dir) / "initial_admin_password"
+    if not initial_password_file.exists():
+        return None
     if os.getenv("KUBERNETES_SERVICE_HOST") is not None:
-        # Kubernetes
         pod_name = os.getenv("HOSTNAME", "<pod_name>")
         namespace_file = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
         namespace = (
@@ -1323,21 +1357,20 @@ def _get_initial_password_command(initial_password_file: Path) -> str:
         )
         return f"kubectl exec {pod_name} -n {namespace} -- cat {initial_password_file}"
     elif Path("/.dockerenv").exists():
-        # Docker
         return f"docker exec <container_name_or_id> cat {initial_password_file}"
-    else:
-        # Non-containerized
-        return f"cat {initial_password_file}"
+    return f"cat {initial_password_file}"
 
 
-def remove_initial_password_file_if_exists(config: Config):
-    """
-    Remove the initial admin password file if it exists.
+def remove_initial_password_file_if_exists(config: Config) -> None:
+    """Remove the initial admin password file if it exists.
+
+    A shared/read-only mount (e.g. the HA password mounted into every replica)
+    may be un-removable; that is fine and not treated as an error. The
+    first-login guide hides via the DB ``require_password_change`` flag, not the
+    file's presence, so leaving the file in place is harmless.
     """
     initial_password_file = Path(config.data_dir) / "initial_admin_password"
-    if initial_password_file.exists():
-        try:
-            initial_password_file.unlink()
-            logger.debug(f"Initial password file deleted: {initial_password_file}")
-        except Exception as e:
-            logger.warning(f"Failed to delete initial password file: {e}")
+    try:
+        initial_password_file.unlink(missing_ok=True)
+    except OSError as e:
+        logger.debug(f"Left initial password file in place: {e}")

@@ -149,7 +149,10 @@ nav:
           - Installation via Helm: installation/helm.md
           - Air-Gapped Installation: installation/air-gapped.md
           - Uninstallation: installation/uninstallation.md
-      - Upgrade: upgrade.md
+      - Upgrade:
+          - Upgrade via Docker: upgrade/docker.md
+          - Upgrade via Helm: upgrade/helm.md
+          - Upgrade a Cluster Deployment: upgrade/cluster.md
       - Migration: migration.md
       - User Guide:
           - Playground:
@@ -247,6 +250,8 @@ nav:
               - H200: performance-lab/deepseek-r1/h200.md
           - DeepSeek-V3.2:
               - H200: performance-lab/deepseek-v3.2/h200.md
+          - GLM-5.2:
+              - H200: performance-lab/glm-5.2/h200.md
           - Qwen3-8B:
               - 910B: performance-lab/qwen3-8b/910b.md
           - Qwen3-14B:

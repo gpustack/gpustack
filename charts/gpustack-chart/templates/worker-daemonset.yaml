@@ -62,6 +62,15 @@ spec:
         gpustack.io/runtime: {{ $w.name }}
         {{- end }}
     spec:
+      # Disable Kubernetes service-link env injection. Kubernetes injects a
+      # <SVCNAME>_PORT=tcp://... env var (name uppercased, '-' -> '_') for every
+      # Service in the namespace; a GPUSTACK_-prefixed name would collide with
+      # GPUStack's GPUSTACK_-prefixed config defaults and crash-loop prerun
+      # (e.g. a worker Service named gpustack-worker -> GPUSTACK_WORKER_PORT).
+      # GPUStack sets every env it needs explicitly and resolves peers via DNS,
+      # so it never relies on these link vars. KUBERNETES_SERVICE_HOST and
+      # KUBERNETES_SERVICE_PORT are exempt from this flag and keep working.
+      enableServiceLinks: false
       {{- with (include "image_pull_secrets" $ | trim) }}
       {{- nindent 6 . }}
       {{- end }}

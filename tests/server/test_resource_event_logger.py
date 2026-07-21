@@ -70,24 +70,25 @@ def _patch_services(principals: dict, clusters: dict):
 async def test_resolve_principals_derives_owner_from_cluster():
     # consumer 5 created an instance on cluster 1, owned by provider 3.
     principals = {
-        3: SimpleNamespace(name="provider-org"),
-        5: SimpleNamespace(name="acme-org"),
-        7: SimpleNamespace(name="bob"),
+        3: SimpleNamespace(name="provider-org", kind="org"),
+        5: SimpleNamespace(name="acme-org", kind="org"),
+        7: SimpleNamespace(name="bob", kind="user"),
     }
     clusters = {1: SimpleNamespace(name="default", owner_principal_id=3)}
     with _patch_services(principals, clusters):
         out = await _resolve_principals(None, 5, 7, 1)
-    # (owner_principal_id, owner_name, consumer_name, creator_name, cluster_name)
-    assert out == (3, "provider-org", "acme-org", "bob", "default")
+    # (owner_principal_id, owner_name, consumer_name, creator_name,
+    #  cluster_name, consumer_kind)
+    assert out == (3, "provider-org", "acme-org", "bob", "default", "org")
 
 
 @pytest.mark.asyncio
 async def test_resolve_principals_no_cluster_owner_equals_consumer():
     # No cluster (e.g. PV) → provider == consumer; resolved once (per-call memo).
-    principals = {9: SimpleNamespace(name="alice")}
+    principals = {9: SimpleNamespace(name="alice", kind="user")}
     with _patch_services(principals, clusters={}) as principal_get:
         out = await _resolve_principals(None, 9, 9, None)
-    assert out == (9, "alice", "alice", "alice", None)
+    assert out == (9, "alice", "alice", "alice", None, "user")
     assert principal_get.await_count == 1  # owner==consumer==creator → one lookup
 
 
@@ -95,8 +96,9 @@ async def test_resolve_principals_no_cluster_owner_equals_consumer():
 async def test_resolve_principals_missing_entity_yields_none():
     with _patch_services(principals={}, clusters={}):  # nothing resolves
         out = await _resolve_principals(None, 404, 404, 404)
-    # cluster 404 missing → owner falls back to consumer id (404), name None
-    assert out == (404, None, None, None, None)
+    # cluster 404 missing → owner falls back to consumer id (404), name None,
+    # and the gone consumer principal yields a None kind.
+    assert out == (404, None, None, None, None, None)
 
 
 @pytest.mark.asyncio

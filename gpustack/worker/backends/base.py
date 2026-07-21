@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sys
 import shlex
 import json
@@ -28,6 +29,7 @@ from gpustack_runtime.deployer.docker import DockerWorkloadPlan
 from gpustack_runtime.deployer import WorkloadPlan
 
 from gpustack.client.generated_clientset import ClientSet
+from gpustack import envs
 from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
 from gpustack.schemas.inference_backend import (
@@ -455,6 +457,11 @@ class InferenceServer(ABC):
         if self._model.env:
             env.update(self._model.env)
 
+        # Skip the container toolkit's NVIDIA_REQUIRE_CUDA check so a newer-minor
+        # image starts on an older host driver. setdefault keeps user overrides.
+        if self._should_disable_cuda_compat():
+            env.setdefault("NVIDIA_DISABLE_REQUIRE", "1")
+
         return env
 
     @lru_cache
@@ -525,6 +532,37 @@ class InferenceServer(ABC):
                 gpu_device.arch_family,
             )
         return None, None, None
+
+    def _cuda_minor_version_compatibility_enabled(self) -> bool:
+        """Resolve the switch: a per-model
+        ``GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`` in the model's env
+        overrides the global default (``gpustack.envs``); off by default."""
+        model_env = self._model.env or {}
+        if envs.ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV in model_env:
+            return to_bool(model_env[envs.ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV])
+        return envs.ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY
+
+    def _should_disable_cuda_compat(self) -> bool:
+        """Whether to disable the image's cuda-compat and rely on the host driver.
+
+        True when enabled and the runner image targets a newer CUDA minor than the
+        host driver (same major) -- there cuda-compat would break consumer GPUs.
+        """
+        if not self._cuda_minor_version_compatibility_enabled():
+            return False
+        backend, host_runtime_version, _ = self._get_device_info()
+        if backend != "cuda" or not host_runtime_version:
+            return False
+        # Resolve the raw image (no registry override / version write-back side
+        # effect); the tag still carries the cudaX.Y we parse.
+        resolved_image, _ = self._resolve_image()
+        image_cuda_version = _parse_image_cuda_version(resolved_image)
+        if not image_cuda_version:
+            return False
+        return (
+            _major_version(image_cuda_version) == _major_version(host_runtime_version)
+            and compare_versions(image_cuda_version, host_runtime_version) > 0
+        )
 
     def _get_configured_resources(
         self, mount_all_devices: bool = False
@@ -659,13 +697,12 @@ class InferenceServer(ABC):
             else self._model_instance.port
         )
 
-    @staticmethod
-    def _get_serving_command_script(env: dict[str, str]) -> Optional[str]:
+    def _get_serving_command_script(self, env: dict[str, str]) -> Optional[str]:
         """
         Get the serving command script for the model instance.
 
-        Return None if `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED` is disabled,
-        or no specific envs are set.
+        Return None if `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED` is set, or
+        no prep step (installing PyPi packages, disabling cuda-compat) is needed.
 
         Args:
             env:
@@ -682,17 +719,35 @@ class InferenceServer(ABC):
         ):
             return None
 
-        # Skip if no specific envs are set.
-        if not env or "PYPI_PACKAGES_INSTALL" not in env:
+        disable_cuda_compat = self._should_disable_cuda_compat()
+
+        # Skip if no prep step is needed.
+        if not disable_cuda_compat and not (env and "PYPI_PACKAGES_INSTALL" in env):
             return None
 
-        return """#!/bin/sh
+        cuda_compat_step = ""
+        if disable_cuda_compat:
+            cuda_compat_step = """if [ -d /usr/local/cuda/compat ]; then
+    echo "Disabling bundled cuda-compat to run with the host driver (CUDA minor version compatibility)"
+    rm -rf /usr/local/cuda/compat 2>/dev/null || true
+    ldconfig 2>/dev/null || true
+    if [ -d /usr/local/cuda/compat ]; then
+        echo "Warning: failed to remove /usr/local/cuda/compat (needs a root container); the bundled cuda-compat may still be used"
+    fi
+fi
+
+"""
+
+        return (
+            """#!/bin/sh
 
 #
 # Prepare
 #
 
-if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
+"""
+            + cuda_compat_step
+            + """if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
     if command -v uv >/dev/null 2>&1; then
         echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
         export UV_HTTP_TIMEOUT=500
@@ -725,6 +780,7 @@ fi
 
 exec "$@"
 """
+        )
 
     def build_versioned_command_args(
         self,
@@ -966,7 +1022,7 @@ exec "$@"
                 backend_variant = "910b"
 
         logger.info(
-            f"_resolve_image query: backend={backend}, backend_variant={backend_variant}, service={service}, service_version={service_version}, platform={platform.system_arch()}"
+            f"_resolve_image query: backend={backend}, backend_variant={backend_variant}, service={service}, service_version={service_version}, platform={platform.system_arch()}, runtime_version={runtime_version}"
         )
 
         runners = list_backend_runners(
@@ -1033,13 +1089,25 @@ exec "$@"
                         backend_versioned_runner
                     )
                     return get_docker_image(backend_versioned_runner), service_version
+            # Every runner is newer than the host runtime. Same-major minor
+            # version compatibility holds even on consumer GPUs, but cross-major
+            # (e.g. 12.x host -> 13.x) does not; prefer the newest runner sharing
+            # the host major, and fall back to the oldest only if none matches.
+            host_major = _major_version(backend_version)
+            fallback_runner = next(
+                (
+                    candidate
+                    for candidate in backend_versioned_runners
+                    if _major_version(candidate.version) == host_major
+                ),
+                backend_versioned_runners[-1],
+            )
+        else:
+            # Failed to detect host runtime version: fall back to the latest.
+            fallback_runner = backend_versioned_runners[0]
 
-        # Return the first(latest) backend version of selected runner
-        # if failed to detect host backend version or no backend version matched.
-        service_version = _get_service_version_from_versioned_runner(
-            backend_versioned_runners[0]
-        )
-        return get_docker_image(backend_versioned_runners[0]), service_version
+        service_version = _get_service_version_from_versioned_runner(fallback_runner)
+        return get_docker_image(fallback_runner), service_version
 
     def _update_model_backend_service_version(
         self, service_version: Optional[str]
@@ -1122,6 +1190,33 @@ def _get_service_version_from_versioned_runner(
             f"Failed to get service version from backend versioned runner: {e}"
         )
         return None
+
+
+def _major_version(version: Optional[str]) -> Optional[str]:
+    """Extract the major version segment, e.g. '12' from 'v12.8'."""
+    if not version:
+        return None
+    return version.removeprefix("v").split(".", 1)[0]
+
+
+_CUDA_IMAGE_VERSION_PATTERN = re.compile(r"cuda(\d+)\.(\d+)")
+
+
+def _parse_image_cuda_version(image: Optional[str]) -> Optional[str]:
+    """Extract the CUDA ``major.minor`` from a runner image tag
+    (``gpustack/runner:cuda12.9-...`` -> ``"12.9"``); None if the tag has none."""
+    if not image:
+        return None
+    # Isolate the tag first so a registry/namespace segment carrying a cudaX.Y
+    # (e.g. a mirror path) can't shadow the version in the actual tag.
+    reference = image.split("/")[-1]
+    if ":" not in reference:
+        return None
+    tag = reference.split(":", 1)[1]
+    match = _CUDA_IMAGE_VERSION_PATTERN.search(tag)
+    if not match:
+        return None
+    return f"{match.group(1)}.{match.group(2)}"
 
 
 def is_ascend_310p(devices: GPUDevicesStatus) -> bool:

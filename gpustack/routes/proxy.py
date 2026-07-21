@@ -48,11 +48,20 @@ HEADER_SKIPPED = [
 HF_ENDPOINT = os.getenv("HF_ENDPOINT")
 
 
+def is_huggingface_url(url: str) -> bool:
+    """Whether url points at the huggingface.co host (exact host match)."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    return parsed.scheme == "https" and parsed.hostname == "huggingface.co"
+
+
 def replace_hf_endpoint(url: str) -> str:
     """
     Replace the huggingface.co domain with HF_ENDPOINT when set (mirror).
     """
-    if HF_ENDPOINT and url.startswith("https://huggingface.co"):
+    if HF_ENDPOINT and is_huggingface_url(url):
         return url.replace("https://huggingface.co", HF_ENDPOINT, 1)
     return url
 
@@ -62,9 +71,8 @@ def apply_hf_token_to_headers(url: str, headers: dict) -> dict:
     Add Authorization Bearer when a token is configured (same rules as the proxy route).
     """
     global_config = get_global_config()
-    if global_config.huggingface_token and (
-        url.startswith("https://huggingface.co") or HF_ENDPOINT
-    ):
+    is_hf = is_huggingface_url(url) or bool(HF_ENDPOINT and url.startswith(HF_ENDPOINT))
+    if global_config.huggingface_token and is_hf:
         headers["Authorization"] = f"Bearer {global_config.huggingface_token}"
     return headers
 
@@ -133,9 +141,10 @@ async def proxy_to(
                     media_type=headers.get("Content-Type"),
                 )
     except Exception as e:
+        logger.error(f"Error proxying request to {url}: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"detail": str(e)},
+            content={"detail": "Failed to proxy the request."},
             media_type="application/json",
         )
 

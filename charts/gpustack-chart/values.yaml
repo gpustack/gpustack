@@ -81,11 +81,84 @@ server:
     size: 100Gi
   apiPort: 30080
   metricsPort: 10161
+  # Shared initial admin password across server replicas. Creates a Secret so
+  # every replica bootstraps the same admin password behind the load balancer.
+  # Only needed for multi-replica (HA) setups; single-node installs generate a
+  # per-node password without it. Enterprise enables this by default.
+  bootstrapPasswordSecret:
+    enabled: false
+    # Pin a known initial password. When set, it is injected into every replica
+    # as GPUSTACK_BOOTSTRAP_PASSWORD and treated as operator-chosen: no forced
+    # first-login change and no password-retrieval guide (same behavior as
+    # --bootstrap-password on CLI/Docker).
+    #
+    # Leave null to auto-generate a random password instead. The random value is
+    # mounted as a shared file on every replica so all of them show the same
+    # first-login retrieval guide, and forces a first-login change.
+    #
+    # GitOps note (auto-generated case only): the random value is kept stable
+    # across upgrades via Helm's `lookup`, which cannot read the cluster during
+    # template rendering (ArgoCD/Flux, `helm template`). In those environments a
+    # new random value is produced on every sync; set a static `password` here
+    # to pin it.
+    password: null
   environmentConfig: {}
+  # Extra volume mounts for the server container. Use together with
+  # `extraVolumes` to mount additional files into the server pod, e.g. a
+  # private/self-signed CA into /usr/local/share/ca-certificates/ so that
+  # gpustack-prerun.sh merges it into the OS CA bundle at startup.
+  extraVolumeMounts: []
+  # - name: private-ca
+  #   mountPath: /usr/local/share/ca-certificates/my-ca.crt
+  #   subPath: my-ca.crt
+  #   readOnly: true
+  extraVolumes: []
+  # - name: private-ca
+  #   configMap:
+  #     name: private-ca
   # Node selector for the server pod. When non-empty, REPLACES
   # `global.nodeSelector` entirely (no merging). Leave empty/null to fall
   # back to `global.nodeSelector`.
   nodeSelector: {}
+  # Affinity for the server pod. When non-empty, REPLACES the built-in default
+  # entirely (no merging). Leave empty/null to use the default: when
+  # `replicas > 1`, a hard (required) podAntiAffinity by `kubernetes.io/hostname`
+  # spreads replicas across nodes so a single node failure only takes down one
+  # replica. NOTE: the hard rule requires at least as many schedulable nodes as
+  # replicas, otherwise extra replicas stay Pending; override this knob (e.g.
+  # with a `preferred` rule) for smaller clusters.
+  affinity: {}
+  # Server pod probes. Each is rendered verbatim when non-empty; set to null/{}
+  # to disable a probe. The server only starts serving HTTP after DB migrations
+  # and init complete, so the startupProbe (up to ~300s here) guards the
+  # slow-start window before livenessProbe takes over — increase its
+  # `failureThreshold` for slow/remote databases. Ports refer to the container's
+  # named `http` port.
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 30
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 5
+    successThreshold: 1
 clusterDomain: cluster.local
 gateway:
   # IngressClass name for the Higress gateway; GPUStack checks if it exists in the cluster to enable in-cluster gateway mode
@@ -120,13 +193,13 @@ higress-core:
     imagePullSecrets:
       - name: gpustack-image-pull-secret
 
-  service:
-    # Preserve real client IP at the gateway (required for IP-based
-    # rate limiting, audit logging, and X-Forwarded-For correctness).
-    # Note: when Service type is LoadBalancer/NodePort, ensure the
-    # external LB performs health checks against healthCheckNodePort,
-    # otherwise nodes without a gateway pod will drop traffic.
-    externalTrafficPolicy: Local
+    service:
+      # Preserve real client IP at the gateway (required for IP-based
+      # rate limiting, audit logging, and X-Forwarded-For correctness).
+      # Note: when Service type is LoadBalancer/NodePort, ensure the
+      # external LB performs health checks against healthCheckNodePort,
+      # otherwise nodes without a gateway pod will drop traffic.
+      externalTrafficPolicy: Local
   controller:
     hub: ""
     image: gpustack/mirrored-higress-higress
@@ -136,6 +209,8 @@ higress-core:
     hub: ""
     image: gpustack/mirrored-higress-pilot
 higressPlugins:
+  # Number of higress-plugins deployment replicas.
+  replicas: 1
   image:
     # Image repository including namespace (no registry); final reference is `{global.hub}/{repository}:{tag}`.
     repository: gpustack/higress-plugins
@@ -205,7 +280,7 @@ operator:
   image:
     # Operator image repository including namespace (no registry).
     # Final reference: {global.hub}/{operator.image.repository}:{operator.image.tag}
-    # Default tag is v0.3.0 — automatically patched by CI from __operator_version__
+    # Default tag is v0.5.4 — automatically patched by CI from __operator_version__
     # in gpustack/__init__.py at build time.
     repository: gpustack/gpustack-operator
     tag: null

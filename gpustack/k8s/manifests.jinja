@@ -39,11 +39,11 @@ roleRef:
 apiVersion: v1
 kind: Service
 metadata:
-  name: worker
+  name: gpustack-worker
   namespace: {{ config.namespace }}
   annotations:
     prometheus.io/scrape: "true"
-    prometheus.io/port: "10151"
+    prometheus.io/port: "{{ config.worker_metrics_port }}"
     prometheus.io/path: "/metrics"
 spec:
   type: ClusterIP
@@ -55,8 +55,8 @@ spec:
     {%- endif %}
   ports:
     - name: api
-      port: 10150
-      targetPort: 10150
+      port: {{ config.worker_port }}
+      targetPort: {{ config.worker_port }}
     - name: metrics
-      port: 10151
-      targetPort: 10151
+      port: {{ config.worker_metrics_port }}
+      targetPort: {{ config.worker_metrics_port }}

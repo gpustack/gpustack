@@ -30,7 +30,7 @@ from sqlalchemy.orm import aliased
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from gpustack.api.auth import get_current_user
+from gpustack.api.auth import _optional_session, get_current_user
 from gpustack.api.exceptions import (
     ForbiddenException,
     InvalidException,
@@ -47,8 +47,6 @@ from gpustack.schemas.principals import (
     get_authenticated_principal_id,
 )
 from gpustack.schemas.users import User
-from gpustack.server.db import get_session
-
 
 PlatformAdminError = ForbiddenException
 OrgRoleError = ForbiddenException
@@ -279,14 +277,34 @@ def _resolve_requested_principal_id(
 
 async def get_tenant_context(
     request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
     x_organization_id: Annotated[Optional[str], Header()] = None,
+) -> TenantContext:
+    """FastAPI entry point for the per-request TenantContext.
+
+    Resolves the context without holding a ``Depends(get_session)``
+    connection, so it can front a long-lived StreamingResponse (SSE watch,
+    streaming inference proxy) without pinning a pooled connection
+    idle-in-transaction for the whole stream.
+    """
+    return await resolve_tenant_context(
+        request, user, x_organization_id=x_organization_id
+    )
+
+
+async def resolve_tenant_context(
+    request: Request,
+    user: User,
+    x_organization_id: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
 ) -> TenantContext:
     """Resolve the per-request TenantContext.
 
     Result is cached on `request.state.tenant_context` so multiple downstream
-    dependencies in the same request share one resolution.
+    dependencies in the same request share one resolution. The DB session is
+    scoped to just this resolution and returned to the pool before any
+    streaming response begins; callers that already hold a session may pass
+    it in.
     """
     if hasattr(request.state, "tenant_context"):
         return request.state.tenant_context
@@ -307,57 +325,60 @@ async def get_tenant_context(
         # resolve. Group grants still apply (the user's groups are
         # principals in their own right), so include them in the
         # cluster_access lookup.
-        if current_principal_id == user.id:
-            current_is_personal_scope = True
-            group_ids = await _user_group_principal_ids(session, user.id)
-            (
-                accessible_cluster_ids,
-                accessible_cluster_owner_ids,
-            ) = await _accessible_clusters(
-                session,
-                user.id,
-                None,
-                group_ids,
-            )
-        else:
-            org_role = await _resolve_effective_org_role(
-                session, user.id, current_principal_id
-            )
-            if org_role is None and not is_platform_admin:
-                # Non-admin users cannot operate as a principal they are
-                # not a member of (directly or via a Group).
-                raise ForbiddenException(
-                    message=(f"Not a member of organization " f"{current_principal_id}")
+        async with _optional_session(session) as session:
+            if current_principal_id == user.id:
+                current_is_personal_scope = True
+                group_ids = await _user_group_principal_ids(session, user.id)
+                (
+                    accessible_cluster_ids,
+                    accessible_cluster_owner_ids,
+                ) = await _accessible_clusters(
+                    session,
+                    user.id,
+                    None,
+                    group_ids,
+                )
+            else:
+                org_role = await _resolve_effective_org_role(
+                    session, user.id, current_principal_id
+                )
+                if org_role is None and not is_platform_admin:
+                    # Non-admin users cannot operate as a principal they are
+                    # not a member of (directly or via a Group).
+                    raise ForbiddenException(
+                        message=(
+                            f"Not a member of organization " f"{current_principal_id}"
+                        )
+                    )
+
+                group_ids = await _user_group_principal_ids(session, user.id)
+                (
+                    accessible_cluster_ids,
+                    accessible_cluster_owner_ids,
+                ) = await _accessible_clusters(
+                    session,
+                    user.id,
+                    current_principal_id,
+                    group_ids,
                 )
 
-            group_ids = await _user_group_principal_ids(session, user.id)
-            (
-                accessible_cluster_ids,
-                accessible_cluster_owner_ids,
-            ) = await _accessible_clusters(
-                session,
-                user.id,
-                current_principal_id,
-                group_ids,
-            )
-
-            # Validate the org-principal exists and isn't soft-deleted
-            # before letting the request continue. Org soft-delete is
-            # "removed for users" — block context resolution against it
-            # so the membership row (still present, since CASCADE
-            # doesn't fire on soft delete) can't be used to keep
-            # operating in a logically-removed Org.
-            org_row = await Principal.first_by_field(
-                session, "id", current_principal_id
-            )
-            if (
-                org_row is None
-                or org_row.deleted_at is not None
-                or org_row.kind != PrincipalType.ORG
-            ):
-                raise NotFoundException(
-                    message=(f"Organization {current_principal_id} not found")
+                # Validate the org-principal exists and isn't soft-deleted
+                # before letting the request continue. Org soft-delete is
+                # "removed for users" — block context resolution against it
+                # so the membership row (still present, since CASCADE
+                # doesn't fire on soft delete) can't be used to keep
+                # operating in a logically-removed Org.
+                org_row = await Principal.first_by_field(
+                    session, "id", current_principal_id
                 )
+                if (
+                    org_row is None
+                    or org_row.deleted_at is not None
+                    or org_row.kind != PrincipalType.ORG
+                ):
+                    raise NotFoundException(
+                        message=(f"Organization {current_principal_id} not found")
+                    )
 
     # Resolve the cluster a SYSTEM service account belongs to. The
     # ``worker`` / ``cluster`` back-references are eager-loaded by
@@ -541,74 +562,6 @@ def cluster_visibility_conditions(
     return [or_(*or_clauses)]
 
 
-def cluster_resource_visibility_conditions(
-    ctx: TenantContext,
-    model: Any,
-) -> List[Any]:
-    """Visibility filter for resources that carry BOTH ``owner_principal_id``
-    (denormalized from cluster) AND ``cluster_id`` — Worker, ModelFile,
-    Benchmark, ModelEvaluation, etc.
-
-    A row is visible if:
-    - it's owned by the caller's current principal
-      (``owner_principal_id`` match), OR
-    - its cluster is granted via ``cluster_access`` (``cluster_id`` ∈
-      ``accessible_cluster_ids``).
-
-    NULL ``owner_principal_id`` rows live on global clusters; they're
-    only visible through the second branch (cluster_access) for
-    non-admin.
-    """
-    from sqlalchemy import or_
-
-    if cluster_scoped_system(ctx):
-        return _scoped_cluster_conditions(ctx, model)
-    if bypass_tenant_filter(ctx):
-        return []
-
-    or_clauses = []
-    if ctx.current_principal_id is not None and hasattr(model, "owner_principal_id"):
-        or_clauses.append(model.owner_principal_id == ctx.current_principal_id)
-    if ctx.accessible_cluster_ids and hasattr(model, "cluster_id"):
-        or_clauses.append(model.cluster_id.in_(ctx.accessible_cluster_ids))
-
-    if not or_clauses:
-        # No access path; force empty result rather than leak.
-        anchor = getattr(model, "cluster_id", None) or getattr(model, "id", None)
-        return [anchor == -1]
-    return [or_(*or_clauses)]
-
-
-def assert_cluster_resource_visible(
-    ctx: TenantContext,
-    resource: Any,
-    *,
-    not_found_message: str = "Resource not found",
-) -> None:
-    """Single-row mirror of ``cluster_resource_visibility_conditions``."""
-    if resource is None:
-        raise NotFoundException(message=not_found_message)
-    if cluster_scoped_system(ctx):
-        if scoped_cluster_row_visible(ctx, resource):
-            return
-        raise NotFoundException(message=not_found_message)
-    if bypass_tenant_filter(ctx):
-        return
-
-    owner = getattr(resource, "owner_principal_id", None)
-    cluster_id = getattr(resource, "cluster_id", None)
-
-    if (
-        ctx.current_principal_id is not None
-        and owner is not None
-        and owner == ctx.current_principal_id
-    ):
-        return
-    if cluster_id is not None and cluster_id in ctx.accessible_cluster_ids:
-        return
-    raise NotFoundException(message=not_found_message)
-
-
 def assert_cluster_visible(
     ctx: TenantContext,
     cluster: Any,
@@ -679,7 +632,7 @@ def assert_org_owned_writable(
         raise OrgRoleError(
             message=(
                 f"{resource_label.capitalize()} does not belong to "
-                "current organization"
+                "the current organization"
             )
         )
     # Platform admin acting-as the Org passes the role check unconditionally.

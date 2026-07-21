@@ -23,8 +23,12 @@ from sqlalchemy import and_, case, desc, func, literal_column, or_
 from sqlmodel import select
 
 from gpustack import envs
-from gpustack.api.exceptions import InvalidException
-from gpustack.routes.usage import _resolve_effective_scope
+from gpustack.api.exceptions import ForbiddenException, InvalidException
+from gpustack.routes.usage import (
+    _group_member_user_ids,
+    _organization_info_by_id,
+    _resolve_effective_scope,
+)
 from gpustack.schemas.common import Pagination
 from gpustack.schemas.metered_usage import (
     METER_INSTANCE_UPTIME,
@@ -39,7 +43,11 @@ from gpustack.schemas.gpu_instance_persistent_volumes import (
 )
 from gpustack.schemas.gpu_instances import GPUInstance
 from gpustack.schemas.model_usage import ModelUsage
-from gpustack.schemas.principals import Principal
+from gpustack.schemas.principals import (
+    Principal,
+    PrincipalType,
+    is_reserved_principal_name,
+)
 from gpustack.schemas.usage import (
     USAGE_GRANULARITY_DAY,
     USAGE_GRANULARITY_MONTH,
@@ -119,6 +127,12 @@ class ResourceBreakdownRequest(BaseModel):
     # receives the kind that matches its ``base_filter``.
     instance_ids: Optional[List[int]] = None
     volume_ids: Optional[List[int]] = None
+    # Platform-wide "All" view only (admin, no selected Org). ``organization_ids``
+    # narrows ``consumer_principal_id``; ``user_group_ids`` is expanded to the
+    # groups' direct USER members and narrows ``creator_id``. Both are gated in
+    # ``_run_breakdown`` (org: admin-only; user-group: non-self scope).
+    organization_ids: Optional[List[int]] = None
+    user_group_ids: Optional[List[int]] = None
     # ``-1`` is the no-pagination sentinel (return all buckets) used by the
     # trend chart and the export path; any other value must be positive.
     page: int = 1
@@ -157,6 +171,48 @@ def _parse_id_csv(value: Optional[str]) -> Optional[List[int]]:
             except ValueError:
                 continue
     return out or None
+
+
+def _is_platform_wide(user, ctx) -> bool:
+    """Platform admin acting without a pinned Org — the only context where the
+    cross-tenant Organization dimension / filter is meaningful (mirrors
+    ``/usage`` and the meta gating)."""
+    return bool(getattr(user, "is_admin", False)) and (
+        ctx is None or getattr(ctx, "current_principal_id", None) is None
+    )
+
+
+def _check_resource_filter_permission(
+    user,
+    ctx,
+    effective_scope: str,
+    *,
+    organization_ids=None,
+    user_group_ids=None,
+) -> None:
+    """Gate the cross-tenant filters (shared by breakdown + GET endpoints).
+
+    Organization filtering is the platform-wide "All" view — a platform admin
+    without a pinned Org. The user-group filter is a cross-user surface, so
+    it's forbidden in self scope (mirrors the token usage gating)."""
+    if organization_ids and not _is_platform_wide(user, ctx):
+        raise ForbiddenException(message="No permission to filter by organization")
+    if user_group_ids and effective_scope == USAGE_SCOPE_SELF:
+        raise ForbiddenException(message="No permission to filter by user group")
+
+
+def _check_resource_permission(user, ctx, request, effective_scope: str) -> None:
+    """Breakdown gating — the filter checks plus the organization group-by
+    dimension (also platform-wide-only)."""
+    if "organization" in request.group_by and not _is_platform_wide(user, ctx):
+        raise ForbiddenException(message="No permission to group by organization")
+    _check_resource_filter_permission(
+        user,
+        ctx,
+        effective_scope,
+        organization_ids=request.organization_ids,
+        user_group_ids=request.user_group_ids,
+    )
 
 
 # group_by token → (label column expr factory). resource/user/sku/date.
@@ -199,6 +255,14 @@ def _group_columns(
                 MeteredUsage.creator_name.label("group_key"),
             ],
             [MeteredUsage.creator_id, MeteredUsage.creator_name],
+        )
+    if group_by == "organization":
+        # Consumer Org (``consumer_principal_id``). No name is denormalized on
+        # metered_usage, so ``_enrich_items`` resolves it live from principals
+        # (same as the token side). Only the id column is carried here.
+        return (
+            [MeteredUsage.consumer_principal_id.label("group_id")],
+            [MeteredUsage.consumer_principal_id],
         )
     if group_by == "date":
         expr = _bucket_expr(session, granularity)
@@ -320,6 +384,8 @@ def _apply_scope(
     base_filter=None,
     creator_ids=None,
     resource_ids=None,
+    organization_ids=None,
+    group_member_ids=None,
 ):
     if base_filter is not None:
         statement = statement.where(base_filter)
@@ -336,10 +402,18 @@ def _apply_scope(
         statement = statement.where(MeteredUsage.creator_id.in_(creator_ids))
     if resource_ids:
         statement = statement.where(MeteredUsage.resource_id.in_(resource_ids))
+    if organization_ids:
+        statement = statement.where(
+            MeteredUsage.consumer_principal_id.in_(organization_ids)
+        )
+    # ``None`` → no user-group filter; an empty set → the group has no members,
+    # so match nothing rather than silently ignoring the filter.
+    if group_member_ids is not None:
+        statement = statement.where(MeteredUsage.creator_id.in_(group_member_ids))
     return statement
 
 
-async def _enrich_items(session, gb: str, items: List[dict]) -> None:
+async def _enrich_items(session, gb: str, items: List[dict]) -> None:  # noqa: C901
     """Post-query enrichment of breakdown rows (mutates ``items`` in place).
 
     * entity groupings (user / instance / volume): resolve display names
@@ -361,7 +435,12 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:
                 principals = (
                     await session.exec(select(Principal).where(Principal.id.in_(ids)))
                 ).all()
-                names = {p.id: (p.display_name or p.name) for p in principals}
+                # Show the login name (``name``), not ``display_name`` — the
+                # Tokens tab groups users by login name too, so both usage
+                # surfaces stay consistent. Resolving live (by id) reflects a
+                # rename; rows whose principal is gone keep the snapshot
+                # ``creator_name`` (also a login name) set as ``key`` above.
+                names = {p.id: p.name for p in principals}
                 existing = set(names)
             else:
                 model = GPUInstance if gb == "instance" else GPUInstancePersistentVolume
@@ -377,6 +456,59 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:
             if gb == "user" and names.get(rid):
                 i["key"] = names[rid]
             i["deleted"] = rid not in existing
+
+    # Organization grouping: prefer the LIVE principal name (fresh on rename,
+    # consistent with the token breakdown); fall back to the row
+    # ``consumer_name`` / kind snapshot only when the principal is gone
+    # (hard-deleted), then to ``Org #{id}`` so a pre-upgrade deleted row never
+    # renders an empty label. The live map doubles as the existence check (id
+    # absent → gone → deleted). A NULL consumer id is un-attributed usage —
+    # left keyless ("Untracked").
+    if gb == "organization":
+        ids = [i["id"] for i in items if i.get("id") is not None]
+        info = await _organization_info_by_id(session, ids)
+        for i in items:
+            rid = i.get("id")
+            if rid is None:
+                i["deleted"] = False
+                continue
+            live = info.get(rid)
+            snapshot_name = i.pop("_org_name", None)
+            snapshot_kind = i.pop("_org_kind", None)
+            i["key"] = (live[0] if live else None) or snapshot_name or f"Org {rid}"
+            i["organization_kind"] = (live[1] if live else None) or snapshot_kind
+            i["deleted"] = live is None
+
+    # Per-entity rows carry their owner (``creator_id``/``creator_name``); flag
+    # whether that principal still exists so the UI can tag a since-deleted
+    # owner "(Deleted)", the same treatment the ``user`` grouping gives via
+    # ``deleted`` above. Only instance/volume rows carry a creator (see
+    # ``carries_creator`` in ``_run_breakdown``); the snapshot ``creator_name``
+    # is kept as the label regardless, so a gone owner still shows a name.
+    if gb in ("instance", "volume"):
+        creator_ids = {
+            i["creator_id"] for i in items if i.get("creator_id") is not None
+        }
+        existing_creators: set[int] = set()
+        if creator_ids:
+            # Exclude soft-deleted principals (``deleted_at`` set) — they're
+            # "deleted" everywhere else (see organization_members), so a
+            # soft-deleted owner must flag ``creator_deleted`` too, not just a
+            # hard-deleted / never-existed id.
+            existing_creators = set(
+                (
+                    await session.exec(
+                        select(Principal.id).where(
+                            Principal.id.in_(creator_ids),
+                            Principal.deleted_at.is_(None),
+                        )
+                    )
+                ).all()
+            )
+        for i in items:
+            cid = i.get("creator_id")
+            if cid is not None:
+                i["creator_deleted"] = cid not in existing_creators
 
     await _attach_dimensions(session, gb, items)
 
@@ -512,7 +644,7 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
             }
 
 
-async def _run_breakdown(
+async def _run_breakdown(  # noqa: C901
     session,
     *,
     user,
@@ -524,8 +656,16 @@ async def _run_breakdown(
     join_volumes: bool = True,
 ):
     effective_scope = _resolve_effective_scope(user, ctx, request.scope)
+    _check_resource_permission(user, ctx, request, effective_scope)
     metrics = _metric_columns()
     metric_keys = [k for k in metric_keys if k in metrics]
+
+    # Expand any user-group filter to its direct USER members before building
+    # the query so the (sync) scope application can apply a plain creator_id
+    # membership.
+    group_member_ids = None
+    if request.user_group_ids:
+        group_member_ids = await _group_member_user_ids(session, request.user_group_ids)
 
     resource_ids = (request.instance_ids or []) + (request.volume_ids or [])
     base = select().select_from(MeteredUsage)
@@ -537,6 +677,8 @@ async def _run_breakdown(
         base_filter=base_filter,
         creator_ids=request.creator_ids,
         resource_ids=resource_ids or None,
+        organization_ids=request.organization_ids,
+        group_member_ids=group_member_ids,
     )
     base = _bucket_in_range(base, request.start_date, request.end_date)
 
@@ -606,6 +748,30 @@ async def _run_breakdown(
         # show their Instance Type / Storage Type even when grouped by resource.
         func.max(MeteredUsage.sku).label("sku"),
     ]
+    # Carry the owner only when a per-entity dimension is grouped on: one
+    # instance/volume is created by a single principal, so within such a group
+    # ``creator_id`` / ``creator_name`` are constant and MAX collapses to that
+    # one row's pair (same trick as ``sku``). For coarser groupings (``date``,
+    # ``instance_type``, ``type``/``sku``, ``resource_type``) a single group
+    # spans many creators, and taking MAX of id and name *independently* would
+    # pair one user's id with another's name — so those groupings omit the
+    # fields entirely rather than emit a mismatched owner. ``user`` grouping
+    # already carries the creator as the group key/id, so it doesn't need them.
+    carries_creator = any(gb in ("instance", "volume") for gb in request.group_by)
+    if carries_creator:
+        agg_cols += [
+            func.max(MeteredUsage.creator_id).label("creator_id"),
+            func.max(MeteredUsage.creator_name).label("creator_name"),
+        ]
+    # Organization grouping is by consumer_principal_id only; carry the
+    # consumer name / kind snapshot (MAX picks up whichever rows have it —
+    # pre-upgrade rows are NULL) so a deleted Org keeps its name and personal
+    # (USER) rows are taggable, resolved in ``_enrich_items``.
+    if "organization" in request.group_by:
+        agg_cols += [
+            func.max(MeteredUsage.consumer_name).label("org_name"),
+            func.max(MeteredUsage.consumer_principal_kind).label("org_kind"),
+        ]
     grouped = base.with_only_columns(*select_cols, *agg_cols).group_by(*group_cols)
 
     order_key = request.order_by or (metric_keys[0] if metric_keys else None)
@@ -668,7 +834,21 @@ async def _run_breakdown(
         # enrichment can fetch the right per-shape representative for display.
         if hasattr(row, "group_sku_count"):
             item["_sku_count"] = getattr(row, "group_sku_count", None)
+        # Organization grouping: carry the consumer name / kind snapshot for
+        # ``_enrich_items`` (popped there once the display key is resolved).
+        if hasattr(row, "org_name"):
+            item["_org_name"] = getattr(row, "org_name", None)
+            item["_org_kind"] = getattr(row, "org_kind", None)
         item["sku"] = getattr(row, "sku", None)
+        # Owner of the resource, present only for resource-dimension groupings
+        # (see ``carries_creator``) so per-instance / per-volume (and
+        # date+instance) rows show their creator without a ``user`` grouping.
+        # Coarser groupings omit these columns entirely, so the row won't carry
+        # them — guard on presence rather than emit a misleading null/mismatch.
+        # ``creator_name`` is the metering-time snapshot.
+        if carries_creator:
+            item["creator_id"] = getattr(row, "creator_id", None)
+            item["creator_name"] = getattr(row, "creator_name", None)
         # max(bucket_start) is a UTC instant → show it in the rollup tz, aware
         # (carries an offset) so the API is self-describing and the UI renders
         # the rollup wall clock via parseZone without re-converting.
@@ -733,7 +913,7 @@ async def gpu_instances_breakdown(
     ctx: TenantContextDep,
     request: ResourceBreakdownRequest,
 ):
-    allowed = {"instance_type", "instance", "user", "date"}
+    allowed = {"instance_type", "instance", "user", "date", "organization"}
     request.group_by = [g for g in request.group_by if g in allowed] or [
         "instance_type"
     ]
@@ -763,7 +943,7 @@ async def storage_breakdown(
     ctx: TenantContextDep,
     request: ResourceBreakdownRequest,
 ):
-    allowed = {"type", "volume", "user", "date"}
+    allowed = {"type", "volume", "user", "date", "organization"}
     request.group_by = [g for g in request.group_by if g in allowed] or ["type"]
     return await _run_breakdown(
         session,
@@ -785,15 +965,35 @@ async def usage_summary(
     end_date: date,
     scope: str = USAGE_SCOPE_ALL,
     creator_ids: Optional[str] = None,
+    organization_ids: Optional[str] = None,
+    user_group_ids: Optional[str] = None,
 ):
     effective_scope = _resolve_effective_scope(user, ctx, scope)
     org_id = ctx.current_principal_id if ctx is not None else None
     creator_id_list = _parse_id_csv(creator_ids)
+    organization_id_list = _parse_id_csv(organization_ids)
+    user_group_id_list = _parse_id_csv(user_group_ids)
+    _check_resource_filter_permission(
+        user,
+        ctx,
+        effective_scope,
+        organization_ids=organization_id_list,
+        user_group_ids=user_group_id_list,
+    )
+    group_member_ids = None
+    if user_group_id_list:
+        group_member_ids = await _group_member_user_ids(session, user_group_id_list)
 
     # metered_usage side (instances + storage)
     mu = select().select_from(MeteredUsage)
     mu = _apply_scope(
-        mu, user=user, ctx=ctx, scope=effective_scope, creator_ids=creator_id_list
+        mu,
+        user=user,
+        ctx=ctx,
+        scope=effective_scope,
+        creator_ids=creator_id_list,
+        organization_ids=organization_id_list,
+        group_member_ids=group_member_ids,
     )
     mu = _bucket_in_range(mu, start_date, end_date)
     metrics = _metric_columns()
@@ -820,6 +1020,10 @@ async def usage_summary(
         tu = tu.where(ModelUsage.consumer_principal_id == org_id)
     if creator_id_list:
         tu = tu.where(ModelUsage.user_id.in_(creator_id_list))
+    if organization_id_list:
+        tu = tu.where(ModelUsage.consumer_principal_id.in_(organization_id_list))
+    if group_member_ids is not None:
+        tu = tu.where(ModelUsage.user_id.in_(group_member_ids))
     tu = tu.where(ModelUsage.date >= start_date).where(ModelUsage.date <= end_date)
     tu_row = (
         await session.exec(
@@ -873,7 +1077,7 @@ def _phase_message_of(spec_snapshot) -> Optional[str]:
 
 
 @router.get("/resource-events")
-async def resource_events(
+async def resource_events(  # noqa: C901
     session: SessionDep,
     user: CurrentUserDep,
     ctx: TenantContextDep,
@@ -884,12 +1088,26 @@ async def resource_events(
     event_types: Optional[str] = None,
     scope: str = USAGE_SCOPE_ALL,
     creator_ids: Optional[str] = None,
+    organization_ids: Optional[str] = None,
+    user_group_ids: Optional[str] = None,
     page: int = 1,
     perPage: int = 50,
 ):
     effective_scope = _resolve_effective_scope(user, ctx, scope)
     org_id = ctx.current_principal_id if ctx is not None else None
     creator_id_list = _parse_id_csv(creator_ids)
+    organization_id_list = _parse_id_csv(organization_ids)
+    user_group_id_list = _parse_id_csv(user_group_ids)
+    _check_resource_filter_permission(
+        user,
+        ctx,
+        effective_scope,
+        organization_ids=organization_id_list,
+        user_group_ids=user_group_id_list,
+    )
+    group_member_ids = None
+    if user_group_id_list:
+        group_member_ids = await _group_member_user_ids(session, user_group_id_list)
     # Comma-separated event types (e.g. "created,deleted"); the only emitted
     # types are created / deleted / phase_to_metered / phase_left_metered.
     event_type_list = (
@@ -906,6 +1124,10 @@ async def resource_events(
         stmt = stmt.where(ResourceEvent.consumer_principal_id == org_id)
     if creator_id_list:
         stmt = stmt.where(ResourceEvent.creator_id.in_(creator_id_list))
+    if organization_id_list:
+        stmt = stmt.where(ResourceEvent.consumer_principal_id.in_(organization_id_list))
+    if group_member_ids is not None:
+        stmt = stmt.where(ResourceEvent.creator_id.in_(group_member_ids))
     if resource_type:
         stmt = stmt.where(ResourceEvent.resource_type == resource_type)
     if event_type_list:
@@ -967,8 +1189,38 @@ async def resource_events(
     }
 
 
+async def _creator_name_snapshots(session, ids: Set[int]) -> Dict[int, str]:
+    """Login-name snapshot per creator id, for creators whose principal row is
+    gone.
+
+    Unions the ``creator_name`` snapshots on ``metered_usage`` and
+    ``resource_events`` — mirroring the id union that builds the creator set —
+    and keeps any one non-null value per id. These snapshots are login names
+    (resolved from ``Principal.name`` at event time), so the fallback stays
+    consistent with the live-resolved labels.
+    """
+    if not ids:
+        return {}
+    out: Dict[int, str] = {}
+    for col_id, col_name in (
+        (MeteredUsage.creator_id, MeteredUsage.creator_name),
+        (ResourceEvent.creator_id, ResourceEvent.creator_name),
+    ):
+        rows = (
+            await session.exec(
+                select(col_id, col_name)
+                .where(col_id.in_(ids), col_name.isnot(None))
+                .distinct()
+            )
+        ).all()
+        for cid, cname in rows:
+            if cid is not None and cname and cid not in out:
+                out[cid] = cname
+    return out
+
+
 @router.get("/resource/meta")
-async def resource_meta(
+async def resource_meta(  # noqa: C901
     session: SessionDep,
     user: CurrentUserDep,
     ctx: TenantContextDep,
@@ -1015,13 +1267,21 @@ async def resource_meta(
         principals = (
             await session.exec(select(Principal).where(Principal.id.in_(ids)))
         ).all()
-        name_by_id = {p.id: (p.display_name or p.name) for p in principals}
+        # Login name (``name``), not ``display_name`` — keeps the resource
+        # filter consistent with the breakdown labels and the Tokens tab.
+        name_by_id = {p.id: p.name for p in principals}
+        # Snapshot login-name fallback for creators whose principal is gone,
+        # so a since-deleted user still shows their name instead of a bare id
+        # (the breakdown does the same via the ``creator_name`` snapshot).
+        snapshot_by_id = await _creator_name_snapshots(session, ids - set(name_by_id))
         # A creator id that no longer resolves to a principal was deleted —
         # flag it so the filter shows a "(Deleted)" tag (same as the Tokens tab).
         creators = [
             {
                 "id": cid,
-                "label": name_by_id.get(cid) or f"User {cid}",
+                "label": name_by_id.get(cid)
+                or snapshot_by_id.get(cid)
+                or f"User {cid}",
                 "deleted": cid not in name_by_id,
             }
             for cid in ids
@@ -1071,4 +1331,82 @@ async def resource_meta(
         [RESOURCE_TYPE_PERSISTENT_VOLUME], GPUInstancePersistentVolume
     )
 
-    return {"creators": creators, "instances": instances, "volumes": volumes}
+    # Organization + user-group filter sources — both are the cross-tenant
+    # "All" view only: admin acting without a selected Org. A caller scoped to
+    # a single Org (org owner, or admin with a pinned Org) sees neither, since
+    # cross-Org grouping / group filtering is meaningless within one tenant
+    # (mirrors the Tokens tab's /usage/meta gating).
+    organizations: List[Dict[str, Any]] = []
+    user_groups: List[Dict[str, Any]] = []
+    if user.is_admin and org_id is None:
+        groups = (
+            await session.exec(
+                select(Principal)
+                .where(
+                    Principal.kind == PrincipalType.GROUP,
+                    Principal.deleted_at.is_(None),
+                )
+                .order_by(Principal.display_name, Principal.name)
+            )
+        ).all()
+        user_groups = [
+            {"id": g.id, "label": g.display_name or g.name or f"Group {g.id}"}
+            for g in groups
+            if not is_reserved_principal_name(g.name)
+        ]
+        # Platform-wide: no scope filter applies, so a plain distinct over
+        # both sources yields every consumer Org that has usage.
+        org_ids: Set[int] = set()
+        for scope_col in (
+            MeteredUsage.consumer_principal_id,
+            ResourceEvent.consumer_principal_id,
+        ):
+            rows = (
+                await session.exec(
+                    select(scope_col).where(scope_col.isnot(None)).distinct()
+                )
+            ).all()
+            org_ids |= set(rows)
+        org_ids.discard(None)
+        if org_ids:
+            info = await _organization_info_by_id(session, org_ids)
+            # Snapshot ``consumer_name`` per consumer id (from both sources) —
+            # the fallback label for a since-deleted Org so it shows its real
+            # name instead of a bare id, matching the breakdown table.
+            snapshot_names: Dict[int, str] = {}
+            for id_col, name_col in (
+                (MeteredUsage.consumer_principal_id, MeteredUsage.consumer_name),
+                (ResourceEvent.consumer_principal_id, ResourceEvent.consumer_name),
+            ):
+                rows = (
+                    await session.exec(
+                        select(id_col, func.max(name_col))
+                        .where(id_col.in_(org_ids), name_col.isnot(None))
+                        .group_by(id_col)
+                    )
+                ).all()
+                for cid, nm in rows:
+                    if cid is not None and nm:
+                        snapshot_names.setdefault(cid, nm)
+            organizations = [
+                {
+                    "id": oid,
+                    "label": (info[oid][0] if oid in info else None)
+                    or snapshot_names.get(oid)
+                    or f"Org {oid}",
+                    "deleted": oid not in info,
+                    # ``kind`` (org / user / group) so the filter can tag a
+                    # personal (USER) consumer, matching the breakdown table.
+                    "kind": info[oid][1] if oid in info else None,
+                }
+                for oid in org_ids
+            ]
+            organizations.sort(key=lambda o: (o["label"] or "").lower())
+
+    return {
+        "creators": creators,
+        "instances": instances,
+        "volumes": volumes,
+        "organizations": organizations,
+        "user_groups": user_groups,
+    }

@@ -1,3 +1,12 @@
+{{- /*
+Bootstrap admin password delivery. A pinned password is injected as an env var
+(the same channel as --bootstrap-password), so the server treats it as
+operator-chosen — no forced first-login change, no retrieval guide. An
+auto-generated password is mounted as a shared file so every replica surfaces
+the same first-login retrieval guide regardless of round-robin routing.
+*/ -}}
+{{- $bootstrapPinned := and .Values.server.bootstrapPasswordSecret.enabled .Values.server.bootstrapPasswordSecret.password -}}
+{{- $bootstrapFile := and .Values.server.bootstrapPasswordSecret.enabled (not .Values.server.bootstrapPasswordSecret.password) -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -20,6 +29,15 @@ spec:
         prometheus.io/port: "{{ .Values.server.metricsPort }}"
         prometheus.io/path: "/metrics"
     spec:
+      # Disable Kubernetes service-link env injection. Kubernetes injects a
+      # <SVCNAME>_PORT=tcp://... env var (name uppercased, '-' -> '_') for every
+      # Service in the namespace; a GPUSTACK_-prefixed name would collide with
+      # GPUStack's GPUSTACK_-prefixed config defaults and crash-loop prerun
+      # (e.g. a worker Service named gpustack-worker -> GPUSTACK_WORKER_PORT).
+      # GPUStack sets every env it needs explicitly and resolves peers via DNS,
+      # so it never relies on these link vars. KUBERNETES_SERVICE_HOST and
+      # KUBERNETES_SERVICE_PORT are exempt from this flag and keep working.
+      enableServiceLinks: false
       {{- with (include "image_pull_secrets" . | trim) }}
       {{- nindent 6 . }}
       {{- end }}
@@ -47,7 +65,7 @@ spec:
             - name: GPUSTACK_DISABLE_WORKER
               value: 'true'
             - name: GPUSTACK_SERVICE_DISCOVERY_NAME
-              value: "{{ .Release.Name }}-server"
+              value: "{{ .Release.Name }}-server-cluster-ip"
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -57,6 +75,13 @@ spec:
               value: {{ include "gpustack.hub" . }}
             - name: GPUSTACK_IMAGE_NAME_OVERRIDE
               value: {{ include "gpustack.image" . }}:{{ include "gpustack.imageTag" . }}
+            {{- if $bootstrapPinned }}
+            - name: GPUSTACK_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-server-bootstrap-password
+                  key: password
+            {{- end }}
           envFrom:
             {{- if .Values.worker.enabled }}
             - secretRef:
@@ -76,6 +101,18 @@ spec:
             - containerPort: {{ .Values.server.metricsPort }}
               name: metrics
               protocol: TCP
+          {{- with .Values.server.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           image: {{ include "gpustack.image" . }}:{{ include "gpustack.imageTag" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           name: {{ .Release.Name }}-server
@@ -90,6 +127,18 @@ spec:
           volumeMounts:
             - mountPath: /var/lib/gpustack
               name: gpustack-data-dir
+            {{- if $bootstrapFile }}
+            # Machine-generated shared initial admin password, mounted so every
+            # replica shows the same first-login retrieval guide regardless of
+            # round-robin routing.
+            - mountPath: /var/lib/gpustack/initial_admin_password
+              name: bootstrap-password
+              subPath: password
+              readOnly: true
+            {{- end }}
+            {{- with .Values.server.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       schedulerName: default-scheduler
@@ -100,12 +149,36 @@ spec:
       nodeSelector:
         {{- nindent 8 . }}
       {{- end }}
-      {{- if .Values.server.dataVolume.hostPath }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- else }}
+      {{- if gt (int (.Values.server.replicas | default 1)) 1 }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: {{ .Release.Name }}-server
+      {{- end }}
+      {{- end }}
+      {{- if or $bootstrapFile .Values.server.dataVolume.hostPath .Values.server.extraVolumes }}
       volumes:
+        {{- if $bootstrapFile }}
+        - name: bootstrap-password
+          secret:
+            secretName: {{ .Release.Name }}-server-bootstrap-password
+        {{- end }}
+        {{- if .Values.server.dataVolume.hostPath }}
         - name: gpustack-data-dir
           hostPath:
             path: {{ .Values.server.dataVolume.hostPath }}
             type: DirectoryOrCreate
+        {{- end }}
+        {{- with .Values.server.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
   {{- if not .Values.server.dataVolume.hostPath }}
   volumeClaimTemplates:

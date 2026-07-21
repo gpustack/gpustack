@@ -41,7 +41,6 @@ from gpustack.security import (
     get_secret_hash,
     API_KEY_PREFIX,
 )
-from gpustack.routes.auth import remove_initial_password_file_if_exists
 from gpustack.server.app import create_app
 from gpustack.server.passwords import set_password
 from gpustack.server.services import provision_bootstrap_admin_orgs
@@ -60,7 +59,11 @@ from gpustack.server.controllers import (
     ModelRouteController,
     ModelRouteTargetController,
     ModelProviderController,
+)
+from gpustack.gpu_instances.controllers import (
     GPUInstanceController,
+    GPUInstancePersistentVolumeController,
+    GPUInstancePersistentVolumeTypeController,
 )
 from gpustack.server.db import async_session
 from gpustack.server.lora_model_routes import (
@@ -84,6 +87,7 @@ from gpustack.schemas.metered_usage import MeteredUsage, MeteredUsageArchive
 from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
+from gpustack.utils.platform import is_inside_kubernetes
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
@@ -250,6 +254,12 @@ class Server:
     async def start(self):
         logger.info("Starting GPUStack server.")
 
+        if self._config.external_auth_insecure_skip_tls_verify:
+            logger.warning(
+                "external_auth_insecure_skip_tls_verify is enabled: TLS "
+                "verification is DISABLED for the external-auth IdP handshake."
+            )
+
         add_signal_handlers_in_loop()
 
         self._run_migrations()
@@ -411,6 +421,14 @@ class Server:
 
         gpu_instance_controller = GPUInstanceController(self._config)
         tasks.append(asyncio.create_task(gpu_instance_controller.start()))
+
+        gpu_instance_pv_controller = GPUInstancePersistentVolumeController(self._config)
+        tasks.append(asyncio.create_task(gpu_instance_pv_controller.start()))
+
+        gpu_instance_pvt_controller = GPUInstancePersistentVolumeTypeController(
+            self._config
+        )
+        tasks.append(asyncio.create_task(gpu_instance_pvt_controller.start()))
 
         logger.debug("Controllers started.")
         return tasks
@@ -760,25 +778,47 @@ class Server:
         if existing_admin:
             return
 
-        # Drop any stale initial password file from a prior bootstrap before
-        # generating a new one, so the login page does not show an outdated
-        # "retrieve initial password" hint.
-        remove_initial_password_file_if_exists(self._config)
-
+        # A machine-generated bootstrap password forces a first-login change
+        # and surfaces the retrieval guide; an operator-supplied one does not.
+        # The machine-generated password lives in the ``initial_admin_password``
+        # file under ``data_dir``: in HA the Helm chart mounts a shared Secret
+        # there so every replica reads the same value, and single-node installs
+        # generate it locally and write it there. An explicit
+        # ``--bootstrap-password`` takes precedence and is not force-changed.
         bootstrap_password = self._config.bootstrap_password
         require_password_change = False
+        password_file = os.path.join(self._config.data_dir, "initial_admin_password")
         if not bootstrap_password:
             require_password_change = True
-            bootstrap_password = generate_secure_password()
-            bootstrap_password_file = os.path.join(
-                self._config.data_dir, "initial_admin_password"
-            )
-            with open(bootstrap_password_file, "w") as file:
-                file.write(bootstrap_password + "\n")
-            logger.info(
-                "Generated initial admin password. "
-                f"You can get it from {bootstrap_password_file}"
-            )
+            if os.path.exists(password_file):
+                try:
+                    with open(password_file, encoding="utf-8") as file:
+                        bootstrap_password = file.read().strip()
+                except (OSError, ValueError) as e:
+                    # ValueError covers UnicodeDecodeError on a corrupted /
+                    # non-UTF-8 file, which is not an OSError.
+                    logger.warning(
+                        f"Failed to read initial admin password from {password_file}: {e}"
+                    )
+            # An empty / whitespace-only / unreadable file (interrupted write,
+            # empty Secret mount, permission issue) must never yield an empty
+            # admin password — fall back to a freshly generated one.
+            if bootstrap_password:
+                logger.info(f"Using initial admin password from {password_file}.")
+            else:
+                bootstrap_password = generate_secure_password()
+                try:
+                    with open(password_file, "w", encoding="utf-8") as file:
+                        file.write(bootstrap_password + "\n")
+                    logger.info(
+                        "Generated initial admin password. "
+                        f"You can get it from {password_file}"
+                    )
+                except OSError as e:
+                    logger.warning(
+                        "Generated initial admin password but could not persist it "
+                        f"to {password_file}: {e}"
+                    )
 
         user = User(
             name="admin",
@@ -973,12 +1013,6 @@ class Server:
             session=session,
             fields={"deleted_at": None},
         )
-        # Needed so cleanup can tell which instances serve their subordinates'
-        # own API (hybrid/external-LB) and which LoRA aliases to keep.
-        models = await Model.all_by_fields(
-            session=session,
-            fields={"deleted_at": None},
-        )
         fallback_route_ids = [
             ep.route_id
             for ep in route_targets
@@ -1036,7 +1070,6 @@ class Server:
             namespace=self.config.gateway_namespace,
             model_instances=model_instances,
             workers=workers,
-            models=models,
             k8s_config=k8s_config,
         )
 
@@ -1186,21 +1219,32 @@ class Server:
                     )
 
     async def _prepare_jwt_secret_key(self):
-        """Enforce that distributed deployments use an explicit JWT secret.
+        """Enforce that in-cluster distributed deployments use an explicit JWT secret.
 
         ``Config`` auto-generates a local ``jwt_secret_key`` file during init
         so early startup paths (e.g. ``initialize_gateway``) have a usable key.
-        That auto-generated value is safe only in single-node mode; distributed
-        instances must share the SAME secret or JWTs signed by one instance
-        won't verify on another. We rely on the ``_jwt_secret_key_user_provided``
-        flag (set from --jwt-secret-key / GPUSTACK_JWT_SECRET_KEY / config file)
-        rather than the current value, since the value is always populated by
-        the time this runs.
+        That auto-generated value is safe only when a single instance owns the
+        secret; distributed instances must share the SAME secret or JWTs signed
+        by one instance won't verify on another. We rely on the
+        ``_jwt_secret_key_user_provided`` flag (set from --jwt-secret-key /
+        GPUSTACK_JWT_SECRET_KEY / config file) rather than the current value,
+        since the value is always populated by the time this runs.
+
+        A single-container deployment (e.g. a plain ``docker run`` against an
+        external database) still selects a distributed coordinator, but it owns
+        the secret alone: the persisted ``<data_dir>/jwt_secret_key`` stays
+        stable across restarts on a mounted volume, so the auto-generated key is
+        safe and we don't force one. Only in-cluster deployments run instances
+        that each own an ephemeral ``data_dir``, so the explicit secret is
+        required there.
         """
         if self._config._jwt_secret_key_user_provided:
             return
 
         if isinstance(self._coordinator, LocalCoordinator):
+            return
+
+        if not is_inside_kubernetes():
             return
 
         raise RuntimeError(

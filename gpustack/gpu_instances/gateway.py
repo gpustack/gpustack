@@ -47,4 +47,8 @@ async def _reconcile(event: Event):
     await gateway_client.subscribe_worker(
         str(cluster.id),
         cluster.registration_token,
+        gvk=[
+            ("worker.gpustack.ai", "v1", "InstanceType"),
+            ("worker.gpustack.ai", "v1", "Instance"),
+        ],
     )

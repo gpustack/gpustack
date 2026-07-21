@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlmodel import select
 
+from gpustack.server.db import async_session
+
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     ConflictException,
@@ -45,7 +47,6 @@ def _to_public(p: Principal) -> OrganizationPublic:
 
 @router.get("", response_model=OrganizationsPublic)
 async def get_organizations(
-    session: SessionDep,
     params: OrganizationListParams = Depends(),
     search: Optional[str] = None,
 ):
@@ -61,15 +62,16 @@ async def get_organizations(
             media_type="text/event-stream",
         )
 
-    page = await Principal.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=params.order_by,
-    )
-    page.items = [_to_public(p) for p in page.items]
+    async with async_session() as session:
+        page = await Principal.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=params.order_by,
+        )
+        page.items = [_to_public(p) for p in page.items]
     return page
 
 

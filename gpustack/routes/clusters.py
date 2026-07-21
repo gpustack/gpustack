@@ -81,14 +81,22 @@ router = APIRouter()
 
 
 def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
-    """Construct the server URL based on request headers or fallback to default."""
+    """Resolve the worker-facing server URL.
+
+    Priority:
+    1. cluster override
+    2. server_external_url
+    3. request host (scheme + netloc). ForwardedHostPortMiddleware only gates
+       X-Forwarded-Host rewriting by trusted_hosts; a directly supplied Host
+       header still flows into request.url, so this is not full host-injection
+       protection unless the server is reachable only via a trusted proxy.
+    """
     if cluster_override:
         return cluster_override.rstrip("/")
-    url = get_global_config().server_external_url
+    cfg = get_global_config()
+    url = cfg.server_external_url if cfg else None
     if not url:
-        url = f"{request.url.scheme}://{request.url.hostname}"
-        if request.url.port:
-            url += f":{request.url.port}"
+        url = f"{request.url.scheme}://{request.url.netloc}"
     return url.rstrip("/")
 
 
@@ -728,6 +736,7 @@ async def get_registration_token(
 async def get_cluster_manifests(
     request: Request,
     session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
     runtime: Optional[List[ManufacturerEnum]] = Query(
         None,
@@ -742,6 +751,9 @@ async def get_cluster_manifests(
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
+    # The manifest embeds the cluster registration token, a write-class
+    # secret — gate it the same way as the registration-token endpoint.
+    assert_cluster_writable(ctx, cluster)
     if cluster.provider != ClusterProvider.Kubernetes:
         raise InvalidException(
             message=f"Cannot get manifests for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
@@ -766,13 +778,25 @@ async def get_cluster_manifests(
     if not k8s_options.operator_image:
         k8s_options.operator_image = cfg.operator_image
 
-    config = TemplateConfig(
-        registration=get_registration_from_cluster(request, cluster),
-        cluster_owner_principal_identifier=principal_namespace_identifier(principal),
-        runtimes=runtime,
-        k8s_options=k8s_options,
-        system_default_container_registry=cluster.system_default_container_registry,
-    )
+    # Only forward worker ports when the cluster explicitly overrides them;
+    # otherwise let TemplateConfig fall back to its own defaults rather than
+    # duplicating the default constants here.
+    worker_config = cluster.worker_config
+    config_kwargs = {
+        "registration": get_registration_from_cluster(request, cluster),
+        "cluster_owner_principal_identifier": principal_namespace_identifier(principal),
+        "runtimes": runtime,
+        "k8s_options": k8s_options,
+        "system_default_container_registry": cluster.system_default_container_registry
+        or cfg.system_default_container_registry,
+    }
+    if worker_config:
+        if worker_config.worker_port is not None:
+            config_kwargs["worker_port"] = worker_config.worker_port
+        if worker_config.worker_metrics_port is not None:
+            config_kwargs["worker_metrics_port"] = worker_config.worker_metrics_port
+
+    config = TemplateConfig(**config_kwargs)
     yaml_content = config.render()
     return Response(
         content=yaml_content,
@@ -837,6 +861,7 @@ _CLUSTER_PROXY_REQUEST_HEADER_SKIP = {
 )
 async def cluster_apiserver_proxy(
     request: Request,
+    ctx: TenantContextDep,
     id: int,
     path: str,
 ):
@@ -853,6 +878,9 @@ async def cluster_apiserver_proxy(
         cluster = await Cluster.one_by_id(session, id)
         if not cluster or cluster.deleted_at is not None:
             raise NotFoundException(message=f"cluster {id} not found")
+        assert_cluster_visible(
+            ctx, cluster, not_found_message=f"cluster {id} not found"
+        )
         if cluster.provider != ClusterProvider.Kubernetes:
             raise InvalidException(
                 message=(

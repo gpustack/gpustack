@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -74,3 +75,49 @@ async def test_model_instance_restart_metrics_are_collected():
         "model_name": "qwen",
         "model_instance_name": "qwen-1",
     }
+
+
+class _NoopSession:
+    async def __aenter__(self):
+        return SimpleNamespace()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_generate_metrics_cache_survives_transient_db_error(monkeypatch):
+    """A transient DB error while refreshing the cache must not escape the
+    loop. If it did, the exception would propagate through the server's
+    asyncio.gather and take the whole process down (the #5839 restart). The
+    loop should keep the last cache and retry on the next tick.
+    """
+    exporter = MetricExporter(SimpleNamespace(metrics_port=10162))
+    exporter._cache_metrics = ["stale"]
+
+    collect_calls = {"n": 0}
+
+    async def _boom(session):
+        collect_calls["n"] += 1
+        raise TimeoutError(
+            "QueuePool limit of size 30 overflow 20 reached, connection timed out"
+        )
+
+    async def _sleep_then_stop(_seconds):
+        # Break the otherwise-infinite loop the way a real shutdown would.
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(exporter, "_collect_metrics", _boom)
+    monkeypatch.setattr(
+        "gpustack.exporter.exporter.async_session", lambda: _NoopSession()
+    )
+    monkeypatch.setattr("gpustack.exporter.exporter.asyncio.sleep", _sleep_then_stop)
+
+    # The transient error is swallowed; the loop proceeds to the sleep, where
+    # our stand-in raises CancelledError to end the test. CancelledError itself
+    # must propagate (clean shutdown), unlike the DB error.
+    with pytest.raises(asyncio.CancelledError):
+        await exporter.generate_metrics_cache()
+
+    assert collect_calls["n"] == 1  # ran once, error swallowed, reached sleep
+    assert exporter._cache_metrics == ["stale"]  # kept last cache, no crash

@@ -8,12 +8,13 @@ from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy.orm import selectinload
 from sqlmodel import and_, or_
 from sqlmodel.ext.asyncio.session import AsyncSession
-from enum import Enum
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
     BadRequestException,
+    ForbiddenException,
+    NotFoundException,
 )
 from gpustack.schemas.common import Pagination
 from gpustack.schemas.inference_backend import is_custom_backend
@@ -26,7 +27,9 @@ from gpustack.schemas.models import (
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.api.tenant import (
+    TenantContext,
     bypass_tenant_filter,
+    assert_cluster_visible,
     assert_resource_visible,
     cluster_scoped_system,
     scoped_cluster_row_visible,
@@ -68,13 +71,13 @@ from gpustack.server.lora_model_routes import (
     is_lora_list_stale,
 )
 from gpustack.utils.command import find_parameter
-from gpustack.utils.vllm_topology import matched_manual_distributed_params
-from gpustack.policies.utils import manual_distributed_from_env
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
 from gpustack.routes.model_common import (
+    ModelStateFilterEnum,
     build_category_conditions,
     categories_filter,
+    state_stream_filter,
 )
 from gpustack.config.config import get_global_config
 from gpustack.utils.grafana import resolve_grafana_base_url
@@ -85,20 +88,26 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-class ModelStateFilterEnum(str, Enum):
-    READY = "ready"
-    NOT_READY = "not_ready"
-    STOPPED = "stopped"
-
-
-def _make_model_watch_filter(ctx, categories):
+def _make_model_watch_filter(ctx, categories, state=None):
     """Watch-stream visibility: cluster-bound service accounts only see
-    their own cluster's models; everyone keeps the categories filter."""
+    their own cluster's models; everyone keeps the categories and state
+    filters. Predicates are pre-built so inactive filters cost nothing on
+    the per-event hot path."""
+    predicates = []
+    if cluster_scoped_system(ctx):
+        predicates.append(lambda data: scoped_cluster_row_visible(ctx, data))
+    if state is not None:
+        predicates.append(
+            lambda data: state_stream_filter(data, state, "ready_replicas", "replicas")
+        )
+    if categories:
+        predicates.append(lambda data: categories_filter(data, categories))
 
     def _visible(data) -> bool:
-        if cluster_scoped_system(ctx) and not scoped_cluster_row_visible(ctx, data):
-            return False
-        return categories_filter(data, categories)
+        for p in predicates:
+            if not p(data):
+                return False
+        return True
 
     return _visible
 
@@ -141,7 +150,7 @@ async def get_models(
             Model.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=_make_model_watch_filter(ctx, categories),
+                filter_func=_make_model_watch_filter(ctx, categories, state),
             ),
             media_type="text/event-stream",
         )
@@ -311,22 +320,6 @@ async def validate_model_in(
     if model_in.gpu_selector is not None and model_in.replicas > 0:
         await validate_gpu_ids(session, model_in, cluster_id=cluster_id)
 
-    # Manual-distributed registers no gateway upstream, so an enabled model route
-    # would resolve to empty destinations (gateway returns 503). Require it
-    # explicitly disabled. ModelUpdate has no such field, so skip when absent.
-    if (
-        hasattr(model_in, "enable_model_route")
-        and manual_distributed_from_env(model_in.env)
-        and model_in.enable_model_route is not False
-    ):
-        raise BadRequestException(
-            message=(
-                "GPUSTACK_MANUAL_DISTRIBUTED requires enable_model_route=false; "
-                "GPUStack registers no upstream for a manual-distributed model and "
-                "the model route would otherwise resolve to empty destinations."
-            )
-        )
-
     if is_custom_backend(model_in.backend):
         logger.info("Skip model validation for custom backend")
         return
@@ -384,23 +377,6 @@ async def validate_model_in(
         for param_names, error_message in unsupported_params:
             if find_parameter(model_in.backend_parameters, param_names):
                 raise BadRequestException(message=error_message)
-
-        # Hand-wired vLLM DP params without GPUSTACK_MANUAL_DISTRIBUTED contradict
-        # GPUStack's auto-orchestration (it would register a gateway upstream the
-        # user's params then override). Require the opt-in, or drop the params.
-        manual_distributed_params = matched_manual_distributed_params(
-            model_in.backend_parameters
-        )
-        if manual_distributed_params and not manual_distributed_from_env(model_in.env):
-            raise BadRequestException(
-                message=(
-                    "Detected manually specified distributed parameters "
-                    f"({', '.join(manual_distributed_params)}) without "
-                    "GPUSTACK_MANUAL_DISTRIBUTED. To wire a data-parallel deployment "
-                    "yourself, set GPUSTACK_MANUAL_DISTRIBUTED=true in Environment "
-                    'Variables and disable "Enable Model Route".'
-                )
-            )
 
     validate_and_normalize_lora_list(model_in)
 
@@ -575,6 +551,40 @@ async def validate_distributed_vllm_limit_per_worker(
             )
 
 
+async def assert_cluster_belongs_to_org(
+    ctx: TenantContext,
+    session: AsyncSession,
+    cluster_id: Optional[int],
+    owner_principal_id: int,
+    cluster: Optional[Cluster] = None,
+):
+    """Ensure a chosen cluster is visible to the caller and owned by the
+    given Org.
+
+    A model runs on infrastructure owned by its Org, so its cluster must
+    belong to that Org — otherwise a tenant could target the platform's
+    (or another Org's) cluster, stamping a cross-tenant model. A cluster the
+    caller can't see is reported as missing (404), so cross-tenant cluster
+    ids can't be probed via a 403-vs-404 difference; a visible cluster owned
+    by another Org is a 403. No cluster chosen (``cluster_id is None``)
+    leaves default-cluster resolution to pick the Org's own cluster.
+
+    ``cluster`` may be passed pre-fetched to avoid a duplicate lookup.
+    """
+    if cluster_id is None:
+        return
+    if cluster is None:
+        cluster = await Cluster.one_by_id(session, cluster_id)
+    not_found = f"Cluster {cluster_id} not found"
+    assert_cluster_visible(ctx, cluster, not_found_message=not_found)
+    if cluster.deleted_at is not None:
+        raise NotFoundException(message=not_found)
+    if cluster.owner_principal_id != owner_principal_id:
+        raise ForbiddenException(
+            message="The selected cluster does not belong to the current organization."
+        )
+
+
 @router.post(
     "",
     response_model=ModelPublic,
@@ -589,12 +599,26 @@ async def create_model(
     # front keeps them in sync so the pre-check actually catches a
     # collision in the Org the model will land in.
     target_org_id = ctx.current_principal_id
+    cluster = None
     if target_org_id is None and model_in.cluster_id is not None:
+        # Admin "All" mode has no principal context; derive the owning Org
+        # from the chosen cluster. Reused by the check below to avoid a
+        # second lookup. Under an Org context the helper does the single
+        # lookup itself.
         cluster = await Cluster.one_by_id(session, model_in.cluster_id)
-        if cluster is not None:
-            target_org_id = cluster.owner_principal_id
+        if cluster is None:
+            raise NotFoundException(message=f"Cluster {model_in.cluster_id} not found")
+        target_org_id = cluster.owner_principal_id
     if target_org_id is None:
         target_org_id = platform_principal_id()
+
+    # The chosen cluster must exist, be visible to the caller, and be owned
+    # by the target Org. In admin "All" mode target_org_id was derived from
+    # the cluster above, so the ownership check is trivially satisfied and
+    # this mainly rejects a missing/deleted or non-visible cluster_id.
+    await assert_cluster_belongs_to_org(
+        ctx, session, model_in.cluster_id, target_org_id, cluster=cluster
+    )
 
     # Model & ModelRoute names are unique within their Org. Two Orgs
     # can each have a "llama3" without colliding.
@@ -712,26 +736,14 @@ async def update_model(
     model = await Model.one_by_id(session, id)
     assert_resource_visible(ctx, model, not_found_message="Model not found")
 
-    await validate_model_in(session, model_in)
+    # Block re-pointing a model at another Org's (e.g. the Default org's
+    # shared) or a non-visible cluster: its cluster must stay owned by the
+    # model's Org.
+    await assert_cluster_belongs_to_org(
+        ctx, session, model_in.cluster_id, model.owner_principal_id
+    )
 
-    # On update env may be omitted, so use the effective env (incoming replaces,
-    # else persisted) — model_in.env alone misses an already-persisted
-    # GPUSTACK_MANUAL_DISTRIBUTED. Reject if a base route still exists; it would
-    # resolve to empty destinations.
-    effective_env = model_in.env if model_in.env is not None else model.env
-    if manual_distributed_from_env(effective_env):
-        base_route = await ModelRoute.one_by_field(
-            session, "created_model_id", model.id
-        )
-        if base_route:
-            raise BadRequestException(
-                message=(
-                    f"Model route '{model.name}' must be deleted before enabling "
-                    "GPUSTACK_MANUAL_DISTRIBUTED; GPUStack registers no upstream "
-                    "for a manual-distributed model and the route would otherwise "
-                    "resolve to empty destinations."
-                )
-            )
+    await validate_model_in(session, model_in)
 
     if model_in.backend != BackendEnum.CUSTOM.value and (
         model.run_command or model.image_name

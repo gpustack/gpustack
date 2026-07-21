@@ -6,7 +6,7 @@ metadata:
   labels:
 {{ include "chart_labels" . | indent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.higressPlugins.replicas }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-higress-plugins

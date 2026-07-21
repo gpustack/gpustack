@@ -28,16 +28,22 @@ gpustack reload-config --set debug=true
 
 ## Configure Log Level
 
-You can configure log level of the GPUStack server at runtime by running the following command inside the **server container**:
+The log level endpoints require authentication.
+
+You can configure log level of the GPUStack server at runtime by running the following command inside the **server container**. Authenticate with an admin API key:
 
 ```bash
-curl -X PUT http://localhost/debug/log_level -d "debug"
+curl -X PUT http://localhost/debug/log_level \
+    -H "Authorization: Bearer <YOUR_API_KEY>" \
+    -d "debug"
 ```
 
-The same applies to GPUStack workers:
+The same applies to GPUStack workers. Authenticate with the local worker token (defaults to `/var/lib/gpustack/worker_token`):
 
 ```bash
-curl -X PUT http://localhost:10150/debug/log_level -d "debug"
+curl -X PUT http://localhost:10150/debug/log_level \
+    -H "Authorization: Bearer $(cat /var/lib/gpustack/worker_token)" \
+    -d "debug"
 ```
 
 The available log levels are: `trace`, `debug`, `info`, `warning`, `error`, `critical`.

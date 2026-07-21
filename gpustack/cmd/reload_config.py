@@ -23,7 +23,6 @@ from gpustack.utils.config import (
 from gpustack.logging import setup_logging
 from gpustack.client.generated_http_client import default_versioned_prefix
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -219,6 +218,23 @@ def resolve_scope_headers(args: argparse.Namespace) -> Dict[str, Dict[str, str]]
     return headers
 
 
+def record_runtime_update_response(
+    url: str,
+    status_code: int,
+    failures: list[str],
+    auth_failures: list[str],
+) -> bool:
+    if status_code == 200:
+        logger.info(f"Applied runtime config via {url}")
+        return True
+    logger.warning(f"Failed to apply config via {url}: {status_code}")
+    if status_code in (401, 403):
+        auth_failures.append(f"{url}: HTTP {status_code}")
+    else:
+        failures.append(f"{url}: HTTP {status_code}")
+    return False
+
+
 def apply_runtime_updates(
     payload: Dict[str, Any],
     args: argparse.Namespace,
@@ -240,6 +256,7 @@ def apply_runtime_updates(
     }
     applied = False
     failures: list[str] = []
+    auth_failures: list[str] = []
     for scope, url in endpoints.items():
         if scope not in scope_headers:
             # No credential for this endpoint's auth scheme. Skip rather than
@@ -250,12 +267,12 @@ def apply_runtime_updates(
             resp = requests.put(
                 url, json=payload, headers=scope_headers[scope], timeout=5
             )
-            if resp.status_code == 200:
-                logger.info(f"Applied runtime config via {url}")
-                applied = True
-            else:
-                logger.warning(f"Failed to apply config via {url}: {resp.status_code}")
-                failures.append(f"{url}: HTTP {resp.status_code}")
+            applied = (
+                record_runtime_update_response(
+                    url, resp.status_code, failures, auth_failures
+                )
+                or applied
+            )
         except requests.exceptions.ConnectionError:
             # This endpoint's role (server/worker) isn't running on this host —
             # e.g. on a worker host where the server port is not bound. Expected;
@@ -268,6 +285,10 @@ def apply_runtime_updates(
     if failures:
         raise Exception("Failed to apply runtime config to: " + "; ".join(failures))
     if not applied:
+        if auth_failures:
+            raise Exception(
+                "Failed to apply runtime config to: " + "; ".join(auth_failures)
+            )
         raise Exception(
             "No reachable config endpoint accepted the update. Ensure the "
             "gpustack server or worker is running on this host, or target it "

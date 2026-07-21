@@ -371,9 +371,16 @@ class Worker:
             prefix=default_versioned_prefix,
             dependencies=[Depends(worker_request_auth)],
         )
-        app.include_router(debug.router, prefix="/debug")
+        app.include_router(
+            debug.router,
+            prefix="/debug",
+            dependencies=[Depends(worker_request_auth)],
+        )
         app.include_router(probes.router)
-        app.include_router(logs.router)
+        app.include_router(
+            logs.router,
+            dependencies=[Depends(worker_request_auth)],
+        )
         app.include_router(proxy.router)
         app.include_router(filesystem.router)
         app.include_router(cluster_proxy.router)

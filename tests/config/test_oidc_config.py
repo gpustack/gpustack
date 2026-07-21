@@ -42,3 +42,31 @@ def test_get_openid_configuration_uses_system_trust_store(monkeypatch):
     assert captured["timeout"] == 10
     assert captured["trust_env"] is False
     assert isinstance(captured["verify"], ssl.SSLContext)
+
+
+def test_get_openid_configuration_skips_verify_when_insecure(monkeypatch):
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def get(self, url):
+            return _FakeResponse()
+
+    monkeypatch.setattr("gpustack.config.config.httpx.Client", _FakeClient)
+    monkeypatch.setattr(
+        "gpustack.config.config.use_proxy_env_for_url", lambda url: False
+    )
+
+    get_openid_configuration(
+        "https://issuer.example.com", insecure_skip_tls_verify=True
+    )
+
+    assert captured["verify"] is False

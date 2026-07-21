@@ -118,24 +118,43 @@ async def _resolve_principals(
             owner_principal_id = c.owner_principal_id
 
     principals = PrincipalService(session)
-    # Per-call memo so owner == consumer (self-owned) resolves once even on a
-    # cold cache; the service cache then makes it cheap across events.
-    name_cache: Dict[int, Optional[str]] = {}
+    # Per-call memo of the principal ROW so owner == consumer (self-owned)
+    # resolves once even on a cold cache; the service cache then makes it cheap
+    # across events. Caching the row (not just the name) lets the consumer kind
+    # come from the same lookup — no extra round-trip.
+    principal_cache: Dict[int, Any] = {}
 
-    async def name_of(pid: Optional[int]) -> Optional[str]:
+    async def principal_of(pid: Optional[int]):
         if pid is None:
             return None
-        if pid not in name_cache:
-            p = await principals.get_by_id(pid)
-            name_cache[pid] = p.name if p else None
-        return name_cache[pid]
+        if pid not in principal_cache:
+            principal_cache[pid] = await principals.get_by_id(pid)
+        return principal_cache[pid]
+
+    async def name_of(pid: Optional[int]) -> Optional[str]:
+        p = await principal_of(pid)
+        return p.name if p else None
+
+    owner_name = await name_of(owner_principal_id)
+    consumer_name = await name_of(consumer_principal_id)
+    creator_name = await name_of(creator_id)
+
+    # Consumer principal kind (``org`` / ``user`` / ``group``) snapshot, so the
+    # Organization breakdown can tag a personal (USER) consumer. Reuses the
+    # cached principal row resolved for ``consumer_name`` above.
+    consumer_principal = await principal_of(consumer_principal_id)
+    consumer_kind: Optional[str] = None
+    if consumer_principal is not None:
+        kind = consumer_principal.kind
+        consumer_kind = kind.value if hasattr(kind, "value") else kind
 
     return (
         owner_principal_id,
-        await name_of(owner_principal_id),
-        await name_of(consumer_principal_id),
-        await name_of(creator_id),
+        owner_name,
+        consumer_name,
+        creator_name,
         cluster_name,
+        consumer_kind,
     )
 
 
@@ -379,6 +398,7 @@ class ResourceEventLogger:
                 consumer_name,
                 creator_name,
                 cluster_name,
+                consumer_principal_kind,
             ) = await _resolve_principals(
                 session, consumer_principal_id, creator_id, cluster_id
             )
@@ -388,6 +408,7 @@ class ResourceEventLogger:
                 owner_name=owner_name,
                 consumer_principal_id=consumer_principal_id,
                 consumer_name=consumer_name,
+                consumer_principal_kind=consumer_principal_kind,
                 creator_id=creator_id,
                 creator_name=creator_name,
                 cluster_id=cluster_id,

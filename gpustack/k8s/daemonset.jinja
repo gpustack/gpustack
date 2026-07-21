@@ -26,10 +26,21 @@ spec:
         gpustack.io/runtime: {{ worker.name }}
         {%- endif %}
     spec:
+      # Disable Kubernetes service-link env injection. The gpustack-worker
+      # Service would otherwise inject GPUSTACK_WORKER_PORT=tcp://... which
+      # collides with the GPUSTACK_-prefixed config defaults and crashes prerun.
+      # GPUStack sets every env it needs explicitly and resolves peers via DNS,
+      # so it never relies on these link vars. (KUBERNETES_SERVICE_HOST/_PORT are
+      # exempt from this flag and keep working.)
+      enableServiceLinks: false
       containers:
         - env:
             - name: GPUSTACK_SERVER_URL
               value: {{ config.server_url }}
+            - name: GPUSTACK_WORKER_PORT
+              value: "{{ config.worker_port }}"
+            - name: GPUSTACK_WORKER_METRICS_PORT
+              value: "{{ config.worker_metrics_port }}"
             - name: GPUSTACK_WORKER_NAME
               valueFrom:
                 fieldRef:
@@ -139,10 +150,10 @@ spec:
             {%- endif %}
           ports:
             - name: api
-              containerPort: 10150
+              containerPort: {{ config.worker_port }}
               protocol: TCP
             - name: metrics
-              containerPort: 10151
+              containerPort: {{ config.worker_metrics_port }}
               protocol: TCP
           readinessProbe:
             httpGet:

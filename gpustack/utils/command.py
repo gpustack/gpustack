@@ -112,16 +112,6 @@ def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
     return False
 
 
-def parse_bool_env(value: Optional[str]) -> bool:
-    """Parse a truthy environment-variable value, sharing the same vocabulary as
-    backend-parameter bool parsing (``1``/``true``/``yes``/``on``/``t``/``y``).
-    ``None``/empty/unrecognized -> False.
-    """
-    if value is None:
-        return False
-    return str(value).strip().lower() in _TRUTHY_VALUES
-
-
 def get_versioned_command(command_name: str, version: str) -> str:
     """
     Get the versioned command name.
@@ -333,9 +323,14 @@ def _normalize_continuations(text: str) -> str:
     """
     text = re.sub(r'\\\r?\n', ' ', text)
 
-    match = re.search(r'(\\+)\s*$', text)
-    if match and len(match.group(1)) % 2 == 1:
-        text = text[: match.start()] + match.group(1)[:-1]
+    # Drop a single stray trailing backslash (odd-length run) that would
+    # otherwise make shlex.split raise "No escaped character". Done with
+    # string ops rather than a trailing-anchored regex to avoid quadratic
+    # backtracking on inputs with many trailing backslashes.
+    stripped = text.rstrip()
+    trailing_backslashes = len(stripped) - len(stripped.rstrip('\\'))
+    if trailing_backslashes % 2 == 1:
+        text = stripped[:-1]
 
     return text
 

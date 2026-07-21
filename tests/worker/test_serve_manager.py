@@ -17,12 +17,40 @@ from gpustack_runtime.deployer import WorkloadStatusStateEnum
 from tests.utils.model import new_model, new_model_instance
 
 
-def _fake_stop_event():
-    """A never-set stop event whose wait() returns instantly, so the log
-    persistence loop is driven purely by the get_workload state sequence."""
+def _fake_stop_event(max_waits: int = 100):
+    """A stop event whose wait() returns instantly (tests aren't driven by real
+    time) and stays unset, so the log persistence loop is driven purely by the
+    get_workload state sequence. It auto-sets after max_waits waits so a
+    mis-sized mock or a runaway loop fails the test fast instead of hanging CI."""
+    state = {"waits": 0, "stopped": False}
+
+    def is_set():
+        return state["stopped"]
+
+    def wait(timeout=None):
+        state["waits"] += 1
+        if state["waits"] >= max_waits:
+            state["stopped"] = True
+        return state["stopped"]
+
     stop_event = MagicMock()
-    stop_event.is_set.return_value = False
+    stop_event.is_set.side_effect = is_set
+    stop_event.wait.side_effect = wait
     return stop_event
+
+
+def _get_workload_sequence(states):
+    """side_effect for a patched get_workload. The recovery grace-poll queries
+    get_workload several times per stream EOF, so once the sequence reaches its
+    terminal state it must keep returning it: a list that runs dry would raise
+    IndexError, which _container_still_running treats as "still alive", spinning
+    the reconnect loop forever."""
+    remaining = list(states)
+
+    def next_state(name):
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    return next_state
 
 
 def _build_serve_manager(worker_id: int = 1):
@@ -129,6 +157,9 @@ def test_restart_model_instance_preserves_transient_backoff_count():
     with (
         patch.object(manager, "_is_provisioning", return_value=False),
         patch.object(manager, "_start_model_instance"),
+        # _stop_model_instance runs for real to exercise clear_restart_backoff=
+        # False, but its delete_workload side effect would hit the runtime socket.
+        patch("gpustack.worker.serve_manager.delete_workload"),
     ):
         manager._restart_model_instance(model_instance)
 
@@ -188,9 +219,10 @@ def test_cleanup_old_logs_restart_zero_purges_all(tmp_path: Path):
     assert remaining == [f"{other}.0.log", f"model_file_{mid}.download.log"]
 
 
-def test_delete_event_purges_logs_but_restart_keeps_them(tmp_path: Path):
-    """DELETED removes the instance's serve logs so a reused id can't inherit them;
-    a restart (default stop) keeps them for the log viewer."""
+def test_permanent_teardown_purges_logs_but_restart_keeps_them(tmp_path: Path):
+    """A permanent teardown (delete_logs=True, used by the reap) removes the
+    instance's serve logs so a reused id can't inherit them; a restart (default
+    stop) keeps them for the log viewer."""
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir(parents=True)
     log = serve_dir / "1.container.ray-head.0.log"
@@ -201,9 +233,6 @@ def test_delete_event_purges_logs_but_restart_keeps_them(tmp_path: Path):
     model_instance = new_model_instance(
         1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
     )
-    # _handle_model_instance_event re-validates the payload; source/repo required.
-    model_instance.source = SourceEnum.HUGGING_FACE
-    model_instance.huggingface_repo_id = "Qwen/Qwen3-0.6B"
 
     with (
         patch("gpustack.worker.serve_manager.logger"),
@@ -211,12 +240,12 @@ def test_delete_event_purges_logs_but_restart_keeps_them(tmp_path: Path):
         patch.object(manager, "_stop_container_log_persistence"),
         patch.object(manager, "_is_provisioning", return_value=False),
     ):
+        # Restart-style stop keeps the logs.
         manager._stop_model_instance(model_instance)
         assert log.exists()
 
-        manager._handle_model_instance_event(
-            Event(type=EventType.DELETED, data=model_instance)
-        )
+        # Permanent teardown removes them.
+        manager._stop_model_instance(model_instance, delete_logs=True)
         assert not log.exists()
 
 
@@ -247,6 +276,177 @@ def test_reap_stale_instance_purges_logs(tmp_path: Path):
     assert not log.exists()
 
 
+def test_reap_confirmation_skips_when_authoritative_fetch_still_has_instance():
+    """A cache read momentarily missing an instance (e.g. mid-reconnect, before
+    the watch replay repopulates) must not reap it: the authoritative
+    confirmation fetch still lists it, so it is a false positive and the live
+    workload is left alone."""
+    manager, clientset = _build_serve_manager(worker_id=1)
+    mi = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[mi.id] = mi
+    # First (cache) read misses it -> reap candidate; the authoritative
+    # confirmation fetch still has it -> not stale.
+    clientset.model_instances.list.side_effect = [
+        SimpleNamespace(items=[]),
+        SimpleNamespace(items=[mi]),
+    ]
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.INITIALIZING),
+        ),
+    ):
+        manager.sync_model_instances_state()
+
+    stop_model_instance.assert_not_called()
+    # Cache read plus exactly one authoritative confirmation fetch.
+    assert clientset.model_instances.list.call_count == 2
+    confirm_call = clientset.model_instances.list.call_args_list[1]
+    assert confirm_call.kwargs.get("params") == {"page": -1}
+    assert confirm_call.kwargs.get("use_cache") is False
+
+
+def test_reap_confirmation_reaps_when_missing_from_authoritative_fetch():
+    """When an instance is absent from both the cache read and the authoritative
+    confirmation fetch, it is genuinely gone and gets reaped."""
+    manager, clientset = _build_serve_manager(worker_id=1)
+    stale = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[stale.id] = stale
+    clientset.model_instances.list.side_effect = [
+        SimpleNamespace(items=[]),
+        SimpleNamespace(items=[]),
+    ]
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+        patch.object(manager, "_is_provisioning", return_value=False),
+    ):
+        manager.sync_model_instances_state()
+
+    stop_model_instance.assert_called_once_with(stale, delete_logs=True)
+    # Cache read plus the authoritative confirmation fetch before reaping.
+    assert clientset.model_instances.list.call_count == 2
+
+
+def test_ghost_in_cache_not_reconciled_when_backstop_disabled():
+    """With the periodic reconciliation disabled (default), an instance present
+    in both local state and the watch cache but gone from DB is not a
+    `local - cache` reap candidate, so the sync trusts the cache and takes no
+    DB round trip."""
+    manager, clientset = _build_serve_manager(worker_id=1)
+    ghost = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[ghost.id] = ghost
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[ghost])
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch(
+            "gpustack.worker.serve_manager.envs.MODEL_INSTANCE_STATE_RECONCILE_INTERVAL",
+            0,
+        ),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.INITIALIZING),
+        ),
+    ):
+        manager.sync_model_instances_state()
+
+    stop_model_instance.assert_not_called()
+    # Cache read only; no authoritative DB fetch when the backstop is off.
+    assert clientset.model_instances.list.call_count == 1
+
+
+def test_ghost_in_cache_reaped_when_backstop_interval_elapsed():
+    """When the reconciliation backstop is enabled and its interval has elapsed,
+    the forced authoritative DB read reaps a ghost living in both local state
+    and the cache — the case `local - cache` can never flag on its own."""
+    manager, clientset = _build_serve_manager(worker_id=1)
+    ghost = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[ghost.id] = ghost
+    # Last reconciliation is far enough in the past to be due.
+    manager._last_state_reconcile_time = 0
+    # Cache still lists the ghost; the authoritative DB fetch does not.
+    clientset.model_instances.list.side_effect = [
+        SimpleNamespace(items=[ghost]),
+        SimpleNamespace(items=[]),
+    ]
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch(
+            "gpustack.worker.serve_manager.envs.MODEL_INSTANCE_STATE_RECONCILE_INTERVAL",
+            60,
+        ),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+        patch.object(manager, "_is_provisioning", return_value=False),
+    ):
+        manager.sync_model_instances_state()
+
+    stop_model_instance.assert_called_once_with(ghost, delete_logs=True)
+    # Cache read plus the forced authoritative fetch.
+    assert clientset.model_instances.list.call_count == 2
+    confirm_call = clientset.model_instances.list.call_args_list[1]
+    assert confirm_call.kwargs.get("params") == {"page": -1}
+    assert confirm_call.kwargs.get("use_cache") is False
+
+
+def test_delete_event_defers_teardown_to_reap():
+    """The DELETED handler no longer tears down directly; teardown is left to the
+    periodic reap so there is a single teardown path (no reap-vs-event race)."""
+    manager, _ = _build_serve_manager(worker_id=1)
+    mi = new_model_instance(
+        4, "qwen3-0.6b-kqkco", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    mi.source = SourceEnum.HUGGING_FACE
+    mi.huggingface_repo_id = "Qwen/Qwen3-0.6B"
+    manager._model_instance_by_instance_id[mi.id] = mi
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+    ):
+        manager._handle_model_instance_event(Event(type=EventType.DELETED, data=mi))
+
+    stop_model_instance.assert_not_called()
+
+
+def test_updated_event_error_does_not_crash_watch():
+    """A failure on any event path (not just DELETED) must be swallowed so it
+    never escapes the awatch callback. Here an UPDATED->restart raises."""
+    manager, _ = _build_serve_manager(worker_id=1)
+    mi = new_model_instance(
+        5, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.SCHEDULED
+    )
+    mi.source = SourceEnum.HUGGING_FACE
+    mi.huggingface_repo_id = "Qwen/Qwen3-0.6B"
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(
+            manager,
+            "_restart_model_instance",
+            side_effect=RuntimeError("start failed"),
+        ),
+    ):
+        # Must not raise.
+        manager._handle_model_instance_event(Event(type=EventType.UPDATED, data=mi))
+
+
 def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):
     """On stream EOF while the workload is still running, reconnect and resume
     by skipping already-written history (anchor), appending only new lines."""
@@ -274,7 +474,7 @@ def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):
         ),
         patch(
             "gpustack.worker.serve_manager.get_workload",
-            side_effect=lambda name: states.pop(0),
+            side_effect=_get_workload_sequence(states),
         ),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())
@@ -330,7 +530,7 @@ def test_persist_container_logs_resets_when_anchor_rotated(tmp_path: Path):
         ),
         patch(
             "gpustack.worker.serve_manager.get_workload",
-            side_effect=lambda name: states.pop(0),
+            side_effect=_get_workload_sequence(states),
         ),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())
@@ -362,7 +562,7 @@ def test_persist_container_logs_empty_reconnect_keeps_history(tmp_path: Path):
         ),
         patch(
             "gpustack.worker.serve_manager.get_workload",
-            side_effect=lambda name: states.pop(0),
+            side_effect=_get_workload_sequence(states),
         ),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())
@@ -396,7 +596,7 @@ def test_persist_container_logs_window_anchor_ignores_repeated_line(
         ),
         patch(
             "gpustack.worker.serve_manager.get_workload",
-            side_effect=lambda name: states.pop(0),
+            side_effect=_get_workload_sequence(states),
         ),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())

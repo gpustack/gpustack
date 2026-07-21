@@ -189,6 +189,40 @@ async def process_request(
     return response
 
 
+async def _resolve_direct_consumer_org(
+    request: Request, user: User, raw_header: str
+) -> Union[str, None]:
+    """Validate a cookie-authed request's ``X-Organization-Id`` before it can
+    become ``consumer_principal_id`` on a usage row.
+
+    The direct (non-gateway) inference path has no api_key, so the raw client
+    header would otherwise flow straight into ``consumer_principal_id`` — and
+    a spoofed / stale id (a principal that doesn't exist) would violate the FK
+    to ``principals`` and roll back the entire usage flush batch, dropping
+    every user's buffered usage for that window.
+
+    Resolve it through the same ``get_tenant_context`` the API routes use: it
+    validates existence + membership (and applies api_key precedence), and its
+    ``current_principal_id`` is the validated active principal. Return it as a
+    string, or ``None`` on any failure (bad id / not a member) so the collector
+    falls back to attributing the usage to the caller themselves. Best-effort —
+    attribution must never break usage recording.
+    """
+    from gpustack.api.tenant import resolve_tenant_context
+    from gpustack.server.db import async_session
+
+    try:
+        async with async_session() as session:
+            ctx = await resolve_tenant_context(
+                request, user, x_organization_id=raw_header, session=session
+            )
+        cpid = ctx.current_principal_id
+        return str(cpid) if cpid is not None else None
+    except Exception as e:
+        logger.debug(f"Ignoring unresolved X-Organization-Id for usage: {e}")
+        return None
+
+
 async def record_model_usage(
     request: Request,
     usage: Union[CompletionUsage, EmbeddingUsage, RerankUsage, None],
@@ -213,6 +247,25 @@ async def record_model_usage(
     user: User = request.state.user
     model: Model = request.state.model
     api_key: ApiKey | None = getattr(request.state, "api_key", None)
+
+    # Active tenant of this call. An api_key pins the consumer to its owner
+    # (resolved downstream from ``api_key.owner_principal_id``), so it takes
+    # precedence — when a key is present we ignore the header entirely. That
+    # also means the gateway path never depends on this: its inference is
+    # api_key-authed, so ``organization_id`` is ignored downstream and needs no
+    # guarding here. Only the direct (cookie-authed) path — the Playground,
+    # whose fetch wrapper attaches ``X-Organization-Id`` — reaches the header
+    # branch below, and there the value is client-controlled. Validate it
+    # before it becomes ``consumer_principal_id`` (which FKs ``principals``): an
+    # unvalidated id straight from the header would let a spoofed / stale value
+    # violate that FK and roll back the whole usage flush batch.
+    organization_id = None
+    if api_key is None:
+        raw_organization_id = request.headers.get("x-organization-id")
+        if raw_organization_id:
+            organization_id = await _resolve_direct_consumer_org(
+                request, user, raw_organization_id
+            )
 
     # Reaching this function means the canonical usage chunk was observed,
     # so the report is ``completed=True``. Wall-clock anchors come from
@@ -246,6 +299,7 @@ async def record_model_usage(
         cluster_id=getattr(model, "cluster_id", None),
         access_key=api_key.access_key if api_key is not None else None,
         operation=operation,
+        organization_id=organization_id,
     )
     await accumulate_gateway_metrics([metric])
 

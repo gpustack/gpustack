@@ -16,6 +16,9 @@ on:
       - "**.jpg"
       - "**.gif"
 
+permissions:
+  contents: write # create GitHub releases via softprops/action-gh-release
+
 jobs:
   linux-build:
     timeout-minutes: 20

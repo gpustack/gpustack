@@ -25,6 +25,33 @@ spec:
       port: {{ .Values.server.metricsPort }}
       targetPort: {{ .Values.server.metricsPort }}
 ---
+# ClusterIP service with a stable virtual IP for the server. Used as the
+# service discovery target for both the Ingress backend and the gateway
+# ext-auth MCP bridge registry, so that kube-proxy routes traffic only to
+# ready endpoints and switchover between StatefulSet pods is handled
+# automatically (unlike the headless service above, which resolves to raw
+# pod IPs that can go stale during a rollover/failover).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-server-cluster-ip
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Release.Name }}-server
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.server.apiPort }}
+      targetPort: {{ .Values.server.apiPort }}
+    - name: metrics
+      protocol: TCP
+      port: {{ .Values.server.metricsPort }}
+      targetPort: {{ .Values.server.metricsPort }}
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -42,7 +69,7 @@ spec:
         paths:
           - backend:
               service:
-                name: {{ .Release.Name }}-server
+                name: {{ .Release.Name }}-server-cluster-ip
                 port:
                   number: {{ .Values.server.apiPort }}
             path: /

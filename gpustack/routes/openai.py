@@ -34,7 +34,10 @@ from gpustack.schemas.model_routes import (
 )
 from gpustack.schemas.principals import Principal, platform_principal_id
 from gpustack.schemas.workers import Worker
-from gpustack.routes.model_routes import _my_model_visibility_sql
+from gpustack.routes.model_routes import (
+    _model_route_grant_conditions,
+    _my_model_visibility_sql,
+)
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, CurrentUserDep, TenantContextDep
 from gpustack.server.services import (
@@ -116,6 +119,13 @@ async def list_models(
         vis = _my_model_visibility_sql(ctx)
         if vis is not None:
             statement = statement.where(vis)
+    else:
+        # Admin act-as: mirror what a member of the current Org would see
+        # (own + PUBLIC/AUTHED + cross-tenant grants) rather than the whole
+        # ModelRoute table. Admin "All" mode (no current_principal_id) yields
+        # no conditions, so every ready route stays visible there.
+        for condition in _model_route_grant_conditions(ctx):
+            statement = statement.where(condition)
 
     if categories:
         conditions = build_category_conditions(session, target_class, categories)
@@ -412,6 +422,7 @@ async def _stream_response(
     """
     Stream response from worker. Yields (chunk, headers, status) tuples.
     """
+    yielded_any = False
     try:
         async for chunk, resp_headers, resp_status in stream_to_worker(
             worker=worker,
@@ -423,25 +434,43 @@ async def _stream_response(
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
         ):
+            yielded_any = True
             yield chunk, resp_headers, resp_status
     except aiohttp.ClientError as e:
+        logger.error(f"Error streaming from worker {worker.id}: {e}", exc_info=True)
         error_response = OpenAIAPIErrorResponse(
             error=OpenAIAPIError(
-                message=f"Service unavailable. Please retry your requests after a brief wait. Original error: {e}",
+                message="Service unavailable. Please retry your requests after a brief wait.",
                 code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 type="ServiceUnavailable",
             ),
         )
-        yield error_response.model_dump_json(), {}, status.HTTP_503_SERVICE_UNAVAILABLE
+        yield _error_chunk(
+            error_response, yielded_any
+        ), {}, status.HTTP_503_SERVICE_UNAVAILABLE
     except Exception as e:
+        logger.error(f"Error streaming from worker {worker.id}: {e}", exc_info=True)
         error_response = OpenAIAPIErrorResponse(
             error=OpenAIAPIError(
-                message=f"Internal server error: {e}",
+                message="Internal server error.",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 type="InternalServerError",
             ),
         )
-        yield error_response.model_dump_json(), {}, status.HTTP_500_INTERNAL_SERVER_ERROR
+        yield _error_chunk(
+            error_response, yielded_any
+        ), {}, status.HTTP_500_INTERNAL_SERVER_ERROR
+
+
+def _error_chunk(error_response: OpenAIAPIErrorResponse, mid_stream: bool) -> str:
+    """
+    Render an error body for the streaming proxy. Once the SSE stream has
+    started (mid_stream), the error must be sent as an SSE data event so the
+    client keeps parsing; before any chunk is sent it is returned as raw JSON
+    with an error status code.
+    """
+    error_json = error_response.model_dump_json()
+    return f"data: {error_json}\n\n" if mid_stream else error_json
 
 
 def filter_headers(headers):
