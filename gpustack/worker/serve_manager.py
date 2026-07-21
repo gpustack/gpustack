@@ -176,6 +176,11 @@ class ServeManager:
         # Track last health check time per model instance
         self._last_health_check_time: Dict[int, float] = {}
 
+        # Timestamp of the last authoritative (uncached) DB reconciliation in
+        # the state sync, for the optional periodic backstop. Starts "now" so
+        # the first forced reconciliation is one full period in, not immediate.
+        self._last_state_reconcile_time: float = time.time()
+
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
     def record_successful_inference(self, instance_id: int):
@@ -268,18 +273,41 @@ class ServeManager:
             if mi.get_deployment_metadata(self._worker_id) is not None
         }
 
+        # Optional periodic reconciliation against DB truth even when the cache
+        # reports nothing reapable. The cache and local serving state are both
+        # fed by the same awatch stream, so a ghost re-seeded into the cache
+        # sits in both and `local - cache` never flags it; an independent DB
+        # read is the only thing that catches that. Disabled by default (the
+        # server-side cached_all fix plus reconnect-driven reaping cover the
+        # realistic cases); opt in via the
+        # GPUSTACK_MODEL_INSTANCE_STATE_RECONCILE_INTERVAL env var when a
+        # coordinator may drop DELETEDs on a live stream.
+        reconcile_interval = envs.MODEL_INSTANCE_STATE_RECONCILE_INTERVAL
+        now = time.time()
+        force_authoritative = (
+            reconcile_interval > 0
+            and now - self._last_state_reconcile_time >= reconcile_interval
+        )
+
         # Reaping tears down live workloads, so it must act on an authoritative
         # snapshot. The cache is not one at every instant: awatch clears it and
         # flips _watch_started before the replay snapshot arrives, so a read
         # during a reconnect window can see an empty-but-"authoritative" cache
-        # and surface healthy instances as stale. So confirm any reap candidates
+        # and surface healthy instances as stale. So confirm reap candidates
         # against a fresh, unpaginated, uncached fetch — this only touches the
-        # DB when something actually looks reapable.
-        if reap_ids:
+        # DB when something looks reapable or on the periodic reconciliation.
+        if reap_ids or force_authoritative:
             response = self._clientset.model_instances.list(
                 params={"page": -1},
                 use_cache=False,
             )
+            # Any successful authoritative fetch counts as a reconciliation —
+            # whether triggered by the timer or by a reap candidate — so reset
+            # the timer here (list() raises on API failure, so a failed fetch
+            # doesn't advance it and the next tick retries). Skipped when the
+            # backstop is disabled to keep the timestamp meaningless-but-inert.
+            if reconcile_interval > 0:
+                self._last_state_reconcile_time = now
             all_items = response.items or []
             reap_ids = local_assigned_ids - {
                 mi.id

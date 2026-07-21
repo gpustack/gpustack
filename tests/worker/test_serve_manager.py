@@ -339,6 +339,74 @@ def test_reap_confirmation_reaps_when_missing_from_authoritative_fetch():
     assert clientset.model_instances.list.call_count == 2
 
 
+def test_ghost_in_cache_not_reconciled_when_backstop_disabled():
+    """With the periodic reconciliation disabled (default), an instance present
+    in both local state and the watch cache but gone from DB is not a
+    `local - cache` reap candidate, so the sync trusts the cache and takes no
+    DB round trip."""
+    manager, clientset = _build_serve_manager(worker_id=1)
+    ghost = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[ghost.id] = ghost
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[ghost])
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch(
+            "gpustack.worker.serve_manager.envs.MODEL_INSTANCE_STATE_RECONCILE_INTERVAL",
+            0,
+        ),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.INITIALIZING),
+        ),
+    ):
+        manager.sync_model_instances_state()
+
+    stop_model_instance.assert_not_called()
+    # Cache read only; no authoritative DB fetch when the backstop is off.
+    assert clientset.model_instances.list.call_count == 1
+
+
+def test_ghost_in_cache_reaped_when_backstop_interval_elapsed():
+    """When the reconciliation backstop is enabled and its interval has elapsed,
+    the forced authoritative DB read reaps a ghost living in both local state
+    and the cache — the case `local - cache` can never flag on its own."""
+    manager, clientset = _build_serve_manager(worker_id=1)
+    ghost = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[ghost.id] = ghost
+    # Last reconciliation is far enough in the past to be due.
+    manager._last_state_reconcile_time = 0
+    # Cache still lists the ghost; the authoritative DB fetch does not.
+    clientset.model_instances.list.side_effect = [
+        SimpleNamespace(items=[ghost]),
+        SimpleNamespace(items=[]),
+    ]
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch(
+            "gpustack.worker.serve_manager.envs.MODEL_INSTANCE_STATE_RECONCILE_INTERVAL",
+            60,
+        ),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+        patch.object(manager, "_is_provisioning", return_value=False),
+    ):
+        manager.sync_model_instances_state()
+
+    stop_model_instance.assert_called_once_with(ghost, delete_logs=True)
+    # Cache read plus the forced authoritative fetch.
+    assert clientset.model_instances.list.call_count == 2
+    confirm_call = clientset.model_instances.list.call_args_list[1]
+    assert confirm_call.kwargs.get("params") == {"page": -1}
+    assert confirm_call.kwargs.get("use_cache") is False
+
+
 def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):
     """On stream EOF while the workload is still running, reconnect and resume
     by skipping already-written history (anchor), appending only new lines."""
