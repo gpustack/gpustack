@@ -1,17 +1,22 @@
 import ssl
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import FastAPI
 from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.testclient import TestClient
+from gpustack.api.exceptions import register_handlers
 from gpustack.api.auth import (
     GATEWAY_AUTH_TOKEN_HEADER,
     client_ip_getter,
     get_current_user,
     worker_auth,
 )
-from gpustack.api.exceptions import UnauthorizedException
+from gpustack.api.exceptions import BadRequestException, UnauthorizedException
 from gpustack.schemas.config import GatewayModeEnum
+from gpustack.schemas.users import AuthProviderEnum
 from gpustack.routes import auth as auth_route
 from gpustack.routes.auth import oidc_callback
 
@@ -543,6 +548,70 @@ def test_saml_settings_signature_floor():
     assert security.get("wantMessagesSigned") is False
 
 
+def test_provider_gate_allows_only_matching_active_provider():
+    """The SSO routes parse attacker-supplied IdP payloads, so each must
+    stay closed unless its provider is the configured active one.
+    ``external_auth_type`` resolves to at most one provider, so the gate
+    passes only for its own provider and rejects every other value
+    (including ``None``)."""
+    all_providers = (
+        AuthProviderEnum.OIDC,
+        AuthProviderEnum.SAML,
+        AuthProviderEnum.CAS,
+    )
+    for guarded in all_providers:
+        gate = auth_route._provider_gate(guarded)
+        request = MagicMock()
+        # The matching provider passes.
+        request.app.state.server_config.external_auth_type = guarded
+        assert gate(request) is None
+        # Every other provider (and the unconfigured None) is rejected.
+        for other in (None, *all_providers):
+            if other == guarded:
+                continue
+            request.app.state.server_config.external_auth_type = other
+            with pytest.raises(BadRequestException):
+                gate(request)
+
+
+def _sso_test_client(external_auth_type) -> TestClient:
+    """Mount the real auth router (prefix ``/auth``, matching production)
+    on a bare app so the sub-router ``dependencies`` and ``include_router``
+    wiring is exercised end-to-end over HTTP."""
+    app = FastAPI()
+    register_handlers(app)
+    app.include_router(auth_route.router, prefix="/auth")
+    app.state.server_config = SimpleNamespace(external_auth_type=external_auth_type)
+    return TestClient(app)
+
+
+@pytest.mark.parametrize(
+    "login_path, provider",
+    [
+        ("/auth/oidc/login", AuthProviderEnum.OIDC),
+        ("/auth/saml/login", AuthProviderEnum.SAML),
+        ("/auth/cas/login", AuthProviderEnum.CAS),
+    ],
+)
+def test_sso_login_route_gated_by_active_provider(login_path, provider):
+    """Structural gating over real HTTP: each SSO route must return 400
+    when ``external_auth_type`` names a different provider (or nothing).
+    Asserting 400 rather than merely non-200 also catches a dropped
+    ``include_router`` — an unmounted route would surface as 404."""
+    for active in (
+        None,
+        AuthProviderEnum.OIDC,
+        AuthProviderEnum.SAML,
+        AuthProviderEnum.CAS,
+    ):
+        if active == provider:
+            continue
+        client = _sso_test_client(active)
+        resp = client.get(login_path, follow_redirects=False)
+        assert resp.status_code == 400, (login_path, active, resp.status_code)
+        assert "is not configured" in resp.json()["message"]
+
+
 def test_saml_unsigned_escape_hatch_detects_both_false():
     """The unsigned escape hatch flags only when *both*
     ``wantAssertionsSigned`` and ``wantMessagesSigned`` are the
@@ -742,6 +811,7 @@ def _saml_callback_request(saml_response_b64: str, **config_overrides) -> object
     request.query_params = {}
 
     cfg = request.app.state.server_config
+    cfg.external_auth_type = AuthProviderEnum.SAML
     cfg.saml_security = "{}"
     cfg.saml_sp_acs_url = "http://localhost:9000/auth/saml/callback"
     cfg.external_auth_name = None
