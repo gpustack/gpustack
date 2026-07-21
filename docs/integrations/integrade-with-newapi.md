@@ -1,6 +1,6 @@
 # Integrate with NewAPI
 
-NewAPI can integrate with GPUStack to aggregate locally deployed LLMs, embeddings, reranking, Speech-to-Text, and Text-to-Speech capabilities into a unified OpenAI-compatible API gateway for enterprise employee.
+NewAPI can integrate with GPUStack to aggregate locally deployed LLMs, embeddings, reranking, Speech-to-Text, and Text-to-Speech capabilities into a unified OpenAI-compatible API gateway for enterprise employees.
 
 ## Deploying Models in GPUStack
 
