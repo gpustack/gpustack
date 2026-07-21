@@ -948,6 +948,12 @@ class ModelInstanceService:
                 ids.add(m.model_id)
             await self.session.commit()
 
+            # delete(auto_commit=False) returns before invalidating cached_all,
+            # so the batch commit must do it. Otherwise subscribe()'s replay
+            # snapshot keeps serving the deleted rows and watch reconnects
+            # resurrect them as ghost CREATED events.
+            await ModelInstance._invalidate_cached_all()
+
             for id in ids:
                 await delete_cache_by_key(self.get_running_instances, id)
             await invalidate_workers_allocated(model_instances)
@@ -964,6 +970,9 @@ class ModelInstanceService:
         model_instances: List[ModelInstance],
         source: Union[dict, SQLModel, None] = None,
     ):
+        if not model_instances:
+            return []
+
         names = [mi.name for mi in model_instances]
         ids = set()
         try:
@@ -971,6 +980,12 @@ class ModelInstanceService:
                 await m.update(self.session, source, auto_commit=False)
                 ids.add(m.model_id)
             await self.session.commit()
+
+            # Per-instance update() invalidates cached_all at flush time, i.e.
+            # before this manual commit — a concurrent read in that window could
+            # repopulate it with pre-commit state. Invalidate again after commit
+            # so the replay snapshot reflects the committed rows.
+            await ModelInstance._invalidate_cached_all()
 
             for id in ids:
                 await delete_cache_by_key(self.get_running_instances, id)
