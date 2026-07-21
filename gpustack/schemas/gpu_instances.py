@@ -105,6 +105,25 @@ class GPUInstanceResources(BaseModel):
     e.g., "1" for 1 GPU.
     """
 
+    accelerator_sliced_memory_percentage: Optional[int] = PField(
+        default=None, ge=0, le=100
+    )
+    """
+    Per-card VRAM budget requested on a sliced InstanceType, as a percentage
+    in [0,100]. 0 disables slicing (the request becomes an exclusive whole-card
+    request). It is ignored by non-sliced requests.
+    """
+
+    accelerator_sliced_cores_percentage: Optional[int] = PField(
+        default=None, ge=0, le=100
+    )
+    """
+    Per-card compute (SM) budget requested on a sliced InstanceType, as a
+    percentage in [0,100]. It must not be smaller than
+    accelerator_sliced_memory_percentage; when only one of the two is set the
+    other is copied from it. It is ignored by non-sliced requests.
+    """
+
 
 class GPUInstanceImagePullSecretReference(BaseModel):
     """
@@ -321,22 +340,6 @@ class GPUInstanceSpec(BaseModel):
     ssh_public_keys: Optional[List[GPUInstanceSSHPublicKeyReference]] = None
     """
     Optional list of references to GPU instance SSH public keys to use for the GPU instance.
-    """
-
-
-class GPUInstanceSpecUpdate(BaseModel):
-    """
-    Represents the specification for updating a GPU instance.
-    """
-
-    model_config = ConfigDict(
-        alias_generator=pydantic_camel_case_generator,
-        populate_by_name=True,
-    )
-
-    ssh_public_keys: Optional[List[GPUInstanceSSHPublicKeyReference]] = None
-    """
-    Optional list of references to GPU instance SSH public keys to update for the GPU instance.
     """
 
 
@@ -657,6 +660,14 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
     Status of the GPU instance, including phase, host IPs, ports, etc.
     """
 
+    # Server-stamped snapshot of the GPUInstanceType this instance was created
+    # against (see ``GPUInstanceType.snapshot``). Resolved from
+    # ``(cluster_id, spec.type_)`` at create/update time; never a client input.
+    type_snapshot: Optional[str] = Field(
+        nullable=True,
+        default=None,
+    )
+
     # -- phase predicates -------------------------------------------------- #
     # Single source of truth for phase semantics, so the controller and routes
     # stop re-deriving them with ad-hoc ``== PHASE_*`` / ``endswith`` checks.
@@ -789,9 +800,15 @@ class GPUInstanceUpdate(GPUInstanceBase):
         populate_by_name=True,
     )
 
-    spec: Optional[GPUInstanceSpecUpdate] = None
+    spec: Optional[GPUInstanceSpec] = None
     """
-    Optional updated specification for the GPU instance.
+    Optional full replacement specification for the GPU instance.
+
+    The client PUTs the whole desired spec (every field except the instance
+    ``name``). ``sshPublicKeys`` may change from any phase; changing any other
+    field requires the instance to be Stopped and takes effect on the next
+    ``/start``. When ``spec.volume`` changes it is re-resolved to the
+    ``persistent_volume_id`` FK.
     """
 
 
@@ -841,6 +858,12 @@ class GPUInstancePublic(GPUInstanceCreate, PublicFields):
     status: Optional[GPUInstanceStatus] = None
     """
     Status of the GPU instance, including phase, host IPs, ports, etc.
+    """
+
+    type_snapshot: Optional[str] = None
+    """
+    Server-stamped snapshot of the GPU instance type this instance was created
+    against (``sha1:<hexdigest>``). Read-only; never accepted as a client input.
     """
 
 
