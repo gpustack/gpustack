@@ -219,9 +219,10 @@ def test_cleanup_old_logs_restart_zero_purges_all(tmp_path: Path):
     assert remaining == [f"{other}.0.log", f"model_file_{mid}.download.log"]
 
 
-def test_delete_event_purges_logs_but_restart_keeps_them(tmp_path: Path):
-    """DELETED removes the instance's serve logs so a reused id can't inherit them;
-    a restart (default stop) keeps them for the log viewer."""
+def test_permanent_teardown_purges_logs_but_restart_keeps_them(tmp_path: Path):
+    """A permanent teardown (delete_logs=True, used by the reap) removes the
+    instance's serve logs so a reused id can't inherit them; a restart (default
+    stop) keeps them for the log viewer."""
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir(parents=True)
     log = serve_dir / "1.container.ray-head.0.log"
@@ -232,9 +233,6 @@ def test_delete_event_purges_logs_but_restart_keeps_them(tmp_path: Path):
     model_instance = new_model_instance(
         1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
     )
-    # _handle_model_instance_event re-validates the payload; source/repo required.
-    model_instance.source = SourceEnum.HUGGING_FACE
-    model_instance.huggingface_repo_id = "Qwen/Qwen3-0.6B"
 
     with (
         patch("gpustack.worker.serve_manager.logger"),
@@ -242,12 +240,12 @@ def test_delete_event_purges_logs_but_restart_keeps_them(tmp_path: Path):
         patch.object(manager, "_stop_container_log_persistence"),
         patch.object(manager, "_is_provisioning", return_value=False),
     ):
+        # Restart-style stop keeps the logs.
         manager._stop_model_instance(model_instance)
         assert log.exists()
 
-        manager._handle_model_instance_event(
-            Event(type=EventType.DELETED, data=model_instance)
-        )
+        # Permanent teardown removes them.
+        manager._stop_model_instance(model_instance, delete_logs=True)
         assert not log.exists()
 
 
@@ -405,6 +403,48 @@ def test_ghost_in_cache_reaped_when_backstop_interval_elapsed():
     confirm_call = clientset.model_instances.list.call_args_list[1]
     assert confirm_call.kwargs.get("params") == {"page": -1}
     assert confirm_call.kwargs.get("use_cache") is False
+
+
+def test_delete_event_defers_teardown_to_reap():
+    """The DELETED handler no longer tears down directly; teardown is left to the
+    periodic reap so there is a single teardown path (no reap-vs-event race)."""
+    manager, _ = _build_serve_manager(worker_id=1)
+    mi = new_model_instance(
+        4, "qwen3-0.6b-kqkco", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    mi.source = SourceEnum.HUGGING_FACE
+    mi.huggingface_repo_id = "Qwen/Qwen3-0.6B"
+    manager._model_instance_by_instance_id[mi.id] = mi
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(manager, "_stop_model_instance") as stop_model_instance,
+    ):
+        manager._handle_model_instance_event(Event(type=EventType.DELETED, data=mi))
+
+    stop_model_instance.assert_not_called()
+
+
+def test_updated_event_error_does_not_crash_watch():
+    """A failure on any event path (not just DELETED) must be swallowed so it
+    never escapes the awatch callback. Here an UPDATED->restart raises."""
+    manager, _ = _build_serve_manager(worker_id=1)
+    mi = new_model_instance(
+        5, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.SCHEDULED
+    )
+    mi.source = SourceEnum.HUGGING_FACE
+    mi.huggingface_repo_id = "Qwen/Qwen3-0.6B"
+
+    with (
+        patch("gpustack.worker.serve_manager.logger"),
+        patch.object(
+            manager,
+            "_restart_model_instance",
+            side_effect=RuntimeError("start failed"),
+        ),
+    ):
+        # Must not raise.
+        manager._handle_model_instance_event(Event(type=EventType.UPDATED, data=mi))
 
 
 def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):

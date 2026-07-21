@@ -720,7 +720,23 @@ class ServeManager:
                 # Reset failure count on success.
                 self._inference_health_check_failures.pop(model_instance.id, None)
 
-    def _handle_model_instance_event(self, event: Event):  # noqa: C901
+    def _handle_model_instance_event(self, event: Event):
+        """Handle a model instance event without ever crashing the watch stream.
+
+        The awatch callback runs inline in the watch loop, so any exception
+        that escapes here tears the stream down and forces a full reconnect
+        plus cache reload. Swallow and log (with traceback) instead; the next
+        event or the periodic state sync recovers the instance.
+        """
+        try:
+            self._dispatch_model_instance_event(event)
+        except Exception:
+            logger.exception(
+                f"Failed to handle {event.type} event for model instance "
+                f"{getattr(event, 'id', None)}"
+            )
+
+    def _dispatch_model_instance_event(self, event: Event):  # noqa: C901
         """
         Handle model instance events.
 
@@ -804,8 +820,15 @@ class ServeManager:
                     return
 
         if event.type == EventType.DELETED:
-            self._stop_model_instance(mi, delete_logs=True)
-            logger.trace(f"DELETED event: stopped deleted model instance {mi.name}.")
+            # Teardown is left to the periodic reap in sync_model_instances_state,
+            # which is the authoritative reconciler and must run anyway to catch
+            # DELETEDs missed during a watch disconnect. Tearing down here too
+            # would give a second concurrent caller racing the reap on
+            # delete_workload, so just let the reap reap it (within one tick).
+            logger.trace(
+                f"DELETED event for model instance {mi.name}; "
+                "teardown deferred to reap."
+            )
             return
 
         if event.type == EventType.UPDATED:
