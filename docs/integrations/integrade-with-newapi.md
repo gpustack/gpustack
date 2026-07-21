@@ -46,7 +46,7 @@ NewAPI can integrate with GPUStack to aggregate locally deployed LLMs, embedding
 ![newapi-add-channel](../assets/integrations/newapi3.png)
 ![newapi-add-channel](../assets/integrations/newapi4.png)
 
-3. config model price
+3. Configure model pricing.
 
 ![newapi-add-channel](../assets/integrations/newapi5.png)
 ![newapi-add-channel](../assets/integrations/newapi6.png)
