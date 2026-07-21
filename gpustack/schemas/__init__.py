@@ -183,8 +183,19 @@ from gpustack.schemas.gpu_instance_templates import (
     GPUInstanceTemplatesPublic,
 )
 from gpustack.schemas.gpu_instance_types import (
+    GPUInstanceType,
+    GPUInstanceTypeCreate,
+    GPUInstanceTypeUpdate,
+    GPUInstanceTypePublic,
+    GPUInstanceTypesPublic,
     GPUAggregatedInstanceTypePublic,
     GPUAggregatedInstanceTypesPublic,
+)
+from gpustack.schemas.gpu_instance_type_flavors import (
+    GPUInstanceTypeFlavorPublic,
+    GPUInstanceTypeFlavorsPublic,
+    GPUAggregatedInstanceTypeFlavorPublic,
+    GPUAggregatedInstanceTypeFlavorsPublic,
 )
 from gpustack.schemas.gpu_instances import (
     GPUInstance,
@@ -342,8 +353,17 @@ __all__ = [
     "GPUInstanceTemplateUpdate",
     "GPUInstanceTemplatePublic",
     "GPUInstanceTemplatesPublic",
+    "GPUInstanceType",
+    "GPUInstanceTypeCreate",
+    "GPUInstanceTypeUpdate",
+    "GPUInstanceTypePublic",
+    "GPUInstanceTypesPublic",
     "GPUAggregatedInstanceTypePublic",
     "GPUAggregatedInstanceTypesPublic",
+    "GPUInstanceTypeFlavorPublic",
+    "GPUInstanceTypeFlavorsPublic",
+    "GPUAggregatedInstanceTypeFlavorPublic",
+    "GPUAggregatedInstanceTypeFlavorsPublic",
     "GPUInstance",
     "GPUInstanceListParams",
     "GPUInstanceCreate",
