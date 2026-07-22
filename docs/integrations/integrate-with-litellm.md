@@ -1,6 +1,6 @@
 # Integrate with LiteLLM
 
-LiteLLM can integrate with GPUStack to aggregate locally deployed LLMs, embeddings, reranking, Speech-to-Text, and Text-to-Speech capabilities into a unified OpenAI-compatible API gateway for enterprise employees.
+LiteLLM can integrate with GPUStack to aggregate locally deployed LLMs, embeddings, reranking, Speech-to-Text, and Text-to-Speech capabilities into a unified OpenAI-compatible/Anthropic API gateway for enterprise employees.
 
 ## Deploying Models in GPUStack
 
