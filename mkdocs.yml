@@ -213,6 +213,7 @@ nav:
           - Integrate with n8n: integrations/integrate-with-n8n.md
           - Integrate with MaxKB: integrations/integrate-with-maxkb.md
           - Integrate with NewAPI: integrations/integrate-with-newapi.md
+          - Integrate with LiteLLM: integrations/integrate-with-litellm.md
       - Architecture: architecture.md
       - Scheduler: scheduler.md
       - Troubleshooting: troubleshooting.md
