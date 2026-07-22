@@ -29,7 +29,9 @@ LiteLLM can integrate with GPUStack to aggregate locally deployed LLMs, embeddin
 
 1. Open LiteLLM manage ui
 
-http://$litellmip:4000/ui
+```
+http://your-litellm-url:4000/ui
+```
 
 ![litellm-dashboard](../assets/integrations/litellm-1.png)
 
@@ -38,9 +40,6 @@ http://$litellmip:4000/ui
 ![litellm-add-model1](../assets/integrations/litellm-2.png)
 ![litellm-add-model2](../assets/integrations/litellm-3.png)
 
-
 3. test in litellm  ->playgroud
+
 ![litellm-chat1](../assets/integrations/litellm-4.png)
-
-
-
