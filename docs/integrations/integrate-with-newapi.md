@@ -81,3 +81,4 @@ curl http://your-newapi-url/v1/chat/completions \
     "model": "qwen3-8b",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
+```
