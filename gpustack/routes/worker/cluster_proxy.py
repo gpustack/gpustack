@@ -47,6 +47,12 @@ _REQUEST_HEADER_SKIP = {
 _RESPONSE_HEADER_SKIP = {
     "transfer-encoding",
     "content-length",
+    # aiohttp auto-decompresses the upstream body (auto_decompress=True), so the
+    # bytes we forward are already plain text. Drop Content-Encoding to avoid
+    # advertising a gzip body that no longer exists — otherwise the server-side
+    # aiohttp client tries to gunzip plain text and fails with
+    # "Can not decode content-encoding: gzip" (zlib incorrect header check).
+    "content-encoding",
     "connection",
     "keep-alive",
     "proxy-authenticate",
