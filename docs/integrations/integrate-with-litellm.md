@@ -25,30 +25,22 @@ LiteLLM can integrate with GPUStack to aggregate locally deployed LLMs, embeddin
 
 3. Copy the API key and save it for later use.
 
-## Integrating GPUStack into LiteLLM Proxy
+## Integrating GPUStack into LiteLLM 
 
-LiteLLM Proxy uses a `config.yaml` file to map model names to upstream OpenAI-compatible endpoints provided by GPUStack.
+1. Open LiteLLM manage ui
 
-1. Open or create your `config.yaml` for LiteLLM.
+http://$litellmip:4000/ui
 
-2. Add your GPUStack models to the `model_list` section using the `openai/` provider prefix:
+![litellm-dashboard](../assets/integrations/litellm-1.png)
 
-```yaml
-model_list:
-  - model_name: qwen3-8b
-    litellm_params:
-      model: openai/qwen3-8b
-      api_base: "http://your-gpustack-url/v1"  # Replace with your GPUStack access URL
-      api_key: "gpustack-xxxxxxxx"            # Replace with your GPUStack API Key
+2. open models+endpoints menu -> add model
 
-  - model_name: bge-m3
-    litellm_params:
-      model: openai/bge-m3
-      api_base: "http://your-gpustack-url/v1"
-      api_key: "gpustack-xxxxxxxx"
+![litellm-add-model1](../assets/integrations/litellm-2.png)
+![litellm-add-model2](../assets/integrations/litellm-3.png)
 
-  - model_name: bge-reranker-v2-m3
-    litellm_params:
-      model: openai/bge-reranker-v2-m3
-      api_base: "http://your-gpustack-url/v1"
-      api_key: "gpustack-xxxxxxxx"
+
+3. test in litellm  ->playgroud
+![litellm-chat1](../assets/integrations/litellm-4.png)
+
+
+
