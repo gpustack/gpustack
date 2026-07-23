@@ -1,0 +1,70 @@
+---
+title: Qwen3.6-35B-A3B-W8A8 (vLLM-Ascend)
+description: "Deploy Qwen3.6-35B-A3B-W8A8 on Ascend 910B with vLLM — Qwen MoE model with Ascend W8A8 quantization, native MTP speculation, and 256K context."
+tag: NEW
+---
+
+# Deploying Qwen3.6-35B-A3B-W8A8 with GPUStack and vLLM-Ascend (910B)
+
+This tutorial guides you through setting up **Qwen3.6-35B-A3B-w8a8**—a highly optimized Mixture-of-Experts (MoE) model featuring W8A8 quantization—using the NPU-accelerated **vLLM-Ascend (v0.18.0)** engine in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `quay.io/ascend/vllm-ascend:v0.18.0`
+* **Hardware Requirements**: Ascend 910B (8x NPUs for Tensor & Expert Parallelism)
+
+### 2. Model Weights Source
+* **Model Name**: `Qwen3.6-35B-A3B-w8a8`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/Eco-Tech/Qwen3.6-35B-A3B-w8a8`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `Qwen3.6-35B-A3B-w8a8`
+* **Container Image**: `quay.io/ascend/vllm-ascend:v0.18.0`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+Based on the UI screenshot `image_e87758.png`, you can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--tensor-parallel-size 8
+--seed 1024
+--quantization ascend
+--max-model-len 256000
+--trust-remote-code
+--enable-prefix-caching
+--speculative_config '{"method": "qwen3_5_mtp", "num_speculative_tokens": 1}'
+--compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+--additional-config '{"enable_cpu_binding":true}'
+--reasoning-parser qwen3
+--enable-auto-tool-choice
+--tool-call-parser qwen3_coder
+--default-chat-template-kwargs={"enable_thinking":false}
+--enable-expert-parallel
+--gpu-memory-utilization 0.7
+--async-scheduling
+--max-num-seqs 128
+--max-num-batched-tokens 65536
+```
+
+env
+```text
+PYTORCH_NPU_ALLOC_CONF expandable_segments:True
+HCCL_BUFFSIZE 512
+OMP_PROC_BIND false
+OMP_NUM_THREADS 1
+TASK_QUEUE_ENABLE 1
+```
+### 3. more config
+
+https://docs.vllm.ai/projects/vllm-ascend-cn/zh-cn/latest/tutorials/models/Qwen3.6-35B-A3B.html
+
+
+
