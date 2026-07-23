@@ -894,6 +894,7 @@ class VLLMServer(InferenceServer):
             f"--min-worker-port={worker_port_min}",
             f"--max-worker-port={worker_port_max}",
             f"--node-ip-address={self._worker.ip}",
+            f"--num-gpus={len(self._get_selected_gpu_devices())}",
         ]
         ports = [
             ContainerPort(
