@@ -2805,8 +2805,11 @@ class ModelProviderController:
         registry_to_remove = (
             provider_registry is None or event.type == EventType.DELETED
         )
-        to_delete_prefix = (
-            f"{mcp_handler.provider_id_prefix}{model_provider.id}"
+        # Match by exact name (not prefix) so that deleting provider id "1" does
+        # not also drop other providers whose id shares that numeric prefix
+        # (e.g. "provider-10", "provider-11").
+        to_delete_names = (
+            [mcp_handler.provider_registry_name(model_provider.id)]
             if registry_to_remove
             else None
         )
@@ -2814,8 +2817,10 @@ class ModelProviderController:
 
         provider_proxy = mcp_handler.provider_proxy(model_provider)
         proxy_to_remove = provider_proxy is None or event.type == EventType.DELETED
-        to_delete_proxy_prefix = (
-            f"proxy-{model_provider.id}" if proxy_to_remove else None
+        to_delete_proxy_names = (
+            [mcp_handler.provider_proxy_name(model_provider.id)]
+            if proxy_to_remove
+            else None
         )
         desired_proxies = [] if proxy_to_remove else [provider_proxy]
 
@@ -2826,8 +2831,8 @@ class ModelProviderController:
                 mcp_bridge_name=mcp_handler.default_mcp_bridge_name,
                 desired_registries=desired_registries,
                 desired_proxies=desired_proxies,
-                to_delete_prefix=to_delete_prefix,
-                to_delete_proxies_prefix=to_delete_proxy_prefix,
+                to_delete_names=to_delete_names,
+                to_delete_proxies_names=to_delete_proxy_names,
             )
         except Exception as e:
             logger.error(

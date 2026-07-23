@@ -8,6 +8,8 @@ from gpustack.api.exceptions import NotFoundException
 from gpustack.gateway.utils import (
     RoutePrefix,
     cleanup_generic_proxy_router_spec_diff,
+    diff_proxies,
+    diff_registries,
     generate_model_ingress,
     generic_proxy_router_diff_spec,
     get_instance_id_from_header,
@@ -25,7 +27,10 @@ from gpustack.schemas.model_provider import (
     OpenAIConfig,
     OllamaConfig,
 )
-from gpustack.gateway.client.networking_higress_io_v1_api import McpBridgeRegistry
+from gpustack.gateway.client.networking_higress_io_v1_api import (
+    McpBridgeProxy,
+    McpBridgeRegistry,
+)
 
 
 def test_flattened_prefixes():
@@ -519,3 +524,75 @@ def test_model_instances_registry_list_threads_suffix():
         f"model-5-1-{suffix}",
         f"model-5-2-{suffix}",
     ]
+
+
+def _reg(name: str) -> McpBridgeRegistry:
+    return McpBridgeRegistry(name=name, domain="127.0.0.1", type="dns", port=80)
+
+
+def test_diff_registries_prefix_deletes_matching_prefix():
+    existing = [_reg("provider-1"), _reg("provider-10"), _reg("model-5-1")]
+    need_update, result = diff_registries(
+        existing, desired=[], to_delete_prefix="provider-"
+    )
+    assert need_update is True
+    assert {r.name for r in result} == {"model-5-1"}
+
+
+def test_diff_registries_exact_name_avoids_prefix_collision():
+    # Deleting provider id "1" must NOT drop "provider-10"/"provider-11".
+    existing = [
+        _reg("provider-1"),
+        _reg("provider-10"),
+        _reg("provider-11"),
+        _reg("model-5-1"),
+    ]
+    need_update, result = diff_registries(
+        existing, desired=[], to_delete_names=["provider-1"]
+    )
+    assert need_update is True
+    assert {r.name for r in result} == {"provider-10", "provider-11", "model-5-1"}
+
+
+def test_diff_registries_no_delete_targets_keeps_all():
+    existing = [_reg("provider-1"), _reg("provider-10")]
+    need_update, result = diff_registries(existing, desired=[])
+    assert need_update is False
+    assert {r.name for r in result} == {"provider-1", "provider-10"}
+
+
+def test_diff_registries_nameless_entry_is_kept_not_crashed():
+    # name is Optional[str]; a nameless existing entry must not raise on the
+    # prefix check and should be preserved as unrelated.
+    nameless = McpBridgeRegistry(domain="127.0.0.1", type="dns", port=80)
+    existing = [nameless, _reg("provider-1")]
+    need_update, result = diff_registries(
+        existing, desired=[], to_delete_prefix="provider-"
+    )
+    assert need_update is True
+    assert result == [nameless]
+
+
+def _proxy(name: str) -> McpBridgeProxy:
+    return McpBridgeProxy(
+        name=name, serverAddress="127.0.0.1", serverPort=80, type="HTTP"
+    )
+
+
+def test_diff_proxies_exact_name_deletes_only_target():
+    existing = [_proxy("provider-1-proxy"), _proxy("provider-10-proxy")]
+    need_update, result = diff_proxies(
+        existing, desired=[], to_delete_names=["provider-1-proxy"]
+    )
+    assert need_update is True
+    assert {p.name for p in result} == {"provider-10-proxy"}
+
+
+def test_diff_proxies_nameless_entry_is_kept_not_crashed():
+    nameless = McpBridgeProxy(serverAddress="127.0.0.1", serverPort=80, type="HTTP")
+    existing = [nameless, _proxy("provider-1-proxy")]
+    need_update, result = diff_proxies(
+        existing, desired=[], to_delete_prefix="provider-"
+    )
+    assert need_update is True
+    assert result == [nameless]
