@@ -5,14 +5,24 @@ import pytest
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    BadRequestException,
     ForbiddenException,
     NotFoundException,
 )
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import models as models_route
-from gpustack.routes.models import create_model, update_model
+from gpustack.routes import model_instances as model_instances_route
+from gpustack.routes.models import create_model, update_model, validate_model_in
+from gpustack.routes.model_instances import delete_model_instance
 from gpustack.routes.model_common import ModelStateFilterEnum
-from gpustack.schemas.models import ModelCreate, ModelUpdate, SourceEnum
+from gpustack.schemas.models import (
+    BackendEnum,
+    Model,
+    ModelCreate,
+    ModelInstance,
+    ModelUpdate,
+    SourceEnum,
+)
 from gpustack.schemas.principals import PrincipalType, platform_principal_id
 
 DEFAULT_ORG_ID = platform_principal_id()
@@ -271,3 +281,131 @@ def test_model_watch_filter_passes_id_only_delete_events(monkeypatch):
         ctx=None, categories=None, state=ModelStateFilterEnum.READY
     )
     assert visible({"id": 7}) is True
+
+
+def _dp_model(cls=ModelCreate, **overrides):
+    base = dict(
+        name="m",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="a/b",
+        backend=BackendEnum.VLLM.value,
+        distributed_inference_across_workers=True,
+    )
+    base.update(overrides)
+    return cls(**base)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "backend_parameters, replicas_in, expected",
+    [
+        # external-LB: replicas derived from --data-parallel-size (dpl == 1).
+        (["--data-parallel-external-lb", "--data-parallel-size=4"], None, 4),
+        # hybrid-LB: replicas == dp // dpl.
+        (
+            [
+                "--data-parallel-hybrid-lb",
+                "--data-parallel-size=8",
+                "--data-parallel-size-local=2",
+            ],
+            None,
+            4,
+        ),
+        # An explicit replicas that matches the derived value is accepted.
+        (["--data-parallel-external-lb", "--data-parallel-size=4"], 4, 4),
+    ],
+)
+async def test_dp_replicas_derived(backend_parameters, replicas_in, expected):
+    kwargs = {"backend_parameters": backend_parameters}
+    if replicas_in is not None:
+        kwargs["replicas"] = replicas_in
+    model_in = _dp_model(**kwargs)
+    # Derivation runs before any session use (gpu_selector is None), so a real
+    # DB session is unnecessary here.
+    await validate_model_in(None, model_in)
+    assert model_in.replicas == expected
+
+
+@pytest.mark.asyncio
+async def test_dp_replicas_conflict_rejected():
+    model_in = _dp_model(
+        replicas=3,
+        backend_parameters=["--data-parallel-external-lb", "--data-parallel-size=4"],
+    )
+    with pytest.raises(BadRequestException):
+        await validate_model_in(None, model_in)
+
+
+@pytest.mark.asyncio
+async def test_dp_replicas_zero_stops_without_override():
+    # replicas == 0 stops the model; it must not be derived-over or rejected.
+    model_in = _dp_model(
+        replicas=0,
+        backend_parameters=["--data-parallel-external-lb", "--data-parallel-size=4"],
+    )
+    await validate_model_in(None, model_in)
+    assert model_in.replicas == 0
+
+
+@pytest.mark.asyncio
+async def test_dp_replicas_update_persists():
+    # On update the derived replicas must join model_fields_set so
+    # ActiveRecord.update writes it back to the DB.
+    model_in = _dp_model(
+        cls=ModelUpdate,
+        backend_parameters=["--data-parallel-external-lb", "--data-parallel-size=6"],
+    )
+    await validate_model_in(None, model_in)
+    assert model_in.replicas == 6
+    assert "replicas" in model_in.model_fields_set
+
+
+def _stub_instance_service(monkeypatch):
+    service = MagicMock()
+    service.delete = AsyncMock()
+    service.batch_delete = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        model_instances_route, "ModelInstanceService", lambda session: service
+    )
+    monkeypatch.setattr(
+        model_instances_route, "assert_resource_visible", lambda *a, **k: None
+    )
+    return service
+
+
+@pytest.mark.asyncio
+async def test_delete_dp_member_deletes_whole_group(monkeypatch):
+    # Deleting one DP member (dp_rank > 0) tears down the whole group; a lone
+    # replacement can never schedule, so the group is rebuilt intact instead.
+    target = ModelInstance(id=19, model_id=1, model_name="m", dp_rank=2)
+    siblings = [
+        ModelInstance(id=i, model_id=1, model_name="m", dp_rank=i) for i in range(4)
+    ]
+    dp_model = _dp_model(
+        cls=Model,
+        id=1,
+        backend_parameters=["--data-parallel-external-lb", "--data-parallel-size=4"],
+    )
+    monkeypatch.setattr(ModelInstance, "one_by_id", AsyncMock(return_value=target))
+    monkeypatch.setattr(Model, "one_by_id", AsyncMock(return_value=dp_model))
+    monkeypatch.setattr(ModelInstance, "all_by_field", AsyncMock(return_value=siblings))
+    service = _stub_instance_service(monkeypatch)
+
+    await delete_model_instance(session=MagicMock(), ctx=MagicMock(), id=19)
+
+    service.batch_delete.assert_awaited_once_with(siblings)
+    service.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_plain_instance_deletes_only_target(monkeypatch):
+    target = ModelInstance(id=19, model_id=1, model_name="m")
+    plain_model = _dp_model(cls=Model, id=1, distributed_inference_across_workers=False)
+    monkeypatch.setattr(ModelInstance, "one_by_id", AsyncMock(return_value=target))
+    monkeypatch.setattr(Model, "one_by_id", AsyncMock(return_value=plain_model))
+    service = _stub_instance_service(monkeypatch)
+
+    await delete_model_instance(session=MagicMock(), ctx=MagicMock(), id=19)
+
+    service.delete.assert_awaited_once_with(target)
+    service.batch_delete.assert_not_awaited()

@@ -51,8 +51,10 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+    ModelInstanceSubordinateWorker,
     get_backend,
     is_gguf_model,
+    is_dp_node_per_instance,
     DistributedServerCoordinateModeEnum,
     SourceEnum,
     is_omni_model,
@@ -264,6 +266,13 @@ class Scheduler:
         Args:
             instance: ModelInstance to check.
         """
+        # vLLM DP node-per-instance: only the rank-0 coordinator triggers
+        # scheduling. It finds an N-node candidate and fans the placement out to
+        # every sibling in one transaction (see _schedule_one), so member nodes
+        # (dp_rank > 0) must never race for their own worker — gate them out here.
+        if instance.dp_rank is not None and instance.dp_rank > 0:
+            return False
+
         newly_created = (instance.updated_at - instance.created_at) < timedelta(
             seconds=1
         )
@@ -368,6 +377,11 @@ class Scheduler:
                 logger.debug(
                     f"No suitable workers for model instance {model_instance.name}, state: {model_instance.state}"
                 )
+            elif is_dp_node_per_instance(model):
+                # DP-node-per-instance: the single N-node candidate is fanned out to every sibling
+                # DP node instead of being stored as subordinate_workers on one
+                # leader record.
+                await self._fan_out_dp_group(session, model, candidate, workers)
             else:
                 # update model instance.
                 model_instance.state = ModelInstanceStateEnum.SCHEDULED
@@ -403,6 +417,93 @@ class Scheduler:
                     f"Scheduled model instance {model_instance.name} to worker "
                     f"{model_instance.worker_name} gpu {candidate.gpu_indexes}"
                 )
+
+    async def _fan_out_dp_group(
+        self,
+        session: AsyncSession,
+        model: Model,
+        candidate: ModelInstanceScheduleCandidate,
+        workers: List[Worker],
+    ):
+        """Fan a single N-node candidate out across the DP group.
+
+        The rank-0 coordinator's schedule pass produced one candidate describing
+        the whole cluster (its own worker + ``candidate.subordinate_workers``).
+        Assign those N placements to the N sibling instances by ascending dp_rank
+        (rank 0 takes the main worker) in this one transaction, so the group
+        commits atomically. Members carry no subordinate_workers of their own.
+        """
+        worker_by_id = {worker.id: worker for worker in workers}
+
+        # node_placements[i] is the physical node for dp_rank i: index 0 is the
+        # main worker, the rest are the candidate's subordinate workers in order.
+        node_placements = [
+            ModelInstanceSubordinateWorker(
+                worker_id=candidate.worker.id,
+                worker_name=candidate.worker.name,
+                worker_ip=candidate.worker.ip,
+                worker_ifname=candidate.worker.ifname,
+                gpu_type=candidate.gpu_type,
+                gpu_indexes=candidate.gpu_indexes,
+                gpu_addresses=candidate.gpu_addresses,
+                computed_resource_claim=candidate.computed_resource_claim,
+            )
+        ]
+        node_placements.extend(candidate.subordinate_workers or [])
+
+        siblings = await ModelInstance.all_by_field(
+            session, "model_id", model.id, for_update=True
+        )
+        siblings.sort(
+            key=lambda mi: mi.dp_rank if mi.dp_rank is not None else len(siblings)
+        )
+
+        unassigned = [sibling for sibling in siblings if sibling.worker_id is None]
+        if not unassigned:
+            # Idempotent: a previous fan-out already placed the whole group.
+            return
+        if len(unassigned) != len(siblings):
+            # The group is mid-transition (some siblings already placed). A fresh
+            # candidate describes a whole new cluster and can't be spliced onto a
+            # partial placement, so defer until the group is coherent again (Phase 5
+            # resets the whole group together).
+            logger.warning(
+                f"Skipping DP group fan-out for model {model.name}: "
+                f"{len(siblings) - len(unassigned)}/{len(siblings)} nodes already placed"
+            )
+            return
+        if len(node_placements) < len(siblings):
+            logger.error(
+                f"DP group fan-out for model {model.name}: candidate has "
+                f"{len(node_placements)} nodes but the group needs {len(siblings)} "
+                f"(replicas must equal the DP node count); leaving "
+                f"{len(siblings) - len(node_placements)} node(s) unplaced"
+            )
+
+        for placement, sibling in zip(node_placements, siblings):
+            worker = worker_by_id.get(placement.worker_id)
+            sibling.state = ModelInstanceStateEnum.SCHEDULED
+            sibling.state_message = ""
+            sibling.worker_id = placement.worker_id
+            sibling.worker_name = placement.worker_name
+            sibling.worker_ip = placement.worker_ip
+            sibling.worker_advertise_address = (
+                worker.advertise_address if worker else None
+            )
+            sibling.worker_ifname = placement.worker_ifname
+            sibling.computed_resource_claim = placement.computed_resource_claim
+            sibling.gpu_type = placement.gpu_type
+            sibling.gpu_indexes = placement.gpu_indexes
+            sibling.gpu_addresses = placement.gpu_addresses
+            # DP nodes are standalone instances: no subordinate_workers and no
+            # INITIALIZE_LATER coordinate mode. Cross-node DP wiring is resolved at
+            # worker start time via the rank-0 coordinator (Phase 3).
+            sibling.distributed_servers = None
+            await ModelInstanceService(session).update(sibling)
+            logger.debug(
+                f"Scheduled DP node {sibling.name} (dp_rank={sibling.dp_rank}) "
+                f"to worker {sibling.worker_name} gpu {sibling.gpu_indexes}"
+            )
 
 
 async def find_candidate(

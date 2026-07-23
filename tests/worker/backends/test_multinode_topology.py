@@ -29,9 +29,12 @@ from gpustack.worker.backends.vllm import (
 )
 
 
-def _model(params):
+def _model(params, distributed_inference_across_workers=False):
     m = MagicMock()
     m.backend_parameters = params
+    # Default off so hybrid-LB world_size tests exercise the legacy
+    # "one deployment per node" path; unified-mode tests pass True explicitly.
+    m.distributed_inference_across_workers = distributed_inference_across_workers
     return m
 
 
@@ -162,7 +165,8 @@ def test_world_size_decode_cp_alone_does_not_size():
 
 
 def test_world_size_hybrid_lb_sizes_by_dpl():
-    """Hybrid-LB: --data-parallel-size is global; local world sizes by dpl."""
+    """Legacy hybrid-LB (one deployment per node, distributed inference off):
+    --data-parallel-size is global; local world sizes by dpl."""
     params = [
         "--data-parallel-hybrid-lb",
         "--data-parallel-size",
@@ -178,7 +182,7 @@ def test_world_size_hybrid_lb_sizes_by_dpl():
 
 
 def test_world_size_hybrid_lb_with_tp():
-    """Hybrid-LB local world = tp * dpl, ignoring the global dp."""
+    """Legacy hybrid-LB local world = tp * dpl, ignoring the global dp."""
     params = ["--data-parallel-hybrid-lb", "--tp", "2", "--dp", "16", "--dpl", "4"]
     world_size, _ = VLLMResourceFitSelector.get_world_size_from_backend_parameters(
         _model(params)
@@ -187,13 +191,63 @@ def test_world_size_hybrid_lb_with_tp():
 
 
 def test_world_size_hybrid_lb_without_dpl():
-    """Hybrid-LB without dpl: local world cannot be inferred, leave it unset."""
+    """Legacy hybrid-LB without dpl: local world cannot be inferred, leave it unset."""
     params = ["--data-parallel-hybrid-lb", "--data-parallel-size", "16"]
     world_size, strategies = (
         VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
     )
     assert world_size is None
     assert strategies is None
+
+
+def test_world_size_hybrid_lb_unified_sizes_by_global_dp():
+    """Unified hybrid-LB (distributed inference across workers on): the whole
+    cluster is one model_instance, so --data-parallel-size is the cluster-wide DP
+    total and sizes the deployment normally (world = tp * pp * dp)."""
+    params = [
+        "--data-parallel-hybrid-lb",
+        "--tensor-parallel-size",
+        "8",
+        "--data-parallel-size",
+        "2",
+    ]
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(
+            _model(params, distributed_inference_across_workers=True)
+        )
+    )
+    assert world_size == 16
+    assert strategies == ["tp", "dp"]
+
+
+def test_world_size_hybrid_lb_unified_without_dpl_still_sizes():
+    """Unified hybrid-LB does not require dpl: unlike the legacy path it no
+    longer bails out, since dpl is derived per node from the topology."""
+    params = ["--data-parallel-hybrid-lb", "--data-parallel-size", "16"]
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(
+            _model(params, distributed_inference_across_workers=True)
+        )
+    )
+    assert world_size == 16
+    assert strategies == ["dp"]
+
+
+def test_world_size_external_lb_sizes_by_global_dp():
+    """external-LB is not hybrid-LB, so it sizes normally (world = tp * dp)
+    with no dpl special-casing."""
+    params = [
+        "--data-parallel-external-lb",
+        "--tensor-parallel-size",
+        "2",
+        "--data-parallel-size",
+        "4",
+    ]
+    world_size, strategies = (
+        VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
+    )
+    assert world_size == 8
+    assert strategies == ["tp", "dp"]
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +259,9 @@ def _follower_mp_arguments(backend_parameters):
     """Drive _build_mp_multinode_arguments for a dp_only follower node."""
     server = object.__new__(VLLMServer)
     server._model = MagicMock(backend_parameters=backend_parameters)
-    server._model_instance = MagicMock(worker_ip="10.0.0.1", ports=[8000, 8001, 8002])
+    server._model_instance = MagicMock(
+        worker_ip="10.0.0.1", ports=[8000, 8001, 8002], dp_rank=None
+    )
     topology = MultinodeTopology(
         shape="dp_only",
         tp=1,
@@ -230,12 +286,108 @@ def _follower_mp_arguments(backend_parameters):
     return server._build_mp_multinode_arguments(ctx)
 
 
+def _dp_only_mp_arguments(
+    backend_parameters,
+    *,
+    dpl=1,
+    start_rank=1,
+    node_rank=1,
+    is_follower=True,
+):
+    """Drive _build_mp_multinode_arguments for a configurable dp_only node.
+
+    Defaults model an external-LB layout (one rank per node, dpl=1).
+    """
+    server = object.__new__(VLLMServer)
+    server._model = MagicMock(backend_parameters=backend_parameters)
+    server._model_instance = MagicMock(
+        worker_ip="10.0.0.1", ports=[8000, 8001, 8002], dp_rank=None
+    )
+    topology = MultinodeTopology(
+        shape="dp_only",
+        tp=1,
+        pp=1,
+        dp=2,
+        dpl=dpl,
+        nnodes=2,
+        node_rank=node_rank,
+        start_rank=start_rank,
+        is_follower=is_follower,
+    )
+    ctx = _VLLMArgsContext(
+        port=8000,
+        is_distributed=True,
+        executor_backend="mp",
+        topology=topology,
+        is_omni=False,
+        is_audio=False,
+        entrypoint=None,
+        deployment_metadata=None,
+    )
+    return server._build_mp_multinode_arguments(ctx)
+
+
 def test_follower_gets_headless_by_default():
     assert "--headless" in _follower_mp_arguments([])
 
 
 def test_follower_skips_headless_under_hybrid_lb():
     assert "--headless" not in _follower_mp_arguments(["--data-parallel-hybrid-lb"])
+
+
+def test_external_lb_follower_emits_rank_and_skips_headless():
+    """external-LB follower: --data-parallel-rank=node_rank, no --headless, and
+    no hybrid/internal-only flags."""
+    args = _dp_only_mp_arguments(
+        ["--data-parallel-external-lb"], node_rank=1, start_rank=1
+    )
+    assert "--headless" not in args
+    assert args.count("--data-parallel-rank") == 1
+    assert args[args.index("--data-parallel-rank") + 1] == "1"
+    assert "--data-parallel-start-rank" not in args
+    assert "--data-parallel-size-local" not in args
+    assert "--data-parallel-address" in args
+    assert "--data-parallel-rpc-port" in args
+
+
+def test_external_lb_leader_rank_zero():
+    args = _dp_only_mp_arguments(
+        ["--data-parallel-external-lb"], node_rank=0, start_rank=0, is_follower=False
+    )
+    assert args[args.index("--data-parallel-rank") + 1] == "0"
+
+
+def test_external_lb_defers_to_user_pinned_rank():
+    """User pinned --data-parallel-rank: GPUStack must NOT inject its own (the
+    user's value flows in later via backend_parameters). Still external-LB, so
+    no --headless and no --data-parallel-start-rank."""
+    args = _dp_only_mp_arguments(["--data-parallel-rank", "0"], node_rank=1)
+    assert "--data-parallel-rank" not in args
+    assert "--data-parallel-start-rank" not in args
+    assert "--headless" not in args
+    assert "--data-parallel-address" in args
+
+
+def test_external_lb_rejects_multi_rank_per_node():
+    """external-LB requires one rank per node; dpl>1 is rejected."""
+    with pytest.raises(ValueError, match="one DP rank per node"):
+        _dp_only_mp_arguments(["--data-parallel-external-lb"], dpl=2)
+
+
+# ---------------------------------------------------------------------------
+# Default (internal-LB) dp_only node — no LB flags
+# ---------------------------------------------------------------------------
+
+
+def test_default_dp_only_internal_keeps_headless():
+    """No LB flag: follower is headless, ranks use --data-parallel-start-rank,
+    and no hybrid/external flags are emitted (GPUStack never injects them —
+    those come only from user-supplied backend_parameters)."""
+    args = _dp_only_mp_arguments([])
+    assert "--headless" in args
+    assert "--data-parallel-hybrid-lb" not in args
+    assert "--data-parallel-external-lb" not in args
+    assert "--data-parallel-start-rank" in args
 
 
 # ---------------------------------------------------------------------------
@@ -758,6 +910,31 @@ def test_create_candidate_returns_candidate_when_topology_fits():
     assert len(candidate.subordinate_workers) == 1
 
 
+def test_create_candidate_external_lb_registers_subordinates():
+    """external-LB is a dp_only layout (one rank per node), so a homogeneous
+    cluster yields a candidate with one subordinate per extra worker."""
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    model = _mock_model(
+        [
+            "--distributed-executor-backend",
+            "mp",
+            "--data-parallel-external-lb",
+            "--tensor-parallel-size",
+            "8",
+            "--data-parallel-size",
+            "2",
+        ]
+    )
+    workers = [_mock_worker("a", 8), _mock_worker("b", 8)]
+    candidate, reason = _create_candidate(model, workers)
+    assert candidate is not None
+    assert reason is None
+    assert len(candidate.subordinate_workers) == 1
+
+
 def test_create_candidate_skips_topology_check_for_ray_backend():
     """Ray-path candidates don't go through MP topology validation."""
     from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
@@ -784,3 +961,133 @@ def test_create_candidate_skips_topology_check_for_single_worker():
     candidate, reason = _create_candidate(model, [_mock_worker("a", 8)])
     assert candidate is not None
     assert reason is None
+
+
+# ---------------------------------------------------------------------------
+# vLLM DP node-per-instance path
+# ---------------------------------------------------------------------------
+
+_A_PRIME_PARAMS = [
+    "--data-parallel-external-lb",
+    "--distributed-executor-backend",
+    "mp",
+]
+
+
+def _dp_siblings(count):
+    """A ``count``-node DP group. rank 0 carries the coordinator ports
+    ([serving, dp_rpc, dp_master, vllm_port]); members just [serving, vllm_port] —
+    matching serve_manager._assign_ports."""
+    from gpustack.schemas.models import ModelInstance
+
+    siblings = []
+    for rank in range(count):
+        serving = 8000 + rank * 10
+        ports = [serving, 8001, 8002, 8003] if rank == 0 else [serving, serving + 1]
+        siblings.append(
+            ModelInstance(
+                name=f"m-n{rank}",
+                model_id=1,
+                model_name="m",
+                dp_rank=rank,
+                worker_ip=f"10.0.0.{rank + 1}",
+                ports=ports,
+                gpu_indexes=list(range(8)),
+            )
+        )
+    return siblings
+
+
+def _dp_meta(dp_rank):
+    from gpustack.schemas.models import ModelInstanceDeploymentMetadata
+
+    return ModelInstanceDeploymentMetadata(
+        name=f"m-n{dp_rank}",
+        distributed=True,
+        distributed_leader=dp_rank == 0,
+        distributed_follower=dp_rank > 0,
+        dp_rank=dp_rank,
+    )
+
+
+def _dp_server(dp_rank, siblings):
+    """VLLMServer for the DP node at ``dp_rank`` with its siblings pre-cached, so
+    arg/env building resolves the rank-0 coordinator without a real clientset."""
+    server = object.__new__(VLLMServer)
+    server._model = MagicMock(
+        backend_parameters=_A_PRIME_PARAMS, backend_version=None, categories=[]
+    )
+    server._model_instance = next(s for s in siblings if s.dp_rank == dp_rank)
+    server._worker = MagicMock(ip=f"10.0.0.{dp_rank + 1}", ifname="eth0")
+    server._worker.status.gpu_devices = None
+    server._dp_siblings_cache = siblings
+    return server
+
+
+def _dp_mp_args(server, dp_rank):
+    topology = cal_multinode_topology(
+        server._model_instance,
+        _dp_meta(dp_rank),
+        MultinodeUserParallelism(),
+        server._dp_gpu_per_node(),
+    )
+    ctx = _VLLMArgsContext(
+        port=server._model_instance.ports[0],
+        is_distributed=True,
+        executor_backend="mp",
+        topology=topology,
+        is_omni=False,
+        is_audio=False,
+        entrypoint=None,
+        deployment_metadata=_dp_meta(dp_rank),
+    )
+    return server._build_mp_multinode_arguments(ctx)
+
+
+@pytest.mark.parametrize("dp_rank", [0, 1, 2])
+def test_dp_node_per_instance_topology_start_rank_equals_rank(dp_rank):
+    """External-LB: one DP rank per node, so start_rank == dp_rank."""
+    server = _dp_server(dp_rank, _dp_siblings(3))
+    topo = cal_multinode_topology(
+        server._model_instance,
+        _dp_meta(dp_rank),
+        MultinodeUserParallelism(),
+        server._dp_gpu_per_node(),
+    )
+    assert topo.shape == "dp_only"
+    assert topo.dp == 3
+    assert topo.node_rank == dp_rank
+    assert topo.start_rank == dp_rank
+    assert topo.is_follower is (dp_rank > 0)
+
+
+def test_dp_node_per_instance_member_dials_coordinator():
+    """A member reads the DP RPC/master endpoints off the rank-0 coordinator (not
+    its own record), while keeping its own host IP and VLLM_PORT; every node serves
+    (no --headless under external-LB)."""
+    siblings = _dp_siblings(3)
+    server = _dp_server(1, siblings)
+    args = _dp_mp_args(server, 1)
+    assert args[args.index("--data-parallel-address") + 1] == "10.0.0.1"  # coordinator
+    assert args[args.index("--data-parallel-rpc-port") + 1] == "8001"  # coord ports[1]
+    assert args[args.index("--data-parallel-rank") + 1] == "1"  # own rank
+    assert "--headless" not in args
+
+    env = {}
+    server._set_distributed_env(env, _dp_meta(1))
+    assert env["VLLM_HOST_IP"] == "10.0.0.2"  # own host
+    assert env["VLLM_DP_MASTER_PORT"] == "8002"  # coordinator ports[2]
+    assert env["VLLM_PORT"] == "8011"  # own last port
+
+
+def test_dp_node_per_instance_coordinator_uses_own_ports():
+    """The rank-0 coordinator resolves to itself and dials its own ports."""
+    server = _dp_server(0, _dp_siblings(3))
+    args = _dp_mp_args(server, 0)
+    assert args[args.index("--data-parallel-rank") + 1] == "0"
+    assert args[args.index("--data-parallel-rpc-port") + 1] == "8001"
+
+    env = {}
+    server._set_distributed_env(env, _dp_meta(0))
+    assert env["VLLM_DP_MASTER_PORT"] == "8002"  # own ports[2]
+    assert env["VLLM_PORT"] == "8003"  # own last port

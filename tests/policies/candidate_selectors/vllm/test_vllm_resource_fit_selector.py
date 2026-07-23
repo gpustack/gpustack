@@ -817,6 +817,71 @@ async def test_select_candidates(
             ],
             0,
         ),
+        # Hybrid-LB as a single unified deployment: TP=8 DP=2 with
+        # --data-parallel-hybrid-lb (no DP-Local set) on a 2x8 GPU H100 cluster.
+        # Unlike the legacy "one deployment per node" layout, distributed
+        # inference across workers is on, so --data-parallel-size is the
+        # cluster-wide DP total and must size the deployment normally.
+        # Check point:
+        # - world_size = TP * DP = 16 (hybrid-lb special-case no longer bails out).
+        # - Multi-worker auto-select returns 2x H100 workers, 8 GPU each, exactly
+        #   like the headless TP=8 DP=2 case.
+        (
+            "hybrid_lb_unified_tp8_dp2_2x_h100",
+            make_model(
+                0,
+                None,
+                "deepseek-ai/DeepSeek-R1",
+                backend_parameters=[
+                    "--tensor-parallel-size=8",
+                    "--data-parallel-size=2",
+                    "--data-parallel-hybrid-lb",
+                    "--data-parallel-backend=mp",
+                ],
+            ),
+            [
+                linux_nvidia_22_H100_80gx8(),
+                linux_nvidia_23_H100_80gx8(),
+            ],
+            [
+                expected_candidate(
+                    22,
+                    "host22-h100",
+                    [0, 1, 2, 3, 4, 5, 6, 7],
+                    {
+                        0: 77309411328,
+                        1: 77309411328,
+                        2: 77309411328,
+                        3: 77309411328,
+                        4: 77309411328,
+                        5: 77309411328,
+                        6: 77309411328,
+                        7: 77309411328,
+                    },
+                    [
+                        ModelInstanceSubordinateWorker(
+                            worker_id=23,
+                            worker_ip="192.168.50.23",
+                            total_gpus=8,
+                            gpu_indexes=[0, 1, 2, 3, 4, 5, 6, 7],
+                            computed_resource_claim=ComputedResourceClaim(
+                                vram={
+                                    0: 77309411328,
+                                    1: 77309411328,
+                                    2: 77309411328,
+                                    3: 77309411328,
+                                    4: 77309411328,
+                                    5: 77309411328,
+                                    6: 77309411328,
+                                    7: 77309411328,
+                                },
+                            ),
+                        ),
+                    ],
+                )
+            ],
+            0,
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -824,9 +889,12 @@ async def test_select_candidates_headless(
     config, case_name, m, workers, expected_candidates, final_candidate_index
 ):
     """
-    Auto-scheduling under vLLM headless mode (sentinel `--data-parallel-backend mp`).
-    Verifies that the scheduler still produces correct multi-worker candidates
-    and that the #5089 fix (DP-Local parsing + world_size formula) holds.
+    Auto-scheduling for multi-worker vLLM deployments: headless mode (sentinel
+    `--data-parallel-backend mp`) and unified hybrid-LB (`--data-parallel-hybrid-lb`).
+    Verifies the scheduler produces correct multi-worker candidates, that the
+    #5089 fix (DP-Local parsing + world_size formula) holds, and that hybrid-LB
+    sizes the deployment by the cluster-wide DP total when distributed inference
+    across workers is enabled.
     """
     with (
         patch(
@@ -1779,3 +1847,130 @@ async def test_lora_vram_claim_in_output_schedule_msg(config):
 - The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
     ]
     assert resource_fit_selector._messages == expect_msg
+
+
+# ---------------------------------------------------------------------------
+# DP load-balance mode hard validation (_validate_mp_multinode_arguments)
+# ---------------------------------------------------------------------------
+
+
+def _mp_lb_selector(
+    config,
+    load_balance_mode,
+    data_parallel_size,
+    moe_num_experts,
+    cross_worker=False,
+    data_parallel_rank=None,
+    data_parallel_size_local=None,
+):
+    backend_parameters = [
+        "--distributed-executor-backend=mp",
+        f"--data-parallel-size={data_parallel_size}",
+    ]
+    if load_balance_mode == "hybrid":
+        backend_parameters.append("--data-parallel-hybrid-lb")
+    elif load_balance_mode == "external":
+        backend_parameters.append("--data-parallel-external-lb")
+    if data_parallel_rank is not None:
+        backend_parameters.append(f"--data-parallel-rank={data_parallel_rank}")
+    if data_parallel_size_local is not None:
+        backend_parameters.append(
+            f"--data-parallel-size-local={data_parallel_size_local}"
+        )
+    m = make_model(
+        1,
+        None,
+        "Qwen/Qwen2.5-7B-Instruct",
+        backend_parameters=backend_parameters,
+    )
+    m.backend = BackendEnum.VLLM
+    m.distributed_inference_across_workers = cross_worker
+    selector = VLLMResourceFitSelector(config, m, [])
+    selector._model_params.moe_num_experts = moe_num_experts
+    return selector
+
+
+def test_validate_dense_hybrid_lb_rejected(config):
+    selector = _mp_lb_selector(config, "hybrid", 4, moe_num_experts=None)
+    with pytest.raises(ValueError, match="MoE"):
+        selector._validate_mp_multinode_arguments()
+
+
+def test_validate_dense_external_lb_rejected(config):
+    selector = _mp_lb_selector(config, "external", 4, moe_num_experts=None)
+    with pytest.raises(ValueError, match="MoE"):
+        selector._validate_mp_multinode_arguments()
+
+
+def test_validate_moe_hybrid_lb_passes(config):
+    selector = _mp_lb_selector(config, "hybrid", 4, moe_num_experts=8)
+    selector._validate_mp_multinode_arguments()  # must not raise
+
+
+def test_validate_external_lb_requires_dp_gt_1(config):
+    selector = _mp_lb_selector(config, "external", 1, moe_num_experts=8)
+    with pytest.raises(ValueError, match="data-parallel-size > 1"):
+        selector._validate_mp_multinode_arguments()
+
+
+def test_validate_external_lb_omitted_dp_rejected(config):
+    # Omitting --data-parallel-size defaults to 1 in vLLM, which crashes
+    # external-LB at runtime; the guard must treat the omitted case as 1 rather
+    # than skip it (find_int_parameter returns None when absent).
+    m = make_model(
+        1,
+        None,
+        "Qwen/Qwen2.5-7B-Instruct",
+        backend_parameters=[
+            "--distributed-executor-backend=mp",
+            "--data-parallel-external-lb",
+        ],
+    )
+    m.backend = BackendEnum.VLLM
+    selector = VLLMResourceFitSelector(config, m, [])
+    selector._model_params.moe_num_experts = 8
+    with pytest.raises(ValueError, match="data-parallel-size > 1"):
+        selector._validate_mp_multinode_arguments()
+
+
+def test_validate_external_lb_cross_worker_user_rank_rejected(config):
+    # Cross-worker external-LB auto-assigns per-node ranks; a user-pinned rank
+    # would collapse every node to one rank, so reject at schedule time.
+    selector = _mp_lb_selector(
+        config,
+        "external",
+        4,
+        moe_num_experts=8,
+        cross_worker=True,
+        data_parallel_rank=0,
+    )
+    with pytest.raises(ValueError, match="data-parallel-rank"):
+        selector._validate_mp_multinode_arguments()
+
+
+def test_validate_external_lb_cross_worker_dpl_not_one_rejected(config):
+    # external-LB needs exactly one DP rank per node (dpl == 1).
+    selector = _mp_lb_selector(
+        config,
+        "external",
+        4,
+        moe_num_experts=8,
+        cross_worker=True,
+        data_parallel_size_local=2,
+    )
+    with pytest.raises(ValueError, match="one DP rank per"):
+        selector._validate_mp_multinode_arguments()
+
+
+def test_validate_external_lb_single_deployment_user_rank_allowed(config):
+    # A single (non-cross-worker) external-LB deployment is the user's own
+    # wiring, so their explicit rank is left untouched.
+    selector = _mp_lb_selector(
+        config,
+        "external",
+        4,
+        moe_num_experts=8,
+        cross_worker=False,
+        data_parallel_rank=0,
+    )
+    selector._validate_mp_multinode_arguments()  # must not raise

@@ -42,7 +42,7 @@ from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
 from gpustack.worker.backends.sglang import SGLangServer
 from gpustack.utils.command import resolve_executor_backend
-from gpustack.worker.backends.vllm import VLLMServer
+from gpustack.worker.backends.vllm import VLLMServer, list_dp_siblings
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.custom import CustomServer
 from gpustack.routes.worker.logs import (
@@ -1323,6 +1323,13 @@ class ServeManager:
             model = self._get_model(mi)
             backend = get_backend(model)
 
+            if self._dp_member_should_wait(mi, model):
+                logger.info(
+                    f"DP member {mi.name} (dp_rank={mi.dp_rank}) waits for its "
+                    f"rank-0 coordinator to be up with ports assigned before starting."
+                )
+                return
+
             self._assign_ports(mi, model, backend)
 
             logger.debug(
@@ -1411,7 +1418,41 @@ class ServeManager:
             self._update_model_instance(mi.id, **patch_dict)
             logger.error(f"Failed to start model instance {mi.name}: {e}")
 
-    def _assign_ports(
+    def _dp_member_should_wait(self, mi: ModelInstance, model: Model) -> bool:
+        """Whether this DP member must wait before starting.
+
+        A member (dp_rank > 0) waits until its rank-0 coordinator is up with the
+        shared DP ports assigned. INITIALIZING counts: a DP coordinator only
+        reaches RUNNING once its members join, so requiring a later state would
+        deadlock. rank 0 and other instances never wait.
+        """
+        if mi.dp_rank is None or mi.dp_rank == 0:
+            return False
+
+        coordinator = next(
+            (
+                sibling
+                for sibling in list_dp_siblings(self._clientset, mi.model_id)
+                if sibling.dp_rank == 0
+            ),
+            None,
+        )
+        if coordinator is None or coordinator.state not in (
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.STARTING,
+            ModelInstanceStateEnum.RUNNING,
+        ):
+            return True
+
+        # Coordinator ports: [serving, dp_rpc(1), dp_master(2), ...]. mp needs the
+        # dp_master (index 2) too; ray only the dp_rpc (index 1).
+        executor_backend = resolve_executor_backend(
+            model.backend_parameters, model.backend_version
+        )
+        min_ports = 3 if executor_backend == "mp" else 2
+        return not coordinator.ports or len(coordinator.ports) < min_ports
+
+    def _assign_ports(  # noqa: C901
         self,
         mi: ModelInstance,
         model: Model,
@@ -1453,6 +1494,66 @@ class ServeManager:
             mi.ports = [mi.port]
             unavailable_ports.add(mi.port)
 
+            # vLLM DP node-per-instance: each DP node is a standalone instance.
+            #   rank 0 (coordinator): [serving, dp_rpc(1), dp_master(2), vllm_port(3)]
+            #   member (rank > 0):    [serving, vllm_port(1)]
+            # The coordinator hosts the DP RPC (ports[1], --data-parallel-rpc-port)
+            # and DP master (ports[2], VLLM_DP_MASTER_PORT) endpoints every sibling
+            # dials; each node also pins its own VLLM_PORT (own ports[-1], #5657).
+            if mi.dp_rank is not None:
+                executor_backend = (
+                    resolve_executor_backend(
+                        model.backend_parameters, model.backend_version
+                    )
+                    if backend == BackendEnum.VLLM
+                    else None
+                )
+                if mi.dp_rank == 0 and executor_backend == "mp":
+                    # Allocate the DP master first so we can fence off the 10-port
+                    # band vLLM reserves around VLLM_DP_MASTER_PORT. get_open_ports_list
+                    # (the VLLM_PORT scan path) does NOT band-check, so dp_rpc and
+                    # VLLM_PORT must be kept out of the band on the coordinator host.
+                    _, end_port = network.parse_port_range(
+                        self._config.service_port_range
+                    )
+                    dp_master_port = network.get_free_port(
+                        port_range=self._config.service_port_range,
+                        unavailable_ports=unavailable_ports,
+                        host=mi.worker_ip,
+                    )
+                    unavailable_ports.add(dp_master_port)
+                    unavailable_ports |= set(
+                        range(dp_master_port, min(dp_master_port + 10, end_port + 1))
+                    )
+                    dp_rpc_port = network.get_free_port(
+                        port_range=self._config.service_port_range,
+                        unavailable_ports=unavailable_ports,
+                        host=mi.worker_ip,
+                    )
+                    unavailable_ports.add(dp_rpc_port)
+                    mi.ports.append(dp_rpc_port)
+                    mi.ports.append(dp_master_port)
+                elif mi.dp_rank == 0 and executor_backend == "ray":
+                    dps = find_int_parameter(
+                        model.backend_parameters, ["data-parallel-size", "dp"]
+                    )
+                    if dps and dps > 1:
+                        dp_rpc_port = network.get_free_port(
+                            port_range=self._config.service_port_range,
+                            unavailable_ports=unavailable_ports,
+                            host=mi.worker_ip,
+                        )
+                        unavailable_ports.add(dp_rpc_port)
+                        mi.ports.append(dp_rpc_port)
+                # Every DP node pins its own VLLM_PORT as the last per-node port.
+                vllm_port = network.get_free_port(
+                    port_range=self._config.service_port_range,
+                    unavailable_ports=unavailable_ports,
+                    host=mi.worker_ip,
+                )
+                unavailable_ports.add(vllm_port)
+                mi.ports.append(vllm_port)
+
             # Additional ports for distributed servers (mp path allocates all):
             #   ports[0]: HTTP API (always)
             #   ports[1]: --data-parallel-rpc-port (DP coordinator ZMQ)
@@ -1460,7 +1561,7 @@ class ServeManager:
             #   ports[3]: env VLLM_PORT
             #   ports[-1]: connecting port (= VLLM_DP_MASTER_PORT for dp_only/nested)
             # Ray path: only ports[1] (DP RPC), when user dp > 1.
-            if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
+            elif mi.distributed_servers and mi.distributed_servers.subordinate_workers:
                 # Allocate first so we can fence off the 10-port band vLLM reserves
                 # around VLLM_DP_MASTER_PORT (= connecting port), keeping the cross
                 # ports (incl. VLLM_PORT) outside it.
