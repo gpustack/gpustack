@@ -357,6 +357,10 @@ def provider_registry_name(id: int) -> str:
     return f"{provider_id_prefix}{id}"
 
 
+def provider_proxy_name(id: int) -> str:
+    return f"{provider_registry_name(id)}-proxy"
+
+
 def provider_registry(provider: ModelProvider) -> Optional[McpBridgeRegistry]:
     provider_url = provider.config.get_base_url()
     if provider_url is None:
@@ -398,7 +402,7 @@ def provider_proxy(provider: ModelProvider) -> Optional[McpBridgeProxy]:
     # timeout in seconds
     connection_timeout = provider.proxy_timeout or 5
     return McpBridgeProxy(
-        name=f"{provider_registry_name(provider.id)}-proxy",
+        name=provider_proxy_name(provider.id),
         serverAddress=proxy_url.hostname,
         serverPort=port,
         type=scheme.upper(),
@@ -457,17 +461,23 @@ def diff_registries(
     existing: List[McpBridgeRegistry],
     desired: List[McpBridgeRegistry],
     to_delete_prefix: Optional[str] = None,
+    to_delete_names: Optional[List[str]] = None,
 ) -> Tuple[bool, List[McpBridgeRegistry]]:
     desired_map = {
         reg.name: idx for idx, reg in enumerate(desired) if reg.name is not None
     }
+    to_delete_name_set = set(to_delete_names or [])
     total_list = []
     need_update = False
     for registry in existing:
-        if registry.name not in desired_map:
-            # delete registries that are not in the current list
-            if to_delete_prefix is not None and registry.name.startswith(
-                to_delete_prefix
+        name = registry.name
+        if name not in desired_map:
+            # delete registries that match the delete prefix or an exact name.
+            # ``name`` is Optional[str]; a nameless entry matches nothing and
+            # is kept as unrelated.
+            if name is not None and (
+                (to_delete_prefix is not None and name.startswith(to_delete_prefix))
+                or name in to_delete_name_set
             ):
                 need_update = True
             else:
@@ -475,7 +485,7 @@ def diff_registries(
                 total_list.append(registry)
         else:
             # update existing registries
-            idx = desired_map.pop(registry.name)
+            idx = desired_map.pop(name)
             if registry != desired[idx]:
                 need_update = True
                 registry = desired[idx]
@@ -493,23 +503,31 @@ def diff_proxies(
     existing: List[McpBridgeProxy],
     desired: List[McpBridgeProxy],
     to_delete_prefix: Optional[str] = None,
+    to_delete_names: Optional[List[str]] = None,
 ) -> Tuple[bool, List[McpBridgeProxy]]:
     desired_map = {
         reg.name: idx for idx, reg in enumerate(desired) if reg.name is not None
     }
+    to_delete_name_set = set(to_delete_names or [])
     total_list = []
     need_update = False
     for proxy in existing:
-        if proxy.name not in desired_map:
-            # delete registries that are not in the current list
-            if to_delete_prefix is not None and proxy.name.startswith(to_delete_prefix):
+        name = proxy.name
+        if name not in desired_map:
+            # delete proxies that match the delete prefix or an exact name.
+            # ``name`` is Optional[str]; a nameless entry matches nothing and
+            # is kept as unrelated.
+            if name is not None and (
+                (to_delete_prefix is not None and name.startswith(to_delete_prefix))
+                or name in to_delete_name_set
+            ):
                 need_update = True
             else:
                 # keep unrelated proxies
                 total_list.append(proxy)
         else:
             # update existing proxies
-            idx = desired_map.pop(proxy.name)
+            idx = desired_map.pop(name)
             if proxy != desired[idx]:
                 need_update = True
                 proxy = desired[idx]
@@ -530,8 +548,10 @@ async def ensure_mcp_bridge(
     mcp_bridge_name: str,
     desired_registries: List[McpBridgeRegistry],
     to_delete_prefix: Optional[str] = None,
+    to_delete_names: Optional[List[str]] = None,
     desired_proxies: List[McpBridgeProxy] = None,
     to_delete_proxies_prefix: Optional[str] = None,
+    to_delete_proxies_names: Optional[List[str]] = None,
 ):
     existing_bridge = None
     try:
@@ -559,6 +579,7 @@ async def ensure_mcp_bridge(
             existing=existing_bridge.spec.registries or [],
             desired=desired_registries,
             to_delete_prefix=to_delete_prefix,
+            to_delete_names=to_delete_names,
         )
         proxy_need_update = False
         proxy_list = existing_bridge.spec.proxies or []
@@ -567,6 +588,7 @@ async def ensure_mcp_bridge(
                 existing=existing_bridge.spec.proxies or [],
                 desired=desired_proxies,
                 to_delete_prefix=to_delete_proxies_prefix,
+                to_delete_names=to_delete_proxies_names,
             )
 
         if registry_need_update or proxy_need_update:
