@@ -163,6 +163,18 @@ class ModelFileManager:
         paths_to_delete = set()
 
         try:
+            if model_file.source in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
+                # Every HF/ModelScope download takes out a coarse lock file up front
+                # (gpustack.utils.locks.HeartbeatSoftFileLock, keyed by get_lock_path())
+                # before any per-file work starts. It only self-removes on a clean
+                # __exit__, so deleting the model file mid/after a failed or
+                # in-progress download always leaves it behind unless we add it here;
+                # this is separate from HuggingFace's own per-file lock below, which
+                # already handles its own cleanup.
+                lock_path = get_lock_path(self._config.cache_dir, model_file)
+                if lock_path:
+                    paths_to_delete.add(lock_path)
+
             if model_file.source == SourceEnum.HUGGING_FACE:
                 if not model_file.huggingface_filename:
                     # The resolved_paths in vLLM model points to entire dir of cache, delete it directly
