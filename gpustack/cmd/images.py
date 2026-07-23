@@ -16,8 +16,8 @@ from gpustack.extension import iter_plugin_classes, Plugin
 # The higress version should be sync with HIGRESS_VERSION in pack/Dockerfile.
 higress_version = "2.1.9"
 
-ssh_server_version = "v1.1.0"
-kueue_version = "v0.17.6"
+ssh_server_version = "v1.3.0"
+kueue_version = "v0.18.2"
 node_feature_discovery_version = "v0.18.3"
 csi_nfs_driver_version = "v4.13.0"
 csi_s3_driver_version = "v0.43.7"

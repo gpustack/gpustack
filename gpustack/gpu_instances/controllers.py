@@ -35,6 +35,10 @@ from gpustack.schemas.gpu_instance_persistent_volume_types import (
     GPUInstancePersistentVolumeType,
     GPUInstancePersistentVolumeTypeStatus,
 )
+from gpustack.schemas.gpu_instance_types import (
+    GPUInstanceType,
+    GPUInstanceTypeSpec,
+)
 from gpustack.schemas.gpu_instance_ssh_public_keys import (
     GPUInstanceSSHPublicKey,
 )
@@ -665,7 +669,9 @@ class GPUInstanceController:
 
         ``stop`` keeps the CR alive (worker reports Stopped), so /start must
         patch ``spec.stop`` off; without it the observe below would merge the
-        worker's Stopped back and revert the row.
+        worker's Stopped back and revert the row. The full row spec is
+        re-applied in the same patch so any config edit made while Stopped takes
+        effect on resume.
         """
         read = await ops.read_instance(fresh.name)
         if read is None:
@@ -689,7 +695,9 @@ class GPUInstanceController:
             self._requeue_after(fresh, self._transitioning_interval)
             return
         try:
-            await ops.start_instance(fresh.name)
+            await ops.start_instance(
+                fresh.name, spec=fresh.convert_to_kuberes()["spec"]
+            )
         except Exception:
             logger.exception(f"Failed to start worker-side instance for {fresh.name}")
             await self._write_phase_message(
@@ -1268,3 +1276,302 @@ class GPUInstancePersistentVolumeTypeController(_PersistentVolumeFinalizeControl
             row.name, principal_identifier=owner_identifier
         )
         return await ops.delete_persistent_volume_type(cluster_name)
+
+
+class GPUInstanceTypeController:
+    """Projects every cluster's operator InstanceType catalog into the
+    ``gpu_instance_types`` table.
+
+    Unlike :class:`GPUInstanceController` there is no DB bus source: the operator
+    worker-gateway watch stream (``watch_instance_types`` across all clusters) is
+    the sole source of truth, so ``start()`` is just the watch loop feeding a
+    per-``(cluster_id, name)`` serial work queue drained by a single dispatcher.
+
+    ADDED / MODIFIED upsert a row keyed by its ``snapshot`` — the row's durable
+    identity (a content hash that excludes the mutable ``display_name``): the
+    same snapshot revives/refreshes its row, a new snapshot inserts a NEW row and
+    retires the previous active row for that ``(cluster_id, name)`` (a same-named
+    type recreated with different resources is a different type, kept distinct so
+    an instance stamped with the old snapshot still resolves). DELETED retires
+    the active row. The queue keys on ``(cluster_id, name)`` so every event for
+    one logical name is serialized (a delete-then-recreate of the same name must
+    not race), while the DB identity is the ``snapshot``.
+
+    Each (re)connect starts with a full catalog LIST (list-then-watch): the watch
+    only carries *future* events, so without it a fresh table would leave every
+    already-existing type unresolvable, and a DELETE missed during a reconnect gap
+    would strand a type as permanently active. The resync populates present types
+    and retires active rows the catalog no longer lists. Runs leader-only, like
+    the other controllers (by virtue of its ``_start_controllers`` call site).
+    """
+
+    def __init__(self):
+        # Per-``(cluster_id, name)`` serial queue with a LATEST-WINS coalescer.
+        # The default coalescer keeps a pending DELETED sticky, which is wrong
+        # here: a catalog DELETED is not terminal (a same-name type can be
+        # recreated), so a later ADDED must win or the recreate is lost and the
+        # type stays wrongly retired. Per-keys backoff (``add_rate_limited`` /
+        # ``forget``) is driven from ``_process``.
+        self._queue: WorkQueue = WorkQueue(coalesce=self._latest_wins)
+        # In-flight per-keys worker tasks, tracked so shutdown can cancel them.
+        self._inflight: Dict[Any, asyncio.Task] = {}
+        # Consumes ``_queue`` and fans out one worker task per keys.
+        self._dispatch_task: Optional[asyncio.Task] = None
+
+    @staticmethod
+    def _latest_wins(existing: WorkEvent, incoming: WorkEvent) -> WorkEvent:
+        """Coalesce policy: the newest event always wins (no DELETED stickiness).
+
+        A DELETED still jumps the ready queue (``WorkQueue`` priority), but it
+        must not survive a later ADDED for the same key — that later ADDED is a
+        recreate and has to be projected, not dropped."""
+        return incoming
+
+    async def start(self):
+        self._dispatch_task = asyncio.create_task(self._dispatch())
+        try:
+            await self._watch()
+        finally:
+            tasks: List[asyncio.Task] = []
+            if self._dispatch_task is not None:
+                self._dispatch_task.cancel()
+                tasks.append(self._dispatch_task)
+            for task in list(self._inflight.values()):
+                task.cancel()
+                tasks.append(task)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    # ======================================================================= #
+    # Watch source -> work queue
+    # ======================================================================= #
+
+    async def _watch(self):
+        """Resync the catalog, then consume the operator InstanceType watch (all
+        clusters) and feed the queue; reconnect on any error (mirrors
+        :meth:`GPUInstanceController._watch_downstream`). The resync runs on every
+        (re)connect so a fresh table is populated and a delete missed during the
+        previous gap is reconciled before the watch resumes."""
+        while True:
+            try:
+                await self._resync()
+                async for line in gateway_client.watch_instance_types():
+                    self._on_event(line)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("GPU instance type watch stream failed; reconnecting")
+            await asyncio.sleep(_WATCH_RECONNECT_INTERVAL)
+
+    async def _resync(self):
+        """List the full operator catalog (all clusters) and reconcile it via the
+        queue: enqueue an ADDED for every listed type, and a DELETED for every
+        active row the catalog no longer lists (a delete missed during a watch
+        gap). Routing through the queue keeps the per-``(cluster_id, name)``
+        serialization, so a concurrent watch event coalesces (latest-wins) instead
+        of racing a direct write.
+
+        An empty result is treated as "don't trust" and skips the retire pass: an
+        outage that returns no items is indistinguishable from a genuinely empty
+        catalog, and retiring every row on a transient empty response would wipe
+        the projection.
+        """
+        result = await gateway_client.list_instance_types()
+        items = result.get("items") or []
+        seen: set = set()
+        for item in items:
+            keys = self._event_keys(item)
+            if keys is None:
+                continue
+            self._queue.add(WorkEvent(keys=keys, type=WorkEventType.ADDED, object=item))
+            seen.add(keys)
+        if not seen:
+            return
+        async with async_session() as session:
+            actives = await GPUInstanceType.all_by_fields(
+                session, fields={"deleted_at": None}
+            )
+        for row in actives:
+            keys = (row.cluster_id, row.name)
+            if keys not in seen:
+                self._queue.add(
+                    WorkEvent(keys=keys, type=WorkEventType.DELETED, object={})
+                )
+
+    def _on_event(self, line: str) -> None:
+        """Map one watch line onto a queue event.
+
+        The object carries ``cluster`` (the GPUStack cluster id),
+        ``metadata.name`` and ``spec``; the raw object is carried on the event so
+        the reconcile can build the row without a second fetch (the watch is the
+        only source). Malformed / unexpected lines are skipped so one bad event
+        can't break the stream.
+        """
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Discarding malformed instance type event: %r", line)
+            return
+        etype = event.get("type")
+        if etype not in ("ADDED", "MODIFIED", "DELETED"):
+            # Ignore BOOKMARK / ERROR and anything unexpected.
+            return
+        obj = event.get("object") or {}
+        keys = self._event_keys(obj)
+        if keys is None:
+            return
+        wtype = {
+            "ADDED": WorkEventType.ADDED,
+            "MODIFIED": WorkEventType.MODIFIED,
+            "DELETED": WorkEventType.DELETED,
+        }[etype]
+        self._queue.add(WorkEvent(keys=keys, type=wtype, object=obj))
+
+    @staticmethod
+    def _event_keys(obj: dict) -> Optional[Tuple[int, str]]:
+        """The stable ``(cluster_id, name)`` identity of an event, or ``None``
+        when the object lacks a usable cluster id or name."""
+        cluster = obj.get("cluster")
+        name = (obj.get("metadata") or {}).get("name")
+        if cluster is None or not name:
+            return None
+        try:
+            cluster_id = int(cluster)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring instance type event with non-integer cluster %r", cluster
+            )
+            return None
+        return (cluster_id, name)
+
+    # ======================================================================= #
+    # Work queue — consumer (mirrors GPUInstanceController)
+    # ======================================================================= #
+
+    async def _dispatch(self):
+        while True:
+            event = await self._queue.get()
+            self._inflight[event.keys] = asyncio.create_task(self._process(event))
+
+    async def _process(self, event: WorkEvent):
+        keys = event.keys
+        try:
+            await self._reconcile(event)
+            # Success — reset the per-keys backoff counter.
+            self._queue.forget(keys)
+        except asyncio.CancelledError:
+            # Shutdown/cancel must propagate, not be treated as a failure.
+            raise
+        except Exception:
+            logger.exception("Failed to reconcile GPU instance type %s", keys)
+            # Failure — retry with a capped exponential backoff.
+            self._queue.add_rate_limited(event)
+        finally:
+            self._queue.done(keys)
+            # Drop the finished task; the returned Task is intentionally discarded.
+            _ = self._inflight.pop(keys, None)
+
+    # ======================================================================= #
+    # Reconcile — project the catalog event onto the DB row
+    # ======================================================================= #
+
+    async def _reconcile(self, event: WorkEvent):
+        cluster_id, name = event.keys
+        async with async_session() as session:
+            if event.type == WorkEventType.DELETED:
+                await self._retire_active(session, cluster_id, name)
+            else:
+                await self._upsert(session, cluster_id, name, event.object or {})
+
+    async def _upsert(
+        self, session: AsyncSession, cluster_id: int, name: str, obj: dict
+    ):
+        """Project an ADDED/MODIFIED catalog object onto a row, keyed by the
+        ``snapshot`` (the row's durable identity).
+
+        The snapshot excludes the mutable ``display_name`` (the only field an
+        operator MODIFIED can change), so:
+
+        - the exact snapshot already exists -> revive it (if soft-deleted) and
+          refresh its ``spec`` (a ``display_name`` edit);
+        - a new snapshot -> a genuinely different definition (e.g. a same-named
+          type recreated with different resources): retire the current active row
+          for this ``(cluster_id, name)`` and insert a NEW row, so an instance
+          stamped with the old snapshot still resolves against the old (now
+          soft-deleted) row and the two sides never silently diverge.
+
+        A ``snapshot`` unique-constraint ``IntegrityError`` (a concurrent insert
+        of the same identity) falls back to re-query-by-snapshot + revive.
+        """
+        spec = GPUInstanceTypeSpec.model_validate(obj.get("spec") or {})
+        candidate = GPUInstanceType(cluster_id=cluster_id, name=name, spec=spec)
+        snapshot = candidate.compute_snapshot()
+        existing = await GPUInstanceType.first_by_fields(
+            session, fields={"snapshot": snapshot}
+        )
+        if existing is not None:
+            await self._revive(session, existing, spec)
+            return
+        # A new definition supersedes the current active row for this name, so at
+        # most one snapshot is ever active per ``(cluster_id, name)``. Retire
+        # without committing so the retire + insert land as ONE transaction — no
+        # window where a concurrent ``_resolve_type_snapshot`` sees zero active
+        # rows, and no crash-between-commits leaving the name with no active row.
+        await self._retire_active(session, cluster_id, name, auto_commit=False)
+        try:
+            await GPUInstanceType.create(
+                session,
+                source={
+                    "cluster_id": cluster_id,
+                    "name": name,
+                    "spec": spec,
+                    "snapshot": snapshot,
+                },
+            )
+        except IntegrityError:
+            # ``save`` already rolled the transaction back; a concurrent writer
+            # inserted this snapshot -> revive/update that row instead. The
+            # rollback also reverted the ``_retire_active`` above, so re-retire
+            # before reviving — otherwise the old active row and the revived one
+            # would both stay active, breaking "at most one active row per
+            # (cluster_id, name)".
+            existing = await GPUInstanceType.first_by_fields(
+                session, fields={"snapshot": snapshot}
+            )
+            if existing is not None:
+                await self._retire_active(session, cluster_id, name, auto_commit=False)
+                await self._revive(session, existing, spec)
+
+    @staticmethod
+    async def _revive(
+        session: AsyncSession, existing: GPUInstanceType, spec: GPUInstanceTypeSpec
+    ):
+        """Refresh ``spec`` (a ``display_name`` edit) and clear ``deleted_at`` —
+        reviving a soft-deleted row, skipped when it is already active and
+        unchanged so a watch re-LIST does not churn writes. The ``snapshot`` is
+        unchanged by definition (it identified this row). Mirrors the
+        ``deleted_at`` revive idiom in ``server/services.py``."""
+        if existing.deleted_at is None and existing.spec == spec:
+            return
+        await existing.update(session, source={"spec": spec, "deleted_at": None})
+
+    @staticmethod
+    async def _retire_active(
+        session: AsyncSession,
+        cluster_id: int,
+        name: str,
+        *,
+        auto_commit: bool = True,
+    ):
+        """Soft-delete the current active row for ``(cluster_id, name)``, if any
+        — driven by a DELETED event and by a new snapshot superseding the old
+        definition. A no-op when nothing is active. DELETED may be a spec-less
+        tombstone, so this keys on ``(cluster_id, name)``, not the snapshot.
+        ``auto_commit=False`` defers the commit so a caller can bundle the retire
+        with a following insert into one transaction."""
+        active = await GPUInstanceType.first_by_fields(
+            session,
+            fields={"cluster_id": cluster_id, "name": name, "deleted_at": None},
+        )
+        if active is not None:
+            await active.delete(session, soft=True, auto_commit=auto_commit)
