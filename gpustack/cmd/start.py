@@ -537,6 +537,18 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env_bool("EXTERNAL_AUTH_DEFAULT_INACTIVE"),
     )
     server_group.add_argument(
+        "--enable-login-captcha",
+        action=OptionalBoolAction,
+        help="Require a graphic CAPTCHA on the local username/password login form.",
+        default=get_gpustack_env_bool("ENABLE_LOGIN_CAPTCHA"),
+    )
+    server_group.add_argument(
+        "--login-captcha-length",
+        type=int,
+        help="Number of characters in the login CAPTCHA (4-6).",
+        default=get_gpustack_env("LOGIN_CAPTCHA_LENGTH"),
+    )
+    server_group.add_argument(
         "--external-auth-insecure-skip-tls-verify",
         action=OptionalBoolAction,
         help="Skip TLS verification for the external-auth IdP handshake "
@@ -841,6 +853,8 @@ def set_server_options(args, config_data: dict):
         "external_auth_full_name",
         "external_auth_avatar_url",
         "external_auth_default_inactive",
+        "enable_login_captcha",
+        "login_captcha_length",
         "external_auth_insecure_skip_tls_verify",
         "oidc_issuer",
         "oidc_client_id",

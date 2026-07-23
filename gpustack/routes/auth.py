@@ -1,23 +1,31 @@
 import base64
 import functools
+import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import httpx
 import logging
 import jwt
 from jwt.algorithms import RSAAlgorithm
+from sqlalchemy.exc import IntegrityError
 from gpustack.config.config import Config
+from gpustack.utils import captcha as captcha_util
 from typing import Annotated, Dict, List, Optional
 from fastapi import APIRouter, Depends, Form, Request, Response
 from gpustack.api.exceptions import (
     ConflictException,
     InvalidException,
+    NotFoundException,
     UnauthorizedException,
     BadRequestException,
+    TooManyRequestsException,
 )
+from gpustack.schemas.login_captcha import LoginCaptchaNonce
 from gpustack.schemas.users import UpdatePassword
 from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.users import User, AuthProviderEnum
@@ -29,22 +37,225 @@ from gpustack.api.auth import (
     OIDC_STATE_COOKIE_NAME,
     SSO_LOGIN_COOKIE_NAME,
     authenticate_user,
+    client_ip_getter,
 )
+from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.server.passwords import change_password, is_password_change_required
 from gpustack.server.services import sync_user_group_memberships
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
 from lxml import etree
+from starlette.concurrency import run_in_threadpool
 from gpustack.utils.convert import safe_b64decode, inflate_data
 from urllib.parse import quote, urlencode, urlparse
 
 from gpustack.ssl_context import make_ssl_context
 from gpustack.utils.network import use_proxy_env_for_url
+from gpustack.utils.rate_limit import KeyedRateLimiter
 
 router = APIRouter()
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
 logger = logging.getLogger(__name__)
+
+# The encrypted challenge is valid long enough to complete the form while
+# keeping the replay window bounded.
+CAPTCHA_TOKEN_TTL_SECONDS = 5 * 60
+CAPTCHA_SESSION_COOKIE_NAME = "gpustack_captcha_session"
+_CAPTCHA_BINDING_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+
+_captcha_issue_limiter = KeyedRateLimiter(max_requests=30, window_seconds=60)
+_captcha_audio_limiter = KeyedRateLimiter(max_requests=10, window_seconds=60)
+_login_ip_limiter = KeyedRateLimiter(max_requests=30, window_seconds=5 * 60)
+_login_account_limiter = KeyedRateLimiter(max_requests=10, window_seconds=5 * 60)
+_DEFAULT_ORIGIN_PORTS = {"http": 80, "https": 443}
+
+
+def _issue_captcha(request: Request, length: int, binding: str) -> Dict[str, str]:
+    """Generate an image and encrypt its answer into an opaque token."""
+    code, image = captcha_util.generate_captcha(length)
+    jwt_manager: JWTManager = request.app.state.jwt_manager
+    captcha_id = captcha_util.encrypt_challenge(
+        secret_key=jwt_manager.secret_key,
+        code=code,
+        nonce=secrets.token_urlsafe(16),
+        binding=binding,
+    )
+    encoded = base64.b64encode(image).decode("ascii")
+    return {
+        "captcha_id": captcha_id,
+        "image": f"data:image/png;base64,{encoded}",
+    }
+
+
+def _decode_bound_challenge(request: Request, captcha_id: str):
+    """Decode a challenge and require the browser-bound HttpOnly cookie."""
+    if not captcha_id:
+        raise BadRequestException(message="CAPTCHA is required")
+
+    jwt_manager: JWTManager = request.app.state.jwt_manager
+    try:
+        challenge = captcha_util.decrypt_challenge(
+            secret_key=jwt_manager.secret_key,
+            token=captcha_id,
+            ttl_seconds=CAPTCHA_TOKEN_TTL_SECONDS,
+        )
+    except captcha_util.InvalidCaptchaToken:
+        raise BadRequestException(message="Invalid or expired CAPTCHA") from None
+
+    binding = request.cookies.get(CAPTCHA_SESSION_COOKIE_NAME, "")
+    if not binding or not hmac.compare_digest(challenge.binding, binding):
+        raise BadRequestException(message="Invalid or expired CAPTCHA")
+    return challenge
+
+
+async def _consume_captcha_nonce(nonce: str) -> None:
+    """Atomically spend a nonce in the shared database ledger."""
+    now = datetime.now(timezone.utc)
+    nonce_hash = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    async with async_session() as session:
+        session.add(
+            LoginCaptchaNonce(
+                nonce_hash=nonce_hash,
+                expires_at=now + timedelta(seconds=CAPTCHA_TOKEN_TTL_SECONDS + 30),
+            )
+        )
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise BadRequestException(message="CAPTCHA has already been used") from None
+
+
+async def _verify_captcha(request: Request, captcha_id: str, captcha: str) -> None:
+    """Validate a solved CAPTCHA or raise ``BadRequestException``.
+
+    Decrypts the opaque token, compares the answer case-insensitively, and
+    burns the nonce so the same token can't be reused.
+    """
+    if not captcha_id or not captcha:
+        raise BadRequestException(message="CAPTCHA is required")
+
+    challenge = _decode_bound_challenge(request, captcha_id)
+
+    # Burn the nonce before checking the answer so a wrong guess still cannot
+    # be retried, including when the next request reaches another replica.
+    await _consume_captcha_nonce(challenge.nonce)
+
+    # Validate before comparing: compare_digest rejects non-ASCII str values,
+    # and unbounded input should not reach a character-by-character scan.
+    answer = captcha.strip().lower()
+    if (
+        not captcha_util.CAPTCHA_MIN_LENGTH
+        <= len(answer)
+        <= captcha_util.CAPTCHA_MAX_LENGTH
+        or any(char.upper() not in captcha_util.CAPTCHA_ALPHABET for char in answer)
+        or not hmac.compare_digest(challenge.code, answer)
+    ):
+        raise BadRequestException(message="Incorrect CAPTCHA")
+
+
+def _captcha_binding(request: Request) -> str:
+    binding = request.cookies.get(CAPTCHA_SESSION_COOKIE_NAME, "")
+    if not _CAPTCHA_BINDING_PATTERN.fullmatch(binding):
+        return secrets.token_urlsafe(32)
+    return binding
+
+
+def _set_captcha_binding_cookie(
+    request: Request, response: Response, binding: str
+) -> None:
+    response.set_cookie(
+        key=CAPTCHA_SESSION_COOKIE_NAME,
+        value=binding,
+        path="/auth",
+        httponly=True,
+        max_age=CAPTCHA_TOKEN_TTL_SECONDS + 30,
+        expires=CAPTCHA_TOKEN_TTL_SECONDS + 30,
+        samesite="strict",
+        secure=request.url.scheme == "https",
+    )
+
+
+def _enforce_rate_limit(limiter: KeyedRateLimiter, key: str) -> None:
+    retry_after = limiter.check(key)
+    if retry_after:
+        raise TooManyRequestsException(
+            message=f"Too many requests; retry in {retry_after} seconds"
+        )
+
+
+def _canonical_http_origin(
+    value: str, *, allow_path: bool = False
+) -> Optional[tuple[str, str, int]]:
+    """Return a normalized HTTP origin, or ``None`` for malformed input."""
+    try:
+        parsed = urlparse(value)
+        scheme = parsed.scheme.casefold()
+        if scheme not in _DEFAULT_ORIGIN_PORTS:
+            return None
+        if (
+            not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+        if (
+            (not allow_path and parsed.path not in ("", "/"))
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, UnicodeError, ValueError):
+        return None
+
+    if not hostname:
+        return None
+    try:
+        normalized_host = hostname.rstrip(".").encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    if not normalized_host:
+        return None
+    return (
+        scheme,
+        normalized_host.casefold(),
+        port or _DEFAULT_ORIGIN_PORTS[scheme],
+    )
+
+
+def _validate_login_origin(request: Request, config: Config) -> None:
+    """Reject browser cross-site form posts while allowing non-browser clients."""
+    if request.headers.get("sec-fetch-site", "").casefold() == "cross-site":
+        raise BadRequestException(message="Cross-site login requests are not allowed")
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+
+    supplied_origin = _canonical_http_origin(origin)
+    expected_origins = set()
+    request_host = request.headers.get("host", "")
+    request_origin = _canonical_http_origin(
+        f"{request.url.scheme}://{request_host}", allow_path=True
+    )
+    if request_origin:
+        expected_origins.add(request_origin)
+
+    # ``server_external_url`` is authoritative when TLS terminates at a
+    # reverse proxy. Raw X-Forwarded-* headers are deliberately not read here;
+    # Uvicorn and ForwardedHostPortMiddleware already apply trusted values.
+    if config.server_external_url:
+        external_origin = _canonical_http_origin(
+            config.server_external_url, allow_path=True
+        )
+        if external_origin:
+            expected_origins.add(external_origin)
+
+    if supplied_origin is None or supplied_origin not in expected_origins:
+        raise BadRequestException(message="Cross-site login requests are not allowed")
 
 
 async def decode_and_validate_token(
@@ -1207,6 +1418,44 @@ async def cas_callback(request: Request, session: SessionDep):
 # Local authentication endpoints
 
 
+@router.get("/captcha")
+async def get_captcha(request: Request, response: Response):
+    """Issue a graphic CAPTCHA challenge for the local login form.
+
+    Only served when ``enable_login_captcha`` is on; otherwise the login form
+    never asks for one, so a request here is a misconfiguration and returns
+    404 rather than a usable challenge.
+    """
+    config: Config = request.app.state.server_config
+    if not config.enable_login_captcha:
+        raise NotFoundException(message="CAPTCHA is not enabled")
+    _enforce_rate_limit(_captcha_issue_limiter, client_ip_getter(request))
+    binding = _captcha_binding(request)
+    _set_captcha_binding_cookie(request, response, binding)
+    response.headers["Cache-Control"] = "no-store"
+    return await run_in_threadpool(
+        _issue_captcha, request, config.login_captcha_length, binding
+    )
+
+
+@router.post("/captcha/audio")
+async def get_captcha_audio(
+    request: Request,
+    response: Response,
+    captcha_id: Annotated[str, Form()] = "",
+):
+    """Return a lazy WAV alternative for the browser-bound challenge."""
+    config: Config = request.app.state.server_config
+    if not config.enable_login_captcha:
+        raise NotFoundException(message="CAPTCHA is not enabled")
+    _enforce_rate_limit(_captcha_audio_limiter, client_ip_getter(request))
+    challenge = _decode_bound_challenge(request, captcha_id)
+    audio = await run_in_threadpool(captcha_util.generate_audio, challenge.code)
+    response.headers["Cache-Control"] = "no-store"
+    encoded = base64.b64encode(audio).decode("ascii")
+    return {"audio": f"data:audio/wav;base64,{encoded}"}
+
+
 @router.post("/login")
 async def login(
     request: Request,
@@ -1214,7 +1463,19 @@ async def login(
     session: SessionDep,
     username: Annotated[str, Form()] = "",
     password: Annotated[str, Form()] = "",
+    captcha_id: Annotated[str, Form()] = "",
+    captcha: Annotated[str, Form()] = "",
 ):
+    config: Config = request.app.state.server_config
+    if config.enable_login_captcha:
+        _validate_login_origin(request, config)
+        client_ip = client_ip_getter(request)
+        username_hash = hashlib.sha256(
+            username.strip().casefold().encode("utf-8")
+        ).hexdigest()
+        _enforce_rate_limit(_login_ip_limiter, client_ip)
+        _enforce_rate_limit(_login_account_limiter, f"{client_ip}:{username_hash}")
+        await _verify_captcha(request, captcha_id, captcha)
     user = await authenticate_user(session, username, password)
     jwt_manager: JWTManager = request.app.state.jwt_manager
     access_token = jwt_manager.create_jwt_token(
@@ -1229,6 +1490,8 @@ async def login(
         samesite="lax",
         secure=request.url.scheme == "https",
     )
+    if config.enable_login_captcha:
+        response.delete_cookie(key=CAPTCHA_SESSION_COOKIE_NAME, path="/auth")
 
 
 @router.post("/logout")
@@ -1323,6 +1586,10 @@ async def get_auth_config(request: Request, session: SessionDep):
 
     req_dict = {
         "external_auth": external_auth,
+        # Drives whether the login form renders the CAPTCHA row and fetches a
+        # challenge. The login endpoint enforces it regardless; this just lets
+        # the UI avoid asking for a CAPTCHA that would never be checked.
+        "captcha_enabled": config.enable_login_captcha,
         # Deprecated: per-provider booleans kept for UI bundles that
         # pre-date the data-driven ``external_auth`` field. Only the
         # providers that were already public are exposed here — newer

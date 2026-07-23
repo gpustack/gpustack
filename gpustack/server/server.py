@@ -85,6 +85,7 @@ from gpustack import envs
 from gpustack.server.usage_archiver import TableArchiver
 from gpustack.schemas.metered_usage import MeteredUsage, MeteredUsageArchive
 from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
+from gpustack.server.login_captcha_nonce_cleaner import LoginCaptchaNonceCleaner
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.utils.platform import is_inside_kubernetes
@@ -479,6 +480,14 @@ class Server:
         self._create_async_task(worker_instance_cleaner.start())
 
         logger.debug("Worker instance cleaner started.")
+
+    def _start_login_captcha_nonce_cleaner(self):
+        if not self._config.enable_login_captcha:
+            return
+        cleaner = LoginCaptchaNonceCleaner()
+        self._create_async_task(cleaner.start())
+
+        logger.debug("Login CAPTCHA nonce cleaner started.")
 
     def _start_usage_details_archiver(self):
         # Construction can fail on schema drift between hot/archive tables or
@@ -1328,6 +1337,9 @@ class Server:
 
         # Worker Instance Cleaner
         self._start_worker_instance_cleaner()
+
+        # Login CAPTCHA Nonce Cleaner
+        self._start_login_captcha_nonce_cleaner()
 
         # Usage Details Archiver (move aged rows to archive table)
         self._start_usage_details_archiver()

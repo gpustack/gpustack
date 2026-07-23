@@ -106,6 +106,8 @@ gpustack start [OPTIONS]
 | `--external-auth-full-name` value                | (empty)                                          | Mapping of external authentication user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`.                                                                                                                                                                                             |
 | `--external-auth-avatar-url` value               | (empty)                                          | Mapping of external authentication user information to user's avatar URL.                                                                                                                                                                                                                                                                     |
 | `--external-auth-default-inactive`               | `False`                                          | True if new users should be deactivated by default.                                                                                                                                                                                                                                                                                           |
+| `--enable-login-captcha`                         | `False`                                          | Require a short-lived encrypted graphic CAPTCHA for local username/password login.                                                                                                                                                                                                                                                           |
+| `--login-captcha-length` value                   | `4`                                              | Number of characters in the login CAPTCHA. Must be between 4 and 6.                                                                                                                                                                                                                                                                           |
 | `--external-auth-insecure-skip-tls-verify`       | `False`                                          | Skip TLS verification for the external-auth IdP handshake (OIDC/CAS). For testing against self-signed IdPs only; never use in production.                                                                                                                                                                                                     |
 | `--server-external-url` value                    | (empty)                                          | The external server URL for worker registration. This option is required when provisioning workers via cloud providers, ensuring that workers can connect to the server correctly.                                                                                                                                                            |
 | `--trusted-hosts` value                          | (empty)                                          | Allowlist for `the X-Forwarded-Host` header behind a reverse proxy. When unset, derived from `--server-external-url`. If both are unset, it defaults to `*` to trust any host (not recommended unless the server is only reachable via a trusted proxy).                                                                                      |
@@ -203,6 +205,8 @@ cas_full_name_attribute: displayName
 external_auth_name: email
 external_auth_full_name: name
 external_auth_avatar_url: picture
+enable_login_captcha: false
+login_captcha_length: 4
 server_external_url: http://your_gpustack_server_url_for_external_access
 trusted_hosts: [ "your_reverse_proxy_hostname" ]
 disable_builtin_observability: false
@@ -225,3 +229,19 @@ system_reserved:
 enable_hf_transfer: false
 proxy_mode: worker
 ```
+
+### Login CAPTCHA Security Notes
+
+When `enable_login_captcha` is `true`, GPUStack requires the browser-bound
+CAPTCHA for local username/password login. Ordinary user password
+authentication through HTTP Basic is disabled in this mode because it would
+bypass the login challenge; API clients should use an API key instead. Legacy
+GPUStack system principals used by workers are not affected.
+
+CAPTCHA challenges expire after five minutes, are bound to a short-lived
+HttpOnly `SameSite=Strict` cookie, and are single-use across server replicas
+through the shared database. The image and optional audio challenge endpoints,
+and the local login endpoint while CAPTCHA is enabled, also have bounded
+per-process rate limits.
+Multi-replica or Internet-facing deployments should enforce an additional
+global rate limit at their trusted ingress or API gateway.
