@@ -118,6 +118,11 @@ class InferenceBackendBase(SQLModel):
     common_parameters: Optional[List[str]] = SQLField(
         sa_column=Column(JSON), default=None
     )
+    # Version keys hidden from the deploy dropdown (/inference-backends/list);
+    # management endpoints still expose them. Applies to all backend types.
+    disabled_versions: Optional[List[str]] = SQLField(
+        sa_column=Column(JSON), default=None
+    )
 
     def resolve_target_version(self, version: Optional[str] = None) -> Optional[str]:
         """

@@ -341,6 +341,7 @@ async def list_backend_configs(  # noqa: C901
         # mutating the ORM rows themselves — no ``expunge`` dance, no
         # risk of a stray flush persisting the read-time merge.
         merged_versions_by_id: Dict[int, VersionConfigDict] = {}
+        merged_disabled_by_id: Dict[int, List[str]] = {}
         grouped: Dict[str, InferenceBackend] = {}
         for b in visible_rows:
             name = b.backend_name
@@ -355,11 +356,18 @@ async def list_backend_configs(  # noqa: C901
                 **(org_row.version_configs.root if org_row.version_configs else {}),
             }
             merged_versions_by_id[org_row.id] = VersionConfigDict(root=merged_versions)
+            # Hide a version disabled in either layer (Platform ∪ Org).
+            merged_disabled_by_id[org_row.id] = list(
+                {*(other.disabled_versions or []), *(org_row.disabled_versions or [])}
+            )
             grouped[name] = org_row
         inference_backends = list(grouped.values())
         for backend in inference_backends:
             effective_version_configs = merged_versions_by_id.get(
                 backend.id, backend.version_configs
+            )
+            effective_disabled = merged_disabled_by_id.get(
+                backend.id, backend.disabled_versions or []
             )
             # Get versions from version_config
             versions: List[VersionListItem] = []
@@ -372,6 +380,9 @@ async def list_backend_configs(  # noqa: C901
                 ]
 
             if backend.is_built_in:
+                # An explicitly disabled built-in is hidden from the dropdown.
+                if backend.enabled is False:
+                    continue
                 # For built-in backends, add runner versions and use special show name
                 runner_versions, version_configs, default_version = merge_list_runners(
                     backend.backend_name,
@@ -415,10 +426,12 @@ async def list_backend_configs(  # noqa: C901
                     common_parameters=backend.common_parameters,
                 )
             else:
-                if (
-                    backend.backend_source == BackendSourceEnum.COMMUNITY
-                    and not backend.enabled
-                ):
+                # community is opt-in (hidden unless enabled); custom is
+                # opt-out (shown unless explicitly disabled; null = enabled).
+                if backend.backend_source == BackendSourceEnum.COMMUNITY:
+                    if not backend.enabled:
+                        continue
+                elif backend.enabled is False:
                     continue
                 # For custom backends, use backend_name as show_name
                 backend_item = InferenceBackendListItem(
@@ -433,6 +446,24 @@ async def list_backend_configs(  # noqa: C901
                     parameter_format=backend.parameter_format,
                     common_parameters=backend.common_parameters,
                 )
+
+            # Hide admin-disabled versions from the deploy dropdown (Platform ∪
+            # Org union); the management endpoint keeps them for re-enabling.
+            if effective_disabled:
+                kept = [
+                    v
+                    for v in (backend_item.versions or [])
+                    if v.version not in effective_disabled
+                ]
+                backend_item.versions = kept
+                kept_names = {v.version for v in kept}
+                # Don't leave the dropdown default pointing at a hidden version.
+                if (
+                    backend_item.default_version
+                    and backend_item.default_version not in kept_names
+                ):
+                    live = [v for v in kept if not v.is_deprecated] or kept
+                    backend_item.default_version = live[0].version if live else None
 
             items.append(backend_item)
 
@@ -670,7 +701,7 @@ async def merge_runner_versions_to_db(
 
 
 def _generate_framework_index_map(  # noqa: C901
-    version_config_dicts: List[Dict[str, VersionConfig]]
+    version_config_dicts: List[Dict[str, VersionConfig]],
 ) -> Dict[str, List[str]]:
     """
     Generate framework index map from a list of version config dictionaries.
@@ -1055,6 +1086,7 @@ async def create_inference_backend(
             backend_source=backend_in.backend_source,
             parameter_format=backend_in.parameter_format,
             common_parameters=backend_in.common_parameters,
+            disabled_versions=backend_in.disabled_versions,
             owner_principal_id=target_org_id,
         )
         backend = await InferenceBackend.create(session, backend)
@@ -1168,11 +1200,10 @@ async def update_inference_backend(  # noqa: C901
             message="The name of inference-backend can not be modified",
         )
 
-    # Validate that built-in backends cannot have default_version set
-    if is_built_in_backend(backend.backend_name) and backend_in.default_version:
-        raise BadRequestException(
-            message=f"Built-in backend '{backend.backend_name}' cannot have default_version set. Default version is managed automatically.",
-        )
+    # Built-in default_version is auto-managed from the runner catalog and the
+    # read path enriches it onto the row, so a client round-trips it back on
+    # PUT. Don't reject or persist it — the DB row stays NULL, catalog wins.
+    is_built_in = is_built_in_backend(backend.backend_name)
 
     if backend_in.version_configs is not None:
         await _validate_version_removal(session, backend, backend_in.version_configs)
@@ -1193,7 +1224,6 @@ async def update_inference_backend(  # noqa: C901
         update_data = {
             "backend_name": backend_in.backend_name,
             "version_configs": backend_in.version_configs,
-            "default_version": backend_in.default_version,
             "default_backend_param": backend_in.default_backend_param,
             "default_run_command": backend_in.default_run_command,
             "default_entrypoint": backend_in.default_entrypoint,
@@ -1204,9 +1234,17 @@ async def update_inference_backend(  # noqa: C901
             "parameter_format": backend_in.parameter_format,
             "common_parameters": backend_in.common_parameters,
         }
+        # Custom/community backends own their default_version; built-ins don't.
+        if not is_built_in:
+            update_data["default_version"] = backend_in.default_version
+        # Visibility toggles apply to every backend type (built-in included);
+        # only write when provided so unrelated edits don't clear them.
+        if backend_in.enabled is not None:
+            update_data["enabled"] = backend_in.enabled
+        if backend_in.disabled_versions is not None:
+            update_data["disabled_versions"] = backend_in.disabled_versions
+
         if backend_in.backend_source == BackendSourceEnum.COMMUNITY:
-            if backend_in.enabled is not None:
-                update_data["enabled"] = backend_in.enabled
             built_in_version = {
                 k: v
                 for k, v in backend.version_configs.root.items()
