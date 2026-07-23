@@ -172,7 +172,7 @@ class UsageDetailsArchiver:
         archive_table = ModelUsageDetailsArchive.__table__
 
         async with async_session() as session:
-            ids = (
+            id_rows = (
                 await session.exec(
                     select(ModelUsageDetails.id)
                     .where(age_predicate)
@@ -180,6 +180,9 @@ class UsageDetailsArchiver:
                     .limit(self._batch_size)
                 )
             ).all()
+            # ``session.exec(select(col))`` may yield Row tuples or scalars
+            # depending on driver — normalize to plain ints.
+            ids = [r if isinstance(r, int) else r[0] for r in id_rows]
             if not ids:
                 return 0
 
@@ -187,15 +190,16 @@ class UsageDetailsArchiver:
             # an id in archive (replication quirk, mid-transaction rollback
             # of the delete leg), skip it on insert. INSERT and DELETE
             # share this transaction so the normal path can't hit this.
-            existing_archive_ids = set(
-                (
-                    await session.exec(
-                        select(ModelUsageDetailsArchive.id).where(
-                            ModelUsageDetailsArchive.id.in_(ids)
-                        )
+            existing_rows = (
+                await session.exec(
+                    select(ModelUsageDetailsArchive.id).where(
+                        ModelUsageDetailsArchive.id.in_(ids)
                     )
-                ).all()
-            )
+                )
+            ).all()
+            existing_archive_ids = {
+                r if isinstance(r, int) else r[0] for r in existing_rows
+            }
             ids_to_insert = [i for i in ids if i not in existing_archive_ids]
 
             if ids_to_insert:
