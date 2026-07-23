@@ -304,11 +304,11 @@ items:
   #
 
   ## CANN
-  - name: "ubuntu-22-04-cann-9-0-0-a3"
-    displayName: "Ubuntu 22.04 LTS + CANN 9.0.0 (A3)"
+  - name: "ubuntu-22-04-cann-9-1-0-beta3-a3"
+    displayName: "Ubuntu 22.04 LTS + CANN 9.1.0-beta.3 (A3)"
     manufacturer: "ascend"
     spec:
-      image: "ascendai/cann:9.0.0-a3-ubuntu22.04-py3.11-devel"
+      image: "quay.io/ascend/cann:9.1.0-beta.3-a3-ubuntu22.04-py3.12-devel"
       imagePullPolicy: "IfNotPresent"
       command:
         - "tail"
@@ -321,11 +321,11 @@ items:
       resources:
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "ubuntu-22-04-cann-9-0-0-910b"
-    displayName: "Ubuntu 22.04 LTS + CANN 9.0.0 (910B)"
+  - name: "ubuntu-22-04-cann-9-1-0-beta3-910b"
+    displayName: "Ubuntu 22.04 LTS + CANN 9.1.0-beta.3 (910B)"
     manufacturer: "ascend"
     spec:
-      image: "ascendai/cann:9.0.0-910b-ubuntu22.04-py3.11-devel"
+      image: "quay.io/ascend/cann:9.1.0-beta.3-910b-ubuntu22.04-py3.12-devel"
       imagePullPolicy: "IfNotPresent"
       command:
         - "tail"
@@ -338,11 +338,62 @@ items:
       resources:
         localStorage: "15Gi"
       volumeMount: "/workspace"
-  - name: "ubuntu-22-04-cann-9-0-0-310p"
-    displayName: "Ubuntu 22.04 LTS + CANN 9.0.0 (310P)"
+  - name: "ubuntu-22-04-cann-9-1-0-beta3-310p"
+    displayName: "Ubuntu 22.04 LTS + CANN 9.1.0-beta.3 (310P)"
     manufacturer: "ascend"
     spec:
-      image: "ascendai/cann:9.0.0-310p-ubuntu22.04-py3.11-devel"
+      image: "quay.io/ascend/cann:9.1.0-beta.3-310p-ubuntu22.04-py3.12-devel"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "ubuntu-22-04-cann-8-5-0-a3"
+    displayName: "Ubuntu 22.04 LTS + CANN 8.5.0 (A3)"
+    manufacturer: "ascend"
+    spec:
+      image: "quay.io/ascend/cann:8.5.0-a3-ubuntu22.04-py3.11"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "ubuntu-22-04-cann-8-5-0-910b"
+    displayName: "Ubuntu 22.04 LTS + CANN 8.5.0 (910B)"
+    manufacturer: "ascend"
+    spec:
+      image: "quay.io/ascend/cann:8.5.0-910b-ubuntu22.04-py3.11"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - "tail"
+        - "-f"
+        - "/dev/null"
+      ports:
+        - name: "SSH"
+          port: 22
+          protocol: "TCP"
+      resources:
+        localStorage: "15Gi"
+      volumeMount: "/workspace"
+  - name: "ubuntu-22-04-cann-8-5-0-310p"
+    displayName: "Ubuntu 22.04 LTS + CANN 8.5.0 (310P)"
+    manufacturer: "ascend"
+    spec:
+      image: "quay.io/ascend/cann:8.5.0-310p-ubuntu22.04-py3.11"
       imagePullPolicy: "IfNotPresent"
       command:
         - "tail"
