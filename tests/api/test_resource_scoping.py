@@ -60,6 +60,39 @@ def _async_session(session):
 # ---- cluster API-server proxy ----
 
 
+def _shared_cluster(monkeypatch):
+    """A cluster owned by another principal but shared (cluster_access), so a
+    non-owner caller can see but not manage it."""
+    cluster = SimpleNamespace(
+        id=1,
+        name="default",
+        deleted_at=None,
+        owner_principal_id=OWNER_PRINCIPAL,
+        provider=ClusterProvider.Kubernetes,
+    )
+    monkeypatch.setattr(clusters_route, "async_session", _async_session(MagicMock()))
+    monkeypatch.setattr(
+        clusters_route.Cluster, "one_by_id", AsyncMock(return_value=cluster)
+    )
+    # No reachable workers, so a request that clears authorization fails later
+    # with ServiceUnavailable — distinguishable from an authorization error.
+    monkeypatch.setattr(
+        clusters_route.Worker, "all_by_fields", AsyncMock(return_value=[])
+    )
+
+
+def _personal_ctx(user_id: int) -> TenantContext:
+    user = SimpleNamespace(kind=PrincipalType.USER, id=user_id, name="u")
+    return TenantContext(
+        user=user,
+        is_platform_admin=False,
+        current_principal_id=user_id,
+        org_role=None,
+        current_is_personal_scope=True,
+        accessible_cluster_ids={1},
+    )
+
+
 @pytest.mark.asyncio
 async def test_apiserver_proxy_denies_cross_tenant(monkeypatch):
     victim = SimpleNamespace(
@@ -73,44 +106,146 @@ async def test_apiserver_proxy_denies_cross_tenant(monkeypatch):
     monkeypatch.setattr(
         clusters_route.Cluster, "one_by_id", AsyncMock(return_value=victim)
     )
-    # No reachable workers so that, if the visibility check were removed,
-    # the handler would raise ServiceUnavailable — a different error than
-    # the NotFound the check produces.
     monkeypatch.setattr(
         clusters_route.Worker, "all_by_fields", AsyncMock(return_value=[])
     )
 
+    # A cluster the caller can neither own nor access is reported as missing.
     with pytest.raises(NotFoundException):
         await clusters_route.cluster_apiserver_proxy(
             request=MagicMock(),
             ctx=_user_ctx(),
             id=2,
+            path="apis/worker.gpustack.ai/v1/namespaces/gpustack-user-7/instances/x/log",
+        )
+
+
+@pytest.mark.asyncio
+async def test_apiserver_proxy_denies_core_api_for_member(monkeypatch):
+    """A usage-grant caller can see the shared cluster but must not read core
+    Kubernetes resources (e.g. Secrets) through the proxy."""
+    _shared_cluster(monkeypatch)
+
+    request = MagicMock()
+    request.method = "GET"
+    with pytest.raises(ForbiddenException):
+        await clusters_route.cluster_apiserver_proxy(
+            request=request,
+            ctx=_personal_ctx(6),
+            id=1,
             path="api/v1/namespaces/kube-system/secrets",
         )
 
 
 @pytest.mark.asyncio
-async def test_apiserver_proxy_allows_owner(monkeypatch):
-    owned = SimpleNamespace(
+async def test_apiserver_proxy_denies_other_namespace(monkeypatch):
+    """A usage-grant caller may read workload resources, but only in their own
+    principal namespace."""
+    _shared_cluster(monkeypatch)
+
+    request = MagicMock()
+    request.method = "GET"
+    with pytest.raises(ForbiddenException):
+        await clusters_route.cluster_apiserver_proxy(
+            request=request,
+            ctx=_personal_ctx(6),
+            id=1,
+            path="apis/worker.gpustack.ai/v1/namespaces/gpustack-user-999/instances/x/log",
+        )
+
+
+@pytest.mark.asyncio
+async def test_apiserver_proxy_denies_member_write(monkeypatch):
+    """Non-managers are read-only even within their own namespace."""
+    _shared_cluster(monkeypatch)
+
+    request = MagicMock()
+    request.method = "DELETE"
+    with pytest.raises(ForbiddenException):
+        await clusters_route.cluster_apiserver_proxy(
+            request=request,
+            ctx=_personal_ctx(6),
+            id=1,
+            path="apis/worker.gpustack.ai/v1/namespaces/gpustack-user-6/instances/x",
+        )
+
+
+@pytest.mark.asyncio
+async def test_apiserver_proxy_allows_own_namespace_workload(monkeypatch):
+    """A usage-grant caller reads workload logs/events in their own namespace —
+    passes authorization and only fails later on "no workers"."""
+    _shared_cluster(monkeypatch)
+
+    request = MagicMock()
+    request.method = "GET"
+    with pytest.raises(ServiceUnavailableException):
+        await clusters_route.cluster_apiserver_proxy(
+            request=request,
+            ctx=_personal_ctx(6),
+            id=1,
+            path="apis/worker.gpustack.ai/v1/namespaces/gpustack-user-6/instances/x/events",
+        )
+
+
+@pytest.mark.asyncio
+async def test_apiserver_proxy_allows_org_member_namespace(monkeypatch):
+    """An Org member acting as their Org reads workload resources in the Org
+    namespace (which Org members share)."""
+    _shared_cluster(monkeypatch)
+    org = SimpleNamespace(kind=PrincipalType.ORG, id=500, name="acme")
+    monkeypatch.setattr(
+        clusters_route.Principal, "one_by_id", AsyncMock(return_value=org)
+    )
+    member_ctx = TenantContext(
+        user=SimpleNamespace(kind=PrincipalType.USER, id=6, name="u"),
+        is_platform_admin=False,
+        current_principal_id=500,
+        org_role=None,
+        current_is_personal_scope=False,
+        accessible_cluster_ids={1},
+    )
+
+    request = MagicMock()
+    request.method = "GET"
+    with pytest.raises(ServiceUnavailableException):
+        await clusters_route.cluster_apiserver_proxy(
+            request=request,
+            ctx=member_ctx,
+            id=1,
+            path="apis/worker.gpustack.ai/v1/namespaces/gpustack-acme/instances/x/events",
+        )
+
+
+@pytest.mark.asyncio
+async def test_apiserver_proxy_allows_manager(monkeypatch):
+    cluster = SimpleNamespace(
         id=2,
-        name="mine",
+        name="c",
         deleted_at=None,
-        owner_principal_id=CALLER_PRINCIPAL,
+        owner_principal_id=OWNER_PRINCIPAL,
         provider=ClusterProvider.Kubernetes,
     )
     monkeypatch.setattr(clusters_route, "async_session", _async_session(MagicMock()))
     monkeypatch.setattr(
-        clusters_route.Cluster, "one_by_id", AsyncMock(return_value=owned)
+        clusters_route.Cluster, "one_by_id", AsyncMock(return_value=cluster)
     )
     monkeypatch.setattr(
         clusters_route.Worker, "all_by_fields", AsyncMock(return_value=[])
     )
 
-    # Passes visibility and fails later on "no workers" — proving the owner
-    # is not blocked by the tenant gate.
+    # A platform admin manages any cluster: passes both authorization gates
+    # and only fails later on "no workers" — proving the manager isn't blocked.
+    admin = MagicMock()
+    admin.kind = PrincipalType.USER
+    admin_ctx = TenantContext(
+        user=admin,
+        is_platform_admin=True,
+        current_principal_id=None,
+        org_role=None,
+    )
     with pytest.raises(ServiceUnavailableException):
         await clusters_route.cluster_apiserver_proxy(
-            request=MagicMock(), ctx=_user_ctx(), id=2, path="version"
+            request=MagicMock(), ctx=admin_ctx, id=2, path="version"
         )
 
 

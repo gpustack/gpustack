@@ -13,6 +13,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    ForbiddenException,
     InternalServerErrorException,
     NotFoundException,
     InvalidException,
@@ -63,7 +64,10 @@ from gpustack.schemas.principals import (
 from gpustack.schemas.users import system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
-from gpustack.gpu_instances.cluster_apis_util import principal_namespace_identifier
+from gpustack.gpu_instances.cluster_apis_util import (
+    principal_namespace_identifier,
+    get_namespace_name,
+)
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import (
     get_global_config,
@@ -854,6 +858,57 @@ _CLUSTER_PROXY_REQUEST_HEADER_SKIP = {
 }
 
 
+# Non-manager callers (usage-grant users, Org members) reach the proxy only
+# for their own workload resources: the UI reads GPU-instance and
+# persistent-volume logs/events under the worker.gpustack.ai API group,
+# scoped to the caller's principal namespace. Everything else — core
+# resources such as Secrets, cluster-scoped reads, other namespaces, and any
+# mutation — stays owner/admin-only.
+_PROXY_READ_METHODS = {"GET", "HEAD", "OPTIONS"}
+_PROXY_WORKLOAD_API_PREFIX = "apis/worker.gpustack.ai/"
+
+
+def _proxy_path_namespace(path: str) -> Optional[str]:
+    """The namespace segment of a Kubernetes API path, or None for a
+    cluster-scoped or all-namespace request."""
+    segments = [s for s in path.split("/") if s]
+    for i, seg in enumerate(segments):
+        if seg == "namespaces" and i + 1 < len(segments):
+            return segments[i + 1]
+    return None
+
+
+async def _assert_workload_proxy_scope(
+    session: AsyncSession, ctx: TenantContext, method: str, path: str
+) -> None:
+    """Confine a non-manager caller to read-only access to the workload API
+    within their own principal namespace. The caller's namespace follows the
+    principal they are acting as — their USER namespace in personal scope, the
+    Org namespace when acting as an Org (Org members share it)."""
+    normalized = path.lstrip("/")
+    if method.upper() not in _PROXY_READ_METHODS or not normalized.startswith(
+        _PROXY_WORKLOAD_API_PREFIX
+    ):
+        raise ForbiddenException(
+            message="Insufficient permission to access this cluster resource"
+        )
+    if ctx.current_is_personal_scope:
+        acting = ctx.user
+    elif ctx.current_principal_id is not None:
+        acting = await Principal.one_by_id(session, ctx.current_principal_id)
+    else:
+        acting = None
+    if acting is None:
+        raise ForbiddenException(
+            message="Insufficient permission to access this cluster resource"
+        )
+    allowed_namespace = get_namespace_name(principal_namespace_identifier(acting))
+    if _proxy_path_namespace(normalized) != allowed_namespace:
+        raise ForbiddenException(
+            message="Insufficient permission to access this cluster resource"
+        )
+
+
 @router.api_route(
     "/{id}/proxy/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
@@ -878,9 +933,17 @@ async def cluster_apiserver_proxy(
         cluster = await Cluster.one_by_id(session, id)
         if not cluster or cluster.deleted_at is not None:
             raise NotFoundException(message=f"cluster {id} not found")
+        # The proxy is a raw Kubernetes API passthrough authenticated with the
+        # worker's in-pod ServiceAccount, so it is a cluster-management
+        # capability. Owners and platform admin get the full passthrough;
+        # everyone who can only use the cluster (a cluster_access grant, e.g.
+        # the Default-Org "Everyone" grant, or an Org member) is confined to
+        # read-only access to their own workload resources.
         assert_cluster_visible(
             ctx, cluster, not_found_message=f"cluster {id} not found"
         )
+        if not _is_cluster_manageable(cluster, ctx):
+            await _assert_workload_proxy_scope(session, ctx, request.method, path)
         if cluster.provider != ClusterProvider.Kubernetes:
             raise InvalidException(
                 message=(
