@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import aiohttp
 from typing import Callable, List, Optional, Tuple
@@ -8,6 +9,7 @@ from starlette.background import BackgroundTask
 
 from gpustack.api.auth import worker_auth
 from gpustack.api.exceptions import (
+    BadRequestException,
     GatewayTimeoutException,
     ServiceUnavailableException,
     NotFoundException,
@@ -16,6 +18,7 @@ from gpustack.api.exceptions import (
 from gpustack import envs
 from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.gateway.utils import get_instance_id_from_header, router_header_key
+from gpustack.scheduler.meta_registry import QWEN3_TTS_ARCHITECTURE
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
@@ -55,6 +58,48 @@ def _filter_response_headers(resp_headers) -> List[Tuple[str, str]]:
     ]
 
 
+def _extract_requested_task_type(content: bytes, content_type: str) -> Optional[str]:
+    if "application/json" not in content_type.lower() or not content:
+        return None
+    try:
+        body = json.loads(content)
+    except (ValueError, TypeError):
+        return None
+    requested = body.get("task_type") if isinstance(body, dict) else None
+    return requested if isinstance(requested, str) else None
+
+
+async def _validate_speech_task_type(request: Request, path: str):
+    # A Qwen3-TTS variant is a single-task checkpoint; a mismatched task_type
+    # crashes the whole vllm engine (issue #5351), so reject it before forwarding.
+    if request.method != "POST" or not path.rstrip("/").endswith("audio/speech"):
+        return
+    model_instance_id = getattr(request.state, "x_target_instance_id", None)
+    get_model = getattr(request.app.state, "get_model_by_model_instance_id", None)
+    if model_instance_id is None or get_model is None:
+        return
+    model = get_model(model_instance_id)
+    meta = (model.meta or {}) if model else {}
+    if meta.get("architecture") != QWEN3_TTS_ARCHITECTURE:
+        return
+    supported = meta.get("task_type")
+    if not supported:
+        return
+
+    requested = _extract_requested_task_type(
+        await request.body(), request.headers.get("content-type", "")
+    )
+    if requested and requested.strip().lower() != supported.lower():
+        raise BadRequestException(
+            message=(
+                f"Model '{model.name}' only supports task_type '{supported}', "
+                f"but '{requested}' was requested. "
+                f"Deploy the matching Qwen3-TTS model for that task."
+            ),
+            is_openai_exception=True,
+        )
+
+
 @router.api_route(
     "/proxy/{path:path}",
     methods=["GET", "POST", "OPTIONS", "HEAD"],
@@ -69,6 +114,10 @@ async def proxy(path: str, request: Request):  # noqa: C901
             status_code=400,
             detail="Missing target port; ensure the request includes the routing header",
         )
+
+    # Reject incompatible TTS requests before the try below, so they surface as
+    # 400 instead of being swallowed into the catch-all 503.
+    await _validate_speech_task_type(request, path)
 
     try:
         logger.debug(
