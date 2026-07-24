@@ -47,7 +47,7 @@ The figure below illustrates how a single GPUStack server can manage multiple GP
 
 GPUStack's automated engine selection and parameter optimization deliver strong inference performance out of the box. The following figure shows throughput improvements over default vLLM configurations:
 
-![a100-throughput-comparison](docs/assets/a100-throughput-comparison.png)
+![h200-throughput-comparison](docs/assets/h200-throughput-comparison.png)
 
 For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
 
