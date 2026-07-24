@@ -24,7 +24,6 @@ from gpustack.routes import clusters as clusters_route
 from gpustack.routes import cloud_credentials as cloud_credentials_route
 from gpustack.routes import gpu_instances as gpu_instances_route
 from gpustack.routes import model_instances as model_instances_route
-from gpustack.routes import models as models_route
 from gpustack.schemas.clusters import ClusterProvider
 from gpustack.schemas.principals import PrincipalType
 from gpustack.server import services as services_module
@@ -154,10 +153,11 @@ async def test_gpu_instance_create_denies_cross_tenant_cluster(monkeypatch):
         provider=ClusterProvider.Kubernetes,
     )
     monkeypatch.setattr(
-        models_route.Cluster, "one_by_id", AsyncMock(return_value=victim_cluster)
+        gpu_instances_route.Cluster, "one_by_id", AsyncMock(return_value=victim_cluster)
     )
     # owner_principal_id matches the caller so owner validation passes and
-    # execution reaches the cluster-ownership check.
+    # execution reaches the cluster-visibility check; the victim cluster is
+    # neither owned by nor granted to the caller, so it resolves as 404.
     create_obj = SimpleNamespace(
         owner_principal_id=CALLER_PRINCIPAL, cluster_id=2, name="x"
     )
@@ -166,6 +166,52 @@ async def test_gpu_instance_create_denies_cross_tenant_cluster(monkeypatch):
         await gpu_instances_route.create_gpu_instance(
             session=MagicMock(), ctx=_user_ctx(), create_obj=create_obj
         )
+
+
+@pytest.mark.asyncio
+async def test_gpu_instance_create_allows_granted_cluster(monkeypatch):
+    """A workload may run on a cluster owned by another principal (e.g. the
+    Default-Org cluster) when it is shared via cluster_access — usage right
+    without ownership. Visibility, not ownership, gates GPU-instance create."""
+    granted_cluster = SimpleNamespace(
+        id=2,
+        name="default",
+        deleted_at=None,
+        owner_principal_id=OWNER_PRINCIPAL,
+        provider=ClusterProvider.Kubernetes,
+    )
+    monkeypatch.setattr(
+        gpu_instances_route.Cluster,
+        "one_by_id",
+        AsyncMock(return_value=granted_cluster),
+    )
+    monkeypatch.setattr(
+        gpu_instances_route, "_validate_create_obj", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        gpu_instances_route.GPUInstance,
+        "exist_by_fields",
+        AsyncMock(return_value=False),
+    )
+    created = SimpleNamespace(id=1)
+    monkeypatch.setattr(
+        gpu_instances_route.GPUInstance, "create", AsyncMock(return_value=created)
+    )
+
+    create_obj = SimpleNamespace(
+        owner_principal_id=CALLER_PRINCIPAL,
+        cluster_id=2,
+        name="x",
+        model_dump=lambda: {"cluster_id": 2, "name": "x"},
+    )
+    ctx = _user_ctx()
+    # The caller isn't the cluster owner but holds a cluster_access grant.
+    ctx.accessible_cluster_ids = {2}
+
+    result = await gpu_instances_route.create_gpu_instance(
+        session=MagicMock(), ctx=ctx, create_obj=create_obj
+    )
+    assert result is created
 
 
 # ---- cloud-credential provider proxy ----

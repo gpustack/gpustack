@@ -45,12 +45,13 @@ from gpustack.api.exceptions import (
 from gpustack.api.tenant import (
     bypass_tenant_filter,
     TenantContext,
+    assert_cluster_visible,
     assert_org_owned_writable,
     validate_owner_principal,
 )
 from gpustack.gpu_instances import validate_k8s_object_name
 from gpustack.routes.gpu_instance_persistent_volumes import resolve_pv_type_for_ctx
-from gpustack.routes.models import assert_cluster_belongs_to_org
+from gpustack.schemas.clusters import Cluster
 
 from gpustack.schemas import (
     GPUInstance,
@@ -146,11 +147,18 @@ async def create_gpu_instance(
         allow_member=True,
     )
 
-    # A GPU instance runs on infrastructure owned by its Org, so the chosen
-    # cluster must be visible to the caller and owned by the instance's Org.
-    await assert_cluster_belongs_to_org(
-        ctx, session, create_obj.cluster_id, create_obj.owner_principal_id
-    )
+    # A GPU instance is a workload, not org-owned infrastructure: it may run
+    # on any cluster the caller can see — one owned by the instance's Org, or
+    # one shared via cluster_access (e.g. the Default-Org cluster granted to
+    # every authenticated user for usage). Cluster ownership is the model-level
+    # rule; a workload only requires visibility. A cluster the caller can't see
+    # is a 404, so cross-tenant cluster ids can't be probed or targeted.
+    if create_obj.cluster_id is not None:
+        not_found = f"Cluster {create_obj.cluster_id} not found"
+        cluster = await Cluster.one_by_id(session, create_obj.cluster_id)
+        assert_cluster_visible(ctx, cluster, not_found_message=not_found)
+        if cluster.deleted_at is not None:
+            raise NotFoundException(message=not_found)
 
     persistent_volume_id = await _validate_create_obj(session, ctx, create_obj)
 
