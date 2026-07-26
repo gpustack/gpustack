@@ -110,3 +110,56 @@ async def test_cluster_proxy_uncompressed_passthrough(monkeypatch):
     assert resp.status_code == 200
     assert "content-encoding" not in {k.lower() for k in resp.headers}
     assert json.loads(resp.content) == json.loads(payload)
+
+
+@asynccontextmanager
+async def _fake_apiserver_stream_then_fail(first_chunk: bytes):
+    """A stand-in kube-apiserver that writes one chunk of a streamed response
+    (mimicking a `?watch=true` long-lived call) and then aborts the connection
+    mid-body, e.g. a network blip or the apiserver process dying. Never sends a
+    second chunk and never completes normally."""
+
+    async def handler(request):
+        resp = web.StreamResponse(
+            headers={"Content-Type": "application/json"},
+        )
+        await resp.prepare(request)
+        await resp.write(first_chunk)
+        # Simulate the transport failing mid-stream: abort the connection
+        # instead of returning normally, so nothing terminates the body
+        # cleanly. aiohttp's client (used by the proxy) sees this as a
+        # mid-read failure on resp.content.iter_any(), not a clean EOF.
+        request.transport.abort()
+        return resp
+
+    app = web.Application()
+    app.router.add_route("*", "/{path:.*}", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = runner.addresses[0][1]
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_cluster_proxy_surfaces_error_when_upstream_stream_fails_mid_read(
+    monkeypatch,
+):
+    """Regression for #5939: streamer() must not swallow a mid-body transport
+    failure into a clean-looking end of stream. The status code and headers
+    are already committed to the caller by the time the body starts (they were
+    set from the upstream's initial 200 response), so the only way left to
+    signal "this body is incomplete" is to fail the ASGI response instead of
+    letting the generator return normally. Before the fix, this raises nothing
+    and the client observes a truncated body under a 200 with no indication
+    anything went wrong."""
+    first_chunk = json.dumps({"items": ["ok"]}).encode() + b"\n"
+
+    async with _fake_apiserver_stream_then_fail(first_chunk) as base_url:
+        async with _worker_client(monkeypatch, base_url) as client:
+            with pytest.raises(Exception):
+                await client.get("/cluster-proxy/api/v1/namespaces/kube-system/pods")
