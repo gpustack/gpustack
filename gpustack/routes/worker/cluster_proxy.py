@@ -185,6 +185,14 @@ async def cluster_proxy(path: str, request: Request):
                 target_url,
                 e,
             )
+            # The status code and headers were already committed to the
+            # caller from the upstream's initial response, so a mid-body
+            # failure can no longer be turned into a non-200. Re-raise
+            # instead of returning normally: letting the generator complete
+            # cleanly here made StreamingResponse close out the body as if
+            # it had ended successfully, so the caller received a truncated
+            # payload under a 200 with no indication anything went wrong.
+            raise
         finally:
             resp.release()
 
