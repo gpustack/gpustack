@@ -1855,14 +1855,14 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(gpustack:cluster_info)",
+        "definition": "query_result(gpustack:cluster_info and on(cluster_id) gpustack:worker_info)",
         "includeAll": false,
         "label": "Cluster",
         "name": "cluster_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "query_result(gpustack:cluster_info)",
+          "query": "query_result(gpustack:cluster_info and on(cluster_id) gpustack:worker_info)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
