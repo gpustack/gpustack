@@ -131,6 +131,7 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE`    | Scale-down max contribution for status scorer (normalized).                 | `100`   | Server     |
 | `GPUSTACK_SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE`   | Scale-down max contribution for offload scorer (normalized).                | `10`    | Server     |
 | `GPUSTACK_SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE` | Scale-down max contribution for placement scorer (normalized).              | `1`     | Server     |
+| `GPUSTACK_SCALING_SCHEDULER_INTERVAL`               | Interval in seconds at which scheduled scaling recomputes each model's replica count from its windows. The reconcile is level-triggered, so this bounds only how long a window boundary can go unnoticed, never correctness. Clamped to a minimum of `1` second. | `30`    | Server     |
 
 ### GPU Instance Configuration
 

@@ -27,6 +27,7 @@ dependencies = [
     "python-multipart>=0.0.17",
     "dataclasses-json>=0.6.7",
     "apscheduler>=3.10.4,<4.0.0",
+    "croniter>=2.0.0,<3.0.0",
     "asyncpg>=0.29.0",
     "httpx[socks]>=0.27.0",
     "alembic>=1.13.2",

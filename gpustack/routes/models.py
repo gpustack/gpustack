@@ -64,6 +64,7 @@ from gpustack.server.services import (
     WorkerService,
     revoke_model_access_cache,
 )
+from gpustack.server.scaling_scheduler import compute_desired_replicas
 from gpustack.server.lora_adapters_discovery import list_adapters_for_base
 from gpustack.server.lora_model_routes import (
     cleanup_orphan_lora_routes,
@@ -311,13 +312,61 @@ async def get_model_instances(ctx: TenantContextDep, id: int, params: ListParams
         return ModelInstancesPublic(items=instances, pagination=pagination)
 
 
+def apply_scaling_schedule_baseline(
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+) -> None:
+    """
+    Drive ``replicas`` from an enabled scaling schedule.
+
+    While a schedule is enabled the replica count is owned by the schedule:
+    ``baseline_replicas`` plus the window rules are the user's input, and
+    ``replicas`` becomes the scheduler-driven value. Set it to the count
+    effective right now so the model doesn't run at a stale count until the
+    scheduler's next tick. A submitted ``replicas`` is ignored in this mode.
+
+    Call this as a server-side assignment *after* validation. Validating a
+    rewritten ``replicas`` would make checks depend on the current wall clock:
+    the value is a point-in-time output of the schedule, not caller intent.
+    """
+    schedule = getattr(model_in, "scaling_schedule", None)
+    if not schedule or not schedule.enabled:
+        return
+    effective = compute_desired_replicas(schedule)
+    if effective is not None:
+        model_in.replicas = effective
+
+
+def _max_intended_replicas(
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+) -> int:
+    """Largest replica count this deployment could ever run.
+
+    Only for deciding *whether* placement needs validating. The plain
+    ``replicas > 0`` gate assumes a zero count means no instances are ever
+    placed, which a schedule breaks: ``replicas`` is then just the count for
+    right now, and the scheduler raises it later. Scaling to zero outside
+    business hours is a headline use case, so a submitted 0 must still get its
+    ``gpu_selector`` checked. Checks *inside* validation keep reading the
+    submitted ``replicas`` — that is the caller's intent.
+    """
+    schedule = getattr(model_in, "scaling_schedule", None)
+    if not schedule or not schedule.enabled:
+        return model_in.replicas
+    # An enabled schedule always carries a baseline and at least one rule.
+    return max(
+        model_in.replicas,
+        schedule.baseline_replicas,
+        *(rule.replicas for rule in schedule.rules),
+    )
+
+
 async def validate_model_in(
     session: SessionDep,
     model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
     *,
     cluster_id: Optional[int] = None,
 ):
-    if model_in.gpu_selector is not None and model_in.replicas > 0:
+    if model_in.gpu_selector is not None and _max_intended_replicas(model_in) > 0:
         await validate_gpu_ids(session, model_in, cluster_id=cluster_id)
 
     if is_custom_backend(model_in.backend):
@@ -643,6 +692,9 @@ async def create_model(
                 message=f"Model route with name '{model_in.name}' already exists."
             )
     await validate_model_in(session, model_in)
+    # Server-side assignment, after validation: validation must see the replica
+    # count the caller submitted, not the schedule-driven one.
+    apply_scaling_schedule_baseline(model_in)
     model_in_dict = model_in.model_dump(exclude={"enable_model_route"})
 
     # Stamp tenant scope. ModelBase has owner_principal_id defaulted to
@@ -744,6 +796,9 @@ async def update_model(
     )
 
     await validate_model_in(session, model_in)
+    # Server-side assignment, after validation: validation must see the replica
+    # count the caller submitted, not the schedule-driven one.
+    apply_scaling_schedule_baseline(model_in)
 
     if model_in.backend != BackendEnum.CUSTOM.value and (
         model.run_command or model.image_name
