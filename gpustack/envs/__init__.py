@@ -318,3 +318,13 @@ BENCHMARK_REQUEST_TIMEOUT = int(
 USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS = int(
     os.getenv("GPUSTACK_USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS", 50000)
 )
+
+# Scheduled scaling (tidal) reconcile cadence. The loop is level-triggered — it
+# recomputes the count each pass from (now, windows, baseline) — so this bounds
+# only how long a window boundary can go unnoticed, never correctness. Cron
+# resolution is a minute and the downstream scale-up (instance create, schedule,
+# weight load) takes minutes anyway, so polling faster mostly re-reads unchanged
+# rows. Clamped to >= 1s to avoid a busy loop.
+SCALING_SCHEDULER_INTERVAL = max(
+    1, int(os.getenv("GPUSTACK_SCALING_SCHEDULER_INTERVAL", 30))
+)  # in seconds

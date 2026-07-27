@@ -88,6 +88,7 @@ from gpustack.schemas.metered_usage import MeteredUsage, MeteredUsageArchive
 from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
+from gpustack.server.scaling_scheduler import ScalingScheduler
 from gpustack.utils.platform import is_inside_kubernetes
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
@@ -483,6 +484,12 @@ class Server:
         self._create_async_task(worker_instance_cleaner.start())
 
         logger.debug("Worker instance cleaner started.")
+
+    def _start_scaling_scheduler(self):
+        scaling_scheduler = ScalingScheduler()
+        self._create_async_task(scaling_scheduler.start())
+
+        logger.debug("Scaling scheduler started.")
 
     def _start_usage_details_archiver(self):
         # Construction can fail on schema drift between hot/archive tables or
@@ -1341,3 +1348,6 @@ class Server:
 
         # Worker Syncer (checks worker reachability and updates states)
         self._start_worker_syncer(self._app)
+
+        # Scaling Scheduler (drives model replicas on a cron timetable)
+        self._start_scaling_scheduler()

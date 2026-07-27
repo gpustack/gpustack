@@ -4,7 +4,14 @@ from enum import Enum
 import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
-from pydantic import BaseModel, ConfigDict, field_serializer, model_validator
+from croniter import croniter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import JSON, Column, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy.orm import selectinload
 from sqlmodel import Field, Relationship, SQLModel, Text, select
@@ -120,6 +127,112 @@ class ExtendedKVCacheConfig(BaseModel):
 
     chunk_size: Optional[int] = None
     """ Size for each KV cache chunk (unit: number of tokens). """
+
+
+# A window may span at most a year. Longer values are meaningless for a
+# recurring schedule and overflow the timedelta used to compute the window end.
+MAX_SCALING_WINDOW_SECONDS = 366 * 24 * 3600
+
+
+def _assert_satisfiable_cron(expr: str) -> None:
+    """Reject cron expressions that parse but can never fire.
+
+    ``croniter.is_valid`` accepts impossible dates such as ``0 0 30 2 *``
+    (February 30th); the window would simply never open while the scheduler
+    logged an evaluation failure on every tick. Resolve an occurrence to prove
+    the expression is reachable.
+    """
+    try:
+        croniter(expr).get_next(datetime)
+    except Exception as e:
+        raise ValueError(f"Invalid cron expression: {expr!r} ({e})")
+
+
+class ScalingScheduleRule(BaseModel):
+    """
+    One scheduled-scaling window (GCP scaling-schedule / KEDA Cron scaler
+    semantics). ``start_cron`` fires the window open; the window stays open for
+    ``duration_seconds``. While ``now`` falls inside the window the model's
+    replicas is driven to this rule's ``replicas``. Outside every rule's window
+    the model falls back to the schedule's ``baseline_replicas``. Multiple rules
+    cover multiple windows (e.g. day / night). A start + duration model (rather
+    than start + end) expresses windows that cross midnight / span whole days
+    (e.g. a weekend) without wrap-around ambiguity.
+    """
+
+    start_cron: str = ""
+    """Cron marking the window start, e.g. "0 8 * * *" (every day at 08:00)."""
+    duration_seconds: Optional[int] = Field(
+        default=None, gt=0, le=MAX_SCALING_WINDOW_SECONDS
+    )
+    """How long the window stays open after ``start_cron`` fires, in seconds.
+    Capped at a year: the window end is computed as a ``timedelta``, which
+    overflows (and would surface as a 500) for astronomically large values."""
+    replicas: int = Field(ge=0)
+    """Desired replica count while ``now`` is inside this window."""
+    name: Optional[str] = None
+    """Optional human-readable label, e.g. "daytime"."""
+
+    @field_validator("start_cron")
+    @classmethod
+    def validate_cron(cls, v: str) -> str:
+        # Empty is allowed for a not-yet-filled rule (e.g. a disabled schedule
+        # or a freshly added row). Enabled schedules require a non-empty cron
+        # for every rule — that check lives in ScalingSchedule below.
+        if v:
+            _assert_satisfiable_cron(v)
+        return v
+
+
+class ScalingSchedule(BaseModel):
+    """Scheduled scaling configuration attached to a Model."""
+
+    enabled: bool = False
+    """Whether scheduled scaling drives this model's replicas."""
+    baseline_replicas: Optional[int] = Field(default=None, ge=0)
+    """Replica count when ``now`` is outside every rule window. Required while
+    the schedule is enabled — together with ``rules`` it is the sole input to
+    the effective replica count, and the model's ``replicas`` field becomes a
+    scheduler-driven value rather than a user setting."""
+    rules: List[ScalingScheduleRule] = Field(default_factory=list)
+    """Window rules. Order does not matter: when windows overlap the one that
+    started most recently wins, and windows sharing a start instant resolve to
+    the largest replica count."""
+
+    @model_validator(mode="after")
+    def validate_schedule(self):
+        # Only a live schedule is held to the "every rule must have valid
+        # crons" bar. A disabled schedule may carry incomplete rows (they are
+        # ignored at runtime), so don't 422 on them — this also keeps the
+        # real-time preview from rejecting in-progress edits.
+        if not self.enabled:
+            return self
+
+        if self.baseline_replicas is None:
+            raise ValueError(
+                "baseline_replicas is required when scaling schedule is enabled."
+            )
+
+        if not self.rules:
+            raise ValueError(
+                "At least one rule is required when scaling schedule is enabled."
+            )
+
+        # Field validators already proved every non-empty cron is satisfiable and
+        # every duration positive; a live schedule additionally requires both to
+        # be present on every rule.
+        for rule in self.rules:
+            if not rule.start_cron:
+                raise ValueError(
+                    "start_cron is required for every rule when scaling schedule "
+                    "is enabled."
+                )
+            if not rule.duration_seconds:
+                raise ValueError(
+                    "duration_seconds is required for every rule when scaling "
+                    "schedule is enabled."
+                )
+        return self
 
 
 class ModelSource(BaseModel):
@@ -252,6 +365,11 @@ class ModelSpecBase(SQLModel, ModelSource):
 
     speculative_config: Optional[SpeculativeConfig] = Field(
         sa_type=pydantic_column_type(SpeculativeConfig), default=None
+    )
+
+    # Scheduled scaling: drives `replicas` on a cron timetable.
+    scaling_schedule: Optional[ScalingSchedule] = Field(
+        sa_type=pydantic_column_type(ScalingSchedule), default=None
     )
 
     # Enable generic proxy for model, the control of generic proxy
