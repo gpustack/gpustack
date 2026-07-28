@@ -40,6 +40,11 @@ _BASE_URL = "https://gpustack-operator/apis"
 # bounded connect timeout so a broken socket still fails fast and reconnects.
 _WATCH_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30)
 
+# The subscribe/unsubscribe calls are short exchanges over a local socket, and their
+# caller reconciles under a lock. aiohttp's 5-minute default would let an operator that
+# accepts the connection but never answers stall that reconciliation for the same time.
+_CONTROL_TIMEOUT = aiohttp.ClientTimeout(total=30, sock_connect=10)
+
 _unix_path: Optional[str] = None
 
 
@@ -138,7 +143,7 @@ async def subscribe_worker(
         params = _query(clusters=[cluster], token=token, force=force)
         body = {"gvks": [f"{g}/{v}/{k}" if g else f"{v}/{k}" for g, v, k in gvk or []]}
         async with session.post(
-            f"{_BASE_URL}/workers", params=params, json=body
+            f"{_BASE_URL}/workers", params=params, json=body, timeout=_CONTROL_TIMEOUT
         ) as resp:
             resp.raise_for_status()
 
@@ -149,7 +154,9 @@ async def unsubscribe_worker(
     """DELETE /apis/workers — unsubscribe a worker cluster from the gateway."""
     async with _session() as session:
         params = _query(clusters=[cluster])
-        async with session.delete(f"{_BASE_URL}/workers", params=params) as resp:
+        async with session.delete(
+            f"{_BASE_URL}/workers", params=params, timeout=_CONTROL_TIMEOUT
+        ) as resp:
             resp.raise_for_status()
 
 
