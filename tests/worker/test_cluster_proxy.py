@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 from aiohttp import web
+from aiohttp.client_exceptions import ClientPayloadError
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -156,10 +157,30 @@ async def test_cluster_proxy_surfaces_error_when_upstream_stream_fails_mid_read(
     signal "this body is incomplete" is to fail the ASGI response instead of
     letting the generator return normally. Before the fix, this raises nothing
     and the client observes a truncated body under a 200 with no indication
-    anything went wrong."""
+    anything went wrong.
+
+    A bare `pytest.raises(Exception)` is wide enough to pass on an unrelated
+    failure (e.g. the fake apiserver never starting), so this also pins the
+    concrete exception type and spies on the chunks streamer() actually
+    yielded, to prove the failure happens after the first chunk, i.e. mid-body
+    as the test claims, not before any byte streamed."""
     first_chunk = json.dumps({"items": ["ok"]}).encode() + b"\n"
+    yielded_chunks = []
+    real_streaming_response = cluster_proxy.StreamingResponse
+
+    def spying_streaming_response(content, *args, **kwargs):
+        async def spy():
+            async for chunk in content:
+                yielded_chunks.append(chunk)
+                yield chunk
+
+        return real_streaming_response(spy(), *args, **kwargs)
+
+    monkeypatch.setattr(cluster_proxy, "StreamingResponse", spying_streaming_response)
 
     async with _fake_apiserver_stream_then_fail(first_chunk) as base_url:
         async with _worker_client(monkeypatch, base_url) as client:
-            with pytest.raises(Exception):
+            with pytest.raises(ClientPayloadError):
                 await client.get("/cluster-proxy/api/v1/namespaces/kube-system/pods")
+
+    assert yielded_chunks == [first_chunk]
