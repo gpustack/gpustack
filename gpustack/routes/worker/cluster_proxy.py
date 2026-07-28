@@ -178,13 +178,7 @@ async def cluster_proxy(path: str, request: Request):
                 yield chunk
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            logger.warning(
-                "cluster-proxy stream interrupted for %s %s: %s",
-                request.method,
-                target_url,
-                e,
-            )
+        except Exception:
             # The status code and headers were already committed to the
             # caller from the upstream's initial response, so a mid-body
             # failure can no longer be turned into a non-200. Re-raise
