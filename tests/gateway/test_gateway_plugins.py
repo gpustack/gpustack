@@ -69,11 +69,13 @@ class TestHigressPluginGetPath:
 
 class TestGetPluginUrlWithNameAndVersion:
     def test_known_plugin(self):
+        # Resolve from the manifest so version bumps don't break this test.
+        known = supported_plugins[0]
         cfg = make_cfg("http://127.0.0.1:8080")
-        url = get_plugin_url_with_name_and_version("ai-proxy", "2.0.0", cfg)
+        url = get_plugin_url_with_name_and_version(known.name, known.version, cfg)
         assert (
             url
-            == f"http://127.0.0.1:8080/{http_path_prefix}/ai-proxy/2.0.0/plugin.wasm"
+            == f"http://127.0.0.1:8080/{http_path_prefix}/{known.name}/{known.version}/plugin.wasm"
         )
 
     def test_unknown_plugin_raises(self):
@@ -82,7 +84,7 @@ class TestGetPluginUrlWithNameAndVersion:
 
     def test_wrong_version_raises(self):
         with pytest.raises(ValueError, match="not supported"):
-            get_plugin_url_with_name_and_version("ai-proxy", "9.9.9")
+            get_plugin_url_with_name_and_version(supported_plugins[0].name, "9.9.9")
 
 
 class TestSupportedPlugins:
@@ -97,7 +99,7 @@ class TestSupportedPlugins:
     def test_known_plugins_present(self):
         names = {p.name for p in supported_plugins}
         for expected in [
-            "ai-proxy",
+            "gpustack-ai-proxy",
             "ai-statistics",
             "ext-auth",
             "gpustack-generic-proxy-router",
