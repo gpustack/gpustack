@@ -37,10 +37,10 @@ on:
 
 env:
   INPUT_PYTHON_VERSION: 3.11
-  INPUT_USERNAME: gpustack
+  INPUT_USERNAME: xpustack
   INPUT_PASSWORD: ${{ secrets.CI_DOCKERHUB_PASSWORD }}
-  INPUT_NAMESPACE: gpustack
-  INPUT_REPOSITORY: gpustack
+  INPUT_NAMESPACE: xpustack
+  INPUT_REPOSITORY: xpustack
 
 jobs:
   pack:
@@ -112,44 +112,44 @@ jobs:
           #
           # Examples:
           # CACHE_FROM_REF
-          #   - vX.Y.Z                 -> "gpustack/build-cache:gpustack-${VERSION|DEFAULT_BRANCH}"
-          #   - PR/PUSH to branch      -> "gpustack/build-cache:gpustack-${BRANCH|DEFUALT_BRANCH}"
+          #   - vX.Y.Z                 -> "xpustack/build-cache:xpustack-${VERSION|DEFAULT_BRANCH}"
+          #   - PR/PUSH to branch      -> "xpustack/build-cache:xpustack-${BRANCH|DEFUALT_BRANCH}"
           # CACHE_TO_REF
-          #   - vX.Y.Z                 -> "gpustack/build-cache:gpustack-${VERSION}"
-          #   - PUSH to branch         -> "gpustack/build-cache:gpustack-${BRANCH}"
+          #   - vX.Y.Z                 -> "xpustack/build-cache:xpustack-${VERSION}"
+          #   - PUSH to branch         -> "xpustack/build-cache:xpustack-${BRANCH}"
           #
           # Stories:
           # CACHE_FROM_REF
-          #   - Release tag v0.7.0rc1      -> gpustack/build-cache:gpustack-v0.7, if not found, fallback to gpustack/build-cache:gpustack-main
-          #   - Release tag v0.7.0         -> gpustack/build-cache:gpustack-v0.7
-          #   - PR to "main" branch        -> gpustack/build-cache:gpustack-main
-          #   - PR to "v0.7-dev" branch    -> gpustack/build-cache:gpustack-v0.7, if not found, fallback to gpustack/build-cache:gpustack-main
-          #   - Push to "main" branch      -> gpustack/build-cache:gpustack-main
-          #   - Push to "v0.7-dev" branch  -> gpustack/build-cache:gpustack-v0.7, if not found, fallback to gpustack/build-cache:gpustack-main
+          #   - Release tag v0.7.0rc1      -> xpustack/build-cache:xpustack-v0.7, if not found, fallback to xpustack/build-cache:xpustack-main
+          #   - Release tag v0.7.0         -> xpustack/build-cache:xpustack-v0.7
+          #   - PR to "main" branch        -> xpustack/build-cache:xpustack-main
+          #   - PR to "v0.7-dev" branch    -> xpustack/build-cache:xpustack-v0.7, if not found, fallback to xpustack/build-cache:xpustack-main
+          #   - Push to "main" branch      -> xpustack/build-cache:xpustack-main
+          #   - Push to "v0.7-dev" branch  -> xpustack/build-cache:xpustack-v0.7, if not found, fallback to xpustack/build-cache:xpustack-main
           # CACHE_TO_REF
-          #   - Release tag v0.7.0rc1      -> gpustack/build-cache:gpustack-v0.7
-          #   - Release tag v0.7.0         -> gpustack/build-cache:gpustack-v0.7
-          #   - PR to "main" branch        -> gpustack/build-cache:gpustack-main
-          #   - PR to "v0.7-dev" branch    -> gpustack/build-cache:gpustack-v0.7
-          #   - Push to "main" branch      -> gpustack/build-cache:gpustack-main
-          #   - Push to "v0.7-dev" branch  -> gpustack/build-cache:gpustack-v0.7
+          #   - Release tag v0.7.0rc1      -> xpustack/build-cache:xpustack-v0.7
+          #   - Release tag v0.7.0         -> xpustack/build-cache:xpustack-v0.7
+          #   - PR to "main" branch        -> xpustack/build-cache:xpustack-main
+          #   - PR to "v0.7-dev" branch    -> xpustack/build-cache:xpustack-v0.7
+          #   - Push to "main" branch      -> xpustack/build-cache:xpustack-main
+          #   - Push to "v0.7-dev" branch  -> xpustack/build-cache:xpustack-v0.7
           #
           DEFAULT_BRANCH="main"
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             REF="${GITHUB_REF#refs/tags/}"
             IFS="." read -r VERSION_MAJOR VERSION_MINOR VERSION_PATCH <<< "${REF}"
             VERSION="${VERSION_MAJOR}.${VERSION_MINOR}"
-            CACHE_FROM_REF="gpustack/build-cache:gpustack-${VERSION}"
+            CACHE_FROM_REF="xpustack/build-cache:xpustack-${VERSION}"
             CACHE_TO_REF="${CACHE_FROM_REF}"
           else
             REF="${GITHUB_BASE_REF:-${GITHUB_REF}}"
             BRANCH="${REF#refs/heads/}"
             BRANCH="${BRANCH%-dev}"
-            CACHE_FROM_REF="gpustack/build-cache:gpustack-${BRANCH}"
+            CACHE_FROM_REF="xpustack/build-cache:xpustack-${BRANCH}"
             CACHE_TO_REF="${CACHE_FROM_REF}"
           fi
           if ! docker manifest inspect "${CACHE_FROM_REF}" >/dev/null 2>&1; then
-            CACHE_FROM_REF="gpustack/build-cache:gpustack-${DEFAULT_BRANCH}"
+            CACHE_FROM_REF="xpustack/build-cache:xpustack-${DEFAULT_BRANCH}"
           fi
           echo "CACHE_FROM_REF=${CACHE_FROM_REF}" >> $GITHUB_ENV
           echo "CACHE_TO_REF=${CACHE_TO_REF}" >> $GITHUB_ENV
