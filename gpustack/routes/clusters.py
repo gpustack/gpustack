@@ -1,3 +1,4 @@
+import logging
 import math
 import random
 import secrets
@@ -958,8 +959,12 @@ async def cluster_apiserver_proxy(
             fields={"cluster_id": id, "state": WorkerStateEnum.READY},
         )
         if not workers:
+            # The gpustack-operator polls this proxy for worker API-service
+            # readiness, so an unreachable cluster is an expected wait rather
+            # than a fault — reporting each 503 at ERROR floods the log.
             raise ServiceUnavailableException(
-                message=f"No reachable workers in cluster {cluster.name}(id: {id})"
+                message=f"No reachable workers in cluster {cluster.name}(id: {id})",
+                log_level=logging.WARNING,
             )
         worker = random.choice(workers)
         session.expunge(worker)
