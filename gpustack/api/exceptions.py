@@ -19,10 +19,21 @@ HTTP_422_UNPROCESSABLE = (
 
 
 class HTTPException(Exception):
-    def __init__(self, status_code: int, reason: str, message: str):
+    def __init__(
+        self,
+        status_code: int,
+        reason: str,
+        message: str,
+        *,
+        log_level: int = logging.ERROR,
+    ):
         self.status_code = status_code
         self.reason = reason
         self.message = message
+        # Server errors are reported at ERROR by default. A caller raising a 5xx
+        # for an expected, self-healing condition can lower this so a polling
+        # client cannot turn a normal wait into a flood of fault records.
+        self.log_level = log_level
 
 
 class OpenAIAPIException(HTTPException):
@@ -36,10 +47,18 @@ def http_exception_factory(
 ):
     class_name = reason + "Exception"
 
-    def init(self, message=default_message, is_openai_exception=False):
+    def init(
+        self,
+        message=default_message,
+        is_openai_exception=False,
+        *,
+        log_level=logging.ERROR,
+    ):
         if is_openai_exception:
             self.__class__.__bases__ = (OpenAIAPIException,)
-        super(self.__class__, self).__init__(status_code, reason, message)
+        super(self.__class__, self).__init__(
+            status_code, reason, message, log_level=log_level
+        )
 
     return type(
         class_name,
@@ -192,7 +211,8 @@ def register_handlers(app: FastAPI):
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         if exc.status_code >= 500:
-            logger.error(
+            logger.log(
+                exc.log_level,
                 "HTTP server error occurred: %s %s - %s (path=%s, method=%s)",
                 exc.status_code,
                 exc.reason,
