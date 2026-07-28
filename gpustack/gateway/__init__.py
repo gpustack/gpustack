@@ -422,7 +422,7 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         phase="AUTHN",
         priority=90,
         url=get_plugin_url_with_name_and_version(
-            name="gpustack-set-header-pre-route", version="1.0.0", cfg=cfg
+            name="gpustack-set-header-pre-route", version="1.0.1", cfg=cfg
         ),
     )
     return resource_name, expected_spec
@@ -433,7 +433,7 @@ def model_mapper_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         phase="AUTHN",
         priority=800,
         url=get_plugin_url_with_name_and_version(
-            name="gpustack-model-mapper", version="1.0.0", cfg=cfg
+            name="gpustack-model-mapper", version="1.0.1", cfg=cfg
         ),
         defaultConfigDisable=False,
         defaultConfig={"modelMapping": {}},
@@ -609,7 +609,7 @@ def generic_proxy_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         phase="AUTHN",
         priority=900,
         url=get_plugin_url_with_name_and_version(
-            name="gpustack-generic-proxy-router", version="1.0.0", cfg=cfg
+            name="gpustack-generic-proxy-router", version="1.0.1", cfg=cfg
         ),
     )
     return resource_name, expected_spec
@@ -636,7 +636,7 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         phase="UNSPECIFIED_PHASE",
         priority=400,
         url=get_plugin_url_with_name_and_version(
-            name="gpustack-token-usage", version="1.1.0", cfg=cfg
+            name="gpustack-token-usage", version="1.1.1", cfg=cfg
         ),
     )
     return resource_name, expected_spec
@@ -653,7 +653,7 @@ def ai_proxy_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         priority=100,
         phase="UNSPECIFIED_PHASE",
         url=get_plugin_url_with_name_and_version(
-            name="ai-proxy", version="2.0.0", cfg=cfg
+            name="gpustack-ai-proxy", version="2.0.0-patched", cfg=cfg
         ),
     )
     return resource_name, expected_spec
