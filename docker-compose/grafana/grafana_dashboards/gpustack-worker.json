@@ -2101,20 +2101,21 @@
   "templating": {
     "list": [
       {
-        "current": {
-          "text": "${DS_PROMETHEUS}",
-          "value": "${DS_PROMETHEUS}"
-        },
-        "hide": 0,
-        "includeAll": false,
-        "label": "Datasource",
-        "multi": false,
         "name": "DS_PROMETHEUS",
-        "options": [],
+        "type": "datasource",
+        "label": "Datasource",
+        "datasource": "Prometheus",
+        "hide": 0,
         "query": "prometheus",
-        "queryValue": "",
+        "current": {
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
+        "multi": false,
+        "includeAll": false,
         "refresh": 1,
-        "type": "datasource"
+        "regex": "",
+        "skipUrlSync": false
       },
       {
         "current": {
