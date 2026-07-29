@@ -44,7 +44,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -120,7 +120,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -196,7 +196,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -287,7 +287,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -363,7 +363,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -454,7 +454,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -521,7 +521,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -590,7 +590,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -674,7 +674,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -789,7 +789,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Total request per minute.",
       "fieldConfig": {
@@ -888,7 +888,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of tokens generation per second for current model",
       "fieldConfig": {
@@ -996,7 +996,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "End to end request latency measured in seconds.",
       "fieldConfig": {
@@ -1275,7 +1275,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of requests in RUNNING, WAITING, and SWAPPED state",
       "fieldConfig": {
@@ -1417,7 +1417,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Total number of tokens processed per second, combining prompt and generation tokens.",
       "fieldConfig": {
@@ -1541,7 +1541,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "P50, P90, P95, and P99 TTFT latency in seconds.",
       "fieldConfig": {
@@ -1713,7 +1713,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Inter token latency in seconds.\n\n**Supported backends:** vLLM, SGLang. MindIE does not expose this metric, so \"No data\" is expected when the runtime is MindIE (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -1885,7 +1885,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Percentage of used cache blocks by LLM Serving Runtime.",
       "fieldConfig": {
@@ -2092,7 +2092,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "rate(gpustack:prefix_cache_hits_total{cluster_name=\"$cluster_name\",model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}[1m]) / rate(gpustack:prefix_cache_queries_total{cluster_name=\"$cluster_name\",model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}[1m])",
@@ -2109,7 +2109,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of request prompt length\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2201,7 +2201,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of request generation length\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2293,7 +2293,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Per output token latency in seconds.\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2465,7 +2465,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of finished requests by their finish reason: either an EOS token was generated or the max sequence length was reached.\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2573,7 +2573,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of prompt tokens and cached prompt tokens served per second.",
       "fieldConfig": {
@@ -2730,7 +2730,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Time spent waiting in the request queue.\n\n**Supported backends:** vLLM, SGLang. MindIE does not expose this metric, so \"No data\" is expected when the runtime is MindIE (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2902,7 +2902,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Time spent in the prefill phase.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -3074,7 +3074,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Time spent in the decode phase.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -3370,7 +3370,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of requested number of parallel completions per request.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -3462,7 +3462,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of requested max_tokens per request.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -3554,7 +3554,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of generation tokens processed per second.",
       "fieldConfig": {
@@ -3678,7 +3678,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Cumulative number of preemptions from the engine, shown as events per second.",
       "fieldConfig": {
@@ -3808,6 +3808,23 @@
   "tags": [],
   "templating": {
     "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "label": "Datasource",
+        "datasource": "Prometheus",
+        "hide": 0,
+        "query": "prometheus",
+        "current": {
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
+        "multi": false,
+        "includeAll": false,
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false
+      },
       {
         "current": {
           "text": "",
