@@ -37,6 +37,7 @@ from gpustack.utils.hub import (
     safe_pretrained_config_from_dict,
 )
 from gpustack.utils import platform
+from gpustack.utils.task import first_successful
 
 logger = logging.getLogger(__name__)
 fetch_file_timeout_in_seconds = 15
@@ -666,13 +667,9 @@ async def _try_parse_on_workers(
             return None
 
     # Concurrently try all workers and return the first successful result
-    tasks = [try_parse_on_worker(worker) for worker in workers]
-
-    # Use as_completed to get results as they finish
-    for completed_task in asyncio.as_completed(tasks):
-        result = await completed_task
-        if result:
-            return result
+    claim = await first_successful(try_parse_on_worker(worker) for worker in workers)
+    if claim:
+        return claim
 
     error_items = list(worker_errors.items())
     shown_errors = "; \n".join(f"{name}: {err}" for name, err in error_items[:3])
@@ -959,20 +956,11 @@ async def read_local_path_file_from_workers(  # noqa: C901
         f"Broadcasting {file_path} read request to {len(filtered_workers)} filtered workers "
         f"(reduced from {len(workers)} total workers)"
     )
-    tasks = [
-        asyncio.create_task(try_read_from_worker(worker)) for worker in filtered_workers
-    ]
-    try:
-        for completed_task in asyncio.as_completed(tasks):
-            result = await completed_task
-            if result:
-                return result
-    finally:
-        pending = [t for t in tasks if not t.done()]
-        for t in pending:
-            t.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+    content = await first_successful(
+        try_read_from_worker(worker) for worker in filtered_workers
+    )
+    if content:
+        return content
 
     error_items = list(worker_errors.items())
     shown_errors = ";\n".join(f"{name}: {err}" for name, err in error_items[:3])
