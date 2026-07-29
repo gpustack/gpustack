@@ -55,6 +55,8 @@ class Runtime(GPUDetector):
                     utilization_rate=dev.memory_utilization,
                 ),
                 temperature=dev.temperature,
+                power=dev.power,
+                power_used=dev.power_used,
             )
             # Correct device_index if possible.
             if "card_id" in dev.appendix and dev.appendix["card_id"] is not None:

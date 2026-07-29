@@ -575,6 +575,8 @@ class Config(WorkerConfig, BaseSettings):
               device_index: 0              # optional
               device_chip_index: 0         # optional
               compute_capability: "9.0"    # optional
+              power: 300                   # optional, power limit in Watts
+              power_used: 150              # optional, current power in Watts
               memory:
                   total: 22906503168
                   is_unified_memory: true
@@ -607,6 +609,8 @@ class Config(WorkerConfig, BaseSettings):
             memory = gd.get("memory")
             network = gd.get("network")
             runtime_version = gd.get("runtime_version")
+            power = gd.get("power", None)
+            power_used = gd.get("power_used", None)
             type_ = gd.get("type") or manufacturer_to_backend(vendor)
 
             if not name:
@@ -677,6 +681,8 @@ class Config(WorkerConfig, BaseSettings):
                             mtu=network.get("mtu", None),
                         )
                     ),
+                    power=power,
+                    power_used=power_used,
                     type=type_,
                 )
             )
