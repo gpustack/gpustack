@@ -194,11 +194,11 @@ class MetricExporter(Collector):
                     model.name,
                 ]
 
-                category = CategoryEnum.UNKNOWN.value
-                if model.categories:
-                    category = getattr(
-                        model.categories[0], "value", model.categories[0]
-                    )
+                category = (
+                    model.categories[0]
+                    if model.categories
+                    else CategoryEnum.UNKNOWN.value
+                )
 
                 model_info.add_metric(
                     model_labels
