@@ -194,6 +194,11 @@ class MetricExporter(Collector):
                     model.name,
                 ]
 
+                # NOTE: Model.categories is a list, but Prometheus labels are
+                # scalar. GPUStack currently treats the first entry as the
+                # primary category for metrics, so secondary categories are not
+                # exposed in gpustack:model_info. This keeps one model_info
+                # series per model for model_id joins.
                 category = (
                     model.categories[0]
                     if model.categories
