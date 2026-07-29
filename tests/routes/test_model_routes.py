@@ -311,6 +311,25 @@ def test_model_route_create_rejects_slashed_name():
         ModelRouteCreate(name="org1/qwen3-0.6b", targets=[])
 
 
+def test_provider_target_accepts_slashed_model_name():
+    target = ModelRouteTargetUpdateItem(
+        provider_id=10,
+        overridden_model_name="kimi/kimi-k3",
+        weight=1,
+    )
+
+    assert target.overridden_model_name == "kimi/kimi-k3"
+
+
+def test_local_model_target_rejects_slashed_overridden_model_name():
+    with pytest.raises(ValueError, match="local-model target must start"):
+        ModelRouteTargetUpdateItem(
+            model_id=5,
+            overridden_model_name="base/lora",
+            weight=1,
+        )
+
+
 def test_model_route_public_accepts_enriched_slashed_name():
     """Regression: the My Models response serializes through
     ``ModelRoutePublic``; once ``_apply_effective_name_to_my_models``
