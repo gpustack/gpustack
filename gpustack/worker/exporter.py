@@ -131,6 +131,16 @@ class MetricExporter(Collector):
             "GPU temperature in celsius of the worker node",
             labels=gpu_labels,
         )
+        gpu_power = GaugeMetricFamily(
+            metric_name("worker_node_gpu_power_watts"),
+            "GPU power management limit in watts of the worker node",
+            labels=gpu_labels,
+        )
+        gpu_power_used = GaugeMetricFamily(
+            metric_name("worker_node_gpu_power_used_watts"),
+            "GPU power usage in watts of the worker node",
+            labels=gpu_labels,
+        )
         gram_total = GaugeMetricFamily(
             metric_name("worker_node_gram_total_bytes"),
             "Total GPU RAM in bytes of the worker node",
@@ -284,6 +294,9 @@ class MetricExporter(Collector):
 
                 _add_metric(gpu_temperature, gpu_label_values, d.temperature)
 
+                _add_metric(gpu_power, gpu_label_values, d.power)
+                _add_metric(gpu_power_used, gpu_label_values, d.power_used)
+
                 if d.memory is not None:
                     _add_metric(gram_total, gpu_label_values, d.memory.total)
                     _add_metric(
@@ -339,6 +352,8 @@ class MetricExporter(Collector):
         yield gpu_cores
         yield gpu_utilization_rate
         yield gpu_temperature
+        yield gpu_power
+        yield gpu_power_used
         yield gram_total
         yield gram_allocated
         yield gram_used

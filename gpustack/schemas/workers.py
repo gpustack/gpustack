@@ -151,6 +151,14 @@ class GPUDeviceStatus(GPUDeviceInfo):
     """
     Temperature of the GPU device in Celsius.
     """
+    power: Optional[float] = Field(default=None)
+    """
+    Power management limit of the GPU device in Watts.
+    """
+    power_used: Optional[float] = Field(default=None)
+    """
+    Current power consumption of the GPU device in Watts.
+    """
     network: Optional[GPUNetworkInfo] = Field(sa_column=Column(JSON), default=None)
     """
     Network information of the GPU device, mainly for Ascend devices.

@@ -24,7 +24,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -105,7 +105,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${idc}"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "count(gpustack:worker_node_os_info{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
@@ -118,7 +118,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${idc}"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "count(gpustack:worker_node_gpu_cores{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
@@ -128,14 +128,16 @@
           "refId": "A"
         }
       ],
+      "description": "Total number of workers and GPU accelerators in the cluster.",
       "title": "Summary",
       "type": "stat"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Average GPU core utilization across all accelerators in percent. Indicates how actively GPU compute resources are being used.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -167,7 +169,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 5,
+        "w": 4,
         "x": 9,
         "y": 0
       },
@@ -192,7 +194,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "avg(gpustack:worker_node_gpu_utilization_rate{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
@@ -208,7 +210,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -241,8 +243,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 5,
-        "x": 14,
+        "w": 4,
+        "x": 13,
         "y": 0
       },
       "id": 90,
@@ -266,7 +268,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "avg(gpustack:worker_node_gram_utilization_rate{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
@@ -276,13 +278,14 @@
           "refId": "A"
         }
       ],
+      "description": "Average VRAM utilization in percent, calculated as the ratio of used memory to total capacity.",
       "title": "Average VRAM Utilization",
       "type": "gauge"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -315,8 +318,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 5,
-        "x": 19,
+        "w": 4,
+        "x": 17,
         "y": 0
       },
       "id": 82,
@@ -340,7 +343,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "avg(gpustack:worker_node_gpu_temperature_celsius{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
@@ -350,13 +353,89 @@
           "refId": "A"
         }
       ],
+      "description": "Average GPU temperature in degrees Celsius. Helps monitor overheating and cooling efficiency.",
       "title": "Average GPU Temperature",
       "type": "gauge"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 90,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "#EAB839",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "watt"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 3,
+        "x": 21,
+        "y": 0
+      },
+      "id": 96,
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "sizing": "auto"
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "avg(gpustack:worker_node_gpu_power_used_watts{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
+          "instant": false,
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "description": "Average GPU power consumption in watts. Shows the current load on the power supply system.",
+      "title": "Average GPU Power",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -416,7 +495,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "sum(gpustack:worker_node_gram_total_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
@@ -426,14 +505,16 @@
           "refId": "A"
         }
       ],
+      "description": "Total VRAM capacity across all GPUs in the cluster.",
       "title": "VRAM Size",
       "type": "stat"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Total system RAM capacity across all workers.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -492,7 +573,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "sum(gpustack:worker_node_memory_total_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
@@ -508,7 +589,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -568,7 +649,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "sum(gpustack:worker_node_cpu_cores{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"})",
@@ -578,15 +659,16 @@
           "refId": "A"
         }
       ],
+      "description": "Total number of CPU cores across all workers.",
       "title": "CPU Cores",
       "type": "stat"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
-      "description": "",
+      "description": "Detailed table of all GPUs: core utilization, VRAM usage, temperature, and power consumption for each accelerator.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -829,6 +911,26 @@
                 "value": 117
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Power"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "watt"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 117
+              }
+            ]
           }
         ]
       },
@@ -850,7 +952,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${idc}"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -864,7 +966,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${idc}"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -879,7 +981,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -890,6 +992,21 @@
           "legendFormat": "__auto",
           "range": false,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "gpustack:worker_node_gpu_power_used_watts{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"} ",
+          "format": "table",
+          "hide": false,
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "D"
         }
       ],
       "title": "GPUs",
@@ -909,77 +1026,101 @@
               "__name__ 1": true,
               "__name__ 2": true,
               "__name__ 3": true,
+              "__name__ 4": true,
               "cluster_id 1": true,
               "cluster_id 2": true,
               "cluster_id 3": true,
+              "cluster_id 4": true,
               "cluster_name 2": true,
               "cluster_name 3": true,
+              "cluster_name 4": true,
               "exported_instance 1": true,
               "exported_instance 2": true,
               "exported_instance 3": true,
+              "exported_instance 4": true,
               "gpu_chip_index 1": false,
               "gpu_chip_index 2": true,
               "gpu_chip_index 3": true,
+              "gpu_chip_index 4": true,
               "gpu_index 2": true,
               "gpu_index 3": true,
+              "gpu_index 4": true,
               "gpu_name 2": true,
               "gpu_name 3": true,
+              "gpu_name 4": true,
               "instance 1": true,
               "instance 2": true,
               "instance 3": true,
+              "instance 4": true,
               "job 1": true,
               "job 2": true,
               "job 3": true,
+              "job 4": true,
               "worker_id 1": true,
               "worker_id 2": true,
               "worker_id 3": true,
+              "worker_id 4": true,
               "worker_name 2": true,
-              "worker_name 3": true
+              "worker_name 3": true,
+              "worker_name 4": true
             },
             "includeByName": {},
             "indexByName": {
               "Time": 15,
-              "Value #A": 12,
-              "Value #B": 27,
-              "Value #C": 11,
+              "Value #A": 13,
+              "Value #B": 29,
+              "Value #C": 12,
+              "Value #D": 14,
               "__name__ 1": 0,
               "__name__ 2": 16,
-              "__name__ 3": 28,
+              "__name__ 3": 30,
+              "__name__ 4": 31,
               "cluster_id 1": 1,
               "cluster_id 2": 17,
-              "cluster_id 3": 29,
+              "cluster_id 3": 32,
+              "cluster_id 4": 33,
               "cluster_name 1": 2,
               "cluster_name 2": 18,
-              "cluster_name 3": 30,
+              "cluster_name 3": 34,
+              "cluster_name 4": 35,
               "exported_instance 1": 4,
               "exported_instance 2": 19,
-              "exported_instance 3": 31,
+              "exported_instance 3": 36,
+              "exported_instance 4": 37,
               "gpu_chip_index 1": 5,
               "gpu_chip_index 2": 20,
-              "gpu_chip_index 3": 32,
+              "gpu_chip_index 3": 38,
+              "gpu_chip_index 4": 39,
               "gpu_index 1": 6,
               "gpu_index 2": 21,
-              "gpu_index 3": 33,
+              "gpu_index 3": 40,
+              "gpu_index 4": 41,
               "gpu_name 1": 7,
               "gpu_name 2": 22,
-              "gpu_name 3": 34,
+              "gpu_name 3": 42,
+              "gpu_name 4": 43,
               "instance 1": 8,
               "instance 2": 23,
-              "instance 3": 35,
+              "instance 3": 44,
+              "instance 4": 45,
               "job 1": 9,
               "job 2": 24,
-              "job 3": 36,
+              "job 3": 46,
+              "job 4": 47,
               "worker_id 1": 10,
               "worker_id 2": 25,
-              "worker_id 3": 37,
+              "worker_id 3": 48,
+              "worker_id 4": 49,
               "worker_name 1": 3,
               "worker_name 2": 26,
-              "worker_name 3": 38
+              "worker_name 3": 50,
+              "worker_name 4": 51
             },
             "renameByName": {
               "Value #A": "GPU Utilization",
               "Value #B": "GPU VRAM Utilization",
               "Value #C": "Temperature",
+              "Value #D": "Power",
               "cluster_name 1": "Cluster",
               "exported_instance 1": "",
               "gpu_chip_index 1": "Chip Index",
@@ -995,7 +1136,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -1084,7 +1225,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "gpustack:worker_node_memory_used_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
@@ -1097,15 +1238,16 @@
           "refId": "A"
         }
       ],
+      "description": "System RAM usage on each worker in bytes.",
       "title": "System Memory Usage",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
-      "description": "",
+      "description": "GPU compute core utilization in percent. A value of 100 indicates full utilization.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1193,7 +1335,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${idc}"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -1211,9 +1353,9 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
-      "description": "",
+      "description": "Percentage of VRAM used relative to available capacity for each GPU.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1304,7 +1446,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${idc}"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -1322,7 +1464,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -1410,7 +1552,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "gpustack:worker_node_cpu_utilization_rate{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
@@ -1421,14 +1563,16 @@
           "refId": "A"
         }
       ],
+      "description": "CPU utilization percentage on each worker.",
       "title": "CPU Utilization",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Total, used, and allocated VRAM for each GPU. Allocated memory is reserved by model instances.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1517,7 +1661,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "gpustack:worker_node_gram_total_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
@@ -1531,7 +1675,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "gpustack:worker_node_gram_used_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
@@ -1544,7 +1688,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "gpustack:worker_node_gram_allocated_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
@@ -1561,7 +1705,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -1649,7 +1793,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "gpustack:worker_node_gpu_temperature_celsius{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
@@ -1661,14 +1805,123 @@
           "refId": "A"
         }
       ],
+      "description": "GPU accelerator temperature in degrees Celsius. High temperatures may lead to throttling.",
       "title": "GPU Temperature",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Current GPU power consumption in watts. Helps assess energy efficiency and power supply load.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "watt"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "id": 97,
+      "options": {
+        "dataLinks": [],
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "gpustack:worker_node_gpu_power_used_watts{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
+          "format": "time_series",
+          "hide": false,
+          "intervalFactor": 1,
+          "legendFormat": "{{worker_name}} GPU{{gpu_index}} (chip {{gpu_chip_index}})",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "GPU Power Usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Bar chart of GPU core utilization. Average value per GPU over the period.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1699,7 +1952,7 @@
         "h": 14,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 67
       },
       "id": 78,
       "options": {
@@ -1734,7 +1987,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -1751,7 +2004,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -1791,7 +2044,7 @@
         "h": 14,
         "w": 12,
         "x": 12,
-        "y": 41
+        "y": 67
       },
       "id": 79,
       "options": {
@@ -1826,7 +2079,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${idc}"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "avg by (cluster_name,worker_name, gpu_chip_index,gpu_index) (gpustack:worker_node_gram_utilization_rate{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}) ",
@@ -1836,6 +2089,7 @@
           "refId": "A"
         }
       ],
+      "description": "Bar chart of VRAM utilization. Average value per GPU over the period.",
       "title": "VRAM Utilization",
       "type": "bargauge"
     }
@@ -1848,12 +2102,28 @@
     "list": [
       {
         "current": {
+          "text": "${DS_PROMETHEUS}",
+          "value": "${DS_PROMETHEUS}"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "current": {
           "text": "",
           "value": ""
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "$DS_PROMETHEUS"
         },
         "definition": "query_result(gpustack:cluster_info and on(cluster_id) gpustack:worker_info)",
         "includeAll": false,
@@ -1880,7 +2150,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "${DS_PROMETHEUS}"
         },
         "definition": "query_result(gpustack:worker_info{cluster_name=\"$cluster_name\"})",
         "includeAll": true,
