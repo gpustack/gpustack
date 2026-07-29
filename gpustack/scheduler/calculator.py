@@ -959,11 +959,20 @@ async def read_local_path_file_from_workers(  # noqa: C901
         f"Broadcasting {file_path} read request to {len(filtered_workers)} filtered workers "
         f"(reduced from {len(workers)} total workers)"
     )
-    tasks = [try_read_from_worker(worker) for worker in filtered_workers]
-    for completed_task in asyncio.as_completed(tasks):
-        result = await completed_task
-        if result:
-            return result
+    tasks = [
+        asyncio.create_task(try_read_from_worker(worker)) for worker in filtered_workers
+    ]
+    try:
+        for completed_task in asyncio.as_completed(tasks):
+            result = await completed_task
+            if result:
+                return result
+    finally:
+        pending = [t for t in tasks if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     error_items = list(worker_errors.items())
     shown_errors = ";\n".join(f"{name}: {err}" for name, err in error_items[:3])
