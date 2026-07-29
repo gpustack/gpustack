@@ -165,11 +165,6 @@ class ModelRouteTargetUpdate(SQLModel):
             return v
         if not isinstance(v, str):
             raise ValueError("overridden_model_name must be a string")
-        if not re.match(name_pattern, v):
-            raise ValueError(
-                "overridden_model_name must start with a letter and contain only "
-                "letters, numbers, hyphens, underscores, dots, or colons"
-            )
         return v
 
     @model_validator(mode="after")
@@ -185,18 +180,25 @@ class ModelRouteTargetUpdate(SQLModel):
             raise ValueError(
                 "overridden_model_name must be provided when provider_id is set."
             )
+        if self.provider_id is not None and not self.overridden_model_name.strip():
+            raise ValueError(
+                "overridden_model_name must not be empty or blank when provider_id is set."
+            )
         # Local-model targets only accept overridden_model_name shaped like
         # "<base_model_name>:<lora_name>". The full base-prefix check lives in
         # the service layer (lora_route_name_for); schema only enforces shape.
-        if (
-            self.model_id is not None
-            and self.overridden_model_name is not None
-            and ":" not in self.overridden_model_name
-        ):
-            raise ValueError(
-                "overridden_model_name for a local-model target must be of the "
-                "form '<base_model_name>:<lora_name>'."
-            )
+        if self.model_id is not None and self.overridden_model_name is not None:
+            if not re.match(name_pattern, self.overridden_model_name):
+                raise ValueError(
+                    "overridden_model_name for a local-model target must start "
+                    "with a letter and contain only letters, numbers, hyphens, "
+                    "underscores, dots, or colons"
+                )
+            if ":" not in self.overridden_model_name:
+                raise ValueError(
+                    "overridden_model_name for a local-model target must be of the "
+                    "form '<base_model_name>:<lora_name>'."
+                )
         return self
 
 
