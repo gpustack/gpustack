@@ -2123,7 +2123,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "$DS_PROMETHEUS"
+          "uid": "${DS_PROMETHEUS}"
         },
         "definition": "query_result(gpustack:cluster_info and on(cluster_id) gpustack:worker_info)",
         "includeAll": false,
