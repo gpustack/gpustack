@@ -190,7 +190,7 @@ These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as 
 | ------------------------------------------- | ----- | ------------------------------------------------------------- |
 | gpustack:cluster                            | Info  | Cluster information (ID, name, provider).                     |
 | gpustack:cluster_status                     | Gauge | Cluster status (with state label).                            |
-| gpustack:model                              | Info  | Model information (ID, name, runtime, source).                |
+| gpustack:model                              | Info  | Model information (ID, name, runtime, source, category).      |
 | gpustack:model_desired_instances            | Gauge | Desired number of model instances.                            |
 | gpustack:model_running_instances            | Gauge | Number of running model instances.                            |
 | gpustack:model_instance_status              | Gauge | Status of each model instance (with state label).             |
