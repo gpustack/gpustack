@@ -25,6 +25,17 @@ def _sample_labels(metrics, metric_name):
     raise AssertionError(f"Metric {metric_name} not found")
 
 
+def _cluster_with_model(model):
+    return SimpleNamespace(
+        id=1,
+        name="default",
+        provider="docker",
+        state="ready",
+        cluster_workers=[],
+        cluster_models=[model],
+    )
+
+
 @pytest.mark.asyncio
 async def test_model_instance_restart_metrics_are_collected():
     exporter = MetricExporter(SimpleNamespace(metrics_port=10161))
@@ -45,6 +56,7 @@ async def test_model_instance_restart_metrics_are_collected():
         backend_version="0.8.0",
         source="huggingface",
         model_source_key="Qwen/Qwen2.5-0.5B-Instruct",
+        categories=[],
         replicas=1,
         ready_replicas=1,
         instances=[instance],
@@ -75,6 +87,68 @@ async def test_model_instance_restart_metrics_are_collected():
         "model_name": "qwen",
         "model_instance_name": "qwen-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_model_info_metric_includes_category_label():
+    exporter = MetricExporter(SimpleNamespace(metrics_port=10161))
+    model = SimpleNamespace(
+        id=10,
+        name="embedding",
+        backend="vllm",
+        backend_version="0.8.0",
+        source="huggingface",
+        model_source_key="BAAI/bge-m3",
+        categories=["embedding"],
+        replicas=1,
+        ready_replicas=1,
+        instances=[],
+    )
+
+    with patch(
+        "gpustack.exporter.exporter.Cluster.all",
+        return_value=[_cluster_with_model(model)],
+    ):
+        metrics = await exporter._collect_metrics(session=SimpleNamespace())
+
+    assert _sample_labels(metrics, "gpustack:model") == {
+        "cluster_id": "1",
+        "cluster_name": "default",
+        "model_id": "10",
+        "model_name": "embedding",
+        "runtime": "vllm",
+        "runtime_version": "0.8.0",
+        "source": "huggingface",
+        "source_key": "BAAI/bge-m3",
+        "category": "embedding",
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_info_metric_uses_unknown_for_uncategorized_models():
+    exporter = MetricExporter(SimpleNamespace(metrics_port=10161))
+    model = SimpleNamespace(
+        id=10,
+        name="qwen",
+        backend="vllm",
+        backend_version=None,
+        source="huggingface",
+        model_source_key="Qwen/Qwen2.5-0.5B-Instruct",
+        categories=[],
+        replicas=1,
+        ready_replicas=1,
+        instances=[],
+    )
+
+    with patch(
+        "gpustack.exporter.exporter.Cluster.all",
+        return_value=[_cluster_with_model(model)],
+    ):
+        metrics = await exporter._collect_metrics(session=SimpleNamespace())
+
+    labels = _sample_labels(metrics, "gpustack:model")
+    assert labels["category"] == "unknown"
+    assert labels["runtime_version"] == "unknown"
 
 
 class _NoopSession:

@@ -12,7 +12,7 @@ from gpustack.exporter.bus_metrics import BusMetricsCollector
 from gpustack.logging import setup_logging
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.clusters import Cluster
-from gpustack.schemas.models import Model
+from gpustack.schemas.models import CategoryEnum, Model
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
@@ -194,9 +194,21 @@ class MetricExporter(Collector):
                     model.name,
                 ]
 
+                category = CategoryEnum.UNKNOWN.value
+                if model.categories:
+                    category = getattr(
+                        model.categories[0], "value", model.categories[0]
+                    )
+
                 model_info.add_metric(
                     model_labels
-                    + ["runtime", "runtime_version", "source", "source_key"],
+                    + [
+                        "runtime",
+                        "runtime_version",
+                        "source",
+                        "source_key",
+                        "category",
+                    ],
                     {
                         "cluster_id": str(cluster.id),
                         "cluster_name": cluster.name,
@@ -206,6 +218,7 @@ class MetricExporter(Collector):
                         "runtime_version": model.backend_version or "unknown",
                         "source": model.source,
                         "source_key": model.model_source_key,
+                        "category": category,
                     },
                 )
 
