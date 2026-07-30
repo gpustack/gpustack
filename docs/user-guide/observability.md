@@ -176,6 +176,8 @@ These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as 
 | gpustack:worker_node_gpu_cores                   | Gauge | Total GPU cores of the worker node.              |
 | gpustack:worker_node_gpu_utilization_rate        | Gauge | GPU utilization rate of the worker node.         |
 | gpustack:worker_node_gpu_temperature_celsius     | Gauge | GPU temperature in Celsius.                      |
+| gpustack:worker_node_gpu_power_limit_watts       | Gauge | GPU power management limit in watts.             |
+| gpustack:worker_node_gpu_power_used_watts        | Gauge | GPU power usage in watts.                        |
 | gpustack:worker_node_gram_total_bytes            | Gauge | Total GPU RAM in bytes.                          |
 | gpustack:worker_node_gram_allocated_bytes        | Gauge | Allocated GPU RAM in bytes.                      |
 | gpustack:worker_node_gram_used_bytes             | Gauge | Used GPU RAM in bytes.                           |
