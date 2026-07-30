@@ -273,7 +273,16 @@ class GPUInstanceController:
         so a worker-side change (phase drift, CR deleted out of band) flows back
         into the same work queue without a DB-triggered re-read. Runs leader-only
         because the whole controller is. The stream is reconnected on any error.
+
+        Without the operator there is no stream to consume at all, so the watcher
+        stops instead of reconnecting forever; upstream reconciles keep working.
         """
+        if not gateway_client.is_gateway_configured():
+            logger.info(
+                "Operator worker gateway is not configured; "
+                "GPU instance downstream watch is disabled."
+            )
+            return
         while True:
             try:
                 async for line in gateway_client.watch_instances():
@@ -1355,7 +1364,17 @@ class GPUInstanceTypeController:
         clusters) and feed the queue; reconnect on any error (mirrors
         :meth:`GPUInstanceController._watch_downstream`). The resync runs on every
         (re)connect so a fresh table is populated and a delete missed during the
-        previous gap is reconciled before the watch resumes."""
+        previous gap is reconciled before the watch resumes.
+
+        The operator watch is this controller's only source, so without the
+        operator there is nothing to project and the loop stops instead of
+        reconnecting forever."""
+        if not gateway_client.is_gateway_configured():
+            logger.info(
+                "Operator worker gateway is not configured; "
+                "GPU instance type projection is disabled."
+            )
+            return
         while True:
             try:
                 await self._resync()

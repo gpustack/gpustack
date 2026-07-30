@@ -57,6 +57,19 @@ def set_gateway_unix_path(path: str) -> None:
     _unix_path = path
 
 
+def is_gateway_configured() -> bool:
+    """Whether the operator's worker gateway socket path is known.
+
+    ``False`` means the operator subprocess was never spawned (its binary is not
+    installed), so every call in this module would fail. The path is recorded
+    once at startup, before any consumer starts, so a ``False`` here is final
+    for the lifetime of the process and callers may opt out permanently rather
+    than retry. The truthiness test mirrors :func:`_session`, so the two agree
+    on what counts as configured.
+    """
+    return bool(_unix_path)
+
+
 def _ssl_context() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
