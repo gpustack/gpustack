@@ -374,7 +374,6 @@
         "name": "DS_PROMETHEUS",
         "type": "datasource",
         "label": "Datasource",
-        "datasource": "Prometheus",
         "hide": 0,
         "query": "prometheus",
         "current": {
@@ -383,9 +382,7 @@
         },
         "multi": false,
         "includeAll": false,
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false
+        "refresh": 1
       },
       {
         "current": {},
