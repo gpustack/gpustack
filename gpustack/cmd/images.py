@@ -17,15 +17,15 @@ from gpustack.extension import iter_plugin_classes, Plugin
 higress_version = "2.1.9"
 
 ssh_server_version = "v1.3.0"
-kueue_version = "v0.18.2"
-node_feature_discovery_version = "v0.18.3"
-csi_nfs_driver_version = "v4.13.0"
+kueue_version = "v0.18.4"
+node_feature_discovery_version = "v0.19.0"
+csi_nfs_driver_version = "v4.13.4"
 csi_s3_driver_version = "v0.43.7"
-csi_provisioner_version = "v6.1.0"
-csi_resizer_version = "v2.0.0"
-csi_snapshotter_version = "v8.4.0"
-csi_livenessprobe_version = "v2.17.0"
-csi_node_driver_registrar_version = "v2.15.0"
+csi_provisioner_version = "v6.3.0"
+csi_resizer_version = "v2.2.0"
+csi_snapshotter_version = "v8.6.0"
+csi_livenessprobe_version = "v2.19.0"
+csi_node_driver_registrar_version = "v2.17.0"
 
 # Append images used by GPUStack here.
 append_images(
