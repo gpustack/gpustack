@@ -89,6 +89,92 @@ class GPUSelector(BaseModel):
     gpus_per_replica: Optional[int] = None
 
 
+class GPUTypeSelector(BaseModel):
+    """
+    Selects a sliced GPU from a gpustack-operator InstanceType pool.
+
+    Field names mirror ``GPUInstanceResources`` / the operator's
+    InstanceResources conventions.
+
+    Mutually exclusive with manual GPU selection: ``gpu_selector.gpu_ids`` must
+    be empty, since the card is chosen by the operator's device plugin, not by
+    index. A ``gpu_selector`` is otherwise allowed — this implies exactly one
+    card per worker per replica, so ``gpus_per_replica`` is constrained to 1
+    rather than rejected.
+    """
+
+    type: str
+    """
+    Name of the operator InstanceType (pool) to schedule onto.
+    """
+
+    accelerator_sliced_memory_percentage: Optional[int] = Field(
+        default=None, ge=0, le=100
+    )
+    """
+    Per-card VRAM budget requested on a sliced InstanceType, as a percentage.
+    Required (in [1,100]) for a sliced request; 0 is valid only together with
+    a 0/unset cores percentage and means a whole-card exclusive request.
+    """
+
+    accelerator_sliced_cores_percentage: Optional[int] = Field(
+        default=None, ge=0, le=100
+    )
+    """
+    Per-card compute budget requested on a sliced InstanceType, as a
+    percentage in [1,100]; an independent dimension from memory. Defaults to
+    100 when unset on a sliced request (operator webhook defaulting rule). 0
+    is valid only together with a 0/unset memory percentage (whole-card
+    exclusive).
+    """
+
+    accelerator_partitioned_profile: Optional[str] = None
+    """
+    Hardware partition profile requested on a partition-offering InstanceType,
+    e.g. "1g.5gb". Mutually exclusive with non-zero slice percentages:
+    hardware partitioning and software slicing cannot both apply to one card.
+    """
+
+    @model_validator(mode="after")
+    def normalize_slice_percentages(self):
+        if self.accelerator_partitioned_profile:
+            # Slicing percentages don't apply to hardware partitioning; their
+            # exclusivity with a profile is enforced by route validation.
+            return self
+
+        memory = self.accelerator_sliced_memory_percentage
+        cores = self.accelerator_sliced_cores_percentage
+        memory_sliced = memory is not None and memory > 0
+        cores_sliced = cores is not None and cores > 0
+
+        if not memory_sliced and not cores_sliced:
+            # Whole-card exclusive mode: valid only as both-0 (or both-unset);
+            # normalize unset to 0.
+            self.accelerator_sliced_memory_percentage = 0
+            self.accelerator_sliced_cores_percentage = 0
+            return self
+
+        if not memory_sliced:
+            # Covers both "cores set, memory unset" and the mixed
+            # "memory 0, cores non-zero" case: memory is required (and
+            # non-zero) for any sliced request.
+            raise ValueError(
+                "accelerator_sliced_memory_percentage is required in the "
+                "range 1-100 for a sliced request; 0 is only valid when both "
+                "percentages are 0 (whole-card exclusive)"
+            )
+        if cores is not None and not cores_sliced:
+            raise ValueError(
+                "accelerator_sliced_cores_percentage must be in the range "
+                "1-100; 0 is only valid when both percentages are 0 "
+                "(whole-card exclusive)"
+            )
+        if cores is None:
+            # Mirror the operator webhook: cores defaults to 100 when unset.
+            self.accelerator_sliced_cores_percentage = 100
+        return self
+
+
 class LoraListEntry(BaseModel):
     """
     One LoRA adapter configured on a base Model (download + runtime + optional route).
@@ -346,6 +432,9 @@ class ModelSpecBase(SQLModel, ModelSource):
     worker_selector: Optional[Dict[str, str]] = Field(sa_type=JSON, default={})
     gpu_selector: Optional[GPUSelector] = Field(
         sa_type=pydantic_column_type(GPUSelector), default=None
+    )
+    gpu_type_selector: Optional[GPUTypeSelector] = Field(
+        sa_type=pydantic_column_type(GPUTypeSelector), default=None
     )
 
     backend: Optional[str] = None

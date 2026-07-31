@@ -25,6 +25,7 @@ from gpustack.schemas.models import (
     ModelListParams,
 )
 from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.gpu_instance_types import GPUInstanceType
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.api.tenant import (
     TenantContext,
@@ -366,6 +367,9 @@ async def validate_model_in(
     *,
     cluster_id: Optional[int] = None,
 ):
+    if getattr(model_in, "gpu_type_selector", None) is not None:
+        await validate_gpu_type_selector(session, model_in, cluster_id=cluster_id)
+
     if model_in.gpu_selector is not None and _max_intended_replicas(model_in) > 0:
         await validate_gpu_ids(session, model_in, cluster_id=cluster_id)
 
@@ -484,6 +488,127 @@ def validate_and_normalize_lora_list(
                 message=f"Duplicate lora_name '{short_name}' in lora_list."
             )
         seen.add(short_name)
+
+
+async def validate_gpu_type_selector(
+    session: SessionDep,
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
+    *,
+    cluster_id: Optional[int] = None,
+):
+    """Validate a model's ``gpu_type_selector`` against the local projection.
+
+    Reads only the local ``GPUInstanceType`` projection table (synced from the
+    operator watch stream); no Kubernetes client calls. Fails closed: anything
+    that cannot be verified from the projection is rejected.
+    """
+    selector = model_in.gpu_type_selector
+
+    gpu_selector = model_in.gpu_selector
+    if gpu_selector is not None and gpu_selector.gpu_ids:
+        raise BadRequestException(
+            message="gpu_type_selector cannot be combined with gpu_selector: "
+            "manual GPU selection and InstanceType-based sliced GPU selection "
+            "are mutually exclusive."
+        )
+
+    if (
+        gpu_selector is not None
+        and gpu_selector.gpus_per_replica is not None
+        and gpu_selector.gpus_per_replica > 1
+    ):
+        raise BadRequestException(
+            message="gpus_per_replica must be 1 when gpu_type_selector is set: "
+            "an InstanceType provides exactly one card per worker per replica."
+        )
+
+    memory_pct = selector.accelerator_sliced_memory_percentage
+    cores_pct = selector.accelerator_sliced_cores_percentage
+    memory_sliced = memory_pct is not None and memory_pct > 0
+    cores_sliced = cores_pct is not None and cores_pct > 0
+    if (memory_sliced or cores_sliced) and selector.accelerator_partitioned_profile:
+        raise BadRequestException(
+            message="accelerator_partitioned_profile cannot be combined with "
+            "accelerator_sliced_memory_percentage or "
+            "accelerator_sliced_cores_percentage: hardware partitioning and "
+            "software slicing cannot both apply to one card."
+        )
+
+    effective_cluster_id = (
+        cluster_id if cluster_id is not None else getattr(model_in, "cluster_id", None)
+    )
+    if effective_cluster_id is None:
+        raise BadRequestException(
+            message="A cluster must be specified when gpu_type_selector is set: "
+            "the InstanceType projection is scoped per cluster."
+        )
+
+    matched_list = await GPUInstanceType.all_by_fields(
+        session,
+        fields={
+            "cluster_id": effective_cluster_id,
+            "deleted_at": None,
+            "name": selector.type,
+        },
+    )
+    if not matched_list:
+        # Keep the two errors distinct: no synced types in the cluster at
+        # all vs. this type missing.
+        instance_types = await GPUInstanceType.all_by_fields(
+            session,
+            fields={"cluster_id": effective_cluster_id, "deleted_at": None},
+        )
+        if not instance_types:
+            raise BadRequestException(
+                message=f"Cluster {effective_cluster_id} has no synced GPU InstanceTypes: "
+                "gpu_type_selector requires a Kubernetes cluster managed by "
+                "gpustack-operator."
+            )
+        raise BadRequestException(
+            message=f"GPU InstanceType '{selector.type}' not found in cluster "
+            f"{effective_cluster_id}."
+        )
+    matched = matched_list[0]
+
+    # A cluster also publishes non-accelerated InstanceTypes (a CPU-only pool),
+    # and nothing about their name says so. The deploy form filters them out of
+    # its GPU Type list, but an API caller can still name one — and it would
+    # only fail later at scheduling, reported as a type that "does not report
+    # its accelerator memory" rather than as the wrong kind of type.
+    if not matched.spec.acceleratable:
+        raise BadRequestException(
+            message=f"GPU InstanceType '{selector.type}' in cluster "
+            f"{effective_cluster_id} is not an accelerator type: "
+            "gpu_type_selector requires one backed by GPUs."
+        )
+
+    # spec is projected as soon as the InstanceType appears, but status.detail is
+    # backfilled by the operator afterwards, so a type can be nameable before its
+    # hardware is known. Every mode needs the card's memory to size the claim
+    # (a percentage of it, a profile out of it, or the whole card), so without it
+    # the model would be accepted here and then never schedule — the fit would
+    # report the type as unavailable or as not reporting its memory.
+    detail = matched.status.detail if matched.status else None
+    if detail is None or not detail.memory:
+        raise BadRequestException(
+            message=f"GPU InstanceType '{selector.type}' in cluster "
+            f"{effective_cluster_id} does not report its accelerator memory yet: "
+            "gpustack-operator has not finished backfilling the type. Retry once "
+            "the type reports its hardware detail."
+        )
+
+    if selector.accelerator_partitioned_profile:
+        sliced_detail = detail.sliced_detail
+        physical = sliced_detail.physical if sliced_detail else None
+        profiles = physical.profiles if physical and physical.profiles else []
+        profile_names = {p.name for p in profiles if p.name}
+        if selector.accelerator_partitioned_profile not in profile_names:
+            raise BadRequestException(
+                message=f"Profile '{selector.accelerator_partitioned_profile}' "
+                f"is not offered by GPU InstanceType '{selector.type}' in "
+                f"cluster {effective_cluster_id}. Available profiles: "
+                f"{sorted(profile_names) or 'none'}."
+            )
 
 
 async def validate_gpu_ids(  # noqa: C901
@@ -794,6 +919,16 @@ async def update_model(
     await assert_cluster_belongs_to_org(
         ctx, session, model_in.cluster_id, model.owner_principal_id
     )
+
+    # Validate against the merged state: a sparse update carries only the
+    # fields being changed, so validation would otherwise check
+    # gpu_selector/gpu_type_selector mutual exclusion against half the
+    # picture (e.g. setting gpu_selector on a model that already has
+    # gpu_type_selector). object.__setattr__ bypasses pydantic's
+    # fields-set tracking, keeping the backfill out of the persisted patch.
+    for field in ("gpu_type_selector", "gpu_selector", "cluster_id"):
+        if field not in model_in.model_fields_set:
+            object.__setattr__(model_in, field, getattr(model, field))
 
     await validate_model_in(session, model_in)
     # Server-side assignment, after validation: validation must see the replica

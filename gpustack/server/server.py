@@ -432,7 +432,7 @@ class Server:
         )
         tasks.append(asyncio.create_task(gpu_instance_pvt_controller.start()))
 
-        gpu_instance_type_controller = GPUInstanceTypeController()
+        gpu_instance_type_controller = GPUInstanceTypeController(self._config)
         tasks.append(asyncio.create_task(gpu_instance_type_controller.start()))
 
         logger.debug("Controllers started.")

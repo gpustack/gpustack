@@ -59,6 +59,11 @@ _INSTANCE = _CRDSpec(
     kind="Instance",
     namespaced=True,
 )
+_DEVICES = _CRDSpec(
+    plural="devices",
+    kind="Devices",
+    namespaced=False,
+)
 
 
 class ClusterOps:
@@ -175,8 +180,23 @@ class ClusterOps:
         decides whether to re-establish the watch. The ``Watch`` is closed when
         the generator exits or is cancelled; ``self.api_client`` stays owned by
         :class:`ClusterOps`.
+
+        A caller that has just listed should pass that list's
+        ``metadata.resourceVersion`` so the two join without a gap; when it does
+        not, one is fetched here. The intent is to always resume from a version,
+        because a version-less watch reads as a WatchList request to the worker
+        cluster's aggregated apiserver, which rejects it with ``422
+        sendInitialEvents is forbidden ... unless the WatchList feature gate is
+        enabled``. When no version is obtainable — the list answers without a
+        ``metadata.resourceVersion`` — there is nothing to resume from, so the
+        watch goes out without one and fails with that documented 422, which the
+        caller handles as a watch failure instead of the watcher crashing.
         """
         crd = self._crd()
+        if resource_version is None:
+            resource_version = ((await self._list(spec)).get("metadata") or {}).get(
+                "resourceVersion"
+            )
         kwargs = {}
         if resource_version is not None:
             kwargs["resource_version"] = resource_version
@@ -645,6 +665,30 @@ class ClusterOps:
         instance type is gone.
         """
         return await self._patch_spec(_INSTANCE_TYPE, name, {"inactive": False})
+
+    #
+    # Devices Operations
+    #
+
+    async def read_devices(self, name: str) -> Optional[dict]:
+        """
+        Read one node's Devices in the cluster by node name.
+        If the node has no Devices, return None.
+        """
+        return await self._read(_DEVICES, name)
+
+    async def list_devices(self, resource_version: Optional[str] = None) -> dict:
+        """
+        List every node's Devices in the cluster.
+
+        Each item is named after its node and reports, per accelerator group,
+        which slicing modes the node has enabled (``spec.groups[].
+        acceleratorSlicedDetail.logical`` / ``.physical``) and what each
+        accelerator has left (``status.groups[].accelerators[].remaining``) —
+        the node-side facts a model's InstanceType claim has to fit into, and
+        which the worker's own inventory does not carry.
+        """
+        return await self._list(_DEVICES, resource_version)
 
     #
     # Instance Types Flavor Operations

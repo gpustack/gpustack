@@ -2,6 +2,7 @@ import asyncio
 from collections import deque
 import contextlib
 from datetime import datetime, timezone
+import json
 import multiprocessing
 import re
 import threading
@@ -84,6 +85,49 @@ _SERVER_CLASS_MAPPING = {
     BackendEnum.VOX_BOX: VoxBoxServer,
     BackendEnum.ASCEND_MINDIE: AscendMindIEServer,
 }
+
+# Annotation the operator device plugin writes onto the Pod after allocation,
+# e.g. {"<container>": {"devices": {"groups": [{"accelerators": [{"id": "<GPU UUID>",
+# "index": 0, "mode": 3, "allocated": 640000}]}]}, "deviceIDs": [...]}}.
+_ALLOCATED_ACCELERATORS_ANNOTATION = "device.gpustack.ai/accelerator.allocated"
+
+
+def _parse_allocated_accelerators(annotations: Optional[Dict[str, str]]) -> List[dict]:
+    """
+    Parse the allocated-accelerators annotation into a flat accelerator list.
+    Tolerates missing/malformed payloads (device-plugin version skew):
+    any parse problem means "allocation unknown", never a sync failure.
+    """
+    raw = (annotations or {}).get(_ALLOCATED_ACCELERATORS_ANNOTATION)
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    accelerators = []
+    for container_allocation in parsed.values():
+        if not isinstance(container_allocation, dict):
+            continue
+        devices = container_allocation.get("devices")
+        if not isinstance(devices, dict):
+            continue
+        groups = devices.get("groups")
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_accelerators = group.get("accelerators")
+            if not isinstance(group_accelerators, list):
+                continue
+            for accelerator in group_accelerators:
+                if isinstance(accelerator, dict) and accelerator.get("id"):
+                    accelerators.append(accelerator)
+    return accelerators
 
 
 class ServeManager:
@@ -400,12 +444,17 @@ class ServeManager:
             ]:
                 # Only if not in ERROR state yet.
                 if model_instance.state != ModelInstanceStateEnum.ERROR:
+                    # Surface the workload's status message (e.g. a
+                    # device-plugin admission rejection) when available.
+                    failure_message = (
+                        workload and getattr(workload, "state_message", "")
+                    ) or "Inference server exited or unhealthy."
                     with contextlib.suppress(NotFoundException):
                         # Get patch dict for main worker.
                         if is_main_worker:
                             patch_dict = {
                                 "state": ModelInstanceStateEnum.ERROR,
-                                "state_message": "Inference server exited or unhealthy.",
+                                "state_message": failure_message,
                             }
                         # Get patch dict for subordinate worker.
                         else:
@@ -422,7 +471,7 @@ class ServeManager:
                                 sw_pos
                             ]
                             sw.state = ModelInstanceStateEnum.ERROR
-                            sw.state_message = "Inference server exited or unhealthy."
+                            sw.state_message = failure_message
                             patch_dict = {
                                 f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                             }
@@ -432,6 +481,10 @@ class ServeManager:
 
             # Otherwise, update model instance state to RUNNING if everything is fine.
             model = self._get_model(model_instance)
+            if model.gpu_type_selector:
+                # vGPU: read back the real device allocation the operator
+                # device plugin wrote onto the workload's annotations.
+                self._sync_vgpu_allocation(model_instance, workload, is_main_worker)
             if not model.backend_version:
                 # backend version may be empty on initialization.
                 # try to refresh to get updated model info on syncs.
@@ -574,6 +627,132 @@ class ServeManager:
             return {"should_update": False}
 
         return None
+
+    def _sync_vgpu_allocation(  # noqa: C901
+        self,
+        model_instance: ModelInstance,
+        workload,
+        is_main_worker: bool,
+    ):
+        """
+        Patch the instance with the real device allocation read back from the
+        workload annotations: GPU UUID(s) into gpu_addresses, the allocated
+        card's index into gpu_indexes (resolved via this worker's reported
+        gpu_devices), and the claim's vram re-keyed from the placeholder to
+        that index so worker_allocated_cache charges the partial card to the
+        right index. No-op until the device plugin has allocated; deferred
+        (not patched) while the allocated card is missing from the worker's
+        reported devices.
+        """
+        accelerators = _parse_allocated_accelerators(
+            getattr(workload, "annotations", None)
+        )
+        if not accelerators:
+            return
+
+        uuids = [a["id"] for a in accelerators]
+
+        # Resolve the patch target first (local lookups only).
+        sw_pos = None
+        if not is_main_worker:
+            if (
+                not model_instance.distributed_servers
+                or not model_instance.distributed_servers.subordinate_workers
+            ):
+                return
+            sw_pos = next(
+                (
+                    i
+                    for i, sw in enumerate(
+                        model_instance.distributed_servers.subordinate_workers
+                    )
+                    if sw.worker_id == self._worker_id
+                ),
+                None,
+            )
+            if sw_pos is None:
+                return
+        target = (
+            model_instance
+            if is_main_worker
+            else model_instance.distributed_servers.subordinate_workers[sw_pos]
+        )
+
+        # Steady-state no-op guard: once addresses, indexes and the re-keyed
+        # claim all agree with the annotation, skip the workers API call that
+        # index resolution needs — it would otherwise fire every sync cycle
+        # for every vGPU instance.
+        target_claim = target.computed_resource_claim
+        if (
+            target.gpu_addresses == uuids
+            and target.gpu_indexes
+            and target_claim is not None
+            and target_claim.vram
+            and set(target_claim.vram.keys()) == set(target.gpu_indexes)
+        ):
+            return
+
+        # Resolve the allocated card's index from this worker's reported
+        # devices (the detected set, not the static config, which is empty
+        # for auto-detected workers).
+        gpu_devices = []
+        with contextlib.suppress(Exception):
+            worker = self._clientset.workers.get(self._worker_id)
+            gpu_devices = (worker.status and worker.status.gpu_devices) or []
+        index_by_uuid = {d.uuid: d.index for d in gpu_devices if d.uuid}
+        allocated_index = next(
+            (index_by_uuid[u] for u in uuids if u in index_by_uuid), None
+        )
+        if allocated_index is None:
+            # The card isn't in the worker's reported devices (yet): patching
+            # now would leave the claim charged to a wrong placeholder index.
+            # Retry on the next sync cycle.
+            logger.debug(
+                f"vgpu allocation UUIDs {uuids} not found in worker "
+                f"{self._worker_id} reported devices, deferring sync"
+            )
+            return
+
+        def rekey_claim(claim):
+            if claim is None or not claim.vram:
+                return None
+            if set(claim.vram.keys()) == {allocated_index}:
+                return None
+            return claim.model_copy(
+                update={"vram": {allocated_index: sum(claim.vram.values())}}
+            )
+
+        with contextlib.suppress(NotFoundException):
+            if is_main_worker:
+                patch_dict = {}
+                if model_instance.gpu_addresses != uuids:
+                    patch_dict["gpu_addresses"] = uuids
+                if model_instance.gpu_indexes != [allocated_index]:
+                    patch_dict["gpu_indexes"] = [allocated_index]
+                new_claim = rekey_claim(model_instance.computed_resource_claim)
+                if new_claim is not None:
+                    patch_dict["computed_resource_claim"] = new_claim
+                if patch_dict:
+                    self._update_model_instance(model_instance.id, **patch_dict)
+                return
+
+            sw = target
+            changed = False
+            if sw.gpu_addresses != uuids:
+                sw.gpu_addresses = uuids
+                changed = True
+            if sw.gpu_indexes != [allocated_index]:
+                sw.gpu_indexes = [allocated_index]
+                changed = True
+            new_claim = rekey_claim(sw.computed_resource_claim)
+            if new_claim is not None:
+                sw.computed_resource_claim = new_claim
+                changed = True
+            if changed:
+                self._update_model_instance(
+                    model_instance.id,
+                    **{f"distributed_servers.subordinate_workers.{sw_pos}": sw},
+                )
 
     @staticmethod
     def _serve_model_instance(

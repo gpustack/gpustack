@@ -1,17 +1,20 @@
 """GPUInstanceTypeController: watch-event mapping + sqlite catalog projection.
 
-The controller has no DB bus source — the operator ``watch_instance_types``
-stream is authoritative. ``_on_event`` maps each ADDED/MODIFIED/DELETED line
-onto a ``WorkEvent`` keyed by the stable ``(cluster_id, name)`` identity (the
-raw object is carried so the reconcile needs no second fetch); DELETED gets the
-queue's default coalesce priority. ``_reconcile`` upserts the row on
-ADDED/MODIFIED (reviving a soft-deleted one) and soft-deletes it on DELETED,
-over a real in-memory sqlite DB.
+The controller has no DB bus source for the catalog — one list-then-watch per
+cluster over ``ClusterOps`` is authoritative, and the ``Cluster`` bus only
+decides which clusters get a watcher. ``_on_watch_event`` maps each
+ADDED/MODIFIED/DELETED native watch event onto a ``WorkEvent`` keyed by the
+stable ``(cluster_id, name)`` identity, with the cluster id supplied by the
+watcher (a raw CR carries none) and the raw object carried so the reconcile
+needs no second fetch. ``_reconcile`` upserts the row on ADDED/MODIFIED
+(reviving a soft-deleted one) and soft-deletes it on DELETED, over a real
+in-memory sqlite DB.
 """
 
-import json
+import asyncio
 from datetime import datetime
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -19,16 +22,21 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.gpu_instances.controllers import GPUInstanceTypeController
+from gpustack.schemas.clusters import ClusterProvider
 from gpustack.schemas.gpu_instance_types import (
     GPUInstanceType,
     GPUInstanceTypeSpec,
 )
+from gpustack.server.bus import Event, EventType
 from gpustack.server.workqueue import WorkEvent, WorkEventType
 
 
-def _line(etype, *, cluster="1", name="a10g", spec=None):
-    obj = {"cluster": cluster, "metadata": {"name": name}, "spec": spec or {}}
-    return json.dumps({"type": etype, "object": obj})
+def _controller():
+    return GPUInstanceTypeController(MagicMock())
+
+
+def _obj(*, name="a10g", spec=None):
+    return {"metadata": {"name": name}, "spec": spec or {}}
 
 
 def _pending(controller, keys):
@@ -39,9 +47,9 @@ def _pending(controller, keys):
 
 
 def test_added_maps_to_added_keyed_on_cluster_and_name():
-    controller = GPUInstanceTypeController()
+    controller = _controller()
 
-    controller._on_event(_line("ADDED", cluster="2", name="a100"))
+    controller._on_watch_event(2, "ADDED", _obj(name="a100"))
 
     event = _pending(controller, (2, "a100"))
     assert event.type == WorkEventType.ADDED
@@ -49,26 +57,26 @@ def test_added_maps_to_added_keyed_on_cluster_and_name():
 
 
 def test_modified_maps_to_modified():
-    controller = GPUInstanceTypeController()
+    controller = _controller()
 
-    controller._on_event(_line("MODIFIED"))
+    controller._on_watch_event(1, "MODIFIED", _obj())
 
     assert _pending(controller, (1, "a10g")).type == WorkEventType.MODIFIED
 
 
 def test_deleted_maps_to_deleted():
-    controller = GPUInstanceTypeController()
+    controller = _controller()
 
-    controller._on_event(_line("DELETED"))
+    controller._on_watch_event(1, "DELETED", _obj())
 
     assert _pending(controller, (1, "a10g")).type == WorkEventType.DELETED
 
 
 def test_deleted_coalesces_over_pending_modified():
-    controller = GPUInstanceTypeController()
+    controller = _controller()
 
-    controller._on_event(_line("MODIFIED"))
-    controller._on_event(_line("DELETED"))
+    controller._on_watch_event(1, "MODIFIED", _obj())
+    controller._on_watch_event(1, "DELETED", _obj())
 
     # Latest-wins: the later DELETED replaces the earlier MODIFIED in the slot.
     assert _pending(controller, (1, "a10g")).type == WorkEventType.DELETED
@@ -77,44 +85,132 @@ def test_deleted_coalesces_over_pending_modified():
 def test_added_after_pending_deleted_wins():
     # A catalog DELETED is NOT terminal: a later ADDED (recreate) for the same
     # key must win, not be discarded by DELETED stickiness (latest-wins policy).
-    controller = GPUInstanceTypeController()
+    controller = _controller()
 
-    controller._on_event(_line("DELETED"))
-    controller._on_event(_line("ADDED"))
+    controller._on_watch_event(1, "DELETED", _obj())
+    controller._on_watch_event(1, "ADDED", _obj())
 
     assert _pending(controller, (1, "a10g")).type == WorkEventType.ADDED
 
 
-def test_malformed_line_is_skipped():
-    controller = GPUInstanceTypeController()
-
-    controller._on_event("{not json")
-
-    assert len(controller._queue._pending) == 0
-
-
 def test_unexpected_verb_is_skipped():
-    controller = GPUInstanceTypeController()
+    controller = _controller()
 
-    controller._on_event(_line("BOOKMARK"))
-
-    assert len(controller._queue._pending) == 0
-
-
-def test_non_integer_cluster_is_skipped():
-    controller = GPUInstanceTypeController()
-
-    controller._on_event(_line("ADDED", cluster="not-a-number"))
+    controller._on_watch_event(1, "BOOKMARK", _obj())
 
     assert len(controller._queue._pending) == 0
 
 
 def test_missing_name_is_skipped():
-    controller = GPUInstanceTypeController()
+    controller = _controller()
 
-    controller._on_event(json.dumps({"type": "ADDED", "object": {"cluster": "1"}}))
+    controller._on_watch_event(1, "ADDED", {"spec": {}})
 
     assert len(controller._queue._pending) == 0
+
+
+# --- watcher set (Cluster bus -> per-cluster watchers) --------------------- #
+
+
+def _cluster_event(
+    etype,
+    *,
+    cluster_id=1,
+    provider=ClusterProvider.Kubernetes,
+    token="tok",
+):
+    return Event(
+        type=etype,
+        data=SimpleNamespace(
+            id=cluster_id, provider=provider, registration_token=token
+        ),
+    )
+
+
+async def _cancelled(task) -> bool:
+    """Whether ``task`` ended cancelled. ``Task.cancel()`` only *requests* the
+    cancellation, so the task has to be given a chance to unwind first."""
+    await asyncio.gather(task, return_exceptions=True)
+    return task.cancelled()
+
+
+@pytest_asyncio.fixture
+async def watcher_controller(monkeypatch):
+    """A controller whose per-cluster watcher is a no-op sleeper, so the watcher
+    set can be exercised without any cluster I/O."""
+    controller = _controller()
+
+    async def idle(cluster_id, registration_token):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(controller, "_watch_cluster", idle)
+    yield controller
+    for _, task in controller._watchers.values():
+        task.cancel()
+    await asyncio.gather(
+        *(task for _, task in controller._watchers.values()), return_exceptions=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_cluster_starts_a_watcher(watcher_controller):
+    watcher_controller._reconcile_cluster(_cluster_event(EventType.CREATED))
+
+    assert set(watcher_controller._watchers) == {1}
+
+
+@pytest.mark.asyncio
+async def test_non_kubernetes_cluster_is_ignored(watcher_controller):
+    watcher_controller._reconcile_cluster(
+        _cluster_event(EventType.CREATED, provider=ClusterProvider.Docker)
+    )
+
+    assert watcher_controller._watchers == {}
+
+
+@pytest.mark.asyncio
+async def test_repeated_event_keeps_the_same_watcher(watcher_controller):
+    # The bus republishes a cluster on every heartbeat-driven update; restarting
+    # the watcher each time would re-list the catalog for no reason.
+    watcher_controller._reconcile_cluster(_cluster_event(EventType.CREATED))
+    first = watcher_controller._watchers[1][1]
+
+    watcher_controller._reconcile_cluster(_cluster_event(EventType.UPDATED))
+
+    assert watcher_controller._watchers[1][1] is first
+
+
+@pytest.mark.asyncio
+async def test_rotated_token_restarts_the_watcher(watcher_controller):
+    # The token authenticates the cluster proxy, so a running watcher built with
+    # the old one can no longer reach the cluster.
+    watcher_controller._reconcile_cluster(_cluster_event(EventType.CREATED))
+    first = watcher_controller._watchers[1][1]
+
+    watcher_controller._reconcile_cluster(
+        _cluster_event(EventType.UPDATED, token="rotated")
+    )
+
+    assert watcher_controller._watchers[1][1] is not first
+    assert await _cancelled(first)
+
+
+@pytest.mark.asyncio
+async def test_deleted_cluster_stops_its_watcher(watcher_controller):
+    watcher_controller._reconcile_cluster(_cluster_event(EventType.CREATED))
+    task = watcher_controller._watchers[1][1]
+
+    watcher_controller._reconcile_cluster(_cluster_event(EventType.DELETED))
+
+    assert watcher_controller._watchers == {}
+    assert await _cancelled(task)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_without_a_row_is_ignored(watcher_controller):
+    watcher_controller._reconcile_cluster(Event(type=EventType.HEARTBEAT, data=None))
+
+    assert watcher_controller._watchers == {}
 
 
 # --- sqlite reconcile ------------------------------------------------------ #
@@ -135,12 +231,11 @@ def controller(engine, monkeypatch):
         "gpustack.gpu_instances.controllers.async_session",
         lambda: AsyncSession(engine, expire_on_commit=False),
     )
-    return GPUInstanceTypeController()
+    return _controller()
 
 
 def _event(etype, *, cluster_id=1, name="a10g", spec=None, status=None):
     obj = {
-        "cluster": str(cluster_id),
         "metadata": {"name": name},
         "spec": spec or {},
     }
@@ -410,63 +505,76 @@ async def test_integrity_error_race_retires_stale_active_row(
 # --- resync (list-then-watch) ---------------------------------------------- #
 
 
-@pytest.mark.asyncio
-async def test_resync_enqueues_present_and_retires_absent(
-    engine, controller, monkeypatch
-):
-    # An active row the fresh catalog no longer lists is retired; a listed type
-    # is (re-)projected. This is the missed-DELETE + fresh-start recovery.
+def _ops(items, resource_version="1"):
+    return SimpleNamespace(
+        list_instance_types=AsyncMock(
+            return_value={
+                "metadata": {"resourceVersion": resource_version},
+                "items": items,
+            }
+        )
+    )
+
+
+async def _seed(engine, *, cluster_id, name):
     async with AsyncSession(engine, expire_on_commit=False) as s:
         s.add(
             GPUInstanceType(
-                cluster_id=1,
-                name="gone",
+                cluster_id=cluster_id,
+                name=name,
                 spec=GPUInstanceTypeSpec(),
-                snapshot="sha1:gone",
+                snapshot=f"sha1:{cluster_id}-{name}",
             )
         )
         await s.commit()
 
-    listed = {
-        "items": [
-            {
-                "cluster": "1",
-                "metadata": {"name": "a10g"},
-                "spec": {"acceleratorGroup": "nvidia-a10g"},
-            }
-        ]
-    }
-    monkeypatch.setattr(
-        "gpustack.gpu_instances.controllers.gateway_client.list_instance_types",
-        AsyncMock(return_value=listed),
-    )
 
-    await controller._resync()
+@pytest.mark.asyncio
+async def test_resync_enqueues_present_and_retires_absent(engine, controller):
+    # An active row the fresh catalog no longer lists is retired; a listed type
+    # is (re-)projected. This is the missed-DELETE + fresh-start recovery.
+    await _seed(engine, cluster_id=1, name="gone")
+
+    await controller._resync(
+        _ops(
+            [
+                {
+                    "metadata": {"name": "a10g"},
+                    "spec": {"acceleratorGroup": "nvidia-a10g"},
+                }
+            ]
+        ),
+        1,
+    )
 
     assert controller._queue._pending[(1, "a10g")].type == WorkEventType.ADDED
     assert controller._queue._pending[(1, "gone")].type == WorkEventType.DELETED
 
 
 @pytest.mark.asyncio
-async def test_resync_empty_list_skips_retire(engine, controller, monkeypatch):
-    # An empty result is indistinguishable from an outage, so it must NOT retire
-    # every active row — the retire pass is skipped entirely.
-    async with AsyncSession(engine, expire_on_commit=False) as s:
-        s.add(
-            GPUInstanceType(
-                cluster_id=1,
-                name="keep",
-                spec=GPUInstanceTypeSpec(),
-                snapshot="sha1:keep",
-            )
-        )
-        await s.commit()
+async def test_resync_empty_list_retires(engine, controller):
+    # A per-cluster list either answers for that cluster or raises, so an empty
+    # result really is an empty catalog and its rows must be retired.
+    await _seed(engine, cluster_id=1, name="gone")
 
-    monkeypatch.setattr(
-        "gpustack.gpu_instances.controllers.gateway_client.list_instance_types",
-        AsyncMock(return_value={"items": []}),
-    )
+    await controller._resync(_ops([]), 1)
 
-    await controller._resync()
+    assert controller._queue._pending[(1, "gone")].type == WorkEventType.DELETED
 
-    assert len(controller._queue._pending) == 0  # nothing retired
+
+@pytest.mark.asyncio
+async def test_resync_returns_the_list_resource_version(engine, controller):
+    # The watch resumes from it, so the snapshot and the stream join with no gap
+    # — and a version-less watch would be rejected outright (WatchList semantics).
+    assert await controller._resync(_ops([], resource_version="913"), 1) == "913"
+
+
+@pytest.mark.asyncio
+async def test_resync_leaves_other_clusters_alone(engine, controller):
+    # Each cluster has its own watcher and its own resync: one cluster's catalog
+    # must never retire another's rows.
+    await _seed(engine, cluster_id=2, name="other")
+
+    await controller._resync(_ops([]), 1)
+
+    assert controller._queue._pending == {}

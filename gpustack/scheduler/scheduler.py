@@ -24,6 +24,7 @@ from gpustack.policies.candidate_selectors import (
     AscendMindIEResourceFitSelector,
     GGUFResourceFitSelector,
     SGLangResourceFitSelector,
+    VGPUResourceFitSelector,
     VLLMResourceFitSelector,
 )
 from gpustack.policies.candidate_selectors.custom_backend_resource_fit_selector import (
@@ -441,7 +442,11 @@ async def find_candidate(
 
     # Initialize candidate selector.
     try:
-        if is_gguf_model(model):
+        if model.gpu_type_selector:
+            candidates_selector = VGPUResourceFitSelector(
+                config, model, model_instances
+            )
+        elif is_gguf_model(model):
             candidates_selector = GGUFResourceFitSelector(
                 model, model_instances, config.cache_dir
             )

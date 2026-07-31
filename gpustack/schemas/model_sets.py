@@ -47,6 +47,14 @@ class ModelSpec(ModelSpecBase):
     # a 422.
     owner_principal_id: Optional[int] = Field(default=None, exclude=True)
 
+    # The cluster the model would be evaluated against, stamped
+    # server-side by the evaluation route from the request's top-level
+    # cluster_id (never trusted from the client). ``ModelSpecBase``
+    # deliberately has no cluster_id, but vGPU/InstanceType checks
+    # resolve pools per cluster. Excluded from responses for the same
+    # merge-back reason as owner_principal_id.
+    cluster_id: Optional[int] = Field(default=None, exclude=True)
+
 
 class SizeUnit(str, Enum):
     MILLION = "M"

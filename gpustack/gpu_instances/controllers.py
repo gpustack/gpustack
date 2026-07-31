@@ -51,6 +51,7 @@ from gpustack.schemas.principals import (
 )
 from gpustack.schemas.clusters import (
     Cluster,
+    ClusterProvider,
 )
 
 from gpustack.server.bus import Event, EventType
@@ -67,6 +68,22 @@ _USER_NAMESPACE_RE = re.compile(r"^user-(\d+)$")
 
 # Backoff before reconnecting the downstream watch stream after it ends/errors.
 _WATCH_RECONNECT_INTERVAL = 5.0
+
+# Ceiling for the per-cluster instance-type watch backoff. A cluster with no
+# reachable worker fails every attempt (the cluster proxy answers 503), and it
+# can sit that way for as long as it has no worker — so its retry decays to this
+# instead of polling the proxy every few seconds forever.
+_WATCH_BACKOFF_MAX = 60.0
+
+# Kubernetes watch verbs -> work-queue event types. Anything else (notably
+# BOOKMARK / ERROR) is absent here and dropped.
+_WATCH_VERB_TO_WORK_EVENT = {
+    "ADDED": WorkEventType.ADDED,
+    "MODIFIED": WorkEventType.MODIFIED,
+    "DELETED": WorkEventType.DELETED,
+}
+
+_INSTANCE_TYPE_SOURCE = "gpu_instance_type_controller"
 
 
 class _InstanceAssetsError(Exception):
@@ -1289,13 +1306,23 @@ class GPUInstancePersistentVolumeTypeController(_PersistentVolumeFinalizeControl
 
 
 class GPUInstanceTypeController:
-    """Projects every cluster's operator InstanceType catalog into the
+    """Projects every Kubernetes cluster's operator InstanceType catalog into the
     ``gpu_instance_types`` table.
 
-    Unlike :class:`GPUInstanceController` there is no DB bus source: the operator
-    worker-gateway watch stream (``watch_instance_types`` across all clusters) is
-    the sole source of truth, so ``start()`` is just the watch loop feeding a
-    per-``(cluster_id, name)`` serial work queue drained by a single dispatcher.
+    Unlike :class:`GPUInstanceController` there is no DB bus source for the
+    catalog itself: one list-then-watch per cluster over :class:`ClusterOps` is
+    the sole source of truth, feeding a per-``(cluster_id, name)`` serial work
+    queue drained by a single dispatcher. The ``Cluster`` bus is subscribed only
+    to decide *which* clusters have a watcher.
+
+    Per cluster rather than through the operator worker-gateway: the gateway
+    carries only the clusters that opted into GPU-instance handling
+    (``k8s_options.gpu_instance_options`` — see ``gpu_instances/gateway.py``), so
+    a model-service cluster would never populate the projection and every
+    ``gpu_type_selector`` deployment onto it would be rejected as "no synced GPU
+    InstanceTypes". ``ClusterOps`` reaches each cluster's aggregated apiserver
+    through ``/v2/clusters/{id}/proxy``, which is the same path the per-cluster
+    ``/v2/gpu-instance-types`` route already uses for both cluster families.
 
     ADDED / MODIFIED upsert a row keyed by its ``snapshot`` — the row's durable
     identity (a content hash that excludes the mutable ``display_name``): the
@@ -1314,11 +1341,13 @@ class GPUInstanceTypeController:
     only carries *future* events, so without it a fresh table would leave every
     already-existing type unresolvable, and a DELETE missed during a reconnect gap
     would strand a type as permanently active. The resync populates present types
-    and retires active rows the catalog no longer lists. Runs leader-only, like
-    the other controllers (by virtue of its ``_start_controllers`` call site).
+    and retires active rows the cluster's catalog no longer lists. Runs
+    leader-only, like the other controllers (by virtue of its
+    ``_start_controllers`` call site).
     """
 
-    def __init__(self):
+    def __init__(self, config: Config):
+        self._config = config
         # Per-``(cluster_id, name)`` serial queue with a LATEST-WINS coalescer.
         # The default coalescer keeps a pending DELETED sticky, which is wrong
         # here: a catalog DELETED is not terminal (a same-name type can be
@@ -1330,6 +1359,10 @@ class GPUInstanceTypeController:
         self._inflight: Dict[Any, asyncio.Task] = {}
         # Consumes ``_queue`` and fans out one worker task per keys.
         self._dispatch_task: Optional[asyncio.Task] = None
+        # One catalog watcher task per Kubernetes cluster, tagged with the
+        # registration token it was built with: that token authenticates the
+        # cluster proxy, so a rotated one invalidates the running watcher.
+        self._watchers: Dict[int, Tuple[str, asyncio.Task]] = {}
 
     @staticmethod
     def _latest_wins(existing: WorkEvent, incoming: WorkEvent) -> WorkEvent:
@@ -1343,7 +1376,7 @@ class GPUInstanceTypeController:
     async def start(self):
         self._dispatch_task = asyncio.create_task(self._dispatch())
         try:
-            await self._watch()
+            await self._watch_clusters()
         finally:
             tasks: List[asyncio.Task] = []
             if self._dispatch_task is not None:
@@ -1352,120 +1385,170 @@ class GPUInstanceTypeController:
             for task in list(self._inflight.values()):
                 task.cancel()
                 tasks.append(task)
+            for _, task in list(self._watchers.values()):
+                task.cancel()
+                tasks.append(task)
+            self._watchers.clear()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+
+    # ======================================================================= #
+    # Cluster set -> per-cluster watchers
+    # ======================================================================= #
+
+    async def _watch_clusters(self):
+        """Keep exactly one catalog watcher alive per Kubernetes cluster.
+
+        ``Cluster.subscribe`` replays every existing row first, so this both
+        bootstraps the watchers at startup and tracks later create / delete /
+        token changes. Reachability is deliberately NOT tracked here: an
+        unreachable cluster simply fails its watcher's list and is retried with
+        backoff, which avoids a second (Worker) subscription just to learn what
+        the retry already discovers.
+        """
+        async for event in Cluster.subscribe(source=_INSTANCE_TYPE_SOURCE):
+            try:
+                self._reconcile_cluster(event)
+            except Exception:
+                logger.exception(
+                    "Failed to reconcile the GPU instance type watcher set"
+                )
+
+    def _reconcile_cluster(self, event: Event):
+        """Start / stop / restart one cluster's watcher from a bus event."""
+        cluster: Cluster = event.data
+        if cluster is None:
+            # HEARTBEAT carries no row.
+            return
+
+        if (
+            event.type == EventType.DELETED
+            or cluster.provider != ClusterProvider.Kubernetes
+        ):
+            # A deleted cluster's rows go with it (``cluster_id`` is ON DELETE
+            # CASCADE), so stopping the watcher is the whole cleanup.
+            self._stop_watcher(cluster.id)
+            return
+
+        existing = self._watchers.get(cluster.id)
+        if existing is not None and existing[0] == cluster.registration_token:
+            return
+        # Either no watcher yet, or the token it authenticates with was rotated
+        # — the running one can no longer reach the cluster, so replace it.
+        self._stop_watcher(cluster.id)
+        self._watchers[cluster.id] = (
+            cluster.registration_token,
+            asyncio.create_task(
+                self._watch_cluster(cluster.id, cluster.registration_token)
+            ),
+        )
+
+    def _stop_watcher(self, cluster_id: int):
+        entry = self._watchers.pop(cluster_id, None)
+        if entry is not None:
+            entry[1].cancel()
 
     # ======================================================================= #
     # Watch source -> work queue
     # ======================================================================= #
 
-    async def _watch(self):
-        """Resync the catalog, then consume the operator InstanceType watch (all
-        clusters) and feed the queue; reconnect on any error (mirrors
-        :meth:`GPUInstanceController._watch_downstream`). The resync runs on every
-        (re)connect so a fresh table is populated and a delete missed during the
-        previous gap is reconciled before the watch resumes.
+    async def _watch_cluster(self, cluster_id: int, registration_token: str):
+        """List-then-watch one cluster's InstanceType catalog, forever.
 
-        The operator watch is this controller's only source, so without the
-        operator there is nothing to project and the loop stops instead of
-        reconnecting forever."""
-        if not gateway_client.is_gateway_configured():
-            logger.info(
-                "Operator worker gateway is not configured; "
-                "GPU instance type projection is disabled."
-            )
-            return
+        The resync runs on every (re)connect so a fresh table is populated and a
+        delete missed during the previous gap is reconciled before the watch
+        resumes. Failures back off up to :data:`_WATCH_BACKOFF_MAX` — a cluster
+        with no reachable worker fails every attempt and may stay that way — and
+        the backoff resets as soon as a resync succeeds.
+        """
+        delay = _WATCH_RECONNECT_INTERVAL
         while True:
             try:
-                await self._resync()
-                async for line in gateway_client.watch_instance_types():
-                    self._on_event(line)
+                ops = ClusterOps(
+                    server_api_port=self._config.get_api_port(),
+                    cluster_id=cluster_id,
+                    cluster_registration_token=registration_token,
+                    # InstanceType is cluster-scoped, so the owner identifier —
+                    # which only derives the org namespace of *namespaced* CRDs —
+                    # never reaches the wire; the constructor requires one anyway.
+                    cluster_owner_principal_identifier=PLATFORM_PRINCIPAL_NAME,
+                )
+                async with ops:
+                    resource_version = await self._resync(ops, cluster_id)
+                    delay = _WATCH_RECONNECT_INTERVAL
+                    async for native in ops.watch_instance_types(resource_version):
+                        self._on_watch_event(
+                            cluster_id,
+                            native.get("type"),
+                            native.get("raw_object") or {},
+                        )
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("GPU instance type watch stream failed; reconnecting")
-            await asyncio.sleep(_WATCH_RECONNECT_INTERVAL)
+            except Exception as e:
+                logger.warning(
+                    "GPU instance type watch for cluster %s failed, "
+                    "retrying in %ss: %s",
+                    cluster_id,
+                    delay,
+                    e,
+                )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _WATCH_BACKOFF_MAX)
 
-    async def _resync(self):
-        """List the full operator catalog (all clusters) and reconcile it via the
-        queue: enqueue an ADDED for every listed type, and a DELETED for every
-        active row the catalog no longer lists (a delete missed during a watch
-        gap). Routing through the queue keeps the per-``(cluster_id, name)``
-        serialization, so a concurrent watch event coalesces (latest-wins) instead
-        of racing a direct write.
+    async def _resync(self, ops: ClusterOps, cluster_id: int) -> Optional[str]:
+        """List one cluster's catalog and reconcile it via the queue: enqueue an
+        ADDED for every listed type, and a DELETED for every active row of that
+        cluster the catalog no longer lists (a delete missed during a watch gap).
+        Routing through the queue keeps the per-``(cluster_id, name)``
+        serialization, so a concurrent watch event coalesces (latest-wins)
+        instead of racing a direct write.
 
-        An empty result is treated as "don't trust" and skips the retire pass: an
-        outage that returns no items is indistinguishable from a genuinely empty
-        catalog, and retiring every row on a transient empty response would wipe
-        the projection.
+        An empty list is taken at face value — a cluster is allowed to define no
+        instance types. Unlike an aggregate over subscriptions, this list either
+        answers for the cluster or raises, so "no items" cannot be an outage in
+        disguise.
+
+        Returns the list's ``resourceVersion`` so the caller's watch resumes
+        exactly where this snapshot ends, leaving no gap between the two.
         """
-        result = await gateway_client.list_instance_types()
+        result = await ops.list_instance_types()
         items = result.get("items") or []
         seen: set = set()
         for item in items:
-            keys = self._event_keys(item)
-            if keys is None:
+            name = (item.get("metadata") or {}).get("name")
+            if not name:
                 continue
+            keys = (cluster_id, name)
             self._queue.add(WorkEvent(keys=keys, type=WorkEventType.ADDED, object=item))
             seen.add(keys)
-        if not seen:
-            return
         async with async_session() as session:
             actives = await GPUInstanceType.all_by_fields(
-                session, fields={"deleted_at": None}
+                session, fields={"cluster_id": cluster_id, "deleted_at": None}
             )
         for row in actives:
-            keys = (row.cluster_id, row.name)
+            keys = (cluster_id, row.name)
             if keys not in seen:
                 self._queue.add(
                     WorkEvent(keys=keys, type=WorkEventType.DELETED, object={})
                 )
+        return (result.get("metadata") or {}).get("resourceVersion")
 
-    def _on_event(self, line: str) -> None:
-        """Map one watch line onto a queue event.
+    def _on_watch_event(self, cluster_id: int, verb: Optional[str], obj: dict) -> None:
+        """Map one native Kubernetes watch event onto a queue event.
 
-        The object carries ``cluster`` (the GPUStack cluster id),
-        ``metadata.name`` and ``spec``; the raw object is carried on the event so
-        the reconcile can build the row without a second fetch (the watch is the
-        only source). Malformed / unexpected lines are skipped so one bad event
-        can't break the stream.
+        The cluster id comes from the watcher, not the object: a raw CR carries
+        no cluster identity. The object itself is carried on the event so the
+        reconcile can build the row without a second fetch (the watch is the only
+        source). Unexpected verbs and nameless objects are skipped so one odd
+        event can't break the stream.
         """
-        try:
-            event = json.loads(line)
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Discarding malformed instance type event: %r", line)
+        wtype = _WATCH_VERB_TO_WORK_EVENT.get(verb)
+        if wtype is None:
             return
-        etype = event.get("type")
-        if etype not in ("ADDED", "MODIFIED", "DELETED"):
-            # Ignore BOOKMARK / ERROR and anything unexpected.
-            return
-        obj = event.get("object") or {}
-        keys = self._event_keys(obj)
-        if keys is None:
-            return
-        wtype = {
-            "ADDED": WorkEventType.ADDED,
-            "MODIFIED": WorkEventType.MODIFIED,
-            "DELETED": WorkEventType.DELETED,
-        }[etype]
-        self._queue.add(WorkEvent(keys=keys, type=wtype, object=obj))
-
-    @staticmethod
-    def _event_keys(obj: dict) -> Optional[Tuple[int, str]]:
-        """The stable ``(cluster_id, name)`` identity of an event, or ``None``
-        when the object lacks a usable cluster id or name."""
-        cluster = obj.get("cluster")
         name = (obj.get("metadata") or {}).get("name")
-        if cluster is None or not name:
-            return None
-        try:
-            cluster_id = int(cluster)
-        except (TypeError, ValueError):
-            logger.warning(
-                "Ignoring instance type event with non-integer cluster %r", cluster
-            )
-            return None
-        return (cluster_id, name)
+        if not name:
+            return
+        self._queue.add(WorkEvent(keys=(cluster_id, name), type=wtype, object=obj))
 
     # ======================================================================= #
     # Work queue — consumer (mirrors GPUInstanceController)
