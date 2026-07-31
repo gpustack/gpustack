@@ -1,5 +1,7 @@
+from gpustack_runtime.deployer import supported_list as supported_deployers
 from gpustack_runtime.detector import (
     detect_devices,
+    expand_mig_devices,
     manufacturer_to_backend,
     ManufacturerEnum,
 )
@@ -8,6 +10,27 @@ from gpustack.detectors.base import GPUDetector
 from gpustack.schemas import GPUDeviceStatus, GPUDevicesStatus
 from gpustack.schemas.workers import GPUCoreInfo, MemoryInfo, GPUNetworkInfo
 from gpustack.utils.convert import safe_int
+
+
+def _mig_devices_addressable() -> bool:
+    """
+    Whether a MIG-partitioned card's MIG devices are what this worker deploys
+    onto, which is what decides whether they belong in the inventory.
+
+    Detection reports the physical card and carries its MIG devices in the
+    ``mig_devices`` appendix. On Kubernetes clusters that is the whole story:
+    the operator's device-manager partitions on demand, so the card is the only
+    stable inventory item and a model asks for a slice of it through an
+    InstanceType. Docker clusters have no such partitioner — MIG instances are
+    created out-of-band with ``nvidia-smi mig``, not per workload — so there the
+    instances are the allocatable devices, and a MIG-enabled card itself can run
+    nothing.
+
+    The deployer that would run the workload owns the answer, so that the
+    inventory can never list a device the deploy path cannot address.
+    """
+    deployers = supported_deployers()
+    return bool(deployers) and deployers[0].allowed_mig_devices
 
 
 class Runtime(GPUDetector):
@@ -25,6 +48,11 @@ class Runtime(GPUDetector):
         devs = detect_devices(fast=False)
         if not devs:
             return ret
+
+        # Substitute a MIG-partitioned card with its MIG devices where they are
+        # the deployable ones.
+        if _mig_devices_addressable():
+            devs = expand_mig_devices(devs)
 
         # Convert to GPUDevicesInfo.
         for dev in devs:
