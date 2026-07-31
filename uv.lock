@@ -1240,7 +1240,7 @@ requires-dist = [
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.3.0" },
     { name = "gpustack-runner", specifier = "==0.1.27.post4" },
-    { name = "gpustack-runtime", specifier = "==0.2.1" },
+    { name = "gpustack-runtime", specifier = "==0.2.2.post6" },
     { name = "hf-xet", specifier = ">=1.3.1,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=1.0.0" },
@@ -1335,7 +1335,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.2.1"
+version = "0.2.2.post6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -1349,9 +1349,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/25/b36bfe056bbd80d450b2d43acef8384368896ffc5ca0f4323e2597780432/gpustack_runtime-0.2.1.tar.gz", hash = "sha256:9669a4db33cd4970b86f22fb76d6fae858b7724ff480a534c3cfafa995d67457", size = 1471155, upload-time = "2026-07-06T11:48:25.265Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/60/17fe0ebc0aa3c4188da363c0bea2649d5a9260572733d3fb138d89dea8da/gpustack_runtime-0.2.2.post6.tar.gz", hash = "sha256:27d6228117e668597dd648fc00f339bd259a4b2c89e56bc7c7b6e01f3b61794e", size = 1472468, upload-time = "2026-07-31T01:25:32.687Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/7e/86a9e1003e6a48dac04b6fb6534abb94786ae32fc0a6655f74718f1c6810/gpustack_runtime-0.2.1-py3-none-any.whl", hash = "sha256:7ffb0422311c88808114b6a703fe53e60d60c362a6d9db0d8bf8be776a5f4a57", size = 1449266, upload-time = "2026-07-06T11:48:23.478Z" },
+    { url = "https://files.pythonhosted.org/packages/38/c7/9af6137a88612c1c36158dcefa21a6ec24f4dd9b783b3f5d9c99b75edc22/gpustack_runtime-0.2.2.post6-py3-none-any.whl", hash = "sha256:f02170056eeb68776348714493b6c027ba6adb3e73fdab4ef6f759a89656b22e", size = 1451415, upload-time = "2026-07-31T01:25:31.029Z" },
 ]
 
 [[package]]
