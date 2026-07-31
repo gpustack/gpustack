@@ -97,6 +97,24 @@ async def test_list_instance_types_delegates(monkeypatch, ops):
 
 
 @pytest.mark.asyncio
+async def test_list_devices_delegates(monkeypatch, ops):
+    captured = {}
+
+    async def fake_list(spec, resource_version=None):
+        captured["spec"] = spec
+        return {"items": [{"metadata": {"name": "node-a"}}]}
+
+    monkeypatch.setattr(ops, "_list", fake_list)
+
+    out = await ops.list_devices()
+
+    assert out["items"][0]["metadata"]["name"] == "node-a"
+    # Devices is cluster-scoped: one object per node, not per namespace.
+    assert captured["spec"].plural == "devices"
+    assert captured["spec"].namespaced is False
+
+
+@pytest.mark.asyncio
 async def test_create_instance_type_wraps_body(monkeypatch, ops):
     captured = {}
 
@@ -265,7 +283,7 @@ async def test_watch_instance_types_builds_cluster_watch(monkeypatch, ops):
     crd.list_cluster_custom_object = list_cluster
     monkeypatch.setattr(ops, "_crd", lambda: crd)
 
-    events = [evt async for evt in ops.watch_instance_types()]
+    events = [evt async for evt in ops.watch_instance_types("42")]
 
     # Watches the cluster-scoped list call with the InstanceType GVR ...
     assert captured["func"] is list_cluster
@@ -273,10 +291,50 @@ async def test_watch_instance_types_builds_cluster_watch(monkeypatch, ops):
         "group": _GROUP,
         "version": _VERSION,
         "plural": _INSTANCE_TYPE.plural,
+        "resource_version": "42",
     }
     # ... yields native events unchanged, and closes the Watch on exit.
     assert events == [{"type": "ADDED", "raw_object": {"metadata": {"name": "it-a"}}}]
     assert captured["watch"].closed
+
+
+@pytest.mark.asyncio
+async def test_watch_without_resource_version_lists_for_one(monkeypatch, ops):
+    # A version-less watch reads as a WatchList request to the worker cluster's
+    # aggregated apiserver and is rejected (422), so one is listed first.
+    captured = {}
+    _install_fake_watch(monkeypatch, captured)
+
+    crd = MagicMock()
+    crd.list_cluster_custom_object = object()
+    monkeypatch.setattr(ops, "_crd", lambda: crd)
+    monkeypatch.setattr(
+        ops,
+        "_list",
+        AsyncMock(return_value={"metadata": {"resourceVersion": "913"}, "items": []}),
+    )
+
+    _ = [evt async for evt in ops.watch_instance_types()]
+
+    assert captured["kwargs"]["resource_version"] == "913"
+
+
+@pytest.mark.asyncio
+async def test_watch_tolerates_list_without_metadata(monkeypatch, ops):
+    # A list answer carrying no usable metadata leaves the watch version-less
+    # (the apiserver then rejects it, which the caller already retries) instead
+    # of raising on a None metadata.
+    captured = {}
+    _install_fake_watch(monkeypatch, captured)
+
+    crd = MagicMock()
+    crd.list_cluster_custom_object = object()
+    monkeypatch.setattr(ops, "_crd", lambda: crd)
+    monkeypatch.setattr(ops, "_list", AsyncMock(return_value={"metadata": None}))
+
+    _ = [evt async for evt in ops.watch_instance_types()]
+
+    assert "resource_version" not in captured["kwargs"]
 
 
 @pytest.mark.asyncio

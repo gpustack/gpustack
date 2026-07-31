@@ -271,3 +271,50 @@ def test_model_watch_filter_passes_id_only_delete_events(monkeypatch):
         ctx=None, categories=None, state=ModelStateFilterEnum.READY
     )
     assert visible({"id": 7}) is True
+
+
+@pytest.mark.asyncio
+async def test_update_model_rejects_gpu_selector_on_vgpu_model(monkeypatch):
+    """A sparse PUT setting gpu_selector on a model that already carries
+    gpu_type_selector must fail mutual-exclusion validation against the
+    merged (stored + request) state, not just the request payload."""
+    from gpustack.api.exceptions import BadRequestException
+    from gpustack.schemas.models import GPUSelector, GPUTypeSelector
+
+    stored = MagicMock()
+    stored.owner_principal_id = CUSTOM_ORG_ID
+    stored.cluster_id = CLUSTER_ID
+    stored.gpu_type_selector = GPUTypeSelector(
+        type="pool-a100",
+        accelerator_sliced_memory_percentage=50,
+        accelerator_sliced_cores_percentage=50,
+    )
+    stored.gpu_selector = None
+    monkeypatch.setattr(
+        "gpustack.routes.models.Model.one_by_id",
+        AsyncMock(return_value=stored),
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_resource_visible",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_cluster_belongs_to_org",
+        AsyncMock(),
+    )
+
+    with pytest.raises(BadRequestException):
+        await update_model(
+            MagicMock(),
+            _ctx(CUSTOM_ORG_ID),
+            1,
+            ModelUpdate(
+                name="m1",
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id="org/repo",
+                gpu_selector=GPUSelector(
+                    gpu_ids=["worker-1:nvidia:0"],
+                    gpus_per_replica=1,
+                ),
+            ),
+        )

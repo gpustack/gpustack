@@ -46,6 +46,10 @@ async def create_model_evaluation(
         owner_principal_id = cluster.owner_principal_id
     for spec in model_specs:
         spec.owner_principal_id = owner_principal_id
+        # The spec schema deliberately carries no cluster, but vGPU
+        # (InstanceType) checks resolve pools per cluster — stamp the
+        # request's cluster so those checks see it.
+        spec.cluster_id = model_evaluation_in.cluster_id
 
     try:
         results = await evaluate_models(

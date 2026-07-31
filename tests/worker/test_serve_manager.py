@@ -604,3 +604,329 @@ def test_persist_container_logs_window_anchor_ignores_repeated_line(
     # Window [A,B,A,B] matches only at the end; single-line 'B' would match
     # index 1 and duplicate A,B.
     assert Path(log_path).read_text(encoding="utf-8") == "A\nB\nA\nB\nC\n"
+
+
+# --- vGPU allocation read-back (gpu_type_selector) ---
+
+from gpustack.schemas.models import (  # noqa: E402
+    ComputedResourceClaim,
+    GPUTypeSelector,
+)
+from gpustack.worker.serve_manager import (  # noqa: E402
+    _ALLOCATED_ACCELERATORS_ANNOTATION,
+    _parse_allocated_accelerators,
+)
+
+_VGPU_ANNOTATION_VALUE = (
+    '{"run-0": {"devices": {"groups": [{"id": "a100", "manufacturer": "nvidia",'
+    ' "accelerators": [{"id": "GPU-uuid-1", "index": 1, "mode": 3,'
+    ' "allocated": 640000}]}]}, "deviceIDs": ["a100:GPU-uuid-1:0124"]}}'
+)
+
+
+def test_parse_allocated_accelerators():
+    accelerators = _parse_allocated_accelerators(
+        {_ALLOCATED_ACCELERATORS_ANNOTATION: _VGPU_ANNOTATION_VALUE}
+    )
+    assert [a["id"] for a in accelerators] == ["GPU-uuid-1"]
+    assert accelerators[0]["index"] == 1
+
+
+def test_parse_allocated_accelerators_tolerates_skew():
+    assert _parse_allocated_accelerators(None) == []
+    assert _parse_allocated_accelerators({}) == []
+    assert (
+        _parse_allocated_accelerators({_ALLOCATED_ACCELERATORS_ANNOTATION: "not json"})
+        == []
+    )
+    assert (
+        _parse_allocated_accelerators({_ALLOCATED_ACCELERATORS_ANNOTATION: '["x"]'})
+        == []
+    )
+    assert (
+        _parse_allocated_accelerators(
+            {_ALLOCATED_ACCELERATORS_ANNOTATION: '{"c": "unexpected"}'}
+        )
+        == []
+    )
+
+
+def _build_vgpu_manager(worker_id=1, device_index=1):
+    clientset = MagicMock()
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[])
+    clientset.workers.get.return_value = SimpleNamespace(
+        status=SimpleNamespace(
+            gpu_devices=[SimpleNamespace(uuid="GPU-uuid-1", index=device_index)]
+        )
+    )
+    cfg = SimpleNamespace(log_dir="/tmp")
+    manager = ServeManager(lambda: worker_id, lambda: clientset, cfg)
+    manager._inference_backend_manager = MagicMock()
+    return manager, clientset
+
+
+def _vgpu_model():
+    model = new_model(1, "test", 1, huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct")
+    model.backend = BackendEnum.VLLM
+    model.backend_version = "0.8.0"
+    model.gpu_type_selector = GPUTypeSelector(
+        type="pool-a100",
+        accelerator_sliced_memory_percentage=50,
+        accelerator_sliced_cores_percentage=50,
+    )
+    return model
+
+
+def test_sync_vgpu_allocation_patches_main_addresses_and_rekeys_claim():
+    manager, clientset = _build_vgpu_manager(worker_id=1, device_index=1)
+
+    model_instance = new_model_instance(
+        1,
+        "vgpu-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+        computed_resource_claim=ComputedResourceClaim(vram={0: 42949672960}),
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    workload = SimpleNamespace(
+        state="Running",
+        annotations={_ALLOCATED_ACCELERATORS_ANNOTATION: _VGPU_ANNOTATION_VALUE},
+    )
+
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=_vgpu_model()),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    update_model_instance.assert_called_once()
+    _, kwargs = update_model_instance.call_args
+    assert kwargs["gpu_addresses"] == ["GPU-uuid-1"]
+    # The allocated card's index is backfilled for display and accounting.
+    assert kwargs["gpu_indexes"] == [1]
+    # Placeholder key 0 re-keyed to the allocated card index 1.
+    assert kwargs["computed_resource_claim"].vram == {1: 42949672960}
+
+
+def test_sync_vgpu_allocation_patches_subordinate_worker():
+    manager, clientset = _build_vgpu_manager(worker_id=2, device_index=3)
+
+    sw = ModelInstanceSubordinateWorker(
+        worker_id=2,
+        worker_name="worker-2",
+        worker_ip="10.0.0.2",
+        state=ModelInstanceStateEnum.RUNNING,
+        computed_resource_claim=ComputedResourceClaim(vram={0: 42949672960}),
+    )
+    model_instance = new_model_instance(
+        1,
+        "vgpu-distributed",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+    )
+    model_instance.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.RUN_FIRST,
+        subordinate_workers=[sw],
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    workload = SimpleNamespace(
+        state="Running",
+        annotations={_ALLOCATED_ACCELERATORS_ANNOTATION: _VGPU_ANNOTATION_VALUE},
+    )
+
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=_vgpu_model()),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    update_model_instance.assert_called_once()
+    args, _ = update_model_instance.call_args
+    assert args[0] == model_instance.id
+    patched_sw = update_model_instance.call_args.kwargs[
+        "distributed_servers.subordinate_workers.0"
+    ]
+    assert patched_sw.gpu_addresses == ["GPU-uuid-1"]
+    assert patched_sw.gpu_indexes == [3]
+    assert patched_sw.computed_resource_claim.vram == {3: 42949672960}
+
+
+def test_sync_vgpu_allocation_noop_without_annotation():
+    manager, clientset = _build_vgpu_manager(worker_id=1)
+
+    model_instance = new_model_instance(
+        1,
+        "vgpu-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+        computed_resource_claim=ComputedResourceClaim(vram={0: 42949672960}),
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    workload = SimpleNamespace(state="Running", annotations={})
+
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=_vgpu_model()),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    update_model_instance.assert_not_called()
+
+
+def test_error_state_surfaces_workload_state_message():
+    manager, clientset = _build_vgpu_manager(worker_id=1)
+
+    model_instance = new_model_instance(
+        1,
+        "vgpu-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.INITIALIZING,
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    workload = SimpleNamespace(
+        state="Failed",
+        state_message="Allocate failed due to no enough sliced units",
+    )
+
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    update_model_instance.assert_called_once_with(
+        model_instance.id,
+        state=ModelInstanceStateEnum.ERROR,
+        state_message="Allocate failed due to no enough sliced units",
+    )
+
+
+def test_error_state_falls_back_to_generic_message():
+    manager, clientset = _build_vgpu_manager(worker_id=1)
+
+    model_instance = new_model_instance(
+        1,
+        "vgpu-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.INITIALIZING,
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state="Failed"),
+        ),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    update_model_instance.assert_called_once_with(
+        model_instance.id,
+        state=ModelInstanceStateEnum.ERROR,
+        state_message="Inference server exited or unhealthy.",
+    )
+
+
+def test_sync_vgpu_allocation_defers_when_card_not_in_reported_devices():
+    """M6: an allocated UUID missing from the worker's reported devices must
+    not leave the claim charged to a wrong placeholder index — defer instead
+    of patching."""
+    manager, clientset = _build_vgpu_manager(worker_id=1, device_index=1)
+    # The reported device carries a different UUID than the annotation's.
+    clientset.workers.get.return_value = SimpleNamespace(
+        status=SimpleNamespace(gpu_devices=[SimpleNamespace(uuid="GPU-other", index=1)])
+    )
+
+    model_instance = new_model_instance(
+        1,
+        "vgpu-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+        computed_resource_claim=ComputedResourceClaim(vram={0: 42949672960}),
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    workload = SimpleNamespace(
+        state="Running",
+        annotations={_ALLOCATED_ACCELERATORS_ANNOTATION: _VGPU_ANNOTATION_VALUE},
+    )
+
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=_vgpu_model()),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    for call in update_model_instance.call_args_list:
+        _, kwargs = call
+        assert "gpu_addresses" not in kwargs
+        assert "gpu_indexes" not in kwargs
+        assert "computed_resource_claim" not in kwargs
+
+
+def test_sync_vgpu_allocation_steady_state_skips_worker_fetch():
+    """M7: once addresses, indexes and the re-keyed claim agree with the
+    annotation, the sync must not call the workers API again."""
+    manager, clientset = _build_vgpu_manager(worker_id=1, device_index=1)
+
+    model_instance = new_model_instance(
+        1,
+        "vgpu-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+        computed_resource_claim=ComputedResourceClaim(vram={1: 42949672960}),
+    )
+    model_instance.gpu_addresses = ["GPU-uuid-1"]
+    model_instance.gpu_indexes = [1]
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    workload = SimpleNamespace(
+        state="Running",
+        annotations={_ALLOCATED_ACCELERATORS_ANNOTATION: _VGPU_ANNOTATION_VALUE},
+    )
+
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=_vgpu_model()),
+        patch.object(manager, "_update_model_instance"),
+    ):
+        manager.sync_model_instances_state()
+
+    clientset.workers.get.assert_not_called()

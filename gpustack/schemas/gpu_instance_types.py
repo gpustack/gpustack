@@ -475,9 +475,9 @@ class GPUInstanceType(SQLModel, BaseModelMixin, table=True):
     """
     Server-side projection of a cluster's ``worker.gpustack.ai/v1`` InstanceType.
 
-    Populated exclusively by ``GPUInstanceTypeController`` from the operator watch
-    stream (never by tenant input); it backs instance-type validation and the
-    snapshot stamped onto a ``GPUInstance`` at create/update time.
+    Populated exclusively by ``GPUInstanceTypeController`` from each cluster's
+    InstanceType watch (never by tenant input); it backs instance-type validation
+    and the snapshot stamped onto a ``GPUInstance`` at create/update time.
     """
 
     __tablename__ = "gpu_instance_types"

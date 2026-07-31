@@ -514,7 +514,7 @@ class InferenceServer(ABC):
         If not found, retrieve from the first device of the worker.
 
         Returns:
-            A tuple of (vendor, runtime_version, arch_family).
+            A tuple of (type, runtime_version, arch_family).
         """
         gpu_devices = self._get_selected_gpu_devices()
         if gpu_devices:
@@ -582,6 +582,8 @@ class InferenceServer(ABC):
             If the GPUs assigned to the model instance are of different types.
         """
         resources = ContainerResources()
+        if getattr(self._model, "gpu_type_selector", None) is not None:
+            return self._get_vgpu_configured_resources(resources)
         gpu_devices = self._get_selected_gpu_devices()
         if gpu_devices:
             gpu_type = gpu_devices[0].type
@@ -600,6 +602,85 @@ class InferenceServer(ABC):
                     else "all"
                 )
         return resources
+
+    def _get_vgpu_configured_resources(
+        self, resources: ContainerResources
+    ) -> ContainerResources:
+        """
+        Translate the model's ``gpu_type_selector`` into the operator-recognized
+        vGPU resource requests, INSTEAD of the whole-card device key:
+
+        - whole card (both slice percentages 0): the bare exclusive resource
+          ``<base>: 1`` — the operator webhook rejects percentage budgets
+          outside (0,100], and an exclusive request also works on pools
+          without slicing capability;
+        - soft slice (any percentage > 0): ``<base>.sliced: 1`` plus the
+          ``<base>.sliced.memory-percentage`` / ``<base>.sliced.cores-percentage``
+          budgets;
+        - hard partition (``accelerator_partitioned_profile`` set):
+          ``<base>.partitioned: 1`` plus the per-profile key
+          ``<base>.partitioned.mig-<profile>: 1``.
+
+        ``<base>`` is the operator resource base of the GPU manufacturer
+        (``nvidia.com/gpu``, ``amd.com/gpu``, ...). Key names mirror the
+        operator's resource families (gpustack-operator ``pkg/nodefeature``);
+        the runtime's Kubernetes deployer lands them verbatim in the
+        container limits/requests.
+
+        Raises:
+            RuntimeError: if the operator resource base cannot be resolved —
+                fail closed rather than deploy without isolation.
+        """
+        selector = self._model.gpu_type_selector
+        base = self._get_vgpu_resource_base()
+
+        profile = selector.accelerator_partitioned_profile
+        if profile:
+            resources[f"{base}.partitioned"] = "1"
+            resources[f"{base}.partitioned.mig-{profile}"] = "1"
+            return resources
+
+        memory = selector.accelerator_sliced_memory_percentage or 0
+        cores = selector.accelerator_sliced_cores_percentage or 0
+        if memory == 0 and cores == 0:
+            # Whole-card exclusive: the bare base resource, no slicing keys.
+            resources[base] = "1"
+            return resources
+        resources[f"{base}.sliced"] = "1"
+        resources[f"{base}.sliced.memory-percentage"] = str(memory)
+        resources[f"{base}.sliced.cores-percentage"] = str(cores)
+        return resources
+
+    def _get_vgpu_resource_base(self) -> str:
+        """
+        Resolve the operator resource base (e.g. ``nvidia.com/gpu``) for the
+        model instance's GPU type, reusing the runtime's existing mapping
+        chain: backend type -> detect resource key (``nvidia.com/devices``)
+        -> CDI / operator base (``nvidia.com/gpu``).
+
+        Raises:
+            RuntimeError: if the base cannot be resolved.
+        """
+        gpu_type = self._model_instance.gpu_type
+        if gpu_type is None:
+            gpu_type, _, _ = self._get_device_info()
+        device_key = (
+            runtime_envs.GPUSTACK_RUNTIME_DETECT_BACKEND_MAP_RESOURCE_KEY.get(gpu_type)
+            if gpu_type
+            else None
+        )
+        base = (
+            runtime_envs.GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_CDI.get(device_key)
+            if device_key
+            else None
+        )
+        if not base:
+            raise RuntimeError(
+                f"Cannot resolve the operator resource base for GPU type "
+                f"'{gpu_type}': refusing to deploy with gpu_type_selector "
+                f"without resource isolation."
+            )
+        return base
 
     def _get_configured_mounts(self) -> List[ContainerMount]:
         """
@@ -1168,6 +1249,11 @@ exec "$@"
         If the deployer is docker, transform the generic WorkloadPlan to DockerWorkloadPlan,
         and fill the pause image and restart image with registry override.
         """
+        selector = getattr(self._model, "gpu_type_selector", None)
+        if selector is not None:
+            # Hand the operator InstanceType name to the runtime; the
+            # runtime's Kubernetes deployer owns queue admission from here.
+            workload.instance_type = selector.type
         return transform_workload_plan(self._config, workload, self._fallback_registry)
 
 
