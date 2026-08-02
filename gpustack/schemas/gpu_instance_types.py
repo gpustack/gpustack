@@ -394,6 +394,70 @@ class GPUInstanceTypeResource(BaseModel):
     """
 
 
+class GPUInstanceTypeAcceleratorProfileCount(BaseModel):
+    """
+    Pairs a physical-slice profile name with a count of instances — allocated
+    (bound) or remaining (still buildable), per the field carrying it.
+
+    It is deliberately not the capability catalog's
+    ``GPUInstanceTypeAcceleratorSlicedPhysicalDetailProfile``, which carries
+    ``memory_mib``: a ledger entry never does, and the operator keeps the two
+    types independently evolvable for that reason.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    name: str
+    """
+    The profile identifier, e.g. "1g.10gb". Required, mirroring the operator's
+    ``json:"name"`` with no omitempty: the ledger is keyed by profile name, so a
+    nameless entry carries nothing a caller could select on.
+    """
+
+    count: Optional[int] = None
+    """
+    The number of instances of this profile. Absent means zero rather than
+    unknown: the operator omits the field at zero, so an entry naming only a
+    profile is that profile at zero.
+    """
+
+
+class GPUInstanceTypePartitionedResource(GPUInstanceTypeResource):
+    """
+    Represents the hardware-partitionable resource of a GPU instance type: the
+    scalar view every resource shares, plus the pool's per-profile ledger.
+
+    The per-profile lists answer "which partition profiles can I still get".
+    Neither alternative does: the scalar ``remaining`` is a best case over a
+    card's profiles rather than a total (the profiles on one card compete for the
+    same physical slices, so summing them would multiply-count the same
+    hardware), and ``detail.sliced_detail`` is the static capability catalog,
+    which by design does not move as instances are carved and released.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    allocated_profiles: Optional[List[GPUInstanceTypeAcceleratorProfileCount]] = None
+    """
+    How many instances of each profile the pool's partitioned cards currently
+    hold, summed by profile name. A profile holding nothing is absent rather
+    than listed at zero — unlike remaining_profiles, where zero carries meaning.
+    """
+
+    remaining_profiles: Optional[List[GPUInstanceTypeAcceleratorProfileCount]] = None
+    """
+    How many more instances of each profile the pool can still host, summed by
+    profile name. Every profile the pool offers gets an entry, even at zero, so
+    "offered but currently full" stays distinguishable from "not offered".
+    """
+
+
 class GPUInstanceTypeStatus(BaseModel):
     """
     Represents the status of a GPU instance type.
@@ -435,12 +499,13 @@ class GPUInstanceTypeStatus(BaseModel):
     The sliceable accelerator resource of the candidate, e.g. "100", "400".
     """
 
-    accelerator_partitioned: Optional[GPUInstanceTypeResource] = None
+    accelerator_partitioned: Optional[GPUInstanceTypePartitionedResource] = None
     """
     The hardware-partitionable view: the partition instances the pool's
-    partitioned cards can still host, summed over those cards. It is disjoint
-    from the three views above — a card in a partitioning mode can serve no
-    other kind of claim — so a pool with no partitioned card reports zero here.
+    partitioned cards can still host, summed over those cards, plus the pool's
+    per-profile ledger. It is disjoint from the three views above — a card in a
+    partitioning mode can serve no other kind of claim — so a pool with no
+    partitioned card reports zero here.
     """
 
     cpu: Optional[GPUInstanceTypeResource] = None
@@ -703,10 +768,11 @@ class GPUAggregatedInstanceTypeOnceMaxRequestCandidate(BaseModel):
     The sliceable accelerator resource of the candidate, e.g. "100", "400".
     """
 
-    accelerator_partitioned: Optional[GPUInstanceTypeResource] = None
+    accelerator_partitioned: Optional[GPUInstanceTypePartitionedResource] = None
     """
     The hardware-partitionable accelerator resource of the candidate,
-    e.g. "7", "14".
+    e.g. "7", "14", plus the per-profile partition ledger the tier and item sum
+    by profile name.
     """
 
     cpu: Optional[GPUInstanceTypeResource] = None
@@ -747,10 +813,23 @@ class GPUAggregatedInstanceTypeOverviewResource(BaseModel):
     The sliceable accelerator resource, e.g. "100", "400".
     """
 
-    accelerator_partitioned: Optional[str] = None
+    accelerator_partitioned: Optional[List[GPUInstanceTypeAcceleratorProfileCount]] = (
+        None
+    )
     """
-    The hardware-partitionable accelerator resource — the partition instances
-    the partitioned cards can still host, e.g. "7", "14".
+    The hardware-partitionable accelerator resource, expressed per partition
+    profile: in once_max_request the winning member's obtainable profiles, each
+    capped at one — a partition request is a single instance on a single card; in
+    remaining the sum of every Active member's obtainable profiles, by name.
+
+    This dimension has no honest scalar, which is why it alone is a list: the
+    profiles of one card compete for the same physical slices, so a total over
+    them is not a capacity and a best case over them is not a total. A profile the
+    fleet offers but cannot currently build stays listed at zero, so "offered but
+    full" stays distinguishable from "not offered" — which detail.sliced_detail
+    cannot answer either, as it records only which profiles are offered at all. A
+    member publishing no per-profile ledger contributes nothing here, even when
+    its own partitioned view counts instances.
     """
 
     cpu: Optional[str] = None
