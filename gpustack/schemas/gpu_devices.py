@@ -33,6 +33,8 @@ class GPUDeviceListParams(ListParams):
         "worker_name",
         "vendor",
         "temperature",
+        "power",
+        "power_used",
         "core.utilization_rate",
         "memory.utilization_rate",
         "created_at",
