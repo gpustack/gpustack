@@ -26,6 +26,8 @@ SELECT
     json_extract(value, '$.core') AS 'core',
     json_extract(value, '$.memory') AS 'memory',
     json_extract(value, '$.temperature') AS 'temperature',
+    json_extract(value, '$.power') AS 'power',
+    json_extract(value, '$.power_used') AS 'power_used',
     json_extract(value, '$.network') AS 'network'
 FROM
     workers w,
@@ -62,6 +64,8 @@ SELECT
     JSON_EXTRACT(gpu_device, '$.core') AS `core`,
     JSON_EXTRACT(gpu_device, '$.memory') AS `memory`,
     CAST(COALESCE(JSON_VALUE(gpu_device, '$.temperature'), '0') AS DECIMAL(10, 2)) AS `temperature`,
+    CAST(JSON_VALUE(gpu_device, '$.power') AS DECIMAL(10, 2)) AS `power`,
+    CAST(JSON_VALUE(gpu_device, '$.power_used') AS DECIMAL(10, 2)) AS `power_used`,
     JSON_EXTRACT(gpu_device, '$.network') AS `network`
 FROM
     workers w,
@@ -101,6 +105,8 @@ SELECT
     (gpu_device::json->>'core')::JSONB AS "core",
     (gpu_device::json->>'memory')::JSONB AS "memory",
     (gpu_device::json->>'temperature')::FLOAT AS "temperature",
+    (gpu_device::json->>'power')::FLOAT AS "power",
+    (gpu_device::json->>'power_used')::FLOAT AS "power_used",
     (gpu_device::json->>'network')::JSONB AS "network"
 FROM
     workers w,
@@ -138,6 +144,8 @@ SELECT
     (w.status::jsonb->'gpu_devices'->s.idx->'core')::JSONB AS "core",
     (w.status::jsonb->'gpu_devices'->s.idx->'memory')::JSONB AS "memory",
     (w.status::jsonb->'gpu_devices'->s.idx->>'temperature')::FLOAT AS "temperature",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'power')::FLOAT AS "power",
+    (w.status::jsonb->'gpu_devices'->s.idx->>'power_used')::FLOAT AS "power_used",
     (w.status::jsonb->'gpu_devices'->s.idx->'network')::JSONB AS "network"
 FROM
     workers w,
