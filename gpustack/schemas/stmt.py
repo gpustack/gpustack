@@ -64,8 +64,8 @@ SELECT
     JSON_EXTRACT(gpu_device, '$.core') AS `core`,
     JSON_EXTRACT(gpu_device, '$.memory') AS `memory`,
     CAST(COALESCE(JSON_VALUE(gpu_device, '$.temperature'), '0') AS DECIMAL(10, 2)) AS `temperature`,
-    CAST(COALESCE(JSON_VALUE(gpu_device, '$.power'), '0') AS DECIMAL(10, 2)) AS `power`,
-    CAST(COALESCE(JSON_VALUE(gpu_device, '$.power_used'), '0') AS DECIMAL(10, 2)) AS `power_used`,
+    CAST(JSON_VALUE(gpu_device, '$.power') AS DECIMAL(10, 2)) AS power,
+    CAST(JSON_VALUE(gpu_device, '$.power_used') AS DECIMAL(10, 2)) AS power_used,
     JSON_EXTRACT(gpu_device, '$.network') AS `network`
 FROM
     workers w,
