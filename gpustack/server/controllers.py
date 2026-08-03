@@ -2594,6 +2594,11 @@ class WorkerProvisioningController:
                 options=[
                     selectinload(Worker.cluster),
                     selectinload(Worker.worker_pool),
+                    # Needed by the DELETING branch below: the hard delete in
+                    # ``_deleting_instance`` cascades to the worker's SYSTEM
+                    # principal, and ``_handle_cascade_delete`` reads that
+                    # ``lazy="noload"`` relationship off the instance.
+                    selectinload(Worker.system_principal),
                 ],
             )
             if not worker:

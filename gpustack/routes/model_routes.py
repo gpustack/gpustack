@@ -1212,8 +1212,7 @@ async def delete_model_route_target(
     ctx: TenantContextDep,
 ):
     existing = await ModelRouteTarget.one_by_id(
-        session=session,
-        id=id,
+        session=session, id=id, options=[selectinload(ModelRouteTarget.model_route)]
     )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(f"ModelRouteTarget with id '{id}' not found.")
@@ -1250,6 +1249,7 @@ async def set_fallback_target(
     existing = await ModelRouteTarget.one_by_id(
         session=session,
         id=id,
+        options=[selectinload(ModelRouteTarget.model_route)],
     )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(f"ModelRouteTarget with id '{id}' not found.")

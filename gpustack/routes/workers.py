@@ -736,7 +736,14 @@ async def update_worker(
 
 @router.delete("/{id}")
 async def delete_worker(ctx: TenantContextDep, session: SessionDep, id: int):
-    worker = await Worker.one_by_id(session, id)
+    # ``Worker.system_principal`` is a ``cascade="delete"`` relationship
+    # declared ``lazy="noload"``; ``_handle_cascade_delete`` reads it off the
+    # instance, so it must be eager loaded or the worker's bootstrap SYSTEM
+    # principal is left dangling (the FK is inverted — ``ON DELETE SET NULL``
+    # only fires the other direction, so the DB can't clean it up).
+    worker = await Worker.one_by_id(
+        session, id, options=[selectinload(Worker.system_principal)]
+    )
     if worker is not None and worker.deleted_at is not None:
         worker = None
     assert_resource_visible(ctx, worker, not_found_message="worker not found")
