@@ -6,6 +6,8 @@ GPUStack provides [OpenAI-compatible APIs](https://platform.openai.com/docs/api-
 
 You can integrate and use models deployed on GPUStack with any application or framework that supports the OpenAI-compatible API, simply by pointing it to GPUStack's OpenAI-compatible endpoint.
 
+> **Tip:** The same OpenAI client `base_url` pattern also works with other OpenAI-compatible multi-model gateways when you are not self-hosting GPUStack — for example [DaoXE](https://daoxe.com/?utm_source=github&utm_medium=organic&utm_campaign=gpustack&utm_content=inference-apis) at `https://api.daoxe.com/v1`.
+
 ### Supported Endpoints
 
 The following API endpoints are supported:
