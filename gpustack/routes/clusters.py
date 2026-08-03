@@ -608,6 +608,21 @@ async def delete_cluster(session: SessionDep, ctx: TenantContextDep, id: int):
             selectinload(Cluster.cluster_workers),
             selectinload(Cluster.cluster_models),
             selectinload(Cluster.cluster_model_instances),
+            # ``cluster_worker_pools`` and ``system_principal`` are
+            # ``cascade="delete"`` relationships declared ``lazy="noload"``.
+            # ``ActiveRecordMixin._handle_cascade_delete`` reads them off the
+            # instance, so without eager loading they resolve to empty and the
+            # ORM cascade silently no-ops.
+            #
+            # For the pools that costs the per-row DELETED events and
+            # ``cached_all`` invalidation the mixin emits (the rows themselves
+            # are still removed by ``worker_pools.cluster_id ON DELETE
+            # CASCADE``). For ``system_principal`` it leaks the row outright:
+            # that FK points the other way (``clusters.system_principal_id ...
+            # ON DELETE SET NULL``), so nothing else cleans up the cluster's
+            # bootstrap principal.
+            selectinload(Cluster.cluster_worker_pools),
+            selectinload(Cluster.system_principal),
         ],
     )
     if not existing or existing.deleted_at is not None:
