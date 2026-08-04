@@ -64,7 +64,7 @@ dependencies = [
     "msgpack>=1.1.2",
     "cachetools>=6.0.0",
     "gpustack-runner==0.1.27.post4",
-    "gpustack-runtime==0.2.2.post7",
+    "gpustack-runtime==0.2.2.post8",
     "gpustack-higress-plugins==0.3.0",
     "websockets==16.0",
     "py-radix>=1.1.0",
