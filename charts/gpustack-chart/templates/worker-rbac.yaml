@@ -37,6 +37,35 @@ roleRef:
   name: {{ .Release.Name }}-worker-ingressclass-viewer
   apiGroup: rbac.authorization.k8s.io
 ---
+# Allow the worker (gpustack-runtime deployer) to resolve the vendor RuntimeClass
+# (e.g. "ascend", "nvidia") for accelerated workload Pods,
+# see GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_RUNTIME_CLASS.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-worker-runtimeclass-viewer
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+rules:
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-worker-runtimeclass-viewer-binding
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-worker
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Release.Name }}-worker-runtimeclass-viewer
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
