@@ -51,9 +51,11 @@ class FailoverConfig(EnableState):
 
 class AIProxyDefaultConfig(CustomConfig):
     id: str
-    apiTokens: List[str] = Field(
-        default_factory=list,
-    )
+    # Optional (rather than an empty-list default) so that ``exclude_none`` is
+    # enough to omit it: a provider with no static credential must not emit
+    # ``apiTokens: []``, or ai-proxy stops falling back to the inbound
+    # ``Authorization`` header.
+    apiTokens: Optional[List[str]] = None
     failover: FailoverConfig = Field(default_factory=FailoverConfig)
     retryOnFailure: EnableState = Field(default_factory=EnableState)
     type: ModelProviderTypeEnum

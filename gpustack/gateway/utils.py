@@ -4,10 +4,11 @@ import logging
 import copy
 import math
 from urllib.parse import urlparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from functools import partial
 from typing import (
     List,
+    Iterable,
     Optional,
     Tuple,
     Union,
@@ -42,6 +43,7 @@ from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
     get_ingress_fallback_envoyfilter,
 )
 from gpustack.schemas.models import (
+    Model,
     ModelInstance,
     ModelInstancePublic,
 )
@@ -73,6 +75,21 @@ model_ingress_prefix = "ai-route-model-"
 model_route_ingress_prefix = "ai-route-route-"
 provider_id_prefix = "provider-"
 model_id_prefix = "model-"
+# AI proxy provider id prefix for self-hosted deployments. One provider per
+# Model (deployment), shared by every ModelRoute pointing at it. Supersedes the
+# per-route ``ai-route-route-<route_id>`` ids, which a route retires itself when
+# it reconciles (see ``legacy_model_route_provider_id``).
+model_ai_proxy_provider_prefix = "gpustack-model-"
+# Legacy per-route provider ids happen to reuse the route ingress prefix — alias
+# it so call sites read as provider ids rather than as ingress names.
+legacy_model_route_provider_prefix = model_route_ingress_prefix
+# Provider ids the reconciler may garbage collect once no match rule references
+# them: the per-deployment ids it owns, plus the legacy per-route ids those
+# supersede.
+_collectable_provider_prefixes = (
+    model_ai_proxy_provider_prefix,
+    legacy_model_route_provider_prefix,
+)
 
 router_header_key = "X-GPUStack-Model-Instance"
 gpustack_original_path_header = "x-gpustack-original-path"
@@ -81,6 +98,33 @@ gpustack_fallback_path_header = "x-gpustack-fallback-path"
 # Type alias for destination tuples
 # Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
 DestinationTupleList = List[Tuple[int, str, McpBridgeRegistry]]
+
+
+@dataclass
+class ModelAIProxyGroup:
+    """AI proxy grouping for one deployment (Model) inside a single route.
+
+    The upstream services of a deployment are its model instances' registries
+    (plus the LoRA aliases of those instances), or the remote cluster gateway
+    registry when the deployment lives in another cluster. They all accept the
+    same credential — the registration token of the deployment's cluster — so
+    one provider per Model is both necessary and sufficient, and it is shared by
+    every route pointing at that Model.
+
+    ``service_names`` and ``fallback_service_names`` are kept apart because the
+    main and the fallback ingress each get their own match rule.
+    ``fallback_service_names`` is a subset: a fallback target also serves the
+    main ingress (see the FIXME in ``sync_gateway``), so the fallback rule
+    covers fewer services, never other ones.
+    """
+
+    model_id: int
+    api_tokens: List[str] = dataclass_field(default_factory=list)
+    service_names: Set[str] = dataclass_field(default_factory=set)
+    fallback_service_names: Set[str] = dataclass_field(default_factory=set)
+
+    def provider_id(self) -> str:
+        return model_ai_proxy_provider_id(self.model_id)
 
 
 @dataclass
@@ -203,8 +247,21 @@ def model_mcp_bridge_name(cluster_id: int) -> str:
     return cluster_mcp_bridge_name(cluster_id)
 
 
-def model_route_cleanup_prefix(model_route_id: int) -> str:
-    return f"{model_route_ingress_prefix}{model_route_id}"
+def model_ai_proxy_provider_id(model_id: int) -> str:
+    """AI proxy provider id for a self-hosted deployment (Model)."""
+    return f"{model_ai_proxy_provider_prefix}{model_id}"
+
+
+def legacy_model_route_provider_id(model_route_id: int) -> str:
+    """AI proxy provider id written by versions that keyed providers per route.
+
+    Superseded by ``model_ai_proxy_provider_id``. A route drops its own legacy
+    entry when it reconciles — the legacy rule carries the same ingress the
+    reconcile owns, and the provider is then garbage collected as unreferenced —
+    so migration happens in one CR write per route, never leaving a route
+    without a provider.
+    """
+    return f"{legacy_model_route_provider_prefix}{model_route_id}"
 
 
 def model_route_ingress_name(model_route_id: int) -> str:
@@ -216,6 +273,23 @@ def fallback_ingress_name(name: str) -> str:
     if len(split_name) == 1:
         return f"{name}.fallback"
     return f"{split_name[0]}.fallback.{split_name[1]}"
+
+
+def route_ingress_names_for_plugins(
+    model_route_id: int, resource_namespace: str, gateway_namespace: str
+) -> Tuple[str, str]:
+    """The (main, fallback) ingress names as WasmPlugin match rules store them.
+
+    Higress qualifies an ingress reference with ``<namespace>/`` when the ingress
+    lives outside the gateway's own namespace. The route reconciler and the
+    startup pruner must spell the names identically or they will not match.
+    """
+    prefix = "" if resource_namespace == gateway_namespace else f"{resource_namespace}/"
+    ingress_name = model_route_ingress_name(model_route_id)
+    return (
+        f"{prefix}{ingress_name}",
+        f"{prefix}{fallback_ingress_name(ingress_name)}",
+    )
 
 
 def model_ingress_name(model_id: int) -> str:
@@ -1284,74 +1358,204 @@ async def ensure_fallback_filter(
             )
 
 
-def ai_proxy_openai_provider_config(id: str) -> Dict[str, Any]:
+def ai_proxy_openai_provider_config(
+    id: str, api_tokens: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Build an openai-type provider entry for a self-hosted upstream.
+
+    ``api_tokens`` makes ai-proxy hold the upstream credential statically:
+    ``apiTokens`` has the highest priority in its openai provider, so the
+    credential no longer has to be injected per request by ``/token-auth``.
+    Left empty, ai-proxy falls back to reading the inbound ``Authorization``
+    header, which is the pre-existing behavior.
+    """
     return ai_proxy_types.AIProxyDefaultConfig(
         type=ModelProviderTypeEnum.OPENAI,
         id=id,
+        apiTokens=api_tokens or None,
         failover=ai_proxy_types.FailoverConfig(enabled=False),
         retryOnFailure=ai_proxy_types.EnableState(enabled=False),
+        # ``exclude_unset`` keeps the nested configs down to the flags set here,
+        # matching the entries already in the CR; ``apiTokens`` is omitted by
+        # ``exclude_none`` alone.
     ).model_dump(exclude_none=True, exclude_unset=True)
+
+
+def model_ai_proxy_plugin_spec(
+    groups: Iterable[ModelAIProxyGroup],
+    main_ingress: str,
+    fallback_ingress: str,
+) -> Tuple[List[Dict[str, Any]], List[WasmPluginMatchRule]]:
+    """Build the providers and match rules of one route, grouped by deployment.
+
+    ``main_ingress`` / ``fallback_ingress`` must already carry the namespace
+    prefix Higress expects for cross-namespace routes.
+
+    A rule is keyed by (ingress, services) so two routes pointing at the same
+    Model each get their own rule while sharing one provider entry. Service
+    lists are sorted so an unchanged deployment produces a byte-identical CR and
+    the reconciler's diff stays quiet.
+    """
+    providers: List[Dict[str, Any]] = []
+    match_rules: List[WasmPluginMatchRule] = []
+    for group in sorted(groups, key=lambda g: g.model_id):
+        if not group.service_names and not group.fallback_service_names:
+            continue
+        provider_id = group.provider_id()
+        providers.append(
+            ai_proxy_openai_provider_config(provider_id, api_tokens=group.api_tokens)
+        )
+        for ingress, service_names in (
+            (main_ingress, group.service_names),
+            (fallback_ingress, group.fallback_service_names),
+        ):
+            if not service_names:
+                continue
+            match_rules.append(
+                WasmPluginMatchRule(
+                    config={"activeProviderId": provider_id},
+                    configDisable=False,
+                    service=sorted(service_names),
+                    ingress=[ingress],
+                )
+            )
+    return providers, match_rules
 
 
 def compare_and_append_default_proxy_config(
     existing_providers: List[Dict[str, Any]],
     expected_providers: List[Dict[str, Any]],
     operating_id_prefix: Optional[str] = None,
+    referenced_ids: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
+    """Merge ``expected_providers`` into the existing list.
+
+    An existing entry is dropped when it is owned by this reconcile
+    (``operating_id_prefix``), when it is superseded by an expected entry with
+    the same id, or — for the ids under ``_collectable_provider_prefixes`` — when
+    ``referenced_ids`` says no remaining match rule points at it. That last rule
+    garbage collects a deployment's provider once the last route stops targeting
+    it, without any one route having to know about the others, and it retires a
+    legacy per-route provider in the same write that replaces its rule.
+    """
+    expected_ids = {
+        provider.get('id') for provider in expected_providers if provider.get('id')
+    }
     to_keep_config = []
     for provider in existing_providers:
         provider_id: Optional[str] = provider.get('id', None)
-        if (
-            provider_id is None
-            or operating_id_prefix is None
-            or not provider_id.startswith(operating_id_prefix)
-        ):
+        if provider_id is None:
             to_keep_config.append(provider)
             continue
+        if operating_id_prefix is not None and provider_id.startswith(
+            operating_id_prefix
+        ):
+            continue
+        if provider_id in expected_ids:
+            continue
+        if (
+            referenced_ids is not None
+            and provider_id.startswith(_collectable_provider_prefixes)
+            and provider_id not in referenced_ids
+        ):
+            continue
+        to_keep_config.append(provider)
     return_providers = expected_providers.copy()
     return_providers.extend(to_keep_config)
     return_providers.sort(key=lambda p: p.get("id", ""))
     return return_providers
 
 
+def _match_rule_provider_id(rule: WasmPluginMatchRule) -> Optional[str]:
+    # ``config`` is Optional on the CR model, so a hand-edited ``config: null``
+    # would otherwise raise on attribute access.
+    return (rule.config or {}).get("activeProviderId", None)
+
+
+def _match_rule_sort_key(rule: WasmPluginMatchRule) -> Tuple[str, str, str]:
+    return (
+        _match_rule_provider_id(rule) or "",
+        ",".join(rule.ingress or []),
+        ",".join(rule.service or []),
+    )
+
+
 def compare_and_append_proxy_match_rules(
     existing_rules: List[WasmPluginMatchRule],
     expected_rules: List[WasmPluginMatchRule],
     operating_id_prefix: Optional[str] = None,
+    owned_ingresses: Optional[Set[str]] = None,
 ) -> List[WasmPluginMatchRule]:
+    """Merge ``expected_rules`` into the existing list.
+
+    Ownership can be expressed two ways: by provider id prefix (external model
+    providers, whose rules match on service only) or by ingress
+    (``owned_ingresses``, one route's ingress plus its fallback ingress). The
+    latter is required now that provider ids are per deployment: dropping rules
+    by id prefix would delete the rules other routes hold for the same
+    deployment.
+    """
     to_keep_config = []
+    owned = owned_ingresses or set()
     for rule in existing_rules:
-        provider_id: Optional[str] = rule.config.get('activeProviderId', None)
+        provider_id: Optional[str] = _match_rule_provider_id(rule)
         if (
-            provider_id is None
-            or operating_id_prefix is None
-            or not provider_id.startswith(operating_id_prefix)
+            provider_id is not None
+            and operating_id_prefix is not None
+            and provider_id.startswith(operating_id_prefix)
         ):
-            to_keep_config.append(rule)
             continue
+        if owned and owned.intersection(rule.ingress or []):
+            continue
+        to_keep_config.append(rule)
 
     return_rules = expected_rules.copy()
     return_rules.extend(to_keep_config)
-    return_rules.sort(key=lambda r: (r.config.get("activeProviderId", None) or ""))
+    return_rules.sort(key=_match_rule_sort_key)
     return return_rules
 
 
 async def cleanup_ai_proxy_config(
     providers: List[ModelProvider],
+    models: List[Model],
     routes: List[ModelRoute],
+    expected_ingresses: Set[str],
     k8s_config: k8s_client.Configuration,
     namespace: str,
 ):
-    prefixes_to_keep = {model_route_cleanup_prefix(route.id) for route in routes}
-    prefixes_to_keep.update(
-        {provider_registry_name(provider.id) for provider in providers}
-    )
+    """Prune the ai-proxy CR at startup, before the controllers replay routes.
 
-    def should_keep(provider_id: str) -> bool:
-        for prefix in prefixes_to_keep:
-            if provider_id.startswith(prefix):
-                return True
-        return False
+    Kept: one entry per live external provider, one per live deployment, and the
+    legacy per-route entry of every live route. Legacy entries are deliberately
+    *not* pruned here: each route retires its own when it reconciles, in the same
+    write that adds the deployment entry replacing it, so no route is ever left
+    without a provider. Pruning them here would open a window between this pass
+    and the route replay — which only starts after leader election.
+
+    Dropped: everything else, i.e. entries whose route, deployment or provider no
+    longer exists — the case this pass exists for, since nothing will reconcile
+    them.
+
+    Rules are filtered on both axes. Provider retention alone is not enough now
+    that provider ids are per deployment: a route deleted while the server was
+    down leaves a rule that still references a live deployment provider, and no
+    reconcile will ever revisit it. ``expected_ingresses`` therefore carries the
+    namespace-prefixed ingress names (main and fallback) of every live route, in
+    the same form the rules store. Rules with no ingress at all belong to external
+    providers, which match on service, and are judged by provider id only.
+    """
+    ids_to_keep = {model_ai_proxy_provider_id(model.id) for model in models}
+    ids_to_keep.update({provider_registry_name(provider.id) for provider in providers})
+    ids_to_keep.update({legacy_model_route_provider_id(route.id) for route in routes})
+
+    def should_keep_rule(
+        rule: WasmPluginMatchRule, kept_provider_ids: Set[str]
+    ) -> bool:
+        if _match_rule_provider_id(rule) not in kept_provider_ids:
+            return False
+        if not rule.ingress:
+            return True
+        return any(ingress in expected_ingresses for ingress in rule.ingress)
 
     try:
         extensions_api = ExtensionsHigressIoV1Api(k8s_client.ApiClient(k8s_config))
@@ -1360,19 +1564,26 @@ async def cleanup_ai_proxy_config(
             name=gpustack_ai_proxy_name,
         )
         existing_plugin = WasmPlugin.model_validate(ai_proxy_data)
-        current_providers = existing_plugin.spec.defaultConfig.get("providers", [])
+        default_config = existing_plugin.spec.defaultConfig or {}
+        current_providers = default_config.get("providers", [])
         filtered_providers = [
-            p for p in current_providers if p.get("id") and should_keep(p.get("id"))
+            p for p in current_providers if p.get("id") and p.get("id") in ids_to_keep
         ]
-        existing_plugin.spec.defaultConfig["providers"] = filtered_providers
+        default_config["providers"] = filtered_providers
+        existing_plugin.spec.defaultConfig = default_config
         filtered_provider_ids = {
             p.get("id") for p in filtered_providers if p.get("id") is not None
         }
-        filtered_rules = [
-            r
-            for r in existing_plugin.spec.matchRules or []
-            if r.config.get("activeProviderId") in filtered_provider_ids
-        ]
+        filtered_rules = []
+        for rule in existing_plugin.spec.matchRules or []:
+            if should_keep_rule(rule, filtered_provider_ids):
+                filtered_rules.append(rule)
+            else:
+                logger.info(
+                    f"Removing ai proxy rule with provider "
+                    f"{_match_rule_provider_id(rule)} and ingress {rule.ingress} "
+                    "as its route, deployment or provider no longer exists."
+                )
         existing_plugin.spec.matchRules = filtered_rules
         await extensions_api.edit_wasmplugin(
             namespace=namespace,
@@ -1518,19 +1729,31 @@ def ai_proxy_diff_spec(
     expected_providers: List[Dict[str, Any]],
     expected_match_rules: List[WasmPluginMatchRule],
     operating_id_prefix: Optional[str] = None,
+    owned_ingresses: Optional[Set[str]] = None,
 ) -> WasmPluginSpec:
     if current_spec is None:
         return current_spec
+    if current_spec.defaultConfig is None:
+        current_spec.defaultConfig = {}
+    match_rules = compare_and_append_proxy_match_rules(
+        existing_rules=current_spec.matchRules or [],
+        expected_rules=expected_match_rules,
+        operating_id_prefix=operating_id_prefix,
+        owned_ingresses=owned_ingresses,
+    )
+    # Providers are merged against the *resulting* rules so a deployment
+    # provider disappears together with the last rule referencing it.
     current_spec.defaultConfig["providers"] = compare_and_append_default_proxy_config(
         existing_providers=current_spec.defaultConfig.get("providers", []),
         expected_providers=expected_providers,
         operating_id_prefix=operating_id_prefix,
+        referenced_ids={
+            provider_id
+            for provider_id in map(_match_rule_provider_id, match_rules)
+            if provider_id
+        },
     )
-    current_spec.matchRules = compare_and_append_proxy_match_rules(
-        existing_rules=current_spec.matchRules or [],
-        expected_rules=expected_match_rules,
-        operating_id_prefix=operating_id_prefix,
-    )
+    current_spec.matchRules = match_rules
     return current_spec
 
 
