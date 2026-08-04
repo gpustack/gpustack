@@ -944,57 +944,30 @@ async def ensure_route_ai_proxy_config(
     cfg: Config,
     model_route_id: int,
     extensions_api: ExtensionsHigressIoV1Api,
-    route_destinations: mcp_handler.DestinationTupleList,
-    fallback_destinations: mcp_handler.DestinationTupleList,
+    model_groups: List[mcp_handler.ModelAIProxyGroup],
 ):
-    service_namespace_prefix = cfg.get_namespace() + "/"
-    if cfg.get_namespace() == cfg.gateway_namespace:
-        service_namespace_prefix = ""
-    operating_id = mcp_handler.model_route_cleanup_prefix(model_route_id)
-    ingress_name = mcp_handler.model_route_ingress_name(model_route_id)
-    fallback_ingress_name = mcp_handler.fallback_ingress_name(ingress_name)
-    expected_providers = []
-    expected_match_rules = []
-    # cross provider needs to configure ai_proxy
-    unique_registry_services: Set[str] = set(
-        registry.get_service_name()
-        for _, _, registry in route_destinations
-        if (not registry.name.startswith(mcp_handler.provider_id_prefix))
-    )
-    unique_fallback_registry_services: Set[str] = set(
-        registry.get_service_name()
-        for _, _, registry in fallback_destinations
-        if (not registry.name.startswith(mcp_handler.provider_id_prefix))
-    )
+    """Reconcile this route's slice of the ai-proxy CR, grouped by deployment.
 
-    if len(unique_registry_services) + len(unique_fallback_registry_services) > 0:
-        expected_providers.append(
-            mcp_handler.ai_proxy_openai_provider_config(operating_id)
-        )
+    Provider entries are keyed by Model, so a Model targeted by several routes
+    has exactly one of them and route-level changes never rewrite it. Ownership
+    of the *rules* is therefore expressed by ingress rather than by provider id
+    — see ``compare_and_append_proxy_match_rules``.
 
-    if len(unique_registry_services) > 0:
-        expected_match_rules.append(
-            WasmPluginMatchRule(
-                config={
-                    "activeProviderId": operating_id,
-                },
-                configDisable=False,
-                service=list(unique_registry_services),
-                ingress=[f"{service_namespace_prefix}{ingress_name}"],
-            )
+    External model providers are not handled here: ``ModelProviderController``
+    owns their ``provider-<id>`` entries, whose rules match on service only.
+    """
+    prefixed_ingress_name, prefixed_fallback_ingress_name = (
+        mcp_handler.route_ingress_names_for_plugins(
+            model_route_id=model_route_id,
+            resource_namespace=cfg.get_namespace(),
+            gateway_namespace=cfg.gateway_namespace,
         )
-    # same logic for fallback
-    if len(unique_fallback_registry_services) > 0:
-        expected_match_rules.append(
-            WasmPluginMatchRule(
-                config={
-                    "activeProviderId": operating_id,
-                },
-                configDisable=False,
-                service=list(unique_fallback_registry_services),
-                ingress=[f"{service_namespace_prefix}{fallback_ingress_name}"],
-            )
-        )
+    )
+    expected_providers, expected_match_rules = mcp_handler.model_ai_proxy_plugin_spec(
+        groups=model_groups,
+        main_ingress=prefixed_ingress_name,
+        fallback_ingress=prefixed_fallback_ingress_name,
+    )
 
     await mcp_handler.ensure_wasm_plugin(
         api=extensions_api,
@@ -1004,7 +977,10 @@ async def ensure_route_ai_proxy_config(
             mcp_handler.ai_proxy_diff_spec,
             expected_providers=expected_providers,
             expected_match_rules=expected_match_rules,
-            operating_id_prefix=operating_id,
+            owned_ingresses={
+                prefixed_ingress_name,
+                prefixed_fallback_ingress_name,
+            },
         ),
     )
 
@@ -1034,11 +1010,12 @@ async def sync_gateway(
     )
     destinations = []
     fallback_destinations = []
+    model_groups: List[mcp_handler.ModelAIProxyGroup] = []
     if not model_route_from_db:
         event_type = EventType.DELETED
     if event.type != EventType.DELETED:
-        destinations, fallback_destinations = await calculate_destinations(
-            session, model_route
+        destinations, fallback_destinations, model_groups = (
+            await calculate_destinations(session, model_route)
         )
     # Effective model name = `<owner-name>/<route.name>` for non-platform
     # Orgs (so two Orgs can use the same `route.name` without colliding
@@ -1115,8 +1092,7 @@ async def sync_gateway(
         cfg=cfg,
         model_route_id=model_route.id,
         extensions_api=extensions_api,
-        route_destinations=destinations,
-        fallback_destinations=fallback_destinations,
+        model_groups=model_groups,
     )
 
 
@@ -1142,19 +1118,32 @@ def flatten_destinations(
 async def calculate_destinations(
     session: AsyncSession,
     model_route: ModelRoute,
-) -> Tuple[mcp_handler.DestinationTupleList, mcp_handler.DestinationTupleList]:
+) -> Tuple[
+    mcp_handler.DestinationTupleList,
+    mcp_handler.DestinationTupleList,
+    List[mcp_handler.ModelAIProxyGroup],
+]:
     """
-    return persentage Tuple for each registry with model name and the fallback registry
+    Return the percentage tuple for each registry with model name and the
+    fallback registry, plus the route's self-hosted destinations grouped by
+    deployment (Model) for the ai-proxy provider config. External provider
+    targets are excluded from the groups — they carry their own credentials and
+    their own provider entry.
     """
     weight_to_count: List[Tuple[int, int, mcp_handler.DestinationTupleList]] = []
     fallback_weight_to_count: List[
         Tuple[int, int, mcp_handler.DestinationTupleList]
     ] = []
+    model_groups: Dict[int, mcp_handler.ModelAIProxyGroup] = {}
+    # Routes commonly fan out to several deployments of one cluster; cache the
+    # token per cluster so the group build stays at one query per cluster.
+    cluster_api_tokens: Dict[Optional[int], List[str]] = {}
     targets = await ModelRouteTarget.all_by_field(session, "route_id", model_route.id)
     for target in targets:
         if target.state != TargetStateEnum.ACTIVE:
             continue
         to_extend: mcp_handler.DestinationTupleList = []
+        model: Optional[Model] = None
         if target.model_id is not None:
             model = await Model.one_by_id(session, target.model_id)
             if model is None:
@@ -1171,15 +1160,25 @@ async def calculate_destinations(
         if to_extend is None or len(to_extend) == 0:
             # no valid destination found
             continue
-        count = sum([count for count, _, _ in to_extend])
-        weight_to_count.append((target.weight, count, to_extend))
-        if (
+        is_fallback_target = (
             target.fallback_status_codes is not None
             and len(target.fallback_status_codes) > 0
-        ):
+        )
+        if model is not None:
+            await accumulate_model_ai_proxy_group(
+                session=session,
+                model_groups=model_groups,
+                cluster_api_tokens=cluster_api_tokens,
+                model=model,
+                destinations=to_extend,
+                is_fallback_target=is_fallback_target,
+            )
+        count = sum([count for count, _, _ in to_extend])
+        weight_to_count.append((target.weight, count, to_extend))
+        if is_fallback_target:
             fallback_weight_to_count.append((target.weight, count, to_extend))
     if len(weight_to_count) == 0:
-        return [], []
+        return [], [], []
 
     flatten_registry_list = flatten_destinations(weight_to_count)
     fallback_registry_list = []
@@ -1189,7 +1188,60 @@ async def calculate_destinations(
             fallback_weight_to_count, max_weight=1
         )
 
-    return flatten_registry_list, fallback_registry_list
+    return flatten_registry_list, fallback_registry_list, list(model_groups.values())
+
+
+async def accumulate_model_ai_proxy_group(
+    session: AsyncSession,
+    model_groups: Dict[int, mcp_handler.ModelAIProxyGroup],
+    cluster_api_tokens: Dict[Optional[int], List[str]],
+    model: Model,
+    destinations: mcp_handler.DestinationTupleList,
+    is_fallback_target: bool,
+):
+    """Fold one route target's upstream services into its deployment's group.
+
+    A Model can appear under several targets of the same route (e.g. one target
+    per LoRA, each aliasing the same instances), so services accumulate instead
+    of overwriting. The credential is the deployment's cluster registration
+    token: it is the only existing credential every worker of that cluster
+    accepts, and ai-proxy holds one ``apiTokens`` list per provider while the
+    backend worker is picked independently by Envoy.
+
+    ``cluster_api_tokens`` is the caller's per-reconcile cache, so a route with
+    many deployments in one cluster resolves the token once.
+    """
+    group = model_groups.get(model.id)
+    if group is None:
+        if model.cluster_id not in cluster_api_tokens:
+            cluster_api_tokens[model.cluster_id] = await cluster_registration_tokens(
+                session, model.cluster_id
+            )
+        group = mcp_handler.ModelAIProxyGroup(
+            model_id=model.id,
+            api_tokens=cluster_api_tokens[model.cluster_id],
+        )
+        model_groups[model.id] = group
+    service_names = {registry.get_service_name() for _, _, registry in destinations}
+    group.service_names.update(service_names)
+    if is_fallback_target:
+        group.fallback_service_names.update(service_names)
+
+
+async def cluster_registration_tokens(
+    session: AsyncSession, cluster_id: Optional[int]
+) -> List[str]:
+    """The cluster's registration token as an ai-proxy ``apiTokens`` list.
+
+    Empty when the cluster or its token is missing, which leaves ai-proxy on its
+    pre-existing behavior of reading the inbound ``Authorization`` header.
+    """
+    if cluster_id is None:
+        return []
+    cluster = await Cluster.one_by_id(session, cluster_id)
+    if cluster is None or not cluster.registration_token:
+        return []
+    return [cluster.registration_token]
 
 
 async def provider_destinations(
