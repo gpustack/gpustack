@@ -66,6 +66,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
 
     # Worker options
     worker_ifname: Optional[str] = None
+    insecure_tls: bool = True
     disable_worker_metrics: bool = False
     worker_port: int = 10150
     worker_metrics_port: int = 10151
@@ -102,6 +103,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
 
 class PredefinedConfigNoDefaults(PredefinedConfig):
     debug: Optional[bool] = None
+    insecure_tls: Optional[bool] = None
     disable_worker_metrics: Optional[bool] = None
     enable_hf_transfer: Optional[bool] = None  # Deprecated
     enable_hf_xet: Optional[bool] = None  # Deprecated

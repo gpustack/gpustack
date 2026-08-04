@@ -51,10 +51,11 @@ class RuntimeMetricsAggregator:
         cache: dict = None,
         worker_id_getter=Callable[[], int],
         clientset: ClientSet = None,
+        insecure_tls: bool = True,
     ):
         self._cache = cache
         self._metrics_client_config = RunTimeMetricsClientConfig(
-            timeout=5, max_retries=2, insecure_tls=True
+            timeout=5, max_retries=2, insecure_tls=insecure_tls
         )
         self._metrics_client = RuntimeMetricsClient(self._metrics_client_config)
         self._worker_id_getter = worker_id_getter

@@ -252,6 +252,7 @@ class Worker:
                 cache=self._runtime_metrics_cache,
                 worker_id_getter=self.worker_id,
                 clientset=self._clientset,
+                insecure_tls=self._config.insecure_tls,
             )
             run_periodically_in_thread(_runtime_metrics_aggregator.aggregate, 3, 30)
 
