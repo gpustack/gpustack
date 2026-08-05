@@ -11,7 +11,7 @@ from starlette.datastructures import Headers
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import async_session
-from typing import Annotated, Optional, Tuple, List, Dict
+from typing import Annotated, Optional, Set, Tuple, List, Dict
 from fastapi.security import (
     APIKeyCookie,
     APIKeyHeader,
@@ -21,6 +21,7 @@ from fastapi.security import (
     HTTPBearer,
 )
 from fastapi.security.utils import get_authorization_scheme_param
+from sqlalchemy import update
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.api.exceptions import (
     ForbiddenException,
@@ -33,9 +34,13 @@ from gpustack.schemas.users import User
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.security import (
     JWTManager,
+    new_secret_key_digest,
+    secret_key_digest_usable,
     verify_hashed_secret,
+    verify_secret_key_digest,
     get_key_pair,
 )
+from gpustack.server.cache import delete_cache_by_key
 from gpustack.server.passwords import verify_password
 from gpustack.server.services import APIKeyService, UserService
 from gpustack.websocket_proxy.authenticator import (
@@ -329,6 +334,108 @@ def parse_hyphen_uuid(value: str) -> Optional[str]:
         return None
 
 
+_backfill_tasks: Set[asyncio.Task] = set()
+_backfill_in_flight: Set[int] = set()
+# Keys whose stored digest this build cannot parse. Warned about once per key per
+# process: the condition is per-request, and a polling worker would otherwise
+# flood the log with the same line.
+_warned_unusable_digest: Set[int] = set()
+
+
+def _schedule_secret_key_digest_backfill(api_key: ApiKey, secret_key: str) -> None:
+    """Write ``secret_key_digest`` for a key that has no usable one.
+
+    Off the request path on purpose: this is a pure optimization -- a key without
+    a digest keeps working through argon2 -- and the first wave after an upgrade
+    would otherwise put a DB write in front of a batch of authentications. For the
+    same reason nothing here may raise: the caller has already authenticated the
+    request, and turning that into a 500 over a missed optimization would be
+    absurd.
+
+    Each key converges after one successful verification, so this is a one-time
+    cost per key rather than anything the steady state pays.
+    """
+    try:
+        digest = new_secret_key_digest(
+            secret_key=secret_key,
+            is_custom=api_key.is_custom,
+            access_key=api_key.access_key,
+        )
+        if digest is None or api_key.id is None:
+            # Custom keys and the legacy cluster token stay on argon2 forever.
+            return
+        if api_key.id in _backfill_in_flight:
+            return
+        # Hold a reference: a bare create_task may be collected mid-flight.
+        task = asyncio.create_task(
+            _backfill_secret_key_digest(
+                api_key.id,
+                api_key.access_key,
+                digest,
+                expected_current=api_key.secret_key_digest,
+            )
+        )
+        # Marked in flight only once the task exists, and safe to do after
+        # ``create_task`` because the coroutine cannot run -- and so cannot reach
+        # its ``finally`` -- before this synchronous function yields.
+        _backfill_in_flight.add(api_key.id)
+        _backfill_tasks.add(task)
+        task.add_done_callback(_backfill_tasks.discard)
+    except Exception:
+        logger.exception(
+            f"Failed to schedule secret key digest backfill for {api_key.id}"
+        )
+
+
+async def _backfill_secret_key_digest(
+    api_key_id: int,
+    access_key: str,
+    digest: str,
+    expected_current: Optional[str] = None,
+) -> None:
+    """Store ``digest`` for ``api_key_id``, unless the row moved under us.
+
+    The update is a compare-and-set against the value the caller read, so
+    concurrent authentications of the same key collapse into one effective write,
+    and a value another process wrote in the meantime is never clobbered.
+    ``expected_current`` is NULL for a key that predates the column and the old
+    string when replacing one this build cannot parse -- an unusable value is
+    worth nothing, so leaving it in place would pin the key to argon2 forever.
+
+    ``updated_at`` is assigned its own value on purpose: the column carries
+    ``onupdate``, which fires on a bulk UPDATE too, and naming it in the SET
+    clause is what suppresses that. Otherwise the first wave after an upgrade
+    would restamp every API key -- a user-visible change, and one the API sorts
+    on -- for a derived column the user never set.
+    """
+    try:
+        async with async_session() as session:
+            guard = (
+                ApiKey.secret_key_digest.is_(None)
+                if expected_current is None
+                else ApiKey.secret_key_digest == expected_current
+            )
+            await session.execute(
+                update(ApiKey)
+                .where(ApiKey.id == api_key_id, guard)
+                .values(secret_key_digest=digest, updated_at=ApiKey.updated_at)
+            )
+            await session.commit()
+            # ``APIKeyService.get_by_access_key`` is cached, so without this the
+            # next requests would keep re-verifying through argon2 until the entry
+            # expired, and keep rescheduling this backfill.
+            await delete_cache_by_key(
+                APIKeyService(session).get_by_access_key, access_key
+            )
+    except Exception:
+        # Purely an optimization: the key keeps verifying through argon2, and the
+        # next request retries. Keep the traceback -- a failure here is either a
+        # DB problem or a bug, and both need the stack to diagnose.
+        logger.exception(f"Failed to backfill secret key digest for {api_key_id}")
+    finally:
+        _backfill_in_flight.discard(api_key_id)
+
+
 async def get_user_from_api_token(
     session: AsyncSession, token: str
 ) -> Tuple[Optional[Principal], Optional[ApiKey]]:
@@ -364,12 +471,33 @@ async def get_user_from_api_token(
         # rollback() is safe -- this lookup is read-only.
         await session.rollback()
 
-        # argon2 verification is synchronous and CPU-bound; run it off the
-        # event loop so concurrent requests keep flowing instead of serializing
-        # behind each hash.
-        verified = await asyncio.to_thread(
-            verify_hashed_secret, api_key.hashed_secret_key, secret_key
-        )
+        if secret_key_digest_usable(api_key.secret_key_digest):
+            # A few microseconds, and cheap enough to stay on the event loop.
+            # Only secrets this server generated ever get a digest, so a fast
+            # hash here is not a downgrade -- see security.new_secret_key_digest.
+            verified = verify_secret_key_digest(api_key.secret_key_digest, secret_key)
+        else:
+            # No digest, or one this build cannot check. argon2 is the permanent
+            # fallback verifier, so a malformed or unknown-algorithm value costs
+            # this request the slow path instead of locking a valid key out.
+            if api_key.secret_key_digest and api_key.id not in _warned_unusable_digest:
+                _warned_unusable_digest.add(api_key.id)
+                logger.warning(
+                    f"API key {api_key.id} has an unusable secret_key_digest; "
+                    "verifying via argon2 and replacing the value. The column held "
+                    "something this version cannot parse."
+                )
+            # argon2 verification is synchronous and CPU-bound; run it off the
+            # event loop so concurrent requests keep flowing instead of
+            # serializing behind each hash.
+            verified = await asyncio.to_thread(
+                verify_hashed_secret, api_key.hashed_secret_key, secret_key
+            )
+            if verified:
+                # The plaintext is in hand exactly here, and only here, for a key
+                # that predates the digest column. Fill it in so the next request
+                # takes the fast path.
+                _schedule_secret_key_digest_backfill(api_key, secret_key)
         if verified:
             user: Optional[User] = await UserService(session).get_by_id(
                 user_id=api_key.user_id,

@@ -63,7 +63,13 @@ from gpustack.schemas.config import (
     SensitivePredefinedConfig,
     PredefinedConfigNoDefaults,
 )
-from gpustack.security import get_secret_hash, API_KEY_PREFIX
+from gpustack.security import (
+    generate_access_key,
+    generate_secret_key,
+    get_secret_hash,
+    new_secret_key_digest,
+    API_KEY_PREFIX,
+)
 from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
@@ -646,8 +652,8 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
             worker_config = _build_worker_config_dict(cluster)
 
             hashed_suffix = secrets.token_hex(6)
-            access_key = secrets.token_hex(8)
-            secret_key = secrets.token_hex(16)
+            access_key = generate_access_key()
+            secret_key = generate_secret_key()
             new_token = f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
 
             new_worker = update_worker_data(
@@ -678,6 +684,9 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                     name=f'{system_name_prefix}-{hashed_suffix}',
                     access_key=access_key,
                     hashed_secret_key=get_secret_hash(secret_key),
+                    secret_key_digest=new_secret_key_digest(
+                        secret_key=secret_key, is_custom=False, access_key=access_key
+                    ),
                 )
                 if existing_api_key is None
                 else None
