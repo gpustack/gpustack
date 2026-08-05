@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta, timezone
-import secrets
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -12,7 +11,14 @@ from gpustack.api.exceptions import (
     InvalidException,
     NotFoundException,
 )
-from gpustack.security import API_KEY_PREFIX, get_secret_hash, get_key_pair
+from gpustack.security import (
+    API_KEY_PREFIX,
+    generate_access_key,
+    generate_secret_key,
+    get_secret_hash,
+    get_key_pair,
+    new_secret_key_digest,
+)
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.schemas.api_keys import (
@@ -184,7 +190,7 @@ async def create_api_key(
         )
 
     if key_in.custom is None:
-        access_key, secret_key = secrets.token_hex(8), secrets.token_hex(16)
+        access_key, secret_key = generate_access_key(), generate_secret_key()
     else:
         access_key, secret_key = get_key_pair(key_in.custom)
         existing_key = await ApiKey.one_by_field(
@@ -214,6 +220,13 @@ async def create_api_key(
             owner_principal_id=target_org_id,
             access_key=access_key,
             hashed_secret_key=get_secret_hash(secret_key),
+            # None for a custom key: the function refuses a secret it did not
+            # generate, so the fast digest can never cover a user-chosen one.
+            secret_key_digest=new_secret_key_digest(
+                secret_key=secret_key,
+                is_custom=key_in.custom is not None,
+                access_key=access_key,
+            ),
             expires_at=expires_at,
             allowed_model_names=key_in.allowed_model_names,
             is_custom=key_in.custom is not None,

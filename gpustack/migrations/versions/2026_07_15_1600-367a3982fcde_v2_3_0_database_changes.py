@@ -13,7 +13,15 @@ Bundles the pre-release schema changes for v2.3.0:
    list of ``start_cron`` + ``duration_seconds`` + ``replicas`` window rules);
    NULL means no schedule is configured.
 
-3. Cleanup of SYSTEM principals (and their registration API keys) leaked by
+3. ``api_keys.secret_key_digest``: a cheap second verifier
+   (``sha256$<salt>$<hash>``) for the secrets GPUStack generates itself, so
+   authentication no longer has to pay argon2 on the request path. Nullable and
+   additive — ``hashed_secret_key`` keeps its argon2 value for every key, so an
+   older version pointed at the same database still verifies everything. Existing
+   rows stay NULL: the plaintext is returned to the caller once at creation and
+   never stored, so it can only be filled in on a later successful verification.
+
+4. Cleanup of SYSTEM principals (and their registration API keys) leaked by
    cluster / worker deletes — data only, no schema change. See
    :func:`_cleanup_orphan_system_principals`.
 
@@ -77,12 +85,22 @@ def upgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.add_column(sa.Column('scaling_schedule', sa.JSON(), nullable=True))
 
+    with op.batch_alter_table('api_keys', schema=None) as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                'secret_key_digest', sqlmodel.sql.sqltypes.AutoString(), nullable=True
+            )
+        )
+
     _cleanup_orphan_system_principals()
 
 
 def downgrade() -> None:
     # The orphan principal cleanup is data-only — the deleted rows (and their
     # credentials) can't be reconstructed, so there is nothing to undo for it.
+    with op.batch_alter_table('api_keys', schema=None) as batch_op:
+        batch_op.drop_column('secret_key_digest')
+
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.drop_column('scaling_schedule')
 

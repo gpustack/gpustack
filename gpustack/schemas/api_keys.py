@@ -56,6 +56,24 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     access_key: str = Field(unique=True, index=True)
     hashed_secret_key: str = Field(unique=True)
+    # Second verifier for the *same* plaintext, ``sha256$<salt>$<hash>``, issued
+    # only for secrets this server generated (see
+    # ``security.secret_key_digest_eligible``). Both columns are permanent and
+    # neither is legacy: this one is the hot-path verifier, ``hashed_secret_key``
+    # keeps its argon2 value forever as the fallback — which is also what lets an
+    # older version verify every key after a downgrade.
+    #
+    # HARD CONSTRAINT: the two columns must always derive from one plaintext.
+    # Authentication treats a digest mismatch as an authoritative rejection and
+    # does *not* retry against argon2, so anything that writes one column must
+    # write both, or set this one back to NULL. Today every writer is a creation
+    # path and there is no rotation path; a future rotation feature — or a manual
+    # DB fix — that touches ``hashed_secret_key`` alone would lock the key out.
+    #
+    # Populated at creation for eligible keys. NULL means either a row that
+    # predates the column, which the first successful argon2 verification
+    # backfills, or a key that is not eligible for a digest at all.
+    secret_key_digest: Optional[str] = Field(default=None, nullable=True)
     user_id: int = Field(foreign_key='principals.id', nullable=False)
     # ``owner_principal_id`` is the tenant the key acts as. Nullable
     # because an admin-created "All" mode key (no Org context) must

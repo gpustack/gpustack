@@ -1,3 +1,4 @@
+import asyncio
 import ssl
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -111,7 +112,10 @@ async def test_authenticate_request_reuses_provided_session(monkeypatch):
 
 def _api_token_double(**overrides):
     fields = {
+        "id": 11,
         "hashed_secret_key": "stored-hash",
+        "secret_key_digest": None,
+        "is_custom": False,
         "expires_at": None,
         "user_id": 7,
         "access_key": "abcd1234",
@@ -210,6 +214,496 @@ async def test_get_user_from_api_token_rollback_before_verify_via_thread(monkeyp
     assert api_key is valid
     assert events == ["rollback", "verify"]  # connection released before argon2
     assert used_thread["n"] == 1  # argon2 ran via asyncio.to_thread
+
+
+@pytest.mark.asyncio
+async def test_get_user_from_api_token_prefers_the_digest(monkeypatch):
+    """A key that has a digest must not touch argon2 at all — that is the whole
+    point of the column — and must not need a worker thread either.
+    """
+    import gpustack.api.auth as auth_module
+    from gpustack.api.auth import get_user_from_api_token
+    from gpustack.security import generate_access_key, new_secret_key_digest
+
+    access_key = generate_access_key()
+    secret_key = "c11c75ed6334ea9505da4ad9c11c75ed"
+    key = _api_token_double(
+        access_key=access_key,
+        secret_key_digest=new_secret_key_digest(
+            secret_key=secret_key, is_custom=False, access_key=access_key
+        ),
+    )
+    expected_user = type("User", (), {"is_active": True, "id": 7})()
+
+    async def fake_get_by_access_key(self, candidate):
+        return key
+
+    async def fake_get_by_id(self, user_id):
+        return expected_user
+
+    def fail_verify(hashed, secret):  # pragma: no cover - must never run
+        raise AssertionError("argon2 must not run for a key that has a digest")
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr("gpustack.api.auth.verify_hashed_secret", fail_verify)
+
+    thread_calls = {"n": 0}
+
+    async def spy_to_thread(fn, *args, **kwargs):  # pragma: no cover
+        thread_calls["n"] += 1
+        raise AssertionError("no thread offload needed for a fast hash")
+
+    monkeypatch.setattr(auth_module.asyncio, "to_thread", spy_to_thread)
+
+    user, api_key = await get_user_from_api_token(
+        _RollbackRecordingSession([]), f"gpustack_{access_key}_{secret_key}"
+    )
+
+    assert user is expected_user
+    assert api_key is key
+    assert thread_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_digest_mismatch_is_rejected_without_falling_back_to_argon2(monkeypatch):
+    """Both columns derive from the same plaintext, so a digest mismatch means the
+    secret is simply wrong — falling back to argon2 would only pay 30 ms to reach
+    the same answer.
+    """
+    from gpustack.api.auth import get_user_from_api_token
+    from gpustack.security import generate_access_key, new_secret_key_digest
+
+    access_key = generate_access_key()
+    key = _api_token_double(
+        access_key=access_key,
+        secret_key_digest=new_secret_key_digest(
+            secret_key="c11c75ed6334ea9505da4ad9c11c75ed",
+            is_custom=False,
+            access_key=access_key,
+        ),
+    )
+
+    async def fake_get_by_access_key(self, candidate):
+        return key
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr(
+        "gpustack.api.auth.verify_hashed_secret",
+        lambda hashed, secret: (_ for _ in ()).throw(
+            AssertionError("no argon2 fallback on digest mismatch")
+        ),
+    )
+
+    user, api_key = await get_user_from_api_token(
+        _RollbackRecordingSession([]),
+        f"gpustack_{access_key}_ffffffffffffffffffffffffffffffff",
+    )
+
+    assert user is None and api_key is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored_digest",
+    [
+        "garbage",
+        "sha256$truncated",
+        "sha256$deadbeef$",
+        "blake3$deadbeef$abc",  # e.g. written by a newer server
+    ],
+)
+async def test_unusable_digest_falls_back_to_argon2(monkeypatch, stored_digest):
+    """A digest this build cannot check says nothing about the secret. argon2 is
+    the permanent fallback verifier, so bad column data must cost the slow path
+    rather than lock a valid key out.
+    """
+    from gpustack.api.auth import get_user_from_api_token
+    from gpustack.security import generate_access_key
+
+    access_key = generate_access_key()
+    key = _api_token_double(access_key=access_key, secret_key_digest=stored_digest)
+    expected_user = type("User", (), {"is_active": True, "id": 7})()
+
+    async def fake_get_by_access_key(self, candidate):
+        return key
+
+    async def fake_get_by_id(self, user_id):
+        return expected_user
+
+    argon2_calls = {"n": 0}
+
+    def fake_verify(hashed, secret):
+        argon2_calls["n"] += 1
+        return True
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr("gpustack.api.auth.verify_hashed_secret", fake_verify)
+    # An unusable digest is non-NULL, so the ``WHERE secret_key_digest IS NULL``
+    # backfill would not repair it -- assert we do not silently rewrite it either.
+    scheduled = {"n": 0}
+    monkeypatch.setattr(
+        "gpustack.api.auth._schedule_secret_key_digest_backfill",
+        lambda api_key, secret: scheduled.__setitem__("n", scheduled["n"] + 1),
+    )
+
+    user, api_key = await get_user_from_api_token(
+        _RollbackRecordingSession([]),
+        f"gpustack_{access_key}_c11c75ed6334ea9505da4ad9c11c75ed",
+    )
+
+    assert user is expected_user
+    assert api_key is key
+    assert argon2_calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_successful_argon2_verify_backfills_the_digest(monkeypatch):
+    """A key created before the column converges on first use, and the write stays
+    off the request path.
+    """
+    import gpustack.api.auth as auth_module
+    from gpustack.api.auth import get_user_from_api_token
+    from gpustack.security import generate_access_key
+
+    access_key = generate_access_key()
+    secret_key = "c11c75ed6334ea9505da4ad9c11c75ed"
+    key = _api_token_double(access_key=access_key, secret_key_digest=None)
+
+    async def fake_get_by_access_key(self, candidate):
+        return key
+
+    async def fake_get_by_id(self, user_id):
+        return type("User", (), {"is_active": True, "id": 7})()
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr(
+        "gpustack.api.auth.verify_hashed_secret", lambda hashed, secret: True
+    )
+
+    written = []
+
+    async def fake_backfill(api_key_id, key_access_key, digest, expected_current=None):
+        written.append((api_key_id, key_access_key, digest, expected_current))
+        auth_module._backfill_in_flight.discard(api_key_id)
+
+    monkeypatch.setattr(auth_module, "_backfill_secret_key_digest", fake_backfill)
+    auth_module._backfill_in_flight.clear()
+
+    user, _ = await get_user_from_api_token(
+        _RollbackRecordingSession([]), f"gpustack_{access_key}_{secret_key}"
+    )
+    await asyncio.sleep(0)  # let the background task run
+
+    assert user is not None
+    assert len(written) == 1
+    written_id, written_access_key, written_digest, expected_current = written[0]
+    assert (written_id, written_access_key) == (11, access_key)
+    # NULL guard: this row predates the column, so the write must not clobber a
+    # value another process may have set in the meantime.
+    assert expected_current is None
+    from gpustack.security import verify_secret_key_digest
+
+    assert verify_secret_key_digest(written_digest, secret_key)
+
+
+@pytest.mark.asyncio
+async def test_custom_key_is_never_backfilled(monkeypatch):
+    """Custom keys stay on argon2 permanently — a fast hash over a user-chosen
+    secret is the one outcome this design must not produce.
+    """
+    import gpustack.api.auth as auth_module
+    from gpustack.api.auth import get_user_from_api_token
+
+    key = _api_token_double(
+        is_custom=True,
+        secret_key_digest=None,
+        access_key="0123456789abcdef0123456789abcdef",
+    )
+
+    async def fake_get_by_access_key(self, candidate):
+        return key
+
+    async def fake_get_by_id(self, user_id):
+        return type("User", (), {"is_active": True, "id": 7})()
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr(
+        "gpustack.api.auth.verify_hashed_secret", lambda hashed, secret: True
+    )
+
+    scheduled = []
+    monkeypatch.setattr(
+        auth_module,
+        "_backfill_secret_key_digest",
+        lambda *args: scheduled.append(args),
+    )
+    auth_module._backfill_in_flight.clear()
+
+    user, _ = await get_user_from_api_token(
+        _RollbackRecordingSession([]), "a-user-chosen-custom-key"
+    )
+    await asyncio.sleep(0)
+
+    assert user is not None
+    assert scheduled == []
+
+
+def test_concurrent_verifications_schedule_one_backfill(monkeypatch):
+    """The first wave after an upgrade hits the same keys repeatedly; only one
+    write should be in flight per key.
+    """
+    import gpustack.api.auth as auth_module
+    from gpustack.security import generate_access_key
+
+    access_key = generate_access_key()
+    key = _api_token_double(access_key=access_key, secret_key_digest=None)
+
+    created = []
+
+    class _FakeTask:
+        def add_done_callback(self, _cb):
+            pass
+
+    def fake_create_task(coro):
+        coro.close()  # nothing awaits it here; this test only counts schedulings
+        created.append(coro)
+        return _FakeTask()
+
+    monkeypatch.setattr(auth_module.asyncio, "create_task", fake_create_task)
+    auth_module._backfill_in_flight.clear()
+
+    auth_module._schedule_secret_key_digest_backfill(
+        key, "c11c75ed6334ea9505da4ad9c11c75ed"
+    )
+    auth_module._schedule_secret_key_digest_backfill(
+        key, "c11c75ed6334ea9505da4ad9c11c75ed"
+    )
+
+    assert len(created) == 1
+    auth_module._backfill_in_flight.clear()
+    auth_module._backfill_tasks.clear()
+
+
+def _mock_backfill_session(execute=None):
+    """An ``async_session()`` stand-in whose ``execute`` is awaitable."""
+    session = MagicMock()
+    session.execute = execute or AsyncMock()
+    session.commit = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm, session
+
+
+def _compiled(stmt) -> str:
+    return str(stmt.compile(compile_kwargs={"literal_binds": True}))
+
+
+@pytest.mark.asyncio
+async def test_backfill_writes_only_the_digest_column(monkeypatch):
+    """The argon2 hash must survive untouched — it is what an older version falls
+    back to after a downgrade, and the two columns must keep describing the same
+    plaintext. ``updated_at`` must not move either: it carries ``onupdate``, which
+    fires on bulk UPDATEs, and the API sorts on it.
+    """
+    import gpustack.api.auth as auth_module
+
+    cm, session = _mock_backfill_session()
+    monkeypatch.setattr(auth_module, "async_session", lambda: cm)
+    monkeypatch.setattr(auth_module, "delete_cache_by_key", AsyncMock())
+    auth_module._backfill_in_flight.add(11)
+
+    await auth_module._backfill_secret_key_digest(11, "abcd1234", "sha256$aa$bb")
+
+    sql = _compiled(session.execute.await_args.args[0])
+    assert "secret_key_digest='sha256$aa$bb'" in sql
+    assert "hashed_secret_key" not in sql
+    assert "api_keys.id = 11" in sql
+    # Self-assignment, which is what keeps ``onupdate`` from restamping the row.
+    assert "updated_at=api_keys.updated_at" in sql
+    session.commit.assert_awaited_once()
+    assert 11 not in auth_module._backfill_in_flight
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "expected_current, guard",
+    [
+        (None, "api_keys.secret_key_digest IS NULL"),
+        ("garbage", "api_keys.secret_key_digest = 'garbage'"),
+    ],
+)
+async def test_backfill_is_a_compare_and_set(monkeypatch, expected_current, guard):
+    """Concurrent authentications of one key collapse into a single effective
+    write, and a value another process wrote meanwhile is never clobbered.
+    """
+    import gpustack.api.auth as auth_module
+
+    cm, session = _mock_backfill_session()
+    monkeypatch.setattr(auth_module, "async_session", lambda: cm)
+    monkeypatch.setattr(auth_module, "delete_cache_by_key", AsyncMock())
+
+    await auth_module._backfill_secret_key_digest(
+        11, "abcd1234", "sha256$aa$bb", expected_current=expected_current
+    )
+
+    assert guard in _compiled(session.execute.await_args.args[0])
+
+
+@pytest.mark.asyncio
+async def test_backfill_invalidates_the_key_the_read_path_reads(monkeypatch):
+    """The one assertion that keeps the backfill from becoming a silent no-op.
+
+    ``locked_cached`` stores under ``build_cache_key(unbound_f, *args[1:])`` while
+    the invalidation passes a *bound* method. The two only agree because
+    ``build_cache_key`` skips its self-stripping branch for bound methods — if
+    that ever changes, every request keeps paying argon2 and rescheduling this
+    backfill, with correct behaviour and no warning anywhere.
+    """
+    import gpustack.api.auth as auth_module
+    from gpustack.server.cache import build_cache_key
+    from gpustack.server.services import APIKeyService
+
+    cm, _ = _mock_backfill_session()
+    monkeypatch.setattr(auth_module, "async_session", lambda: cm)
+
+    invalidated = []
+
+    async def fake_delete(func, *args, **kwargs):
+        invalidated.append(build_cache_key(func, *args, **kwargs))
+
+    monkeypatch.setattr(auth_module, "delete_cache_by_key", fake_delete)
+
+    await auth_module._backfill_secret_key_digest(11, "abcd1234", "sha256$aa$bb")
+
+    # What ``locked_cached.decorator`` would have stored the row under.
+    read_path_key = build_cache_key(APIKeyService.get_by_access_key, "abcd1234")
+    assert invalidated == [read_path_key]
+
+
+@pytest.mark.asyncio
+async def test_backfill_failure_is_swallowed_and_releases_the_marker(monkeypatch):
+    """A failed optimization must not surface anywhere, and must not cost the key
+    its next attempt.
+    """
+    import gpustack.api.auth as auth_module
+
+    cm, _ = _mock_backfill_session(execute=AsyncMock(side_effect=RuntimeError("no db")))
+    monkeypatch.setattr(auth_module, "async_session", lambda: cm)
+    monkeypatch.setattr(auth_module, "delete_cache_by_key", AsyncMock())
+    auth_module._backfill_in_flight.add(11)
+
+    await auth_module._backfill_secret_key_digest(11, "abcd1234", "sha256$aa$bb")
+
+    assert 11 not in auth_module._backfill_in_flight
+
+
+@pytest.mark.asyncio
+async def test_scheduling_failure_never_reaches_the_caller(monkeypatch):
+    """``get_user_from_api_token`` wraps its body in a try that raises 500, so a
+    throw from scheduling would turn an already-authenticated request into an
+    error over a missed optimization.
+    """
+    import gpustack.api.auth as auth_module
+    from gpustack.security import generate_access_key
+
+    key = _api_token_double(access_key=generate_access_key(), secret_key_digest=None)
+
+    def boom(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(auth_module, "new_secret_key_digest", boom)
+    auth_module._backfill_in_flight.clear()
+
+    auth_module._schedule_secret_key_digest_backfill(
+        key, "c11c75ed6334ea9505da4ad9c11c75ed"
+    )
+
+    assert auth_module._backfill_in_flight == set()
+
+
+@pytest.mark.asyncio
+async def test_failed_create_task_does_not_strand_the_marker(monkeypatch):
+    """A stranded id would cost that key its backfill for the process's lifetime,
+    since nothing else ever clears the set.
+    """
+    import gpustack.api.auth as auth_module
+    from gpustack.security import generate_access_key
+
+    key = _api_token_double(access_key=generate_access_key(), secret_key_digest=None)
+
+    def failing_create_task(coro):
+        coro.close()
+        raise RuntimeError("no loop")
+
+    monkeypatch.setattr(auth_module.asyncio, "create_task", failing_create_task)
+    auth_module._backfill_in_flight.clear()
+
+    auth_module._schedule_secret_key_digest_backfill(
+        key, "c11c75ed6334ea9505da4ad9c11c75ed"
+    )
+
+    assert auth_module._backfill_in_flight == set()
+
+
+@pytest.mark.asyncio
+async def test_unusable_digest_warns_once_per_key(monkeypatch, caplog):
+    """A polling worker key would otherwise repeat the same warning every request
+    until the value is repaired.
+    """
+    import logging
+
+    import gpustack.api.auth as auth_module
+    from gpustack.api.auth import get_user_from_api_token
+    from gpustack.security import generate_access_key
+
+    access_key = generate_access_key()
+    key = _api_token_double(access_key=access_key, secret_key_digest="garbage")
+
+    async def fake_get_by_access_key(self, candidate):
+        return key
+
+    async def fake_get_by_id(self, user_id):
+        return type("User", (), {"is_active": True, "id": 7})()
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr(
+        "gpustack.api.auth.verify_hashed_secret", lambda hashed, secret: True
+    )
+    monkeypatch.setattr(
+        auth_module,
+        "_schedule_secret_key_digest_backfill",
+        lambda api_key, secret: None,
+    )
+    auth_module._warned_unusable_digest.clear()
+
+    with caplog.at_level(logging.WARNING, logger="gpustack.api.auth"):
+        for _ in range(3):
+            await get_user_from_api_token(
+                _RollbackRecordingSession([]),
+                f"gpustack_{access_key}_c11c75ed6334ea9505da4ad9c11c75ed",
+            )
+
+    warnings = [r for r in caplog.records if "unusable secret_key_digest" in r.message]
+    assert len(warnings) == 1
+    auth_module._warned_unusable_digest.clear()
 
 
 @pytest.mark.asyncio

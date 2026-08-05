@@ -37,8 +37,11 @@ from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
 from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.security import (
+    generate_access_key,
+    generate_secret_key,
     generate_secure_password,
     get_secret_hash,
+    new_secret_key_digest,
     API_KEY_PREFIX,
 )
 from gpustack.server.app import create_app
@@ -887,6 +890,13 @@ class Server:
                 name="Legacy Cluster Token",
                 access_key="",
                 hashed_secret_key=get_secret_hash(self._config.token),
+                # Always None here, and deliberately routed through the same
+                # guard rather than simply omitted: the deployment supplies
+                # ``config.token``, so its entropy is not ours to assume and it
+                # must keep verifying through argon2.
+                secret_key_digest=new_secret_key_digest(
+                    secret_key=self._config.token, is_custom=False, access_key=""
+                ),
                 user_id=default_cluster_principal.id,
                 user=default_cluster_principal,
             )
@@ -934,12 +944,17 @@ class Server:
                     )
                     worker.system_principal_id = worker_principal.id
                     await worker.save(session=session, auto_commit=False)
-                    access_key = secrets.token_hex(8)
-                    secret_key = secrets.token_hex(16)
+                    access_key = generate_access_key()
+                    secret_key = generate_secret_key()
                     to_create_apikey = ApiKey(
                         name=worker_principal.name,
                         access_key=access_key,
                         hashed_secret_key=get_secret_hash(secret_key),
+                        secret_key_digest=new_secret_key_digest(
+                            secret_key=secret_key,
+                            is_custom=False,
+                            access_key=access_key,
+                        ),
                         user=worker_principal,
                         user_id=worker_principal.id,
                     )
@@ -975,12 +990,15 @@ class Server:
         token = cluster.registration_token
         if not token:
             try:
-                access_key = secrets.token_hex(8)
-                secret_key = secrets.token_hex(16)
+                access_key = generate_access_key()
+                secret_key = generate_secret_key()
                 new_key = ApiKey(
                     name="Default Cluster Token",
                     access_key=access_key,
                     hashed_secret_key=get_secret_hash(secret_key),
+                    secret_key_digest=new_secret_key_digest(
+                        secret_key=secret_key, is_custom=False, access_key=access_key
+                    ),
                     user_id=cluster_principal.id,
                     user=cluster_principal,
                 )

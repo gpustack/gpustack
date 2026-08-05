@@ -64,7 +64,13 @@ from gpustack.schemas.principals import (
 )
 from gpustack.schemas.users import system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
-from gpustack.security import get_secret_hash, API_KEY_PREFIX
+from gpustack.security import (
+    generate_access_key,
+    generate_secret_key,
+    get_secret_hash,
+    new_secret_key_digest,
+    API_KEY_PREFIX,
+)
 from gpustack.gpu_instances.cluster_apis_util import (
     principal_namespace_identifier,
     get_namespace_name,
@@ -496,8 +502,8 @@ async def create_cluster(
     )
     auto_default = has_existing_in_org is None
 
-    access_key = secrets.token_hex(8)
-    secret_key = secrets.token_hex(16)
+    access_key = generate_access_key()
+    secret_key = generate_secret_key()
     target_state = ClusterStateEnum.READY
     state_message = None
     if input.provider not in [ClusterProvider.Kubernetes, ClusterProvider.Docker]:
@@ -522,6 +528,9 @@ async def create_cluster(
         name=f'{system_name_prefix}-{to_create_cluster.hashed_suffix}',
         access_key=access_key,
         hashed_secret_key=get_secret_hash(secret_key),
+        secret_key_digest=new_secret_key_digest(
+            secret_key=secret_key, is_custom=False, access_key=access_key
+        ),
     )
     try:
         # create cluster
