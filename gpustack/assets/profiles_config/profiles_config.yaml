@@ -1,56 +1,55 @@
+# Benchmark presets (create-form defaults).
+#
+# The create form's top selector picks a preset; choosing one auto-fills the form
+# from the same-named entry below. Custom starts blank.
+#
+# `name` is stored on the benchmark's `profile` column as a soft label for list
+# display / filtering. `load_type` (fixed_rate / concurrency) is the load axis;
+# `auto_tune` toggles the adaptive ramp engine (geometric bracket + binary
+# search) which auto-detects the answer. The latency-SLA scenario is just
+# load_type=concurrency + auto_tune + sla_avg_ttft_ms / sla_avg_tpot_ms.
 profiles:
-  - name: Throughput
+  - name: Max Throughput
+    # Kept in sync with the UI blurb (benchmark.form.profile.maxThroughput.tips):
+    # this is the API-facing text and the fallback when a client has no i18n for
+    # the preset, so the two must not drift.
     description: >
-      Max throughput with realistic prompt length.
-      The most commonly used baseline for GPU and model comparison.
+      Finds peak throughput. The usual baseline for comparing GPUs and models.
+    load_type: fixed_rate # rate axis (open-loop constant)
+    auto_tune: true # adaptive ramp; target = throughput saturation (no SLA)
     dataset_name: Random
-    dataset_input_tokens: 1024 # Default value for Random dataset in vLLM https://github.com/vllm-project/vllm/blob/17b17c068453e6dc6af79240bb94857ae175cc51/vllm/benchmarks/datasets.py#L457
+    dataset_input_tokens: 1024 # vLLM Random default https://github.com/vllm-project/vllm/blob/17b17c068453e6dc6af79240bb94857ae175cc51/vllm/benchmarks/datasets.py#L457
     dataset_output_tokens: 128
-    dataset_seed: 42
-    request_rate: -1 # unlimited
-    total_requests: 1000
+    # No dataset_seed here on purpose: a fixed base would make every benchmark of
+    # this preset send identical prompts, so the second run of a deployment just
+    # replays the first run's prefix cache. The seed is generated per benchmark
+    # (client-side, or by the server when a client sends none); each ramp point
+    # then uses seed + point_index.
+    dataset_seed_increment: true # increment the seed per point
+    # Auto-tune budget — written explicitly so the effective values are visible /
+    # editable in the form instead of being silently applied by the runner (kept
+    # in sync with benchmark-runner RampConfig, design §4.5). multiplier/min_requests
+    # stay internal (no form field).
+    lower_bound: 4 # knob floor (ramp start; skip low-info 1,2 points)
+    upper_bound: 1024 # knob ceiling (rate axis)
+    max_points: 12 # max measured ramp points
+    max_total_seconds: 3600 # whole-run cap (1h)
 
-  # Default value for Latency in vLLM is 32/128 https://github.com/vllm-project/vllm/blob/17b17c068453e6dc6af79240bb94857ae175cc51/vllm/benchmarks/latency.py#L34
-  # NVIDIA blog workload shapes for chat is 128/128 https://developer.nvidia.com/blog/advancing-the-accuracy-efficiency-frontier-with-llama-3-1-nemotron-51b/
-  # In production chat workloads, the input is rarely below 100 tokens once a system prompt such as "You are an AI assistant..." is included, 
-  # so 128/128 is a more realistic chat shape than the vLLM default 32/128
-  - name: Latency
+  - name: Latency SLA
+    # Kept in sync with benchmark.form.profile.latencySla.tips (see above).
     description: >
-      Single-request latency benchmark focusing on TTFT and tail latency.
-      Suitable for API serving and chat scenarios.
+      Finds the most load that still meets your TTFT/TPOT targets. For capacity
+      planning.
+    load_type: concurrency # concurrency axis (closed-loop)
+    auto_tune: true # adaptive ramp; target = SLA boundary (sla_* set)
     dataset_name: Random
     dataset_input_tokens: 128
     dataset_output_tokens: 128
-    dataset_seed: 42
-    request_rate: 1
-    total_requests: 100
-
-  - name: Long Context
-    description: >
-      Stress test for long-context handling.
-      Evaluates KV cache behavior, memory usage, and backend stability.
-    dataset_name: Random
-    dataset_input_tokens: 32000
-    dataset_output_tokens: 100
-    dataset_seed: 42
-    request_rate: 1
-    total_requests: 100
-
-  - name: Generation Heavy
-    description: >
-      Decode-heavy generation benchmark.
-      Measures sustained decoding speed and output token throughput.
-    dataset_name: Random
-    dataset_input_tokens: 1000
-    dataset_output_tokens: 2000
-    dataset_seed: 42
-    request_rate: 1
-    total_requests: 200
-
-  - name: ShareGPT
-    description: >
-      Measures maximum throughput using real conversational data.
-      Suitable for GPU and model performance benchmarking.
-    dataset_name: ShareGPT
-    request_rate: 1000
-    total_requests: 1000
+    dataset_seed_increment: true # increment the seed per point (see note above)
+    sla_avg_ttft_ms: 500
+    sla_avg_tpot_ms: 50
+    # Auto-tune budget (see Max Throughput note above).
+    lower_bound: 4 # knob floor (ramp start; skip low-info 1,2 points)
+    upper_bound: 1024 # knob ceiling (concurrency axis)
+    max_points: 12
+    max_total_seconds: 3600
