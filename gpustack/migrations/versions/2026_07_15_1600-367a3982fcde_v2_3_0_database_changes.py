@@ -3,9 +3,12 @@
 Bundles the pre-release schema changes for v2.3.0:
 
 1. GPU instance types: a ``gpu_instance_types`` table holding the per-cluster
-   catalog of offerable types, plus ``gpu_instances.type_snapshot`` recording
-   the type an instance was created from, so later edits to the catalog don't
-   retroactively change existing instances.
+   catalog of offerable types, ``gpu_instances.type_snapshot`` recording the
+   type an instance was created from (so later edits to the catalog don't
+   retroactively change existing instances), and ``models.gpu_type_selector``,
+   the per-model constraint that picks which of those types a model deploys
+   onto — the catalog, the instance's frozen copy, and the model's choice being
+   one feature.
 
 2. ``models.scaling_schedule`` for scheduled scaling: a per-model cron
    timetable that drives the model's replica count. The column stores the
@@ -24,6 +27,13 @@ Bundles the pre-release schema changes for v2.3.0:
 4. Cleanup of SYSTEM principals (and their registration API keys) leaked by
    cluster / worker deletes — data only, no schema change. See
    :func:`_cleanup_orphan_system_principals`.
+   
+5. Benchmark load curves: a ``benchmark_results`` child table holding one row
+   per measured point, and the ``benchmarks`` config/result columns behind it
+   (load axis, adaptive auto-tune budget, the nine latency-SLA thresholds, the
+   token-length distribution, seed policy, stop conditions, and the computed
+   best operating points). The parent's flat ``*_mean`` columns stay as the
+   representative (throughput-peak) point, so this is an additive change.
 
 Revision ID: 367a3982fcde
 Revises: c4d7e8f9a0b1
@@ -37,6 +47,8 @@ from alembic import op
 import sqlalchemy as sa
 import sqlmodel
 import gpustack
+from gpustack.schemas.common import JSON, UTCDateTime
+from gpustack.migrations.utils import column_exists, table_exists
 
 # revision identifiers, used by Alembic.
 revision: str = '367a3982fcde'
@@ -57,57 +69,281 @@ _WORKER_PRINCIPAL_PREFIX = 'system/worker-'
 
 _CHUNK_SIZE = 500
 
+# ── Benchmark load curves ─────────────────────────────────────────────────────
+# Flat metric columns shared by ``benchmarks`` (the representative point) and
+# ``benchmark_results`` (the per-point grid) — i.e. BenchmarkMetricsLite.
+_METRIC_FLOAT_COLS = [
+    'requests_per_second_mean',
+    'request_latency_mean',
+    'time_per_output_token_mean',
+    'inter_token_latency_mean',
+    'time_to_first_token_mean',
+    'tokens_per_second_mean',
+    'output_tokens_per_second_mean',
+    'input_tokens_per_second_mean',
+    'request_concurrency_mean',
+    'request_concurrency_max',
+]
+_METRIC_INT_COLS = [
+    'request_total',
+    'request_successful',
+    'request_errored',
+    'request_incomplete',
+]
+# Measured percentiles of the SLA-relevant latency metrics. Both aggregations
+# are stored because a threshold can only be evaluated against its own
+# percentile. NOT backfilled: rows written before this revision have neither,
+# and simply never match a p95/p99 threshold.
+_METRIC_PCT_COLS = [
+    'time_to_first_token_p95',
+    'time_to_first_token_p99',
+    # Decode-only per-token time (guidellm's inter_token_latency): the industry
+    # TPOT, and what the `sla_*_tpot_ms` thresholds are evaluated against.
+    'inter_token_latency_p95',
+    'inter_token_latency_p99',
+    # The includes-TTFT variant. Still recorded, no longer judged on.
+    'time_per_output_token_p95',
+    'time_per_output_token_p99',
+    'request_latency_p95',
+    'request_latency_p99',
+]
+
+# All nullable columns added to ``benchmarks`` (name, type, server_default).
+_BENCHMARK_COLUMNS = [
+    # Load axis: fixed_rate (open-loop req/s) or concurrency (closed-loop).
+    ('load_type', sqlmodel.sql.sqltypes.AutoString(), None),
+    # Latency-SLA targets: 3 metrics x 3 aggregations, every one an optional
+    # "<= ms" threshold. A point meets the SLA when every threshold that was
+    # set holds AND its success rate clears the floor.
+    ('sla_avg_ttft_ms', sa.Float(), None),
+    ('sla_p95_ttft_ms', sa.Float(), None),
+    ('sla_p99_ttft_ms', sa.Float(), None),
+    ('sla_avg_tpot_ms', sa.Float(), None),
+    ('sla_p95_tpot_ms', sa.Float(), None),
+    ('sla_p99_tpot_ms', sa.Float(), None),
+    ('sla_avg_latency_ms', sa.Float(), None),
+    ('sla_p95_latency_ms', sa.Float(), None),
+    ('sla_p99_latency_ms', sa.Float(), None),
+    # Measured percentiles of the representative point (mirrors the sub-table).
+    *[(c, sa.Float(), None) for c in _METRIC_PCT_COLS],
+    # Computed conclusions + run constraints + multi-turn.
+    ('sla_met_rate', sa.Float(), None),
+    ('recommended_rate', sa.Float(), None),
+    ('peak_rate', sa.Float(), None),
+    ('validity', JSON(), None),
+    ('turns', sa.Integer(), None),
+    ('warmup', sa.Float(), None),
+    ('cooldown', sa.Float(), None),
+    ('max_errors', sa.Integer(), None),
+    ('max_error_rate', sa.Float(), None),
+    ('stop_on_saturation', sa.Boolean(), None),
+    # Token-length distribution (spread the load instead of one fixed length).
+    ('dataset_input_stdev', sa.Integer(), None),
+    ('dataset_input_min', sa.Integer(), None),
+    ('dataset_input_max', sa.Integer(), None),
+    ('dataset_output_stdev', sa.Integer(), None),
+    ('dataset_output_min', sa.Integer(), None),
+    ('dataset_output_max', sa.Integer(), None),
+    # Seed policy. `_increment` gives each point its own seed so successive
+    # points don't replay one another's prefix cache; `_random` records where
+    # the base seed came from (generated vs pinned for a reproducible re-run).
+    ('dataset_seed_increment', sa.Boolean(), sa.true()),
+    ('dataset_seed_random', sa.Boolean(), sa.true()),
+    # Manual stages / shared prefix buckets.
+    ('stages', JSON(), None),
+    ('prefix_buckets', JSON(), None),
+    # Global duration cap for non-stage runs.
+    ('max_seconds', sa.Float(), None),
+    # Adaptive auto-tune: the toggle plus its hard search range and budget.
+    ('auto_tune', sa.Boolean(), None),
+    ('lower_bound', sa.Float(), None),
+    ('upper_bound', sa.Float(), None),
+    ('max_points', sa.Integer(), None),
+    ('max_total_seconds', sa.Float(), None),
+]
+
 
 def upgrade() -> None:
-    op.create_table(
-        'gpu_instance_types',
-        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
-        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
-        sa.Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('cluster_id', sa.Integer(), nullable=False),
-        sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column('spec', gpustack.schemas.common.JSON(), nullable=False),
-        sa.Column('status', gpustack.schemas.common.JSON(), nullable=True),
-        sa.Column('snapshot', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.ForeignKeyConstraint(['cluster_id'], ['clusters.id'], ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('snapshot', name='uq_gpu_instance_type_snapshot'),
-    )
+    """Every step checks for its own object first.
 
-    with op.batch_alter_table('gpu_instances', schema=None) as batch_op:
-        batch_op.add_column(
+    This bundle folded in several revisions that shipped separately during
+    pre-release, so a development database may already carry some of these objects.
+    Skipping what is present lets such a database be stamped back to the previous
+    revision and migrated forward instead of rebuilt.
+
+    The guards have to cover the WHOLE revision to be worth anything. They used to
+    sit only in `_upgrade_benchmark_load_curves()`, which is reached fourth: a
+    database that already had `gpu_instance_types` failed on the first statement and
+    never got to the guarded part, so the promise above held for one section and was
+    false for the revision.
+    """
+    if not table_exists('gpu_instance_types'):
+        op.create_table(
+            'gpu_instance_types',
             sa.Column(
-                'type_snapshot', sqlmodel.sql.sqltypes.AutoString(), nullable=True
-            )
+                'created_at', gpustack.schemas.common.UTCDateTime(), nullable=False
+            ),
+            sa.Column(
+                'updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False
+            ),
+            sa.Column(
+                'deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True
+            ),
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('cluster_id', sa.Integer(), nullable=False),
+            sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+            sa.Column('spec', gpustack.schemas.common.JSON(), nullable=False),
+            sa.Column('status', gpustack.schemas.common.JSON(), nullable=True),
+            sa.Column('snapshot', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+            sa.ForeignKeyConstraint(
+                ['cluster_id'], ['clusters.id'], ondelete='CASCADE'
+            ),
+            sa.PrimaryKeyConstraint('id'),
+            sa.UniqueConstraint('snapshot', name='uq_gpu_instance_type_snapshot'),
         )
 
-    with op.batch_alter_table('models', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('scaling_schedule', sa.JSON(), nullable=True))
-
-    with op.batch_alter_table('api_keys', schema=None) as batch_op:
-        batch_op.add_column(
-            sa.Column(
-                'secret_key_digest', sqlmodel.sql.sqltypes.AutoString(), nullable=True
+    if not column_exists('gpu_instances', 'type_snapshot'):
+        with op.batch_alter_table('gpu_instances', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    'type_snapshot', sqlmodel.sql.sqltypes.AutoString(), nullable=True
+                )
             )
-        )
 
+    # One batch for both columns: batch mode copies and moves the whole table per
+    # block, so two blocks would rewrite `models` twice.
+    models_columns = [
+        sa.Column('scaling_schedule', sa.JSON(), nullable=True),
+        sa.Column('gpu_type_selector', sa.JSON(), nullable=True),
+    ]
+    models_columns = [c for c in models_columns if not column_exists('models', c.name)]
+    if models_columns:
+        with op.batch_alter_table('models', schema=None) as batch_op:
+            for column in models_columns:
+                batch_op.add_column(column)
+
+    _upgrade_benchmark_load_curves()
+
+    if not column_exists('api_keys', 'secret_key_digest'):
+        with op.batch_alter_table('api_keys', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    'secret_key_digest',
+                    sqlmodel.sql.sqltypes.AutoString(),
+                    nullable=True,
+                )
+            )
+
+    # Data-only and idempotent: it deletes orphans, so a replay finds none.
     _cleanup_orphan_system_principals()
 
 
 def downgrade() -> None:
+    _downgrade_benchmark_load_curves()
+
     # The orphan principal cleanup is data-only — the deleted rows (and their
     # credentials) can't be reconstructed, so there is nothing to undo for it.
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         batch_op.drop_column('secret_key_digest')
 
     with op.batch_alter_table('models', schema=None) as batch_op:
+        batch_op.drop_column('gpu_type_selector')
         batch_op.drop_column('scaling_schedule')
 
     with op.batch_alter_table('gpu_instances', schema=None) as batch_op:
         batch_op.drop_column('type_snapshot')
 
     op.drop_table('gpu_instance_types')
+
+
+def _upgrade_benchmark_load_curves() -> None:
+    """Add the per-point results table and the benchmark config/result columns.
+
+    Each step checks for its own object first, as every other step of this revision
+    does — see `upgrade`, which states why that matters for the revision as a whole.
+    """
+    if not table_exists('benchmark_results'):
+        op.create_table(
+            'benchmark_results',
+            sa.Column('id', sa.Integer(), nullable=False, autoincrement=True),
+            sa.Column('benchmark_id', sa.Integer(), nullable=False),
+            sa.Column('input_tokens', sa.Integer(), nullable=True),
+            sa.Column('rate', sa.Float(), nullable=True),
+            sa.Column(
+                'strategy_type', sqlmodel.sql.sqltypes.AutoString(), nullable=True
+            ),
+            # Probe order, not load order: the ramp doubles, then bisects, so
+            # the row sequence is the only record of how the curve was walked.
+            sa.Column('sequence', sa.Integer(), nullable=False, server_default='0'),
+            *[sa.Column(c, sa.Float(), nullable=True) for c in _METRIC_FLOAT_COLS],
+            *[sa.Column(c, sa.Float(), nullable=True) for c in _METRIC_PCT_COLS],
+            *[sa.Column(c, sa.Integer(), nullable=True) for c in _METRIC_INT_COLS],
+            sa.Column('raw_metrics', JSON(), nullable=True),
+            sa.Column('created_at', UTCDateTime(), nullable=False),
+            sa.Column('updated_at', UTCDateTime(), nullable=False),
+            sa.Column('deleted_at', UTCDateTime(), nullable=True),
+            sa.ForeignKeyConstraint(
+                ['benchmark_id'], ['benchmarks.id'], ondelete='CASCADE'
+            ),
+            sa.PrimaryKeyConstraint('id'),
+        )
+        op.create_index(
+            'ix_benchmark_results_benchmark_id',
+            'benchmark_results',
+            ['benchmark_id'],
+            unique=False,
+        )
+
+    missing = [
+        (name, col_type, server_default)
+        for name, col_type, server_default in _BENCHMARK_COLUMNS
+        if not column_exists('benchmarks', name)
+    ]
+    if missing:
+        with op.batch_alter_table('benchmarks') as batch_op:
+            for name, col_type, server_default in missing:
+                batch_op.add_column(
+                    sa.Column(
+                        name, col_type, nullable=True, server_default=server_default
+                    )
+                )
+
+    # Carry each finished single-point benchmark into the grid as a one-row
+    # curve, so the detail page renders old and new runs through one path.
+    metric_cols = ", ".join(_METRIC_FLOAT_COLS + _METRIC_INT_COLS)
+    op.execute(
+        f"""
+        INSERT INTO benchmark_results (
+            benchmark_id, rate, sequence,
+            {metric_cols},
+            raw_metrics, created_at, updated_at
+        )
+        SELECT
+            id, request_rate, 0,
+            {metric_cols},
+            raw_metrics, created_at, updated_at
+        FROM benchmarks
+        WHERE request_total IS NOT NULL
+          AND id NOT IN (SELECT benchmark_id FROM benchmark_results)
+        """
+    )
+
+
+def _downgrade_benchmark_load_curves() -> None:
+    if table_exists('benchmark_results'):
+        op.drop_index(
+            'ix_benchmark_results_benchmark_id', table_name='benchmark_results'
+        )
+        op.drop_table('benchmark_results')
+
+    present = [
+        name for name, _, _ in reversed(_BENCHMARK_COLUMNS)
+        if column_exists('benchmarks', name)
+    ]
+    if present:
+        with op.batch_alter_table('benchmarks') as batch_op:
+            for name in present:
+                batch_op.drop_column(name)
 
 
 def _cleanup_orphan_system_principals() -> None:
