@@ -12,10 +12,16 @@ from gpustack.logging import setup_logging
 from gpustack.schemas.benchmark import (
     DATASET_RANDOM,
     DATASET_SHAREGPT,
+    SLA_THRESHOLDS,
     Benchmark,
     BenchmarkDeploymentMetadata,
+    BenchmarkLoadModeEnum,
+    BenchmarkLoadTypeEnum,
     BenchmarkStateEnum,
     ModelInstanceSnapshot,
+    benchmark_load_axis,
+    benchmark_load_mode,
+    generate_dataset_seed,
 )
 from gpustack.utils.command import find_bool_parameter
 from gpustack.utils.config import apply_registry_override_to_image
@@ -211,23 +217,82 @@ class BenchmarkRunner:
 
         logger.info(f"Created benchmark container workload: {deployment_metadata.name}")
 
-    def _build_command_args(self) -> List[str]:
+    def _build_command_args(self) -> List[str]:  # noqa: C901
+        # guidellm 0.7.1 registers request handlers on OpenAIRequestHandlerFactory
+        # by API PATH, and benchmark-runner's `openai_http_error_detail` backend
+        # exposes that as a `request_handlers` field (path -> registered handler
+        # NAME, resolved to a class by the backend). This is the native shape.
+        # benchmark-runner also accepts a legacy `response_handlers` dict keyed by
+        # request type ("chat_completions") and translates it, but relying on that
+        # shim only obscures which form is current.
         backend_kwargs = {
             "timeout": BENCHMARK_REQUEST_TIMEOUT,
-            "response_handlers": {
-                "chat_completions": "chat_completions_with_reasoning"
+            "request_handlers": {
+                "/v1/chat/completions": "chat_completions_with_reasoning"
             },
         }
+
+        # Load selection — one of three mutually-exclusive shapes, named by
+        # benchmark_load_mode so the precedence lives in one place (the result
+        # collection and the ready-file count read the same function):
+        #   1. auto_tune  -> benchmark-runner's adaptive ramp engine (geometric
+        #      bracket + binary search) over the load axis. Replaces the old
+        #      guidellm `sweep` profile. Target derived: sla_* set -> SLA boundary,
+        #      else throughput saturation.
+        #   2. stages     -> one single-rate guidellm run per stage (Custom manual
+        #      mode; each stage carries its own max_requests / max_seconds).
+        #   3. single     -> one `constant`/`concurrent` run (single-rate records
+        #      via request_rate).
+        b = self._benchmark
+        mode = benchmark_load_mode(b)
+        # fixed_rate -> ramp/pin the request rate (open-loop constant);
+        # concurrency -> ramp/pin the stream count (closed-loop concurrent).
+        axis = benchmark_load_axis(b)
+        if mode is BenchmarkLoadModeEnum.AUTO_TUNE:
+            profile_args = ["--auto-tune", "--axis", axis]
+            for attr, flag in (
+                ("lower_bound", "--lower-bound"),
+                ("upper_bound", "--upper-bound"),
+                ("max_points", "--max-points"),
+                ("max_total_seconds", "--max-total-seconds"),
+            ):
+                value = getattr(b, attr, None)
+                if value is not None:
+                    profile_args += [flag, str(value)]
+            # SLA targets ("<=" ms). Any one set -> target is the SLA boundary; a
+            # point meets the SLA when every set threshold holds (AND). Walked from
+            # SLA_THRESHOLDS so a threshold added there is forwarded here without a
+            # second list to remember (it used to be silently dropped).
+            for t in SLA_THRESHOLDS:
+                value = getattr(b, t.attr, None)
+                if value is not None:
+                    profile_args += [t.flag, str(value)]
+        elif mode is BenchmarkLoadModeEnum.STAGES:
+            # Custom manual mode: per-stage independent constraints. benchmark-runner
+            # loops one single-rate run per stage (each carries its own
+            # max_requests / max_seconds), so no top-level profile/rate here.
+            # `--axis` still has to be passed: it selects the load axis per stage
+            # exactly as it does for the ramp (rate -> open-loop `constant` at N
+            # req/s, concurrency -> closed-loop `concurrent` with N streams). Left
+            # out, every stage runs as `concurrent` and a fixed_rate stage list is
+            # silently executed as a concurrency sweep.
+            profile_args = ["--stages", json.dumps(b.stages), "--axis", axis]
+        else:
+            # concurrency -> guidellm `concurrent` (closed-loop N in-flight);
+            # fixed_rate -> `constant` (open-loop fixed req/s).
+            kind = (
+                "concurrent"
+                if b.load_type == BenchmarkLoadTypeEnum.CONCURRENCY
+                else "constant"
+            )
+            profile_args = ["--profile", kind, "--rate", str(b.request_rate)]
 
         command_args = [
             "benchmark",
             "run",
             "--target",
             self._model_endpoint,
-            "--profile",
-            "constant",
-            "--rate",
-            str(self._benchmark.request_rate),
+            *profile_args,
             "--sample-requests",
             "0",
             "--processor",
@@ -246,6 +311,15 @@ class BenchmarkRunner:
             "openai_http_error_detail",
         ]
 
+        # Multi-stage seed policy (auto-tune ramp / manual stages): increment the
+        # seed per stage unless the user pinned it fixed. Only affects the Random
+        # synthetic dataset (file datasets read in file order regardless of seed).
+        command_args.append(
+            "--seed-increment"
+            if self._benchmark.dataset_seed_increment is not False
+            else "--no-seed-increment"
+        )
+
         if find_bool_parameter(self._model_backend_parameters, ["trust-remote-code"]):
             command_args.extend(
                 [
@@ -263,26 +337,92 @@ class BenchmarkRunner:
             and self._benchmark.dataset_output_tokens is not None
         ):
             data = f"prompt_tokens={self._benchmark.dataset_input_tokens},output_tokens={self._benchmark.dataset_output_tokens}"
+            # Data distribution — spread token lengths around the mean
+            # (guidellm prompt_tokens_stdev/min/max + output_tokens_stdev/min/max).
+            for attr, key in (
+                ("dataset_input_stdev", "prompt_tokens_stdev"),
+                ("dataset_input_min", "prompt_tokens_min"),
+                ("dataset_input_max", "prompt_tokens_max"),
+                ("dataset_output_stdev", "output_tokens_stdev"),
+                ("dataset_output_min", "output_tokens_min"),
+                ("dataset_output_max", "output_tokens_max"),
+            ):
+                value = getattr(self._benchmark, attr, None)
+                if value is not None:
+                    data += f",{key}={value}"
+            # Multi-turn synthetic conversations
+            if self._benchmark.turns and self._benchmark.turns > 1:
+                data += f",turns={self._benchmark.turns}"
+            # Shared prefix: prefix_buckets is a nested list, so re-encode the whole
+            # data config as JSON (guidellm parses --data starting with "{" as JSON).
+            prefix_buckets = self._benchmark.prefix_buckets
+            if prefix_buckets:
+                data_dict: dict = {}
+                for pair in data.split(","):
+                    k, _, v = pair.partition("=")
+                    k = k.strip()
+                    v = v.strip()
+                    data_dict[k] = int(v) if v.lstrip("-").isdigit() else v
+                data_dict["prefix_buckets"] = prefix_buckets
+                data = json.dumps(data_dict)
             command_args.extend(["--data", data])
 
-            if self._benchmark.dataset_seed is not None:
+            # Always send the seed explicitly. Left out, guidellm falls back to
+            # its own fixed default, so every run would replay the same synthetic
+            # prompts. The server fills dataset_seed on creation; rows predating
+            # that get a seed here rather than silently sharing the default.
+            seed = self._benchmark.dataset_seed
+            if seed is None:
+                seed = generate_dataset_seed()
+            command_args.extend(["--random-seed", f"{seed}"])
+
+        # Global caps belong to the single-run shape only. auto_tune computes
+        # per-point request counts itself (knob * multiplier) and caps the whole run
+        # via --max-total-seconds; stages carry their own limits inside the --stages
+        # payload, and a global cap would leak onto every stage that omitted one.
+        if mode is BenchmarkLoadModeEnum.SINGLE:
+            if (
+                self._benchmark.total_requests is not None
+                and self._benchmark.total_requests > 0
+            ):
                 command_args.extend(
                     [
-                        "--random-seed",
-                        f"{self._benchmark.dataset_seed}",
+                        "--max-requests",
+                        f"{self._benchmark.total_requests}",
                     ]
                 )
 
-        if (
-            self._benchmark.total_requests is not None
-            and self._benchmark.total_requests > 0
-        ):
-            command_args.extend(
-                [
-                    "--max-requests",
-                    f"{self._benchmark.total_requests}",
-                ]
-            )
+            if b.max_seconds is not None:
+                command_args.extend(["--max-seconds", str(b.max_seconds)])
+
+        # Warmup / cooldown / constraints, passed through to guidellm.
+        if b.warmup is not None:
+            command_args.extend(["--warmup", str(b.warmup)])
+        if b.cooldown is not None:
+            command_args.extend(["--cooldown", str(b.cooldown)])
+        if b.max_errors is not None:
+            command_args.extend(["--max-errors", str(b.max_errors)])
+        # guidellm's MaxErrorRateConstraint takes a FRACTION in the open interval
+        # (0, 1) and rejects the endpoints outright — a run configured with 1.0
+        # died at scenario construction ("Input should be less than 1") without
+        # issuing a single request. Both endpoints already have a faithful
+        # representation as "no constraint": 1.0 means "tolerate every request
+        # failing" and 0 means "tolerate nothing", which this constraint cannot
+        # express anyway (max_errors is the count-based knob for that). So only
+        # forward a rate that guidellm can actually act on.
+        # Say so in the log when one is dropped, rather than leaving the user to
+        # wonder why a rate they configured had no effect.
+        if b.max_error_rate is not None:
+            if 0 < b.max_error_rate < 1:
+                command_args.extend(["--max-error-rate", str(b.max_error_rate)])
+            else:
+                logger.info(
+                    f"Ignoring max_error_rate={b.max_error_rate}: guidellm takes a "
+                    "fraction in (0, 1) and rejects both endpoints, which mean "
+                    "'no constraint' anyway. Use max_errors for a count-based cap."
+                )
+        if b.stop_on_saturation:
+            command_args.append("--detect-saturation")
 
         return command_args
 
