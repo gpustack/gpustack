@@ -636,7 +636,7 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         phase="UNSPECIFIED_PHASE",
         priority=400,
         url=get_plugin_url_with_name_and_version(
-            name="gpustack-token-usage", version="1.1.1", cfg=cfg
+            name="gpustack-token-usage", version="1.1.2", cfg=cfg
         ),
     )
     return resource_name, expected_spec
