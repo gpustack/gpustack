@@ -1108,6 +1108,54 @@ def test_resolve_image_fallback_matches_host_major(
     assert image_name == expected_image
 
 
+@pytest.mark.parametrize(
+    "backend_version, expected_service_version, expected_with_deprecated",
+    [
+        # Auto: no version filter, deprecated runners stay hidden.
+        (None, None, False),
+        # Blank version is stored by legacy/migrated data and API clients. It is
+        # shown as "Auto" in the UI and has to resolve like None, not like an
+        # exact version filter that matches no runner.
+        ("", None, False),
+        # An explicit version is still passed through verbatim.
+        ("0.10.2", "0.10.2", True),
+    ],
+)
+def test_resolve_image_treats_blank_backend_version_as_auto(
+    backend_version, expected_service_version, expected_with_deprecated, monkeypatch
+):
+    import gpustack.worker.backends.base as base_module
+
+    captured = {}
+
+    def fake_list_backend_runners(**kwargs):
+        captured.update(kwargs)
+        return [
+            types.SimpleNamespace(
+                versions=[
+                    _make_versioned_runner(
+                        "13.0", "gpustack/runner:cuda13.0-vllm0.10.2"
+                    )
+                ]
+            )
+        ]
+
+    monkeypatch.setattr(base_module, "list_backend_runners", fake_list_backend_runners)
+
+    server = VLLMServer.__new__(VLLMServer)
+    server._model = types.SimpleNamespace(
+        image_name=None, backend="vllm", backend_version=backend_version
+    )
+    server.inference_backend = None
+    server._get_device_info = lambda: ("cuda", "13.0", None)
+
+    image_name, _ = server._resolve_image()
+
+    assert image_name == "gpustack/runner:cuda13.0-vllm0.10.2"
+    assert captured["service_version"] == expected_service_version
+    assert captured["with_deprecated"] is expected_with_deprecated
+
+
 class _StubServer(InferenceServer):
     """Concrete InferenceServer so base methods can be exercised in isolation."""
 
