@@ -1092,7 +1092,10 @@ exec "$@"
 
         backend_variant = None
         service = self._model.backend.lower()
-        model_service_version = self._model.backend_version
+        # A blank backend version means "Auto", same as None. Legacy/migrated data
+        # and API clients can store "", which would otherwise be used as an exact
+        # version filter and match no runner at all.
+        model_service_version = self._model.backend_version or None
         service_version = model_service_version
 
         # Default variant for some backends.
