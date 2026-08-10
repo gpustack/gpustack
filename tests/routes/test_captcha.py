@@ -1,6 +1,8 @@
 """Tests for login CAPTCHA generation, tokens, and HTTP integration."""
 
 import base64
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from io import BytesIO
 from types import SimpleNamespace
@@ -47,6 +49,7 @@ def _config(enabled: bool = True, length: int = 4):
     return SimpleNamespace(
         enable_login_captcha=enabled,
         login_captcha_length=length,
+        server_external_url=None,
         external_auth_type=None,
         gateway_mode=GatewayModeEnum.disabled,
     )
@@ -98,6 +101,16 @@ def client(monkeypatch):
         yield test_client, config, authenticate_user
 
 
+def _solved_challenge(test_client):
+    issued = test_client.get("/auth/captcha").json()
+    challenge = captcha_util.decrypt_challenge(
+        _SECRET_KEY,
+        issued["captcha_id"],
+        ttl_seconds=auth_routes.CAPTCHA_TOKEN_TTL_SECONDS,
+    )
+    return issued, challenge.code
+
+
 def test_generate_code_uses_unambiguous_characters():
     code = captcha_util.generate_code(6)
 
@@ -126,6 +139,28 @@ def test_generate_audio_returns_valid_wav():
 
     assert audio.startswith(b"RIFF")
     assert audio[8:12] == b"WAVE"
+
+
+def test_generators_are_reused_per_thread(monkeypatch):
+    monkeypatch.setattr(captcha_util, "_generators", threading.local())
+    barrier = threading.Barrier(2)
+
+    def generators():
+        image = captcha_util._get_image_generator()
+        audio = captcha_util._get_audio_generator()
+        assert image is captcha_util._get_image_generator()
+        assert audio is captcha_util._get_audio_generator()
+        barrier.wait()
+        return image, audio
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(generators)
+        second_future = executor.submit(generators)
+        first_image, first_audio = first_future.result()
+        second_image, second_audio = second_future.result()
+
+    assert first_image is not second_image
+    assert first_audio is not second_audio
 
 
 def test_challenge_token_is_opaque_and_authenticated(monkeypatch):
@@ -355,6 +390,75 @@ def test_http_login_rejects_cross_site_fetch_metadata(client):
 
     assert response.status_code == 400
     authenticate_user.assert_not_awaited()
+
+
+def test_http_login_accepts_external_origin_behind_tls_proxy(client):
+    test_client, config, authenticate_user = client
+    config.server_external_url = "https://public.example/gpustack"
+    issued, code = _solved_challenge(test_client)
+
+    response = test_client.post(
+        "/auth/login",
+        data={
+            "username": "admin",
+            "password": "password",
+            "captcha_id": issued["captcha_id"],
+            "captcha": code,
+        },
+        headers={"Origin": "https://public.example:443"},
+    )
+
+    assert response.status_code == 200
+    authenticate_user.assert_awaited_once()
+
+
+def test_http_login_does_not_trust_raw_forwarded_proto(client):
+    test_client, _, authenticate_user = client
+    issued, code = _solved_challenge(test_client)
+
+    response = test_client.post(
+        "/auth/login",
+        data={
+            "username": "admin",
+            "password": "password",
+            "captcha_id": issued["captcha_id"],
+            "captcha": code,
+        },
+        headers={
+            "Origin": "https://testserver",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+
+    assert response.status_code == 400
+    authenticate_user.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://EXAMPLE.com", ("https", "example.com", 443)),
+        ("https://example.com:443", ("https", "example.com", 443)),
+        ("http://[::1]:80", ("http", "::1", 80)),
+        ("null", None),
+        ("https://user@example.com", None),
+        ("https://example.com/path", None),
+    ],
+)
+def test_canonical_http_origin(value, expected):
+    assert auth_routes._canonical_http_origin(value) == expected
+
+
+def test_canonical_http_origin_allows_deployment_path_only_when_requested():
+    assert auth_routes._canonical_http_origin(
+        "https://example.com/gpustack", allow_path=True
+    ) == ("https", "example.com", 443)
+    assert (
+        auth_routes._canonical_http_origin(
+            "https://example.com/gpustack?source=test", allow_path=True
+        )
+        is None
+    )
 
 
 def test_disabled_captcha_preserves_cross_site_login_behavior(client):
