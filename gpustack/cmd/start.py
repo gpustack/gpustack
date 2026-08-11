@@ -123,7 +123,7 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     common_group.add_argument(
         "--system-default-container-registry",
         type=str,
-        help="Default container registry for GPUStack to pull system and inference images. The default is 'docker.io'.",
+        help="Default container registry for GPUStack to pull system and inference images. The default is 'docker.io'. Keep all GPUStack business images under the 'gpustack' namespace; if a multi-level namespace is required, keep 'gpustack' as the last level (e.g. 'awesome.com/amazing-group/amazing-subgroup/gpustack') and set this to the parent path (e.g. 'awesome.com/amazing-group/amazing-subgroup'). If the images cannot stay under the 'gpustack' namespace (e.g. 'gpustack-ai'), adjust --image-repo and --benchmark-image-repo accordingly.",
         default=get_gpustack_env("SYSTEM_DEFAULT_CONTAINER_REGISTRY"),
     )
     common_group.add_argument(
@@ -135,13 +135,13 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     common_group.add_argument(
         "--image-repo",
         type=str,
-        help="Override the default image repository gpustack/gpustack for the GPUStack container.",
+        help="Override the default image repository gpustack/gpustack for the GPUStack container (do not include the tag; GPUStack appends the version tag automatically). If the image lives outside the 'gpustack' namespace (e.g. 'awesome.com/amazing-group/amazing-subgroup/gpustack-ai/gpustack:<tag>'), set --system-default-container-registry to the parent path (e.g. 'awesome.com/amazing-group/amazing-subgroup') first, then set this to 'gpustack-ai/gpustack'.",
         default=get_gpustack_env("IMAGE_REPO"),
     )
     common_group.add_argument(
         "--benchmark-image-repo",
         type=str,
-        help="Override the default benchmark image repository gpustack/benchmark-runner for the GPUStack benchmark container.",
+        help="Override the default benchmark image repository gpustack/benchmark-runner for the GPUStack benchmark container. Unlike --image-repo, this value is used as-is, so include the tag. If the image lives outside the 'gpustack' namespace (e.g. 'awesome.com/amazing-group/amazing-subgroup/gpustack-ai/benchmark-runner:<tag>'), set --system-default-container-registry to the parent path (e.g. 'awesome.com/amazing-group/amazing-subgroup') first, then set this to 'gpustack-ai/benchmark-runner:<tag>'.",
         default=get_gpustack_env("BENCHMARK_IMAGE_REPO"),
     )
     common_group.add_argument(

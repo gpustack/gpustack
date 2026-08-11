@@ -121,9 +121,9 @@ class Config(WorkerConfig, BaseSettings):
         allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
         server_external_url: Specified external URL for the server.
-        system_default_container_registry: Default registry for container images (server and inference images).
+        system_default_container_registry: Default registry for container images (server and inference images). Images are expected under the 'gpustack' namespace; for multi-level namespaces keep 'gpustack' as the last level and set this to the parent path.
         image_name_override: Force override of the image name.
-        image_repo: Repository for the container images.
+        image_repo: Repository for the container images. When the image lives outside the 'gpustack' namespace (e.g. 'gpustack-ai/gpustack'), point system_default_container_registry to the parent namespace path and set this to the remaining repository path.
         service_discovery_name: Name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.
         gateway_mode: Gateway deployment mode. Options are 'auto', 'embedded', 'incluster', 'external', 'disabled'. Default is 'auto'.
         gateway_kubeconfig: Path to the kubeconfig file for gateway. Only used when gateway_mode is 'external'.
