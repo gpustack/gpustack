@@ -552,17 +552,28 @@ def _limit_warnings(
     one case: a run ended by `max_total_seconds` leaves exactly the same curve as
     one that stopped of its own accord, so the inference path below reported "raise
     the upper bound" for a run the CLOCK ended. Hence the facts.
+
+    A THIRD bound exists and is not the user's: the saturation probe's soft cap.
+    `not_saturated` must never be reported for it — its advice is "raise
+    upper_bound", and raising it changes nothing, because the probe re-derives the
+    cap from a fresh measurement on every run. Observed: a run configured 4..1024
+    stopped at 31 (cap = ceil(25.6 * 1.2)) and was told to raise the 1024.
     """
     bracket = (ramp or {}).get("bracket_reason")
     if bracket is not None:
         if bracket == RAMP_STOP_UPPER_BOUND and not overloaded_any:
+            if _stopped_on_the_probes_cap(benchmark, ramp):
+                return []
             return [{"code": "not_saturated", "params": {}}]
         if bracket in (RAMP_STOP_BUDGET_POINTS, RAMP_STOP_BUDGET_SECONDS):
             # `which` names the cap, so the message can point at the right knob.
             which = "seconds" if bracket == RAMP_STOP_BUDGET_SECONDS else "points"
             return [{"code": "budget_exhausted", "params": {"which": which}}]
-        # Any other reason (capacity_plateau, sla_failed, converged, ...) means the
-        # search ended because it had its answer: no limit to report.
+        # Any other reason means either the search had its answer
+        # (capacity_plateau, sla_failed, ...) or the limit was one the user cannot
+        # act on: `probe_bound` is the saturation probe's own soft cap, and raising
+        # upper_bound does not move a cap the probe re-derives from a fresh
+        # measurement on every run. Either way: no limit to report.
         return []
 
     # ── No facts (stage / legacy / pre-sidecar run): judge from the grid ──
@@ -579,6 +590,43 @@ def _limit_warnings(
     if max_points is not None and len(rate_points) >= max_points:
         return [{"code": "budget_exhausted", "params": {"which": "points"}}]
     return [{"code": "not_saturated", "params": {}}]
+
+
+def _stopped_on_the_probes_cap(benchmark, ramp: Optional[dict]) -> bool:
+    """Did the SOFT cap end this run, while reporting itself as `upper_bound`?
+
+    Runners that name the two bounds apart report `probe_bound` and never reach
+    this. For one that does not, the sidecar still carries enough to tell: the run
+    ended AT OR ABOVE the probe's cap, and that cap was below the range the user
+    asked for. Those two facts are jointly decisive, because the ramp only breaks
+    on a bound it has reached (`knob >= bound`, `bound = min(upper_bound, cap)`):
+
+      * the cap ended it  -> bound is the cap, so stopped_at >= probe_bound, and
+        the cap sits under the user's range.
+      * the range ended it -> bound is upper_bound, which means the cap was absent
+        or already at/above it, so `probe_bound < upper` is false.
+
+    `>=` rather than `==` because the run does not have to LAND on the cap. Points
+    are clamped to the bound at the end of an iteration, so the FIRST point is
+    never clamped: a range starting above the cap (lower_bound 32, cap 31) measures
+    32, stops, and reports 32. That is the one case the current runner can still
+    produce — it is exactly when the cap is allowed to end a search — so requiring
+    equality would miss it on every pre-`probe_bound` image.
+
+    Every one of the three facts is required: the cap (`probe_bound`), where the
+    run ended (`stopped_at`), and the range to compare the cap against
+    (`benchmark.upper_bound`, absent on runs that never had a search range). Any
+    of them missing and the verdict is left alone. That asymmetry is deliberate —
+    this only ever SUPPRESSES advice, so a false negative merely restores the old
+    (wrong) message, while a false positive would hide a real range limit.
+    """
+    facts = ramp or {}
+    probe_bound = facts.get("probe_bound")
+    stopped_at = facts.get("stopped_at")
+    upper = getattr(benchmark, "upper_bound", None)
+    if probe_bound is None or stopped_at is None or upper is None:
+        return False
+    return stopped_at >= probe_bound and probe_bound < upper
 
 
 def _plateaued_at_top(rate_points: list) -> bool:

@@ -2056,3 +2056,77 @@ class TestOneMissingPercentileDoesNotCostThePoint:
         assert not [
             name for name, f in Percentiles.model_fields.items() if f.is_required()
         ]
+
+
+class TestTheProbesCapIsNotTheUsersRange:
+    """`not_saturated` says "raise upper_bound". Never say it about the soft cap.
+
+    The saturation probe derives its own cap from a fresh measurement on every
+    run, so raising the range cannot move it — the advice is not merely unhelpful,
+    it is unfollowable. Reproduces benchmark 40: configured 4..1024, probe read
+    25.6 rps, cap = ceil(25.6 * 1.2) = 31, ramp stopped there with the grid still
+    climbing (+63% throughput on the last step) and the page told the user to
+    raise the 1024.
+    """
+
+    BM40 = {
+        "version": 1,
+        "bracket_reason": "upper_bound",
+        "stop_reason": "upper_bound",
+        "stopped_at": 31,
+        "probe_ceiling": 25.6,
+        "probe_bound": 31,
+        "probe_relaxed": 0,
+    }
+
+    @staticmethod
+    def _points():
+        return [
+            _point(4, 4635.0, 0.4),
+            _point(8, 9220.0, 0.4),
+            _point(16, 18350.0, 0.5),
+            _point(31, 30022.0, 1.4),
+        ]
+
+    def _validity(self, ramp, upper_bound=1024):
+        return analysis.compute_validity(
+            SimpleNamespace(upper_bound=upper_bound, max_points=12),
+            self._points(),
+            {"recommended_rate": 31, "peak_rate": 31},
+            ramp,
+        )
+
+    def test_a_legacy_sidecar_that_calls_the_cap_upper_bound_is_seen_through(self):
+        # An older runner reports both bounds as `upper_bound`; the facts it does
+        # carry still tell them apart — it ended ON the cap, and the cap was below
+        # the range the user asked for.
+        assert self._validity(self.BM40)["warnings"] == []
+
+    def test_the_named_reason_needs_no_inference(self):
+        ramp = {**self.BM40, "bracket_reason": "probe_bound"}
+        assert self._validity(ramp)["warnings"] == []
+
+    def test_the_users_own_range_still_gets_the_advice(self):
+        # Same shape, but the run ended at the top of the range it was given:
+        # raising it is exactly the right thing to do.
+        ramp = {**self.BM40, "stopped_at": 1024, "probe_bound": 1024}
+        codes = [w["code"] for w in self._validity(ramp)["warnings"]]
+        assert codes == ["not_saturated"]
+
+    def test_a_cap_that_never_bound_anything_still_gets_the_advice(self):
+        # The probe read HIGH, so the ramp hit the user's range before the cap:
+        # stopped_at < probe_bound means the cap is not what ended this.
+        ramp = {**self.BM40, "stopped_at": 512, "probe_bound": 900}
+        codes = [w["code"] for w in self._validity(ramp, upper_bound=512)["warnings"]]
+        assert codes == ["not_saturated"]
+
+    def test_a_run_with_no_probe_is_unaffected(self):
+        # Concurrency axis: no probe, so no cap keys — the verdict must not change.
+        ramp = {
+            "version": 1,
+            "bracket_reason": "upper_bound",
+            "stop_reason": "upper_bound",
+            "stopped_at": 1024,
+        }
+        codes = [w["code"] for w in self._validity(ramp)["warnings"]]
+        assert codes == ["not_saturated"]
