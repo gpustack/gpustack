@@ -1374,16 +1374,29 @@ class ServeManager:
                     )
 
     def _cleanup_old_logs(self, model_instance_id: int, current_restart_count: int):
-        """Keep serve logs for restart_count in {R, R-1}.
+        """Keep the newest ``serve_log_retention_count`` restarts, plus restart 0.
 
         R==0 is a fresh lifecycle start, so all existing files are purged (any
         present belong to a previous owner of a reused id).
+
+        Restart 0 survives the whole lifecycle on top of that sliding window
+        because it holds the run that failed first, which is the log needed to
+        explain why the instance started restarting at all. A window alone
+        loses it after ``serve_log_retention_count`` restarts, so a crash loop
+        overwrites its own root cause (issue #6019).
         """
         if current_restart_count == 0:
             self._purge_instance_logs(model_instance_id)
             return
 
         try:
+            # Inside the try with the rest: a retention problem must never stop
+            # a model instance from starting, and this runs on the start path.
+            # The config validator already rejects anything below 1.
+            retention_count = self._config.serve_log_retention_count
+            oldest_in_window = max(0, current_restart_count - retention_count + 1)
+            keep = {0, *range(oldest_in_window, current_restart_count + 1)}
+
             log_dir = Path(self._serve_log_dir)
 
             # Separate main logs, container logs, and sidecar container logs
@@ -1407,13 +1420,9 @@ class ServeManager:
                 f for f in all_container_files if f not in default_container_logs
             ]
 
-            self._cleanup_log_type(all_main_logs, current_restart_count, "main")
-            self._cleanup_log_type(
-                default_container_logs, current_restart_count, "container"
-            )
-            self._cleanup_log_type(
-                sidecar_container_logs, current_restart_count, "sidecar_container"
-            )
+            self._cleanup_log_type(all_main_logs, keep, "main")
+            self._cleanup_log_type(default_container_logs, keep, "container")
+            self._cleanup_log_type(sidecar_container_logs, keep, "sidecar_container")
 
         except Exception as e:
             logger.error(f"Failed to cleanup old logs for {model_instance_id}: {e}")
@@ -1421,14 +1430,10 @@ class ServeManager:
     def _cleanup_log_type(
         self,
         log_files: List[Path],
-        current_restart_count: int,
+        keep: Set[int],
         log_type: str,
     ):
-        """Delete log files whose restart_count is not current or previous."""
-
-        keep = {current_restart_count}
-        if current_restart_count > 0:
-            keep.add(current_restart_count - 1)
+        """Delete log files whose restart_count is not in ``keep``."""
 
         def _extract_sidecar_restart_count(filename: str) -> int:
             """Extract restart count from {id}.container.{name}.{restart_count}.log"""

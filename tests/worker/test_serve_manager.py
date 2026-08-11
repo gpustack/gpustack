@@ -53,10 +53,12 @@ def _get_workload_sequence(states):
     return next_state
 
 
-def _build_serve_manager(worker_id: int = 1):
+def _build_serve_manager(worker_id: int = 1, serve_log_retention_count: int = 2):
     clientset = MagicMock()
     clientset.model_instances.list.return_value = SimpleNamespace(items=[])
-    cfg = SimpleNamespace(log_dir="/tmp")
+    cfg = SimpleNamespace(
+        log_dir="/tmp", serve_log_retention_count=serve_log_retention_count
+    )
     manager = ServeManager(lambda: worker_id, lambda: clientset, cfg)
     manager._inference_backend_manager = MagicMock()
     return manager, clientset
@@ -166,8 +168,9 @@ def test_restart_model_instance_preserves_transient_backoff_count():
     assert manager._restart_backoff_counts[model_instance.id] == 1
 
 
-def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path):
-    """Keep main/container logs for R and R-1; delete older restart_count files."""
+def test_cleanup_old_logs_keeps_retention_window_and_first_failure(tmp_path: Path):
+    """Keep main/container logs for R and R-1 (the default window) plus restart
+    0; delete restart counts that fall between them."""
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir(parents=True)
     mid = 42
@@ -175,23 +178,84 @@ def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path
         f"{mid}.0.log",
         f"{mid}.1.log",
         f"{mid}.2.log",
+        f"{mid}.3.log",
         f"{mid}.container.0.log",
         f"{mid}.container.1.log",
         f"{mid}.container.2.log",
+        f"{mid}.container.3.log",
     ):
         (serve_dir / name).write_text("x", encoding="utf-8")
 
     manager, _clients = _build_serve_manager()
     manager._serve_log_dir = str(serve_dir)
 
-    manager._cleanup_old_logs(mid, 2)
+    manager._cleanup_old_logs(mid, 3)
+
+    # 1 is outside the window {2, 3} and is not the first-failure log.
+    remaining = sorted(p.name for p in serve_dir.iterdir())
+    assert remaining == [
+        f"{mid}.0.log",
+        f"{mid}.2.log",
+        f"{mid}.3.log",
+        f"{mid}.container.0.log",
+        f"{mid}.container.2.log",
+        f"{mid}.container.3.log",
+    ]
+
+
+def test_cleanup_old_logs_keeps_first_failure_through_a_crash_loop(tmp_path: Path):
+    """A long crash loop must not overwrite its own root cause. Restart counts
+    reach the hundreds in practice (issue #5858), and the log explaining why the
+    instance started restarting is restart 0."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir(parents=True)
+    mid = 2945
+    for name in (
+        f"{mid}.0.log",
+        f"{mid}.197.log",
+        f"{mid}.198.log",
+        f"{mid}.199.log",
+        f"{mid}.container.0.log",
+        f"{mid}.container.199.log",
+    ):
+        (serve_dir / name).write_text("x", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+
+    manager._cleanup_old_logs(mid, 199)
 
     remaining = sorted(p.name for p in serve_dir.iterdir())
     assert remaining == [
-        f"{mid}.1.log",
+        f"{mid}.0.log",
+        f"{mid}.198.log",
+        f"{mid}.199.log",
+        f"{mid}.container.0.log",
+        f"{mid}.container.199.log",
+    ]
+
+
+def test_cleanup_old_logs_honours_configured_retention_count(tmp_path: Path):
+    """serve_log_retention_count widens the window; restart 0 stays pinned."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir(parents=True)
+    mid = 42
+    for name in (f"{mid}.{rc}.log" for rc in range(6)):
+        (serve_dir / name).write_text("x", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager(serve_log_retention_count=4)
+    manager._serve_log_dir = str(serve_dir)
+
+    manager._cleanup_old_logs(mid, 5)
+
+    # Window is {2, 3, 4, 5}; only restart 1 is neither in it nor the first.
+    remaining = sorted(p.name for p in serve_dir.iterdir())
+    assert remaining == [
+        f"{mid}.0.log",
         f"{mid}.2.log",
-        f"{mid}.container.1.log",
-        f"{mid}.container.2.log",
+        f"{mid}.3.log",
+        f"{mid}.4.log",
+        f"{mid}.5.log",
     ]
 
 
@@ -659,7 +723,7 @@ def _build_vgpu_manager(worker_id=1, device_index=1):
             gpu_devices=[SimpleNamespace(uuid="GPU-uuid-1", index=device_index)]
         )
     )
-    cfg = SimpleNamespace(log_dir="/tmp")
+    cfg = SimpleNamespace(log_dir="/tmp", serve_log_retention_count=2)
     manager = ServeManager(lambda: worker_id, lambda: clientset, cfg)
     manager._inference_backend_manager = MagicMock()
     return manager, clientset
