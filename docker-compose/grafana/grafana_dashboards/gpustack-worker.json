@@ -15,6 +15,7 @@
       }
     ]
   },
+  "description": "Monitoring GPUStack Workers.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -1855,14 +1856,14 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(gpustack:cluster_info)",
+        "definition": "query_result(max by(cluster_id, cluster_name, provider) (gpustack:cluster_info))",
         "includeAll": false,
         "label": "Cluster",
         "name": "cluster_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "query_result(gpustack:cluster_info)",
+          "query": "query_result(max by(cluster_id, cluster_name, provider) (gpustack:cluster_info))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -1882,7 +1883,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(gpustack:worker_info{cluster_name=\"$cluster_name\"})",
+        "definition": "query_result(max without(instance, pod, endpoint, container, namespace, job, service, node, prometheus, prometheus_replica) (gpustack:worker_info{cluster_name=\"$cluster_name\"}))",
         "includeAll": true,
         "label": "Worker",
         "multi": true,
@@ -1890,7 +1891,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "query_result(gpustack:worker_info{cluster_name=\"$cluster_name\"})",
+          "query": "query_result(max without(instance, pod, endpoint, container, namespace, job, service, node, prometheus, prometheus_replica) (gpustack:worker_info{cluster_name=\"$cluster_name\"}))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
