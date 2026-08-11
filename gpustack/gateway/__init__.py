@@ -7,7 +7,7 @@ import yaml
 import copy
 from functools import partial
 from typing import Any, Dict, Tuple, List, Optional, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
 from kubernetes_asyncio.config.kube_config import KubeConfigLoader, KubeConfigMerger
@@ -44,14 +44,17 @@ from gpustack.gateway.utils import (
     gpustack_fallback_path_header,
     model_route_ingress_prefix,
 )
-from gpustack.gateway.plugins import (
-    get_plugin_url_with_name_and_version,
-)
+from gpustack.gateway.plugins import plugin_entry, plugin_spec_overrides
 from gpustack.security import AUTH_CACHE_HEADER
 
 logger = logging.getLogger(__name__)
 
 mcp_registry_port = 80
+
+# Manifest name of the ai-statistics plugin, which is also its
+# ``gateway_plugin`` key -- distinct from the ``gpustack-ai-statistics``
+# resource it is deployed as.
+ai_statistics_plugin_name = "ai-statistics"
 
 supported_openai_routes = [
     route for v in openai_model_prefixes for route in v.flattened_prefixes()
@@ -369,18 +372,43 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         failStrategy="FAIL_OPEN",
         phase="AUTHN",
         priority=360,
-        url=get_plugin_url_with_name_and_version(
-            name="ext-auth", version="2.0.0", cfg=cfg
-        ),
+        **plugin_spec_overrides("ext-auth", "2.0.0", cfg),
     )
     return resource_name, expected_spec
+
+
+class AiStatisticsOverride(BaseModel):
+    """``gateway_plugin["ai-statistics"].config``.
+
+    ``attributes`` is not settable: the ``consumer`` attribute is what carries
+    caller identity into the access log, and this plugin is the only thing that
+    writes it there.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Bodies of these content types are parsed for token usage. ``audio/pcm`` is
+    # rejected below rather than declared away, so the error names the value.
+    enable_content_types: List[str] = ["application/json", "text/event-stream"]
+
+
+def ai_statistics_override(cfg: Config) -> AiStatisticsOverride:
+    entry = plugin_entry(ai_statistics_plugin_name, cfg)
+    if entry is None or not entry.config:
+        return AiStatisticsOverride()
+    try:
+        return AiStatisticsOverride.model_validate(entry.config)
+    except ValidationError as e:
+        raise ValueError(
+            f"Invalid gateway_plugin.{ai_statistics_plugin_name}.config: {e}"
+        ) from e
 
 
 def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-ai-statistics"
     expected_spec = WasmPluginSpec(
         defaultConfig={
-            "enable_content_types": envs.GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES,
+            "enable_content_types": ai_statistics_override(cfg).enable_content_types,
             "attributes": [
                 {
                     "apply_to_log": True,
@@ -397,9 +425,7 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="UNSPECIFIED_PHASE",
         priority=900,
-        url=get_plugin_url_with_name_and_version(
-            name="ai-statistics", version="2.0.0", cfg=cfg
-        ),
+        **plugin_spec_overrides(ai_statistics_plugin_name, "2.0.0", cfg),
     )
     return resource_name, expected_spec
 
@@ -421,9 +447,7 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="AUTHN",
         priority=90,
-        url=get_plugin_url_with_name_and_version(
-            name="gpustack-set-header-pre-route", version="1.0.1", cfg=cfg
-        ),
+        **plugin_spec_overrides("gpustack-set-header-pre-route", "1.0.1", cfg),
     )
     return resource_name, expected_spec
 
@@ -432,9 +456,7 @@ def model_mapper_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     return gpustack_model_mapper_name, WasmPluginSpec(
         phase="AUTHN",
         priority=800,
-        url=get_plugin_url_with_name_and_version(
-            name="gpustack-model-mapper", version="1.0.1", cfg=cfg
-        ),
+        **plugin_spec_overrides("gpustack-model-mapper", "1.0.1", cfg),
         defaultConfigDisable=False,
         defaultConfig={"modelMapping": {}},
         matchRules=[],
@@ -529,9 +551,7 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="AUTHN",
         priority=810,
-        url=get_plugin_url_with_name_and_version(
-            name="transformer", version="2.0.0", cfg=cfg
-        ),
+        **plugin_spec_overrides("transformer", "2.0.0", cfg),
     )
     return resource_name, expected_spec
 
@@ -608,9 +628,7 @@ def generic_proxy_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="AUTHN",
         priority=900,
-        url=get_plugin_url_with_name_and_version(
-            name="gpustack-generic-proxy-router", version="1.0.1", cfg=cfg
-        ),
+        **plugin_spec_overrides("gpustack-generic-proxy-router", "1.0.1", cfg),
     )
     return resource_name, expected_spec
 
@@ -635,9 +653,7 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="UNSPECIFIED_PHASE",
         priority=400,
-        url=get_plugin_url_with_name_and_version(
-            name="gpustack-token-usage", version="1.1.2", cfg=cfg
-        ),
+        **plugin_spec_overrides("gpustack-token-usage", "1.1.2", cfg),
     )
     return resource_name, expected_spec
 
@@ -652,9 +668,7 @@ def ai_proxy_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         priority=100,
         phase="UNSPECIFIED_PHASE",
-        url=get_plugin_url_with_name_and_version(
-            name="gpustack-ai-proxy", version="2.0.0-patched", cfg=cfg
-        ),
+        **plugin_spec_overrides("gpustack-ai-proxy", "2.0.0-patched", cfg),
     )
     return resource_name, expected_spec
 
@@ -816,8 +830,8 @@ def generic_proxy_router_spec_diff(
     return expected_spec.model_copy(update={"defaultConfig": merged_default_config})
 
 
-def validate_ai_statistics_plugin_content_types():
-    for content_type in envs.GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES:
+def validate_ai_statistics_plugin_content_types(cfg: Config):
+    for content_type in ai_statistics_override(cfg).enable_content_types:
         if content_type == "audio/pcm":
             raise ValueError(
                 "audio/pcm content type is not supported in ai statistics plugin"
@@ -834,7 +848,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
         GatewayModeEnum.external,
         GatewayModeEnum.incluster,
     ]:
-        validate_ai_statistics_plugin_content_types()
+        validate_ai_statistics_plugin_content_types(cfg=cfg)
         plugin_list: List[Tuple[str, WasmPluginSpec]] = [
             ext_auth_plugin(cfg=cfg),
             ai_statistics_plugin(cfg=cfg),
