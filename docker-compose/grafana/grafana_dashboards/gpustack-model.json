@@ -21,7 +21,7 @@
       }
     ]
   },
-  "description": "Monitoring Inference Server",
+"description": "Monitoring Inference Server.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -107,7 +107,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:model_desired_instances{cluster_name=\"$cluster_name\", model_name=\"$model_name\"})",
+          "expr": "sum(max by(cluster_id, cluster_name, model_id, model_name) (gpustack:model_desired_instances{cluster_name=\"$cluster_name\", model_name=\"$model_name\"}))",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -183,7 +183,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
+          "expr": "sum(max by(cluster_id, cluster_name, model_id, model_name) (gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}))",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -274,7 +274,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:model_desired_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}) - sum(gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
+          "expr": "sum(max by(cluster_id, cluster_name, model_id, model_name) (gpustack:model_desired_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})) - sum(max by(cluster_id, cluster_name, model_id, model_name) (gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}))",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -508,7 +508,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
+          "expr": "max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -577,7 +577,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
+          "expr": "max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -661,7 +661,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
+          "expr": "max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -763,7 +763,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
+          "expr": "max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -3827,13 +3827,13 @@
           "text": "",
           "value": ""
         },
-        "definition": "query_result(gpustack:cluster_info and on(cluster_id) gpustack:worker_info)",
+        "definition": "query_result(max by(cluster_id, cluster_name, provider) (gpustack:cluster_info) and on(cluster_id) gpustack:worker_info)",
         "label": "Cluster",
         "name": "cluster_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "query_result(gpustack:cluster_info and on(cluster_id) gpustack:worker_info)",
+          "query": "query_result(max by(cluster_id, cluster_name, provider) (gpustack:cluster_info) and on(cluster_id) gpustack:worker_info)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -3845,13 +3845,13 @@
           "text": "",
           "value": ""
         },
-        "definition": "query_result(gpustack:model_info{cluster_name=\"$cluster_name\"})",
+        "definition": "query_result(max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\"}))",
         "label": "Model",
         "name": "model_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "query_result(gpustack:model_info{cluster_name=\"$cluster_name\"})",
+          "query": "query_result(max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\"}))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -3864,14 +3864,14 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "query_result(gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"})",
+        "definition": "query_result(max by(cluster_id, cluster_name, worker_id, worker_name, model_id, model_name, model_instance_name, state) (gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"}))",
         "includeAll": true,
         "label": "Model Instance",
         "name": "model_instance_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "query_result(gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"})",
+          "query": "query_result(max by(cluster_id, cluster_name, worker_id, worker_name, model_id, model_name, model_instance_name, state) (gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"}))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
