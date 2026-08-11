@@ -18,11 +18,19 @@ class LogOptions:
     follow: bool = False
     stop_event: Optional[asyncio.Event] = None
     previous: bool = False
+    # Address one specific retained restart. ``previous`` can only reach the two
+    # newest log sets, but the worker retains more than that (the first-failure
+    # log is pinned, and serve_log_retention_count may widen the window), so
+    # those are only reachable by naming the restart count. Takes precedence
+    # over ``previous`` when set; None keeps the old boolean behaviour.
+    restart_count: Optional[int] = None
 
     def url_encode(self):
         params = f"tail={self.tail}&follow={self.follow}"
         if self.previous:
             params += "&previous=true"
+        if self.restart_count is not None:
+            params += f"&restart_count={self.restart_count}"
         return params
 
 
@@ -33,14 +41,24 @@ default_follow = Query(default=False, description="Whether to follow the log out
 default_previous = Query(
     default=False, description="Whether to fetch logs from the previous restart"
 )
+default_restart_count = Query(
+    default=None,
+    description=(
+        "Fetch logs for this specific restart count, as listed by the "
+        "log-options endpoint. Takes precedence over 'previous'."
+    ),
+)
 
 
 def get_log_options(
     tail: int = default_tail,
     follow: bool = default_follow,
     previous: bool = default_previous,
+    restart_count: Optional[int] = default_restart_count,
 ) -> LogOptions:
-    return LogOptions(tail=tail, follow=follow, previous=previous)
+    return LogOptions(
+        tail=tail, follow=follow, previous=previous, restart_count=restart_count
+    )
 
 
 LogOptionsDep = Annotated[LogOptions, Depends(get_log_options)]

@@ -2,7 +2,7 @@ import asyncio
 import json
 from typing import List, Optional, Tuple
 import aiohttp
-from fastapi import APIRouter, Request, status, HTTPException
+from fastapi import APIRouter, Query, Request, status, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
 from urllib.parse import urlencode
 
@@ -279,6 +279,11 @@ async def get_serving_logs(  # noqa: C901
             "model_instance_name": model_instance.name,
             "previous": log_options.previous,
         }
+        # Omitted rather than sent as None: _convert_params only normalises
+        # bools, so a None would reach yarl and raise. Leaving it out also keeps
+        # the request byte-identical to today's for callers that don't ask.
+        if log_options.restart_count is not None:
+            params["restart_count"] = log_options.restart_count
         if container_name:
             params["container_name"] = container_name
         if (
@@ -365,8 +370,12 @@ async def fetch_serve_log_options_from_worker(
     request: Request,
     worker: Worker,
     model_instance_id: int,
+    all_restarts: bool = False,
 ) -> ServeLogOptionsResponse:
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
+    # Only sent when asked for, so the request to an older worker (which would
+    # ignore the param anyway) stays exactly as it is today.
+    params = {"all_restarts": True} if all_restarts else None
     try:
         resp, body = await request_to_worker(
             worker=worker,
@@ -374,6 +383,7 @@ async def fetch_serve_log_options_from_worker(
             path=f"serveLogOptions/{model_instance_id}",
             proxy_client=request.app.state.http_client,
             no_proxy_client=request.app.state.http_client_no_proxy,
+            params=params,
             timeout=timeout,
         )
     except Exception as e:
@@ -400,6 +410,14 @@ async def get_model_instance_log_options(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
+    all_restarts: bool = Query(
+        default=False,
+        description=(
+            "List every retained log session per worker, not just the two a "
+            "'previous' request can address. Read those extras with the "
+            "'restart_count' query parameter on the logs endpoint."
+        ),
+    ),
 ):
     """Return per-worker restart_count values that exist on disk for this model instance."""
     model_instance = await fetch_model_instance(session, ctx, id)
@@ -421,7 +439,7 @@ async def get_model_instance_log_options(
             display_name = worker.name or ""
         try:
             payload = await fetch_serve_log_options_from_worker(
-                request, worker, model_instance.id
+                request, worker, model_instance.id, all_restarts
             )
             return ModelInstanceLogWorkerOption(
                 worker_id=wid,
