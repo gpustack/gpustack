@@ -33,7 +33,11 @@ TCP_CONNECTOR_LIMIT = int(os.getenv("GPUSTACK_TCP_CONNECTOR_LIMIT", 1000))
 # JWT Expiration
 JWT_TOKEN_EXPIRE_MINUTES = int(os.getenv("GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES", 120))
 
-# Higress plugin configuration
+# Anything that ends up *inside* a WasmPlugin CR is configured under
+# ``gateway_plugin`` in config.yaml instead of here, so the two mechanisms keep
+# distinct effective-time semantics: a value there takes effect on the next
+# reconcile, a value here on restart. What remains below governs how the server
+# maintains those CRs, or the gateway process itself, and never appears in one.
 HIGRESS_EXT_AUTH_TIMEOUT_MS = int(
     os.getenv("GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS", 30000)
 )
@@ -177,15 +181,6 @@ GATEWAY_PORT_CHECK_RETRY_COUNT = int(
 GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
     "GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME", "gpustack"
 )
-
-GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES = [
-    ct.strip()
-    for ct in os.getenv(
-        "GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES",
-        "application/json,text/event-stream",
-    ).split(",")
-    if ct.strip()
-]
 
 # Heuristics for partial-stream usage estimation.
 # Used by metrics_collector when a gateway report arrives with completed=false

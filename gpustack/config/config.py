@@ -5,7 +5,7 @@ import secrets
 import socket
 import uuid
 from enum import Enum
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 from urllib.parse import urlparse
 
 import httpx
@@ -17,7 +17,7 @@ from gpustack_runtime.detector import (
     available_manufacturers,
     available_backends,
 )
-from pydantic import model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
@@ -57,6 +57,37 @@ from gpustack.utils import platform
 _config = None
 
 logger = logging.getLogger(__name__)
+
+
+class GatewayPluginEntry(BaseModel):
+    """Operator-supplied overrides for one gateway plugin.
+
+    Deliberately a generic envelope: this module knows nothing about any
+    individual plugin's settings, so adding a knob to a plugin never touches
+    config.py. ``config`` is handed to the plugin's own module, which validates
+    its slice against a model declaring exactly the fields it is willing to let
+    an operator set -- for a plugin that makes access decisions that whitelist
+    is load-bearing, since some of its config fields would be a way to grant
+    access rather than to configure it.
+
+    The scope of this section is "what ends up in the WasmPlugin CR". Knobs
+    that govern how the *server* maintains that CR stay in ``gpustack.envs``,
+    which keeps the two mechanisms honest about when a change takes effect:
+    here, on the next reconcile; there, on restart.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Where Envoy pulls the module from, replacing the URL derived from the
+    # plugin manifest. Set both this and ``sha256`` when pointing at a build
+    # the manifest does not carry.
+    url: Optional[str] = None
+    sha256: Optional[str] = None
+    image_pull_policy: Optional[str] = None
+    # Passed through to the plugin module for validation; shaped like the CR's
+    # own ``defaultConfig`` so an operator can transcribe field paths straight
+    # out of the plugin's documentation.
+    config: Dict[str, Any] = {}
 
 
 class WorkerConfig(PredefinedConfig):
@@ -248,6 +279,13 @@ class Config(WorkerConfig, BaseSettings):
     gateway_concurrency: int = 16
     gateway_plugin_server_url: Optional[str] = None
     gateway_ingress_class: str = "higress"
+    # Per-plugin overrides, keyed by the plugin's *manifest* name -- the one
+    # ``supported_plugins`` and the module URL are built from, which for five of
+    # the eight plugins differs from the WasmPlugin resource name they appear
+    # under in the cluster (``transformer`` vs ``gpustack-header-transformer``,
+    # ``ai-statistics`` vs ``gpustack-ai-statistics``, ...). See
+    # ``gpustack.gateway.plugins.plugin_spec_overrides``.
+    gateway_plugin: Dict[str, GatewayPluginEntry] = {}
     disable_builtin_observability: bool = False
     builtin_prometheus_port: int = 19090
     builtin_grafana_port: int = 13000
