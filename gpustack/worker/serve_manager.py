@@ -472,6 +472,9 @@ class ServeManager:
                             ]
                             sw.state = ModelInstanceStateEnum.ERROR
                             sw.state_message = failure_message
+                            if not sw.first_failure_message:
+                                sw.first_failure_message = failure_message
+                                sw.first_failure_at = datetime.now(timezone.utc)
                             patch_dict = {
                                 f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                             }
@@ -522,6 +525,12 @@ class ServeManager:
                         patch_dict = {
                             "state": ModelInstanceStateEnum.RUNNING,
                             "state_message": "",
+                            # The streak ended, so the captured reason no longer
+                            # describes anything in progress. Cleared alongside
+                            # the backoff count above for the same reason: a
+                            # later failure must report itself, not a stale one.
+                            "first_failure_message": None,
+                            "first_failure_at": None,
                         }
 
                         # Fetch model meta once running.
@@ -565,6 +574,10 @@ class ServeManager:
                         continue
                     sw.state = ModelInstanceStateEnum.RUNNING
                     sw.state_message = ""
+                    # Streak over for this subordinate; see the main worker's
+                    # RUNNING patch above.
+                    sw.first_failure_message = None
+                    sw.first_failure_at = None
                     patch_dict = {
                         f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                     }
@@ -1822,13 +1835,23 @@ class ServeManager:
 
         with contextlib.suppress(NotFoundException):
             self._restart_backoff_counts[mi.id] = backoff_count + 1
-            self._update_model_instance(
-                mi.id,
-                restart_count=restart_count + 1,
-                last_restart_time=current_time,
-                state=ModelInstanceStateEnum.SCHEDULED,
-                state_message="",
-            )
+            patch = {
+                "restart_count": restart_count + 1,
+                "last_restart_time": current_time,
+                "state": ModelInstanceStateEnum.SCHEDULED,
+                "state_message": "",
+            }
+            # This is the one place the failure reason is destroyed, so it is
+            # the one place worth capturing it. Write-once per unhealthy streak:
+            # later restarts in the same crash loop carry secondary errors, and
+            # overwriting would lose the root cause the operator needs.
+            if mi.state_message and not mi.first_failure_message:
+                patch["first_failure_message"] = mi.state_message
+                # Observation time, not failure time: the failure happened
+                # somewhere between the previous health check and now, and this
+                # is the closest bound the restart path has.
+                patch["first_failure_at"] = current_time
+            self._update_model_instance(mi.id, **patch)
 
         # Pop from error model instances,
         # if failed to restart next time, it will be added again in watch_model_instance_events().
