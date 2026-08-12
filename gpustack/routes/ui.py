@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
 from starlette.responses import Response
 from starlette.types import Scope
 
@@ -119,10 +120,14 @@ class PrecompressedStaticFiles(StaticFiles):
             full_path, stat_result = await anyio.to_thread.run_sync(
                 self.lookup_path, f"{path}.gz"
             )
-        except OSError:
-            # Covers the unreadable, the too-long and the merely absent. A .gz
-            # we cannot stat is not worth failing the request over — the plain
-            # asset is a complete answer on its own.
+        except (OSError, HTTPException):
+            # Covers the unreadable, the too-long and the merely absent. The
+            # installed Starlette reports a miss by returning ``(\"\", None)``,
+            # but the dependency range spans a major version of it, so a build
+            # that signals the miss by raising must land here too rather than
+            # turning every asset without a .gz sibling into a 404. Either way
+            # a .gz we cannot stat is not worth failing the request over — the
+            # plain asset is a complete answer on its own.
             return None
 
         if stat_result is None or not stat.S_ISREG(stat_result.st_mode):
@@ -171,9 +176,12 @@ def register(app: FastAPI):
 
     @app.get("/", include_in_schema=False)
     async def index():
-        # Never cache the entry point. Its own name is fixed while every asset
-        # it points at is content-addressed, so a cached index.html is exactly
-        # what pins a browser to the previous build's bundles after an upgrade.
+        # Revalidate the entry point on every load. Its own name is fixed
+        # while every asset it points at is content-addressed, so a copy
+        # reused without asking is what pins a browser to the previous build's
+        # bundles after an upgrade. no-cache still permits storing the body —
+        # the check settles with a 304, costing a round trip rather than a
+        # re-download.
         return FileResponse(
             os.path.join(ui_dir, "index.html"),
             headers={"Cache-Control": CACHE_REVALIDATE},
