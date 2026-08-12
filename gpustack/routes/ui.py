@@ -26,6 +26,11 @@ _CACHE_BUSTED_NAME = re.compile(r"\.[0-9a-f]{8,}\.")
 CACHE_FOREVER = f"public, max-age={IMMUTABLE_MAX_AGE}, immutable"
 CACHE_REVALIDATE = "public, no-cache"
 
+# What Starlette's FileResponse settles on when `mimetypes` cannot guess. Kept
+# in step with it deliberately: the gzip and plain answers to one URL have to
+# agree on the type, including for extensions neither of us recognises.
+FILE_RESPONSE_FALLBACK_MEDIA_TYPE = "application/octet-stream"
+
 
 def cache_control_for(path: str) -> str:
     """The caching policy for a UI asset, decided by its file name.
@@ -40,6 +45,12 @@ def cache_control_for(path: str) -> str:
     both kinds in one place: ``static/`` holds cache-busted bundles and fonts
     next to ``catalog_icons/qwen.png``, which the backend ships under a fixed
     name and can replace in-place at any release.
+
+    The two ways this can be wrong are not equally bad. Failing to recognise a
+    hash costs a round trip per load; mistaking a stable name for one — a hex
+    run of eight or more between dots that is not a cache buster — pins that
+    asset in browsers for a year with no way to invalidate it. Widen the
+    pattern only against real build output.
     """
     if _CACHE_BUSTED_NAME.search(posixpath.basename(path)):
         return CACHE_FOREVER
@@ -51,11 +62,14 @@ def accepts_gzip(headers: Headers) -> bool:
 
     Parses q-values rather than substring-matching, so an explicit refusal
     (``gzip;q=0``, which some proxies send to opt out) is honoured instead of
-    being read as acceptance.
+    being read as acceptance. A named coding beats ``*``, per RFC 9110 §12.5.3
+    — ``gzip;q=0, *`` is a refusal of gzip, not an acceptance of everything.
     """
+    qualities: dict[str, float] = {}
     for part in headers.get("accept-encoding", "").split(","):
-        coding, _, params = part.strip().partition(";")
-        if coding.lower() not in ("gzip", "*"):
+        coding, _, params = part.partition(";")
+        coding = coding.strip().lower()
+        if coding not in ("gzip", "*"):
             continue
         quality = 1.0
         for param in params.split(";"):
@@ -65,9 +79,11 @@ def accepts_gzip(headers: Headers) -> bool:
                     quality = float(value.strip())
                 except ValueError:
                     quality = 0.0
-        if quality > 0:
-            return True
-    return False
+        qualities[coding] = quality
+
+    if "gzip" in qualities:
+        return qualities["gzip"] > 0
+    return qualities.get("*", 0.0) > 0
 
 
 class PrecompressedStaticFiles(StaticFiles):
@@ -154,9 +170,11 @@ def _content_type_for(path: str) -> str:
     Mirrors what ``FileResponse`` puts on the plain asset, charset included —
     the two representations of a URL must not disagree about how to decode the
     bytes, or the same script parses differently depending on whether the
-    client happened to accept gzip.
+    client happened to accept gzip. That includes the fallback: an extension
+    `mimetypes` does not know (a `.map`, say) has to land on the same guess
+    `FileResponse` would have made for it.
     """
-    media_type = guess_type(path)[0] or "text/plain"
+    media_type = guess_type(path)[0] or FILE_RESPONSE_FALLBACK_MEDIA_TYPE
     if media_type.startswith("text/"):
         media_type += "; charset=utf-8"
     return media_type
@@ -168,6 +186,10 @@ def register(app: FastAPI):
         raise RuntimeError(f"directory '{ui_dir}' does not exist")
 
     for name in ["css", "js", "static"]:
+        # follow_symlink stays off, unlike the /static mount fastapi_cdn_host
+        # would have made. install.sh materialises this tree as real files, so
+        # resolving links buys nothing here and would let one placed under
+        # ui/ serve a file from outside it.
         app.mount(
             f"/{name}",
             PrecompressedStaticFiles(directory=os.path.join(ui_dir, name)),

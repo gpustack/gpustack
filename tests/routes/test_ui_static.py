@@ -1,5 +1,6 @@
 import errno
 import gzip
+from pathlib import Path
 
 import pytest
 from starlette.applications import Starlette
@@ -7,6 +8,7 @@ from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
 from starlette.testclient import TestClient
 
+import gpustack
 from gpustack.routes.ui import (
     CACHE_FOREVER,
     CACHE_REVALIDATE,
@@ -18,6 +20,11 @@ from gpustack.routes.ui import (
 # Large enough that the real build would have emitted a .gz for it.
 BUNDLE_JS = b"console.log('bundle');\n" * 500
 SMALL_JS = b"console.log('small');\n"
+
+# `hack/install.sh` downloads this, and skips it when UI_DOWNLOAD=false, so a
+# checkout can legitimately lack it. Only the test that builds the real app
+# needs it.
+UI_DIR = Path(gpustack.__file__).parent / "ui"
 
 
 @pytest.fixture
@@ -32,6 +39,9 @@ def client(tmp_path):
     (tmp_path / "small.js").write_bytes(SMALL_JS)
     (tmp_path / "hashed.530e136d.js").write_bytes(BUNDLE_JS)
     (tmp_path / "hashed.530e136d.js.gz").write_bytes(gzip.compress(BUNDLE_JS))
+    # An extension mimetypes has no entry for, to exercise the type fallback.
+    (tmp_path / "sourcemap.js.map").write_bytes(BUNDLE_JS)
+    (tmp_path / "sourcemap.js.map.gz").write_bytes(gzip.compress(BUNDLE_JS))
 
     app = Starlette()
     app.mount("/js", PrecompressedStaticFiles(directory=tmp_path), name="js")
@@ -49,14 +59,18 @@ def test_serves_precompressed_sibling_when_gzip_accepted(client):
     assert int(response.headers["content-length"]) == len(gzip.compress(BUNDLE_JS))
 
 
-def test_precompressed_response_is_typed_as_the_decoded_asset(client):
-    gzipped = client.get("/js/bundle.js", headers={"accept-encoding": "gzip"})
-    plain = client.get("/js/bundle.js", headers={"accept-encoding": "identity"})
+@pytest.mark.parametrize("name", ["bundle.js", "sourcemap.js.map"])
+def test_precompressed_response_is_typed_as_the_decoded_asset(client, name):
+    gzipped = client.get(f"/js/{name}", headers={"accept-encoding": "gzip"})
+    plain = client.get(f"/js/{name}", headers={"accept-encoding": "identity"})
 
-    # Not application/gzip: the browser has to parse this as JS once decoded,
-    # and it must not decode it differently than the uncompressed asset.
-    assert gzipped.headers["content-type"] == "text/javascript; charset=utf-8"
+    # The exact type is left to mimetypes, which reads the OS registry and so
+    # differs between a developer's machine and CI. What must hold everywhere
+    # is that the two representations agree, and that neither describes the
+    # .gz wrapper instead of the asset inside it. `.map` is the case that
+    # actually exercises the fallback: mimetypes has no entry for it.
     assert gzipped.headers["content-type"] == plain.headers["content-type"]
+    assert "gzip" not in gzipped.headers["content-type"]
 
 
 def test_serves_plain_asset_when_gzip_not_accepted(client):
@@ -156,7 +170,13 @@ def test_head_request_reports_the_compressed_length(client):
 
 
 def test_directory_traversal_still_blocked(client):
-    response = client.get("/js/../../etc/passwd", headers={"accept-encoding": "gzip"})
+    # Percent-encoded, because httpx resolves dot segments client-side: sent
+    # literally, the request never reaches the mount and the 404 proves
+    # nothing. Encoded, it arrives intact and lookup_path is asked for both
+    # "../../etc/passwd.gz" and "../../etc/passwd".
+    response = client.get(
+        "/js/%2e%2e%2f%2e%2e%2fetc%2fpasswd", headers={"accept-encoding": "gzip"}
+    )
 
     assert response.status_code == 404
 
@@ -280,6 +300,10 @@ def test_cache_control_for(path, expected):
     assert cache_control_for(path) == expected
 
 
+@pytest.mark.skipif(
+    not UI_DIR.is_dir(),
+    reason="UI assets not downloaded; create_app requires gpustack/ui",
+)
 def test_static_mount_is_not_shadowed_by_the_docs_mount(config):
     """``/static`` must resolve to our mount, not fastapi_cdn_host's.
 
@@ -320,6 +344,18 @@ def test_static_mount_is_not_shadowed_by_the_docs_mount(config):
         ("identity;q=1, gzip;q=0", False),
         # Malformed q-values are treated as a refusal rather than crashing.
         ("gzip;q=bogus", False),
+        # Optional whitespace around the delimiters is legal (RFC 9110 §5.6.6)
+        # and must not turn acceptance into a silent fallback to plain.
+        ("gzip ; q=0.5", True),
+        ("gzip , deflate", True),
+        (" GZIP ", True),
+        # A named coding beats the wildcard, in either order (§12.5.3), so an
+        # explicit refusal is not undone by a trailing "*".
+        ("gzip;q=0, *", False),
+        ("*, gzip;q=0", False),
+        ("*, gzip;q=1", True),
+        ("*;q=0", False),
+        ("*;q=0, gzip", True),
     ],
 )
 def test_accepts_gzip(header, expected):
