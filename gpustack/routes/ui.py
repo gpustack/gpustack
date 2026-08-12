@@ -3,7 +3,7 @@ import posixpath
 import re
 import stat
 from mimetypes import guess_type
-from typing import Optional
+from typing import Optional, Tuple
 
 import anyio
 from fastapi import FastAPI
@@ -137,27 +137,54 @@ class PrecompressedStaticFiles(StaticFiles):
         headers.add_vary_header("Origin")
         headers["cache-control"] = cache_control_for(path)
 
+    def _lookup_precompressed(self, path: str) -> Optional[Tuple[str, os.stat_result]]:
+        """Locate the ``.gz`` for ``path``, or None if there is nothing to serve.
+
+        Requires the plain asset to exist too. A ``.gz`` on its own is not an
+        encoding of anything, and serving it would make the URL resolve for
+        clients that accept gzip and 404 for everyone else — whether the
+        resource exists would depend on ``Accept-Encoding``, which is meant to
+        select among representations, not decide existence.
+
+        Both stats happen here, in whichever thread the caller dispatched to,
+        rather than in a second ``run_sync``: the handoff costs ~80 µs against
+        ~1.5 µs for the stat itself. The plain asset is only checked once the
+        ``.gz`` is known to be there, so the common case of an asset with no
+        ``.gz`` is no more expensive than before.
+        """
+        gz_path, gz_stat = self.lookup_path(f"{path}.gz")
+        if gz_stat is None or not stat.S_ISREG(gz_stat.st_mode):
+            return None
+
+        _, plain_stat = self.lookup_path(path)
+        if plain_stat is None or not stat.S_ISREG(plain_stat.st_mode):
+            return None
+
+        return gz_path, gz_stat
+
     async def _precompressed_response(
         self, path: str, scope: Scope
     ) -> Optional[Response]:
         """The ``.gz`` sibling of ``path``, or None to fall back to the plain file."""
         try:
-            full_path, stat_result = await anyio.to_thread.run_sync(
-                self.lookup_path, f"{path}.gz"
-            )
-        except (OSError, HTTPException):
-            # Covers the unreadable, the too-long and the merely absent. The
-            # installed Starlette reports a miss by returning ``(\"\", None)``,
-            # but the dependency range spans a major version of it, so a build
-            # that signals the miss by raising must land here too rather than
-            # turning every asset without a .gz sibling into a 404. Either way
-            # a .gz we cannot stat is not worth failing the request over — the
-            # plain asset is a complete answer on its own.
+            found = await anyio.to_thread.run_sync(self._lookup_precompressed, path)
+        except (OSError, ValueError, HTTPException):
+            # A .gz we cannot stat is not worth failing the request over — the
+            # plain asset is a complete answer on its own, and falling through
+            # hands the path to Starlette, which has its own answer for each of
+            # these. ValueError is the one that bites: os.stat raises it, not
+            # an OSError, for a path holding a null byte, so leaving it out
+            # turned "/asset%00" into a 500 for gzip-accepting clients while
+            # everyone else still got Starlette's 404. HTTPException is here
+            # because the dependency range spans a major version of Starlette
+            # and a build that signals a miss by raising must not turn every
+            # asset without a .gz sibling into a 404.
             return None
 
-        if stat_result is None or not stat.S_ISREG(stat_result.st_mode):
+        if found is None:
             return None
 
+        full_path, stat_result = found
         response = self.file_response(full_path, stat_result, scope)
         # Keyed on the requested path, not the .gz we resolved to: the two
         # encodings are the same resource and must expire together.
