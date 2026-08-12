@@ -37,6 +37,14 @@ A template lets you specify the following properties:
 
 After filling in the required fields, click `Save` to create the template.
 
+## Generated Value Placeholders
+
+When creating an instance, GPUStack resolves `{{generated_*}}` placeholders found in the startup command and in port access parameters, generating one value per instance and persisting it in the instance spec — so the value stays the same across instance stop/start. Currently supported:
+
+- `{{generated_token}}`: a random 32-character hex token. For example, the built-in JupyterLab templates use `--ServerApp.token={{generated_token}}` as the startup command and carry the same placeholder in the JUPYTER port's access parameters, so the web access link shown in the `Connect` column includes the token as a `?token=` query parameter for automatic login.
+
+Placeholders and port access parameters can be set through the API (`spec.command` and `spec.ports[].accessParams`); the template form does not expose them yet.
+
 ## Editing a Template
 
 Click `Edit` on a template card to open its configuration, make your changes, and click `Save`.
