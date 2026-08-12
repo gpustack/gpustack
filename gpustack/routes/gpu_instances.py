@@ -50,6 +50,7 @@ from gpustack.api.tenant import (
     validate_owner_principal,
 )
 from gpustack.gpu_instances import validate_k8s_object_name
+from gpustack.gpu_instances.placeholders import substitute_generated_placeholders
 from gpustack.routes.gpu_instance_persistent_volumes import resolve_pv_type_for_ctx
 from gpustack.schemas.clusters import Cluster
 
@@ -481,6 +482,10 @@ def _build_create_source(
     persistent_volume_id: Optional[int],
     type_snapshot: str,
 ) -> dict:
+    # Resolve {{generated_*}} placeholders before persisting: the stored spec
+    # must carry the concrete values so stop/start replays and UI access links
+    # see the same credential.
+    substitute_generated_placeholders(create_obj.spec)
     source: dict = create_obj.model_dump()
     source["creator_id"] = creator_id
     source["type_snapshot"] = type_snapshot
@@ -550,6 +555,9 @@ async def _build_update_source(
                 owner_principal_id=existing_obj.owner_principal_id,
                 volume=new_spec.volume,
             )
+        # Resolve {{generated_*}} placeholders in the accepted spec, same as at
+        # create: the stored spec must carry concrete values.
+        substitute_generated_placeholders(new_spec)
         source["spec"] = new_spec
         source["persistent_volume_id"] = persistent_volume_id
         # Re-stamp the type snapshot ONLY when the referenced type changed. An

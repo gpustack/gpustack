@@ -342,7 +342,7 @@ async def test_gpu_instance_create_allows_granted_cluster(monkeypatch):
         owner_principal_id=CALLER_PRINCIPAL,
         cluster_id=2,
         name="x",
-        spec=SimpleNamespace(type_=None),
+        spec=SimpleNamespace(type_=None, command=None, ports=None),
         model_dump=lambda: {"cluster_id": 2, "name": "x"},
     )
     ctx = _user_ctx()

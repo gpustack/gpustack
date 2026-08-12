@@ -8,6 +8,7 @@ Exercised directly over a real in-memory sqlite DB with a fake ``ctx``.
 
 from datetime import datetime
 from types import SimpleNamespace
+import re
 
 import pytest
 import pytest_asyncio
@@ -22,6 +23,7 @@ from gpustack.schemas.gpu_instances import (
     GPUInstanceEphemeralVolume,
     GPUInstancePersistentVolumeReference,
     GPUInstancePhase,
+    GPUInstancePort,
     GPUInstancePublic,
     GPUInstanceSpec,
     GPUInstanceSSHPublicKeyReference,
@@ -238,6 +240,27 @@ async def test_spec_edit_stopped_swap_to_missing_pv_rejected(engine):
         await _build(engine, GPUInstanceUpdate(spec=_persistent_spec(name="nope")), row)
 
 
+@pytest.mark.asyncio
+async def test_update_stopped_resolves_generated_token(engine):
+    # A spec replacement may carry {{generated_token}} (e.g. re-applying a
+    # template); it must resolve to a concrete value just like at create.
+    await _seed(engine, phase=GPUInstancePhase.STOPPED)
+    row = await _row(engine)
+
+    new_spec = _ephemeral_spec()
+    new_spec.command = ["jupyter", "lab", "--ServerApp.token={{generated_token}}"]
+    new_spec.ports = [
+        GPUInstancePort(
+            name="JUPYTER", port=8888, access_params={"token": "{{generated_token}}"}
+        )
+    ]
+    source = await _build(engine, GPUInstanceUpdate(spec=new_spec), row)
+
+    token = source["spec"].command[2].split("=", 1)[1]
+    assert re.fullmatch(r"[0-9a-f]{32}", token)
+    assert source["spec"].ports[0].access_params["token"] == token
+
+
 # --- type_snapshot column -------------------------------------------------- #
 
 
@@ -305,6 +328,25 @@ def test_build_create_source_stamps_type_snapshot():
     source = routes._build_create_source(create_obj, 1, None, "sha1:stamped")
 
     assert source["type_snapshot"] == "sha1:stamped"
+
+
+def test_build_create_source_resolves_generated_token():
+    # The persisted spec carries the concrete token, so stop/start replays and
+    # the UI's accessParams link building always see the same value.
+    spec = _ephemeral_spec()
+    spec.command = ["jupyter", "lab", "--ServerApp.token={{generated_token}}"]
+    spec.ports = [
+        GPUInstancePort(
+            name="JUPYTER", port=8888, access_params={"token": "{{generated_token}}"}
+        )
+    ]
+    create_obj = GPUInstanceCreate(name="gi-1", spec=spec, cluster_id=2)
+
+    source = routes._build_create_source(create_obj, 1, None, "sha1:stamped")
+
+    token = source["spec"]["command"][2].split("=", 1)[1]
+    assert re.fullmatch(r"[0-9a-f]{32}", token)
+    assert source["spec"]["ports"][0]["access_params"]["token"] == token
 
 
 @pytest.mark.asyncio
