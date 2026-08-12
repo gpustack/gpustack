@@ -112,12 +112,18 @@ def get_worker_allocatable_resource(
                 or (gpu_type is not None and gpu.type != gpu_type)
             ):
                 continue
+            # Account for physical GPU memory already in use by processes that
+            # GPUStack does not manage (e.g. an independently launched container
+            # or a native CUDA process bound to this device). Workers report a
+            # live `used` value, whereas `MemoryInfo.allocated` is deprecated
+            # and never populated anymore, so the scheduler previously assumed
+            # every card with no known ModelInstance was fully available and
+            # could schedule onto a device that is actually saturated, causing
+            # the inference engine to OOM on startup.
+            physical_used = gpu.memory.used if gpu.memory.used is not None else 0
+            effective_used = max(allocated.vram.get(gpu_index, 0), physical_used)
             allocatable_vram = max(
-                (
-                    gpu.memory.total
-                    - allocated.vram.get(gpu_index, 0)
-                    - worker.system_reserved.vram
-                ),
+                (gpu.memory.total - effective_used - worker.system_reserved.vram),
                 0,
             )
             allocatable.vram[gpu_index] = allocatable_vram
