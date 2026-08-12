@@ -176,14 +176,15 @@ items:
       command:
         - "jupyter"
         - "lab"
-        - "--ServerApp.token=''"
-        - "--ServerApp.password=''"
+        - "--ServerApp.token={{generated_token}}"
         - "--notebook-dir=/workspace"
         - "--allow-root"
       ports:
         - name: "JUPYTER"
           port: 8888
           protocol: "TCP"
+          accessParams:
+            token: "{{generated_token}}"
       resources:
         localStorage: "15Gi"
       volumeMount: "/workspace"
@@ -196,14 +197,15 @@ items:
       command:
         - "jupyter"
         - "lab"
-        - "--ServerApp.token=''"
-        - "--ServerApp.password=''"
+        - "--ServerApp.token={{generated_token}}"
         - "--notebook-dir=/workspace"
         - "--allow-root"
       ports:
         - name: "JUPYTER"
           port: 8888
           protocol: "TCP"
+          accessParams:
+            token: "{{generated_token}}"
       resources:
         localStorage: "15Gi"
       volumeMount: "/workspace"
