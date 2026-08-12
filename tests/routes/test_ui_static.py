@@ -42,6 +42,8 @@ def client(tmp_path):
     # An extension mimetypes has no entry for, to exercise the type fallback.
     (tmp_path / "sourcemap.js.map").write_bytes(BUNDLE_JS)
     (tmp_path / "sourcemap.js.map.gz").write_bytes(gzip.compress(BUNDLE_JS))
+    # A .gz with no plain sibling, which the build never produces.
+    (tmp_path / "orphan.js.gz").write_bytes(gzip.compress(BUNDLE_JS))
 
     app = Starlette()
     app.mount("/js", PrecompressedStaticFiles(directory=tmp_path), name="js")
@@ -96,6 +98,8 @@ def test_falls_back_to_plain_asset_when_no_gz_sibling(client):
         FileNotFoundError("gone"),
         PermissionError("denied"),
         OSError(errno.ENAMETOOLONG, "name too long"),
+        # What os.stat raises for a path holding a null byte. Not an OSError.
+        ValueError("embedded null byte"),
         HTTPException(status_code=404),
     ],
 )
@@ -126,6 +130,30 @@ def test_falls_back_to_plain_asset_when_the_gz_probe_raises(
     assert response.status_code == 200
     assert "content-encoding" not in response.headers
     assert response.content == BUNDLE_JS
+
+
+@pytest.mark.parametrize("accept_encoding", ["gzip", "identity"])
+def test_orphan_gz_does_not_make_the_url_exist(client, accept_encoding):
+    """A .gz with no plain sibling is not an encoding of anything.
+
+    Serving it would make the URL resolve for clients that accept gzip and 404
+    for everyone else, so whether the resource exists would turn on
+    Accept-Encoding — which selects among representations, not existence. It
+    would also type the body from a file name nothing on disk has, and a
+    `page.html.gz` alone would become HTML the browser renders on this origin.
+    """
+    response = client.get("/js/orphan.js", headers={"accept-encoding": accept_encoding})
+
+    assert response.status_code == 404
+
+
+def test_the_gz_itself_is_still_reachable_by_its_own_name(client):
+    # Refusing the orphan above must not stop a .gz being served as a plain
+    # file when that is literally what was asked for.
+    response = client.get("/js/orphan.js.gz", headers={"accept-encoding": "identity"})
+
+    assert response.status_code == 200
+    assert response.content == gzip.compress(BUNDLE_JS)
 
 
 @pytest.mark.parametrize("accept_encoding", ["gzip", "identity"])
@@ -211,6 +239,22 @@ def test_directory_traversal_still_blocked(client):
     response = client.get(
         "/js/%2e%2e%2f%2e%2e%2fetc%2fpasswd", headers={"accept-encoding": "gzip"}
     )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("path", ["/js/bundle.js%00", "/js/foo%00bar.js"])
+@pytest.mark.parametrize("accept_encoding", ["gzip", "identity"])
+def test_null_byte_in_path_is_a_404_not_a_500(client, path, accept_encoding):
+    """A null byte must not depend on Accept-Encoding to be rejected safely.
+
+    `os.stat` raises ValueError for these, not an OSError, so probing the .gz
+    without catching it let an unauthenticated request reach the error handler
+    — a 500 and a logged traceback for gzip-accepting clients, where everyone
+    else got Starlette's 404. Parametrised over both encodings because the
+    asymmetry is the bug.
+    """
+    response = client.get(path, headers={"accept-encoding": accept_encoding})
 
     assert response.status_code == 404
 
