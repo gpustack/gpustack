@@ -97,11 +97,8 @@ class PrecompressedStaticFiles(StaticFiles):
     afford a slower, higher level), so prefer the precompressed file and fall
     back to the plain asset when there is none — small chunks and images.
 
-    Content negotiation here is per-file, so ``Vary: Accept-Encoding`` goes on
-    both answers: without it a shared cache could hand a gzip body to a client
-    that never asked for one.
-
-    Both answers also carry a ``Cache-Control`` chosen by ``cache_control_for``.
+    Every answer also carries a ``Cache-Control`` from ``cache_control_for``
+    and the ``Vary`` keys that make it safe to store — see ``_apply_policy``.
     Starlette sets an ETag and Last-Modified but no freshness lifetime at all,
     which leaves the browser guessing and in practice revalidating every asset
     on every load.
@@ -114,19 +111,31 @@ class PrecompressedStaticFiles(StaticFiles):
                 return response
 
         response = await super().get_response(path, scope)
-        response.headers.add_vary_header("Accept-Encoding")
-        self._set_cache_control(response, path)
+        self._apply_policy(response, path)
         return response
 
     @staticmethod
-    def _set_cache_control(response: Response, path: str) -> None:
-        """Apply the freshness policy, including on a 304.
+    def _apply_policy(response: Response, path: str) -> None:
+        """The caching contract, applied to every answer including a 304.
 
         A Not Modified response is how a client refreshes an expired entry, so
-        omitting the header there would leave the refreshed copy with no
-        lifetime and force another revalidation on the very next load.
+        leaving the policy off it would give the refreshed copy no lifetime and
+        force another revalidation on the very next load.
+
+        Both ``Vary`` keys describe a way this URL's response changes with the
+        request, and a cache that is not told will keep one entry and replay it
+        for the rest. ``Accept-Encoding``, or it may hand a gzip body to a
+        client that never asked for one. ``Origin``, because CORSMiddleware
+        adds ``Access-Control-Allow-Origin`` only when the request carries an
+        Origin, and with ``allow_origins=["*"]`` it does not declare that
+        variance itself — so an entry stored from an ordinary same-origin load
+        would come back, header missing, to a cross-origin one, and stay
+        blocked for the whole immutable lifetime.
         """
-        response.headers["cache-control"] = cache_control_for(path)
+        headers = response.headers
+        headers.add_vary_header("Accept-Encoding")
+        headers.add_vary_header("Origin")
+        headers["cache-control"] = cache_control_for(path)
 
     async def _precompressed_response(
         self, path: str, scope: Scope
@@ -150,10 +159,9 @@ class PrecompressedStaticFiles(StaticFiles):
             return None
 
         response = self.file_response(full_path, stat_result, scope)
-        response.headers.add_vary_header("Accept-Encoding")
         # Keyed on the requested path, not the .gz we resolved to: the two
         # encodings are the same resource and must expire together.
-        self._set_cache_control(response, path)
+        self._apply_policy(response, path)
         if response.status_code == 200:
             response.headers["content-encoding"] = "gzip"
             # Type the asset the browser ends up with, not the .gz wrapper it

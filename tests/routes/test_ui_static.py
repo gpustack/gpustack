@@ -137,6 +137,40 @@ def test_vary_is_set_on_both_representations(client, accept_encoding):
     assert "accept-encoding" in response.headers["vary"].lower()
 
 
+@pytest.mark.parametrize("origin", [None, "https://elsewhere.example"])
+def test_vary_origin_is_set_whether_or_not_the_request_carries_one(client, origin):
+    """CORSMiddleware varies the response by Origin without saying so.
+
+    With ``allow_origins=["*"]`` it attaches Access-Control-Allow-Origin only
+    to requests that carry an Origin, and adds no ``Vary`` for it. Paired with
+    a year-long immutable lifetime, an entry stored from a plain same-origin
+    load would be replayed to a cross-origin one with the header missing and
+    stay blocked until the next release changes the hash in the URL.
+    """
+    headers = {"accept-encoding": "gzip"}
+    if origin is not None:
+        headers["origin"] = origin
+
+    response = client.get("/js/hashed.530e136d.js", headers=headers)
+
+    assert "origin" in response.headers["vary"].lower()
+
+
+def test_not_modified_response_carries_both_vary_keys(client):
+    first = client.get("/js/hashed.530e136d.js", headers={"accept-encoding": "gzip"})
+    second = client.get(
+        "/js/hashed.530e136d.js",
+        headers={"accept-encoding": "gzip", "if-none-match": first.headers["etag"]},
+    )
+
+    # The 304 is what refreshes the stored entry, so it has to restate the
+    # terms under which that entry may be reused.
+    assert second.status_code == 304
+    vary = second.headers["vary"].lower()
+    assert "accept-encoding" in vary
+    assert "origin" in vary
+
+
 def test_conditional_request_against_the_gz_representation(client):
     first = client.get("/js/bundle.js", headers={"accept-encoding": "gzip"})
     etag = first.headers["etag"]
