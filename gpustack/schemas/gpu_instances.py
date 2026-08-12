@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional, ClassVar, List, Literal
+from typing import Dict, Optional, ClassVar, List, Literal
 
 from pydantic import (
     ConfigDict,
@@ -47,6 +47,13 @@ class GPUInstancePort(BaseModel):
     name: Optional[str] = None
     """
     Name of the port mapping.
+    """
+
+    access_params: Optional[Dict[str, str]] = None
+    """
+    URL query parameters the UI appends to this port's web access link,
+    e.g. {"token": "..."} for JupyterLab. Server-side presentation metadata
+    only; stripped before submitting the worker CR.
     """
 
 
@@ -757,8 +764,13 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
            provisioning and are not part of the CRD).
         3. ``sshPublicKeys`` (list) collapses into ``sshPublicKey`` (singular
            ``LocalObjectReference`` named after the instance).
+        4. ``ports[].accessParams`` is stripped — it is server-side
+           presentation metadata for the UI, not part of the operator CRD.
         """
         spec = self.spec.model_dump(by_alias=True, exclude_none=True)
+
+        for port in spec.get("ports") or []:
+            port.pop("accessParams", None)
 
         if self.display_name is not None:
             spec["displayName"] = self.display_name
