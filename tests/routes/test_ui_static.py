@@ -1,8 +1,10 @@
+import errno
 import gzip
 
 import pytest
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
 from starlette.testclient import TestClient
 
 from gpustack.routes.ui import (
@@ -74,6 +76,44 @@ def test_falls_back_to_plain_asset_when_no_gz_sibling(client):
     assert response.content == SMALL_JS
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("gone"),
+        PermissionError("denied"),
+        OSError(errno.ENAMETOOLONG, "name too long"),
+        HTTPException(status_code=404),
+    ],
+)
+def test_falls_back_to_plain_asset_when_the_gz_probe_raises(
+    client, tmp_path, monkeypatch, failure
+):
+    """A failed probe for the .gz must never cost us the plain asset.
+
+    The installed Starlette reports a miss by returning ``("", None)``, but the
+    dependency range spans a major version of it, so this pins the contract
+    from the caller's side instead of trusting one implementation: however
+    ``lookup_path`` chooses to fail on the .gz, the request still succeeds.
+    """
+    mount = PrecompressedStaticFiles(directory=tmp_path)
+    real_lookup = mount.lookup_path
+
+    def lookup(path: str):
+        if path.endswith(".gz"):
+            raise failure
+        return real_lookup(path)
+
+    monkeypatch.setattr(mount, "lookup_path", lookup)
+    app = Starlette()
+    app.mount("/js", mount, name="js")
+
+    response = TestClient(app).get("/js/bundle.js", headers={"accept-encoding": "gzip"})
+
+    assert response.status_code == 200
+    assert "content-encoding" not in response.headers
+    assert response.content == BUNDLE_JS
+
+
 @pytest.mark.parametrize("accept_encoding", ["gzip", "identity"])
 def test_vary_is_set_on_both_representations(client, accept_encoding):
     # Without Vary a shared cache could replay a gzip body to a client that
@@ -119,6 +159,61 @@ def test_directory_traversal_still_blocked(client):
     response = client.get("/js/../../etc/passwd", headers={"accept-encoding": "gzip"})
 
     assert response.status_code == 404
+
+
+def test_missing_asset_404_carries_no_cache_policy(client):
+    # StaticFiles raises for a miss rather than returning a response, so the
+    # header work never runs — a cache-busted-looking path that does not exist
+    # must not come back with a year-long lifetime attached to its 404.
+    response = client.get(
+        "/js/nonexistent.deadbeef.js", headers={"accept-encoding": "gzip"}
+    )
+
+    assert response.status_code == 404
+    assert "cache-control" not in response.headers
+
+
+def test_range_request_is_consistent_with_the_encoding_it_returns(client):
+    response = client.get(
+        "/js/bundle.js",
+        headers={"accept-encoding": "gzip", "range": "bytes=0-49"},
+    )
+
+    # A range applies to the representation actually selected, so serving the
+    # .gz is correct — as long as every header agrees it is the gzip one, and
+    # the total is the compressed length rather than the original's. Silently
+    # handing back compressed bytes described as plain JS is the failure mode
+    # worth pinning.
+    compressed = gzip.compress(BUNDLE_JS)
+    assert response.status_code == 206
+    assert response.headers["content-encoding"] == "gzip"
+    assert response.headers["content-range"] == f"bytes 0-49/{len(compressed)}"
+    # The transport decodes as it reads, so what lands here is however much of
+    # the asset those 50 compressed bytes unpack to — a prefix of the original,
+    # which is only true if the range really was taken from this asset's gzip
+    # stream and labelled as such.
+    assert response.content
+    assert BUNDLE_JS.startswith(response.content)
+
+
+def test_resuming_a_plain_download_does_not_switch_to_gzip(client):
+    plain_etag = client.get(
+        "/js/bundle.js", headers={"accept-encoding": "identity"}
+    ).headers["etag"]
+
+    response = client.get(
+        "/js/bundle.js",
+        headers={
+            "accept-encoding": "gzip",
+            "range": "bytes=100-199",
+            "if-range": plain_etag,
+        },
+    )
+
+    # The validator names the plain representation but gzip is on offer, so
+    # the range must be refused outright. Splicing these 100 bytes into a
+    # half-downloaded plain file would corrupt it silently.
+    assert response.status_code == 200
 
 
 def test_cache_busted_asset_is_cacheable_forever(client):
