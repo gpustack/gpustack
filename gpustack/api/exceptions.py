@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Dict, Optional
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -19,10 +19,21 @@ HTTP_422_UNPROCESSABLE = (
 
 
 class HTTPException(Exception):
-    def __init__(self, status_code: int, reason: str, message: str):
+    def __init__(
+        self,
+        status_code: int,
+        reason: str,
+        message: str,
+        details: Optional[Dict[str, Any]] = None,
+    ):
         self.status_code = status_code
         self.reason = reason
         self.message = message
+        # Optional machine-readable payload for errors the client must act on
+        # rather than just display (e.g. an over-large export telling the UI
+        # how far to narrow the range). Omitted from the response entirely
+        # when unset, so every existing error keeps its exact current shape.
+        self.details = details
 
 
 class OpenAIAPIException(HTTPException):
@@ -36,10 +47,10 @@ def http_exception_factory(
 ):
     class_name = reason + "Exception"
 
-    def init(self, message=default_message, is_openai_exception=False):
+    def init(self, message=default_message, is_openai_exception=False, details=None):
         if is_openai_exception:
             self.__class__.__bases__ = (OpenAIAPIException,)
-        super(self.__class__, self).__init__(status_code, reason, message)
+        super(self.__class__, self).__init__(status_code, reason, message, details)
 
     return type(
         class_name,
@@ -151,6 +162,20 @@ class ErrorResponse(BaseModel):
     code: int
     reason: str
     message: str
+    # Optional machine-readable payload, set only by errors the client has to
+    # act on rather than just display.
+    details: Optional[Dict[str, Any]] = None
+
+    def model_dump(self, **kwargs):
+        """Drop unset optional fields unless the caller says otherwise.
+
+        This model backs ~60 route declarations, so adding ``details`` must
+        not put a ``"details": null`` into every error body in the product.
+        Defaulting here rather than at each call site means a future producer
+        cannot reintroduce that by forgetting a keyword.
+        """
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(**kwargs)
 
 
 error_responses = {
@@ -206,6 +231,7 @@ def register_handlers(app: FastAPI):
                 code=exc.status_code,
                 reason=exc.reason,
                 message=exc.message,
+                details=getattr(exc, "details", None),
             ).model_dump(),
         )
 
