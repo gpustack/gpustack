@@ -1636,7 +1636,7 @@ class ServeManager:
             #   ports[0]: HTTP API (always)
             #   ports[1]: --data-parallel-rpc-port (DP coordinator ZMQ)
             #   ports[2]: --master-port (PyTorch distributed TCP store)
-            #   ports[3]: env VLLM_PORT
+            #   ports[3]: env VLLM_PORT (dp_only only; reserved but unused otherwise)
             #   ports[-1]: connecting port (= VLLM_DP_MASTER_PORT for dp_only/nested)
             # Ray path: only ports[1] (DP RPC), when user dp > 1.
             if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
