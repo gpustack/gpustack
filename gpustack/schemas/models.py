@@ -657,10 +657,10 @@ class ModelInstanceSubordinateWorker(BaseModel):
     # the main worker only ever reports a summary built from a subordinate's
     # state_message, so once the restart clears that, the true first failure is
     # gone and only cascading peer errors remain (issue #6019). Embedded in the
-    # distributed_servers JSON column, so no schema migration.
-    first_failure_message: Optional[str] = Field(
-        default=None, sa_column=Column(Text, nullable=True)
-    )
+    # distributed_servers JSON column, so no schema migration. Plain fields: this
+    # model is not a table, so an sa_column here would be inert decoration (the
+    # neighbouring state_message still carries one).
+    first_failure_message: Optional[str] = None
     first_failure_at: Optional[datetime] = None
 
 

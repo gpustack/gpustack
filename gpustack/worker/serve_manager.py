@@ -554,12 +554,6 @@ class ServeManager:
                 else:
                     # For initialize later mode, the state is set to RUNNING directly,
                     # which means the subordinate worker doesn't need to wait for the main worker to be healthy.
-                    if (
-                        model_instance.distributed_servers.mode
-                        == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
-                    ):
-                        continue
-                    # Otherwise, update subordinate worker state to RUNNING.
                     sw_pos = next(
                         (
                             i
@@ -570,14 +564,30 @@ class ServeManager:
                         ),
                     )
                     sw = model_instance.distributed_servers.subordinate_workers[sw_pos]
-                    if sw.state == ModelInstanceStateEnum.RUNNING:
-                        continue
-                    sw.state = ModelInstanceStateEnum.RUNNING
-                    sw.state_message = ""
-                    # Streak over for this subordinate; see the main worker's
-                    # RUNNING patch above.
+
+                    # Reaching here means the workload is healthy, so this
+                    # subordinate's unhealthy streak is over. Capturing the reason
+                    # is gated on neither the coordinate mode nor sw.state, so
+                    # clearing it must not be either: both early exits below would
+                    # otherwise strand a stale reason on a healthy subordinate for
+                    # the rest of the instance's life.
+                    had_failure = bool(sw.first_failure_message or sw.first_failure_at)
                     sw.first_failure_message = None
                     sw.first_failure_at = None
+
+                    # INITIALIZE_LATER marks the subordinate RUNNING at start, so
+                    # in that mode there is never a state transition to make here.
+                    already_running = (
+                        model_instance.distributed_servers.mode
+                        == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                        or sw.state == ModelInstanceStateEnum.RUNNING
+                    )
+                    if already_running and not had_failure:
+                        continue
+                    if not already_running:
+                        # Otherwise, update subordinate worker state to RUNNING.
+                        sw.state = ModelInstanceStateEnum.RUNNING
+                        sw.state_message = ""
                     patch_dict = {
                         f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                     }

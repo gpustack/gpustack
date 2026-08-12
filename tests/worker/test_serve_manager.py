@@ -1097,3 +1097,90 @@ def test_subordinate_captures_and_keeps_its_first_failure():
     )
     assert subordinate.first_failure_message == root_cause
     assert subordinate.first_failure_at == first_seen_at
+
+
+def test_subordinate_first_failure_is_cleared_in_initialize_later_mode():
+    """INITIALIZE_LATER marks the subordinate RUNNING at start and returns early
+    from the state sync, but the capture runs in every mode. Without an equally
+    ungated clear, a recovered subordinate carries a stale reason for the rest of
+    the instance's life."""
+    manager, clientset = _build_serve_manager(worker_id=2)
+
+    model_instance = new_model_instance(
+        1, "initialize-later", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    subordinate = ModelInstanceSubordinateWorker(
+        worker_id=2,
+        worker_name="worker-2",
+        worker_ip="10.0.0.58",
+        state=ModelInstanceStateEnum.RUNNING,
+        first_failure_message="zmq.error.ZMQError: Address already in use",
+        first_failure_at=datetime.now(timezone.utc),
+    )
+    model_instance.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[subordinate],
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    model = new_model(1, "test", 1, huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct")
+    model.backend = BackendEnum.VLLM
+    model.backend_version = "0.8.0"
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    assert subordinate.first_failure_message is None
+    assert subordinate.first_failure_at is None
+    # The clear has to be persisted, not just applied to the in-memory copy.
+    update_model_instance.assert_called_once()
+
+
+def test_healthy_subordinate_without_a_captured_failure_is_not_patched():
+    """The clear must not turn every healthy sync into a write."""
+    manager, clientset = _build_serve_manager(worker_id=2)
+
+    model_instance = new_model_instance(
+        1, "steady", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    model_instance.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2,
+                worker_name="worker-2",
+                worker_ip="10.0.0.58",
+                state=ModelInstanceStateEnum.RUNNING,
+            )
+        ],
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    model = new_model(1, "test", 1, huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct")
+    model.backend = BackendEnum.VLLM
+    model.backend_version = "0.8.0"
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    update_model_instance.assert_not_called()
