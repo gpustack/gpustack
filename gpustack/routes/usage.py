@@ -1,8 +1,12 @@
+from dataclasses import dataclass
+import logging
+import time
 from datetime import date, datetime
-from math import ceil
-from typing import Any, Dict, List, Optional
+from math import ceil, floor
+from typing import Any, AsyncIterator, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import Date, Select, and_, asc, cast, desc
 from sqlmodel import func, or_, select
 
@@ -28,6 +32,7 @@ from gpustack.schemas.usage import (
     USAGE_GROUP_BY_ORGANIZATION,
     USAGE_GROUP_BY_ROUTE,
     USAGE_GROUP_BY_USER,
+    USAGE_GROUP_BYS,
     USAGE_SCOPE_ALL,
     USAGE_SCOPE_SELF,
     USAGE_METRIC_API_KEYS_USED,
@@ -41,11 +46,18 @@ from gpustack.schemas.usage import (
     USAGE_METRIC_OUTPUT_TOKENS,
     USAGE_METRIC_TOTAL_TOKENS,
     USAGE_SORT_DESC,
+    USAGE_EXPORT_FORMAT_CSV,
+    USAGE_EXPORT_FORMAT_XLSX,
+    USAGE_EXPORT_SPLIT_AUTO,
     UsageBreakdownDateDimension,
     UsageBreakdownDimension,
     UsageBreakdownItem,
     UsageBreakdownRequest,
     UsageBreakdownResponse,
+    UsageExportColumn,
+    UsageExportEstimateResponse,
+    UsageExportRequest,
+    UsageExportSheetEstimate,
     UsageFilterItem,
     UsageFilterOption,
     UsageFilters,
@@ -58,6 +70,18 @@ from gpustack.schemas.usage import (
 )
 from gpustack.schemas.common import Pagination
 from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
+from gpustack.utils.tabular_export import (
+    ExportStageTimer,
+    build_xlsx,
+    stream_csv,
+    stream_zip,
+    take_rows,
+)
+from gpustack.utils.usage_export import (
+    build_export_columns,
+    export_column_keys,
+    export_row,
+)
 from gpustack.utils.usage_snapshots import (
     format_usage_api_key_label,
     format_usage_date_label,
@@ -65,6 +89,8 @@ from gpustack.utils.usage_snapshots import (
     format_usage_route_label,
     format_usage_user_label,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -396,6 +422,21 @@ def _identity_label(group_by: str, identity: UsageIdentity) -> str:
     )
 
 
+# One ``IN (...)`` renders one bind parameter per id, and PostgreSQL's wire
+# protocol caps a statement at 65535 of them. A breakdown grouped by a single
+# entity dimension has as many distinct ids as it has rows, so a large export
+# would sail past that ceiling and fail outright. Chunk well under it.
+_ID_LOOKUP_CHUNK = 5000
+
+
+def _id_chunks(ids) -> List[List[Any]]:
+    unique = sorted({i for i in ids if i is not None})
+    return [
+        unique[start : start + _ID_LOOKUP_CHUNK]
+        for start in range(0, len(unique), _ID_LOOKUP_CHUNK)
+    ]
+
+
 async def _existing_entity_ids(session, model, ids) -> set:
     """The subset of ``ids`` that still resolve to a live ``model`` row.
 
@@ -405,11 +446,11 @@ async def _existing_entity_ids(session, model, ids) -> set:
     Existence is by raw id (no soft-delete filter), matching the old FK
     ``SET NULL`` behavior which only fired on hard delete.
     """
-    unique = {i for i in ids if i is not None}
-    if not unique:
-        return set()
-    rows = await _get_rows(session, select(model.id).where(model.id.in_(unique)))
-    return set(rows)
+    existing: set = set()
+    for chunk in _id_chunks(ids):
+        rows = await _get_rows(session, select(model.id).where(model.id.in_(chunk)))
+        existing.update(rows)
+    return existing
 
 
 async def _existing_ids_for_dimension(session, group_by: str, ids) -> Optional[set]:
@@ -430,10 +471,11 @@ async def _organization_info_by_id(session, ids) -> Dict[int, tuple]:
     raw id (no soft-delete filter), matching the FK-less attribution contract
     on model_usages. ``kind`` is the ``PrincipalType`` value.
     """
-    unique = {i for i in ids if i is not None}
-    if not unique:
-        return {}
-    rows = await _get_rows(session, select(Principal).where(Principal.id.in_(unique)))
+    principals = []
+    for chunk in _id_chunks(ids):
+        principals.extend(
+            await _get_rows(session, select(Principal).where(Principal.id.in_(chunk)))
+        )
     # Use the principal ``name`` (the stable slug), NOT ``display_name`` — the
     # Organization breakdown is standardized on ``name`` so the token and
     # resource tabs stay consistent (resource snapshots ``name`` too).
@@ -442,7 +484,7 @@ async def _organization_info_by_id(session, ids) -> Dict[int, tuple]:
             p.name or "",
             p.kind.value if hasattr(p.kind, "value") else p.kind,
         )
-        for p in rows
+        for p in principals
     }
 
 
@@ -925,10 +967,22 @@ def _sort_expression(sort_by: str, metric_columns: Dict[str, Any], date_sort_exp
 
 
 def _order_expression(
-    order_by: List[tuple[str, str]], metric_columns: Dict[str, Any], date_sort_expr=None
+    order_by: List[tuple[str, str]],
+    metric_columns: Dict[str, Any],
+    date_sort_expr=None,
+    *,
+    grouped_by_date: bool = False,
 ):
     if not order_by:
-        order_by = [(USAGE_METRIC_TOTAL_TOKENS, USAGE_SORT_DESC)]
+        # A date-grouped result is a time series and has to come out in time
+        # order; sorting it by tokens alone leaves the calendar shuffled, and
+        # ties (equal token counts) come back in whatever order the database
+        # feels like. Only the DEFAULT changes — an explicit sort still wins.
+        order_by = (
+            [(USAGE_METRIC_DATE, USAGE_SORT_DESC)]
+            if grouped_by_date
+            else [(USAGE_METRIC_TOTAL_TOKENS, USAGE_SORT_DESC)]
+        )
 
     sort_exprs = []
     for sort_by, direction in order_by:
@@ -1023,18 +1077,53 @@ def _build_breakdown_item(
     return breakdown_item
 
 
-@router.post(
-    "/breakdown",
-    response_model=UsageBreakdownResponse,
-    response_model_exclude_none=True,
-)
-async def get_usage_breakdown(
-    session: SessionDep,
-    user: CurrentUserDep,
-    ctx: TenantContextDep,
+@dataclass
+class BreakdownQuery:
+    """The statements behind one breakdown request.
+
+    Built once by :func:`_build_breakdown_statement` and shared by the JSON
+    ``/breakdown`` route and the streaming ``/breakdown/export`` route. Sharing
+    is the point: scope resolution, the permission gate and the filter
+    application must not be re-implemented per route, or the export's
+    visibility will drift from the list's — the classic export IDOR.
+
+    ``items_statement`` is ordered but NOT paginated; slicing is the caller's
+    job (the export path deliberately never slices).
+    """
+
+    scoped_statement: Select
+    summary_statement: Select
+    items_statement: Select
+    count_statement: Select
+    granularity: str
+    effective_scope: str
+
+
+async def _build_breakdown_statement(
+    session,
+    user: User,
+    ctx,
     request: UsageBreakdownRequest,
-):
+    *,
+    strict_scope: bool = False,
+) -> BreakdownQuery:
+    """Resolve scope, check permission and build the breakdown statements.
+
+    ``strict_scope`` flips the one behavior the export path must not inherit:
+    :func:`_resolve_effective_scope` silently downgrades an unauthorized
+    ``all`` to ``self`` so a regular user opening the Usage page (whose
+    request defaults to ``all``) doesn't get a 403. That's right for a list
+    the user is looking at, and wrong for an export — the file leaves the
+    page, and whoever opens it cannot tell that "platform-wide usage" is
+    actually just one person's rows. Exports ask for strict and get a 403.
+    """
     effective_scope = _resolve_effective_scope(user, ctx, request.scope)
+    if (
+        strict_scope
+        and request.scope == USAGE_SCOPE_ALL
+        and effective_scope != USAGE_SCOPE_ALL
+    ):
+        raise ForbiddenException(message="No permission to export platform-wide usage")
     _check_permission(user, ctx, request, effective_scope)
 
     # Expand any user-group filter to its direct USER members before
@@ -1065,9 +1154,7 @@ async def get_usage_breakdown(
         base_statement, request.start_date, request.end_date
     )
     summary_columns = [metric_columns[item].label(item) for item in metric_columns]
-    summary_row = await _get_first_row(
-        session, scoped_statement.with_only_columns(*summary_columns)
-    )
+    summary_statement = scoped_statement.with_only_columns(*summary_columns)
 
     granularity = _breakdown_bucket_granularity(request)
     date_bucket_expr = _date_bucket_expression(session, granularity)
@@ -1107,8 +1194,631 @@ async def get_usage_breakdown(
         if USAGE_GROUP_BY_DATE in request.group_by
         else func.max(ModelUsage.date)
     )
-    sort_exprs = _order_expression(request.order_by, metric_columns, date_sort_expr)
-    items_statement = grouped_statement.order_by(*sort_exprs)
+    sort_exprs = _order_expression(
+        request.order_by,
+        metric_columns,
+        date_sort_expr,
+        grouped_by_date=USAGE_GROUP_BY_DATE in request.group_by,
+    )
+    return BreakdownQuery(
+        scoped_statement=scoped_statement,
+        summary_statement=summary_statement,
+        items_statement=grouped_statement.order_by(*sort_exprs),
+        count_statement=count_statement,
+        granularity=granularity,
+        effective_scope=effective_scope,
+    )
+
+
+async def _prefetch_identity_maps(
+    session, query: BreakdownQuery, group_by: List[str]
+) -> tuple:
+    """Resolve entity existence / Org info for a whole result set up front.
+
+    The JSON path collects ids from the rows it already has in memory. The
+    export path cannot: it holds an open server-side cursor, and issuing
+    another query on that connection while the cursor is live is not allowed.
+    So the ids are gathered here — with one DISTINCT query per dimension over
+    the same grouped statement — before streaming starts. Cost scales with the
+    number of distinct entities, not the number of rows.
+    """
+    subquery = query.items_statement.subquery()
+
+    async def distinct_ids(column_name: str) -> List[Any]:
+        column = subquery.c.get(column_name)
+        if column is None:
+            return []
+        return await _get_rows(session, select(column).distinct())
+
+    existing_ids_by_dim: Dict[str, set] = {}
+    for dimension, id_attr in _DIMENSION_ROW_ID_ATTR.items():
+        if dimension in group_by:
+            existing_ids_by_dim[dimension] = await _existing_ids_for_dimension(
+                session, dimension, await distinct_ids(id_attr)
+            )
+
+    org_info_by_id: Dict[int, tuple] = {}
+    if USAGE_GROUP_BY_ORGANIZATION in group_by:
+        org_info_by_id = await _organization_info_by_id(
+            session, await distinct_ids("group_organization_id")
+        )
+    return existing_ids_by_dim, org_info_by_id
+
+
+async def _stream_export_rows(
+    session, query: BreakdownQuery, group_by: List[str]
+) -> AsyncIterator[List[Any]]:
+    """Yield export rows straight off a server-side cursor.
+
+    Rows are turned into :func:`_build_breakdown_item` results first, so an
+    exported number is produced by exactly the same code as the number on
+    screen — the two cannot drift.
+    """
+    timer = ExportStageTimer()
+    with timer.stage("prefetch"):
+        existing_ids_by_dim, org_info_by_id = await _prefetch_identity_maps(
+            session, query, group_by
+        )
+    rows_out = 0
+    batches = 0
+    result = await session.stream(query.items_statement)
+    partitions = result.partitions(envs.USAGE_EXPORT_STREAM_CHUNK_ROWS)
+    while True:
+        # Hand-driven so the wait on the cursor is charged separately, and the
+        # first wait separately again: a GROUP BY ... ORDER BY produces and
+        # sorts every row before releasing one, so the aggregate's entire cost
+        # lands on that first fetch while the rest are mere transfers.
+        with timer.stage("aggregate" if batches == 0 else "fetch"):
+            partition = await anext(partitions, None)
+        if partition is None:
+            break
+        batches += 1
+        with timer.stage("build"):
+            batch_rows = [
+                export_row(
+                    _build_breakdown_item(
+                        group_by,
+                        row,
+                        query.granularity,
+                        existing_ids_by_dim,
+                        org_info_by_id,
+                    ),
+                    group_by,
+                )
+                for row in partition
+            ]
+        for row in batch_rows:
+            rows_out += 1
+            yield row
+
+    # Split out so a slow export can be attributed. Identity prefetch scales
+    # with distinct ENTITIES and the stream with ROWS; a request log shows
+    # only their sum, which is not enough to know which one to go after.
+    logger.info(
+        "usage export streamed: group_by=%s rows=%d batches=%d entities=%d %s",
+        ",".join(group_by),
+        rows_out,
+        batches,
+        sum(len(ids) for ids in existing_ids_by_dim.values()),
+        timer.summary(),
+    )
+
+
+def _shorten_range_days(request: UsageExportRequest, total: int, limit: int) -> int:
+    """How many days would fit under ``limit`` at the current row density."""
+    days = (request.end_date - request.start_date).days + 1
+    if total <= 0:
+        return days
+    return max(1, floor(days * limit / total))
+
+
+def export_split_plan(totals: Dict[str, int], limit: int) -> Dict[str, int]:
+    """How many files each sheet's rows split into: ``ceil(total / limit)``.
+
+    Parts are slices of the ROW STREAM, so this is exact rather than an
+    estimate — the count returned here is the count of members the archive
+    ends up with. Sheets under the limit still contribute their one file.
+
+    Shared by the estimate and both split responses so the number offered
+    before the click is the number produced after it. They had drifted: the
+    estimate reported the largest SHEET's part count while the export writes
+    parts for EVERY sheet, so a four-sheet split promised 11 files and
+    delivered 44.
+    """
+    if limit <= 0:
+        return {key: 1 for key in totals}
+    return {key: max(1, ceil(total / limit)) for key, total in totals.items()}
+
+
+def export_suggestions(
+    request, total: int, limit: int, split_parts: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """Concrete moves that would bring an over-large export under ``limit``.
+
+    Returned by BOTH the estimate endpoint and the over-limit error, from this
+    one function: the advice a user sees before clicking and the advice they
+    see after a rejection must not contradict each other. Everything here is
+    derived from values already in hand, so it costs nothing.
+
+    ``split_parts`` is the file count splitting would actually produce; pass
+    ``None`` when the split path would refuse the request (over
+    ``USAGE_EXPORT_MAX_SPLIT_MEMBERS``) and the remedy is left out entirely.
+    Offering a way out that the next request rejects is worse than offering
+    only the one that works.
+    """
+    # Two remedies, deliberately. A third — switching to month buckets — was
+    # dropped: unlike the other two it CHANGES THE DATA, collapsing 30 daily
+    # rows into one, and its row estimate was a guess (total // 30) that the
+    # export could not honour. Offering a lossy option next to two lossless
+    # ones invites picking it without noticing.
+    suggestions: List[Dict[str, Any]] = [
+        {
+            "action": "shorten_range",
+            "max_days": _shorten_range_days(request, total, limit),
+        }
+    ]
+    # Offered for every grouping — parts are row slices, so none is excluded —
+    # but only when the split path would accept it.
+    if split_parts:
+        suggestions.append({"action": "split_export", "parts": split_parts})
+    return suggestions
+
+
+def build_export_estimate(
+    request, estimates: List[UsageExportSheetEstimate], total: int
+) -> UsageExportEstimateResponse:
+    """Assemble the estimate response, verdicts included.
+
+    Shared by the token and resource endpoints so the two cannot drift on what
+    counts as over-limit — the resource one previously sized its advice off the
+    SUM of the sheets while the export path checked each sheet on its own.
+
+    ``over`` is the largest single sheet, because that is the number
+    ``export_*`` compares against: sheets are separate queries and separate
+    worksheets, so five small tables are not one big one.
+
+    The FILE count is the opposite: every sheet contributes its own parts, and
+    the cap applies to their sum — so it is computed across all of them, and
+    the split remedy is withheld when that sum is one the export would reject.
+    """
+    over = max(
+        (estimate.total for estimate in estimates if estimate.available), default=0
+    )
+    exceeds_hard = over > envs.USAGE_EXPORT_MAX_ROWS
+    members = sum(
+        export_split_plan(
+            {
+                estimate.key: estimate.total
+                for estimate in estimates
+                if estimate.available
+            },
+            envs.USAGE_EXPORT_MAX_ROWS,
+        ).values()
+    )
+    split_parts = (
+        members
+        if exceeds_hard and members <= envs.USAGE_EXPORT_MAX_SPLIT_MEMBERS
+        else None
+    )
+    return UsageExportEstimateResponse(
+        sheets=estimates,
+        total=total,
+        soft_limit=envs.USAGE_EXPORT_SOFT_ROWS,
+        hard_limit=envs.USAGE_EXPORT_MAX_ROWS,
+        exceeds_soft_limit=over > envs.USAGE_EXPORT_SOFT_ROWS,
+        exceeds_hard_limit=exceeds_hard,
+        suggested_max_days=(
+            _shorten_range_days(request, over, envs.USAGE_EXPORT_MAX_ROWS)
+            if exceeds_hard
+            else None
+        ),
+        # The remedies are computed here, not in the client, so the advice
+        # before the click matches the advice after a rejection verbatim.
+        suggestions=(
+            export_suggestions(
+                request, over, envs.USAGE_EXPORT_MAX_ROWS, split_parts=split_parts
+            )
+            if exceeds_hard
+            else []
+        ),
+        split_parts=split_parts,
+        # A split export is always CSV (it is the only format that streams),
+        # so once splitting is the way out, that is the format the user will
+        # get. Saying so here is what keeps the promise before the click equal
+        # to the file after it.
+        effective_format=(
+            USAGE_EXPORT_FORMAT_CSV
+            if exceeds_hard
+            else _effective_export_format(
+                request.format, [estimate.total for estimate in estimates]
+            )
+        ),
+    )
+
+
+def _export_too_large(
+    request, sheet_key: str, total: int, limit: int, split_parts: Optional[int] = None
+):
+    """Build the structured over-limit error.
+
+    The message alone is not actionable — "narrow the range" is true and
+    useless. ``details`` carries the numbers plus the moves the UI renders as
+    buttons.
+
+    The sentence names only the remedies ``export_suggestions`` actually
+    returns. It used to also offer a coarser granularity, which was dropped
+    for changing the data rather than the range; leaving it in the prose would
+    have kept advertising a button that is no longer there.
+    """
+    return InvalidException(
+        message=(
+            f"Result set too large ({total} rows, limit {limit}). "
+            "Narrow the date range or split the export."
+        ),
+        details={
+            "kind": "export_too_large",
+            "sheet": sheet_key,
+            "total": total,
+            "limit": limit,
+            "suggestions": export_suggestions(
+                request, total, limit, split_parts=split_parts
+            ),
+        },
+    )
+
+
+async def _resolve_export_sheets(
+    session,
+    user: User,
+    ctx,
+    request: UsageExportRequest,
+    *,
+    tolerate_forbidden: bool,
+) -> List[tuple]:
+    """Build (sheet, query_or_None, reason) for every requested sheet.
+
+    ``tolerate_forbidden`` is what separates the two callers. The estimate
+    endpoint reports an unavailable sheet so the UI can grey out just that
+    table; the export endpoint refuses the whole request, because quietly
+    dropping one table produces a file the user believes is complete.
+    """
+    if len(request.resolved_sheets()) > envs.USAGE_EXPORT_MAX_SHEETS:
+        raise InvalidException(
+            message=(
+                f"Too many sheets ({len(request.resolved_sheets())}, limit "
+                f"{envs.USAGE_EXPORT_MAX_SHEETS})."
+            )
+        )
+    resolved = []
+    for sheet in request.resolved_sheets():
+        # The sheet type only checks structure; the legal dimension names are
+        # this endpoint's to define.
+        unsupported = [g for g in sheet.group_by if g not in USAGE_GROUP_BYS]
+        if unsupported:
+            raise InvalidException(
+                message=f"Unsupported group_by: {', '.join(unsupported)}"
+            )
+        breakdown_request = request.to_breakdown_request(sheet)
+        try:
+            query = await _build_breakdown_statement(
+                session, user, ctx, breakdown_request, strict_scope=True
+            )
+        except ForbiddenException as exc:
+            if not tolerate_forbidden:
+                raise
+            resolved.append((sheet, None, exc.message))
+            continue
+        resolved.append((sheet, query, None))
+    return resolved
+
+
+@router.post(
+    "/breakdown/export/estimate",
+    response_model=UsageExportEstimateResponse,
+)
+async def estimate_usage_breakdown_export(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: UsageExportRequest,
+):
+    """Row counts for an export the user has not committed to yet.
+
+    Exists so the UI can say "this will be 183,000 rows" *before* the click,
+    instead of surfacing a failure thirty seconds in. For a multi-table export
+    this replaces one probe request per table.
+    """
+    sheets = await _resolve_export_sheets(
+        session, user, ctx, request, tolerate_forbidden=True
+    )
+    estimates = []
+    total = 0
+    for sheet, query, reason in sheets:
+        if query is None:
+            estimates.append(
+                UsageExportSheetEstimate(
+                    key=sheet.key,
+                    name=sheet.name,
+                    total=0,
+                    available=False,
+                    reason=reason,
+                )
+            )
+            continue
+        sheet_total = _row_count_value(
+            await _get_first_row(session, query.count_statement)
+        )
+        total += sheet_total
+        estimates.append(
+            UsageExportSheetEstimate(
+                key=sheet.key,
+                name=sheet.name,
+                total=sheet_total,
+                columns=_export_columns_payload(sheet.group_by),
+            )
+        )
+    return build_export_estimate(request, estimates, total)
+
+
+@router.post("/breakdown/export")
+async def export_usage_breakdown(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: UsageExportRequest,
+):
+    """Stream the full filtered result set as a downloadable file."""
+    sheets = await _resolve_export_sheets(
+        session, user, ctx, request, tolerate_forbidden=False
+    )
+
+    # Count every sheet before writing a byte: once the response starts the
+    # status code is committed, so an over-limit sheet has to fail here or not
+    # at all.
+    totals: Dict[str, int] = {}
+    over_limit = None
+    sizing_started = time.monotonic()
+    for sheet, query, _ in sheets:
+        totals[sheet.key] = _row_count_value(
+            await _get_first_row(session, query.count_statement)
+        )
+        if over_limit is None and totals[sheet.key] > envs.USAGE_EXPORT_MAX_ROWS:
+            over_limit = (sheet, totals[sheet.key])
+
+    # Counting replays the same GROUP BY the stream is about to run, so the
+    # export pays for the aggregate twice and the user waits through this half
+    # before the download starts. It is also the purest measurement we have —
+    # no Python, no encoding, no network — so a slow number here is the query.
+    logger.info(
+        "usage export sized: sheets=%d rows=%d count=%.1fs",
+        len(sheets),
+        sum(totals.values()),
+        time.monotonic() - sizing_started,
+    )
+
+    if over_limit is not None:
+        # Every sheet's count is in hand, which is what the splitter needs to
+        # size its parts. Splitting works for ANY grouping now — parts are
+        # slices of the row stream, not narrower date ranges — so there is no
+        # "this one cannot be split" branch left.
+        if request.split == USAGE_EXPORT_SPLIT_AUTO:
+            return await _split_export_response(session, ctx, request, sheets, totals)
+        sheet, sheet_total = over_limit
+        members = sum(export_split_plan(totals, envs.USAGE_EXPORT_MAX_ROWS).values())
+        raise _export_too_large(
+            request,
+            sheet.key,
+            sheet_total,
+            envs.USAGE_EXPORT_MAX_ROWS,
+            split_parts=(
+                members if members <= envs.USAGE_EXPORT_MAX_SPLIT_MEMBERS else None
+            ),
+        )
+
+    stamp = f"{request.start_date}_{request.end_date}"
+    effective_format = _effective_export_format(request.format, totals.values())
+    if effective_format == USAGE_EXPORT_FORMAT_XLSX:
+        payload = await build_xlsx(
+            (
+                sheet.name or sheet.key,
+                build_export_columns(sheet.group_by),
+                _stream_export_rows(session, query, sheet.group_by),
+            )
+            for sheet, query, _ in sheets
+        )
+        return Response(
+            content=payload,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers=_attachment_headers(f"usage_{stamp}.xlsx"),
+        )
+
+    trailer_context = (
+        f"scope={sheets[0][1].effective_scope} "
+        f"organization={ctx.current_principal_id or '*'}"
+    )
+    if len(sheets) == 1:
+        sheet, query, _ = sheets[0]
+        return StreamingResponse(
+            stream_csv(
+                build_export_columns(sheet.group_by),
+                _stream_export_rows(session, query, sheet.group_by),
+                trailer=f"rows={totals[sheet.key]} {trailer_context}",
+            ),
+            media_type="text/csv; charset=utf-8",
+            headers=_attachment_headers(f"usage_by_{sheet.key}_{stamp}.csv"),
+        )
+
+    members = [
+        (
+            f"by_{sheet.key}.csv",
+            stream_csv(
+                build_export_columns(sheet.group_by),
+                _stream_export_rows(session, query, sheet.group_by),
+                trailer=f"rows={totals[sheet.key]} {trailer_context}",
+            ),
+        )
+        for sheet, query, _ in sheets
+    ]
+    return StreamingResponse(
+        stream_zip(members),
+        media_type="application/zip",
+        headers=_attachment_headers(f"usage_{stamp}.zip"),
+    )
+
+
+def _attachment_headers(filename: str) -> Dict[str, str]:
+    return {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+
+def _export_columns_payload(group_by: List[str]) -> List[UsageExportColumn]:
+    """The sheet's columns, keyed and titled, for the preview to render."""
+    return [
+        UsageExportColumn(key=key, title=title)
+        for key, title in zip(
+            export_column_keys(group_by), build_export_columns(group_by)
+        )
+    ]
+
+
+def _effective_export_format(requested: str, totals) -> str:
+    """The format the response will actually use.
+
+    xlsx is the default because it is what these exports have always
+    produced. A worksheet holds at most ``XLSX_MAX_ROWS_PER_SHEET`` rows,
+    though, so beyond that the choice is between refusing the export and
+    handing back the same data in a format that can hold it. Falling back to
+    CSV loses nothing — the rows are identical and the extension announces
+    the change — whereas refusing leaves the user with no way to get the data
+    at all. The estimate endpoint reports this ahead of the click.
+    """
+    if requested == USAGE_EXPORT_FORMAT_XLSX and any(
+        total >= envs.XLSX_MAX_ROWS_PER_SHEET for total in totals
+    ):
+        return USAGE_EXPORT_FORMAT_CSV
+    return requested
+
+
+def split_member_name(
+    sheet_key: str, index: int, parts: int, many: bool, *, prefix: str = "usage"
+) -> str:
+    """Name for one part of a split export.
+
+    Zero-padded so a plain lexical sort is chronological, and carrying
+    ``of-MM`` so a consumer can tell at a glance whether they have the whole
+    set. The parts are row slices, not date ranges, so the name deliberately
+    does NOT claim a period — the rows inside are date-ordered, and the
+    trailer records the row range.
+    """
+    width = len(str(parts))
+    part = f"part-{index:0{width}d}-of-{parts}"
+    return f"by_{sheet_key}/{part}.csv" if many else f"usage_by_{sheet_key}_{part}.csv"
+
+
+async def _split_export_response(
+    session,
+    ctx,
+    request: UsageExportRequest,
+    sheets: List[tuple],
+    totals: Dict[str, int],
+):
+    """Deliver an over-large export as one archive of row-sliced files.
+
+    This is what keeps the hard limit from being a dead end. Without it the
+    only answer to "my range is too big" is "make it smaller", and operators
+    end up raising the ceiling until something falls over.
+
+    **Parts are slices of the ROW STREAM, not narrower date ranges.** The
+    aggregation has already happened by the time these rows exist, so cutting
+    between two of them is just that — a cut. Nothing is re-aggregated, so
+    nothing can be double-counted, which means:
+
+    * every grouping can be split, not only the ones with a date axis;
+    * a single overweight day is no longer a failure mode, because a day is
+      no longer the unit;
+    * the part count is exactly ``ceil(total / limit)``, so the number the
+      estimate promised is the number the user gets;
+    * one cursor feeds all the parts, so a row inserted mid-export cannot
+      land in two files or none — the per-part re-query this replaced had
+      exactly that race.
+    """
+    limit = envs.USAGE_EXPORT_MAX_ROWS
+    parts_by_sheet = export_split_plan(
+        {sheet.key: totals[sheet.key] for sheet, _q, _ in sheets}, limit
+    )
+    members_planned = sum(parts_by_sheet.values())
+    if members_planned > envs.USAGE_EXPORT_MAX_SPLIT_MEMBERS:
+        raise InvalidException(
+            message=(
+                f"Splitting would produce {members_planned} files, over the "
+                f"{envs.USAGE_EXPORT_MAX_SPLIT_MEMBERS} limit. Narrow the date "
+                "range or export fewer tables at once."
+            ),
+            details={
+                "kind": "export_split_too_many_parts",
+                "total": members_planned,
+                "limit": envs.USAGE_EXPORT_MAX_SPLIT_MEMBERS,
+            },
+        )
+
+    # A split export is ALWAYS CSV, whatever format was requested. Not a
+    # format constraint — every part fits a worksheet — but a throughput one:
+    # xlsx has to be assembled in full before any of it is valid, and a split
+    # multiplies that by the part count. Measured on a ~108k-row two-part
+    # export it was slow enough that the download never completed. The
+    # estimate reports ``effective_format`` so this is announced, not sprung.
+    trailer_context = (
+        f"scope={sheets[0][1].effective_scope} "
+        f"organization={ctx.current_principal_id or '*'}"
+    )
+    many = len(sheets) > 1
+
+    def members():
+        for sheet, query, _ in sheets:
+            parts = parts_by_sheet[sheet.key]
+            total = totals[sheet.key]
+            # ONE cursor per sheet; each part takes the next slice off it.
+            rows = _stream_export_rows(session, query, sheet.group_by)
+            for index in range(1, parts + 1):
+                first = (index - 1) * limit + 1
+                last = min(index * limit, total)
+                yield (
+                    split_member_name(sheet.key, index, parts, many),
+                    stream_csv(
+                        build_export_columns(sheet.group_by),
+                        take_rows(rows, limit),
+                        trailer=(
+                            f"rows={last - first + 1} part={index}/{parts} "
+                            f"range={first}-{last} of {total} {trailer_context}"
+                        ),
+                    ),
+                )
+
+    stamp = f"{request.start_date}_{request.end_date}"
+    return StreamingResponse(
+        stream_zip(members()),
+        media_type="application/zip",
+        headers=_attachment_headers(f"usage_{stamp}_split.zip"),
+    )
+
+
+@router.post(
+    "/breakdown",
+    response_model=UsageBreakdownResponse,
+    response_model_exclude_none=True,
+)
+async def get_usage_breakdown(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: UsageBreakdownRequest,
+):
+    query = await _build_breakdown_statement(session, user, ctx, request)
+    summary_row = await _get_first_row(session, query.summary_statement)
+    granularity = query.granularity
+
+    items_statement = query.items_statement
     # ``page <= 0`` is the project-wide "no pagination" sentinel (mirrors
     # ActiveRecordMixin.page_query): return every bucket unsliced. The trend
     # chart needs the full date series — a token-sorted page would drop the
@@ -1118,7 +1828,7 @@ async def get_usage_breakdown(
             (request.page - 1) * request.perPage
         ).limit(request.perPage)
 
-    total = _row_count_value(await _get_first_row(session, count_statement))
+    total = _row_count_value(await _get_first_row(session, query.count_statement))
     # No-pagination (page <= 0) returns the whole series. ``total`` (the bucket
     # count) is already computed above, so reject an over-large result before
     # fetching its rows — narrowing the range / adding filters beats silently
