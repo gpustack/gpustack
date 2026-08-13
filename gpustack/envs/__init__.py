@@ -319,6 +319,63 @@ USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS = int(
     os.getenv("GPUSTACK_USAGE_BREAKDOWN_MAX_NO_PAGINATION_ROWS", 50000)
 )
 
+# Usage export configuration
+#
+# Separate from the constant above because the two paths fail differently, not
+# because one is simply "bigger":
+#
+#   * ``/breakdown`` materializes every bucket into Pydantic models and then
+#     into one JSON body. Cost grows with the result set on BOTH sides of the
+#     wire, and the browser then builds a spreadsheet out of it.
+#   * ``/breakdown/export`` reads through a server-side cursor a chunk at a
+#     time and writes bytes straight out, so this process's memory is flat.
+#
+# What that does NOT buy is a free lunch: the database still computes and
+# sorts the whole GROUP BY before the cursor yields its first row, and the
+# export holds a connection for the duration. Streaming bounds OUR memory, not
+# the server's work — so this ceiling is set by query cost, not by ours.
+#
+# 100k is chosen to stay inside what is routinely survivable without the
+# safeguards a much larger ceiling would need (statement timeout, per-user
+# export concurrency limits, a read replica). Raise it once those exist.
+USAGE_EXPORT_MAX_ROWS = int(os.getenv("GPUSTACK_USAGE_EXPORT_MAX_ROWS", 100000))
+# Above this the UI warns that the export will take a while (it still runs).
+# Tunable alongside the hard limit: raising one without the other would leave
+# a deployment warning at 10k about exports it now happily does at 200k.
+USAGE_EXPORT_SOFT_ROWS = int(os.getenv("GPUSTACK_USAGE_EXPORT_SOFT_ROWS", 10000))
+
+# The rest are internal guards, deliberately NOT environment-tunable. They
+# bound what a hand-crafted request can make the server do; no deployment has
+# a reason to move them, and exposing them as GPUSTACK_* would advertise knobs
+# that only invite mis-tuning.
+
+# Max logical tables one export request may ask for. Each is an independent
+# aggregate query, so this gates fan-out. The UI can only ever ask for the
+# tabs it renders — at most 4 today (3 built-in + the enterprise Organization
+# breakdown) — so this is headroom, not a limit anyone should reach.
+USAGE_EXPORT_MAX_SHEETS = 10
+# Rows pulled off the server-side cursor per batch. Bounds peak memory, and
+# nothing else: enrichment used to be sized by this too, until it was made
+# per-entity for the whole export rather than per-batch. Raising it buys very
+# little — a 105k-row export spends about 2s total waiting on its 106 fetches,
+# so even eliminating them all would not be felt.
+USAGE_EXPORT_STREAM_CHUNK_ROWS = 1000
+# Most files one split export may write, summed over its sheets. Once parts
+# became row slices this stopped being about query fan-out — a single cursor
+# now feeds every part — and became the real ceiling on the whole feature:
+# 10 x USAGE_EXPORT_MAX_ROWS, i.e. ~1M rows in one download.
+#
+# Sized by what a browser download can actually finish, not by what the server
+# can produce. A 100k-row CSV measures ~8.3MB, so this is ~83MB of CSV and
+# roughly a minute or two on the wire — and there is no resume: a proxy idle
+# timeout or a closed laptop at minute six of a longer download costs the whole
+# thing. Anyone who genuinely needs millions of rows wants the API in a loop
+# over date ranges, not one heroic response, and beyond this limit the estimate
+# says so by offering only "shorten the range".
+USAGE_EXPORT_MAX_SPLIT_MEMBERS = 10
+# xlsx cannot hold more than this per worksheet — a format limit, not ours.
+XLSX_MAX_ROWS_PER_SHEET = 1048576
+
 # Scheduled scaling (tidal) reconcile cadence. The loop is level-triggered — it
 # recomputes the count each pass from (now, windows, baseline) — so this bounds
 # only how long a window boundary can go unnoticed, never correctness. Cron
