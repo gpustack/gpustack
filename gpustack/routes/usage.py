@@ -356,6 +356,21 @@ def _row_dimension(
     )
 
 
+def _is_platform_wide(user, ctx) -> bool:
+    """Platform admin acting without a pinned Org — the cross-tenant view.
+
+    The one context where the Organization dimension, the Organization filter
+    and the per-row tenant attribute are meaningful: an Org owner scoped to
+    their own Org would only ever see the one, so all three are hidden there.
+
+    Extracted because three call sites had spelled it out inline and a fourth
+    was about to; the resource routes have the identical helper.
+    """
+    return bool(getattr(user, "is_admin", False)) and (
+        getattr(ctx, "current_principal_id", None) is None
+    )
+
+
 def _row_org_dimension(
     row: Any, org_info_by_id: Optional[Dict[int, tuple]] = None
 ) -> UsageBreakdownDimension:
@@ -866,11 +881,7 @@ async def get_usage_meta(  # noqa: C901
             ModelUsage.consumer_principal_id == ctx.current_principal_id
         )
 
-    # The Organization dimension is the cross-tenant "All" view — platform
-    # admin acting without a selected Org (``current_principal_id is None``).
-    # An Org owner scoped to their own Org would only ever see one Org, so
-    # the dimension is hidden for them.
-    is_platform_wide = user.is_admin and ctx.current_principal_id is None
+    is_platform_wide = _is_platform_wide(user, ctx)
 
     user_options: List[UsageFilterOption] = []
     if scope == USAGE_SCOPE_ALL:
@@ -940,9 +951,7 @@ def _check_permission(user: User, ctx, request, effective_scope: str) -> None:
             raise ForbiddenException(message="No permission to filter by user")
         if request.filters.user_groups:
             raise ForbiddenException(message="No permission to filter by user group")
-    is_platform_wide = (
-        user.is_admin and getattr(ctx, "current_principal_id", None) is None
-    )
+    is_platform_wide = _is_platform_wide(user, ctx)
     if not is_platform_wide:
         if USAGE_GROUP_BY_ORGANIZATION in group_bys:
             raise ForbiddenException(message="No permission to group by organization")
@@ -1017,6 +1026,7 @@ def _build_breakdown_item(
     granularity: str,
     existing_ids_by_dim: Optional[Dict[str, set]] = None,
     org_info_by_id: Optional[Dict[int, tuple]] = None,
+    carries_organization: bool = False,
 ) -> UsageBreakdownItem:
     existing_ids_by_dim = existing_ids_by_dim or {}
     api_requests = int(getattr(row, USAGE_METRIC_API_REQUESTS, 0) or 0)
@@ -1046,7 +1056,9 @@ def _build_breakdown_item(
         breakdown_item.route = _row_dimension(
             USAGE_GROUP_BY_ROUTE, row, existing_ids_by_dim.get(USAGE_GROUP_BY_ROUTE)
         )
-    if USAGE_GROUP_BY_ORGANIZATION in group_bys:
+    # Same field either way: as the grouped dimension, or as the tenant this
+    # row belongs to. One organization, one representation.
+    if USAGE_GROUP_BY_ORGANIZATION in group_bys or carries_organization:
         breakdown_item.organization = _row_org_dimension(row, org_info_by_id)
 
     if _single_group_by(group_bys, USAGE_GROUP_BY_USER):
@@ -1097,6 +1109,9 @@ class BreakdownQuery:
     count_statement: Select
     granularity: str
     effective_scope: str
+    # Whether the rows carry the consumer tenant as an attribute — see the
+    # note in ``_build_breakdown_statement``.
+    carries_organization: bool = False
 
 
 async def _build_breakdown_statement(
@@ -1184,6 +1199,35 @@ async def _build_breakdown_statement(
                 "group_organization_kind"
             ),
         ]
+    # The tenant a row BELONGS TO, carried as an attribute rather than as a
+    # grouping key, so that a cross-tenant export says whose each row is
+    # without changing which rows exist.
+    #
+    # What makes MAX() safe here is that ``consumer_principal_id`` is
+    # denormalized FROM THE API KEY: one api_key has one consumer, so an
+    # api_key-grouped bucket has exactly one, and the three MAX()es cannot
+    # disagree with each other. That invariant is why the condition is
+    # api_key — not user (who can hold keys in several Orgs) and not route
+    # (which Orgs share). Getting this wrong would pair one tenant's id with
+    # another's name, and a wrong attribution is worse than none.
+    #
+    # Labels match the DIMENSION's on purpose: ``_row_org_dimension`` and the
+    # export row then read one organization the same way in either role,
+    # instead of two code paths that can drift into two spellings of one
+    # tenant. The two are mutually exclusive, so the labels cannot collide.
+    carries_organization = (
+        USAGE_GROUP_BY_API_KEY in request.group_by
+        and USAGE_GROUP_BY_ORGANIZATION not in request.group_by
+        and _is_platform_wide(user, ctx)
+    )
+    if carries_organization:
+        aggregate_columns += [
+            func.max(ModelUsage.consumer_principal_id).label("group_organization_id"),
+            func.max(ModelUsage.consumer_name).label("group_organization_name"),
+            func.max(ModelUsage.consumer_principal_kind).label(
+                "group_organization_kind"
+            ),
+        ]
     grouped_statement = scoped_statement.with_only_columns(
         *select_columns, *aggregate_columns
     ).group_by(*group_columns)
@@ -1207,6 +1251,7 @@ async def _build_breakdown_statement(
         count_statement=count_statement,
         granularity=granularity,
         effective_scope=effective_scope,
+        carries_organization=carries_organization,
     )
 
 
@@ -1237,8 +1282,10 @@ async def _prefetch_identity_maps(
                 session, dimension, await distinct_ids(id_attr)
             )
 
+    # Also when organization is only an ATTRIBUTE of the row: the column is
+    # resolved live exactly like the dimension, so it needs the same map.
     org_info_by_id: Dict[int, tuple] = {}
-    if USAGE_GROUP_BY_ORGANIZATION in group_by:
+    if USAGE_GROUP_BY_ORGANIZATION in group_by or query.carries_organization:
         org_info_by_id = await _organization_info_by_id(
             session, await distinct_ids("group_organization_id")
         )
@@ -1282,8 +1329,10 @@ async def _stream_export_rows(
                         query.granularity,
                         existing_ids_by_dim,
                         org_info_by_id,
+                        query.carries_organization,
                     ),
                     group_by,
+                    query.carries_organization,
                 )
                 for row in partition
             ]
@@ -1554,7 +1603,9 @@ async def estimate_usage_breakdown_export(
                 key=sheet.key,
                 name=sheet.name,
                 total=sheet_total,
-                columns=_export_columns_payload(sheet.group_by),
+                columns=_export_columns_payload(
+                    sheet.group_by, query.carries_organization
+                ),
             )
         )
     return build_export_estimate(request, estimates, total)
@@ -1621,7 +1672,7 @@ async def export_usage_breakdown(
         payload = await build_xlsx(
             (
                 sheet.name or sheet.key,
-                build_export_columns(sheet.group_by),
+                build_export_columns(sheet.group_by, query.carries_organization),
                 _stream_export_rows(session, query, sheet.group_by),
             )
             for sheet, query, _ in sheets
@@ -1642,7 +1693,7 @@ async def export_usage_breakdown(
         sheet, query, _ = sheets[0]
         return StreamingResponse(
             stream_csv(
-                build_export_columns(sheet.group_by),
+                build_export_columns(sheet.group_by, query.carries_organization),
                 _stream_export_rows(session, query, sheet.group_by),
                 trailer=f"rows={totals[sheet.key]} {trailer_context}",
             ),
@@ -1654,7 +1705,7 @@ async def export_usage_breakdown(
         (
             f"by_{sheet.key}.csv",
             stream_csv(
-                build_export_columns(sheet.group_by),
+                build_export_columns(sheet.group_by, query.carries_organization),
                 _stream_export_rows(session, query, sheet.group_by),
                 trailer=f"rows={totals[sheet.key]} {trailer_context}",
             ),
@@ -1672,12 +1723,15 @@ def _attachment_headers(filename: str) -> Dict[str, str]:
     return {"Content-Disposition": f'attachment; filename="{filename}"'}
 
 
-def _export_columns_payload(group_by: List[str]) -> List[UsageExportColumn]:
+def _export_columns_payload(
+    group_by: List[str], carries_organization: bool = False
+) -> List[UsageExportColumn]:
     """The sheet's columns, keyed and titled, for the preview to render."""
     return [
         UsageExportColumn(key=key, title=title)
         for key, title in zip(
-            export_column_keys(group_by), build_export_columns(group_by)
+            export_column_keys(group_by, carries_organization),
+            build_export_columns(group_by, carries_organization),
         )
     ]
 
@@ -1786,7 +1840,9 @@ async def _split_export_response(
                 yield (
                     split_member_name(sheet.key, index, parts, many),
                     stream_csv(
-                        build_export_columns(sheet.group_by),
+                        build_export_columns(
+                            sheet.group_by, query.carries_organization
+                        ),
                         take_rows(rows, limit),
                         trailer=(
                             f"rows={last - first + 1} part={index}/{parts} "
@@ -1856,7 +1912,7 @@ async def get_usage_breakdown(
     # Organization: resolve live (name, kind) as the fallback for rows without
     # a snapshot, and to detect deletion (id no longer among live principals).
     org_info_by_id: Dict[int, tuple] = {}
-    if USAGE_GROUP_BY_ORGANIZATION in request.group_by:
+    if USAGE_GROUP_BY_ORGANIZATION in request.group_by or query.carries_organization:
         org_info_by_id = await _organization_info_by_id(
             session,
             [getattr(r, "group_organization_id", None) for r in item_rows],
@@ -1883,6 +1939,7 @@ async def get_usage_breakdown(
                 granularity,
                 existing_ids_by_dim,
                 org_info_by_id,
+                query.carries_organization,
             )
             for row in item_rows
         ],
