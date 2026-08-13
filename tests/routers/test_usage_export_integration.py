@@ -29,6 +29,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import register_handlers
 from gpustack.routes import usage as usage_routes
+from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_routes import ModelRoute
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.principals import Principal, PrincipalType
@@ -48,7 +49,24 @@ class _Ctx:
     current_is_personal_scope = False
 
 
+# Which tenant each seeded user's API key belongs to. ``consumer_principal_id``
+# is denormalized from the key, so this is what a row's Organization resolves
+# to: a live Org, an Org since deleted (snapshot name only), and a keyless row
+# whose consumer is NULL and therefore Untracked.
+_CONSUMERS = {
+    1: (10, "acme", "org"),
+    2: (11, "gone-org", "org"),
+    3: (10, "acme", "org"),
+    4: (None, None, None),
+    5: (None, None, None),
+}
+
+
 def _usage_row(*, user_id, user_name, route_id, route_name, day, tokens):
+    consumer_id, consumer_name, consumer_kind = _CONSUMERS[user_id]
+    # A row is only credited to a tenant through its API key; keyless (cookie)
+    # traffic has no consumer at all.
+    keyed = consumer_id is not None
     return ModelUsage(
         user_id=user_id,
         user_name=user_name,
@@ -56,9 +74,12 @@ def _usage_row(*, user_id, user_name, route_id, route_name, day, tokens):
         model_name=route_name,
         model_route_id=route_id,
         model_route_name=route_name,
-        api_key_id=None,
-        api_key_name=None,
-        access_key=None,
+        api_key_id=200 + user_id if keyed else None,
+        api_key_name=f"key{user_id}" if keyed else None,
+        access_key=f"ak{user_id}" if keyed else None,
+        consumer_principal_id=consumer_id,
+        consumer_name=consumer_name,
+        consumer_principal_kind=consumer_kind,
         api_key_is_custom=False,
         date=day,
         prompt_token_count=tokens,
@@ -79,6 +100,10 @@ async def app_and_engine():
         await conn.run_sync(Principal.__table__.create)
         # The route dimension checks entity existence against this table.
         await conn.run_sync(ModelRoute.__table__.create)
+        # ...and the api_key dimension against this one. Left uncreated while
+        # every seeded row was keyless; the tenant column is only carried on
+        # api_key-grouped rows, so the fixture now has keys and needs it.
+        await conn.run_sync(ApiKey.__table__.create)
 
     async with AsyncSession(engine) as seed:
         seed.add_all(
@@ -88,6 +113,19 @@ async def app_and_engine():
                     kind=PrincipalType.USER,
                     name="alice",
                     display_name="Alice",
+                    source="local",
+                    is_admin=False,
+                    is_active=True,
+                    created_at=NOW,
+                    updated_at=NOW,
+                ),
+                # Org 10 is live; org 11 deliberately is not, so a row whose
+                # tenant was deleted still has to name it from its snapshot.
+                Principal(
+                    id=10,
+                    kind=PrincipalType.ORG,
+                    name="acme",
+                    display_name="Acme",
                     source="local",
                     is_admin=False,
                     is_active=True,
@@ -778,19 +816,126 @@ async def test_estimate_columns_match_the_exported_header_row(client):
 
 @pytest.mark.asyncio
 async def test_a_row_with_no_api_key_leaves_its_columns_empty(client):
-    """None of the seeded usage carries an API key.
+    """Keyless (cookie-authenticated) usage has no API key to name.
 
     A ``-`` placeholder is a UI convention, and ``FALSE`` would assert that
     something which never existed has not been deleted. Both mislead whoever
-    reads the file, so the cells stay empty.
+    reads the file, so the cells stay empty — and empty has to survive
+    alongside rows that DO carry a key, which is why this asserts on both.
     """
     response = await client.post(
         "/usage/breakdown/export", json={**RANGE, "group_by": ["user", "api_key"]}
     )
 
-    rows = _parse_csv(response.content)
-    assert rows
-    for row in rows:
-        assert row["API Key ID"] == ""
-        assert row["API Key"] == ""
-        assert row["API Key Deleted"] == ""
+    rows = {row["User"]: row for row in _parse_csv(response.content)}
+    keyless = rows["user4"]
+    assert keyless["API Key ID"] == ""
+    assert keyless["API Key"] == ""
+    assert keyless["API Key Deleted"] == ""
+    # Keyed rows name theirs (the label is "<owner> / <key>").
+    assert rows["user1"]["API Key"] == "user1 / key1"
+
+
+CHART_GROUP_BY = ["date", "user", "route", "api_key"]
+
+
+@pytest.mark.asyncio
+async def test_all_view_names_the_tenant_each_row_belongs_to(client):
+    """Cross-tenant token rows must say whose they are.
+
+    Two organizations can each have an ``ops`` user calling a shared model.
+    Without the tenant those rows differ only in their numbers, and attributing
+    spend is what these files are for.
+
+    Carried as an attribute, not a grouping: ``consumer_principal_id`` is
+    denormalized from the API key, so an api_key-grouped row already has
+    exactly one tenant and naming it moves no rows.
+    """
+    response = await client.post(
+        "/usage/breakdown/export", json={**RANGE, "group_by": CHART_GROUP_BY}
+    )
+
+    assert response.status_code == 200, response.text
+    rows = {row["User"]: row for row in _parse_csv(response.content)}
+
+    assert rows["user1"]["Organization"] == "acme"
+    assert rows["user1"]["Organization ID"] == "10"
+    assert rows["user1"]["Organization Type"] == "org"
+    assert rows["user1"]["Organization Deleted"] == "False"
+    # A deleted tenant keeps its snapshot name; dropping the row would lose
+    # real, billable usage.
+    assert rows["user2"]["Organization"] == "gone-org"
+    assert rows["user2"]["Organization Deleted"] == "True"
+    # Keyless traffic has no consumer — un-attributed, not missing.
+    assert rows["user4"]["Organization"] == "Untracked"
+
+
+@pytest.mark.asyncio
+async def test_a_grouping_without_api_key_omits_the_tenant(client):
+    """Only the API key pins a row to one tenant.
+
+    A user can hold keys in several Orgs and a model can be shared across
+    them, so for those groupings ``MAX(id)`` and ``MAX(name)`` could come from
+    different tenants — pairing one Org's id with another's name. A wrong
+    attribution is worse than an absent one.
+    """
+    response = await client.post(
+        "/usage/breakdown/export", json={**RANGE, "group_by": ["date", "user"]}
+    )
+
+    header = response.content.decode("utf-8-sig").splitlines()[0]
+    assert "Organization" not in header
+
+
+@pytest.mark.asyncio
+async def test_the_tenant_column_follows_the_grouping_columns(client):
+    """Grouping columns identify a row; attribute columns describe it.
+
+    Reusing the dimension loop would have put the tenant FIRST (it is the
+    broadest dimension, and that is where it belongs when it IS the grouping).
+    As an attribute it trails them instead — the same place the resource
+    export puts the owner and the tenant.
+    """
+    response = await client.post(
+        "/usage/breakdown/export/estimate",
+        json={**RANGE, "group_by": CHART_GROUP_BY},
+    )
+
+    keys = [c["key"] for c in response.json()["sheets"][0]["columns"]]
+    assert keys[0] == "date"
+    assert keys.index("organization_id") > keys.index("api_key_deleted")
+    assert keys[keys.index("organization_id") : keys.index("organization_id") + 4] == [
+        "organization_id",
+        "organization_name",
+        "organization_kind",
+        "organization_deleted",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_preview_can_read_the_tenant_off_a_breakdown_item(client):
+    """The preview reads values from ``/breakdown``, columns from the estimate.
+
+    The attribute reuses the item's existing ``organization`` field — the same
+    shape the Organization grouping produces — so the client reads one
+    organization one way in either role and needs no second code path. This
+    pins that shape: an attribute delivered under some new field would render
+    as empty preview cells while the file itself looked fine.
+    """
+    response = await client.post(
+        "/usage/breakdown", json={**RANGE, "group_by": CHART_GROUP_BY, "page": -1}
+    )
+
+    items = {item["user"]["label"]: item for item in response.json()["items"]}
+    org = items["user1"]["organization"]
+    assert org["label"] == "acme"
+    assert org["deleted"] is False
+    assert org["identity"]["current"]["organization_id"] == 10
+    assert org["identity"]["value"]["organization_kind"] == "org"
+    # Untracked carries no identity at all (the field is omitted, not null),
+    # which the preview's optional chaining already handles — it reads the
+    # label and the flag and asks for nothing else.
+    untracked = items["user4"]["organization"]
+    assert untracked.get("identity") is None
+    assert untracked["label"] == "Untracked"
+    assert untracked["deleted"] is False

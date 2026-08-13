@@ -95,6 +95,7 @@ from gpustack.utils.tabular_export import (
     take_rows,
 )
 from gpustack.utils.usage_export import (
+    UNTRACKED_ORGANIZATION_NAME,
     build_resource_export_columns,
     resource_export_column_keys,
     resource_export_row,
@@ -620,7 +621,58 @@ async def _enrich_items(  # noqa: C901
             if cid is not None:
                 i["creator_deleted"] = not creator_exists.get(cid, False)
 
+    await _attach_organization(session, items, cache=cache)
     await _attach_dimensions(session, gb, items, cache=cache)
+
+
+async def _attach_organization(session, items: List[dict], cache=None) -> None:
+    """Resolve the organization an entity row BELONGS TO (mutates in place).
+
+    This is the attribute form of the organization dimension: an instance or
+    volume has exactly one consumer, so naming it adds a column without
+    changing which rows exist. A no-op unless the statement carried the
+    consumer columns (see ``carries_organization``).
+
+    Resolution deliberately mirrors the dimension in ``_enrich_items``: live
+    principal name by id, the row's own snapshot when that principal is gone,
+    ``Org {id}`` as the last resort, and ``Untracked`` for usage with no
+    consumer at all. One organization must read the same whether it is the
+    thing being grouped or an attribute of the thing being grouped — two
+    spellings of one tenant is precisely what makes an export unusable for
+    reconciliation.
+    """
+    tagged = [item for item in items if "organization_id" in item]
+    if not tagged:
+        return
+
+    ids = [item["organization_id"] for item in tagged if item["organization_id"]]
+    info: Dict[Any, Any] = cache.org_info if cache is not None else {}
+
+    async def fetch_orgs(missing):
+        found = await _organization_info_by_id(session, missing)
+        return {oid: found.get(oid) for oid in missing}
+
+    if cache is not None:
+        await cache.resolve(info, ids, fetch_orgs)
+    elif ids:
+        info = await _organization_info_by_id(session, ids)
+
+    for item in tagged:
+        oid = item["organization_id"]
+        snapshot_name = item.pop("_consumer_name", None)
+        snapshot_kind = item.pop("_consumer_kind", None)
+        if not oid:
+            # NULL consumer is un-attributed usage, not missing data (§3.10.4).
+            item["organization_name"] = UNTRACKED_ORGANIZATION_NAME
+            item["organization_kind"] = None
+            item["organization_deleted"] = False
+            continue
+        live = info.get(oid)
+        item["organization_name"] = (
+            (live[0] if live else None) or snapshot_name or f"Org {oid}"
+        )
+        item["organization_kind"] = (live[1] if live else None) or snapshot_kind
+        item["organization_deleted"] = live is None
 
 
 async def _fill_missing(awaitable, keys) -> dict:
@@ -832,6 +884,7 @@ class ResourceBreakdownQuery:
     count_statement: Any
     metric_keys: List[str]
     carries_creator: bool
+    carries_organization: bool
     effective_scope: str
 
 
@@ -980,6 +1033,24 @@ async def _build_resource_breakdown_statement(  # noqa: C901
             func.max(MeteredUsage.consumer_name).label("org_name"),
             func.max(MeteredUsage.consumer_principal_kind).label("org_kind"),
         ]
+    # The organization an entity BELONGS TO, carried as an attribute of the row
+    # rather than as a grouping key — exactly like the creator above, and safe
+    # for exactly the same reason: an instance or volume has one consumer, so
+    # MAX collapses to that one row's values and the three stay consistent with
+    # each other. Coarser groupings span many consumers and get nothing.
+    #
+    # Only in the platform-wide "All" view: with an Org pinned, every row has
+    # the same one and the columns would be three constants. Deciding that here
+    # rather than letting the client ask keeps the file's shape server-owned —
+    # and the client cannot know it anyway, since it is a property of the
+    # caller's tenancy, not of the query.
+    carries_organization = carries_creator and _is_platform_wide(user, ctx)
+    if carries_organization:
+        agg_cols += [
+            func.max(MeteredUsage.consumer_principal_id).label("consumer_id"),
+            func.max(MeteredUsage.consumer_name).label("consumer_name"),
+            func.max(MeteredUsage.consumer_principal_kind).label("consumer_kind"),
+        ]
     grouped = base.with_only_columns(*select_cols, *agg_cols).group_by(*group_cols)
 
     order_exprs: List[Any] = []
@@ -1004,6 +1075,7 @@ async def _build_resource_breakdown_statement(  # noqa: C901
         count_statement=select(func.count()).select_from(grouped.subquery()),
         metric_keys=metric_keys,
         carries_creator=carries_creator,
+        carries_organization=carries_organization,
         effective_scope=effective_scope,
     )
 
@@ -1022,6 +1094,7 @@ _OPTIONAL_ROW_COLUMNS = (
     "group_id",
     "group_sku_count",
     "org_name",
+    "consumer_id",
     "sku",
 )
 
@@ -1069,6 +1142,7 @@ def _rows_to_items(
     has_id = "group_id" in present
     has_sku_count = "group_sku_count" in present
     has_org = "org_name" in present
+    has_consumer = "consumer_id" in present
     has_sku = "sku" in present
 
     for row in rows:
@@ -1092,6 +1166,13 @@ def _rows_to_items(
         if has_org:
             item["_org_name"] = row.org_name
             item["_org_kind"] = getattr(row, "org_kind", None)
+        # The consumer this entity belongs to. Carried under its own keys, not
+        # the dimension's: when organization IS the grouping these are absent,
+        # and mixing the two would leave "whose row is this" ambiguous.
+        if has_consumer:
+            item["organization_id"] = row.consumer_id
+            item["_consumer_name"] = getattr(row, "consumer_name", None)
+            item["_consumer_kind"] = getattr(row, "consumer_kind", None)
         item["sku"] = row.sku if has_sku else None
         # Owner of the resource, present only for resource-dimension groupings
         # (see ``carries_creator``) so per-instance / per-volume (and
@@ -1469,6 +1550,7 @@ async def _stream_resource_export_rows(
                         request.group_by,
                         query.metric_keys,
                         granularity=request.granularity,
+                        carries_organization=query.carries_organization,
                     )
                     for item in items
                 ]
@@ -1587,7 +1669,9 @@ async def _resource_export_response(
         return _stream_resource_export_rows(session, query, breakdown_request)
 
     def columns_for(sheet, query):
-        return build_resource_export_columns(sheet.group_by, query.metric_keys)
+        return build_resource_export_columns(
+            sheet.group_by, query.metric_keys, query.carries_organization
+        )
 
     if effective_format == USAGE_EXPORT_FORMAT_XLSX:
         payload = await build_xlsx(
@@ -1691,7 +1775,9 @@ async def _split_resource_export_response(
                     split_member_name(sheet.key, index, parts, many, prefix=prefix),
                     stream_csv(
                         build_resource_export_columns(
-                            sheet.group_by, query.metric_keys
+                            sheet.group_by,
+                            query.metric_keys,
+                            query.carries_organization,
                         ),
                         take_rows(rows, limit),
                         trailer=(
@@ -1739,9 +1825,15 @@ async def _resource_export_estimate(
                 columns=[
                     UsageExportColumn(key=key, title=title)
                     for key, title in zip(
-                        resource_export_column_keys(sheet.group_by, query.metric_keys),
+                        resource_export_column_keys(
+                            sheet.group_by,
+                            query.metric_keys,
+                            query.carries_organization,
+                        ),
                         build_resource_export_columns(
-                            sheet.group_by, query.metric_keys
+                            sheet.group_by,
+                            query.metric_keys,
+                            query.carries_organization,
                         ),
                     )
                 ],

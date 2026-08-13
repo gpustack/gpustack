@@ -43,7 +43,18 @@ class _Ctx:
     current_is_personal_scope = False
 
 
+# Which tenant each seeded instance belongs to, covering the three states the
+# Organization column has to render: a live Org, an Org that has since been
+# deleted (only its snapshot name survives), and usage with no consumer at all.
+_CONSUMERS = {
+    1: (10, "acme", "org"),
+    2: (11, "gone-org", "org"),
+    3: (None, None, None),
+}
+
+
 def _metered(resource_id: int, day: int, creator_id: int):
+    consumer_id, consumer_name, consumer_kind = _CONSUMERS[resource_id]
     return MeteredUsage(
         meter_key=METER_INSTANCE_UPTIME,
         resource_type=RESOURCE_TYPE_GPU_INSTANCE,
@@ -56,6 +67,9 @@ def _metered(resource_id: int, day: int, creator_id: int):
         sku_count=2,
         creator_id=creator_id,
         creator_name=f"user{creator_id}",
+        consumer_principal_id=consumer_id,
+        consumer_name=consumer_name,
+        consumer_principal_kind=consumer_kind,
         created_at=NOW,
         updated_at=NOW,
     )
@@ -76,6 +90,21 @@ async def app_and_engine():
                 kind=PrincipalType.USER,
                 name="user1",
                 display_name="User One",
+                source="local",
+                is_admin=False,
+                is_active=True,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        # Org 10 exists; org 11 deliberately does not, so a row whose tenant
+        # was deleted still has to name it from its snapshot.
+        seed.add(
+            Principal(
+                id=10,
+                kind=PrincipalType.ORG,
+                name="acme",
+                display_name="Acme",
                 source="local",
                 is_admin=False,
                 is_active=True,
@@ -461,3 +490,130 @@ async def test_estimate_columns_match_the_exported_header_row(client):
     promised = [c["title"] for c in estimate.json()["sheets"][0]["columns"]]
     header = exported.content.decode("utf-8-sig").splitlines()[0]
     assert header == ",".join(promised)
+
+
+@pytest.mark.asyncio
+async def test_all_view_names_the_tenant_each_resource_belongs_to(client):
+    """Cross-tenant rows must say whose they are.
+
+    In the platform-wide view two organizations can each own an instance
+    called ``web-1`` and an operator called ``ops``. The ids disambiguate for
+    a script, but a person reconciling spend per tenant cannot work backwards
+    from ``Instance ID: 900360`` — and attributing cost is what these files are
+    for. The organization is an ATTRIBUTE here, not a grouping: one instance
+    has one tenant, so naming it adds a column without moving a single row.
+    """
+    response = await client.post(
+        "/usage/gpu-instances/breakdown/export",
+        json={**RANGE, "group_by": ["instance"]},
+    )
+
+    assert response.status_code == 200, response.text
+    rows = _parse_csv(response.content)
+    by_instance = {r["Instance ID"]: r for r in rows}
+    assert len(rows) == 3
+
+    # Live tenant: resolved by id, so a rename shows up.
+    assert by_instance["1"]["Organization"] == "acme"
+    assert by_instance["1"]["Organization Deleted"] == "False"
+    assert by_instance["1"]["Organization Type"] == "org"
+    # Deleted tenant: the snapshot keeps it named, and the flag says it is
+    # gone. Dropping the row instead would lose real, billable usage.
+    assert by_instance["2"]["Organization"] == "gone-org"
+    assert by_instance["2"]["Organization Deleted"] == "True"
+    # No consumer at all is un-attributed usage, not missing data.
+    assert by_instance["3"]["Organization"] == "Untracked"
+    assert by_instance["3"]["Organization Deleted"] == "False"
+
+    # The tenant is a different fact from the resource's own lifecycle: every
+    # instance here is deleted, but only one tenant is.
+    assert {r["Instance Deleted"] for r in rows} == {"True"}
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_organization_view_omits_the_column(client, app_and_engine):
+    """With one tenant in scope the column would be one constant, repeated.
+
+    The verdict depends on WHO is exporting, not on what was asked for, so the
+    server decides it — a client cannot know its own tenancy well enough to
+    ask, and letting it try is how the file's shape starts to drift.
+    """
+    app, _ = app_and_engine
+    pinned = _Ctx()
+    pinned.user = User(id=1, name="admin", is_admin=True)
+    pinned.is_platform_admin = True
+    pinned.current_principal_id = 10  # acting inside Acme
+    app.dependency_overrides[get_tenant_context] = lambda: pinned
+
+    response = await client.post(
+        "/usage/gpu-instances/breakdown/export",
+        json={**RANGE, "group_by": ["instance"], "scope": "all"},
+    )
+
+    header = response.content.decode("utf-8-sig").splitlines()[0]
+    assert "Organization" not in header
+    assert "Instance" in header
+
+
+@pytest.mark.asyncio
+async def test_a_grouping_that_spans_tenants_omits_the_column(client):
+    """One flavor is used by every tenant, so there is no single answer.
+
+    The same rule the Owner columns already follow: taking MAX of the id and
+    MAX of the name independently would pair one tenant's id with another's
+    name. A wrong attribution is worse than an absent one, so the coarse
+    groupings get nothing.
+    """
+    response = await client.post(
+        "/usage/gpu-instances/breakdown/export",
+        json={**RANGE, "group_by": ["instance_type"]},
+    )
+
+    header = response.content.decode("utf-8-sig").splitlines()[0]
+    assert "Organization" not in header
+
+
+@pytest.mark.asyncio
+async def test_the_preview_is_promised_the_organization_columns(client):
+    """The preview renders from the estimate, so the columns must be announced.
+
+    Without this the file would carry a tenant the dialog never showed —
+    exactly the client/server drift the estimate exists to prevent.
+    """
+    payload = {**RANGE, "group_by": ["instance"]}
+    estimate = await client.post(
+        "/usage/gpu-instances/breakdown/export/estimate", json=payload
+    )
+    exported = await client.post("/usage/gpu-instances/breakdown/export", json=payload)
+
+    keys = [c["key"] for c in estimate.json()["sheets"][0]["columns"]]
+    assert [k for k in keys if k.startswith("organization_")] == [
+        "organization_id",
+        "organization_name",
+        "organization_kind",
+        "organization_deleted",
+    ]
+    promised = [c["title"] for c in estimate.json()["sheets"][0]["columns"]]
+    assert exported.content.decode("utf-8-sig").splitlines()[0] == ",".join(promised)
+
+
+@pytest.mark.asyncio
+async def test_the_breakdown_json_carries_the_tenant_too(client):
+    """The preview reads rows from ``/breakdown``, not from the file.
+
+    Announcing the columns is only half of it: the dialog fills them from the
+    JSON items, so a column promised there and absent here renders as an empty
+    cell — which reads as "this instance has no owner".
+    """
+    response = await client.post(
+        "/usage/gpu-instances/breakdown",
+        json={**RANGE, "group_by": ["instance"], "page": -1},
+    )
+
+    items = {item["id"]: item for item in response.json()["items"]}
+    assert items[1]["organization_name"] == "acme"
+    assert items[1]["organization_kind"] == "org"
+    assert items[1]["organization_deleted"] is False
+    assert items[2]["organization_name"] == "gone-org"
+    assert items[2]["organization_deleted"] is True
+    assert items[3]["organization_name"] == "Untracked"
