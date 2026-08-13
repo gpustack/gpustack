@@ -1,7 +1,14 @@
 import pytest
-from gpustack.routes.model_sets import filter_specs_by_gpu
+from gpustack.routes.draft_models import get_draft_models
+from gpustack.routes.model_sets import filter_specs_by_gpu, get_model_sets
+from gpustack.schemas.common import ListParams
 from gpustack.schemas.gpu_devices import GPUDevice
-from gpustack.schemas.model_sets import GPUFilters, ModelSpec
+from gpustack.schemas.model_sets import (
+    DraftModel,
+    GPUFilters,
+    ModelSetPublic,
+    ModelSpec,
+)
 from gpustack.schemas.models import SourceEnum
 
 
@@ -174,3 +181,138 @@ def test_filter_specs_by_gpu(
     except AssertionError as e:
         print(f"Test case '{case_name}' failed.")
         raise e
+
+
+# --- GET /model-sets and GET /draft-models: search, filters, pagination -------
+# Both handlers hold the catalog in memory and receive it as a dependency, so
+# they can be driven directly without a database.
+
+CATALOG = [
+    ModelSetPublic(id=1, name="Qwen3-235B-A22B-Instruct-2507", categories=["llm"]),
+    ModelSetPublic(id=2, name="Qwen3.5-0.8B", categories=["llm"]),
+    ModelSetPublic(id=3, name="Qwen3.5-9B", categories=["llm"]),
+    ModelSetPublic(id=4, name="Qwen3.5-27B", categories=["llm"]),
+    ModelSetPublic(id=5, name="Qwen3-Embedding-8B", categories=["embedding"]),
+    ModelSetPublic(id=6, name="FLUX.2-klein-9B", categories=["image"]),
+]
+
+
+def params(page=1, perPage=100):
+    return ListParams(page=page, perPage=perPage, watch=False, sort_by=None)
+
+
+async def call(**kwargs):
+    kwargs.setdefault("params", params())
+    kwargs.setdefault("model_sets", CATALOG)
+    # Both are declared with FastAPI defaults, which are marker objects rather
+    # than None when the handler is called directly.
+    kwargs.setdefault("search", None)
+    kwargs.setdefault("categories", None)
+    return await get_model_sets(**kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "search",
+    ["qwen3.5 9b", "9b qwen3.5", "qwen3.5_9b", "qwen 3.5 9b", "  QWEN3.5-9B  "],
+)
+async def test_search_finds_the_model_however_it_is_typed(search):
+    result = await call(search=search)
+    assert [item.name for item in result.items] == ["Qwen3.5-9B"]
+    assert result.pagination.total == 1
+
+
+@pytest.mark.asyncio
+async def test_search_ranks_and_excludes_incidental_matches():
+    result = await call(search="qwen 3.5")
+    names = [item.name for item in result.items]
+    # `35` also sits inside `235B`, and the total is what feeds pagination, so
+    # it has to count only the relevant ones.
+    assert names == ["Qwen3.5-0.8B", "Qwen3.5-9B", "Qwen3.5-27B"]
+    assert result.pagination.total == 3
+
+
+@pytest.mark.asyncio
+async def test_blank_search_returns_the_whole_catalog():
+    # Whitespace-only input reaches the route as a truthy string; it has to
+    # behave as no query rather than matching nothing.
+    for search in ["   ", "\t", None]:
+        result = await call(search=search)
+        assert result.pagination.total == len(CATALOG)
+
+
+@pytest.mark.asyncio
+async def test_search_combines_with_categories():
+    result = await call(search="9b", categories=["image"])
+    assert [item.name for item in result.items] == ["FLUX.2-klein-9B"]
+    assert result.pagination.total == 1
+
+
+@pytest.mark.asyncio
+async def test_search_survives_pagination():
+    first = await call(search="qwen 3.5", params=params(page=1, perPage=2))
+    second = await call(search="qwen 3.5", params=params(page=2, perPage=2))
+
+    assert [item.name for item in first.items] == ["Qwen3.5-0.8B", "Qwen3.5-9B"]
+    assert [item.name for item in second.items] == ["Qwen3.5-27B"]
+    assert first.pagination.total == second.pagination.total == 3
+    assert first.pagination.totalPage == 2
+
+
+@pytest.mark.asyncio
+async def test_search_with_no_match_is_empty():
+    result = await call(search="nonexistent-model")
+    assert result.items == []
+    assert result.pagination.total == 0
+
+
+# --- /draft-models: same catalog, same matching --------------------------------
+
+
+def draft(name, repo):
+    return DraftModel(
+        name=name,
+        algorithm="eagle3",
+        source="huggingface",
+        huggingface_repo_id=repo,
+    )
+
+
+DRAFT_MODELS = [
+    draft("Qwen3-8B-EAGLE3", "Tengyunw/qwen3_8b_eagle3"),
+    draft("Qwen3-30B-A3B-EAGLE3", "Tengyunw/qwen3_30b_moe_eagle3"),
+    draft("Qwen3-235B-A22B-EAGLE3", "lmsys/Qwen3-235B-A22B-EAGLE3"),
+    draft("gpt-oss-120b-EAGLE3", "lmsys/EAGLE3-gpt-oss-120b-bf16"),
+]
+
+
+async def call_drafts(**kwargs):
+    kwargs.setdefault("params", params())
+    kwargs.setdefault("draft_models", DRAFT_MODELS)
+    kwargs.setdefault("search", None)
+    kwargs.setdefault("algorithm", None)
+    return await get_draft_models(**kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "search",
+    ["qwen3 235b eagle3", "eagle3 qwen3-235b", "qwen3_235b_a22b", "  QWEN3 235B  "],
+)
+async def test_draft_model_search_matches_like_model_sets(search):
+    result = await call_drafts(search=search)
+    assert [item.name for item in result.items] == ["Qwen3-235B-A22B-EAGLE3"]
+
+
+@pytest.mark.asyncio
+async def test_draft_model_blank_search_returns_everything():
+    result = await call_drafts(search="   ")
+    assert result.pagination.total == len(DRAFT_MODELS)
+
+
+@pytest.mark.asyncio
+async def test_draft_model_search_combines_with_algorithm():
+    result = await call_drafts(search="gpt oss", algorithm="eagle3")
+    assert [item.name for item in result.items] == ["gpt-oss-120b-EAGLE3"]
+    result = await call_drafts(search="gpt oss", algorithm="medusa")
+    assert result.items == []

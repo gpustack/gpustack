@@ -8,6 +8,7 @@ from gpustack.server.catalog import (
     get_catalog_draft_models,
 )
 from gpustack.server.deps import ListParamsDep
+from gpustack.utils.search import rank_matches
 
 router = APIRouter()
 
@@ -20,8 +21,10 @@ async def get_draft_models(
     draft_models: List[DraftModel] = Depends(get_catalog_draft_models),
 ):
     if search:
-        search = search.strip().lower()
-        draft_models = [model for model in draft_models if search in model.name.lower()]
+        # Same catalog, same directory page in the UI as /model-sets, so the
+        # same matching: `qwen3 235b eagle3` finds the model whose name is
+        # spelled Qwen3-235B-A22B-EAGLE3.
+        draft_models = rank_matches(draft_models, search, key=lambda model: model.name)
 
     if algorithm:
         draft_models = [

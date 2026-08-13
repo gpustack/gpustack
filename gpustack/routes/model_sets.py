@@ -15,6 +15,7 @@ from gpustack.server.catalog import (
     get_model_set_specs,
 )
 from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.utils.search import rank_matches
 from gpustack.worker.backends.base import get_ascend_cann_variant
 
 router = APIRouter()
@@ -28,9 +29,11 @@ async def get_model_sets(
     model_sets: List[ModelSet] = Depends(get_model_sets),
 ):
     if search:
-        model_sets = [
-            model for model in model_sets if search.lower() in model.name.lower()
-        ]
+        # Matching ignores separators, which admits loose matches; ranking by
+        # relevance is what keeps the model the user typed above them, since
+        # the curated (order, release_date) sequence knows nothing about the
+        # query.
+        model_sets = rank_matches(model_sets, search, key=lambda model: model.name)
 
     if categories:
         model_sets = [
