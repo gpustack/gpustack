@@ -146,7 +146,9 @@ _SINGLE_GROUP_EXTRA_KEYS = {
 }
 
 
-def _column_keys(group_by: Sequence[str]) -> List[str]:
+def _column_keys(
+    group_by: Sequence[str], carries_organization: bool = False
+) -> List[str]:
     keys: List[str] = []
     if USAGE_GROUP_BY_DATE in group_by:
         keys.append("date")
@@ -168,24 +170,44 @@ def _column_keys(group_by: Sequence[str]) -> List[str]:
         if dimension == USAGE_GROUP_BY_ORGANIZATION:
             keys.append("organization_kind")
         keys.append(f"{dimension}_deleted")
+    # Grouping columns identify the row, so they come first; attribute columns
+    # describe it and follow them. That is why the tenant lands here when it is
+    # carried as an attribute but up in the block above when it IS the
+    # grouping — and it is the same order the resource export uses, where the
+    # owner and the tenant both trail the dimension they belong to.
+    if carries_organization:
+        keys.extend(
+            [
+                "organization_id",
+                "organization_name",
+                "organization_kind",
+                "organization_deleted",
+            ]
+        )
     keys.extend(_METRIC_KEYS)
     if len(group_by) == 1:
         keys.extend(_SINGLE_GROUP_EXTRA_KEYS.get(group_by[0], []))
     return keys
 
 
-def build_export_columns(group_by: Sequence[str]) -> List[str]:
+def build_export_columns(
+    group_by: Sequence[str], carries_organization: bool = False
+) -> List[str]:
     """The header row for one sheet, in file order."""
-    return [export_column_title(key) for key in _column_keys(group_by)]
+    return [
+        export_column_title(key) for key in _column_keys(group_by, carries_organization)
+    ]
 
 
-def export_column_keys(group_by: Sequence[str]) -> List[str]:
+def export_column_keys(
+    group_by: Sequence[str], carries_organization: bool = False
+) -> List[str]:
     """The machine keys behind that header row, in the same order.
 
     The preview renders from these while the file shows the titles, so both
     describe the same columns without the client re-deriving the list.
     """
-    return _column_keys(group_by)
+    return _column_keys(group_by, carries_organization)
 
 
 def _dimension_values(dimension, id_field: str, name_field: str) -> Dict[str, Any]:
@@ -216,7 +238,11 @@ def _dimension_values(dimension, id_field: str, name_field: str) -> Dict[str, An
     }
 
 
-def export_row(item: UsageBreakdownItem, group_by: Sequence[str]) -> List[Any]:
+def export_row(
+    item: UsageBreakdownItem,
+    group_by: Sequence[str],
+    carries_organization: bool = False,
+) -> List[Any]:
     """Flatten one breakdown item into a row matching ``build_export_columns``.
 
     Takes the same :class:`UsageBreakdownItem` the JSON endpoint returns, so a
@@ -233,8 +259,11 @@ def export_row(item: UsageBreakdownItem, group_by: Sequence[str]) -> List[Any]:
         USAGE_GROUP_BY_ROUTE: item.route,
         USAGE_GROUP_BY_API_KEY: item.api_key,
     }
+    emitted = set(group_by)
+    if carries_organization:
+        emitted.add(USAGE_GROUP_BY_ORGANIZATION)
     for dimension_key, dimension in dimension_by_key.items():
-        if dimension_key not in group_by:
+        if dimension_key not in emitted:
             continue
         id_field, name_field = _ENTITY_DIMENSION_FIELDS[dimension_key]
         flattened = _dimension_values(dimension, id_field, name_field)
@@ -257,7 +286,7 @@ def export_row(item: UsageBreakdownItem, group_by: Sequence[str]) -> List[Any]:
         for key in _SINGLE_GROUP_EXTRA_KEYS.get(group_by[0], []):
             values[key] = getattr(item, key, None)
 
-    return [values.get(key) for key in _column_keys(group_by)]
+    return [values.get(key) for key in _column_keys(group_by, carries_organization)]
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +345,16 @@ def _resources_column_key(metric_keys: Sequence[str]) -> str:
 def resource_export_column_keys(
     group_by: Sequence[str],
     metric_keys: Sequence[str],
+    carries_organization: bool = False,
 ) -> List[str]:
+    """Column keys for one resource sheet, in file order.
+
+    ``carries_organization`` is passed in rather than derived from
+    ``group_by``, because it isn't derivable: whether the rows span more than
+    one tenant depends on WHO is exporting (a platform admin with no Org
+    pinned), which only the statement builder knows. Guessing it here would
+    put a header on a column the rows don't have.
+    """
     keys: List[str] = []
     if USAGE_GROUP_BY_DATE in group_by:
         keys.append("date")
@@ -328,6 +366,17 @@ def resource_export_column_keys(
     # than pair one user's id with another's name.
     if any(dimension in ("instance", "volume") for dimension in group_by):
         keys.extend(["owner_id", "owner_name", "owner_deleted"])
+    # Which tenant the resource belongs to. Same columns the organization
+    # DIMENSION emits, so one entity is spelled one way in either role.
+    if carries_organization:
+        keys.extend(
+            [
+                "organization_id",
+                "organization_name",
+                "organization_kind",
+                "organization_deleted",
+            ]
+        )
     keys.extend(
         list(metric_keys)
         + [_resources_column_key(metric_keys), "active_users", "last_active"]
@@ -346,7 +395,9 @@ class _ResourceExportShape(NamedTuple):
 
 @lru_cache(maxsize=64)
 def _resource_export_shape(
-    group_by: Tuple[str, ...], metric_keys: Tuple[str, ...]
+    group_by: Tuple[str, ...],
+    metric_keys: Tuple[str, ...],
+    carries_organization: bool = False,
 ) -> _ResourceExportShape:
     """Resolve a sheet's fixed layout once per (group_by, metric_keys).
 
@@ -363,7 +414,9 @@ def _resource_export_shape(
     cannot grow with traffic.
     """
     return _ResourceExportShape(
-        column_keys=tuple(resource_export_column_keys(group_by, metric_keys)),
+        column_keys=tuple(
+            resource_export_column_keys(group_by, metric_keys, carries_organization)
+        ),
         resources_key=_resources_column_key(metric_keys),
         carries_owner=any(
             dimension in ("instance", "volume") for dimension in group_by
@@ -409,9 +462,12 @@ def resource_export_row(
     group_by: Sequence[str],
     metric_keys: Sequence[str],
     granularity: str = USAGE_GRANULARITY_DAY,
+    carries_organization: bool = False,
 ) -> List[Any]:
     """Flatten one enriched resource breakdown item into an export row."""
-    shape = _resource_export_shape(tuple(group_by), tuple(metric_keys))
+    shape = _resource_export_shape(
+        tuple(group_by), tuple(metric_keys), carries_organization
+    )
     values: Dict[str, Any] = {}
     if USAGE_GROUP_BY_DATE in group_by:
         values["date"] = _export_bucket(item.get("date"), granularity)
@@ -442,6 +498,14 @@ def resource_export_row(
         values["owner_name"] = item.get("creator_name")
         values["owner_deleted"] = bool(item.get("creator_deleted"))
 
+    if carries_organization:
+        # Resolved in ``_attach_organization`` — including the Untracked label
+        # for usage with no consumer, so this only spells the values out.
+        values["organization_id"] = item.get("organization_id")
+        values["organization_name"] = item.get("organization_name")
+        values["organization_kind"] = item.get("organization_kind")
+        values["organization_deleted"] = bool(item.get("organization_deleted"))
+
     metrics = item.get("metrics") or {}
     for key in metric_keys:
         values[key] = metrics.get(key)
@@ -457,9 +521,12 @@ def resource_export_row(
 def build_resource_export_columns(
     group_by: Sequence[str],
     metric_keys: Sequence[str],
+    carries_organization: bool = False,
 ) -> List[str]:
     """The header row for one resource sheet, in file order."""
     return [
         export_column_title(key)
-        for key in resource_export_column_keys(group_by, metric_keys)
+        for key in resource_export_column_keys(
+            group_by, metric_keys, carries_organization
+        )
     ]
