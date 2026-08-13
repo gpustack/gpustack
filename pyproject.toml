@@ -67,6 +67,9 @@ dependencies = [
     "gpustack-higress-plugins==0.3.0",
     "websockets==16.0",
     "py-radix>=1.1.0",
+    # Usage export, xlsx path only (CSV needs nothing beyond the stdlib).
+    # Pure Python, no build step.
+    "xlsxwriter>=3.2.9",
 ]
 
 [dependency-groups]
