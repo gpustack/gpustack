@@ -27,6 +27,23 @@ SECRET_KEY_DIGEST_ALGORITHM = "sha256"
 _DIGEST_SALT_BYTES = 16
 _GENERATED_SECRET_KEY_RE = re.compile(f"^[0-9a-f]{{{GENERATED_SECRET_KEY_BYTES * 2}}}$")
 
+# The characters that count as "special" for the password policy. The set is
+# the one the UI's client-side check offers, so a password its form accepts is
+# a password this API accepts:
+#
+#   /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*_+.])[a-zA-Z\d!@#$%^&*_+.]{6,64}$/
+#
+# The length bound and the allowlist of permitted characters in that regex are
+# the UI's own. A client may be stricter than the server; the server is the
+# authority, and NIST SP 800-63B argues against capping length or restricting
+# the alphabet there.
+#
+# Both the validator and ``generate_secure_password`` read this, and they have
+# to agree: ``gpustack reset-admin-password`` submits a generated password
+# through the regular UserUpdate path, so anything the generator can emit that
+# the validator would reject turns that command into a 422.
+PASSWORD_SPECIAL_CHARACTERS = "!@#$%^&*_+."
+
 
 def _as_text(value: Union[str, bytes]) -> str:
     return value.decode() if isinstance(value, bytes) else value
@@ -166,7 +183,7 @@ def generate_secure_password(length=12):
     if length < 8:
         raise ValueError("Password length should be at least 8 characters")
 
-    special_characters = "!@#$%^&*_+"
+    special_characters = PASSWORD_SPECIAL_CHARACTERS
     characters = string.ascii_letters + string.digits + special_characters
     while True:
         password = ''.join(secrets.choice(characters) for i in range(length))
