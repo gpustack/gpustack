@@ -401,12 +401,10 @@ def _resource_export_shape(
 ) -> _ResourceExportShape:
     """Resolve a sheet's fixed layout once per (group_by, metric_keys).
 
-    Every value here is a function of the sheet definition alone, yet
-    ``resource_export_row`` used to recompute all of it for every row: the
-    column-key list, the name of the ``resources`` column, and the scan for
-    whether the grouping carries an owner. On a 100k-row export that is 100k
-    identical answers — cheap individually, but it is the per-row call count
-    that a loaded server multiplies.
+    The column-key list, the name of the ``resources`` column and whether the
+    grouping carries an owner are functions of the sheet definition alone, so
+    computing them per row would be 100k identical answers on a 100k-row
+    export.
 
     Cached rather than passed in as an argument so every caller benefits
     without threading a context object through the row loop. The key space is

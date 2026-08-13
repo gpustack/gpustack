@@ -47,10 +47,14 @@ def _ctx_for(user):
 class _StreamResult:
     def __init__(self, rows):
         self._rows = rows
+        self.closed = False
 
     async def partitions(self, size):
         for start in range(0, len(self._rows), size):
             yield self._rows[start : start + size]
+
+    async def close(self):
+        self.closed = True
 
 
 def _session(*, counts, stream_rows):
@@ -399,6 +403,29 @@ async def test_multi_sheet_resource_export_is_zipped():
 
 
 @pytest.mark.asyncio
+async def test_default_scope_exports_the_callers_own_rows():
+    # The default is "all", so an omitted ``scope`` is not a request for
+    # platform-wide data — it is what every client sends. Refusing it would
+    # leave a regular user unable to export their own usage.
+    user = User(id=2, name="member", is_admin=False)
+    session = _session(counts=[1], stream_rows=[_instance_rows()])
+    request = ResourceExportRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["instance_type"],
+        format="csv",
+    )
+
+    with _stubbed_enrichment():
+        response = await export_gpu_instances_breakdown(
+            session=session, user=user, ctx=_ctx_for(user), request=request
+        )
+        text = (await _collect(response)).decode("utf-8-sig")
+
+    assert "scope=self" in text.strip().splitlines()[-1]
+
+
+@pytest.mark.asyncio
 async def test_resource_export_refuses_silent_scope_downgrade():
     user = User(id=2, name="member", is_admin=False)
     session = _session(counts=[], stream_rows=[])
@@ -478,6 +505,46 @@ def test_export_request_requires_exactly_one_shape():
             group_by=["instance"],
             sheets=[{"key": "user", "group_by": ["user"]}],
         )
+
+
+def test_export_request_rejects_duplicate_sheet_keys():
+    # Two sheets with one key overwrite each other's row count and part plan,
+    # and land in the archive as two members with the same name.
+    with pytest.raises(ValidationError):
+        ResourceExportRequest(
+            start_date=date(2026, 4, 1),
+            end_date=date(2026, 4, 2),
+            sheets=[
+                {"key": "user", "group_by": ["user"]},
+                {"key": "user", "group_by": ["date", "user"]},
+            ],
+        )
+
+
+def test_sheet_sort_by_reaches_the_breakdown_request():
+    # A per-sheet sort is the only way a multi-table export can order a date
+    # sheet by date and a top-N sheet by its metric. Accepting it and then
+    # ignoring it would order both by whatever the request-level default is.
+    request = ResourceExportRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        sheets=[
+            {"key": "a", "group_by": ["user"], "sort_by": "-gpu_hours"},
+            {"key": "b", "group_by": ["instance"], "sort_by": "instance_hours"},
+            {"key": "c", "group_by": ["user"], "sort_by": "--gpu_hours"},
+        ],
+    )
+    sheets = request.resolved_sheets()
+
+    descending = request.to_breakdown_request(sheets[0])
+    ascending = request.to_breakdown_request(sheets[1])
+    malformed = request.to_breakdown_request(sheets[2])
+
+    assert (descending.order_by, descending.descending) == ("gpu_hours", True)
+    assert (ascending.order_by, ascending.descending) == ("instance_hours", False)
+    # Only ONE leading dash is the direction; the rest is the key, so a
+    # malformed value stays unrecognized instead of turning into a valid one.
+    assert malformed.order_by == "-gpu_hours"
 
 
 @pytest.mark.asyncio
