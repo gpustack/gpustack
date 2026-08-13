@@ -9,7 +9,13 @@ from gpustack.cmd.local_auth import (
     read_local_jwt_secret,
 )
 from gpustack.cmd import reload_config
-from gpustack.cmd.reload_config import apply_runtime_updates, resolve_scope_headers
+from gpustack.cmd.reload_config import (
+    apply_runtime_updates,
+    build_runtime_update_payload,
+    get_filtered_config_data,
+    resolve_scope_headers,
+)
+from gpustack.config.config import Config
 from gpustack.security import JWTManager
 
 
@@ -150,6 +156,43 @@ def test_apply_runtime_updates_still_fails_when_only_endpoint_is_unauthorized(
 
     with pytest.raises(Exception, match="HTTP 401"):
         apply_runtime_updates({"debug": True}, argparse.Namespace())
+
+
+def test_reload_config_payload_only_contains_explicit_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("GPUSTACK_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("GPUSTACK_DEBUG", "true")
+    args = argparse.Namespace(
+        file=None,
+        set=["system-default-container-registry=registry.example"],
+    )
+    config_data = get_filtered_config_data(args, {})
+    cfg = Config(**config_data)
+
+    assert cfg.debug is True
+    assert build_runtime_update_payload(cfg, config_data) == {
+        "system_default_container_registry": "registry.example"
+    }
+
+
+def test_reload_config_payload_keeps_explicit_false_boolean(monkeypatch, tmp_path):
+    monkeypatch.setenv("GPUSTACK_DATA_DIR", str(tmp_path))
+    args = argparse.Namespace(file=None, set=["debug=false"])
+    config_data = get_filtered_config_data(args, {})
+    cfg = Config(**config_data)
+
+    assert build_runtime_update_payload(cfg, config_data) == {"debug": False}
+
+
+def test_reload_config_skips_empty_runtime_update(monkeypatch, tmp_path):
+    monkeypatch.setenv("GPUSTACK_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(reload_config, "setup_logging", lambda debug: None)
+    monkeypatch.setattr(
+        reload_config,
+        "apply_runtime_updates",
+        lambda payload, args: pytest.fail("empty payload must not be sent"),
+    )
+
+    reload_config.run(argparse.Namespace(file=None, set=None, list=False))
 
 
 # ---------------------------------------------------------------------------
