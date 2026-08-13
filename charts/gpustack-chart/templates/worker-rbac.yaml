@@ -121,4 +121,62 @@ roleRef:
   kind: ClusterRole
   name: {{ .Release.Name }}-worker-pod-cm-creator
   apiGroup: rbac.authorization.k8s.io
+---
+# The cluster API proxy (/v2/clusters/{id}/proxy/...) tunnels through a worker
+# pod and calls the API server with the worker's in-pod ServiceAccount, so the
+# SA must be able to read and write the worker.gpustack.ai workload API
+# (instances and their log/events/metrics subresources, instance types,
+# persistent volumes, ...) and manage the per-principal namespaces those
+# resources live in. It also reads APIService objects: the operator's
+# worker-gateway readiness check ("check api services ready") queries the
+# aggregated API's Available condition with this SA. Callers are authorized on
+# the GPUStack server side before anything reaches the worker, so this grant
+# is broad on purpose — script/Docker installs already proxy with the host's
+# admin kubeconfig.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-worker-workload-api
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+rules:
+  - apiGroups:
+      - "worker.gpustack.ai"
+    resources:
+      - "*"
+    verbs:
+      - "*"
+  - apiGroups:
+      - ""
+    resources:
+      - "namespaces"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+      - "create"
+      - "delete"
+  - apiGroups:
+      - "apiregistration.k8s.io"
+    resources:
+      - "apiservices"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-worker-workload-api-binding
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-worker
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Release.Name }}-worker-workload-api
+  apiGroup: rbac.authorization.k8s.io
 {{- end }}
