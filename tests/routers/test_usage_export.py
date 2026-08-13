@@ -1,12 +1,14 @@
 import io
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gpustack.api.exceptions import ForbiddenException, InvalidException
+from gpustack.routes import usage as usage_routes
 from gpustack.routes.usage import (
     estimate_usage_breakdown_export,
     export_usage_breakdown,
@@ -54,31 +56,52 @@ class _StreamResult:
 
     def __init__(self, rows):
         self._rows = rows
+        self.closed = False
 
     async def partitions(self, size):
         for start in range(0, len(self._rows), size):
             yield self._rows[start : start + size]
 
+    async def close(self):
+        self.closed = True
 
-def _session(*, counts, stream_rows, prefetch_rows=None):
-    """Session stub.
 
-    ``session.exec`` is called in a fixed order the export drives: every
-    sheet's COUNT first (all sheets are sized before a byte is written, since
-    the status code is committed once streaming starts), then per sheet the
-    DISTINCT-id lookup and the entity-existence lookup that
-    ``_prefetch_identity_maps`` runs before opening the cursor.
-    ``prefetch_rows`` supplies that tail in order.
+def _session(*, counts, stream_rows):
+    """Request-session stub.
+
+    ``session.exec`` answers the sizing pass — every sheet is counted before a
+    byte is written, since the status code is committed once streaming starts
+    — and ``session.stream`` hands out one cursor per sheet. Entity lookups do
+    NOT land here: they run on the enrichment session (see ``_enrichment``),
+    because this connection is holding the cursor open.
     """
     session = MagicMock()
     session.exec = AsyncMock(
         side_effect=[_mock_exec_result([count]) for count in counts]
-        + [_mock_exec_result(rows) for rows in (prefetch_rows or [])]
     )
     session.stream = AsyncMock(
         side_effect=[_StreamResult(rows) for rows in stream_rows]
     )
     return session
+
+
+@pytest.fixture(autouse=True)
+def _enrichment():
+    """Stand in for the app-wide session factory the enrichment borrows.
+
+    Every entity resolves to "gone", which is what the export does with an id
+    it cannot find; no test here asserts on names or deletion flags, and the
+    ones that do run against a real database in the integration module.
+    """
+    enrich_session = MagicMock()
+    enrich_session.exec = AsyncMock(return_value=_mock_exec_result([]))
+
+    @asynccontextmanager
+    async def factory():
+        yield enrich_session
+
+    with patch.object(usage_routes, "async_session", factory):
+        yield enrich_session
 
 
 async def _collect(response) -> bytes:
@@ -255,9 +278,6 @@ async def test_multi_sheet_csv_is_zipped_with_stable_member_names():
     session = _session(
         counts=[2, 2],
         stream_rows=[_route_rows(), _user_rows()],
-        # Per sheet: DISTINCT ids off the grouped statement, then the
-        # existence check that flags deleted entities.
-        prefetch_rows=[[11], [11], [7], [7]],
     )
     request = UsageExportRequest(
         start_date=date(2026, 4, 1),
@@ -359,6 +379,29 @@ async def test_export_refuses_instead_of_silently_downgrading_scope():
         await export_usage_breakdown(
             session=session, user=user, ctx=_ctx_for(user), request=request
         )
+
+
+@pytest.mark.asyncio
+async def test_default_scope_exports_the_callers_own_rows():
+    # ``scope`` defaults to "all", so a client that never sets it is not
+    # asking for platform-wide data — every regular user's export sends
+    # exactly this payload. Refusing it would leave non-admins unable to
+    # export their own usage at all; the file records the scope it got.
+    user = User(id=2, name="member", is_admin=False)
+    session = _session(counts=[2], stream_rows=[_date_rows()])
+    request = UsageExportRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["date"],
+        format="csv",
+    )
+
+    response = await export_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
+    text = (await _collect(response)).decode("utf-8-sig")
+
+    assert "scope=self" in text.strip().splitlines()[-1]
 
 
 @pytest.mark.asyncio

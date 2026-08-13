@@ -370,10 +370,10 @@ async def test_split_delivers_an_over_limit_resource_export_as_periods(
 async def test_date_grouped_export_comes_out_in_date_order(client, monkeypatch):
     """A time series has to arrive in time order.
 
-    The default sort was the first metric, so every row with the same GB-Days
-    was a tie and the database returned them in whatever order it liked — the
-    downloaded file's Date column jumped around. Sorting by a flat metric is
-    the same as not sorting at all.
+    Sorting by the first metric alone is the same as not sorting at all when
+    that metric is flat: every row is a tie, and the database returns them in
+    whatever order it likes — a downloaded file whose Date column jumps
+    around.
     """
     response = await client.post(
         "/usage/gpu-instances/breakdown/export",
@@ -384,6 +384,59 @@ async def test_date_grouped_export_comes_out_in_date_order(client, monkeypatch):
     rows = _parse_csv(response.content)
     dates = [row["Date"] for row in rows]
     assert dates == sorted(dates, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_a_sort_key_this_tab_does_not_meter_falls_back_to_the_default(client):
+    """An unknown sort key must not cost the result its ORDER BY entirely.
+
+    Which keys are legal is per-endpoint, so a sheet can carry one this tab
+    never meters (``-total_tokens`` belongs to the Tokens tab). Treated as a
+    preference it would suppress the date default and then match no column,
+    leaving the statement unordered — the shuffled Date column this ordering
+    exists to prevent.
+    """
+    response = await client.post(
+        "/usage/gpu-instances/breakdown/export",
+        json={
+            **RANGE,
+            "sheets": [{"key": "d", "group_by": ["date"], "sort_by": "-total_tokens"}],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    dates = [row["Date"] for row in _parse_csv(response.content)]
+    assert dates == sorted(dates, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_top_level_order_by_falls_back_to_the_default(client):
+    """Same rule for the request-level knob the JSON routes share."""
+    response = await client.post(
+        "/usage/gpu-instances/breakdown/export",
+        json={**RANGE, "group_by": ["date", "instance"], "order_by": "nope"},
+    )
+
+    assert response.status_code == 200, response.text
+    dates = [row["Date"] for row in _parse_csv(response.content)]
+    assert dates == sorted(dates, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_ascending_request_orders_the_dates_ascending_too(client):
+    """``descending`` governs the whole order, not just the metric.
+
+    Otherwise one request means newest-first and smallest-first at once, and
+    the file's most visible column contradicts the flag that produced it.
+    """
+    response = await client.post(
+        "/usage/gpu-instances/breakdown/export",
+        json={**RANGE, "group_by": ["date", "instance"], "descending": False},
+    )
+
+    assert response.status_code == 200, response.text
+    dates = [row["Date"] for row in _parse_csv(response.content)]
+    assert dates == sorted(dates)
 
 
 @pytest.mark.asyncio
@@ -617,3 +670,43 @@ async def test_the_breakdown_json_carries_the_tenant_too(client):
     assert items[2]["organization_name"] == "gone-org"
     assert items[2]["organization_deleted"] is True
     assert items[3]["organization_name"] == "Untracked"
+
+
+@pytest.mark.asyncio
+async def test_split_members_are_named_after_the_export_they_came_from(
+    client, monkeypatch
+):
+    """A single-sheet split kept the token export's name.
+
+    ``split_member_name`` takes a prefix and the multi-sheet branch honoured
+    it, but the single-sheet one hardcoded ``usage_``. So a GPU or storage
+    split arrived as ``usage_by_instance_part-1-of-3.csv`` — a filename
+    claiming a different export than the one that produced it, and not the
+    name the un-split download uses.
+    """
+    monkeypatch.setattr(resource_routes.envs, "USAGE_EXPORT_MAX_ROWS", 4)
+    response = await client.post(
+        "/usage/gpu-instances/breakdown/export",
+        json={**RANGE, "group_by": ["date", "instance"], "split": "auto"},
+    )
+
+    names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
+    assert all(name.startswith("gpu-instances_by_date_instance_") for name in names)
+    assert not any(name.startswith("usage_") for name in names)
+
+
+@pytest.mark.asyncio
+async def test_an_unrecognized_split_value_is_refused(client):
+    """Silently ignoring it made the wrong word look like the wrong data.
+
+    An unknown ``split`` used to fall through as "no split", so a client
+    asking for one got a plain over-limit refusal and nothing pointing at the
+    value it had actually sent. The token request already validated this.
+    """
+    response = await client.post(
+        "/usage/gpu-instances/breakdown/export",
+        json={**RANGE, "group_by": ["instance"], "split": "by_day"},
+    )
+
+    assert response.status_code == 422
+    assert "split" in response.text

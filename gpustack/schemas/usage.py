@@ -367,52 +367,33 @@ class UsageExportSheet(BaseModel):
         return value
 
 
-class UsageExportRequest(UsageBaseRequest):
-    """``/breakdown/export`` and ``/breakdown/export/estimate`` payload.
+class UsageExportShape(BaseModel):
+    """The file-shape knobs every export payload carries, validated once.
 
-    Shares every filter with :class:`UsageBreakdownRequest` so the exported
-    rows and the on-screen rows come from the same predicate. The date range,
-    ``filters`` and ``scope`` live ONLY at the top level and cannot be
-    overridden per sheet: one file must have one set of conditions, or the
-    tables inside it can't be reconciled with each other.
+    The token and resource exports produce the same kinds of file from the
+    same three decisions — one table or several, which format, whether an
+    over-large result may be split — and the checks behind them are not
+    cosmetic: two sheets sharing a key overwrite each other's row counts and
+    parts, and land in the archive as two members with one name. Defining them
+    here is what stops one endpoint from being validated less than the other.
+
+    Subclasses redeclare ``group_by`` to validate it, since which dimension
+    names are legal is endpoint-specific.
     """
 
-    granularity: Optional[str] = None
-    # No default: the ROW ORDER OF A FILE is the server's to define, and it
-    # depends on the grouping — a date-grouped sheet must come out in date
-    # order, anything else by its headline metric. Baking "-total_tokens" in
-    # here made a date-grouped export come back with its Date column shuffled
-    # unless the client happened to send "-date" (the dialog did; nothing else
-    # had to). An explicit value still wins.
-    sort_by: Optional[str] = None
-    # xlsx by default: that is what these exports have always produced, and
-    # changing the file type users receive is not part of fixing their row
-    # counts. The server falls back to CSV only when the result cannot fit a
-    # worksheet — see ``USAGE_EXPORT_FORMAT_*``.
+    # xlsx by default: that is what these exports have always produced. The
+    # server falls back to CSV only when the result cannot fit a worksheet —
+    # see ``USAGE_EXPORT_FORMAT_*``.
     format: str = USAGE_EXPORT_FORMAT_XLSX
-    # ``"auto"`` splits an over-large result into per-period files inside one
-    # archive instead of rejecting it.
+    # ``"auto"`` slices an over-large result into files inside one archive
+    # instead of rejecting it.
     split: Optional[str] = None
-
-    # Exactly one of these two. ``group_by`` is the single-table form and keeps
-    # the payload identical to ``/breakdown``; ``sheets`` is the multi-table
-    # form.
-    group_by: Optional[List[str]] = None
+    # Exactly one of ``sheets`` and ``group_by``. ``group_by`` is the
+    # single-table form and keeps the payload identical to ``/breakdown``; it
+    # is declared here as well as in the subclasses so the shape check below
+    # holds for any model that inherits this.
     sheets: Optional[List[UsageExportSheet]] = None
-
-    @field_validator("group_by")
-    @classmethod
-    def validate_group_by(cls, value: Optional[List[str]]) -> Optional[List[str]]:
-        if value is None:
-            return value
-        return _validate_group_by_values(value)
-
-    @field_validator("granularity")
-    @classmethod
-    def validate_granularity(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and value not in USAGE_GRANULARITIES:
-            raise ValueError(f"Unsupported granularity: {value}")
-        return value
+    group_by: Optional[List[str]] = None
 
     @field_validator("format")
     @classmethod
@@ -427,6 +408,9 @@ class UsageExportRequest(UsageBaseRequest):
     @field_validator("split")
     @classmethod
     def validate_split(cls, value: Optional[str]) -> Optional[str]:
+        # An unrecognized value must not read as "no split": the caller asked
+        # for a way around the row limit and would otherwise get a plain
+        # over-limit refusal with nothing pointing at the word it sent.
         if value is not None and value not in USAGE_EXPORT_SPLITS:
             raise ValueError(f"Unsupported split: {value}")
         return value
@@ -446,13 +430,20 @@ class UsageExportRequest(UsageBaseRequest):
         return value
 
     @model_validator(mode="after")
-    def validate_exclusive_shape(self) -> "UsageExportRequest":
+    def validate_exclusive_shape(self) -> "UsageExportShape":
         if bool(self.group_by) == bool(self.sheets):
             raise ValueError(
                 "exactly one of 'group_by' (single table) or 'sheets' "
                 "(multiple tables) must be provided"
             )
         return self
+
+    def default_sheet_sort_by(self) -> Optional[str]:
+        """Sort the single-table form gives its one sheet.
+
+        ``None`` unless the payload has a request-level sort to hand down.
+        """
+        return None
 
     def resolved_sheets(self) -> List[UsageExportSheet]:
         """Normalize both request shapes to a list of sheets.
@@ -468,9 +459,47 @@ class UsageExportRequest(UsageBaseRequest):
             UsageExportSheet(
                 key="_".join(group_by) or "usage",
                 group_by=group_by,
-                sort_by=self.sort_by,
+                sort_by=self.default_sheet_sort_by(),
             )
         ]
+
+
+class UsageExportRequest(UsageBaseRequest, UsageExportShape):
+    """``/breakdown/export`` and ``/breakdown/export/estimate`` payload.
+
+    Shares every filter with :class:`UsageBreakdownRequest` so the exported
+    rows and the on-screen rows come from the same predicate. The date range,
+    ``filters`` and ``scope`` live ONLY at the top level and cannot be
+    overridden per sheet: one file must have one set of conditions, or the
+    tables inside it can't be reconciled with each other.
+    """
+
+    granularity: Optional[str] = None
+    # No default: the ROW ORDER OF A FILE is the server's to define, and it
+    # depends on the grouping — a date-grouped sheet comes out in date order,
+    # anything else by its headline metric. A fixed default here would order a
+    # date-grouped export by tokens and shuffle its Date column. An explicit
+    # value still wins.
+    sort_by: Optional[str] = None
+
+    group_by: Optional[List[str]] = None
+
+    @field_validator("group_by")
+    @classmethod
+    def validate_group_by(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return value
+        return _validate_group_by_values(value)
+
+    @field_validator("granularity")
+    @classmethod
+    def validate_granularity(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in USAGE_GRANULARITIES:
+            raise ValueError(f"Unsupported granularity: {value}")
+        return value
+
+    def default_sheet_sort_by(self) -> Optional[str]:
+        return self.sort_by
 
     def to_breakdown_request(self, sheet: UsageExportSheet) -> UsageBreakdownRequest:
         """Build the equivalent breakdown request for one sheet.

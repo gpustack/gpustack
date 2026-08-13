@@ -8,9 +8,8 @@ actually decide whether the export works in production:
    dependency closed too early would produce an empty or half file — and only
    in production, never in a mocked test.
 2. Does the SQL the builder emits actually run? ``session.stream``, the
-   ``DISTINCT`` prefetch over an ordered grouped subquery, and the aggregate
-   ordering are all things a MagicMock will happily accept and a database will
-   not.
+   per-batch entity lookups on a second connection, and the aggregate ordering
+   are all things a MagicMock will happily accept and a database will not.
 
 These run on SQLite, which is enough to exercise the statements end to end.
 """
@@ -18,7 +17,9 @@ These run on SQLite, which is enough to exercise the statements end to end.
 import csv
 import io
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import date, datetime
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -166,7 +167,16 @@ async def app_and_engine():
     app.dependency_overrides[get_current_user] = lambda: admin
     app.dependency_overrides[get_tenant_context] = lambda: ctx
 
-    yield app, engine
+    @asynccontextmanager
+    async def _enrichment_session():
+        # Stands in for the app-wide session factory, which is only wired up
+        # once the server has initialized the database. The export resolves
+        # names on a connection of its own while its cursor is open.
+        async with AsyncSession(engine) as session:
+            yield session
+
+    with patch.object(usage_routes, "async_session", _enrichment_session):
+        yield app, engine
     await engine.dispose()
 
 
@@ -483,8 +493,15 @@ async def test_date_grouped_export_defaults_to_date_order(client):
     )
 
     assert response.status_code == 200, response.text
-    dates = [row["Date"] for row in _parse_csv(response.content)]
+    rows = _parse_csv(response.content)
+    dates = [row["Date"] for row in rows]
     assert dates == sorted(dates, reverse=True)
+    # A date is a bucket, not a row: five users share each one. Without a
+    # tie-break their order is the database's to pick, which shows up as a
+    # paginated /breakdown repeating and skipping rows across pages.
+    for date_value in set(dates):
+        tokens = [int(row["Total Tokens"]) for row in rows if row["Date"] == date_value]
+        assert tokens == sorted(tokens, reverse=True)
 
 
 @pytest.mark.asyncio

@@ -4,15 +4,26 @@ These cover what only the writer can get wrong: what a value becomes once it
 is a cell. The route tests above them check which values are chosen.
 """
 
+import asyncio
+import csv
 import io
 import time
 import re
 import zipfile
 from datetime import date, datetime
+from unittest.mock import patch
 
 import pytest
 
-from gpustack.utils.tabular_export import ExportStageTimer, build_xlsx, stream_csv
+from gpustack.utils import tabular_export
+
+from gpustack.utils.tabular_export import (
+    ExportStageTimer,
+    build_xlsx,
+    stream_csv,
+    stream_zip,
+    take_rows,
+)
 
 
 async def _rows(rows):
@@ -223,4 +234,126 @@ async def test_csv_writes_a_bom_a_header_and_a_trailer():
     ]
     text = b"".join(chunks).decode("utf-8-sig")
 
-    assert text.splitlines() == ["A,B", "1,", "# rows=1"]
+    # The trailer is padded to the header width: CSV has no comment syntax, so
+    # a one-field last line is a parse error for a strict reader.
+    assert text.splitlines() == ["A,B", "1,", "# rows=1,"]
+
+
+@pytest.mark.asyncio
+async def test_csv_neutralizes_a_name_that_looks_like_a_formula():
+    """CSV is the format users double-click, so it needs xlsx's defence too.
+
+    A volume or API key may be named ``=HYPERLINK("http://…")``, and Excel
+    evaluates a leading ``=`` in a CSV field whether or not it is quoted. The
+    apostrophe makes the cell text; a negative NUMBER is untouched, since it
+    is not a string.
+    """
+    rows = _rows([['=HYPERLINK("http://x")', "-7", -7, "@cmd", "+1", "ok"]])
+    chunks = [chunk async for chunk in stream_csv(["A"] * 6, rows)]
+    line = b"".join(chunks).decode("utf-8-sig").splitlines()[1]
+    cells = next(csv.reader([line]))
+
+    assert cells[0].startswith("'=")
+    assert cells[1] == "'-7"
+    assert cells[2] == "-7"
+    assert cells[3] == "'@cmd"
+    assert cells[4] == "'+1"
+    assert cells[5] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_csv_trailer_parses_as_a_row():
+    """The trailer must not break a strict reader.
+
+    These files are read by reconciliation scripts, and CSV has no comment
+    syntax: a one-field last line under a twelve-field header is a parse
+    error, not a comment.
+    """
+    chunks = [
+        chunk
+        async for chunk in stream_csv(
+            ["A", "B", "C"], _rows([[1, 2, 3]]), trailer="rows=1 scope=all"
+        )
+    ]
+    parsed = list(csv.reader(io.StringIO(b"".join(chunks).decode("utf-8-sig"))))
+
+    assert {len(row) for row in parsed} == {3}
+    assert parsed[-1][0] == "# rows=1 scope=all"
+
+
+@pytest.mark.asyncio
+async def test_take_rows_leaves_the_shared_source_open():
+    """Parts of a split export share one row stream, so a part must not close
+    it — only the owner of the stream does, once every part is written."""
+    closed = False
+
+    async def source():
+        nonlocal closed
+        try:
+            for index in range(10):
+                yield [index]
+        finally:
+            closed = True
+
+    rows = source()
+    first = [row async for row in take_rows(rows, 4)]
+    second = [row async for row in take_rows(rows, 4)]
+
+    assert first == [[0], [1], [2], [3]]
+    # Consecutive slices off one cursor, not a re-read.
+    assert second == [[4], [5], [6], [7]]
+    assert not closed
+    await rows.aclose()
+    assert closed
+
+
+@pytest.mark.asyncio
+async def test_stream_zip_closes_its_members_when_the_client_walks_away():
+    """An abandoned download must not strand the cursor feeding it.
+
+    Starlette stops draining the body on disconnect; if the archive generator
+    then leaves its member source suspended, the server-side cursor behind it
+    stays open until the event loop gets around to finalizing an abandoned
+    generator.
+    """
+    closed = False
+
+    async def payload():
+        yield b"x" * 100
+        yield b"y" * 100
+
+    async def members():
+        nonlocal closed
+        try:
+            yield ("one.csv", payload())
+            yield ("two.csv", payload())
+        finally:
+            closed = True
+
+    archive = stream_zip(members())
+    await archive.__anext__()
+    await archive.aclose()
+
+    assert closed
+
+
+@pytest.mark.asyncio
+async def test_workbook_is_assembled_off_the_event_loop():
+    """``close()`` is where the whole archive is built.
+
+    It reads back every temporary file, deflates it and writes the zip, all
+    synchronously — seconds on a large export, during which nothing else in
+    the process can run. It belongs on a worker thread.
+    """
+    calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy(func, *args, **kwargs):
+        calls.append(getattr(func, "__name__", str(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    with patch.object(tabular_export.asyncio, "to_thread", spy):
+        payload = await build_xlsx([("Sheet", ["A"], _rows([[1]]))])
+
+    assert "close" in calls
+    assert zipfile.ZipFile(io.BytesIO(payload)).testzip() is None
