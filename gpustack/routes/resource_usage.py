@@ -25,6 +25,7 @@ from typing import (
     AsyncIterator,
     Dict,
     List,
+    NamedTuple,
     Optional,
     Set,
     Tuple,
@@ -138,6 +139,10 @@ def _metric_columns() -> Dict[str, Any]:
             q * MeteredUsage.sku_count,
         )
         / 3600.0,
+        # uptime seconds × sku_count → the BILLED quantity, for every instance
+        # kind. This is ``gpu_hours`` without the GPU filter, and it is what
+        # ``amount = quantity * sku_count * unit_price`` multiplies.
+        "unit_hours": _sum_case(_UPTIME, q * MeteredUsage.sku_count) / 3600.0,
         # storage.capacity mib-seconds → GB·days
         "gb_days": _sum_case(_STORAGE, q) / 1024.0 / 86400.0,
         "gb_hours": _sum_case(_STORAGE, q) / 1024.0 / 3600.0,
@@ -481,6 +486,7 @@ class ExportEnrichmentCache:
         self.creator_exists: Dict[Any, bool] = {}
         self.org_info: Dict[Any, Any] = {}
         self.dimensions: Dict[Any, dict] = {}
+        self.shapes: Dict[Any, List[dict]] = {}
 
     async def resolve(self, known: Dict, keys, fetch) -> None:
         """Fill ``known`` for whatever ``keys`` it is missing, and only those."""
@@ -493,7 +499,9 @@ async def _enrich_items(  # noqa: C901
     session,
     gb: str,
     items: List[dict],
+    window: Optional[Tuple[Optional[datetime], Optional[datetime]]] = None,
     cache: Optional[ExportEnrichmentCache] = None,
+    bucketed: bool = False,
 ) -> None:
     """Post-query enrichment of breakdown rows (mutates ``items`` in place).
 
@@ -622,7 +630,7 @@ async def _enrich_items(  # noqa: C901
                 i["creator_deleted"] = not creator_exists.get(cid, False)
 
     await _attach_organization(session, items, cache=cache)
-    await _attach_dimensions(session, gb, items, cache=cache)
+    await _attach_dimensions(session, gb, items, window, cache=cache, bucketed=bucketed)
 
 
 async def _attach_organization(session, items: List[dict], cache=None) -> None:
@@ -685,12 +693,32 @@ async def _fill_missing(awaitable, keys) -> dict:
     return {key: found.get(key) or {} for key in keys}
 
 
+class _Representative(NamedTuple):
+    """One group's display facts, all read off the SAME ``metered_usage`` row."""
+
+    dimensions: dict
+    sku: Optional[str]
+    instance_type_name: Optional[str]
+    definition_snapshot: Optional[str]
+
+
+_EMPTY_REPRESENTATIVE = _Representative({}, None, None, None)
+
+
 async def _dims_by_representative(session, *, group_col, keys, extra_filter):
-    """``{group value: dimensions}`` from the latest row per group.
+    """``{group value: _Representative}`` from the latest row per group.
 
     Picks MAX(id) per ``group_col`` among rows matching ``extra_filter`` (e.g.
     uptime / storage-capacity meter) and returns that representative row's
     ``dimensions`` blob — dimensions are constant per group so any row will do.
+
+    The type identity travels WITH the dimensions rather than being aggregated
+    separately, because the two have to describe the same shape. ``func.max`` over
+    ``sku`` picks the lexicographic maximum, which for a hash is an arbitrary
+    member — so a reconfigured instance produced a row labelled with one shape's
+    type name and specced with another's (CPU-2c4g by name, 4 x A100 by
+    ``dimensions``). That the group holds ONE shape is precisely the assumption
+    this release breaks.
     """
     if not keys:
         return {}
@@ -702,21 +730,31 @@ async def _dims_by_representative(session, *, group_col, keys, extra_filter):
     )
     rows = (
         await session.exec(
-            select(group_col, MeteredUsage.dimensions).where(
-                MeteredUsage.id.in_(rep_ids)
-            )
+            select(
+                group_col,
+                MeteredUsage.dimensions,
+                MeteredUsage.sku,
+                MeteredUsage.instance_type_name,
+                MeteredUsage.definition_snapshot,
+            ).where(MeteredUsage.id.in_(rep_ids))
         )
     ).all()
-    return {r[0]: (r[1] or {}) for r in rows}
+    return {r[0]: _Representative(r[1] or {}, r[2], r[3], r[4]) for r in rows}
 
 
 async def _dims_by_shape(session, shapes):
-    """``{(sku, sku_count): dimensions}`` from the latest row per shape.
+    """``{(sku, sku_count): (dimensions, instance_type_name, definition_snapshot)}``
+    from the latest row per shape.
 
     Instance types are grouped by ``(sku, sku_count)``; every row of one shape
     has the same specs (cpu/mem/cards) and flavor fields, so one MAX(id) per
     ``(sku, sku_count)`` supplies the whole display blob. Grouping is on indexed
     columns, not JSON.
+
+    The two extra columns are what keep the breakdown readable now that ``sku``
+    is an opaque ``sha1:`` hash: ``instance_type_name`` is the row label and
+    ``definition_snapshot`` is how a caller folds the same type across clusters
+    (``sku`` embeds the cluster, so it cannot).
     """
     skus = {s for s, _ in shapes if s}
     if not skus:
@@ -733,17 +771,188 @@ async def _dims_by_shape(session, shapes):
                 MeteredUsage.sku,
                 MeteredUsage.sku_count,
                 MeteredUsage.dimensions,
+                MeteredUsage.instance_type_name,
+                MeteredUsage.definition_snapshot,
             ).where(MeteredUsage.id.in_(rep_ids))
         )
     ).all()
-    return {(r[0], r[1]): (r[2] or {}) for r in rows}
+    return {(r[0], r[1]): (r[2] or {}, r[3], r[4]) for r in rows}
 
 
-async def _attach_dimensions(
+def _rounded_parts(values: List[float], digits: int = 2) -> List[float]:
+    """Round each part so the parts still SUM to the rounded total.
+
+    Rounding independently does not: 2534s at 2 units and 933s at 4 units are
+    1.4078 h and 1.0367 h, which round to 1.41 + 1.04 = 2.45 while their total
+    rounds to 2.44. A breakdown exists to be reconciled against its row, so a
+    visible 0.01 gap defeats it.
+
+    Largest-remainder allocation: round every part, then push the whole residual
+    onto the biggest one — where a 0.01 shift is proportionally smallest.
+    """
+    if not values:
+        return []
+    parts = [round(v, digits) for v in values]
+    residual = round(round(sum(values), digits) - sum(parts), digits)
+    if residual:
+        biggest = max(range(len(values)), key=lambda n: values[n])
+        parts[biggest] = round(parts[biggest] + residual, digits)
+    return parts
+
+
+async def _attach_shapes(
+    session,
+    items: List[dict],
+    window: Optional[Tuple[Optional[datetime], Optional[datetime]]],
+    cache: Optional["ExportEnrichmentCache"] = None,
+) -> None:
+    """Attach ``shapes`` — the billed shapes a per-instance row is made of — in
+    place. Emitted for every row that HAS one, single-shape rows included; never
+    conditional on the row having been reconfigured.
+
+    A row with no uptime rows at all gets no field, so a consumer must treat it as
+    optional rather than indexing straight into it. That is reachable: under the
+    generic ``/resource/breakdown`` this grouping keys on ``resource_id`` alone
+    (no ``resource_type`` filter, no ``base_filter``), so a storage row lands here
+    too — and it has no shapes to describe.
+
+    A per-instance row aggregates by ``resource_id``, so the several
+    ``metered_usage`` rows an instance produced (one per ``(sku, sku_count)``,
+    which is what the natural key is for) collapse into one item whose
+    ``dimensions`` describe only the LATEST of them. That is a lie as soon as the
+    instance was reconfigured mid-period. ``shapes`` restores what the
+    aggregation dropped.
+
+    Emitted even for a single shape because the UI renders every row's usage as
+    an explicit ``unit × count × hours = value`` formula — so it needs the count
+    and the per-unit spec of EVERY row, not just reconfigured ones. Deriving them
+    client-side (``unit_hours / instance_hours``) would be a rounded division and
+    would silently disagree on non-integer requests.
+
+    Each entry carries its OWN ``dimensions``-derived facets, not the item's:
+    changing the instance type produces shapes with different ``sku``, and their
+    per-unit spec can differ (a 1c2g flavor vs a 2c4g one). The item-level
+    ``dimensions`` only has the latest.
+
+    Only valid for rows that cover the whole window — see the ``bucketed`` guard
+    in :func:`_attach_dimensions`.
+    """
+    ids = [i.get("id") for i in items if i.get("id") is not None]
+    if not ids:
+        return
+    # A shape breakdown is a property of the INSTANCE over the export's window,
+    # not of the batch it landed in, so it memoizes like every other enrichment
+    # (see ExportEnrichmentCache). Two aggregate queries over ``metered_usage``
+    # per 1000-row batch is the exact degradation that cache exists to remove.
+    known: Dict[Any, List[dict]] = cache.shapes if cache else {}
+    if cache is not None:
+        await cache.resolve(
+            known, ids, lambda missing: _shapes_by_instance(session, missing, window)
+        )
+    else:
+        known = await _shapes_by_instance(session, ids, window)
+    for i in items:
+        shapes = known.get(i.get("id"))
+        if shapes:
+            i["shapes"] = shapes
+
+
+async def _shapes_by_instance(
+    session,
+    ids: List[Any],
+    window: Optional[Tuple[Optional[datetime], Optional[datetime]]],
+) -> Dict[Any, List[dict]]:
+    """``{resource_id: [shape, …]}`` over ``window``, one entry per requested id.
+
+    Ids with no rows map to ``[]`` rather than being absent, so a caller caching
+    the result does not re-run the query that already came back empty.
+    """
+    start_dt, end_dt = window or (None, None)
+
+    agg = (
+        select(
+            MeteredUsage.resource_id,
+            MeteredUsage.sku,
+            MeteredUsage.sku_count,
+            func.sum(MeteredUsage.quantity).label("seconds"),
+            func.min(MeteredUsage.bucket_start).label("first_bucket"),
+            func.max(MeteredUsage.id).label("rep_id"),
+        )
+        .where(_UPTIME, MeteredUsage.resource_id.in_(ids))
+        .group_by(MeteredUsage.resource_id, MeteredUsage.sku, MeteredUsage.sku_count)
+    )
+    if start_dt is not None:
+        agg = agg.where(MeteredUsage.bucket_start >= start_dt)
+    if end_dt is not None:
+        agg = agg.where(MeteredUsage.bucket_start < end_dt)
+    rows = (await session.exec(agg)).all()
+
+    by_instance: Dict[Any, List[Any]] = {rid: [] for rid in ids}
+    for row in rows:
+        by_instance.setdefault(row[0], []).append(row)
+    if not rows:
+        return by_instance
+
+    rep_ids = [r[5] for rs in by_instance.values() for r in rs]
+    dim_rows = (
+        await session.exec(
+            select(MeteredUsage.id, MeteredUsage.dimensions).where(
+                MeteredUsage.id.in_(rep_ids)
+            )
+        )
+    ).all()
+    dims_by_id = {r[0]: (r[1] or {}) for r in dim_rows}
+
+    shapes_by_instance: Dict[Any, List[dict]] = {}
+    for rid, shapes in by_instance.items():
+        if not shapes:
+            shapes_by_instance[rid] = []
+            continue
+        ordered = sorted(shapes, key=lambda s: (s[4], s[5]))
+        seconds = [float(s[3] or 0) for s in ordered]
+        counts = [float(s[2] or 0) for s in ordered]
+        inst_h = _rounded_parts([x / 3600.0 for x in seconds])
+        unit_h = _rounded_parts([x * c / 3600.0 for x, c in zip(seconds, counts)])
+        shapes_by_instance[rid] = [
+            {
+                "sku": s[1],
+                "sku_count": s[2],
+                "instance_hours": inst_h[n],
+                "unit_hours": unit_h[n],
+                **{
+                    k: dims_by_id.get(s[5], {}).get(k)
+                    for k in (
+                        "product",
+                        "gpu_count",
+                        "vram_mib",
+                        "cpu_milli",
+                        "memory_mib",
+                        # The formula's MULTIPLICAND is "one unit", not the
+                        # instance total: the cell reads `1c2g × 4 × 70.05h`.
+                        # Cannot be derived as total/count — that division
+                        # inverts a ``round()`` (``_resolve_sku_count``) and so
+                        # disagrees whenever the request is not an exact multiple
+                        # of the unit (3500m on a 1c2g flavor → count 4 → 875m).
+                        "unit_cpu_milli",
+                        "unit_memory_mib",
+                        "slice_mode",
+                        "sliced_memory_percentage",
+                        "partitioned_profile",
+                    )
+                },
+            }
+            for n, s in enumerate(ordered)
+        ]
+    return shapes_by_instance
+
+
+async def _attach_dimensions(  # noqa: C901
     session,
     gb: str,
     items: List[dict],
+    window: Optional[Tuple[Optional[datetime], Optional[datetime]]] = None,
     cache: Optional[ExportEnrichmentCache] = None,
+    bucketed: bool = False,
 ) -> None:
     """Attach the ``dimensions`` the UI needs per grouping (in place).
 
@@ -760,7 +969,7 @@ async def _attach_dimensions(
         # One representative row per (sku, sku_count) supplies the whole shape's
         # display blob (product / per-unit specs / VRAM are flavor-constant;
         # cpu/mem/cards are constant within the shape).
-        shapes = {(i.get("sku"), i.get("_sku_count")) for i in items}
+        shapes = {(i.get("sku"), i.get("sku_count")) for i in items}
         dims: Dict[Any, dict] = cache.dimensions if cache else {}
         if cache is not None:
             await cache.resolve(
@@ -773,7 +982,18 @@ async def _attach_dimensions(
         else:
             dims = await _dims_by_shape(session, shapes)
         for i in items:
-            d = dims.get((i.get("sku"), i.pop("_sku_count", None))) or {}
+            # ``sku_count`` is NOT popped — it is half of the row's public
+            # identity, not just an internal lookup key.
+            d, type_name, definition_snapshot = dims.get(
+                (i.get("sku"), i.get("sku_count"))
+            ) or ({}, None, None)
+            # The grouping key is still ``(sku, sku_count)`` — the correct, exact
+            # identity — but ``sku`` is now an opaque hash, so the row LABEL comes
+            # from the snapshotted type name. The raw ``sku`` stays on the item as
+            # its own field, so nothing loses access to the exact key.
+            if type_name:
+                i["key"] = type_name
+            i["definition_snapshot"] = definition_snapshot
             i["dimensions"] = {
                 "product": d.get("product"),
                 "unit_cpu_milli": d.get("unit_cpu_milli"),
@@ -786,6 +1006,13 @@ async def _attach_dimensions(
                 # size — "CPU Only · 3 vCPU · 6 GB" / "NVIDIA-A100-80GB x 4".
                 "cpu_milli": d.get("cpu_milli"),
                 "memory_mib": d.get("memory_mib"),
+                # Card-pool key + how the card is carved up, so a sliced row is
+                # distinguishable from a whole-card row of the same type.
+                "gpu_type": d.get("gpu_type"),
+                "slice_mode": d.get("slice_mode"),
+                "sliced_memory_percentage": d.get("sliced_memory_percentage"),
+                "partitioned_profile": d.get("partitioned_profile"),
+                "slice_share_milli": d.get("slice_share_milli"),
             }
     elif gb == "instance":
         # Per-instance dims: gpu_count varies per instance (unlike the flavor),
@@ -817,7 +1044,27 @@ async def _attach_dimensions(
                 extra_filter=_UPTIME,
             )
         for i in items:
-            d = dims.get(i.get("id")) or {}
+            rep = dims.get(i.get("id")) or _EMPTY_REPRESENTATIVE
+            d = rep.dimensions
+            # Realign the row's type identity with the specs beside it. Both were
+            # already on the item from the aggregate select, but from a different
+            # shape (``func.max`` over a hash column). A reconfigured instance is
+            # exactly where they diverge, and a row that names one type while
+            # describing another is worse than either alone. ``shapes`` below is
+            # what states the full history; these three describe the LATEST shape,
+            # which is what the rest of the row does too.
+            #
+            # Only when an uptime representative exists, which is also the test for
+            # "this row IS an instance". The generic ``/resource/breakdown`` has no
+            # ``base_filter``, and this grouping keys on ``resource_id`` alone, so a
+            # storage row lands here too; overwriting unconditionally erased its
+            # perfectly good ``volume--<kind>--<type>`` sku. For those rows the
+            # aggregate MAX is exact anyway — a volume has one sku — so leaving
+            # them alone is both correct and a smaller claim.
+            if rep is not _EMPTY_REPRESENTATIVE:
+                i["sku"] = rep.sku
+                i["instance_type_name"] = rep.instance_type_name
+                i["definition_snapshot"] = rep.definition_snapshot
             i["dimensions"] = {
                 "product": d.get("product"),
                 "unit_cpu_milli": d.get("unit_cpu_milli"),
@@ -833,7 +1080,25 @@ async def _attach_dimensions(
                 "ephemeral_mib": d.get("ephemeral_mib"),
                 "local_storage_mib": d.get("local_storage_mib"),
                 "persistent_mib": d.get("persistent_mib"),
+                # Card-pool key + slicing facets. ``gpu_type`` matters most here:
+                # ``sku`` is an opaque hash, so without it a row whose type has
+                # no ``status.detail`` (hence no ``product``) has nothing
+                # readable left to label the Instance Type column with.
+                "gpu_type": d.get("gpu_type"),
+                "slice_mode": d.get("slice_mode"),
+                "sliced_memory_percentage": d.get("sliced_memory_percentage"),
+                "partitioned_profile": d.get("partitioned_profile"),
+                "slice_share_milli": d.get("slice_share_milli"),
             }
+        # Skipped for a time-bucketed grouping (``["date", "instance"]``). A shape
+        # breakdown aggregates the instance over the whole window, so on a per-day
+        # row it would describe 30 days against metrics covering one — the very
+        # mismatch the ``window`` argument exists to prevent, one level up. There
+        # is no per-bucket variant to fall back to either: the point of the field
+        # is "what is this row's total made of", and a bucketed row's total is
+        # already narrow enough to read. Only the per-instance table asks for it.
+        if not bucketed:
+            await _attach_shapes(session, items, window, cache=cache)
     elif gb == "volume":
         # Per-volume storage type + provisioned capacity (constant per volume),
         # for the Storage tab's Type / Capacity columns.
@@ -861,7 +1126,7 @@ async def _attach_dimensions(
                 extra_filter=MeteredUsage.meter_key == METER_STORAGE_CAPACITY,
             )
         for i in items:
-            d = dims.get(i.get("id")) or {}
+            d = (dims.get(i.get("id")) or _EMPTY_REPRESENTATIVE).dimensions
             i["dimensions"] = {
                 "storage_type": d.get("storage_type"),
                 "capacity_mib": d.get("capacity_mib"),
@@ -1008,6 +1273,20 @@ async def _build_resource_breakdown_statement(  # noqa: C901
         # One sku per resource — carry it so per-instance / per-volume rows can
         # show their Instance Type / Storage Type even when grouped by resource.
         func.max(MeteredUsage.sku).label("sku"),
+        # ``sku`` is an opaque ``sha1:`` hash for instances, so it cannot be a
+        # label. These two carry the readable name and the cross-cluster
+        # definition id alongside it, on the same MAX-per-resource basis.
+        #
+        # Exact for the ``instance_type`` grouping, whose group IS one
+        # ``(sku, sku_count)``. For a per-INSTANCE grouping it is not: one
+        # instance can hold several shapes, and MAX over a hash picks a
+        # lexicographic winner unrelated to the shape ``dimensions`` describes —
+        # so ``_enrich_items`` re-reads all three off the representative row and
+        # overwrites them there. On a coarser grouping (``date`` alone) the group
+        # spans many resources and none of the three is meaningful, which is why
+        # no caller reads them on those rows.
+        func.max(MeteredUsage.instance_type_name).label("instance_type_name"),
+        func.max(MeteredUsage.definition_snapshot).label("definition_snapshot"),
     ]
     # Carry the owner only when a per-entity dimension is grouped on: one
     # instance/volume is created by a single principal, so within such a group
@@ -1169,10 +1448,14 @@ def _rows_to_items(
             item["key"] = row.group_key
         if has_id:
             item["id"] = row.group_id
-        # instance_type rows are grouped by (sku, sku_count); carry sku_count so
-        # enrichment can fetch the right per-shape representative for display.
+        # instance_type rows are grouped by (sku, sku_count). Carry sku_count as
+        # a PUBLIC field: together with ``sku`` it is the row's full identity, and
+        # a client keyed on the display label alone collides whenever one type
+        # name appears twice (same definition on two clusters, or a whole-card row
+        # next to a sliced row of the same type). Enrichment also uses it to fetch
+        # the right per-shape representative for display.
         if has_sku_count:
-            item["_sku_count"] = row.group_sku_count
+            item["sku_count"] = row.group_sku_count
         # Organization grouping: carry the consumer name / kind snapshot for
         # ``_enrich_items`` (popped there once the display key is resolved).
         if has_org:
@@ -1186,6 +1469,12 @@ def _rows_to_items(
             item["_consumer_name"] = getattr(row, "consumer_name", None)
             item["_consumer_kind"] = getattr(row, "consumer_kind", None)
         item["sku"] = row.sku if has_sku else None
+        # Readable label + cross-cluster definition id for the opaque sku above.
+        # Set here for every grouping; ``_attach_dimensions`` (which runs after
+        # this) overwrites them for the instance_type grouping, where they come
+        # from the per-shape representative row instead.
+        item["instance_type_name"] = getattr(row, "instance_type_name", None)
+        item["definition_snapshot"] = getattr(row, "definition_snapshot", None)
         # Owner of the resource, present only for resource-dimension groupings
         # (see ``carries_creator``) so per-instance / per-volume (and
         # date+instance) rows show their creator without a ``user`` grouping.
@@ -1276,7 +1565,13 @@ async def _run_breakdown(
     # agnostic (hour/day/week/month all share the ["date", <dim>] shape).
     dims = [g for g in request.group_by if g != "date"]
     if dims:
-        await _enrich_items(session, dims[0], items)
+        await _enrich_items(
+            session,
+            dims[0],
+            items,
+            _rollup_day_window(request.start_date, request.end_date),
+            bucketed="date" in request.group_by,
+        )
 
     return {
         "summary": metrics_of(summary_row) if summary_row is not None else {},
@@ -1300,6 +1595,15 @@ async def _run_breakdown(
 # ---------------------------------------------------------------------------
 
 
+# Metrics a tab meters, in file/column order. Shared by the JSON breakdown and
+# the export so the two cannot drift: the export builds its columns from this
+# list, so a metric present on one side only is a column the page shows and the
+# file lacks (which is how ``unit_hours`` came to have an export title no sheet
+# could use). ``[0]`` doubles as the default sort key.
+_GPU_METRIC_KEYS = ["unit_hours", "gpu_hours", "instance_hours"]
+_STORAGE_METRIC_KEYS = ["gb_days", "gb_hours"]
+
+
 @router.post("/resource/breakdown")
 async def resource_breakdown(
     session: SessionDep,
@@ -1313,7 +1617,7 @@ async def resource_breakdown(
         ctx=ctx,
         request=request,
         base_filter=None,
-        metric_keys=["instance_hours", "gpu_hours", "gb_days"],
+        metric_keys=["unit_hours", "instance_hours", "gpu_hours", "gb_days"],
     )
 
 
@@ -1342,7 +1646,7 @@ async def gpu_instances_breakdown(
                 [RESOURCE_TYPE_GPU_INSTANCE, RESOURCE_TYPE_CPU_INSTANCE]
             ),
         ),
-        metric_keys=["gpu_hours", "instance_hours"],
+        metric_keys=_GPU_METRIC_KEYS,
         join_volumes=False,  # GPU rows never resolve against the PV table
     )
 
@@ -1362,7 +1666,7 @@ async def storage_breakdown(
         ctx=ctx,
         request=request,
         base_filter=(MeteredUsage.meter_key == METER_STORAGE_CAPACITY),
-        metric_keys=["gb_days", "gb_hours"],
+        metric_keys=_STORAGE_METRIC_KEYS,
         join_instances=False,  # PV rows never resolve against the instance table
     )
 
@@ -1498,6 +1802,7 @@ async def _stream_resource_export_rows(
     aware_tz = resolve_rollup_tz()
     fixed_tz = rollup_fixed_tz()
     dims = [g for g in request.group_by if g != "date"]
+    window = _rollup_day_window(request.start_date, request.end_date)
 
     @contextlib.asynccontextmanager
     async def _enricher():
@@ -1544,7 +1849,18 @@ async def _stream_resource_export_rows(
                     )
                 if enrich_session is not None:
                     with timer.stage("enrich"):
-                        await _enrich_items(enrich_session, dims[0], items, cache=cache)
+                        # Same window the rows were aggregated over. Without it
+                        # ``_attach_shapes`` would describe each instance's WHOLE
+                        # history while its metrics cover the selected range —
+                        # segment hours that do not add up to the row.
+                        await _enrich_items(
+                            enrich_session,
+                            dims[0],
+                            items,
+                            window=window,
+                            cache=cache,
+                            bucketed="date" in request.group_by,
+                        )
                 with timer.stage("build"):
                     batch_rows = [
                         resource_export_row(
@@ -1745,7 +2061,7 @@ _GPU_EXPORT_KWARGS = dict(
             [RESOURCE_TYPE_GPU_INSTANCE, RESOURCE_TYPE_CPU_INSTANCE]
         ),
     ),
-    metric_keys=["gpu_hours", "instance_hours"],
+    metric_keys=_GPU_METRIC_KEYS,
     join_instances=True,
     join_volumes=False,
     allowed={"instance_type", "instance", "user", "date", "organization"},
@@ -1753,7 +2069,7 @@ _GPU_EXPORT_KWARGS = dict(
 
 _STORAGE_EXPORT_KWARGS = dict(
     base_filter=(MeteredUsage.meter_key == METER_STORAGE_CAPACITY),
-    metric_keys=["gb_days", "gb_hours"],
+    metric_keys=_STORAGE_METRIC_KEYS,
     join_instances=False,
     join_volumes=True,
     allowed={"type", "volume", "user", "date", "organization"},
@@ -1860,6 +2176,10 @@ async def usage_summary(
             mu.with_only_columns(
                 metrics["instance_hours"].label("instance_hours"),
                 metrics["gpu_hours"].label("gpu_hours"),
+                # The billed quantity, and the only compute figure here that
+                # counts CPU instances — ``gpu_hours`` is 0 for every one of
+                # them, so a CPU-only deployment had a ~0 compute headline.
+                metrics["unit_hours"].label("unit_hours"),
                 metrics["gb_days"].label("gb_days"),
                 func.count(func.distinct(MeteredUsage.creator_id)).label(
                     "active_users"
@@ -1910,6 +2230,7 @@ async def usage_summary(
         "output_tokens": output_tokens,
         "token_active_users": int(getattr(tu_row, "token_active_users", 0) or 0),
         "gpu_hours": round(float(getattr(mu_row, "gpu_hours", 0) or 0), 2),
+        "unit_hours": round(float(getattr(mu_row, "unit_hours", 0) or 0), 2),
         "instance_hours": round(float(getattr(mu_row, "instance_hours", 0) or 0), 2),
         "storage_gb_days": round(float(getattr(mu_row, "gb_days", 0) or 0), 2),
         "active_users": int(getattr(mu_row, "active_users", 0) or 0),

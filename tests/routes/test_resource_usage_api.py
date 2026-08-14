@@ -2,6 +2,7 @@
 aggregation (case/coalesce/group-by) against an in-memory sqlite engine."""
 
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,7 @@ from gpustack.routes.resource_usage import (
 from gpustack.schemas.metered_usage import (
     METER_INSTANCE_UPTIME,
     METER_STORAGE_CAPACITY,
+    RESOURCE_TYPE_CPU_INSTANCE,
     RESOURCE_TYPE_GPU_INSTANCE,
     RESOURCE_TYPE_PERSISTENT_VOLUME,
     MeteredUsage,
@@ -513,6 +515,396 @@ async def test_instance_type_splits_by_actual_shape(session):
     assert set(by_cpu) == {1000, 3000}
     assert by_cpu[1000]["memory_mib"] == 2048
     assert by_cpu[3000]["memory_mib"] == 6144
+
+
+@pytest.mark.asyncio
+async def test_unit_hours_exposes_the_billed_quantity_for_cpu_instances(session):
+    """``instance_hours`` is unweighted wall clock and ``gpu_hours`` is zero for
+    a CPU instance, so between them NOTHING on the page reflected a CPU row's
+    ``sku_count`` — a 4-unit instance looked identical to a 1-unit one, and even
+    *smaller* when it ran for less wall time. ``unit_hours`` is the quantity the
+    invoice multiplies, so it must invert that.
+    """
+    from sqlalchemy import and_
+
+    common = dict(
+        meter_key=METER_INSTANCE_UPTIME,
+        resource_type=RESOURCE_TYPE_CPU_INSTANCE,
+        sku="sha1:" + "7" * 40,
+        unit="seconds",
+        instance_type_name="generic",
+    )
+    session.add_all(
+        [
+            # c1: 1 unit, runs LONGER.
+            _mu(
+                resource_id=931,
+                resource_name="c1",
+                sku_count=1,
+                quantity=3698,
+                **common,
+            ),
+            # c2: 4 units, runs shorter — but bills far more.
+            _mu(
+                resource_id=932,
+                resource_name="c2",
+                sku_count=4,
+                quantity=3467,
+                **common,
+            ),
+        ]
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance"),
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_CPU_INSTANCE,
+        ),
+        metric_keys=["gpu_hours", "unit_hours", "instance_hours"],
+    )
+    by_name = {i["key"]: i["metrics"] for i in out["items"]}
+    # Wall clock says c1 is the bigger consumer …
+    assert by_name["c1"]["instance_hours"] > by_name["c2"]["instance_hours"]
+    # … and GPU-Hours says nothing at all about either.
+    assert by_name["c1"]["gpu_hours"] == 0
+    assert by_name["c2"]["gpu_hours"] == 0
+    # unit_hours restores the truth: c2 bills ~3.7x c1.
+    assert by_name["c2"]["unit_hours"] > by_name["c1"]["unit_hours"] * 3
+    assert by_name["c1"]["unit_hours"] == by_name["c1"]["instance_hours"]  # 1 unit
+
+
+@pytest.mark.asyncio
+async def test_unit_hours_equals_gpu_hours_for_gpu_rows(session):
+    """``unit_hours`` is ``gpu_hours`` without the GPU filter — a generalization,
+    not a second, competing number. If the two ever disagree on a GPU row, one of
+    them is wrong."""
+    from sqlalchemy import and_
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance"),
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["gpu_hours", "unit_hours"],
+    )
+    assert out["items"]
+    for i in out["items"]:
+        assert i["metrics"]["unit_hours"] == i["metrics"]["gpu_hours"]
+
+
+@pytest.mark.asyncio
+async def test_reconfigured_instance_reports_its_shape_history(session):
+    """A per-instance row shows the LATEST shape but sums the whole period, so a
+    mid-period reconfiguration makes the cell lie. ``shapes`` carries the split
+    that ``metered_usage`` already stores, so the popover can say so."""
+    from sqlalchemy import and_
+
+    common = dict(
+        meter_key=METER_INSTANCE_UPTIME,
+        resource_type=RESOURCE_TYPE_CPU_INSTANCE,
+        resource_id=941,
+        resource_name="c2",
+        sku="sha1:" + "8" * 40,
+        unit="seconds",
+        instance_type_name="generic",
+    )
+    session.add_all(
+        [
+            _mu(
+                sku_count=2,
+                quantity=2534,
+                dimensions={"cpu_milli": 2000, "memory_mib": 4096, "gpu_count": 0},
+                **common,
+            ),
+            _mu(
+                bucket_start=BUCKET + timedelta(hours=1),
+                sku_count=4,
+                quantity=933,
+                dimensions={"cpu_milli": 4000, "memory_mib": 8192, "gpu_count": 0},
+                **{k: v for k, v in common.items() if k != "bucket_start"},
+            ),
+        ]
+    )
+    # A single-shape instance in the same query must NOT get a shapes array.
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_CPU_INSTANCE,
+            resource_id=942,
+            resource_name="c1",
+            sku="sha1:" + "8" * 40,
+            sku_count=1,
+            quantity=3698,
+            unit="seconds",
+        )
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance"),
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_CPU_INSTANCE,
+        ),
+        metric_keys=["unit_hours", "instance_hours"],
+    )
+    by_name = {i["key"]: i for i in out["items"]}
+
+    # A single-shape instance still gets a shapes array — the UI renders EVERY
+    # row's usage as an explicit formula, so it needs the count and per-unit spec
+    # of every row, not only reconfigured ones.
+    assert len(by_name["c1"]["shapes"]) == 1
+    assert by_name["c1"]["shapes"][0]["sku_count"] == 1
+
+    shapes = by_name["c2"]["shapes"]
+    assert len(shapes) == 2
+    # Chronological, so it reads as a sequence of changes.
+    assert [s["cpu_milli"] for s in shapes] == [2000, 4000]
+    # The parts must reconcile with the row's totals — that is the whole point.
+    assert (
+        round(sum(s["instance_hours"] for s in shapes), 2)
+        == by_name["c2"]["metrics"]["instance_hours"]
+    )
+    assert (
+        round(sum(s["unit_hours"] for s in shapes), 2)
+        == by_name["c2"]["metrics"]["unit_hours"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_each_shape_carries_its_own_per_unit_spec(session):
+    """The usage cell renders ``unit × count × hours = value``, so every shape
+    needs the spec of ONE unit — and its own, not the row's.
+
+    Two traps this pins:
+      * the multiplicand cannot be derived as total/count (that inverts a
+        ``round()``, so it breaks on non-integer requests);
+      * changing the instance TYPE gives the shapes different per-unit specs,
+        while the row-level ``dimensions`` only describes the latest one.
+    """
+    from sqlalchemy import and_
+
+    common = dict(
+        meter_key=METER_INSTANCE_UPTIME,
+        resource_type=RESOURCE_TYPE_CPU_INSTANCE,
+        resource_id=961,
+        resource_name="c4",
+        unit="seconds",
+        quantity=3600,
+    )
+    session.add_all(
+        [
+            # Type A: one unit is 1c2g, instance holds 2 of them.
+            _mu(
+                sku="sha1:" + "a" * 40,
+                sku_count=2,
+                dimensions={"cpu_milli": 2000, "unit_cpu_milli": 1000},
+                **common,
+            ),
+            # Moved to type B: one unit is 2c4g, instance holds 2 of them. Note
+            # the count is IDENTICAL, so the change is invisible from count.
+            _mu(
+                bucket_start=BUCKET + timedelta(hours=1),
+                sku="sha1:" + "b" * 40,
+                sku_count=2,
+                dimensions={"cpu_milli": 4000, "unit_cpu_milli": 2000},
+                **{k: v for k, v in common.items() if k != "bucket_start"},
+            ),
+        ]
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance"),
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_CPU_INSTANCE,
+        ),
+        metric_keys=["unit_hours", "instance_hours"],
+    )
+    row = next(i for i in out["items"] if i["key"] == "c4")
+    shapes = row["shapes"]
+    assert len(shapes) == 2
+    # Each shape's own per-unit spec — NOT the row's latest one for both.
+    assert [s["unit_cpu_milli"] for s in shapes] == [1000, 2000]
+    # The row-level dimensions only knows the latest, which is exactly why the
+    # per-shape copy is required.
+    assert row["dimensions"]["unit_cpu_milli"] == 2000
+
+
+@pytest.mark.asyncio
+async def test_shape_history_is_scoped_to_the_queried_range(session):
+    """Reporting a reconfiguration that happened OUTSIDE the selected period
+    would be worse than reporting none."""
+    from sqlalchemy import and_
+
+    common = dict(
+        meter_key=METER_INSTANCE_UPTIME,
+        resource_type=RESOURCE_TYPE_CPU_INSTANCE,
+        resource_id=951,
+        resource_name="c3",
+        sku="sha1:" + "9" * 40,
+        unit="seconds",
+        quantity=3600,
+    )
+    session.add_all(
+        [
+            # Last month, at 2 units — outside the queried day.
+            _mu(bucket_start=BUCKET - timedelta(days=40), sku_count=2, **common),
+            _mu(sku_count=4, **common),
+        ]
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance"),
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_CPU_INSTANCE,
+        ),
+        metric_keys=["unit_hours"],
+    )
+    row = next(i for i in out["items"] if i["key"] == "c3")
+    # Positive assertions, not "shapes is absent" — that would also hold if the
+    # feature were removed entirely (it did, silently, once). Exactly ONE shape
+    # is in range, and it is the in-range one (count 4), not the old count 2.
+    assert len(row["shapes"]) == 1
+    assert row["shapes"][0]["sku_count"] == 4
+    assert row["shapes"][0]["instance_hours"] == 1.0
+    # And the out-of-range hour is not folded into the row's totals either.
+    assert row["metrics"]["unit_hours"] == 4.0
+
+
+@pytest.mark.asyncio
+async def test_instance_type_rows_are_identifiable_not_just_labelled(session):
+    """``sku`` became an opaque hash, so the row LABEL is the snapshotted type
+    name — and a label is not an identity: the same definition on two clusters is
+    two priced rows sharing one name. Each row must therefore carry the full
+    ``(sku, sku_count)`` key plus ``definition_snapshot``, or a client keying on
+    what it can see collides."""
+    from sqlalchemy import and_
+
+    common = dict(
+        meter_key=METER_INSTANCE_UPTIME,
+        resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+        quantity=3600,
+        unit="seconds",
+        instance_type_name="gpustack--generic--nvidia-a100-linux-amd64",
+        definition_snapshot="sha1:" + "d" * 40,
+        dimensions={"gpu_count": 1},
+    )
+    session.add_all(
+        [
+            # Same definition, two clusters -> two skus, ONE name.
+            _mu(resource_id=901, resource_name="a", sku="sha1:" + "1" * 40, **common),
+            _mu(resource_id=902, resource_name="b", sku="sha1:" + "2" * 40, **common),
+        ]
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance_type"),
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["instance_hours"],
+    )
+    items = [i for i in out["items"] if str(i.get("sku", "")).startswith("sha1:")]
+    assert len(items) == 2
+    # Readable label, identical on both — exactly why it cannot be the key.
+    assert {i["key"] for i in items} == {"gpustack--generic--nvidia-a100-linux-amd64"}
+    # The real identity is distinct, and both halves of it are exposed.
+    assert len({i["sku"] for i in items}) == 2
+    assert all(i["sku_count"] == 1 for i in items)
+    # Cross-cluster folding stays possible.
+    assert {i["definition_snapshot"] for i in items} == {"sha1:" + "d" * 40}
+
+
+@pytest.mark.asyncio
+async def test_instance_type_shapes_share_a_name_but_not_a_key(session):
+    """Within ONE cluster, a whole-card row and a sliced row of the same type
+    also share the label — ``sku_count`` is what separates them."""
+    from sqlalchemy import and_
+
+    sku = "sha1:" + "3" * 40
+    common = dict(
+        meter_key=METER_INSTANCE_UPTIME,
+        resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+        sku=sku,
+        quantity=3600,
+        unit="seconds",
+        instance_type_name="a100-pool",
+    )
+    session.add_all(
+        [
+            _mu(
+                resource_id=911,
+                resource_name="whole",
+                sku_count=Decimal("1"),
+                dimensions={"gpu_count": 1, "slice_mode": "whole"},
+                **common,
+            ),
+            _mu(
+                resource_id=912,
+                resource_name="sliced",
+                sku_count=Decimal("0.25"),
+                dimensions={
+                    "gpu_count": 1,
+                    "slice_mode": "ratio",
+                    "sliced_memory_percentage": 25,
+                    "slice_share_milli": 250,
+                },
+                **common,
+            ),
+        ]
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance_type"),
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE,
+        ),
+        metric_keys=["instance_hours"],
+    )
+    items = [i for i in out["items"] if i.get("sku") == sku]
+    assert len(items) == 2
+    assert {i["key"] for i in items} == {"a100-pool"}  # same label
+    # Compared numerically, not as text: the column has scale 8, so the value
+    # reads back as Decimal("0.25000000"). That is the same shape as 0.25 — the
+    # very reason the shape lives in a NUMERIC column instead of a hashed string.
+    ordered = sorted(items, key=lambda i: i["sku_count"])
+    assert ordered[0]["sku_count"] == Decimal("0.25")
+    assert ordered[1]["sku_count"] == 1
+    # The sliced row's facets travel, so the page can show WHY it costs less.
+    assert ordered[0]["dimensions"]["slice_mode"] == "ratio"
+    assert ordered[0]["dimensions"]["slice_share_milli"] == 250
 
 
 @pytest.mark.asyncio
@@ -1414,3 +1806,186 @@ async def test_resource_meta_hides_org_and_group_when_pinned_to_org(session):
     out = await resource_meta(session, USER, pinned_ctx, scope="all")
     assert out["organizations"] == []
     assert out["user_groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_row_identity_and_specs_describe_the_same_shape(session):
+    """A per-instance row's type identity must come from the shape its
+    ``dimensions`` describe.
+
+    Both used to be aggregated, but differently: ``dimensions`` from the row with
+    the greatest ``id`` (the LATEST shape) and ``sku`` / ``instance_type_name``
+    from ``func.max`` over the column (the lexicographic maximum, which for a hash
+    is an arbitrary member). A reconfigured instance is where they part company —
+    the row below then named the old CPU type while describing 4 A100s. Callers
+    have no way to notice, since both fields look authoritative.
+    """
+    from sqlalchemy import and_
+
+    common = dict(
+        meter_key=METER_INSTANCE_UPTIME,
+        resource_type=RESOURCE_TYPE_CPU_INSTANCE,
+        resource_id=961,
+        resource_name="switched",
+        unit="seconds",
+        quantity=3600,
+    )
+    session.add_all(
+        [
+            # First the CPU shape, whose sku sorts HIGHER than the GPU one that
+            # replaced it — so ``func.max`` picks the superseded row.
+            _mu(
+                sku="sha1:" + "f" * 40,
+                instance_type_name="zz-cpu-2c4g",
+                definition_snapshot="sha1:" + "c" * 40,
+                sku_count=2,
+                dimensions={"cpu_milli": 2000, "memory_mib": 4096, "gpu_count": 0},
+                **common,
+            ),
+            _mu(
+                bucket_start=BUCKET + timedelta(hours=1),
+                sku="sha1:" + "a" * 40,
+                instance_type_name="aa-gpu-a100",
+                definition_snapshot="sha1:" + "g" * 40,
+                sku_count=4,
+                dimensions={"gpu_count": 4, "gpu_type": "nvidia-a100"},
+                **{k: v for k, v in common.items() if k != "bucket_start"},
+            ),
+        ]
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance"),
+        base_filter=and_(
+            MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+            MeteredUsage.resource_type == RESOURCE_TYPE_CPU_INSTANCE,
+        ),
+        metric_keys=["unit_hours"],
+    )
+    row = next(i for i in out["items"] if i["key"] == "switched")
+
+    # The latest shape, consistently: label, identity and specs all agree.
+    assert row["dimensions"]["gpu_count"] == 4
+    assert row["instance_type_name"] == "aa-gpu-a100"
+    assert row["sku"] == "sha1:" + "a" * 40
+    assert row["definition_snapshot"] == "sha1:" + "g" * 40
+    # Nothing is lost by picking one: the full history is what ``shapes`` is for.
+    assert [s["sku_count"] for s in row["shapes"]] == [2, 4]
+
+
+@pytest.mark.asyncio
+async def test_bucketed_rows_carry_no_shape_breakdown(session):
+    """``["date", "instance"]`` rows cover ONE bucket, so a whole-window shape
+    breakdown does not describe them.
+
+    ``shapes`` is aggregated over the request's date range. On a per-day row that
+    made the segments sum to the instance's whole-range hours while the row's own
+    metrics covered a single day — a 30-day query put ~720 hours of segments under
+    a 24-hour row. The scoping the ``window`` argument adds one level up does not
+    reach the date axis, so the field is simply not emitted there.
+    """
+    from sqlalchemy import and_
+
+    common = dict(
+        meter_key=METER_INSTANCE_UPTIME,
+        resource_type=RESOURCE_TYPE_CPU_INSTANCE,
+        resource_id=971,
+        resource_name="daily",
+        sku="sha1:" + "7" * 40,
+        unit="seconds",
+        quantity=3600,
+    )
+    session.add_all(
+        [
+            _mu(sku_count=2, **common),
+            _mu(
+                bucket_start=BUCKET + timedelta(days=1),
+                sku_count=4,
+                **{k: v for k, v in common.items() if k != "bucket_start"},
+            ),
+        ]
+    )
+    await session.commit()
+
+    base = and_(
+        MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+        MeteredUsage.resource_type == RESOURCE_TYPE_CPU_INSTANCE,
+    )
+    bucketed = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=ResourceBreakdownRequest(
+            scope="self",
+            start_date=D,
+            end_date=D + timedelta(days=1),
+            group_by=["date", "instance"],
+        ),
+        base_filter=base,
+        metric_keys=["unit_hours"],
+    )
+    rows = [i for i in bucketed["items"] if i["key"] == "daily"]
+    assert len(rows) == 2
+    assert all("shapes" not in r for r in rows)
+    # The enrichment a bucketed row DOES need still happens — this is a skip of
+    # one field, not of the branch.
+    assert all(r["dimensions"] is not None for r in rows)
+
+    # Without the date axis the same request does carry the breakdown.
+    whole = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=ResourceBreakdownRequest(
+            scope="self",
+            start_date=D,
+            end_date=D + timedelta(days=1),
+            group_by=["instance"],
+        ),
+        base_filter=base,
+        metric_keys=["unit_hours"],
+    )
+    row = next(i for i in whole["items"] if i["key"] == "daily")
+    assert [s["sku_count"] for s in row["shapes"]] == [2, 4]
+
+
+@pytest.mark.asyncio
+async def test_a_storage_row_keeps_its_own_sku_under_the_generic_endpoint(session):
+    """``/resource/breakdown`` has no ``base_filter``, and this grouping keys on
+    ``resource_id`` alone — so a volume lands in the "instance" branch too.
+
+    The realignment above must not touch it. It looks up an uptime representative,
+    which a volume has none of, so overwriting unconditionally replaced a perfectly
+    readable ``volume--<kind>--<type>`` sku with ``None``. For a volume the
+    aggregate MAX is exact (one sku per volume), so the untouched value is right.
+    """
+    session.add(
+        _mu(
+            meter_key=METER_STORAGE_CAPACITY,
+            resource_type=RESOURCE_TYPE_PERSISTENT_VOLUME,
+            resource_id=981,
+            resource_name="pv-mixed",
+            sku="volume--nfs--aws",
+            quantity=204800 * 3600,
+            unit="mib_seconds",
+        )
+    )
+    await session.commit()
+
+    out = await _run_breakdown(
+        session,
+        user=USER,
+        ctx=CTX,
+        request=_req("instance"),
+        base_filter=None,  # what the generic endpoint passes
+        metric_keys=["unit_hours", "instance_hours", "gpu_hours", "gb_days"],
+    )
+    by_name = {i["key"]: i for i in out["items"]}
+    assert by_name["pv-mixed"]["sku"] == "volume--nfs--aws"
+    # A real instance in the same response is still realigned off its
+    # representative — the guard narrows the overwrite, it does not remove it.
+    assert by_name["gpu-1"]["sku"] == "h100x2"
