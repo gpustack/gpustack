@@ -97,7 +97,12 @@ EXPORT_COLUMN_TITLES: Dict[str, str] = {
     "owner_name": "Owner",
     "owner_deleted": "Owner Deleted",
     "gpu_hours": "GPU Hours",
-    "instance_hours": "Instance Hours",
+    # The billed quantity: running time weighted by how many units the instance
+    # held. Named after the page's column, with the unit in the HEADER — the
+    # cell keeps a bare number so a spreadsheet can still sum the column, which
+    # is the opposite of the UI where the unit rides on the value.
+    "unit_hours": "Usage (h)",
+    "instance_hours": "Running Time (h)",
     "gb_days": "GB Days",
     "gb_hours": "GB Hours",
     # One server metric (``metrics.resources`` — distinct resources still alive)

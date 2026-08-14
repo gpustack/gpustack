@@ -10,6 +10,9 @@ from pydantic import ValidationError
 
 from gpustack.api.exceptions import ForbiddenException, InvalidException
 from gpustack.routes.resource_usage import (
+    _GPU_EXPORT_KWARGS,
+    _GPU_METRIC_KEYS,
+    _STORAGE_EXPORT_KWARGS,
     ResourceExportRequest,
     estimate_gpu_instances_breakdown_export,
     export_gpu_instances_breakdown,
@@ -23,8 +26,10 @@ from gpustack.utils.usage_export import (
     resource_export_row,
 )
 
-GPU_METRICS = ["gpu_hours", "instance_hours"]
-STORAGE_METRICS = ["gb_days", "gb_hours"]
+# The REAL lists the endpoints run with, not a copy: a hand-written mirror is
+# what let the export lose ``unit_hours`` while every column test still passed.
+GPU_METRICS = list(_GPU_EXPORT_KWARGS["metric_keys"])
+STORAGE_METRICS = list(_STORAGE_EXPORT_KWARGS["metric_keys"])
 
 
 def _result(rows):
@@ -567,3 +572,27 @@ async def test_oversized_date_grouping_does_offer_split(monkeypatch):
 
     actions = {i["action"] for i in excinfo.value.details["suggestions"]}
     assert "split_export" in actions
+
+
+def test_the_export_meters_exactly_what_the_page_does():
+    """The file's metric columns are the endpoint's metric list, so the two
+    cannot be allowed to diverge.
+
+    They did: the export kept a hand-written ``["gpu_hours", "instance_hours"]``
+    while the page gained ``unit_hours``, so the primary column on screen — the
+    billed quantity — had no column in the file at all, and its
+    ``EXPORT_COLUMN_TITLES`` entry was dead configuration. Nothing failed, because
+    every column test asserted against the same hand-written copy.
+    """
+    assert _GPU_EXPORT_KWARGS["metric_keys"] is _GPU_METRIC_KEYS
+    keys = resource_export_column_keys(["instance"], _GPU_METRIC_KEYS)
+    assert "unit_hours" in keys
+    # Ordered as the page orders its columns, and that order is also the file's
+    # default sort (``metric_keys[0]``) — Usage descending, like the table.
+    assert [k for k in keys if k in _GPU_METRIC_KEYS] == _GPU_METRIC_KEYS
+    # Every metric that reaches a column has a human header.
+    titles = dict(
+        zip(keys, build_resource_export_columns(["instance"], _GPU_METRIC_KEYS))
+    )
+    assert titles["unit_hours"] == "Usage (h)"
+    assert titles["instance_hours"] == "Running Time (h)"
