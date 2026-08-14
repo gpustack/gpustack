@@ -223,6 +223,21 @@ GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL = int(
 GPU_INSTANCE_READY_SWEEP_INTERVAL = int(
     os.getenv("GPUSTACK_GPU_INSTANCE_READY_SWEEP_INTERVAL", 0)
 )  # in seconds
+# How long a not-yet-Ready GPU instance may stay Unknown because its worker-side
+# CR is unreadable, before the controller settles it to Stopped.
+#
+# An unreadable CR is normally eventual consistency (it is about to appear), so
+# the row is held at Unknown rather than prematurely stopped and stranded. But
+# Unknown is a METERED phase, so an unbounded hold means an instance that no
+# longer exists anywhere keeps accruing uptime with no upper limit — which is
+# exactly what a cluster teardown / uninstall-reinstall upgrade produces in bulk.
+# Bounding the hold keeps the eventual-consistency tolerance while capping the
+# billing exposure. Generous by default (30 min) because the cost of settling too
+# early is a spuriously Stopped instance the user must restart. 0 disables the
+# bound (restores the previous unbounded behaviour).
+GPU_INSTANCE_UNREADABLE_CR_TOLERANCE = int(
+    os.getenv("GPUSTACK_GPU_INSTANCE_UNREADABLE_CR_TOLERANCE", 1800)
+)  # in seconds
 
 # Model instance configuration
 MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(

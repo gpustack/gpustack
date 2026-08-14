@@ -2,6 +2,7 @@ import json
 import logging
 import asyncio
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple, Optional
 from cachetools import TTLCache
 from sqlalchemy.exc import IntegrityError
@@ -68,6 +69,12 @@ _USER_NAMESPACE_RE = re.compile(r"^user-(\d+)$")
 
 # Backoff before reconnecting the downstream watch stream after it ends/errors.
 _WATCH_RECONNECT_INTERVAL = 5.0
+
+# ``phase_message`` stamped when the worker-side CR cannot be read for a
+# not-yet-Ready row. Matched (not just written) by ``_unreadable_cr_expired`` to
+# recognize its own hold, so the two must stay in sync.
+_UNREADABLE_CR_MESSAGE = "Not found in cluster"
+
 
 # Ceiling for the per-cluster instance-type watch backoff. A cluster with no
 # reachable worker fails every attempt (the cluster proxy answers 503), and it
@@ -173,6 +180,12 @@ class GPUInstanceController:
         )
         # Opt-in fallback: re-observe Ready rows every N seconds (0 disables).
         self._ready_sweep_interval: int = max(0, envs.GPU_INSTANCE_READY_SWEEP_INTERVAL)
+        # How long a not-yet-Ready row may be held at Unknown for an unreadable
+        # worker-side CR before it settles to Stopped. Unknown is metered, so the
+        # hold has to be bounded (see ``_unreadable_cr_expired``). 0 disables.
+        self._unreadable_cr_tolerance: int = max(
+            0, envs.GPU_INSTANCE_UNREADABLE_CR_TOLERANCE
+        )
 
     async def start(self):
         self._dispatch_task = asyncio.create_task(self._dispatch())
@@ -817,10 +830,17 @@ class GPUInstanceController:
         unknown) instead keeps observing as Unknown — the CR may simply not be
         visible yet (eventual consistency), so it must not be prematurely
         stopped and stranded once it does appear.
+
+        That tolerance is BOUNDED. ``Unknown`` is a metered phase, so an
+        indefinite hold means an instance whose CR is gone for good keeps
+        accruing uptime forever — the bulk case being an
+        uninstall-and-reinstall upgrade, which deletes every Instance CR at once.
+        Past ``GPU_INSTANCE_UNREADABLE_CR_TOLERANCE`` the row settles to Stopped,
+        which both stops metering and leaves it restartable.
         """
         read = await ops.read_instance(fresh.name)
         if read is None:
-            if fresh.is_ready():
+            if fresh.is_ready() or self._unreadable_cr_expired(fresh):
                 await self._write_status(
                     session,
                     fresh,
@@ -835,10 +855,82 @@ class GPUInstanceController:
                 "metadata": {"namespace": ops.org_namespace},
                 "status": {
                     "phase": self.PHASE_UNKNOWN,
-                    "phaseMessage": "Not found in cluster",
+                    "phaseMessage": _UNREADABLE_CR_MESSAGE,
+                    # The hold's own clock, carried forward once stamped so the
+                    # synthetic status stays byte-identical across passes — which
+                    # is what keeps ``_write_status`` from writing every tick.
+                    "unreadableSince": self._unreadable_since(fresh),
                 },
             }
         await self._db_update_instance_status(session, fresh, read)
+
+    def _unreadable_since(self, fresh: GPUInstance) -> datetime:
+        """When the current unreadable-CR hold began.
+
+        Reuses the stamp already on the row when it is in that hold, so the
+        timestamp marks the START of the hold and not the latest observation. A
+        row that entered the hold under an older version has none; it gets one on
+        the first observation after the upgrade, which restarts its tolerance
+        once, at the version boundary only.
+        """
+        status = fresh.status
+        if (
+            status is not None
+            and status.phase == self.PHASE_UNKNOWN
+            and status.phase_message == _UNREADABLE_CR_MESSAGE
+            and status.unreadable_since is not None
+        ):
+            return status.unreadable_since
+        return datetime.now(timezone.utc)
+
+    def _unreadable_cr_expired(self, fresh: GPUInstance) -> bool:
+        """Whether this row has been held at ``Unknown`` for an unreadable CR
+        longer than the tolerance allows.
+
+        The clock is ``status.unreadable_since`` — a field of the hold itself,
+        stamped when it begins and carried forward while it lasts. Requeues keep
+        re-observing on the transitioning cadence (``Unknown`` is transitioning),
+        so this is re-evaluated until it trips.
+
+        It deliberately does NOT use ``updated_at``. That reads correct at first
+        glance, because ``_write_status`` writes only on a real change, so the
+        row's timestamp does stop advancing once the hold settles. But it is a
+        ROW-level timestamp and the hold bounds a METERED phase: ``display_name``
+        / ``description`` / ``spec.sshPublicKeys`` are all editable from any phase
+        (see the update route), so editing a note on an instance restarted its
+        30-minute bound from zero — silently, and repeatably. The one guarantee
+        this mechanism exists to give is a ceiling on metered time at Unknown, and
+        a clock any unrelated write can reset cannot give it.
+
+        Only the ``Unknown`` + not-found state counts — a row that is
+        ``Starting`` or ``NotReady`` for its own reasons is not being held by
+        this tolerance and must not be swept up by it.
+        """
+        if self._unreadable_cr_tolerance <= 0:
+            return False
+        status = fresh.status
+        if status is None or status.phase != self.PHASE_UNKNOWN:
+            return False
+        if status.phase_message != _UNREADABLE_CR_MESSAGE:
+            return False
+        since = status.unreadable_since
+        if since is None:
+            return False
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        held = (datetime.now(timezone.utc) - since).total_seconds()
+        if held < self._unreadable_cr_tolerance:
+            return False
+        logger.warning(
+            "GPU instance %s (id=%s) has been Unknown with an unreadable "
+            "worker-side CR for %.0fs (> %ss); settling it to Stopped so it stops "
+            "accruing metered uptime",
+            fresh.name,
+            fresh.id,
+            held,
+            self._unreadable_cr_tolerance,
+        )
+        return True
 
     async def _release_template_persistent_volume(
         self, session: AsyncSession, fresh: GPUInstance
