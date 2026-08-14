@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 from typing import Dict, Optional, ClassVar, List, Literal
 
@@ -549,6 +550,22 @@ class GPUInstanceStatus(BaseModel):
     allocations: Optional[List[GPUInstanceDevicesAllocationGroup]] = None
     """
     Optional list of allocated accelerator devices for the GPU instance, grouped by manufacturer and type.
+    """
+
+    unreadable_since: Optional[datetime] = None
+    """
+    When this row entered the "worker-side CR is unreadable" hold, in UTC.
+
+    The one field here the worker does NOT report — the server stamps it, and
+    ``merge_from_kuberes`` drops it whenever a real CR is read, so it exists
+    exactly as long as the hold does.
+
+    It is what bounds a *metered* phase, so it cannot be inferred from
+    ``updated_at``: that timestamp is row-level, and ``display_name`` /
+    ``description`` / ``spec.sshPublicKeys`` are editable from any phase, so an
+    unrelated edit would silently restart the tolerance window and let a row
+    accrue metered uptime at Unknown indefinitely. See
+    ``_unreadable_cr_expired``.
     """
 
 

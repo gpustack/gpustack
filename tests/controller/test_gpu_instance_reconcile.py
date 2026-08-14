@@ -16,6 +16,7 @@ transitioning row via ``add_after``; ``_process`` retries a failed reconcile
 with ``add_rate_limited`` and resets on success.
 """
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -95,11 +96,16 @@ def _with_ops(controller, ops):
     return ops
 
 
-async def _seed(engine, *, phase=None, phase_message=None, spec=None):
+async def _seed(
+    engine, *, phase=None, phase_message=None, spec=None, unreadable_since=None
+):
     async with AsyncSession(engine, expire_on_commit=False) as s:
         status = (
             GPUInstanceStatus(
-                phase=phase, phase_message=phase_message, namespace=NAMESPACE
+                phase=phase,
+                phase_message=phase_message,
+                namespace=NAMESPACE,
+                unreadable_since=unreadable_since,
             )
             if phase is not None
             else None
@@ -435,8 +441,12 @@ async def test_unknown_absent_keeps_observing_not_stopped(engine, controller):
     # A not-yet-Ready row whose CR is (still) absent must keep observing as
     # Unknown, never prematurely settle to Stopped — the CR may just be lagging
     # (eventual consistency); settling would strand it once it appears.
+    since = datetime.now(timezone.utc) - timedelta(seconds=60)
     await _seed(
-        engine, phase=GPUInstancePhase.UNKNOWN, phase_message="Not found in cluster"
+        engine,
+        phase=GPUInstancePhase.UNKNOWN,
+        phase_message="Not found in cluster",
+        unreadable_since=since,
     )
     _with_ops(controller, FakeOps(read_return=None))
 
@@ -445,6 +455,184 @@ async def test_unknown_absent_keeps_observing_not_stopped(engine, controller):
     row = await _get(engine)
     assert row.status.phase == GPUInstancePhase.UNKNOWN  # not Stopped
     assert _requeued(controller) == 1  # keeps re-observing
+    # The hold's clock is carried forward, not re-stamped: a synthetic status
+    # that changed every pass would write on every tick AND reset the bound.
+    assert row.status.unreadable_since == since
+
+
+@pytest.mark.asyncio
+async def test_unknown_absent_settles_to_stopped_past_the_tolerance(engine, controller):
+    """The eventual-consistency hold above is BOUNDED. ``Unknown`` is a metered
+    phase, so a CR that is gone for good (cluster torn down, or an
+    uninstall-and-reinstall upgrade that drops every Instance CR) would otherwise
+    keep accruing uptime forever. Past the tolerance the row settles to Stopped,
+    which stops metering and leaves it restartable."""
+    # The hold's own clock, backdated past the tolerance.
+    await _seed(
+        engine,
+        phase=GPUInstancePhase.UNKNOWN,
+        phase_message="Not found in cluster",
+        unreadable_since=datetime.now(timezone.utc) - timedelta(seconds=3600),
+    )
+    controller._unreadable_cr_tolerance = 1800
+    _with_ops(controller, FakeOps(read_return=None))
+
+    await controller._reconcile_instance(1, {})
+
+    row = await _get(engine)
+    assert row.status.phase == GPUInstancePhase.STOPPED
+    assert row.status.phase_message == "Worker-side instance not found"
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_edit_does_not_restart_the_tolerance(engine, controller):
+    """The bound must survive a write to the row that has nothing to do with it.
+
+    The clock used to be ``updated_at``, which reads plausible — ``_write_status``
+    writes only on a real change, so it does stop advancing once the hold settles.
+    But it is ROW-level, and ``display_name`` is editable from any phase. So
+    renaming an instance while its CR was unreadable pushed the 30-minute ceiling
+    back to zero, and doing it repeatedly kept a metered Unknown row alive
+    indefinitely — with no trace that it had happened.
+    """
+    since = datetime.now(timezone.utc) - timedelta(seconds=3600)
+    await _seed(
+        engine,
+        phase=GPUInstancePhase.UNKNOWN,
+        phase_message="Not found in cluster",
+        unreadable_since=since,
+    )
+    # The user renames it right now: ``updated_at`` becomes NOW.
+    async with AsyncSession(engine) as s:
+        row = await GPUInstance.one_by_id(s, 1)
+        await row.update(s, source={"display_name": "renamed just now"})
+    fresh = await _get(engine)
+    assert (
+        datetime.now(timezone.utc) - fresh.updated_at.replace(tzinfo=timezone.utc)
+    ).total_seconds() < 60
+
+    controller._unreadable_cr_tolerance = 1800
+    _with_ops(controller, FakeOps(read_return=None))
+    await controller._reconcile_instance(1, {})
+
+    # Still settles: the hold began an hour ago and the rename did not touch that.
+    assert (await _get(engine)).status.phase == GPUInstancePhase.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_the_hold_clock_survives_the_json_round_trip_unchanged(
+    engine, controller
+):
+    """Two observations in a row must produce a byte-identical status.
+
+    The stamp goes out through ``model_dump`` into a JSON column and comes back
+    through pydantic validation. If that round trip altered it at all — dropped
+    microseconds, changed the offset — ``_status_equivalent`` would see a change on
+    every pass, so the row would be written on every tick AND its bound would move
+    forward each time. That is the failure the row-level ``updated_at`` had, in a
+    new place, so equality here is the invariant the whole fix rests on.
+    """
+    await _seed(
+        engine, phase=GPUInstancePhase.UNKNOWN, phase_message="Not found in cluster"
+    )
+    _with_ops(controller, FakeOps(read_return=None))
+
+    await controller._reconcile_instance(1, {})  # stamps + writes
+    stamped = (await _get(engine)).status.unreadable_since
+    requeues_after_write = _requeued(controller)
+
+    await controller._reconcile_instance(1, {})  # must be a no-op write-wise
+
+    row = await _get(engine)
+    assert row.status.unreadable_since == stamped
+    assert _requeued(controller) == requeues_after_write + 1  # requeued, not written
+
+
+@pytest.mark.asyncio
+async def test_a_readable_cr_clears_the_hold_clock(engine, controller):
+    """The stamp exists only while the hold does.
+
+    ``merge_from_kuberes`` builds the status purely from the CR payload and the
+    worker never reports this field, so a real read drops it — which is what makes
+    a later hold start its own clock instead of inheriting a stale one.
+    """
+    await _seed(
+        engine,
+        phase=GPUInstancePhase.UNKNOWN,
+        phase_message="Not found in cluster",
+        unreadable_since=datetime.now(timezone.utc) - timedelta(seconds=60),
+    )
+    _with_ops(
+        controller,
+        FakeOps(
+            read_return={
+                "metadata": {"namespace": NAMESPACE},
+                "status": {"phase": GPUInstancePhase.READY},
+            }
+        ),
+    )
+
+    await controller._reconcile_instance(1, {})
+
+    row = await _get(engine)
+    assert row.status.phase == GPUInstancePhase.READY
+    assert row.status.unreadable_since is None
+
+
+@pytest.mark.asyncio
+async def test_a_hold_from_an_older_version_gets_stamped_on_first_observe(
+    engine, controller
+):
+    """A row already at Unknown when the server upgrades has no stamp.
+
+    It gets one on the next observation, which restarts its tolerance once — at
+    the version boundary only, since every later pass carries the stamp forward.
+    Better than the alternatives: falling back to ``updated_at`` would keep the
+    resettable clock alive, and refusing to expire without a stamp would leave
+    those rows metered forever.
+    """
+    await _seed(
+        engine, phase=GPUInstancePhase.UNKNOWN, phase_message="Not found in cluster"
+    )
+    assert (await _get(engine)).status.unreadable_since is None
+    controller._unreadable_cr_tolerance = 1800
+    _with_ops(controller, FakeOps(read_return=None))
+
+    await controller._reconcile_instance(1, {})
+
+    row = await _get(engine)
+    assert row.status.phase == GPUInstancePhase.UNKNOWN  # not swept up
+    assert row.status.unreadable_since is not None
+
+
+@pytest.mark.asyncio
+async def test_tolerance_does_not_sweep_up_other_transitioning_phases(
+    engine, controller
+):
+    """Only the "Unknown + CR unreadable" hold is bounded. A row that is
+    Starting for its own reasons is not being held by this tolerance and must
+    keep its phase even though it is long past the window."""
+    await _seed(
+        engine,
+        phase=GPUInstancePhase.STARTING,
+        unreadable_since=datetime.now(timezone.utc) - timedelta(seconds=99999),
+    )
+    controller._unreadable_cr_tolerance = 1800
+    row = await _get(engine)
+    assert controller._unreadable_cr_expired(row) is False
+
+
+@pytest.mark.asyncio
+async def test_tolerance_of_zero_restores_the_unbounded_hold(engine, controller):
+    await _seed(
+        engine,
+        phase=GPUInstancePhase.UNKNOWN,
+        phase_message="Not found in cluster",
+        unreadable_since=datetime.now(timezone.utc) - timedelta(days=30),
+    )
+    controller._unreadable_cr_tolerance = 0
+    row = await _get(engine)
+    assert controller._unreadable_cr_expired(row) is False
 
 
 # --- terminal -------------------------------------------------------------- #
