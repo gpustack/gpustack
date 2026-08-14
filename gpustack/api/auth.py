@@ -56,6 +56,20 @@ SSO_LOGIN_COOKIE_NAME = "gpustack_sso_login"
 SYSTEM_USER_PREFIX = "system/"
 SYSTEM_WORKER_USER_PREFIX = "system/worker/"
 GATEWAY_AUTH_TOKEN_HEADER = "X-GPUStack-Auth-Token"
+# Identity the gateway plugin says it has already verified locally, sent
+# *instead of* the credential. Both are request headers a client must never be
+# able to set: the transformer plugin strips them at priority 810, before
+# ext-auth injects the trusted values at 360 in the same AUTHN phase.
+GATEWAY_ASSERTED_ACCESS_KEY_HEADER = "X-GPUStack-Access-Key"
+GATEWAY_ASSERTED_KEY_REF_HEADER = "X-GPUStack-Key-Ref"
+# The client connection the gateway plugin observed for this request, used to
+# bind an auth-cache marker to it. The server never derives this -- only the
+# plugin can read source.address -- so it embeds whatever the plugin sends at
+# mint time and compares against whatever it sends on the pass that presents the
+# marker. Trustworthy for the same reason as the two above: the plugin sets it
+# fresh from source.address on every authorization call, overwriting any
+# client-supplied copy, so it names the connection the client is actually on.
+GATEWAY_DOWNSTREAM_CONN_HEADER = "X-GPUStack-Downstream-Conn"
 basic_auth = HTTPBasic(auto_error=False)
 bearer_auth = HTTPBearer(auto_error=False)
 api_key_header_auth = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -78,6 +92,32 @@ def gateway_token_auth(
     request: Request,
     token: Annotated[Optional[str], Depends(_gateway_auth_header)] = None,
 ):
+    """Verify that a request came from the API gateway.
+
+    What this token authorizes grew with the move of authentication to the
+    gateway: it used to say only "this request came from the gateway", and it
+    now also lets the caller assert an identity to ``/token-auth`` -- see
+    :func:`authenticate_gateway_asserted_identity`.
+
+    Holding it is still much less than being able to act as someone. This
+    endpoint answers with a consumer name and a marker, not with inference: a
+    client that presents the token and an asserted identity learns who the
+    server would call them, and nothing more. Reaching a model that way needs a
+    marker the gateway will accept, and the gateway signs those with a
+    *different* key -- while stripping any identity header a client sends.
+
+    That other key is the one worth guarding. ``auth_cache.signing_key`` sits in
+    the same WasmPlugin resource as this token, and forging markers with it is
+    impersonation outright. Read access to the gateway namespace is therefore
+    closer to platform-level authority than it looks, which is worth knowing
+    before granting it -- the API key documentation says so where it tells an
+    operator to edit that resource.
+
+    Rotating this token means rotating ``jwt_secret_key``, which also
+    invalidates every user session. A dedicated derivation is the change to make
+    if it ever needs rotating on its own, the way the marker signing key already
+    has one.
+    """
     if not token:
         token = request.headers.get(GATEWAY_AUTH_TOKEN_HEADER)
     if not token:
@@ -324,7 +364,7 @@ async def get_user_from_jwt_token(
 
 def parse_hyphen_uuid(value: str) -> Optional[str]:
     if not re.match(
-        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', value, re.I
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", value, re.I
     ):
         return None
     try:
@@ -362,7 +402,13 @@ def _schedule_secret_key_digest_backfill(api_key: ApiKey, secret_key: str) -> No
             access_key=api_key.access_key,
         )
         if digest is None or api_key.id is None:
-            # Custom keys and the legacy cluster token stay on argon2 forever.
+            # Whatever the eligibility test refuses stays on argon2: the legacy
+            # cluster token always, and a custom key while
+            # ``GATEWAY_AUTH_ALLOW_CUSTOM_KEYS`` is off. Nothing here knows
+            # which -- backfilling a custom key is the same code path as
+            # backfilling a generated one, and has to stay that way, since the
+            # switch can be turned back on and keys created while it was off
+            # have to converge without being touched by hand.
             return
         if api_key.id in _backfill_in_flight:
             return
@@ -508,6 +554,120 @@ async def get_user_from_api_token(
         raise InternalServerErrorException(message=f"Failed to get user: {e}")
 
     return None, None
+
+
+# ``api_keys.id`` is a 32-bit serial. A larger value parses fine as a Python
+# int and only fails at the driver, as a DataError the caller would surface as
+# a 500 -- so the range is part of "is this a key ref", not a database concern.
+_MAX_KEY_REF = 2**31 - 1
+
+
+def _parse_key_ref(key_ref: str) -> Optional[int]:
+    try:
+        key_id = int(key_ref)
+    except ValueError:
+        logger.debug("Ignoring asserted identity: key ref is not an id")
+        return None
+    if not 0 < key_id <= _MAX_KEY_REF:
+        logger.debug("Ignoring asserted identity: key ref is out of range")
+        return None
+    return key_id
+
+
+async def authenticate_gateway_asserted_identity(
+    request: Request, session: AsyncSession
+) -> Tuple[Optional[User], Optional[ApiKey]]:
+    """Resolve an identity the gateway states it has already authenticated.
+
+    The gateway plugin verifies the secret locally for keys that carry a
+    ``secret_key_digest`` and then calls ``/token-auth`` with the identity in a
+    header and no credential at all, so this stands in for authentication on
+    that path -- the server only evaluates policy afterwards.
+
+    The assertion is honoured *only* behind ``gateway_token_auth``. That check
+    is the whole trust boundary here: authentication no longer happens on this
+    path, so without it any client could name any ``access_key`` and nothing
+    else would stop it. A missing or wrong gateway token makes this a no-op and
+    the caller falls through to ordinary credential authentication, which is
+    also what a client forging the header gets.
+
+    Returns ``(None, None)`` whenever the assertion cannot be honoured -- no
+    header, no gateway token, or a key that is gone, expired, or owned by a
+    deactivated principal. The caller then treats the request as
+    unauthenticated, which is what the credential path would have done for a
+    revoked key anyway; on a PUBLIC route that still means allowed with the
+    ``'none'`` consumer, exactly as today.
+    """
+    # No gateway, no gateway assertions. Defence in depth rather than a check
+    # that carries weight on its own -- the gateway token below is the boundary
+    # -- but with the gateway disabled these headers can only be a client's, so
+    # there is no reason to be reachable. Mirrors client_ip_getter, which gates
+    # its own trust in gateway-set headers the same way.
+    server_config: Config = request.app.state.server_config
+    if server_config.gateway_mode == GatewayModeEnum.disabled:
+        return None, None
+
+    access_key = request.headers.get(GATEWAY_ASSERTED_ACCESS_KEY_HEADER)
+    key_ref = request.headers.get(GATEWAY_ASSERTED_KEY_REF_HEADER)
+    if not access_key and not key_ref:
+        return None, None
+    try:
+        gateway_token_auth(request)
+    except UnauthorizedException:
+        logger.debug("Ignoring asserted identity: gateway token missing or invalid")
+        return None, None
+
+    api_key: Optional[ApiKey] = None
+    if access_key:
+        api_key = await APIKeyService(session).get_by_access_key(access_key)
+    else:
+        key_id = _parse_key_ref(key_ref)
+        if key_id is None:
+            return None, None
+        # Detached like the access-key branch above, which goes through a cached
+        # service that expunges. Harmless either way under
+        # ``expire_on_commit=False``, but two paths returning objects with
+        # different session affinity is a difference waiting to matter.
+        api_key = await ApiKey.one_by_id(session, key_id)
+        if api_key is not None:
+            session.expunge(api_key)
+    if api_key is None:
+        return None, None
+    # Unlike the credential path this also rejects a soft-deleted row. The
+    # divergence is deliberate and one-directional: it can only reject a key the
+    # gateway's own table has gone stale about, never a live one.
+    if api_key.deleted_at is not None:
+        return None, None
+    if api_key.expires_at is not None and api_key.expires_at <= datetime.now(
+        timezone.utc
+    ):
+        return None, None
+
+    user: Optional[User] = await UserService(session).get_by_id(user_id=api_key.user_id)
+    if user is None or not user.is_active:
+        return None, None
+    # A SYSTEM principal is never something the gateway is in a position to
+    # assert: those keys are kept out of its tables precisely because one of
+    # them -- the cluster registration token -- is what ai-proxy puts into
+    # ``Authorization`` on every fallback trip. If one ever reached the tables
+    # anyway, the plugin would authenticate that credential as the system
+    # identity and assert it here, and policy would then be evaluated for the
+    # platform's own subject. Filtering on the gateway side is the primary
+    # defence; refusing it here means a lapse there cannot escalate. Nothing
+    # legitimate is lost: workers authenticate with a credential, not an
+    # assertion.
+    if user.kind == PrincipalType.SYSTEM:
+        logger.warning(
+            "Refusing a gateway-asserted identity for SYSTEM principal "
+            f"{user.id}: these keys must never reach the gateway's tables."
+        )
+        return None, None
+
+    # Same state the credential path publishes, so ``inference_scope`` and the
+    # rest of the authorization checks read the key's scope either way.
+    request.state.user = user
+    request.state.api_key = api_key
+    return user, api_key
 
 
 async def authenticate_user(

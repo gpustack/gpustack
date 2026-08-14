@@ -70,6 +70,7 @@ from gpustack.gpu_instances.controllers import (
     GPUInstanceTypeController,
 )
 from gpustack.server.db import async_session
+from gpustack.server.gateway_auth_reconciler import GatewayAuthReconciler
 from gpustack.server.lora_model_routes import (
     cleanup_orphan_lora_routes,
     create_lora_model_routes,
@@ -438,6 +439,11 @@ class Server:
 
         gpu_instance_type_controller = GPUInstanceTypeController(self._config)
         tasks.append(asyncio.create_task(gpu_instance_type_controller.start()))
+
+        # Publishes the key tables the gateway authenticates against. Runs
+        # regardless of proxy mode, but no-ops when the gateway is disabled.
+        gateway_auth_reconciler = GatewayAuthReconciler(self._config)
+        tasks.append(asyncio.create_task(gateway_auth_reconciler.start()))
 
         logger.debug("Controllers started.")
         return tasks

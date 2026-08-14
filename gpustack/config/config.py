@@ -5,7 +5,7 @@ import secrets
 import socket
 import uuid
 from enum import Enum
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Literal, Optional, Dict
 from urllib.parse import urlparse
 
 import httpx
@@ -83,7 +83,12 @@ class GatewayPluginEntry(BaseModel):
     # the manifest does not carry.
     url: Optional[str] = None
     sha256: Optional[str] = None
-    image_pull_policy: Optional[str] = None
+    # Constrained rather than free text: an unrecognised value is only refused
+    # by the Kubernetes API, i.e. once per reconcile, forever, with the failure
+    # nowhere near the thing that caused it.
+    image_pull_policy: Optional[
+        Literal["UNSPECIFIED_POLICY", "IfNotPresent", "Always"]
+    ] = None
     # Passed through to the plugin module for validation; shaped like the CR's
     # own ``defaultConfig`` so an operator can transcribe field paths straight
     # out of the plugin's documentation.
@@ -308,6 +313,7 @@ class Config(WorkerConfig, BaseSettings):
 
     _set_worker_fields = {}
     _derive_gateway_token = None
+    _derive_auth_cache_key = None
     _jwt_secret_key_user_provided = False
     _data_dir_was_fresh = False
 
@@ -396,6 +402,20 @@ class Config(WorkerConfig, BaseSettings):
 
         self._derive_gateway_token = hmac.new(
             self.jwt_secret_key.encode(), b"gateway-metrics-push", hashlib.sha256
+        ).hexdigest()
+        # Signing key for the ``x-gpustack-auth-cache`` marker, which the gateway
+        # plugin issues and verifies on its own (see the API-key auth design,
+        # §3.5). Derived rather than reused for two independent reasons:
+        #
+        # * ``jwt_secret_key`` itself also signs user session JWTs, so putting it
+        #   in a WasmPlugin CR would ship the ability to forge an admin session
+        #   cookie to every gateway pod via xDS.
+        # * the derived *gateway token* is no substitute either -- that one is
+        #   sent to the server in plaintext on every request and compared for
+        #   equality, i.e. designed to be transmitted, whereas a signing key is
+        #   designed never to be.
+        self._derive_auth_cache_key = hmac.new(
+            self.jwt_secret_key.encode(), b"gateway-auth-cache", hashlib.sha256
         ).hexdigest()
 
     @model_validator(mode="after")
@@ -1016,6 +1036,9 @@ class Config(WorkerConfig, BaseSettings):
 
     def get_derived_gateway_token(self) -> str:
         return self._derive_gateway_token
+
+    def get_derived_auth_cache_key(self) -> str:
+        return self._derive_auth_cache_key
 
 
 def get_image_name(

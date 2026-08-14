@@ -6,6 +6,7 @@ from typing import Optional, Union, Tuple
 from functools import lru_cache
 import jwt
 from argon2 import PasswordHasher
+import base64
 import hashlib
 
 from gpustack import envs
@@ -85,27 +86,30 @@ def secret_key_digest_eligible(
 ) -> bool:
     """Whether ``secret_key`` may be stored under the fast digest.
 
-    Only secrets this server generated qualify. Getting this wrong stores a
-    low-entropy secret behind a fast hash, which is a real vulnerability rather
-    than a lost optimization, so all three conditions are required and the
-    decision lives here instead of at the call sites:
+    The decision lives here rather than at the call sites because getting it
+    wrong stores a secret behind a hash that is cheap to search, and a call site
+    cannot see that.
 
-    * ``is_custom`` — a user-supplied secret is excluded by the flag that records
-      it. ``ApiKeyCreate.custom`` has no entropy requirement at all, so
-      ``custom: "123456"`` is a key that can exist.
-    * ``access_key`` non-empty — excludes the legacy cluster token, whose row
-      stores the deployment-provided ``config.token`` under an empty access key
-      and never goes through the custom flag.
-    * shape — exactly the hex output of :func:`generate_secret_key`.
+    A secret this server generated always qualifies, on two conditions that have
+    to hold together: a non-empty ``access_key``, which excludes the legacy
+    cluster token (its row stores the deployment-provided ``config.token`` under
+    an empty access key and never goes through the custom flag), and the exact
+    hex shape of :func:`generate_secret_key`. Neither suffices alone -- a custom
+    key may well be 32 hex characters, an md5 of a dictionary word being one.
 
-    None of the three suffices alone: a custom key may well be a 32-character hex
-    string (an md5 of a dictionary word is one), and the ``config.token`` path
-    never sets ``is_custom``.
+    A custom secret qualifies only when the deployment says so, via
+    ``GATEWAY_AUTH_ALLOW_CUSTOM_KEYS``. The shape test does not apply to it:
+    a custom secret is whatever the user typed, so there is nothing to check it
+    against. That is also why the flag exists rather than a rule -- nothing in
+    this system knows how much entropy a given custom key has, and
+    ``ApiKeyCreate.custom`` imposes none, so the choice is the operator's to
+    make with knowledge this code does not have. See the flag's own comment for
+    what it costs.
     """
-    if is_custom:
-        return False
     if not access_key:
         return False
+    if is_custom:
+        return envs.GATEWAY_AUTH_ALLOW_CUSTOM_KEYS
     return bool(_GENERATED_SECRET_KEY_RE.match(_as_text(secret_key)))
 
 
@@ -123,6 +127,49 @@ def new_secret_key_digest(
         return None
     salt = secrets.token_hex(_DIGEST_SALT_BYTES)
     return f"{SECRET_KEY_DIGEST_ALGORITHM}${salt}${_digest_hash(salt, secret_key)}"
+
+
+# The form the gateway config carries. Same salt, same hashed input, same
+# digest -- only the expected hash is truncated to its leading 16 bytes and
+# re-encoded. A derivation rather than a second construction, which is what
+# lets an existing key shrink: rewriting a *stored* digest would need the
+# plaintext, and the plaintext stops reaching this server once its key
+# authenticates at the gateway.
+GATEWAY_DIGEST_ALGORITHM = "s128"
+_GATEWAY_DIGEST_BYTES = 16
+
+
+def gateway_digest(digest: Optional[str]) -> Optional[str]:
+    """``digest`` rewritten for the gateway's key table, or None if unusable.
+
+    Every byte here is multiplied by the number of keys: the table ships in a
+    WasmPlugin CR, etcd caps an object at ~1.5 MiB, and the digest is most of an
+    entry. 60 characters instead of 104 is the difference between roughly 6000
+    and 8600 keys authenticating at the gateway rather than at the server.
+
+    Truncating to 128 bits is the matching length, not a compromise. The secret
+    being verified is 128 bits of CSPRNG output (:func:`generate_secret_key`),
+    so a second preimage costs 2^128 -- exactly what guessing the secret
+    outright costs, and the discarded half was protecting nothing. That
+    reasoning is tied to ``GENERATED_SECRET_KEY_BYTES`` and does not survive
+    being applied to a lower-entropy secret, which is one more reason
+    :func:`secret_key_digest_eligible` refuses those.
+
+    The algorithm prefix changes with the encoding, which is what keeps a
+    rollback safe: an older gateway cannot name ``s128`` so it falls through to
+    the server, whereas one that still read ``sha256`` and compared a truncated
+    hash against a full one would reject the request outright.
+    """
+    parsed = _parse_secret_key_digest(digest)
+    if parsed is None:
+        return None
+    salt, expected = parsed
+    try:
+        raw = bytes.fromhex(expected)
+    except ValueError:
+        return None
+    truncated = base64.urlsafe_b64encode(raw[:_GATEWAY_DIGEST_BYTES])
+    return f"{GATEWAY_DIGEST_ALGORITHM}${salt}${truncated.decode().rstrip('=')}"
 
 
 def secret_key_digest_usable(digest: Optional[str]) -> bool:

@@ -50,6 +50,25 @@ def get_plugin_url_with_name_and_version(
 
 
 def get_plugin_url_prefix(cfg: Optional[Config] = None) -> str:
+    """Where Envoy fetches plugin modules from.
+
+    This setting decides something the code cannot: whether a gateway pod can
+    still load its modules while the GPUStack server is down. Unset, the server
+    serves them itself, so a pod cold-starting during an outage gets nothing --
+    and ``failStrategy: FAIL_OPEN`` turns a module that fails to load into
+    inference routes served with no authentication at all. The chart points it
+    at a separate deployment, which is what takes module distribution out of
+    the server's availability domain; embedded mode does not, and relies on
+    Envoy having cached the module for the life of the pod.
+
+    Deliberately no ``sha256`` on what comes back, though the spec accepts one
+    and an operator can supply it. The URL already carries the plugin version
+    and a version's bytes do not change, so a digest adds no discrimination the
+    path does not; and tampering with this fetch requires the same position on
+    the network as tampering with the authorization calls to ``/token-auth``,
+    which is the stronger attack of the two. It would harden a link that is not
+    the weakest one.
+    """
     base_url = "http://127.0.0.1"
     if cfg is not None and cfg.gateway_plugin_server_url:
         base_url = cfg.gateway_plugin_server_url

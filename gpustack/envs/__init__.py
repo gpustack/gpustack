@@ -1,6 +1,8 @@
 """Configurable environment variables for GPUStack."""
 
+import logging
 import os
+from typing import List, Set
 
 # Database configuration
 DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
@@ -37,9 +39,123 @@ JWT_TOKEN_EXPIRE_MINUTES = int(os.getenv("GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES", 12
 # ``gateway_plugin`` in config.yaml instead of here, so the two mechanisms keep
 # distinct effective-time semantics: a value there takes effect on the next
 # reconcile, a value here on restart. What remains below governs how the server
-# maintains those CRs, or the gateway process itself, and never appears in one.
-HIGRESS_EXT_AUTH_TIMEOUT_MS = int(
-    os.getenv("GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS", 30000)
+# maintains those CRs, and never appears in one.
+#
+# The two exceptions are the variables that predate that split. They are honored
+# as the *default* the config file may override, because dropping them outright
+# would fail silently: a deployment that had raised the ext-auth timeout would
+# quietly get the stock one, and a deployment that had added a content type
+# would quietly stop metering it -- an accounting error nobody notices until a
+# bill is wrong.
+
+
+_warned_deprecated_envs: Set[str] = set()
+
+
+def _deprecated_gateway_env(name: str, replacement: str, default, parse):
+    """Read a variable that has moved into ``gateway_plugin``.
+
+    Warned about once per process rather than per read: this is called from a
+    pydantic ``default_factory``, so it runs every time the plugin's config is
+    rendered.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    if name not in _warned_deprecated_envs:
+        _warned_deprecated_envs.add(name)
+        logging.getLogger(__name__).warning(
+            f"{name} is deprecated and will be removed. Set {replacement} in "
+            "the config file instead; the config file wins where both are set."
+        )
+    try:
+        return parse(raw)
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).warning(
+            f"Ignoring {name}: {raw!r} is not a valid value."
+        )
+        return default
+
+
+def deprecated_ext_auth_timeout_ms() -> int:
+    """Default for ``gateway_plugin.gpustack-ext-auth.config.authz.timeout``."""
+    return _deprecated_gateway_env(
+        "GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS",
+        "gateway_plugin.gpustack-ext-auth.config.authz.timeout",
+        30000,
+        int,
+    )
+
+
+def deprecated_ai_statistics_content_types() -> List[str]:
+    """Default for ``gateway_plugin.ai-statistics.config.enable_content_types``."""
+    return _deprecated_gateway_env(
+        "GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES",
+        "gateway_plugin.ai-statistics.config.enable_content_types",
+        ["application/json", "text/event-stream"],
+        lambda raw: [part.strip() for part in raw.split(",") if part.strip()],
+    )
+
+
+# How often the gateway auth reconciler recomputes the key tables from the
+# database in full. This is a security parameter, not a tuning knob: deletions
+# that bypass the ORM (a principal cascade, direct SQL) produce no event, and
+# on a PUBLIC route -- where the plugin no longer calls the server per request
+# -- this interval is the worst-case time such a key keeps being accepted.
+# Cheap to keep short: the reconciler diffs before writing, so an unchanged
+# recomputation costs one read and no CR write.
+GATEWAY_AUTH_RECONCILE_INTERVAL_SECONDS = int(
+    os.getenv("GPUSTACK_GATEWAY_AUTH_RECONCILE_INTERVAL_SECONDS", 30)
+)
+
+# Whether a custom API key -- one whose secret the user supplied rather than
+# this server generating it -- may be authenticated at the gateway.
+#
+# Off, a custom key keeps working exactly as before: the gateway cannot verify
+# it, so every request carrying one asks the server. On, it is given the same
+# fast digest a generated key gets, which is what lets the gateway answer
+# locally and, on a public route, without the server at all.
+#
+# The cost is specific and worth stating. ``ApiKeyCreate.custom`` has no entropy
+# requirement of any kind, so ``custom: "123456"`` is a key that can exist. What
+# is published for it travels in a WasmPlugin CR -- reachable through
+# ``istioctl proxy-config``, ``/config_dump`` and support bundles, a wider
+# audience than the database the argon2 hash never leaves. Against a weak secret
+# an offline search is then trivial, and no part of the system knows which
+# custom keys are weak.
+#
+# Two hashes are published, and the weaker one is not the digest. The digest is
+# salted, so it has to be attacked one key at a time. But a custom key has no
+# access key inside it, so ``get_key_pair`` derives one by hashing the whole
+# credential -- and that value is what the ``keys`` table is *indexed by*. It is
+# an unsalted blake2b of the secret itself, identical for the same secret in
+# every deployment, which is what makes precomputation pay: one table over a
+# password list, tried against every custom key ever published anywhere. The
+# salt on the digest buys nothing while the index next to it is salt-free.
+#
+# Deployments that mint their custom keys from a random source are unaffected;
+# deployments that let people choose them should turn this off.
+GATEWAY_AUTH_ALLOW_CUSTOM_KEYS = (
+    os.getenv("GPUSTACK_GATEWAY_AUTH_ALLOW_CUSTOM_KEYS", "true").lower() != "false"
+)
+
+# Byte budget for the parts of the ext-auth CR the reconciler owns: the key
+# tables and one match rule per PUBLIC route. Both are sized from it, so
+# whichever grows leaves less room for the other instead of the two overrunning
+# a shared limit independently.
+#
+# The ceiling is etcd's 1.5 MiB (1536 KiB) object limit, and exceeding it is not
+# a partial failure: the write is refused outright, the tables freeze at their
+# last good state, and revocations stop propagating -- on a PUBLIC route that is
+# the only path they have. So this leaves ~28% for the rest of the object
+# (metadata, managedFields, the static config block) and for error in the
+# per-entry estimates the reconciler sizes with.
+#
+# Overflow itself is benign on both sides: a key past the budget authenticates
+# at the server on every request, and a public route past it authorizes there
+# per request. Both are the behaviour that predates this mechanism.
+GATEWAY_AUTH_MAX_CR_BYTES = int(
+    os.getenv("GPUSTACK_GATEWAY_AUTH_MAX_CR_BYTES", 1_100_000)
 )
 
 # Server Cache
