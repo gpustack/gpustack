@@ -220,8 +220,11 @@ async def create_api_key(
             owner_principal_id=target_org_id,
             access_key=access_key,
             hashed_secret_key=get_secret_hash(secret_key),
-            # None for a custom key: the function refuses a secret it did not
-            # generate, so the fast digest can never cover a user-chosen one.
+            # None whenever the eligibility test refuses -- for a custom key,
+            # that is what ``GATEWAY_AUTH_ALLOW_CUSTOM_KEYS`` decides. A key
+            # created while the switch was off is not stranded: it has no
+            # digest, so the first authentication after the switch is turned
+            # back on backfills one, the same as a key predating the column.
             secret_key_digest=new_secret_key_digest(
                 secret_key=secret_key,
                 is_custom=key_in.custom is not None,

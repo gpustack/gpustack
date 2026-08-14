@@ -7,7 +7,7 @@ import yaml
 import copy
 from functools import partial
 from typing import Any, Dict, Tuple, List, Optional, Literal
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
 from kubernetes_asyncio.config.kube_config import KubeConfigLoader, KubeConfigMerger
@@ -17,7 +17,11 @@ from kubernetes_asyncio.config.incluster_config import (
     SERVICE_CERT_FILENAME,
 )
 from kubernetes_asyncio.client.rest import ApiException
-from gpustack.api.auth import GATEWAY_AUTH_TOKEN_HEADER
+from gpustack.api.auth import (
+    GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+    GATEWAY_ASSERTED_KEY_REF_HEADER,
+    GATEWAY_AUTH_TOKEN_HEADER,
+)
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack import envs
@@ -42,19 +46,22 @@ from gpustack.gateway.utils import (
     router_header_key,
     gpustack_original_path_header,
     gpustack_fallback_path_header,
-    model_route_ingress_prefix,
+)
+from gpustack.gateway.ext_auth import (
+    ext_auth_init_spec_diff,
+    ext_auth_resource_name,
+    ext_auth_spec,
 )
 from gpustack.gateway.plugins import plugin_entry, plugin_spec_overrides
-from gpustack.security import AUTH_CACHE_HEADER
 
 logger = logging.getLogger(__name__)
 
 mcp_registry_port = 80
 
-# Manifest name of the ai-statistics plugin, which is also its
-# ``gateway_plugin`` key -- distinct from the ``gpustack-ai-statistics``
-# resource it is deployed as.
-ai_statistics_plugin_name = "ai-statistics"
+# The caller identity every Higress plugin agrees on by constant, ext-auth
+# included. Named here because two plugins below have to spell it identically:
+# one strips whatever the client sent, the other reads whatever survives.
+consumer_header = "x-mse-consumer"
 
 supported_openai_routes = [
     route for v in openai_model_prefixes for route in v.flattened_prefixes()
@@ -277,104 +284,29 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             )
 
 
-def get_match_rules(
-    match_type: Literal["whitelist", "blacklist"],
-    paths: List[Tuple[str, str]],
-) -> Dict[str, Any]:
-    match_list = [
-        {
-            "match_rule_path": pair[0],
-            "match_rule_type": pair[1],
-        }
-        for pair in paths
-    ]
-    return {
-        "match_list": match_list,
-        "match_type": match_type,
-    }
-
-
 def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
-    resource_name = "gpustack-llm-ext-auth"
-    registry = get_gpustack_higress_registry(cfg=cfg)
+    """The static base of the ext-auth CR.
 
-    # auth every path on the matched route
-    default_match_rule = get_match_rules(
-        match_type="blacklist",
-        paths=[("/", "prefix")],
+    Scoped to gpustack's own inference routes by route-name prefix, so
+    unrelated traffic on a shared Higress gateway is never authenticated:
+    model-route ingresses are named ``ai-route-route-<id>.internal`` (plus
+    ``.fallback.``), nothing else matches, and non-matching routes pass
+    through untouched.
+
+    The key tables and the PUBLIC route rules are absent here and filled in by
+    :class:`~gpustack.server.gateway_auth_reconciler.GatewayAuthReconciler`;
+    see :func:`gpustack.gateway.ext_auth.ext_auth_init_spec_diff` for how they
+    survive this rewrite on restart.
+    """
+    return ext_auth_resource_name, ext_auth_spec(
+        cfg=cfg, registry=get_gpustack_higress_registry(cfg=cfg)
     )
 
-    http_service = {
-        "authorization_request": {
-            "allowed_headers": [
-                {"exact": "X-Real-IP"},
-                {"exact": "X-Forwarded-For"},
-                {"exact": "x-higress-llm-model"},
-                {"exact": "x-api-key"},
-                {"exact": "cookie"},
-                {"exact": AUTH_CACHE_HEADER},
-                {"exact": GATEWAY_AUTH_TOKEN_HEADER},
-            ],
-            "headers_to_add": {
-                GATEWAY_AUTH_TOKEN_HEADER: cfg.get_derived_gateway_token(),
-            },
-        },
-        "authorization_response": {
-            "allowed_upstream_headers": [
-                {"exact": "X-Mse-Consumer"},
-                {"exact": "Authorization"},
-                {"exact": "cookie"},
-                {"exact": AUTH_CACHE_HEADER},
-            ]
-        },
-        "endpoint": {
-            "path": "/token-auth",
-            "request_method": "GET",
-            "service_name": registry.get_service_name(),
-            "service_port": registry.port,
-        },
-        "endpoint_mode": "forward_auth",
-        "timeout": envs.HIGRESS_EXT_AUTH_TIMEOUT_MS,
-    }
-    # Scope ext-auth to gpustack's own inference routes by route-name prefix,
-    # so unrelated traffic on a shared Higress gateway is never authenticated.
-    #
-    # gpustack model-route ingresses are named ``ai-route-route-<id>.internal``
-    # (and ``ai-route-route-<id>.fallback.internal`` for fallbacks), both of
-    # which share the ``ai-route-route-`` prefix. Other routes -- the gpustack
-    # control-plane mirror ingress, and any other tenant sharing the gateway --
-    # do not match this prefix, so the ext-auth matcher returns nil for them and
-    # the request passes through unauthenticated. This replaces the previous
-    # "global blacklist + ingress whitelist" shape and needs no hostname.
-    #
-    # Higress route names carry a ``<namespace>/`` prefix when the gpustack
-    # ingresses live in a different namespace than the gateway; mirror the
-    # ``service_namespace_prefix`` convention used elsewhere so the match still
-    # works cross-namespace (otherwise the prefix would not match and inference
-    # APIs would be left unauthenticated under FAIL_OPEN).
-    namespace = cfg.get_namespace()
-    service_namespace_prefix = (
-        f"{namespace}/" if namespace and namespace != cfg.gateway_namespace else ""
-    )
-    route_prefix = f"{service_namespace_prefix}{model_route_ingress_prefix}"
 
-    expected_spec = WasmPluginSpec(
-        defaultConfig={
-            "_rules_": [
-                {
-                    "_match_route_prefix_": [route_prefix],
-                    "http_service": http_service,
-                    **default_match_rule,
-                }
-            ],
-        },
-        defaultConfigDisable=False,
-        failStrategy="FAIL_OPEN",
-        phase="AUTHN",
-        priority=360,
-        **plugin_spec_overrides("ext-auth", "2.0.0", cfg),
-    )
-    return resource_name, expected_spec
+# Manifest name, which is also the ``gateway_plugin`` key -- distinct from the
+# ``gpustack-ai-statistics`` resource it is deployed as. Kept beside the model
+# that consumes it, as ext_auth.py does with its own.
+ai_statistics_plugin_name = "ai-statistics"
 
 
 class AiStatisticsOverride(BaseModel):
@@ -389,7 +321,13 @@ class AiStatisticsOverride(BaseModel):
 
     # Bodies of these content types are parsed for token usage. ``audio/pcm`` is
     # rejected below rather than declared away, so the error names the value.
-    enable_content_types: List[str] = ["application/json", "text/event-stream"]
+    #
+    # Defaults to the deprecated GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES
+    # when that is set: dropping it silently would stop metering a content type
+    # somebody had added, which surfaces as a wrong bill rather than an error.
+    enable_content_types: List[str] = Field(
+        default_factory=envs.deprecated_ai_statistics_content_types
+    )
 
 
 def ai_statistics_override(cfg: Config) -> AiStatisticsOverride:
@@ -414,7 +352,7 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     "apply_to_log": True,
                     "apply_to_span": False,
                     "key": "consumer",
-                    "value": "x-mse-consumer",
+                    "value": consumer_header,
                     "value_source": "request_header",
                 }
             ],
@@ -495,6 +433,29 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     expected_spec = WasmPluginSpec(
         defaultConfig={
             "reqRules": [
+                # Strip everything a client must not be able to say about
+                # itself. Runs at priority 810, ahead of ext-auth at 360 in the
+                # same AUTHN phase, so removal always precedes injection of the
+                # trusted values.
+                #
+                # The two identity headers are as load-bearing as the gateway
+                # token: the server skips authentication entirely when it sees
+                # them behind a valid gateway token, so a client that could set
+                # one would be able to name any access_key -- and with
+                # authentication moved to the edge there is no second gate
+                # behind this one.
+                #
+                # ``x-mse-consumer`` is stripped here rather than left to
+                # ext-auth because ext-auth only reaches its own removal on
+                # routes it owns -- its route gate returns first for everything
+                # else. This plugin has no such gate, so it covers the routes
+                # ext-auth declines: the control-plane mirror ingress, and any
+                # other tenant on a shared gateway. Without it a client could
+                # name itself on those routes and be believed, because
+                # ai-statistics and token-usage read this header globally and
+                # write it into the access log and the usage records. Stripping
+                # it globally is safe precisely because ext-auth runs later and
+                # replaces it with an authoritative value where it applies.
                 transform_header(
                     "remove",
                     HeaderRule(
@@ -502,6 +463,15 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     ),
                     HeaderRule(
                         key=router_header_key,
+                    ),
+                    HeaderRule(
+                        key=GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+                    ),
+                    HeaderRule(
+                        key=GATEWAY_ASSERTED_KEY_REF_HEADER,
+                    ),
+                    HeaderRule(
+                        key=consumer_header,
                     ),
                 ),
                 transform_header(
@@ -874,6 +844,13 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
                 if plugin_name == gpustack_generic_proxy_router_name:
                     spec_diff_func = partial(
                         generic_proxy_router_spec_diff, expected_spec=plugin_spec
+                    )
+                elif plugin_name == ext_auth_resource_name:
+                    # Hybrid resource: the static base is rewritten from cfg on
+                    # every start, the key tables and PUBLIC rules are carried
+                    # over from the live CR because the database owns them.
+                    spec_diff_func = partial(
+                        ext_auth_init_spec_diff, expected_spec=plugin_spec
                     )
                 else:
                     create_only = plugin_name in [

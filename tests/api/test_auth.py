@@ -1,5 +1,6 @@
 import asyncio
 import ssl
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -108,6 +109,14 @@ async def test_authenticate_request_reuses_provided_session(monkeypatch):
     assert captured["token"] == "sk_test_value"
     assert request.state.user is expected_user
     assert request.state.api_key is expected_key
+
+
+def _principal_double(**overrides):
+    from gpustack.schemas.principals import PrincipalType
+
+    fields = {"id": 7, "is_active": True, "kind": PrincipalType.USER}
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
 
 
 def _api_token_double(**overrides):
@@ -1586,3 +1595,341 @@ def test_client_ip_getter_ignores_headers_when_gateway_disabled():
     )
 
     assert client_ip_getter(request) == "10.0.0.1"
+
+
+# --- Gateway-asserted identity (form B of /token-auth) ---------------------
+#
+# The gateway plugin verifies a generated key's secret locally and then calls
+# /token-auth with the identity in a header and no credential at all. These
+# cover the one thing that makes that safe: the assertion is worth nothing
+# without a valid gateway token.
+
+_GATEWAY_TOKEN = "derived-gateway-token"
+
+
+def _asserted_request(headers):
+    request = _make_request(headers=headers)
+    request.app.state.server_config = SimpleNamespace(
+        gateway_mode=GatewayModeEnum.embedded,
+        get_derived_gateway_token=lambda: _GATEWAY_TOKEN,
+    )
+    return request
+
+
+class _SessionDouble:
+    """Enough of a session for the asserted-identity lookups: they only ever
+    detach what they read."""
+
+    def __init__(self):
+        self.expunged = []
+
+    def expunge(self, obj):
+        self.expunged.append(obj)
+
+
+def _install_key_lookups(monkeypatch, api_key=None, user=None):
+    """Point both service lookups at fixed doubles, and record the calls."""
+    calls = {"by_access_key": [], "by_id": [], "user": []}
+
+    class _APIKeyService:
+        def __init__(self, session):
+            pass
+
+        async def get_by_access_key(self, access_key):
+            calls["by_access_key"].append(access_key)
+            return api_key
+
+    class _UserService:
+        def __init__(self, session):
+            pass
+
+        async def get_by_id(self, user_id):
+            calls["user"].append(user_id)
+            return user
+
+    async def _one_by_id(session, key_id):
+        calls["by_id"].append(key_id)
+        return api_key
+
+    monkeypatch.setattr("gpustack.api.auth.APIKeyService", _APIKeyService)
+    monkeypatch.setattr("gpustack.api.auth.UserService", _UserService)
+    monkeypatch.setattr("gpustack.api.auth.ApiKey.one_by_id", _one_by_id)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_asserted_access_key_resolves_identity(monkeypatch):
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    api_key = _api_token_double(access_key="3192253c1f4a9b7e", deleted_at=None)
+    expected_user = _principal_double()
+    calls = _install_key_lookups(monkeypatch, api_key=api_key, user=expected_user)
+
+    request = _asserted_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_ACCESS_KEY_HEADER: "3192253c1f4a9b7e",
+        }
+    )
+
+    user, key = await authenticate_gateway_asserted_identity(request, _SessionDouble())
+
+    assert user is expected_user
+    assert key is api_key
+    assert calls["by_access_key"] == ["3192253c1f4a9b7e"]
+    # Downstream authorization (inference_scope, model_allowed_for_user) reads
+    # the key off request.state, exactly as the credential path leaves it.
+    assert request.state.user is expected_user
+    assert request.state.api_key is api_key
+
+
+@pytest.mark.asyncio
+async def test_a_system_principal_is_never_accepted_as_asserted(monkeypatch):
+    """The gateway keeps SYSTEM keys out of its tables because one of them --
+    the cluster registration token -- is what ai-proxy puts into Authorization
+    on every fallback trip. If one leaked in, the plugin would authenticate
+    that credential as the system identity and assert it here. Refusing it on
+    this side means a lapse over there cannot escalate to the platform's own
+    subject."""
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+    from gpustack.schemas.principals import PrincipalType
+
+    api_key = _api_token_double(access_key="3192253c1f4a9b7e", deleted_at=None)
+    _install_key_lookups(
+        monkeypatch,
+        api_key=api_key,
+        user=_principal_double(kind=PrincipalType.SYSTEM),
+    )
+
+    request = _asserted_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_ACCESS_KEY_HEADER: "3192253c1f4a9b7e",
+        }
+    )
+
+    assert await authenticate_gateway_asserted_identity(request, _SessionDouble()) == (
+        None,
+        None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key_ref", ["not-an-id", "99999999999999999999", "0", "-1", ""]
+)
+async def test_an_unusable_key_ref_is_ignored_rather_than_queried(monkeypatch, key_ref):
+    """api_keys.id is a 32-bit serial, so an oversized value parses fine as a
+    Python int and only fails at the driver -- as a DataError this endpoint
+    would surface as a 500. Range is part of "is this a key ref"."""
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_KEY_REF_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    calls = _install_key_lookups(monkeypatch, api_key=None, user=None)
+
+    request = _asserted_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_KEY_REF_HEADER: key_ref,
+        }
+    )
+
+    assert await authenticate_gateway_asserted_identity(request, _SessionDouble()) == (
+        None,
+        None,
+    )
+    assert not calls["by_id"], "an unusable ref must not reach the database"
+
+
+@pytest.mark.asyncio
+async def test_asserted_key_ref_resolves_identity(monkeypatch):
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_KEY_REF_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    api_key = _api_token_double(id=58, is_custom=True, deleted_at=None)
+    expected_user = _principal_double()
+    calls = _install_key_lookups(monkeypatch, api_key=api_key, user=expected_user)
+
+    request = _asserted_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_KEY_REF_HEADER: "58",
+        }
+    )
+
+    user, key = await authenticate_gateway_asserted_identity(request, _SessionDouble())
+
+    assert (user, key) == (expected_user, api_key)
+    assert calls["by_id"] == [58]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "gateway_token",
+    [None, "not-the-derived-token"],
+    ids=["missing", "wrong"],
+)
+async def test_asserted_identity_needs_a_valid_gateway_token(
+    monkeypatch, gateway_token
+):
+    """A client naming an access_key gets nothing -- the request falls through
+    to ordinary credential authentication. Without this the assertion would be
+    a self-service identity header, and authentication no longer happens
+    anywhere behind it."""
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    api_key = _api_token_double(deleted_at=None)
+    calls = _install_key_lookups(
+        monkeypatch, api_key=api_key, user=SimpleNamespace(id=7, is_active=True)
+    )
+
+    headers = {GATEWAY_ASSERTED_ACCESS_KEY_HEADER: "3192253c1f4a9b7e"}
+    if gateway_token is not None:
+        headers[GATEWAY_AUTH_TOKEN_HEADER] = gateway_token
+    request = _asserted_request(headers)
+
+    assert await authenticate_gateway_asserted_identity(request, _SessionDouble()) == (
+        None,
+        None,
+    )
+    # The key is never even looked up, and nothing is published to the request.
+    assert calls["by_access_key"] == []
+    assert not hasattr(request.state, "user")
+    assert not hasattr(request.state, "api_key")
+
+
+@pytest.mark.asyncio
+async def test_no_assertion_headers_is_a_no_op(monkeypatch):
+    from gpustack.api.auth import authenticate_gateway_asserted_identity
+
+    calls = _install_key_lookups(
+        monkeypatch,
+        api_key=_api_token_double(deleted_at=None),
+        user=SimpleNamespace(id=7, is_active=True),
+    )
+    request = _asserted_request({GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN})
+
+    assert await authenticate_gateway_asserted_identity(request, _SessionDouble()) == (
+        None,
+        None,
+    )
+    assert calls["by_access_key"] == [] and calls["by_id"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key_overrides,user,reason",
+    [
+        (
+            {"expires_at": datetime(2000, 1, 1, tzinfo=timezone.utc)},
+            SimpleNamespace(id=7, is_active=True),
+            "expired",
+        ),
+        (
+            {"deleted_at": datetime(2000, 1, 1, tzinfo=timezone.utc)},
+            SimpleNamespace(id=7, is_active=True),
+            "soft-deleted",
+        ),
+        ({}, SimpleNamespace(id=7, is_active=False), "deactivated principal"),
+        ({}, None, "principal gone"),
+    ],
+)
+async def test_asserted_identity_is_rejected_when_the_key_is_not_usable(
+    monkeypatch, key_overrides, user, reason
+):
+    """The gateway's key table can be stale (a push has not landed yet), so the
+    server stays the authority: a revoked, expired or deactivated key is
+    unauthenticated here, which on a non-PUBLIC route is a 401 and on a PUBLIC
+    route is the 'none' consumer -- the same outcome the credential path
+    produces."""
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    fields = {"deleted_at": None}
+    fields.update(key_overrides)
+    _install_key_lookups(monkeypatch, api_key=_api_token_double(**fields), user=user)
+
+    request = _asserted_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_ACCESS_KEY_HEADER: "3192253c1f4a9b7e",
+        }
+    )
+
+    assert await authenticate_gateway_asserted_identity(request, _SessionDouble()) == (
+        None,
+        None,
+    ), reason
+    assert not hasattr(request.state, "user")
+
+
+@pytest.mark.asyncio
+async def test_asserted_key_ref_must_be_an_id(monkeypatch):
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_KEY_REF_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    calls = _install_key_lookups(
+        monkeypatch,
+        api_key=_api_token_double(deleted_at=None),
+        user=SimpleNamespace(id=7, is_active=True),
+    )
+    request = _asserted_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_KEY_REF_HEADER: "not-an-id",
+        }
+    )
+
+    assert await authenticate_gateway_asserted_identity(request, _SessionDouble()) == (
+        None,
+        None,
+    )
+    assert calls["by_id"] == []
+
+
+@pytest.mark.asyncio
+async def test_no_gateway_means_no_gateway_assertions(monkeypatch):
+    """Defence in depth rather than the boundary itself -- the gateway token is
+    that. But with the gateway disabled these headers can only have come from a
+    client, so there is no reason for the branch to be reachable at all."""
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    calls = _install_key_lookups(
+        monkeypatch, api_key=_api_token_double(), user=_principal_double()
+    )
+    request = _make_request(
+        headers={
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_ACCESS_KEY_HEADER: "3192253c1f4a9b7e",
+        }
+    )
+    request.app.state.server_config = SimpleNamespace(
+        gateway_mode=GatewayModeEnum.disabled,
+        get_derived_gateway_token=lambda: _GATEWAY_TOKEN,
+    )
+
+    assert await authenticate_gateway_asserted_identity(request, _SessionDouble()) == (
+        None,
+        None,
+    )
+    assert not calls["by_access_key"], "the lookup must not even be attempted"

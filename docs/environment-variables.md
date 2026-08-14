@@ -73,12 +73,26 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Gateway Configuration
 
-| Variable                                              | Description                                                                                                                        | Default                              | Applies to |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ---------- |
-| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Higress external authentication timeout in milliseconds.                                                                           | `30000`                              | Server     |
-| `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`                | The interval in seconds of GPUStack Server checking embedded gateway listening port                                                | `2`                                  | Server     |
-| `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT`             | The retry count of GPUStack Server checking embedded gateway listening port                                                        | `300`                                | Server     |
-| `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Comma-separated list of content-types to be monitored by the ai-statistics plugin. Each value should be a valid HTTP Content-Type. | `application/json,text/event-stream` | Server     |
+| Variable                                           | Description                                                                                                                                                                                                                | Default   | Applies to |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------- |
+| `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`             | The interval in seconds of GPUStack Server checking embedded gateway listening port                                                                                                                                        | `2`       | Server     |
+| `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT`          | The retry count of GPUStack Server checking embedded gateway listening port                                                                                                                                                | `300`     | Server     |
+| `GPUSTACK_GATEWAY_AUTH_RECONCILE_INTERVAL_SECONDS` | How often the server recomputes, from the database, the API keys the gateway authenticates locally. Deletions that bypass the ORM emit no event, so on a public route this is the worst-case time such a key keeps working. | `30`      | Server     |
+| `GPUSTACK_GATEWAY_AUTH_ALLOW_CUSTOM_KEYS`          | Whether a custom API key (one whose secret the user supplied) may be authenticated at the gateway. Off, it keeps working but asks the server on every request. On, the key is published into the gateway's configuration indexed by an unsalted fast hash of the secret itself — identical across deployments, so a weak secret falls to a precomputed table. `custom` imposes no entropy requirement, so turn this off where users choose their own keys — it is re-read on every reconcile, so it withdraws custom keys published while it was on, not just new ones. | `true`    | Server     |
+| `GPUSTACK_GATEWAY_AUTH_MAX_CR_BYTES`               | Byte budget for the key tables and public-route rules the server writes into the gateway's auth plugin. Sized under etcd's ~1.5 MiB object limit; keys past it authenticate via the server on every request.                | `1100000` | Server     |
+
+Settings that end up **inside** a gateway plugin's configuration are set in the
+config file under `gateway_plugin` rather than here, so that each mechanism has
+one effective-time story — a value there takes effect on the next reconcile, a
+variable here on restart. The two below moved there and are deprecated. They are
+still honored, as the default the config file may override, so upgrading does
+not silently revert a deployment that had set them; setting either logs a
+warning.
+
+| Deprecated variable                                   | Description                                              | Replaced by                                                | Default                              | Applies to |
+| ----------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------ | ---------- |
+| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Gateway authentication call timeout, in milliseconds.    | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | Server     |
+| `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Comma-separated content types metered for token usage.   | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | Server     |
 
 ### Usage Tracking Configuration
 

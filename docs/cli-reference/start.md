@@ -207,6 +207,37 @@ trusted_hosts: [ "your_reverse_proxy_hostname" ]
 disable_builtin_observability: false
 builtin_prometheus_port: 19090
 builtin_grafana_port: 13000
+# Per-plugin overrides for the API gateway, keyed by the plugin's manifest name
+# -- which for several of them is not the name of the WasmPlugin resource they
+# are deployed as (`transformer` is deployed as `gpustack-header-transformer`,
+# `ai-statistics` as `gpustack-ai-statistics`). Keying by the wrong one matches
+# nothing, silently.
+#
+# `url` / `sha256` / `image_pull_policy` say where Envoy pulls the module from,
+# replacing the address derived from the bundled plugin manifest. `config` is
+# the plugin's own settings and is validated against what that plugin accepts,
+# so a field it does not declare fails startup rather than being ignored.
+gateway_plugin:
+  gpustack-ext-auth:
+    config:
+      local_auth:
+        # Whether the gateway authenticates API keys itself. Turned off, every
+        # credential is forwarded to the server instead, as it was before.
+        enabled: true
+      authz:
+        # How long the gateway waits for the server to authorize a request.
+        # Sized for a loaded server rather than a healthy one: a server that is
+        # down refuses the connection and is detected at once, so this governs
+        # only the case of one too busy to answer yet -- where waiting is what
+        # keeps a load spike from being read as an outage.
+        timeout: 30000
+      # Let a caller the gateway authenticated itself through while the server
+      # is unreachable -- a rolling upgrade included. Authorization is skipped
+      # for the duration; unknown keys and anonymous callers are still refused.
+      failure_mode_allow_authenticated: true
+  ai-statistics:
+    config:
+      enable_content_types: [ application/json, text/event-stream ]
 
 # Worker Options
 server_url: http://your_gpustack_server_url
