@@ -233,6 +233,49 @@ async def test_spec_edit_stopped_swap_to_existing_pv_resolves_fk(engine):
 
 
 @pytest.mark.asyncio
+async def test_spec_edit_stopped_swap_leaves_the_old_pv_intact(engine):
+    """V4: a volume swap re-points the FK and nothing else.
+
+    The previously bound PV is deliberately NOT released — releasing it would
+    destroy user data — so it stays a live row with an unchanged phase and keeps
+    being metered (`storage.capacity` runs from created to deleted, see
+    tests/server/test_pv_metering_lifecycle.py). It has to be deleted explicitly
+    via the PV endpoint, which is why the storage list needs the "attached
+    instances" column to make an idle-but-billed volume visible.
+    """
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        for pv_id, pv_name in ((4, "pv-1"), (5, "pv-2")):
+            s.add(
+                GPUInstancePersistentVolume(
+                    id=pv_id,
+                    name=pv_name,
+                    owner_principal_id=1,
+                    persistent_volume_type_id=1,
+                    spec=GPUInstancePersistentVolumeSpec(type_="pvt"),
+                    status=GPUInstancePersistentVolumeStatus(phase="Ready"),
+                )
+            )
+        await s.commit()
+    await _seed(
+        engine,
+        phase=GPUInstancePhase.STOPPED,
+        spec=_persistent_spec(name="pv-1"),
+        persistent_volume_id=4,
+    )
+    row = await _row(engine)
+
+    source = await _build(
+        engine, GPUInstanceUpdate(spec=_persistent_spec(name="pv-2")), row
+    )
+
+    assert source["persistent_volume_id"] == 5
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        old = await GPUInstancePersistentVolume.one_by_id(s, 4)
+    assert old is not None, "the swapped-out volume must not be deleted"
+    assert old.status.phase == "Ready", "nor marked for deletion"
+
+
+@pytest.mark.asyncio
 async def test_spec_edit_stopped_swap_to_missing_pv_rejected(engine):
     await _seed(engine, phase=GPUInstancePhase.STOPPED)
     row = await _row(engine)

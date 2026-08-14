@@ -71,7 +71,15 @@ def controller(engine, monkeypatch):
     )
 
 
-async def _seed(engine, *, phase="Deleting", finalizing=None, instance_ref=False):
+async def _seed(
+    engine,
+    *,
+    phase="Deleting",
+    finalizing=None,
+    instance_ref=False,
+    instance_phase=None,
+    instance_count=1,
+):
     async with AsyncSession(engine, expire_on_commit=False) as s:
         s.add(Principal(id=1, kind=PrincipalType.ORG, name="acme"))
         status = (
@@ -90,16 +98,18 @@ async def _seed(engine, *, phase="Deleting", finalizing=None, instance_ref=False
             )
         )
         if instance_ref:
-            s.add(
-                GPUInstance(
-                    id=1,
-                    name="gi-1",
-                    owner_principal_id=1,
-                    cluster_id=10,
-                    spec={"type_": "gpu", "image": "busybox"},
-                    persistent_volume_id=1,
+            for n in range(1, instance_count + 1):
+                s.add(
+                    GPUInstance(
+                        id=n,
+                        name=f"gi-{n}",
+                        owner_principal_id=1,
+                        cluster_id=10,
+                        spec={"type_": "gpu", "image": "busybox"},
+                        persistent_volume_id=1,
+                        status=({"phase": instance_phase} if instance_phase else None),
+                    )
                 )
-            )
         await s.commit()
 
 
@@ -165,6 +175,25 @@ async def test_active_instance_reference_blocks_finalize(
     assert pv.status.phase == "Deleting"
     assert pv.status.phase_message is not None
     assert len(controller._queue._delayed) == 1
+
+
+@pytest.mark.asyncio
+async def test_blocked_reason_names_the_holder_and_its_phase(
+    engine, controller, monkeypatch
+):
+    """The FK is not phase-filtered, so a *Stopped* instance blocks reclaim just
+    as much as a running one. Saying "active GPU instance(s)" was the misleading
+    part — the message has to name the instance and its real phase, or the user
+    cannot act on it."""
+    await _seed(engine, instance_ref=True, instance_phase="Stopped")
+    _mock_clusters(monkeypatch, controller, {10: FakeOps(present=True)})
+
+    await controller._finalize(1)
+
+    message = (await _get_pv(engine)).status.phase_message
+    assert "gi-1" in message
+    assert "Stopped" in message
+    assert "active" not in message
 
 
 @pytest.mark.asyncio
@@ -251,3 +280,24 @@ async def test_missing_principal_hard_deletes_row(engine, controller, monkeypatc
 
     assert await _get_pv(engine) is None  # hard-deleted, not stranded
     clusters.assert_not_awaited()  # short-circuited before cluster enumeration
+
+
+@pytest.mark.asyncio
+async def test_blocked_reason_says_when_it_listed_only_some_holders(
+    engine, controller, monkeypatch
+):
+    """A truncated list of holders has to admit it is truncated.
+
+    The message names at most three instances. Cut silently, it told the user
+    exactly which instances to release — and releasing all three left the volume
+    still blocked, with the reason naming nothing new. So the query fetches one
+    over the cap purely to detect the overflow and say so.
+    """
+    await _seed(engine, instance_ref=True, instance_phase="Ready", instance_count=5)
+    _mock_clusters(monkeypatch, controller, {10: FakeOps(present=True)})
+
+    await controller._finalize(1)
+
+    message = (await _get_pv(engine)).status.phase_message
+    assert message.count("gi-") == 3
+    assert "and others" in message
