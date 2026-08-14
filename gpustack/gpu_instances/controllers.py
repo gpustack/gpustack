@@ -76,6 +76,24 @@ _WATCH_RECONNECT_INTERVAL = 5.0
 _UNREADABLE_CR_MESSAGE = "Not found in cluster"
 
 
+# How many holders a blocked-delete reason names before it says "and others".
+# Three keeps the message readable; the overflow is stated rather than dropped.
+_BLOCKED_REASON_HOLDERS = 3
+
+
+def _describe_holder(name: Optional[str], status: Optional[GPUInstanceStatus]) -> str:
+    """``<name> (<phase>)`` for an instance blocking a volume reclaim.
+
+    ``status`` is declared with ``pydantic_column_type``, whose result processor
+    validates the JSON into the model — recursively, and including on a tuple
+    select like the one this feeds (verified on a cold session, so the identity
+    map is not what is doing it). Hence the plain attribute read, here and at
+    every other read of such a column.
+    """
+    phase = status.phase if status is not None else None
+    return f"{name} ({phase})" if phase else f"{name}"
+
+
 # Ceiling for the per-cluster instance-type watch backoff. A cluster with no
 # reachable worker fails every attempt (the cluster proxy answers 503), and it
 # can sit that way for as long as it has no worker — so its retry decays to this
@@ -1350,14 +1368,31 @@ class GPUInstancePersistentVolumeController(_PersistentVolumeFinalizeController)
         # detach a volume still mounted by a running instance. Wait until every
         # active reference clears (a deleting instance clears its ref only once
         # its own hard-delete SET NULLs it).
+        #
+        # The FK is not phase-filtered, so a *Stopped* instance blocks reclaim
+        # just as much as a running one. Report the instance name and phase rather
+        # than the word "active": the user has to know which instance to release,
+        # and calling a Stopped instance "active" is exactly the misleading part.
+        #
+        # Capped at three names, and fetched one over the cap so the overflow can
+        # be STATED. Truncating silently made the message actively misleading: a
+        # user who released the three listed instances would find the volume still
+        # blocked, with the reason naming nothing new.
         stmt = (
-            select(GPUInstance.id)
+            select(GPUInstance.name, GPUInstance.status)
             .where(GPUInstance.persistent_volume_id == row.id)
-            .limit(1)
+            .limit(_BLOCKED_REASON_HOLDERS + 1)
         )
-        if (await session.exec(stmt)).first() is not None:
-            return "waiting for active GPU instance(s) to release this volume"
-        return None
+        holders = (await session.exec(stmt)).all()
+        if not holders:
+            return None
+        listed = holders[:_BLOCKED_REASON_HOLDERS]
+        described = [_describe_holder(name, status) for name, status in listed]
+        if len(holders) > _BLOCKED_REASON_HOLDERS:
+            described.append("and others")
+        return "waiting for GPU instance(s) to release this volume: " + ", ".join(
+            described
+        )
 
     async def _probe_and_delete(
         self, ops: ClusterOps, row, owner_identifier: str
