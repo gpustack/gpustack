@@ -1625,11 +1625,12 @@ class GPUInstanceTypeController:
             status = GPUInstanceTypeStatusPublic.model_validate(obj.get("status") or {})
         candidate = GPUInstanceType(cluster_id=cluster_id, name=name, spec=spec)
         snapshot = candidate.compute_snapshot()
+        definition_snapshot = candidate.compute_definition_snapshot()
         existing = await GPUInstanceType.first_by_fields(
             session, fields={"snapshot": snapshot}
         )
         if existing is not None:
-            await self._revive(session, existing, spec, status)
+            await self._revive(session, existing, spec, status, definition_snapshot)
             return
         # A new definition supersedes the current active row for this name, so at
         # most one snapshot is ever active per ``(cluster_id, name)``. Retire
@@ -1646,6 +1647,7 @@ class GPUInstanceTypeController:
                     "spec": spec,
                     "status": status,
                     "snapshot": snapshot,
+                    "definition_snapshot": definition_snapshot,
                 },
             )
         except IntegrityError:
@@ -1660,7 +1662,7 @@ class GPUInstanceTypeController:
             )
             if existing is not None:
                 await self._retire_active(session, cluster_id, name, auto_commit=False)
-                await self._revive(session, existing, spec, status)
+                await self._revive(session, existing, spec, status, definition_snapshot)
 
     @staticmethod
     async def _revive(
@@ -1668,6 +1670,7 @@ class GPUInstanceTypeController:
         existing: GPUInstanceType,
         spec: GPUInstanceTypeSpec,
         status: Optional[GPUInstanceTypeStatusPublic],
+        definition_snapshot: Optional[str] = None,
     ):
         """Refresh ``spec`` (a ``display_name`` edit) and ``status`` (the
         operator's ``status.detail`` backfill), and clear ``deleted_at`` —
@@ -1676,16 +1679,31 @@ class GPUInstanceTypeController:
         means the event carried no status information, so the persisted status
         is left untouched. The ``snapshot`` is unchanged by definition (it
         identified this row). Mirrors the ``deleted_at`` revive idiom in
-        ``server/services.py``."""
+        ``server/services.py``.
+
+        ``definition_snapshot`` is also written when the row predates that
+        column (upgrade backfill): the migration adds it NULL, and the first
+        watch re-LIST after the upgrade fills every active row in place. It is a
+        pure function of ``(name, spec)``, so writing it never changes identity.
+        Soft-deleted rows are never re-LISTed and stay NULL — the metering read
+        path derives the value on the fly for those.
+        """
+        needs_definition_snapshot = (
+            definition_snapshot is not None
+            and existing.definition_snapshot != definition_snapshot
+        )
         if (
             existing.deleted_at is None
             and existing.spec == spec
             and (status is None or existing.status == status)
+            and not needs_definition_snapshot
         ):
             return
         source: Dict[str, Any] = {"spec": spec, "deleted_at": None}
         if status is not None:
             source["status"] = status
+        if needs_definition_snapshot:
+            source["definition_snapshot"] = definition_snapshot
         await existing.update(session, source=source)
 
     @staticmethod

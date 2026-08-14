@@ -7,8 +7,10 @@ the rest of the server.
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -70,6 +72,25 @@ _KNOWN_MANUFACTURERS = frozenset(
 def parse_gpu_type(queue_name: Optional[str]) -> Tuple[str, Optional[str]]:
     """Parse a kueue queue name into ``(gpu_type, manufacturer)``.
 
+    .. deprecated::
+        Fallback only. The accurate card-pool key is the instance type's
+        ``spec.accelerator_group`` (e.g. ``nvidia-a10g``, ``ascend-910b2``),
+        which is byte-stable across operator versions — reach it via
+        ``type_snapshot``.
+
+        This regex was written for kueue queue names (``gpustack-<vendor>-<model>``
+        plus a short random suffix) and produces garbage on an operator
+        InstanceType name, which uses a ``--`` separator and no random suffix::
+
+            >>> parse_gpu_type("gpustack--generic--ascend-910b2-linux-arm64")
+            ('-generic--ascend-910b2-linux', None)
+
+        Note the leading ``-``, the ``None`` manufacturer, and the swallowed
+        ``arm64`` — the suffix stripper mistook the arch for a random suffix.
+        Kept unchanged (rather than "fixed") because historical rows were
+        written with exactly this behaviour and it is only reached when there is
+        no type row to consult.
+
     Examples
     --------
     >>> parse_gpu_type("gpustack-nvidia-geforce-rtx-4090-c9bjn")
@@ -96,10 +117,21 @@ def parse_gpu_type(queue_name: Optional[str]) -> Tuple[str, Optional[str]]:
 def parse_gpu_vram_mib(description: Any) -> int:
     """Per-card GPU VRAM in MiB, parsed from a GPUInstance ``description`` blob.
 
+    .. deprecated::
+        Legacy fallback only. The authoritative source is the instance type row
+        reached via ``gpu_instances.type_snapshot``
+        (``status.detail.memory``); ``description`` is a 1024-char *user* text
+        field that only carries this JSON because the UI chooses to write it.
+        It stays because pre-upgrade instances have a NULL ``type_snapshot``
+        that cannot be backfilled.
+
     ``description`` is the device descriptor — usually a JSON string (sometimes
-    already a dict) shaped like ``{"spec": {"memory": "48Gi", ...}}``. Returns 0
-    when absent / unparseable (e.g. CPU instances), matching the "0 = skip"
-    convention of ``parse_quantity_to_mib``.
+    already a dict) shaped like ``{"spec": {"memory": "48Gi", ...}}``. Note the
+    flat shape is the pre-v2.3.0 InstanceType layout: the operator moved these
+    observed fields to ``status.detail``, and the UI flattens them back for
+    compatibility. Returns 0 when absent / unparseable (e.g. CPU instances,
+    or any client that creates instances through the API without the UI),
+    matching the "0 = skip" convention of ``parse_quantity_to_mib``.
     """
     if not description:
         return 0
@@ -128,6 +160,16 @@ def parse_gpu_descriptor(description: Any) -> dict:
     ``metered_usage.dimensions`` so the Usage "Instance Type" view can render the
     pretty product name + per-card specs, matching the GPU Instances list.
     Missing / unparseable keys are omitted (CPU instances → ``{}``).
+
+    .. deprecated::
+        Legacy fallback only — see :func:`parse_gpu_vram_mib`. The flat
+        ``spec.{product,memory,unitResources}`` shape it expects is the
+        pre-v2.3.0 InstanceType layout, kept alive by the UI writing a
+        compatibility blob; ``product`` / ``memory`` now live on the type's
+        ``status.detail`` and ``unitResources`` on its ``spec``. Instances
+        created straight through the API carry no descriptor at all, so callers
+        must have a real source (``type_snapshot``) and use this only when that
+        is unavailable.
     """
     data = description
     if isinstance(data, str):
@@ -295,6 +337,181 @@ def parse_accelerator_count(value: Optional[str | int | float]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Accelerator slicing weight
+# ---------------------------------------------------------------------------
+
+# ``dimensions.slice_mode`` — how the request carves up each card.
+SLICE_MODE_WHOLE = "whole"  # exclusive whole card(s)
+SLICE_MODE_RATIO = "ratio"  # software slice, a VRAM percentage per card
+SLICE_MODE_PROFILE = "profile"  # hardware partition (e.g. an NVIDIA MIG profile)
+
+# Per-card share is carried in thousandths so it stays an exact integer for both
+# slicing modes (a percentage is a whole number of tenths of a percent).
+WHOLE_CARD_MILLI = 1000
+
+
+def slice_mode_of(
+    memory_percentage: Optional[int], partitioned_profile: Optional[str]
+) -> str:
+    """Classify a request's per-card slicing mode.
+
+    Hardware partitioning wins when both are present: the two are mutually
+    exclusive by schema (one card cannot be both partitioned and soft-sliced),
+    and the partition is the one the scheduler actually honours.
+    ``memory_percentage == 0`` means "slicing disabled" — an exclusive whole-card
+    request — not "zero share", so it maps to ``whole``.
+
+    Coerced through ``int`` rather than tested for truthiness: the value reaches
+    here from a spec snapshot, i.e. JSON, and a string ``"0"`` is truthy while
+    meaning the opposite. That would classify an exclusive request as ``ratio``
+    with a 0 share, and a share of 0 prices the instance at nothing.
+    """
+    if partitioned_profile:
+        return SLICE_MODE_PROFILE
+    try:
+        percentage = int(memory_percentage or 0)
+    except (TypeError, ValueError):
+        percentage = 0
+    if percentage > 0:
+        return SLICE_MODE_RATIO
+    return SLICE_MODE_WHOLE
+
+
+def slice_share_milli(
+    *,
+    memory_percentage: Optional[int] = None,
+    partitioned_profile: Optional[str] = None,
+    profile_memory_mib: Optional[int] = None,
+    card_memory_mib: Optional[int] = None,
+) -> Optional[int]:
+    """Per-card billed share in thousandths (1000 = a whole card).
+
+    The metered share is the fraction of the card's **sellable capacity** the
+    request occupies, and VRAM is what decides how many slices a card can host,
+    so VRAM is the yardstick::
+
+        whole    -> 1000
+        ratio    -> memory_percentage * 10                       (exact)
+        profile  -> min(1000, ceil(profile_mib * 1000 / card_mib))
+
+    This is deliberately NOT the compute share. MIG ``1g.10gb`` and ``1g.20gb``
+    have identical compute but the latter halves how many instances fit on a
+    card, so it must cost twice as much; billing compute share would collect 57%
+    of a fully-partitioned card. It also matches what the operator already
+    charges Kueue for a MIG request (``MemoryMibToUnits`` — VRAM-anchored).
+
+    CPU / RAM never enter the weight: on an accelerator node they are
+    overcommitted (10x / 8x) and excluded from the accelerated ClusterQueue, so
+    the 1c1g floor a tiny slice gets is given away for usability, not sold.
+
+    Rounding is ``ceil`` — the opposite of the operator's quota-side ``floor``,
+    and intentionally so: quota floors to never over-allocate physical capacity,
+    billing ceils to never under-charge. Both lean toward protecting the
+    platform and differ by at most 1 milli (0.1% of a card). The single division
+    matters: going through ``MemoryMibToUnits(...) / 1600`` would truncate twice
+    and lose an extra step. The ``min`` clamp guards against a detect-time skew
+    reporting a partition at least as large as the card, which would otherwise
+    price a slice above a whole card.
+
+    Returns ``None`` when a profile request's share cannot be established
+    (unknown profile, or ``memoryMib`` / card VRAM not yet backfilled). Callers
+    MUST treat that as "not settleable yet" and retry — falling back to a whole
+    card would silently overcharge up to 8x.
+
+    Examples
+    --------
+    >>> slice_share_milli()
+    1000
+    >>> slice_share_milli(memory_percentage=25)
+    250
+    >>> slice_share_milli(memory_percentage=0)
+    1000
+    >>> slice_share_milli(partitioned_profile="1g.10gb", profile_memory_mib=9728,
+    ...                   card_memory_mib=81920)
+    119
+    >>> slice_share_milli(partitioned_profile="1g.10gb", card_memory_mib=81920)
+    """
+    mode = slice_mode_of(memory_percentage, partitioned_profile)
+    if mode == SLICE_MODE_WHOLE:
+        return WHOLE_CARD_MILLI
+    if mode == SLICE_MODE_RATIO:
+        # ``ratio`` is only classified for a percentage that parses to >= 1, so
+        # the clamp cannot produce a 0 share (which would price the slice at
+        # nothing) — the floor is stated rather than relied on.
+        pct = max(1, min(100, int(memory_percentage)))
+        return pct * 10
+    if not profile_memory_mib or not card_memory_mib or card_memory_mib <= 0:
+        return None
+    share = math.ceil(profile_memory_mib * WHOLE_CARD_MILLI / card_memory_mib)
+    return min(WHOLE_CARD_MILLI, max(1, share))
+
+
+def profile_memory_mib(profiles: Any, name: Optional[str]) -> Optional[int]:
+    """Look up a partition profile's VRAM (MiB) by name in a type's aggregated
+    ``status.detail.slicedDetail.physical.profiles`` list.
+
+    Reads the reported ``memoryMib`` rather than parsing the ``<n>g.<m>gb``
+    name, for four reasons: (1) ``memoryMib`` is the very value the operator's
+    Pod webhook folds into the Kueue credit request, so using it keeps quota and
+    bill on one number; (2) the name's ``<m>gb`` is derived from the partition
+    geometry and rounds to the marketing size — an A100-80GB ``1g.10gb`` really
+    has ~9728 MiB, so parsing the name over-states it by ~5%; (3) the name format
+    is not guaranteed (any manufacturer can enable partitioning with its own
+    naming), and a regex miss would silently fall back to a whole card; (4) the
+    type row is already loaded, so it costs nothing.
+
+    Accepts pydantic profile objects or plain dicts (either key style). Returns
+    ``None`` when the list or the named profile is absent, or when its
+    ``memoryMib`` is missing / non-positive.
+    """
+    if not name or not profiles:
+        return None
+    for profile in profiles:
+        if isinstance(profile, dict):
+            p_name = profile.get("name")
+            p_mib = profile.get("memory_mib", profile.get("memoryMib"))
+        else:
+            p_name = getattr(profile, "name", None)
+            p_mib = getattr(profile, "memory_mib", None)
+        if p_name != name:
+            continue
+        try:
+            mib = int(p_mib)
+        except (TypeError, ValueError):
+            return None
+        return mib if mib > 0 else None
+    return None
+
+
+def sliced_sku_count(accelerator_count: int, share_milli: int) -> Decimal:
+    """Billed unit multiplier for ``accelerator_count`` cards at ``share_milli``
+    each — the value stored in ``metered_usage.sku_count``.
+
+    Per-card share is computed first and multiplied by the card count (not the
+    other way round) so one profile costs exactly N times as much on N cards,
+    with no rounding tail from division order. ``Decimal`` keeps it exact:
+    ``share_milli`` is an integer ≤ 1000, so the quotient always fits the
+    column's 8 fraction digits.
+
+    Not normalized: Decimal division already yields the shortest exact form for
+    a terminating quotient (``4000/1000 -> 4``, ``500/1000 -> 0.5``), whereas
+    ``normalize()`` would rewrite a whole ``10`` as ``1E+1``.
+
+    Examples
+    --------
+    >>> sliced_sku_count(2, 250)
+    Decimal('0.5')
+    >>> sliced_sku_count(4, 1000)
+    Decimal('4')
+    >>> sliced_sku_count(10, 1000)
+    Decimal('10')
+    >>> sliced_sku_count(1, 119)
+    Decimal('0.119')
+    """
+    return Decimal(accelerator_count) * Decimal(share_milli) / Decimal(WHOLE_CARD_MILLI)
+
+
+# ---------------------------------------------------------------------------
 # UTC midnight splitter
 # ---------------------------------------------------------------------------
 
@@ -327,18 +544,33 @@ def instance_sku(
     cpu_millicores: int,
     memory_mib: int,
 ) -> str:
-    """The "Instance Type" breakdown dimension (the sku).
+    """Legacy sku derivation — the per-cluster instance type NAME.
+
+    .. deprecated::
+        The sku is now the instance type's identity snapshot
+        (``gpu_instance_types.snapshot``, i.e. ``gpu_instances.type_snapshot``)
+        verbatim. This function is the last-resort fallback for instances whose
+        ``type_snapshot`` is NULL (created before v2.3.0, unbackfillable) or for
+        deployments with no operator, and a row that falls back MUST be tagged
+        ``dimensions.sku_source`` so it is distinguishable.
+
+        The name is a poor key for three reasons the snapshot does not share:
+        the operator renamed its derived types between v0.5 and v0.7 (so one
+        hardware pool is two skus across an upgrade); the name does not encode
+        ``unitResources``, so a CPU row's ``sku_count`` unit is not recoverable
+        from it; and it is per-cluster only by convention.
 
     The sku is the instance spec's ``type`` (the flavor / queue name, e.g.
-    ``gpustack--generic-...--ascend-910b2-1d``) verbatim — it identifies the
-    flavor for both GPU and CPU instances. The remaining args are a fallback
-    for snapshots missing ``type``: GPU instances fall back to ``gpu_type``
-    (the card model), CPU instances to a ``cpu-{cores}vcpu-{gib}g`` flavor.
+    ``gpustack--generic--nvidia-tesla-t4-linux-amd64`` on operator v0.7,
+    ``gpustack--generic-ln-x64-4c-16g-98g--nvidia-tesla-t4-1d`` on v0.5)
+    verbatim. The remaining args are a fallback for snapshots missing ``type``:
+    GPU instances fall back to ``gpu_type`` (the card model), CPU instances to a
+    ``cpu-{cores}vcpu-{gib}g`` flavor.
 
     Examples
     --------
-    >>> instance_sku("gpustack-nvidia-h100-ab12c", "nvidia-h100", 2, 8000, 128000)
-    'gpustack-nvidia-h100-ab12c'
+    >>> instance_sku("gpustack--generic--nvidia-tesla-t4-linux-amd64", "x", 2, 8000, 1)
+    'gpustack--generic--nvidia-tesla-t4-linux-amd64'
     >>> instance_sku(None, "nvidia-h100", 2, 8000, 128000)
     'nvidia-h100'
     >>> instance_sku(None, None, 0, 2000, 8192)

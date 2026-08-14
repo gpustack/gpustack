@@ -35,6 +35,42 @@ Bundles the pre-release schema changes for v2.3.0:
    best operating points). The parent's flat ``*_mean`` columns stay as the
    representative (throughput-peak) point, so this is an additive change.
 
+6. Metering keyed on the instance type snapshot, with fractional counts and a
+   per-shape natural key. Three coupled changes — splitting them would leave an
+   intermediate state that can neither meter a sliced accelerator correctly nor
+   split a mid-hour reconfiguration into separate billing segments:
+
+   - ``metered_usage.sku_count`` / ``metered_usage_archive.sku_count``:
+     ``INTEGER`` -> ``NUMERIC(20, 8)``. A sliced accelerator bills a fraction of
+     a card (0.5 = half a card, ~0.119 for a MIG ``1g.10gb``), which an integer
+     column silently rounded up to a whole card. Purely a widening: existing
+     ``1`` / ``2`` / ``4`` read back as ``1.0`` / ``2.0`` / ``4.0``, so no row's
+     meaning changes and no backfill is needed.
+   - ``uq_metered_usage``: ``(meter_key, resource_id, bucket_start)`` ->
+     ``(meter_key, resource_id, bucket_start, sku, sku_count)``. The old key was
+     "one row per resource-hour", so a spec change inside one UTC hour re-rated
+     the whole hour by whichever shape landed last. Adding the two columns that
+     decide the amount makes each shape its own row. Also a widening — existing
+     rows were already unique on the narrower key — so it needs no data fix.
+   - New columns: ``metered_usage.definition_snapshot`` (indexed, the type's
+     cluster-independent definition hash, for cross-cluster aggregation and bulk
+     pricing), ``metered_usage.instance_type_name`` (because ``sku`` becomes an
+     opaque ``sha1:<40hex>`` and every human-facing label has to come from
+     somewhere), and ``gpu_instance_types.definition_snapshot`` (indexed) as the
+     source of the first.
+
+   The two metered tables must stay column-identical: archival is a bulk
+   ``INSERT ... SELECT``.
+
+   ``gpu_instance_types.definition_snapshot`` is NOT backfilled: it is a hash
+   over the pydantic ``spec`` model dumped by field name, while the persisted
+   JSON is alias(camelCase)-keyed, so reproducing it in raw SQL would risk a
+   value that silently disagrees with the one the running code computes.
+   ``GPUInstanceTypeController`` fills every active row in place on its first
+   watch re-LIST after the upgrade (which happens on every server start), and
+   the metering read path derives the value on the fly for soft-deleted rows,
+   which are never re-LISTed.
+
 Revision ID: 367a3982fcde
 Revises: c4d7e8f9a0b1
 Create Date: 2026-07-15 16:00:00.000000
@@ -45,6 +81,7 @@ from typing import List, Sequence, Set, Tuple, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.engine.reflection import Inspector
 import sqlmodel
 import gpustack
 from gpustack.schemas.common import JSON, UTCDateTime
@@ -68,6 +105,16 @@ _CLUSTER_PRINCIPAL_PREFIX = 'system/cluster-'
 _WORKER_PRINCIPAL_PREFIX = 'system/worker-'
 
 _CHUNK_SIZE = 500
+
+_METERED_TABLES = ('metered_usage', 'metered_usage_archive')
+
+# Precision mirrors gpustack.schemas.metered_usage.SKU_COUNT_{PRECISION,SCALE};
+# duplicated as literals so the migration does not import app code.
+_SKU_COUNT_TYPE = sa.Numeric(precision=20, scale=8)
+
+_UQ_METERED_USAGE = 'uq_metered_usage'
+_UQ_NARROW = ['meter_key', 'resource_id', 'bucket_start']
+_UQ_WIDE = _UQ_NARROW + ['sku', 'sku_count']
 
 # ── Benchmark load curves ─────────────────────────────────────────────────────
 # Flat metric columns shared by ``benchmarks`` (the representative point) and
@@ -195,12 +242,43 @@ def upgrade() -> None:
             sa.Column('spec', gpustack.schemas.common.JSON(), nullable=False),
             sa.Column('status', gpustack.schemas.common.JSON(), nullable=True),
             sa.Column('snapshot', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+            # Cluster-independent twin of ``snapshot``: the same definition
+            # rolled out to N clusters gives N snapshots but one of these.
+            # Non-unique by design.
+            sa.Column(
+                'definition_snapshot',
+                sqlmodel.sql.sqltypes.AutoString(),
+                nullable=True,
+            ),
             sa.ForeignKeyConstraint(
                 ['cluster_id'], ['clusters.id'], ondelete='CASCADE'
             ),
             sa.PrimaryKeyConstraint('id'),
             sa.UniqueConstraint('snapshot', name='uq_gpu_instance_type_snapshot'),
         )
+    elif not column_exists('gpu_instance_types', 'definition_snapshot'):
+        # The table predates this column on databases that ran the pre-release
+        # revision which created it.
+        with op.batch_alter_table('gpu_instance_types', schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    'definition_snapshot',
+                    sqlmodel.sql.sqltypes.AutoString(),
+                    nullable=True,
+                )
+            )
+
+    if not _index_exists(
+        'gpu_instance_types', 'ix_gpu_instance_types_definition_snapshot'
+    ):
+        op.create_index(
+            'ix_gpu_instance_types_definition_snapshot',
+            'gpu_instance_types',
+            ['definition_snapshot'],
+            unique=False,
+        )
+
+    _upgrade_metering_sku_shape()
 
     if not column_exists('gpu_instances', 'type_snapshot'):
         with op.batch_alter_table('gpu_instances', schema=None) as batch_op:
@@ -210,8 +288,11 @@ def upgrade() -> None:
                 )
             )
 
-    # One batch for both columns: batch mode copies and moves the whole table per
-    # block, so two blocks would rewrite `models` twice.
+    # One batch for both columns. On SQLite, batch mode recreates and copies the
+    # whole table per block, so two blocks would rewrite `models` twice; on
+    # PostgreSQL / MySQL each block is a plain ALTER and the grouping is only
+    # tidiness. Written for the worst case, since the revision has to run on all
+    # three.
     models_columns = [
         sa.Column('scaling_schedule', sa.JSON(), nullable=True),
         sa.Column('gpu_type_selector', sa.JSON(), nullable=True),
@@ -239,6 +320,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    _downgrade_metering_sku_shape()
     _downgrade_benchmark_load_curves()
 
     # The orphan principal cleanup is data-only — the deleted rows (and their
@@ -253,7 +335,209 @@ def downgrade() -> None:
     with op.batch_alter_table('gpu_instances', schema=None) as batch_op:
         batch_op.drop_column('type_snapshot')
 
+    op.drop_index(
+        'ix_gpu_instance_types_definition_snapshot',
+        table_name='gpu_instance_types',
+    )
     op.drop_table('gpu_instance_types')
+
+
+def _index_exists(table_name: str, index_name: str) -> bool:
+    """Whether ``index_name`` is already defined on ``table_name``."""
+    inspector = Inspector.from_engine(op.get_bind())
+    return any(ix['name'] == index_name for ix in inspector.get_indexes(table_name))
+
+
+def _unique_constraint_columns(table_name: str, constraint_name: str) -> List[str]:
+    """Columns of a named unique constraint, or ``[]`` when it is absent."""
+    inspector = Inspector.from_engine(op.get_bind())
+    for uc in inspector.get_unique_constraints(table_name):
+        if uc['name'] == constraint_name:
+            return list(uc['column_names'])
+    return []
+
+
+def _sku_count_is_widened(table_name: str) -> bool:
+    """Whether ``sku_count`` already carries the fractional type."""
+    inspector = Inspector.from_engine(op.get_bind())
+    for col in inspector.get_columns(table_name):
+        if col['name'] == 'sku_count':
+            return isinstance(col['type'], sa.Numeric)
+    return False
+
+
+def _upgrade_metering_sku_shape() -> None:
+    """Fractional ``sku_count`` + the per-shape natural key + display columns.
+
+    Each step guards on its own object, per this revision's contract.
+    """
+    for table in _METERED_TABLES:
+        if not table_exists(table):
+            continue
+        new_columns = [
+            sa.Column(
+                'definition_snapshot',
+                sqlmodel.sql.sqltypes.AutoString(),
+                nullable=True,
+            ),
+            sa.Column(
+                'instance_type_name',
+                sqlmodel.sql.sqltypes.AutoString(),
+                nullable=True,
+            ),
+        ]
+        new_columns = [c for c in new_columns if not column_exists(table, c.name)]
+        widen = not _sku_count_is_widened(table)
+        if not new_columns and not widen:
+            continue
+        # One batch per table: batch mode copies and moves the whole table per
+        # block, so a block per column would rewrite it repeatedly.
+        with op.batch_alter_table(table, schema=None) as batch_op:
+            if widen:
+                batch_op.alter_column(
+                    'sku_count',
+                    existing_type=sa.Integer(),
+                    type_=_SKU_COUNT_TYPE,
+                    existing_nullable=False,
+                    existing_server_default='1',
+                )
+            for column in new_columns:
+                batch_op.add_column(column)
+
+    # Only the hot table is indexed: the archive is read by ad-hoc audit
+    # queries, not the dashboard, so an index there would only tax archival.
+    if table_exists('metered_usage') and not _index_exists(
+        'metered_usage', 'ix_metered_usage_definition_snapshot'
+    ):
+        op.create_index(
+            'ix_metered_usage_definition_snapshot',
+            'metered_usage',
+            ['definition_snapshot'],
+            unique=False,
+        )
+
+    # Drop + recreate rather than alter: a unique constraint's column list is
+    # not alterable. Existing rows are already unique on the narrower key, so
+    # the wider one is satisfied by construction and the window between the two
+    # statements cannot admit a duplicate the old key would have rejected.
+    if not table_exists('metered_usage'):
+        return
+    current = _unique_constraint_columns('metered_usage', _UQ_METERED_USAGE)
+    if sorted(current) == sorted(_UQ_WIDE):
+        return
+    with op.batch_alter_table('metered_usage', schema=None) as batch_op:
+        if current:
+            batch_op.drop_constraint(_UQ_METERED_USAGE, type_='unique')
+        batch_op.create_unique_constraint(_UQ_METERED_USAGE, _UQ_WIDE)
+
+
+def _downgrade_metering_sku_shape() -> None:
+    """Undo :func:`_upgrade_metering_sku_shape`.
+
+    Guarded step by step, like the upgrade and for the same reason: a partially
+    applied upgrade (one that failed between two of its blocks) must still be
+    reversible, and an unguarded ``drop_column`` on an object that was never
+    added aborts the whole downgrade at the first such step.
+
+    LOSSY, and not only in the obvious direction. Narrowing ``sku_count`` back to
+    an integer converts, and the conversion ROUNDS on both PostgreSQL and MySQL:
+    a half-card row (0.5) comes back as 1 — over-reporting — while a small MIG
+    share (0.119) comes back as 0, which zeroes that row's contribution outright.
+    Neither is a number anyone can reconcile, so a downgrade is an escape hatch
+    for a failed upgrade, not a supported way to run on the old schema with data
+    metered by the new one.
+    """
+    if table_exists('metered_usage'):
+        # Narrowing the natural key can collide: any resource-hour that was split
+        # into per-shape rows by the new key violates the old one. Fold those back
+        # into a single row first — sum the seconds and keep the shape of the
+        # latest-settled row, which is exactly the (wrong, but pre-existing)
+        # behaviour the old key produced.
+        _collapse_per_shape_rows()
+        if sorted(
+            _unique_constraint_columns('metered_usage', _UQ_METERED_USAGE)
+        ) != sorted(_UQ_NARROW):
+            with op.batch_alter_table('metered_usage', schema=None) as batch_op:
+                if _unique_constraint_columns('metered_usage', _UQ_METERED_USAGE):
+                    batch_op.drop_constraint(_UQ_METERED_USAGE, type_='unique')
+                batch_op.create_unique_constraint(_UQ_METERED_USAGE, _UQ_NARROW)
+
+        if _index_exists('metered_usage', 'ix_metered_usage_definition_snapshot'):
+            op.drop_index(
+                'ix_metered_usage_definition_snapshot', table_name='metered_usage'
+            )
+
+    for table in _METERED_TABLES:
+        if not table_exists(table):
+            continue
+        drop = [
+            c
+            for c in ('instance_type_name', 'definition_snapshot')
+            if column_exists(table, c)
+        ]
+        narrow = _sku_count_is_widened(table)
+        if not drop and not narrow:
+            continue
+        with op.batch_alter_table(table, schema=None) as batch_op:
+            for column in drop:
+                batch_op.drop_column(column)
+            if narrow:
+                batch_op.alter_column(
+                    'sku_count',
+                    existing_type=_SKU_COUNT_TYPE,
+                    type_=sa.Integer(),
+                    existing_nullable=False,
+                    existing_server_default='1',
+                )
+
+
+def _collapse_per_shape_rows() -> None:
+    """Merge rows that share the pre-migration natural key back into one.
+
+    Keeps the row with the greatest ``settled_until`` (ties broken by ``id``) —
+    the shape the old collector would have left in place — adds the other rows'
+    ``quantity`` onto it, and deletes them.
+    """
+    bind = op.get_bind()
+    groups = bind.execute(
+        sa.text(
+            "SELECT meter_key, resource_id, bucket_start FROM metered_usage "
+            "GROUP BY meter_key, resource_id, bucket_start HAVING COUNT(*) > 1"
+        )
+    ).fetchall()
+    for meter_key, resource_id, bucket_start in groups:
+        params = {"m": meter_key, "b": bucket_start}
+        # resource_id is nullable, so it needs IS NULL rather than = NULL. Bind
+        # :r only when the clause actually references it — passing a parameter
+        # the statement never mentions is an error on some backends.
+        if resource_id is None:
+            rid_clause = "resource_id IS NULL"
+        else:
+            rid_clause = "resource_id = :r"
+            params["r"] = resource_id
+        rows = bind.execute(
+            sa.text(
+                "SELECT id, quantity FROM metered_usage "
+                f"WHERE meter_key = :m AND {rid_clause} AND bucket_start = :b "
+                "ORDER BY settled_until DESC, id DESC"
+            ),
+            params,
+        ).fetchall()
+        if len(rows) < 2:
+            continue
+        keep_id = rows[0][0]
+        total = sum(r[1] or 0 for r in rows)
+        drop_ids = [r[0] for r in rows[1:]]
+        bind.execute(
+            sa.text("UPDATE metered_usage SET quantity = :q WHERE id = :id"),
+            {"q": total, "id": keep_id},
+        )
+        bind.execute(
+            sa.text("DELETE FROM metered_usage WHERE id IN :ids").bindparams(
+                sa.bindparam("ids", expanding=True)
+            ),
+            {"ids": drop_ids},
+        )
 
 
 def _upgrade_benchmark_load_curves() -> None:

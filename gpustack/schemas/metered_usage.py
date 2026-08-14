@@ -4,7 +4,7 @@
 metering framework. Every time-based resource (GPU instance, CPU instance,
 persistent volume — and future ones) accumulates here as
 
-    one row per (meter_key, resource_id, bucket_start)
+    one row per (meter_key, resource_id, bucket_start, sku, sku_count)
 
 where ``bucket_start`` is a UTC hour bucket and ``quantity`` is stored in the
 meter's canonical integer unit. Coarser granularities (day/week/month) are
@@ -18,18 +18,31 @@ Design notes
 * **Quantities only, no cost.** This is a pure metering table — it stores
   ``quantity`` in the meter's canonical unit and never any price/cost.
 * **GPU per-card / CPU whole-machine.** Instances meter on the single
-  ``instance.uptime`` meter (wall-clock metered seconds). GPU rows key on
-  ``sku = gpu_type`` and yield GPU-Hours (``quantity * sku_count / 3600`` where
-  ``sku_count`` = card count); CPU rows key on ``sku = cpu flavor`` and yield
-  Instance-Hours (``quantity / 3600``, ``sku_count`` = 1). CPU / memory are not
-  metered separately.
-* **Natural key = resource identity.** The unique constraint is
-  ``(meter_key, resource_id, bucket_start)`` — all non-null — so the
-  collector's idempotent upsert works even for resources with no owner
-  (created directly via K8s, ``owner_principal_id`` NULL).
+  ``instance.uptime`` meter (wall-clock metered seconds). GPU rows yield
+  GPU-Hours (``quantity * sku_count / 3600`` where ``sku_count`` = card count,
+  fractional for a sliced card); CPU rows yield Instance-Hours
+  (``quantity / 3600``, ``sku_count`` = base-flavor unit count). CPU / memory
+  are not metered separately.
+* **`sku` is the instance type's identity snapshot.** For instances it is the
+  ``gpu_instance_types.snapshot`` of the type the instance runs on, verbatim
+  (``sha1:<40hex>``) — an opaque reference key, joinable straight back to the
+  catalog and used as the pricing match key. Human-readable facets live in
+  ``instance_type_name`` and ``dimensions`` (the AWS Price List shape: opaque
+  SKU + readable attributes). Storage keeps its ``volume--<kind>--<type>`` sku.
+* **Natural key = resource identity + billed shape.** The unique constraint is
+  ``(meter_key, resource_id, bucket_start, sku, sku_count)``. The first three
+  are the resource-hour; the last two are the only inputs that decide the
+  amount, so a reconfiguration inside one hour (4 cards → 1 card, or a switch
+  to another instance type) lands as TWO rows priced independently instead of
+  one row re-rated by whichever shape happened to be last. All five columns are
+  non-null for instance rows, and the collector's upsert stays idempotent for
+  resources with no owner (created directly via K8s, ``owner_principal_id``
+  NULL).
 * **Hot/cold archival.** Rows older than retention move to
   ``metered_usage_archive`` (see server.usage archiver); the dashboard reads
-  only the hot table, audit reads the archive directly via DB.
+  only the hot table, audit reads the archive directly via DB. The two tables
+  MUST keep an identical column layout — archival is a bulk
+  ``INSERT ... SELECT``.
 
 Query-side conversions
 ----------------------
@@ -40,6 +53,7 @@ Query-side conversions
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any, ClassVar, Dict, Optional, Tuple
 
 from pydantic import ConfigDict
@@ -47,6 +61,7 @@ from sqlalchemy import (
     BigInteger,
     Column,
     Integer,
+    Numeric,
     String,
     UniqueConstraint,
     update,
@@ -55,7 +70,6 @@ from sqlmodel import Field, SQLModel
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import JSON, UTCDateTime
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -73,6 +87,25 @@ METER_STORAGE_CAPACITY = "storage.capacity"
 # unit — canonical integer unit of ``quantity``.
 UNIT_SECONDS = "seconds"
 UNIT_MIB_SECONDS = "mib_seconds"
+
+# ``sku_count`` precision. A sliced accelerator bills a FRACTION of a card, so
+# the unit multiplier is a decimal rather than an int: 8 fraction digits cover
+# the smallest MIG share (1/8 = 0.125) and the smallest soft slice (1% = 0.01)
+# with room to spare. ``NUMERIC`` is native on both supported backends
+# (PostgreSQL / MySQL). Keeping it a DB numeric — instead of folding the billed
+# shape into a hashed fingerprint column — is also what lets the unique
+# constraint treat ``0.5`` and ``0.50`` as the same shape.
+SKU_COUNT_PRECISION = 20
+SKU_COUNT_SCALE = 8
+
+
+def _sku_count_column() -> Column:
+    return Column(
+        Numeric(SKU_COUNT_PRECISION, SKU_COUNT_SCALE),
+        nullable=False,
+        default=Decimal(1),
+        server_default="1",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -117,13 +150,18 @@ class MeteredUsage(SQLModel, BaseModelMixin, table=True):
 
     __tablename__: ClassVar[str] = "metered_usage"
     __table_args__ = (
-        # Natural key = resource identity. All three columns are non-null, so
-        # the collector's upsert is robust even when owner_principal_id / sku
-        # are NULL.
+        # Natural key = resource-hour + billed shape. ``(meter_key, resource_id,
+        # bucket_start)`` identifies the resource-hour; ``(sku, sku_count)`` are
+        # the only inputs that decide the amount, so including them splits a
+        # mid-hour reconfiguration into one row per shape instead of re-rating
+        # the whole hour by the last shape seen. Widening (not replacing) the old
+        # three-column key means existing rows stay unique with no backfill.
         UniqueConstraint(
             "meter_key",
             "resource_id",
             "bucket_start",
+            "sku",
+            "sku_count",
             name="uq_metered_usage",
         ),
     )
@@ -169,13 +207,25 @@ class MeteredUsage(SQLModel, BaseModelMixin, table=True):
     resource_display_name: Optional[str] = Field(default=None, max_length=255)
 
     # —— Grouping dimensions ——
-    # ``sku`` is the "Type" breakdown dimension: GPU = gpu_type (card model);
-    # CPU = cpu flavor; storage = storage type.
+    # ``sku`` is the priced unit's identity. Instances: the running instance
+    # type's ``gpu_instance_types.snapshot`` verbatim (``sha1:<40hex>``), so it
+    # joins straight back to the catalog and is the pricing match key. Storage:
+    # ``volume--<kind>--<type>``. Opaque by design — read ``instance_type_name``
+    # / ``dimensions`` for anything human-facing.
     sku: Optional[str] = Field(default=None, max_length=128)
     # Count of sku units — a real column so per-unit metrics are plain SQL.
-    # GPU instance = card count (drives GPU-Hours = SUM(quantity * sku_count));
-    # CPU instance = 1 (whole machine); storage = 1.
-    sku_count: int = Field(default=1)
+    # GPU instance = card count, FRACTIONAL for a sliced card (0.5 = half a
+    # card); drives GPU-Hours = SUM(quantity * sku_count). CPU instance =
+    # base-flavor unit count; storage = 1.
+    sku_count: Decimal = Field(default=Decimal(1), sa_column=_sku_count_column())
+    # Cluster-independent definition hash of the instance type
+    # (``gpu_instance_types.definition_snapshot``). ``sku`` embeds the cluster,
+    # so this is what makes "the same type across N clusters" aggregatable and
+    # bulk-priceable. NULL for storage rows and for rows metered before upgrade.
+    definition_snapshot: Optional[str] = Field(default=None, index=True)
+    # Per-cluster instance type name, snapshotted for display / triage — ``sku``
+    # is a hash, so every human-facing label comes from here.
+    instance_type_name: Optional[str] = Field(default=None, max_length=255)
     # Display-only metadata. Never grouped / filtered on.
     dimensions: Optional[Dict[str, Any]] = Field(
         default=None, sa_column=Column(JSON(), nullable=True)
@@ -275,7 +325,12 @@ class MeteredUsageArchive(SQLModel, BaseModelMixin, table=True):
     resource_name: str = Field(default=..., max_length=255)
     resource_display_name: Optional[str] = Field(default=None, max_length=255)
     sku: Optional[str] = Field(default=None, max_length=128)
-    sku_count: int = Field(default=1)
+    sku_count: Decimal = Field(default=Decimal(1), sa_column=_sku_count_column())
+    # Same columns as the hot table (archival is a bulk INSERT ... SELECT), but
+    # unindexed: the archive is read by ad-hoc audit queries, not by the
+    # dashboard, so an index here would only tax the archival write.
+    definition_snapshot: Optional[str] = Field(default=None)
+    instance_type_name: Optional[str] = Field(default=None, max_length=255)
     dimensions: Optional[Dict[str, Any]] = Field(
         default=None, sa_column=Column(JSON(), nullable=True)
     )
