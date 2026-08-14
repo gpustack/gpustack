@@ -342,12 +342,21 @@ class StorageUsageCollector:
     ) -> None:
         if vol.capacity_mib <= 0:
             return
+        sku = volume_sku(vol.storage_category, vol.storage_type)
+        # Matched on the sku too, mirroring the natural key. A volume's sku is
+        # stable in practice — it is derived from its type, and the type reference
+        # is set at creation — but the update API does accept a new ``spec.type_``,
+        # and without the sku here that would recompute the whole hour under the
+        # new type instead of splitting the hour between the two, which is the
+        # defect the instance meter carries the shape in its key to avoid. One row
+        # per (volume, hour, sku) is what the widened ``uq_metered_usage`` allows.
         row = (
             await session.exec(
                 select(MeteredUsage).where(
                     MeteredUsage.meter_key == METER_STORAGE_CAPACITY,
                     MeteredUsage.resource_id == vol.volume_id,
                     MeteredUsage.bucket_start == bucket_start,
+                    MeteredUsage.sku == sku,
                 )
             )
         ).first()
@@ -355,7 +364,6 @@ class StorageUsageCollector:
         prior = _naive_utc(row.settled_until) if row is not None else None
         add_seconds = _clamped_seconds(seg_start, seg_end, prior)
         delta_capacity = add_seconds * vol.capacity_mib
-        sku = volume_sku(vol.storage_category, vol.storage_type)
         dimensions = {
             "storage_type": vol.storage_type,
             "storage_category": vol.storage_category,
@@ -389,7 +397,7 @@ class StorageUsageCollector:
                 row.consumer_principal_kind = vol.consumer_principal_kind
             if vol.creator_name is not None:
                 row.creator_name = vol.creator_name
-            row.sku = sku
+            # ``row.sku`` is what we matched on, so it needs no rewrite.
             row.dimensions = dimensions
             session.add(row)
             return

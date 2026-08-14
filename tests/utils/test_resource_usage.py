@@ -1,11 +1,19 @@
 """Unit tests for the dependency-free resource-usage helpers."""
 
 from datetime import datetime
+from decimal import Decimal
 
 from gpustack.utils.resource_usage import (
+    SLICE_MODE_PROFILE,
+    SLICE_MODE_RATIO,
+    SLICE_MODE_WHOLE,
     instance_resource_type,
     instance_sku,
     is_metered_phase,
+    profile_memory_mib,
+    slice_mode_of,
+    slice_share_milli,
+    sliced_sku_count,
     volume_sku,
     iter_utc_day_segments,
     iter_utc_hour_segments,
@@ -17,6 +25,8 @@ from gpustack.utils.resource_usage import (
     parse_quantity_to_millicores,
     split_delta_across_utc_midnight,
 )
+
+A100_MIB = 81920
 
 
 def test_is_metered_phase():
@@ -292,3 +302,153 @@ def test_parse_gpu_descriptor():
     assert parse_gpu_descriptor(None) == {}
     assert parse_gpu_descriptor("not json") == {}
     assert parse_gpu_descriptor({}) == {}
+
+
+# ---------------------------------------------------------------------------
+# Accelerator slicing weight
+# ---------------------------------------------------------------------------
+
+
+def test_slice_mode_of():
+    assert slice_mode_of(None, None) == SLICE_MODE_WHOLE
+    assert slice_mode_of(25, None) == SLICE_MODE_RATIO
+    assert slice_mode_of(None, "1g.10gb") == SLICE_MODE_PROFILE
+    # A hardware partition wins over a soft percentage: the two are mutually
+    # exclusive by schema, and the partition is what the scheduler honours.
+    assert slice_mode_of(25, "1g.10gb") == SLICE_MODE_PROFILE
+    # 0 means "slicing disabled" (exclusive whole card), not "zero share".
+    assert slice_mode_of(0, None) == SLICE_MODE_WHOLE
+
+
+def test_slice_share_ratio_is_exact():
+    assert slice_share_milli() == 1000
+    assert slice_share_milli(memory_percentage=0) == 1000
+    assert slice_share_milli(memory_percentage=1) == 10
+    assert slice_share_milli(memory_percentage=25) == 250
+    assert slice_share_milli(memory_percentage=100) == 1000
+    # Out-of-range input is clamped rather than trusted.
+    assert slice_share_milli(memory_percentage=250) == 1000
+
+
+def test_slice_share_profile_uses_ceil_and_one_division():
+    # 1g.10gb on an A100-80GB: real VRAM ~9728 MiB, not the 10 GB in the name.
+    assert (
+        slice_share_milli(
+            partitioned_profile="1g.10gb",
+            profile_memory_mib=9728,
+            card_memory_mib=A100_MIB,
+        )
+        == 119  # ceil(9728 * 1000 / 81920) = ceil(118.75)
+    )
+    # ceil, not round / floor.
+    assert (
+        slice_share_milli(
+            partitioned_profile="p",
+            profile_memory_mib=1,
+            card_memory_mib=A100_MIB,
+        )
+        == 1
+    )
+    # A single division: going via the operator's credit helper
+    # (MemoryMibToUnits then / 1600) truncates twice and loses a step.
+    two_step = (9728 * 1_600_000 // A100_MIB) // 1600
+    assert two_step == 118
+    assert (
+        slice_share_milli(
+            partitioned_profile="p",
+            profile_memory_mib=9728,
+            card_memory_mib=A100_MIB,
+        )
+        != two_step
+    )
+
+
+def test_slice_share_profile_is_clamped_to_a_whole_card():
+    """A detect-time skew can report a partition at least as large as the card;
+    without the clamp a slice would cost more than the whole card."""
+    assert (
+        slice_share_milli(
+            partitioned_profile="p",
+            profile_memory_mib=A100_MIB,
+            card_memory_mib=A100_MIB,
+        )
+        == 1000
+    )
+    assert (
+        slice_share_milli(
+            partitioned_profile="p",
+            profile_memory_mib=A100_MIB * 2,
+            card_memory_mib=A100_MIB,
+        )
+        == 1000
+    )
+
+
+def test_slice_share_profile_unresolvable_returns_none():
+    """``None`` is the signal "do not settle yet". Returning 1000 here would
+    silently bill a 1/8 partition as a whole card."""
+    assert slice_share_milli(partitioned_profile="p", card_memory_mib=A100_MIB) is None
+    assert slice_share_milli(partitioned_profile="p", profile_memory_mib=9728) is None
+    assert (
+        slice_share_milli(
+            partitioned_profile="p", profile_memory_mib=9728, card_memory_mib=0
+        )
+        is None
+    )
+
+
+def test_vram_share_not_compute_share():
+    """``1g.10gb`` and ``1g.20gb`` have identical compute but the latter halves
+    how many instances a card can host, so it must cost twice as much. Billing
+    compute share would collect 57% of a fully-partitioned card."""
+    small = slice_share_milli(
+        partitioned_profile="1g.10gb",
+        profile_memory_mib=9728,
+        card_memory_mib=A100_MIB,
+    )
+    large = slice_share_milli(
+        partitioned_profile="1g.20gb",
+        profile_memory_mib=19968,
+        card_memory_mib=A100_MIB,
+    )
+    assert large > small * 2 - 2  # ~2x, within the ceil tolerance
+
+    # Packing a card with 4x 1g.20gb sells more of it than packing it with
+    # 7x 1g.10gb (976 vs 833 thousandths) — which is the whole point: the same
+    # compute per slice, but the bigger slice denies more capacity to others.
+    assert 4 * large > 7 * small
+    # Neither reaches a whole card: MIG's partition overhead is physically
+    # unsellable, so summing below 1000 is correct, not a rounding bug.
+    assert 4 * large < 1000
+    assert 7 * small < 1000
+    # Billing compute share instead would collect the same for both (7 x 1/7 and
+    # 4 x 1/7 of compute), i.e. only 57% of a card in the 1g.20gb case.
+    assert 4 * (1000 // 7) < 600
+
+
+def test_sliced_sku_count_scales_per_card():
+    assert sliced_sku_count(1, 1000) == Decimal(1)
+    assert sliced_sku_count(4, 1000) == Decimal(4)
+    assert sliced_sku_count(2, 250) == Decimal("0.5")
+    assert sliced_sku_count(1, 119) == Decimal("0.119")
+    # Per-card share first, then x N — so one profile on N cards is exactly N
+    # times one card, with no rounding tail from the division order.
+    assert sliced_sku_count(4, 119) == sliced_sku_count(1, 119) * 4
+    # Whole counts stay whole (no ``1E+1`` from an over-eager normalize).
+    assert str(sliced_sku_count(10, 1000)) == "10"
+
+
+def test_profile_memory_mib_lookup():
+    profiles = [
+        {"name": "1g.10gb", "memoryMib": 9728},
+        {"name": "3g.40gb", "memory_mib": 40192},
+    ]
+    assert profile_memory_mib(profiles, "1g.10gb") == 9728
+    # Both key styles (pydantic field name and camelCase alias) resolve.
+    assert profile_memory_mib(profiles, "3g.40gb") == 40192
+    # Unknown / absent / non-positive → None, i.e. "not resolvable".
+    assert profile_memory_mib(profiles, "7g.80gb") is None
+    assert profile_memory_mib(None, "1g.10gb") is None
+    assert profile_memory_mib(profiles, None) is None
+    assert profile_memory_mib([{"name": "p", "memoryMib": 0}], "p") is None
+    assert profile_memory_mib([{"name": "p"}], "p") is None

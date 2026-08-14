@@ -596,11 +596,42 @@ class GPUInstanceType(SQLModel, BaseModelMixin, table=True):
     Stable identity hash (``sha1:<hexdigest>``) over ``(cluster_id, name, spec)``
     with the mutable ``display_name`` excluded, unique per row. See
     ``compute_snapshot``.
+
+    It doubles as ``metered_usage.sku`` — the metering / pricing reference key —
+    so it must stay byte-stable for the lifetime of a type (guaranteed: the
+    operator webhook freezes the whole spec, the CR name is immutable, and
+    ``display_name`` is excluded here).
+    """
+
+    definition_snapshot: Optional[str] = Field(default=None, index=True)
+    """
+    Cluster-independent definition hash (``sha1:<hexdigest>``) over
+    ``(name, spec)`` — the same value on every cluster that offers this exact
+    definition. NOT unique: N clusters offering one definition are N rows
+    sharing it. See ``compute_definition_snapshot``.
     """
 
     def is_deleted(self) -> bool:
         """Whether the type row is soft-deleted (``deleted_at`` set)."""
         return self.deleted_at is not None
+
+    def _identity_spec(self) -> dict:
+        """The definitional spec that both snapshots hash over.
+
+        ``exclude_none`` keeps identity stable across additive schema evolution:
+        an unset optional field must not enter the payload, so introducing a new
+        optional definitional field later does not churn the snapshot of
+        existing types the operator never set it on. ``display_name`` is dropped
+        because it is the one mutable spec field.
+        """
+        spec = self.spec.model_dump(mode="json", exclude_none=True)
+        spec.pop("display_name", None)
+        return spec
+
+    @staticmethod
+    def _digest(payload: dict) -> str:
+        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return f"sha1:{hashlib.sha1(blob.encode('utf-8')).hexdigest()}"
 
     def compute_snapshot(self) -> str:
         """Return this type's stable identity snapshot as ``sha1:<hexdigest>``.
@@ -611,19 +642,29 @@ class GPUInstanceType(SQLModel, BaseModelMixin, table=True):
         definitions that differ only by display name share a snapshot, while a
         change to a definitional field (e.g. ``unit_resources``) diverges it.
         """
-        # ``exclude_none`` keeps identity stable across additive schema
-        # evolution: an unset optional field must not enter the payload, so
-        # introducing a new optional definitional field later does not churn the
-        # snapshot of existing types the operator never set it on.
-        spec = self.spec.model_dump(mode="json", exclude_none=True)
-        spec.pop("display_name", None)
-        payload = json.dumps(
-            {"cluster_id": self.cluster_id, "name": self.name, "spec": spec},
-            sort_keys=True,
-            separators=(",", ":"),
+        return self._digest(
+            {
+                "cluster_id": self.cluster_id,
+                "name": self.name,
+                "spec": self._identity_spec(),
+            }
         )
-        digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
-        return f"sha1:{digest}"
+
+    def compute_definition_snapshot(self) -> str:
+        """Return the cluster-independent definition snapshot.
+
+        Identical to :meth:`compute_snapshot` minus ``cluster_id``, so the same
+        definition rolled out to N clusters yields N ``snapshot`` values but ONE
+        ``definition_snapshot``. Metering carries both: ``snapshot`` is the
+        pricing key (per-cluster pricing stays expressible), while
+        ``definition_snapshot`` backs cross-cluster aggregation, bulk pricing,
+        and a future switch of pricing granularity without migrating history.
+
+        ``name`` is still part of it — a later change to the operator's derived
+        naming gives newly-created types a new value (existing rows never
+        change, the projection is keyed by ``snapshot``).
+        """
+        return self._digest({"name": self.name, "spec": self._identity_spec()})
 
 
 class GPUInstanceTypeBase(BaseModel):
