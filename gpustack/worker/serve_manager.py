@@ -72,6 +72,9 @@ logger = logging.getLogger(__name__)
 # Inference health check error message
 _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
 
+# Last-resort message for a workload that stopped serving without saying why.
+_WORKLOAD_FAILED_MESSAGE = "Inference server exited or unhealthy."
+
 # One health-check cycle (+2s margin) to let a container return after a stream
 # EOF; beyond that gpustack marks it ERROR and takes over recovery.
 LOG_RECONNECT_GRACE_SECONDS = envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL + 2
@@ -128,6 +131,54 @@ def _parse_allocated_accelerators(annotations: Optional[Dict[str, str]]) -> List
                 if isinstance(accelerator, dict) and accelerator.get("id"):
                     accelerators.append(accelerator)
     return accelerators
+
+
+def _describe_workload_failure(workload) -> str:
+    """
+    Explain why a workload stopped serving, for the instance's state message.
+
+    The workload's `state_message` is the most specific text the runtime has --
+    a Pod's admission rejection, or an image-pull reason plus the registry error
+    behind it (gpustack/gpustack#5869) -- but it never carries an exit code, and
+    a container that merely crashed leaves it empty on Kubernetes. The
+    per-container `exits` carry both, so take the reason from there when there
+    is no message, and append the exit code either way
+    (gpustack/gpustack#4217).
+
+    Args:
+        workload: The runtime WorkloadStatus, None if the workload is gone.
+
+    Returns:
+        The failure message to surface on the model instance.
+    """
+    if not workload:
+        return _WORKLOAD_FAILED_MESSAGE
+
+    message = getattr(workload, "state_message", "") or ""
+    # A container blocked from starting reports no exit code, and its reason is
+    # already what the state message is built from, so it adds nothing here.
+    exits = [
+        exit_
+        for exit_ in (getattr(workload, "exits", None) or [])
+        if exit_.exit_code is not None
+    ]
+    if not exits:
+        return message or _WORKLOAD_FAILED_MESSAGE
+
+    if not message:
+        # Deduplicated but order-preserving: sidecars usually die of one cause.
+        message = ", ".join(
+            dict.fromkeys(exit_.reason for exit_ in exits if exit_.reason)
+        )
+    codes = ", ".join(
+        (
+            f"{exit_.name} exit code {exit_.exit_code}"
+            if len(exits) > 1
+            else f"exit code {exit_.exit_code}"
+        )
+        for exit_ in exits
+    )
+    return f"{message or _WORKLOAD_FAILED_MESSAGE} ({codes})"
 
 
 class ServeManager:
@@ -444,11 +495,10 @@ class ServeManager:
             ]:
                 # Only if not in ERROR state yet.
                 if model_instance.state != ModelInstanceStateEnum.ERROR:
-                    # Surface the workload's status message (e.g. a
-                    # device-plugin admission rejection) when available.
-                    failure_message = (
-                        workload and getattr(workload, "state_message", "")
-                    ) or "Inference server exited or unhealthy."
+                    # Surface the workload's own diagnosis (e.g. a device-plugin
+                    # admission rejection, an image-pull failure, an exit code)
+                    # when available.
+                    failure_message = _describe_workload_failure(workload)
                     with contextlib.suppress(NotFoundException):
                         # Get patch dict for main worker.
                         if is_main_worker:
