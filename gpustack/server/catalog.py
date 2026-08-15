@@ -114,7 +114,13 @@ def prepare_chat_templates(data_dir: str):
     if not os.path.exists(source_dir):
         return
 
-    file.copy_with_owner(source_dir, target_dir)
+    try:
+        file.copy_with_owner(source_dir, target_dir)
+    except OSError as e:
+        logger.warning(
+            f"Failed to copy chat templates to {target_dir}, "
+            f"will use existing files if available: {e}"
+        )
 
 
 def get_builtin_model_catalog_file() -> str:
