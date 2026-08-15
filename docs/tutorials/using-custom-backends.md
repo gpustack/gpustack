@@ -57,6 +57,106 @@ After the inference backend service starts, you can see the model_instance statu
 You can engage in conversations in the Playground.
 ![image.png](../assets/tutorials/using-custom-backend/use-custom-backend-in-playground.png)
 
+### Example: TokenSpeed
+
+[TokenSpeed](https://lightseek.org/tokenspeed/) is an OpenAI-compatible inference engine
+with hybrid linear-attention support and MTP speculative decoding. It publishes no
+official serving image, so build one from the runner image first, then register it as a
+custom backend.
+
+1. Build the image. The upstream `lightseekorg/tokenspeed-runner` image is a development
+   base: it ships the CUDA/PyTorch toolchain and prebuilt kernel wheels, but not the
+   TokenSpeed source. Install the three packages into it and commit the result:
+
+```bash
+docker run -itd --gpus all --name tokenspeed lightseekorg/tokenspeed-runner:latest /bin/bash
+docker exec -it tokenspeed bash
+
+export PIP_BREAK_SYSTEM_PACKAGES=1
+git clone https://github.com/lightseekorg/tokenspeed.git /opt/tokenspeed
+cd /opt/tokenspeed
+pip install -e "./python" --no-build-isolation
+pip install -e tokenspeed-kernel/python/ --no-build-isolation          # Blackwell (sm_100a/sm_103a)
+# On Hopper, build for sm_90a instead:
+# TOKENSPEED_CUDA_ARCH=90a pip install -e tokenspeed-kernel/python/ --no-build-isolation
+pip install -e tokenspeed-scheduler/
+chmod -R a+rX /opt/tokenspeed
+```
+
+   Two things matter for GPUStack specifically:
+
+   - **Build for the right GPU architecture.** `tokenspeed-kernel` does not detect the
+     local GPU. Its default architecture list is `("100a", "103a")`, so a plain
+     `pip install` produces a **Blackwell-only** build — correct for B200/B300, but on
+     Hopper every locally compiled kernel then fails at runtime with
+     `no kernel image is available for execution on the device`. Hopper builds must set
+     `TOKENSPEED_CUDA_ARCH=90a`. Keep one image per architecture and encode the
+     architecture in the tag.
+   - **Keep the install readable by non-root users.** GPUStack may run the container as a
+     non-root UID. An editable install under `/root` is unreachable (`/root` is mode
+     `700`), which surfaces as
+     `PermissionError: /root/tokenspeed/python/tokenspeed/__init__.py`. Install under
+     `/opt` as shown above, and point `HOME` at a writable directory so libraries that
+     write to `~/.cache` (flashinfer, Triton) do not fail on import.
+
+2. Add the configuration on the Inference Backend page. YAML import is supported:
+
+```yaml
+backend_name: tokenspeed-custom
+description: TokenSpeed custom backend
+default_version: 0.1.3-sm90
+health_check_path: /v1/models
+default_backend_param:
+parameter_format: space
+common_parameters:
+  - --gpu-memory-utilization
+  - --max-model-len
+default_run_command: "{{model_path}} --port {{port}} --host {{worker_ip}} --served-model-name {{model_name}}"
+default_env:
+  HOME: /opt/ts-home
+  FLASHINFER_CACHE_DIR: /opt/ts-cache/flashinfer
+  TRITON_CACHE_DIR: /opt/ts-cache/triton
+version_configs:
+  0.1.3-sm90:
+    image_name: swr.cn-north-4.myhuaweicloud.com/yiminghub/tokenspeed:0.1.3-sm90-cu130-20260815
+    entrypoint: "tokenspeed serve"
+    run_command: "{{model_path}} --port {{port}} --host {{worker_ip}} --served-model-name {{model_name}} --world-size {{gpu_count}} --attention-backend fa3 --drafter-attention-backend fa3 --chunked-prefill-size 8192 --max-num-seqs 128 --disable-kvstore"
+    custom_framework: cuda
+    env:
+  0.1.3-sm100:
+    image_name: swr.cn-north-4.myhuaweicloud.com/yiminghub/tokenspeed:0.1.3-cu130-20260815-fix
+    entrypoint: "tokenspeed serve"
+    run_command: "{{model_path}} --port {{port}} --host {{worker_ip}} --served-model-name {{model_name}} --world-size {{gpu_count}} --attention-backend trtllm --moe-backend flashinfer_trtllm --chunked-prefill-size 8192 --max-num-seqs 128 --disable-kvstore"
+    custom_framework: cuda
+    env:
+```
+
+   Because the executable is supplied through `entrypoint`, `run_command` must contain
+   arguments only — do not repeat `tokenspeed serve` there.
+
+   The two versions differ only in kernel backends. TokenSpeed's `trtllm` attention
+   backend uses TensorRT-LLM's trtllm-gen kernels, which are Blackwell-only and abort
+   with `TllmGenFmhaRunner: Unsupported architecture` on Hopper. Use `fa3` on Hopper
+   (`0.1.3-sm90`) and `trtllm` on Blackwell (`0.1.3-sm100`). `--drafter-attention-backend`
+   defaults to the main attention backend, so set it explicitly whenever speculative
+   decoding is enabled.
+
+3. On the Deployments page, select the newly added backend and choose the version matching
+   the worker's GPU architecture. Add model-specific flags such as `--max-model-len`,
+   `--kv-cache-dtype`, `--reasoning-parser`, and the `--speculative-*` group in the
+   deployment's backend parameters rather than in `run_command`, so one backend version
+   can serve several models.
+
+!!! note
+    TokenSpeed captures CUDA graphs for both decode batch sizes and prefill buckets at
+    startup, which takes a few minutes on the first launch of a large model. Allow enough
+    startup time before treating a deployment as failed. The engine is ready once the log
+    prints `TokenSpeed gRPC health status -> SERVING`.
+
+This configuration has been verified serving Qwen3.8-27B-FP8 on both an H20-3e
+(141 GB, sm_90) node and a B300 node.
+
+
 ## Advanced Configuration
 
 ### Using Environment Variables
