@@ -99,11 +99,17 @@ rules:
       - get
       - list
       - watch
+  # The read is what turns a bare "ImagePullBackOff" into the registry error
+  # behind it: gpustack-runtime reads the workload Pod's Events to explain why
+  # the pull fails, and reports it on the workload's state message,
+  # see gpustack/gpustack#5869.
   - apiGroups:
       - ""
-    resources: 
+    resources:
       - "events"
-    verbs: 
+    verbs:
+      - "get"
+      - "list"
       - "create"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
