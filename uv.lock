@@ -1241,7 +1241,7 @@ requires-dist = [
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.3.0.post1" },
     { name = "gpustack-runner", specifier = "==0.1.27.post4" },
-    { name = "gpustack-runtime", specifier = "==0.2.2.post8" },
+    { name = "gpustack-runtime", specifier = "==0.2.3" },
     { name = "hf-xet", specifier = ">=1.3.1,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=1.0.0" },
@@ -1337,7 +1337,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.2.2.post8"
+version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -1351,9 +1351,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/43/0e/9b67d9793eae19126e2389446ea544ddb4431ce5a67644bf03e068099b26/gpustack_runtime-0.2.2.post8.tar.gz", hash = "sha256:a8776af5bbfd437f2dc539eae501fb57b4e4b00adff5e2f2bbad355be85810f8", size = 1476137, upload-time = "2026-08-04T06:39:17.184Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/c9/f9704041b9a550cac4cd9ee7e89d747b3c9d8dd68b49d66f5ed3b3af09d7/gpustack_runtime-0.2.3.tar.gz", hash = "sha256:a1ff6ddcdbcf1b204ab8c4e03aa57badfe7acddeb0cae560e1116e2a7194088a", size = 1589779, upload-time = "2026-08-15T04:02:26.379Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/1d/2d8c564be202224d98a053e8d9292108b4f6d570c0a6dc5289fa0ecbf7de/gpustack_runtime-0.2.2.post8-py3-none-any.whl", hash = "sha256:d0245ddd0fc5dd5da519d84da1485849448ba93fd09e67df6d214fa82eacf500", size = 1453143, upload-time = "2026-08-04T06:39:15.826Z" },
+    { url = "https://files.pythonhosted.org/packages/90/3e/f2790d57f64fb3a1d1aee992279fff7fd5f69595656d8825157cb7fd9bb5/gpustack_runtime-0.2.3-py3-none-any.whl", hash = "sha256:f62a8c942d73b2517c3c9e17779a966594bd961ceae73ab3ba16ba8b69caec98", size = 1480734, upload-time = "2026-08-15T04:02:24.779Z" },
 ]
 
 [[package]]
