@@ -362,6 +362,9 @@ class Worker:
         app.state.get_instance_port_by_model_instance_id = (
             self._serve_manager.get_instance_port_by_model_instance_id
         )
+        app.state.get_model_by_model_instance_id = (
+            self._serve_manager.get_model_by_model_instance_id
+        )
         app.state.record_successful_inference = (
             self._serve_manager.record_successful_inference
         )
