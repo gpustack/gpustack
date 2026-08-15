@@ -12,7 +12,7 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.server.bus import Event, EventType
-from gpustack.worker.serve_manager import ServeManager
+from gpustack.worker.serve_manager import ServeManager, _describe_workload_failure
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
 from tests.utils.model import new_model, new_model_instance
 
@@ -852,6 +852,123 @@ def test_error_state_falls_back_to_generic_message():
         model_instance.id,
         state=ModelInstanceStateEnum.ERROR,
         state_message="Inference server exited or unhealthy.",
+    )
+
+
+def _workload_exit(name="default", exit_code=None, reason=""):
+    return SimpleNamespace(name=name, exit_code=exit_code, reason=reason)
+
+
+def test_error_state_surfaces_the_container_exit_code():
+    """gpustack/gpustack#4217: the exit code must reach the instance, not just
+    the runtime's workload status."""
+    manager, clientset = _build_vgpu_manager(worker_id=1)
+
+    model_instance = new_model_instance(
+        1,
+        "vgpu-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.INITIALIZING,
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    workload = SimpleNamespace(
+        state="Failed",
+        state_message="Error",
+        exits=[_workload_exit(exit_code=7, reason="Error")],
+    )
+
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    update_model_instance.assert_called_once_with(
+        model_instance.id,
+        state=ModelInstanceStateEnum.ERROR,
+        state_message="Error (exit code 7)",
+    )
+
+
+def test_workload_failure_appends_the_exit_code():
+    """Both backends must answer gpustack/gpustack#4217, and they arrive at it
+    differently: Docker names the reason on state_message, Kubernetes leaves it
+    empty and the exits are the only source."""
+    assert (
+        _describe_workload_failure(
+            SimpleNamespace(
+                state_message="OOMKilled",
+                exits=[_workload_exit(exit_code=137, reason="OOMKilled")],
+            )
+        )
+        == "OOMKilled (exit code 137)"
+    )
+    assert (
+        _describe_workload_failure(
+            SimpleNamespace(
+                state_message="",
+                exits=[_workload_exit(exit_code=1, reason="Error")],
+            )
+        )
+        == "Error (exit code 1)"
+    )
+
+
+def test_workload_failure_keeps_the_image_pull_diagnosis():
+    """gpustack/gpustack#5869: a container blocked on its image pull never
+    terminated, so it has no exit code, and its state message already carries
+    the registry error the Pod's Events explain it with. Nothing may displace
+    or pad it."""
+    message = (
+        'ImagePullBackOff: Back-off pulling image "registry.invalid/nope:latest"; '
+        "Failed to pull image: not found"
+    )
+
+    assert (
+        _describe_workload_failure(
+            SimpleNamespace(
+                state_message=message,
+                exits=[_workload_exit(reason="ImagePullBackOff")],
+            )
+        )
+        == message
+    )
+
+
+def test_workload_failure_names_each_container_when_several_exit():
+    assert (
+        _describe_workload_failure(
+            SimpleNamespace(
+                state_message="",
+                exits=[
+                    _workload_exit(exit_code=1, reason="Error"),
+                    _workload_exit(name="ray-head", exit_code=137, reason="OOMKilled"),
+                ],
+            )
+        )
+        == "Error, OOMKilled (default exit code 1, ray-head exit code 137)"
+    )
+
+
+def test_workload_failure_falls_back_when_the_workload_explains_nothing():
+    # A workload reaped out from under the sync, and one that failed without a
+    # message or any exit entry (the pre-0.2.3 shape, which has no `exits` at
+    # all) both land on the generic message.
+    assert _describe_workload_failure(None) == "Inference server exited or unhealthy."
+    assert (
+        _describe_workload_failure(SimpleNamespace(state="Failed"))
+        == "Inference server exited or unhealthy."
+    )
+    assert (
+        _describe_workload_failure(
+            SimpleNamespace(state_message="", exits=[_workload_exit(exit_code=2)])
+        )
+        == "Inference server exited or unhealthy. (exit code 2)"
     )
 
 
