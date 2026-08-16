@@ -12,9 +12,14 @@ import pytest
 from kubernetes_asyncio import client
 from starlette.responses import StreamingResponse
 
-from gpustack.api.exceptions import ForbiddenException, NotFoundException
+from gpustack.api.exceptions import (
+    ConflictException,
+    ForbiddenException,
+    NotFoundException,
+)
 from gpustack.routes import gpu_instance_types as it_routes
 from gpustack.routes import gpu_instances_helper as helper
+from gpustack.schemas.clusters import GpuInstanceOptions, K8sOptions
 from gpustack.schemas.gpu_instance_types import (
     GPUInstanceTypeCreate,
     GPUInstanceTypeSpec,
@@ -155,11 +160,23 @@ def _patch_watch_ops(monkeypatch, watch_events):
     monkeypatch.setattr(helper, "ClusterOps", FakeWatchOps)
 
 
-def _cluster(id_=1, owner_principal_id=None):
+def _cluster(id_=1, owner_principal_id=None, gpu_service=True):
+    """A cluster fixture, GPU Service by default.
+
+    Every route in this module is a GPU Service route, so a cluster that can be
+    used here is the norm; a Model Service cluster is the exception, and each
+    test that exercises one passes ``gpu_service=False`` explicitly. The purpose
+    signal is the presence of ``gpu_instance_options`` — see
+    ``schemas/clusters.is_gpu_service_k8s_options``.
+    """
     return SimpleNamespace(
         id=id_,
+        name=f"cluster-{id_}",
         owner_principal_id=owner_principal_id,
         registration_token="tok",
+        k8s_options=K8sOptions(
+            gpu_instance_options=GpuInstanceOptions() if gpu_service else None
+        ),
     )
 
 
@@ -411,7 +428,10 @@ async def test_aggregated_watch_wraps_gateway_verbs(monkeypatch):
     monkeypatch.setattr(it_routes, "async_session", lambda: _FakeSession())
 
     async def fake_all(session, fields=None, extra_conditions=None, **kw):
-        return [_cluster(id_=1), _cluster(id_=2)]
+        # Cluster 3 is a Model Service cluster: visible, Kubernetes, and still
+        # dropped from the watch's cluster filter, so no event can be sourced
+        # from it in the first place.
+        return [_cluster(id_=1), _cluster(id_=2), _cluster(id_=3, gpu_service=False)]
 
     monkeypatch.setattr(it_routes.Cluster, "all_by_fields", fake_all)
 
@@ -456,9 +476,154 @@ async def test_aggregated_watch_wraps_gateway_verbs(monkeypatch):
     assert payloads[0]["data"]["name"] == "a100"
     # The aggregated status survives, serialized by camelCase alias.
     assert payloads[0]["data"]["status"]["onceMaxRequest"]["accelerator"] == "4"
-    # Cluster ids forwarded to the gateway as strings, aggregated=True.
+    # Cluster ids forwarded to the gateway as strings, aggregated=True, with
+    # the Model Service cluster absent from the filter.
     assert captured["clusters"] == ["1", "2"]
     assert captured["aggregated"] is True
+
+
+@pytest.mark.asyncio
+async def test_aggregated_excludes_model_service_clusters(monkeypatch):
+    # A Model Service cluster is Kubernetes and visible, but its capacity is
+    # committed to model deployment, so its instance types must not reach the
+    # GPU Instance create form.
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(it_routes, "async_session", lambda: _FakeSession())
+
+    async def fake_all(session, fields=None, extra_conditions=None, **kw):
+        return [_cluster(id_=1, gpu_service=False), _cluster(id_=2)]
+
+    monkeypatch.setattr(it_routes.Cluster, "all_by_fields", fake_all)
+
+    captured = {}
+
+    async def fake_list(clusters=None, aggregated=False):
+        captured["clusters"] = clusters
+        return {"items": []}
+
+    monkeypatch.setattr(it_routes.gateway_client, "list_instance_types", fake_list)
+
+    await it_routes.get_gpu_aggregated_instance_types(CTX)
+
+    assert captured["clusters"] == ["2"]
+
+
+@pytest.mark.asyncio
+async def test_aggregated_all_model_service_short_circuits(monkeypatch):
+    # The sharper form of the empty-cluster guard: clusters ARE visible, they
+    # are just all Model Service. Forwarding the resulting empty filter would
+    # make the gateway return the whole fleet.
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(it_routes, "async_session", lambda: _FakeSession())
+
+    async def fake_all(session, fields=None, extra_conditions=None, **kw):
+        return [
+            _cluster(id_=1, gpu_service=False),
+            _cluster(id_=2, gpu_service=False),
+        ]
+
+    monkeypatch.setattr(it_routes.Cluster, "all_by_fields", fake_all)
+
+    async def boom(*a, **kw):
+        raise AssertionError("gateway must not be called for zero GPU Service clusters")
+
+    monkeypatch.setattr(it_routes.gateway_client, "list_instance_types", boom)
+    monkeypatch.setattr(it_routes.gateway_client, "watch_instance_types", boom)
+
+    out = await it_routes.get_gpu_aggregated_instance_types(CTX)
+    assert out.items == []
+
+
+@pytest.mark.asyncio
+async def test_per_cluster_read_still_serves_a_model_service_cluster(monkeypatch):
+    # The guard is on writes only. This read is what the model deploy form's
+    # Scheduling > Manual > Slicing GPU Type picker calls, and that picker
+    # targets Model Service clusters by definition.
+    _patch_cluster(monkeypatch, _cluster(gpu_service=False))
+    _patch_ops(
+        monkeypatch,
+        list_result={"items": [{"metadata": {"name": "it-a"}, "spec": {}}]},
+    )
+
+    out = await it_routes.get_gpu_instance_types(REQUEST, None, CTX, 1)
+
+    assert [i.name for i in out.items] == ["it-a"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(
+            lambda: it_routes.create_gpu_instance_type(
+                REQUEST,
+                None,
+                CTX,
+                GPUInstanceTypeCreate(
+                    name="new-it",
+                    spec=GPUInstanceTypeSpec(acceleratable=True),
+                ),
+                1,
+            ),
+            id="create",
+        ),
+        pytest.param(
+            lambda: it_routes.update_gpu_instance_type(
+                REQUEST,
+                None,
+                CTX,
+                GPUInstanceTypeUpdate(
+                    name="it-a",
+                    spec=GPUInstanceTypeSpecUpdate(display_name="x"),
+                ),
+                1,
+            ),
+            id="update",
+        ),
+        pytest.param(
+            lambda: it_routes.delete_gpu_instance_type(REQUEST, None, CTX, "it-a", 1),
+            id="delete",
+        ),
+        pytest.param(
+            lambda: it_routes.deactivate_gpu_instance_type(
+                REQUEST, None, CTX, "it-a", 1
+            ),
+            id="deactivate",
+        ),
+        pytest.param(
+            lambda: it_routes.activate_gpu_instance_type(REQUEST, None, CTX, "it-a", 1),
+            id="activate",
+        ),
+    ],
+)
+async def test_writes_to_a_model_service_cluster_raise_409(monkeypatch, call):
+    _patch_cluster(monkeypatch, _cluster(gpu_service=False))
+
+    async def boom(*a, **kw):
+        raise AssertionError("must refuse before reaching the cluster")
+
+    monkeypatch.setattr(helper, "build_cluster_ops", boom)
+
+    with pytest.raises(ConflictException) as excinfo:
+        await call()
+
+    assert excinfo.value.status_code == 409
+    # The refusal names the cluster and its purpose, so an API caller is not
+    # left guessing why an otherwise-visible, otherwise-owned cluster refused.
+    assert "cluster-1" in excinfo.value.message
+    assert "model service" in excinfo.value.message
 
 
 def test_spec_create_display_name_camel_alias():

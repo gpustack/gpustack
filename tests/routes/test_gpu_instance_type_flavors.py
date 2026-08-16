@@ -11,6 +11,7 @@ import pytest
 from gpustack.api.exceptions import NotFoundException
 from gpustack.routes import gpu_instance_type_flavors as flavor_routes
 from gpustack.routes import gpu_instances_helper as helper
+from gpustack.schemas.clusters import GpuInstanceOptions, K8sOptions
 from gpustack.schemas.principals import PrincipalType
 
 # SYSTEM principal → bypasses tenant filters (visible everywhere).
@@ -56,11 +57,23 @@ def _patch_ops(monkeypatch, *, list_result=None):
     monkeypatch.setattr(helper, "ClusterOps", FakeOps)
 
 
-def _cluster(id_=1, owner_principal_id=None):
+def _cluster(id_=1, owner_principal_id=None, gpu_service=True):
+    """A cluster fixture, GPU Service by default.
+
+    Every route in this module is a GPU Service route, so a cluster that can be
+    used here is the norm; a Model Service cluster is the exception, and each
+    test that exercises one passes ``gpu_service=False`` explicitly. The purpose
+    signal is the presence of ``gpu_instance_options`` — see
+    ``schemas/clusters.is_gpu_service_k8s_options``.
+    """
     return SimpleNamespace(
         id=id_,
+        name=f"cluster-{id_}",
         owner_principal_id=owner_principal_id,
         registration_token="tok",
+        k8s_options=K8sOptions(
+            gpu_instance_options=GpuInstanceOptions() if gpu_service else None
+        ),
     )
 
 
@@ -134,6 +147,100 @@ async def test_aggregated_flavors_empty_clusters_short_circuits(monkeypatch):
 
     out = await flavor_routes.get_gpu_aggregated_instance_type_flavors(CTX)
     assert out.items == []
+
+
+def _patch_aggregated_clusters(monkeypatch, clusters):
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(flavor_routes, "async_session", lambda: _FakeSession())
+
+    async def fake_all(session, fields=None, extra_conditions=None, **kw):
+        return clusters
+
+    monkeypatch.setattr(flavor_routes.Cluster, "all_by_fields", fake_all)
+
+
+@pytest.mark.asyncio
+async def test_aggregated_flavors_exclude_model_service_clusters(monkeypatch):
+    # A Model Service cluster is Kubernetes and visible, and its operator still
+    # publishes flavors — but that capacity is committed to model deployment,
+    # so the flavors must not reach the GPU Instance create form.
+    _patch_aggregated_clusters(
+        monkeypatch, [_cluster(id_=1, gpu_service=False), _cluster(id_=2)]
+    )
+
+    captured = {}
+
+    async def fake_list(clusters=None, aggregated=False):
+        captured["clusters"] = clusters
+        captured["aggregated"] = aggregated
+        return {"items": []}
+
+    monkeypatch.setattr(
+        flavor_routes.gateway_client, "list_instance_type_flavors", fake_list
+    )
+
+    await flavor_routes.get_gpu_aggregated_instance_type_flavors(CTX)
+
+    assert captured["clusters"] == ["2"]
+    assert captured["aggregated"] is True
+
+
+@pytest.mark.asyncio
+async def test_aggregated_flavors_all_model_service_short_circuits(monkeypatch):
+    # The sharper form of the empty-cluster guard: clusters ARE visible, they
+    # are just all Model Service. Forwarding the resulting empty filter would
+    # make the gateway return the whole fleet.
+    _patch_aggregated_clusters(
+        monkeypatch,
+        [_cluster(id_=1, gpu_service=False), _cluster(id_=2, gpu_service=False)],
+    )
+
+    async def boom(*a, **kw):
+        raise AssertionError("gateway must not be called for zero GPU Service clusters")
+
+    monkeypatch.setattr(
+        flavor_routes.gateway_client, "list_instance_type_flavors", boom
+    )
+    monkeypatch.setattr(
+        flavor_routes.gateway_client, "watch_instance_type_flavors", boom
+    )
+
+    out = await flavor_routes.get_gpu_aggregated_instance_type_flavors(CTX)
+    assert out.items == []
+
+
+@pytest.mark.asyncio
+async def test_aggregated_flavors_watch_filter_excludes_model_service(monkeypatch):
+    # The watch path takes the same narrowed cluster filter, so no event can be
+    # sourced from a Model Service cluster in the first place.
+    _patch_aggregated_clusters(
+        monkeypatch,
+        [_cluster(id_=1), _cluster(id_=2, gpu_service=False), _cluster(id_=3)],
+    )
+
+    captured = {}
+
+    async def fake_watch(clusters=None, aggregated=False):
+        captured["clusters"] = clusters
+        captured["aggregated"] = aggregated
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(
+        flavor_routes.gateway_client, "watch_instance_type_flavors", fake_watch
+    )
+
+    resp = await flavor_routes.get_gpu_aggregated_instance_type_flavors(CTX, watch=True)
+    [frame async for frame in resp.body_iterator]
+
+    assert captured["clusters"] == ["1", "3"]
+    assert captured["aggregated"] is True
 
 
 def test_flavor_routes_registered():
