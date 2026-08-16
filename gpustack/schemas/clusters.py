@@ -279,6 +279,48 @@ class K8sOptions(BaseModel):
     )
 
 
+def is_gpu_service_k8s_options(k8s_options: Any) -> bool:
+    """Whether a ``k8s_options`` value opts the cluster in to GPU Service.
+
+    A cluster carries no purpose column: ``k8s_options.gpu_instance_options``
+    being set *is* the signal — present means GPU Service, absent means Model
+    Service. This is the single home for that test; the route layer
+    (``routes/clusters.py``) and the gateway subscription
+    (``gpu_instances/gateway.py``) both delegate here, so the two halves of the
+    product can never disagree about what a cluster is for.
+
+    Runs once per cluster on every list/watch tick, so we look at the raw shape
+    instead of re-running ``K8sOptions.model_validate`` — a full nested parse on
+    the hot path would also propagate any future schema drift as a
+    request-level ``ValidationError``. The dict branch tolerates both serialized
+    key forms (snake from ``model_dump``, camel from API/UI submissions).
+
+    Presence, not validity, is what is read: a dict carrying an unparseable
+    ``gpu_instance_options`` value still counts as GPU Service. Nothing writes
+    such a row — the column is only ever written from a validated model — and
+    answering by presence keeps a malformed row from raising on a watch tick.
+    Any other shape reads as Model Service, so a cluster whose purpose cannot be
+    established is excluded from GPU Service rather than included.
+    """
+    if isinstance(k8s_options, K8sOptions):
+        return k8s_options.gpu_instance_options is not None
+    if isinstance(k8s_options, dict):
+        return (
+            k8s_options.get("gpu_instance_options") is not None
+            or k8s_options.get("gpuInstanceOptions") is not None
+        )
+    return False
+
+
+def is_gpu_service_cluster(cluster: "Cluster") -> bool:
+    """Whether the cluster is registered for GPU Service rather than Model Service.
+
+    The cluster-shaped entry point onto :func:`is_gpu_service_k8s_options`,
+    which carries the invariant and the reason for the shape.
+    """
+    return is_gpu_service_k8s_options(cluster.k8s_options)
+
+
 class CloudOptions(BaseModel):
     volumes: Optional[List[Volume]] = None
 
