@@ -180,8 +180,20 @@ class GpuInstanceOptions(BaseModel):
     for this cluster — leaving the field unset opts the cluster out, so
     no separate boolean flag is needed.
 
-    Not wired into manifest rendering yet; persisted so the operator /
-    future render paths can pick it up without another schema change.
+    Each knob mirrors a gpustack-operator ``Setting`` of the same name and is
+    **tri-state**: ``None`` means GPUStack does not manage that setting and the
+    cluster's own value is left alone, which is a different instruction from an
+    explicit ``True`` or ``False``. The operator catalog is also administered by
+    ``kubectl``, so an unmanaged knob must never be asserted.
+
+    Every default stays ``None``. The column persists with ``exclude_none`` /
+    ``exclude_unset`` / ``exclude_defaults`` (see ``ClusterUpdate.k8s_options``),
+    so a non-``None`` default would be stripped back out of the JSON and read
+    back as unmanaged. That same serialization is why an all-unset
+    ``GpuInstanceOptions()`` still lands as a *present* ``{}`` rather than
+    ``null`` — and its presence is the cluster-purpose signal
+    (:func:`is_gpu_service_k8s_options`), so a knob-less GPU Service cluster
+    must never serialize itself into a Model Service one.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -190,7 +202,33 @@ class GpuInstanceOptions(BaseModel):
         alias="gpuInstancesAccessStaticAddress",
         description=(
             "Static address surfaced to the operator for accessing GPU "
-            "instances in this cluster (e.g. LoadBalancer VIP)."
+            "instances in this cluster (e.g. LoadBalancer VIP). Mirrors the "
+            "operator's ``instance-access-static-address`` setting (operator "
+            "default: blank, i.e. the address is generated from host IPs). "
+            "Keeps its legacy name: renaming it to match the operator would "
+            "break the payload for every existing client."
+        ),
+    )
+    instance_type_derived_from_node: Optional[bool] = PydanticField(
+        default=None,
+        alias="instanceTypeDerivedFromNode",
+        description=(
+            "Whether the operator auto-derives InstanceTypes (and their backing "
+            "ClusterQueues) from node hardware. Mirrors the operator's "
+            "``instance-type-derived-from-node`` setting (operator default: "
+            "true). Unset means GPUStack does not manage it and the cluster's "
+            "own value stands."
+        ),
+    )
+    instance_type_mixed_on_node: Optional[bool] = PydanticField(
+        default=None,
+        alias="instanceTypeMixedOnNode",
+        description=(
+            "Whether one node may surface both an accelerated and a CPU-only "
+            "InstanceType. Mirrors the operator's "
+            "``instance-type-mixed-on-node`` setting (operator default: true). "
+            "Unset means GPUStack does not manage it and the cluster's own "
+            "value stands."
         ),
     )
 

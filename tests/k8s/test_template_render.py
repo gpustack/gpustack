@@ -1,5 +1,8 @@
+import json
+
 import yaml
 from gpustack_runtime.detector import ManufacturerEnum
+from sqlalchemy.dialects import sqlite
 
 from gpustack.k8s.manifest_template import (
     WORKER_DS_BASENAME,
@@ -7,12 +10,15 @@ from gpustack.k8s.manifest_template import (
 )
 from gpustack.schemas.clusters import ClusterRegistrationTokenPublic
 from gpustack.schemas.clusters import (
+    Cluster,
+    GpuInstanceOptions,
     HostPathVolumeSource,
     ImageCredential,
     K8sOptions,
     K8sVolumeMount,
     OperatorOptions,
     VolumeSource,
+    is_gpu_service_k8s_options,
 )
 
 # PCI presence labels per vendor (mirrors _MANUFACTURER_PCI_ID).
@@ -685,3 +691,215 @@ def test_worker_ports_override_propagates_everywhere():
     env = _container_env_map(container)
     assert env["GPUSTACK_WORKER_PORT"] == "10152"
     assert env["GPUSTACK_WORKER_METRICS_PORT"] == "10153"
+
+
+# ---------------------------------------------------------------------------
+# GPU Service operator knobs — the three settings GPUStack manages on a GPU
+# Service cluster. Each is tri-state: unset means GPUStack does not manage it
+# and the cluster's own value stands, which is a different instruction from an
+# explicit off. Two things are under test here: that the tri-state survives
+# both the schema round trip and the persisted column (the column's presence
+# is the cluster-purpose signal), and that each *set* knob renders the
+# GPUSTACK_* env entry the operator seeds its Setting from on first deploy.
+# ---------------------------------------------------------------------------
+
+
+def _persisted_k8s_options(k8s_options: K8sOptions) -> dict:
+    """Serialize through the real ``clusters.k8s_options`` column.
+
+    Drives the column's own bind processor rather than a hand-rolled
+    ``jsonable_encoder`` call, so the test reads the
+    ``exclude_none`` / ``exclude_unset`` / ``exclude_defaults`` flags off the
+    schema itself. Changing them there has to fail here rather than slip past
+    a duplicated literal.
+    """
+    processor = Cluster.__table__.c.k8s_options.type.bind_processor(sqlite.dialect())
+    dumped = processor(k8s_options)
+    return json.loads(dumped) if isinstance(dumped, str) else dumped
+
+
+def _operator_env_map(**render_kwargs):
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA], **render_kwargs)
+    return {
+        e["name"]: e.get("value")
+        for e in _operator_deployment_env(docs)
+        if "value" in e
+    }
+
+
+def _gpu_instance_env(**gpu_instance_options):
+    """Operator container env map for a GPU Service cluster with these knobs."""
+    return _operator_env_map(
+        k8s_options=K8sOptions(
+            gpu_instance_options=GpuInstanceOptions(**gpu_instance_options)
+        )
+    )
+
+
+def test_gpu_instance_options_round_trips_snake_keys():
+    options = GpuInstanceOptions.model_validate(
+        {
+            "gpu_instances_access_static_address": "10.0.0.1",
+            "instance_type_derived_from_node": False,
+            "instance_type_mixed_on_node": True,
+        }
+    )
+    assert options.gpu_instances_access_static_address == "10.0.0.1"
+    assert options.instance_type_derived_from_node is False
+    assert options.instance_type_mixed_on_node is True
+
+
+def test_gpu_instance_options_round_trips_camel_keys():
+    """The aliases must equal the operator/gateway keys exactly: the UI and API
+    submit camel, and the column persists camel (``by_alias``)."""
+    options = GpuInstanceOptions.model_validate(
+        {
+            "gpuInstancesAccessStaticAddress": "10.0.0.1",
+            "instanceTypeDerivedFromNode": True,
+            "instanceTypeMixedOnNode": False,
+        }
+    )
+    assert options.instance_type_derived_from_node is True
+    assert options.instance_type_mixed_on_node is False
+    assert options.model_dump(by_alias=True, exclude_none=True) == {
+        "gpuInstancesAccessStaticAddress": "10.0.0.1",
+        "instanceTypeDerivedFromNode": True,
+        "instanceTypeMixedOnNode": False,
+    }
+
+
+def test_unset_gpu_instance_knobs_are_none_not_false():
+    """Tri-state at construction: an unset knob is ``None`` (unmanaged), never
+    ``False``. The settings reconciler only ever writes a knob that is set, so
+    collapsing the two would make it assert a value nobody asked GPUStack to
+    own — on a catalog that is also administered by ``kubectl``."""
+    options = GpuInstanceOptions()
+    assert options.instance_type_derived_from_node is None
+    assert options.instance_type_mixed_on_node is None
+
+
+def test_all_unset_gpu_instance_options_persists_as_a_present_object():
+    """The cluster-purpose signal has to survive the new knobs.
+
+    ``k8s_options.gpu_instance_options`` being *present* is what makes a
+    cluster GPU Service. The column persists with ``exclude_none`` /
+    ``exclude_unset`` / ``exclude_defaults``, so a knob carrying a non-``None``
+    default would be stripped back out — and if that ever emptied the object
+    into ``null``, every knob-less GPU Service cluster would silently convert
+    to Model Service on its next write, across the whole fleet.
+    """
+    persisted = _persisted_k8s_options(
+        K8sOptions(gpu_instance_options=GpuInstanceOptions())
+    )
+    assert persisted == {"gpuInstanceOptions": {}}
+    assert is_gpu_service_k8s_options(persisted) is True
+
+
+def test_unmanaged_gpu_instance_knob_is_dropped_from_the_persisted_row():
+    """An explicit null — what the form submits for "not managed" — is dropped,
+    so an unmanaged knob reads back as unset rather than as ``False``, while a
+    sibling explicit ``False`` is kept."""
+    persisted = _persisted_k8s_options(
+        K8sOptions.model_validate(
+            {
+                "gpuInstanceOptions": {
+                    "instanceTypeDerivedFromNode": None,
+                    "instanceTypeMixedOnNode": False,
+                }
+            }
+        )
+    )
+    assert persisted == {"gpuInstanceOptions": {"instanceTypeMixedOnNode": False}}
+    assert is_gpu_service_k8s_options(persisted) is True
+
+
+def test_model_service_cluster_persists_without_gpu_instance_options():
+    """The negative half of the signal: no knobs object, Model Service."""
+    persisted = _persisted_k8s_options(K8sOptions())
+    assert persisted == {}
+    assert is_gpu_service_k8s_options(persisted) is False
+
+
+def test_operator_env_seeds_set_gpu_instance_knobs():
+    env = _gpu_instance_env(
+        instance_type_derived_from_node=True,
+        instance_type_mixed_on_node=True,
+    )
+    assert env["GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE"] == "true"
+    assert env["GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE"] == "true"
+
+
+def test_operator_env_seeds_explicit_false_as_the_string_false():
+    """The sharp edge of the tri-state: an explicit off renders ``"false"``,
+    not nothing — and as a *string*, because an unquoted YAML ``false`` is a
+    boolean and a container env value must be a string."""
+    env = _gpu_instance_env(
+        instance_type_derived_from_node=False,
+        instance_type_mixed_on_node=False,
+    )
+    assert env["GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE"] == "false"
+    assert env["GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE"] == "false"
+    assert isinstance(env["GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE"], str)
+    assert isinstance(env["GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE"], str)
+
+
+def test_operator_env_omits_unset_gpu_instance_knobs():
+    """A GPU Service cluster managing none of the three seeds none of them, so
+    the operator's own defaults apply."""
+    env = _gpu_instance_env()
+    assert "GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE" not in env
+    assert "GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE" not in env
+    assert "GPUSTACK_INSTANCE_ACCESS_STATIC_ADDRESS" not in env
+
+
+def test_operator_env_seeds_one_knob_without_the_other():
+    """The knobs are independent — managing one must not seed the other."""
+    env = _gpu_instance_env(instance_type_derived_from_node=False)
+    assert env["GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE"] == "false"
+    assert "GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE" not in env
+
+
+def test_operator_env_omits_gpu_instance_knobs_for_a_model_service_cluster():
+    """No ``gpu_instance_options`` at all, with and without a k8s_options
+    object — nothing to seed either way."""
+    for k8s_options in (K8sOptions(), None):
+        env = (
+            _operator_env_map(k8s_options=k8s_options)
+            if k8s_options is not None
+            else _operator_env_map()
+        )
+        assert "GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE" not in env
+        assert "GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE" not in env
+
+
+def test_operator_env_seeds_the_static_access_address():
+    """The pre-existing third knob still seeds, alongside the two new ones."""
+    env = _gpu_instance_env(
+        gpu_instances_access_static_address="10.0.0.1",
+        instance_type_derived_from_node=True,
+    )
+    assert env["GPUSTACK_INSTANCE_ACCESS_STATIC_ADDRESS"] == "10.0.0.1"
+    assert env["GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE"] == "true"
+
+
+def test_operator_env_static_address_survives_yaml_metacharacters():
+    """The static address is administrator-supplied free text — the field takes
+    any string — so it is JSON-quoted rather than interpolated bare.
+
+    Each shape below breaks an unquoted ``value:`` differently: the bracket form
+    of an IPv6 address with a port opens a flow sequence, ``{`` a flow mapping,
+    ``*`` an alias, and a `` #`` starts a comment that truncates the value
+    without any error at all. Plain double quotes would cover those four but
+    break on the last two, which carry a quote and a backslash of their own —
+    hence ``tojson``, which escapes them.
+    """
+    for address in (
+        "[2001:db8::1]:8080",
+        "{a}",
+        "*anchor",
+        "1.2.3.4 # note",
+        'say "hi"',
+        "back\\slash",
+    ):
+        env = _gpu_instance_env(gpu_instances_access_static_address=address)
+        assert env["GPUSTACK_INSTANCE_ACCESS_STATIC_ADDRESS"] == address, address
