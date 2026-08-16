@@ -121,6 +121,15 @@ MODEL_INSTANCE_HEALTH_CHECK_INTERVAL = int(
 MODEL_INSTANCE_STATE_RECONCILE_INTERVAL = int(
     os.getenv("GPUSTACK_MODEL_INSTANCE_STATE_RECONCILE_INTERVAL", 0)
 )
+# Max time a model instance may stay in DRAINING before hard-delete, even if
+# in-flight requests have not finished (protects against stuck streams).
+MODEL_INSTANCE_DRAIN_TIMEOUT = int(
+    os.getenv("GPUSTACK_MODEL_INSTANCE_DRAIN_TIMEOUT", 120)
+)  # in seconds
+# How often the server drain finalizer scans DRAINING instances.
+MODEL_INSTANCE_DRAIN_FINALIZER_INTERVAL = int(
+    os.getenv("GPUSTACK_MODEL_INSTANCE_DRAIN_FINALIZER_INTERVAL", 3)
+)  # in seconds
 DISABLE_OS_FILELOCK = os.getenv("GPUSTACK_DISABLE_OS_FILELOCK", "false").lower() in [
     "true",
     "1",

@@ -129,3 +129,49 @@ async def test_cleanup_offline_worker_instances_deletes_distributed_instances_wi
     batch_delete.assert_awaited_once()
     deleted_instances = batch_delete.await_args.args[-1]
     assert [item.name for item in deleted_instances] == [instance.name]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_offline_worker_instances_hard_deletes_draining():
+    """Offline workers bypass drain — DRAINING instances are hard-deleted."""
+    offline_worker = _offline_worker(linux_nvidia_1_4090_24gx1())
+
+    instance = new_model_instance(
+        1,
+        "draining-instance",
+        1,
+        worker_id=offline_worker.id,
+        state=ModelInstanceStateEnum.DRAINING,
+    )
+    instance.worker_name = offline_worker.name
+
+    batch_delete = AsyncMock(return_value=[instance.name])
+
+    with (
+        patch(
+            "gpustack.server.worker_instance_cleaner.async_session",
+            return_value=mock_async_session(),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.Worker.all",
+            AsyncMock(return_value=[offline_worker]),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.ModelInstance.all",
+            AsyncMock(return_value=[instance]),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.ModelInstanceService.batch_delete",
+            batch_delete,
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.envs.MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD",
+            300,
+        ),
+    ):
+        cleaner = WorkerInstanceCleaner()
+        await cleaner._cleanup_offline_worker_instances()
+
+    batch_delete.assert_awaited_once()
+    deleted_instances = batch_delete.await_args.args[-1]
+    assert [item.name for item in deleted_instances] == [instance.name]

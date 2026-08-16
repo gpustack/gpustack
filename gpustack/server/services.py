@@ -55,7 +55,6 @@ class RouteTargetResolution(NamedTuple):
 
 
 class UserService:
-
     def __init__(self, session: AsyncSession):
         self.session = session
 
@@ -180,7 +179,7 @@ class UserService:
         )
         if not allowed:
             logger.info(
-                "Access denied: model_name=%r user_id=%d " "accessible=%s limited=%s",
+                "Access denied: model_name=%r user_id=%d accessible=%s limited=%s",
                 model_name,
                 user_id,
                 sorted(accessible_model_names),
@@ -996,6 +995,55 @@ class ModelInstanceService:
             await self.session.rollback()
             raise InternalServerErrorException(
                 message=f"Failed to update model instances {names}: {e}"
+            )
+
+    async def begin_drain(self, model_instances: List[ModelInstance]) -> List[str]:
+        """Mark RUNNING instances as DRAINING for graceful teardown.
+
+        Excludes them from LB immediately (get_running_instances filters
+        RUNNING only). Hard-delete is deferred to the drain finalizer once
+        the worker reports idle or the drain timeout elapses.
+        """
+        if not model_instances:
+            return []
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        to_drain: List[ModelInstance] = []
+        for mi in model_instances:
+            if mi.state == ModelInstanceStateEnum.DRAINING:
+                continue
+            to_drain.append(mi)
+
+        if not to_drain:
+            return []
+
+        names = [mi.name for mi in to_drain]
+        ids: Set[int] = set()
+        try:
+            for mi in to_drain:
+                await mi.update(
+                    self.session,
+                    {
+                        "state": ModelInstanceStateEnum.DRAINING,
+                        "state_message": "Draining: waiting for in-flight requests",
+                        "drain_started_at": now,
+                        "drain_idle": False,
+                    },
+                    auto_commit=False,
+                )
+                ids.add(mi.model_id)
+            await self.session.commit()
+            await ModelInstance._invalidate_cached_all()
+
+            for model_id in ids:
+                await delete_cache_by_key(self.get_running_instances, model_id)
+            await invalidate_workers_allocated(to_drain)
+
+            return names
+        except Exception as e:
+            await self.session.rollback()
+            raise InternalServerErrorException(
+                message=f"Failed to drain model instances {names}: {e}"
             )
 
 
