@@ -478,19 +478,24 @@ class GPUInstanceController:
         it raises :class:`_InstanceAssetsError` carrying the matching
         ``*CreateFailed`` phase; the caller records that phase and stops.
         """
-        # SSH public key.
-        if fresh.spec.ssh_public_keys is not None:
-            try:
-                data = await self._aggregate_ssh_public_key_data(session, fresh)
-                await ops.upsert_ssh_public_key(name=fresh.name, spec={"data": data})
-            except Exception as e:
-                logger.exception(
-                    f"Failed to sync worker-side ssh public key for {fresh.name}"
-                )
-                raise _InstanceAssetsError(
-                    self.PHASE_SSH_KEY_CREATE_FAILED,
-                    f"Failed to sync worker-side ssh public key: {e}",
-                )
+        # SSH public key. Unconditional, matching the resync path below and
+        # ``to_kuberes``, which always writes ``spec.sshPublicKey``: the operator
+        # therefore always mounts a secret named after the instance, and an
+        # instance that referenced no keys used to leave that mount pointing at
+        # a secret nobody ever created — the pod then waits in ContainerCreating
+        # forever. An empty body is the right answer; the operator renders it as
+        # an empty ``authorized_keys``.
+        try:
+            data = await self._aggregate_ssh_public_key_data(session, fresh)
+            await ops.upsert_ssh_public_key(name=fresh.name, spec={"data": data})
+        except Exception as e:
+            logger.exception(
+                f"Failed to sync worker-side ssh public key for {fresh.name}"
+            )
+            raise _InstanceAssetsError(
+                self.PHASE_SSH_KEY_CREATE_FAILED,
+                f"Failed to sync worker-side ssh public key: {e}",
+            )
 
         # Persistent volume (type).
         pv_name: Optional[str] = None
