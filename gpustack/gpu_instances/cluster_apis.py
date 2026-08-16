@@ -3,71 +3,100 @@ from __future__ import annotations
 import http
 import logging
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import AsyncIterator, Optional
 
 from kubernetes_asyncio import client, watch
 
 from .cluster_apis_util import (
+    DEFAULT_SYSTEM_NAMESPACE,
     get_namespace_name,
     get_k8s_client,
 )
 
 logger = logging.getLogger(__name__)
 
-_GROUP = "worker.gpustack.ai"
-_VERSION = "v1"
+_DEFAULT_GROUP = "worker.gpustack.ai"
+_DEFAULT_VERSION = "v1"
+
+
+class _Scope(Enum):
+    """Where a resource's objects live, which decides *which* namespace the
+    generic helpers put on the wire — not merely whether they send one.
+
+    The distinction between the two namespaced members is the reason this is
+    an enum rather than a boolean: an Org-namespaced object is per-tenant and
+    lands in a namespace GPUStack creates on demand, while a system-namespaced
+    one lives beside the operator in the cluster's own system namespace, which
+    GPUStack does not own and must never create.
+    """
+
+    CLUSTER = auto()
+    ORG_NAMESPACED = auto()
+    SYSTEM_NAMESPACED = auto()
 
 
 @dataclass(frozen=True)
 class _CRDSpec:
+    """Identifies one resource: its GVR plus the scope its objects live at.
+
+    ``group`` / ``version`` default to ``worker.gpustack.ai/v1`` because that
+    is what every worker CRD uses; they are per-spec so a resource served by
+    another operator API group can be addressed by the same client.
+    """
+
     plural: str
     kind: str
-    namespaced: bool
+    scope: _Scope
+    group: str = _DEFAULT_GROUP
+    version: str = _DEFAULT_VERSION
 
     @property
     def api_version(self) -> str:
-        return f"{_GROUP}/{_VERSION}"
+        return f"{self.group}/{self.version}"
 
 
 _SSH_PUBLIC_KEY = _CRDSpec(
     plural="instancesshpublickeys",
     kind="InstanceSSHPublicKey",
-    namespaced=True,
+    scope=_Scope.ORG_NAMESPACED,
 )
 _PV_TYPE = _CRDSpec(
     plural="instancepersistentvolumetypes",
     kind="InstancePersistentVolumeType",
-    namespaced=False,
+    scope=_Scope.CLUSTER,
 )
 _PV = _CRDSpec(
     plural="instancepersistentvolumes",
     kind="InstancePersistentVolume",
-    namespaced=True,
+    scope=_Scope.ORG_NAMESPACED,
 )
 _INSTANCE_TYPE = _CRDSpec(
     plural="instancetypes",
     kind="InstanceType",
-    namespaced=False,
+    scope=_Scope.CLUSTER,
 )
 _INSTANCE_TYPE_FLAVOR = _CRDSpec(
     plural="instancetypeflavors",
     kind="InstanceTypeFlavor",
-    namespaced=False,
+    scope=_Scope.CLUSTER,
 )
 _INSTANCE = _CRDSpec(
     plural="instances",
     kind="Instance",
-    namespaced=True,
+    scope=_Scope.ORG_NAMESPACED,
 )
 _DEVICES = _CRDSpec(
     plural="devices",
     kind="Devices",
-    namespaced=False,
+    scope=_Scope.CLUSTER,
 )
 
 
 class ClusterOps:
-    """Raw CRD client for ``worker.gpustack.ai/v1`` resources.
+    """Raw CRD client for a worker cluster, addressing each resource at the
+    group/version its :class:`_CRDSpec` names (``worker.gpustack.ai/v1`` unless
+    the spec says otherwise).
 
     Owns a :class:`kubernetes_asyncio.client.api_client.ApiClient` which must
     be closed. Use as an async context manager so the client is released on
@@ -84,6 +113,7 @@ class ClusterOps:
     cluster_owner_principal_identifier: str
     api_client: client.api_client.ApiClient
     org_namespace: str
+    system_namespace: str
 
     def __init__(
         self,
@@ -91,7 +121,15 @@ class ClusterOps:
         cluster_id: int,
         cluster_registration_token: str,
         cluster_owner_principal_identifier: str,
+        system_namespace: Optional[str] = None,
     ):
+        """``system_namespace`` is the cluster's ``k8s_options.namespace`` —
+        where its operator runs — and is only consulted by
+        :attr:`_Scope.SYSTEM_NAMESPACED` resources. It falls back to
+        ``gpustack-system``, the same default the manifest renderer applies, so
+        a caller that only touches cluster- or Org-scoped resources can leave
+        it out.
+        """
         self.cluster_id = cluster_id
         self.cluster_owner_principal_identifier = cluster_owner_principal_identifier
         self.api_client = get_k8s_client(
@@ -102,6 +140,7 @@ class ClusterOps:
         self.org_namespace = get_namespace_name(
             principal_identifier=cluster_owner_principal_identifier,
         )
+        self.system_namespace = system_namespace or DEFAULT_SYSTEM_NAMESPACE
 
     async def __aenter__(self) -> "ClusterOps":
         return self
@@ -119,20 +158,30 @@ class ClusterOps:
     def _crd(self) -> client.CustomObjectsApi:
         return client.CustomObjectsApi(self.api_client)
 
+    def _namespace(self, spec: _CRDSpec) -> Optional[str]:
+        """The namespace ``spec``'s objects live in, or ``None`` when the
+        resource is cluster-scoped and the call must go out without one."""
+        if spec.scope is _Scope.ORG_NAMESPACED:
+            return self.org_namespace
+        if spec.scope is _Scope.SYSTEM_NAMESPACED:
+            return self.system_namespace
+        return None
+
     async def _read(self, spec: _CRDSpec, name: str) -> Optional[dict]:
         crd = self._crd()
+        namespace = self._namespace(spec)
         try:
-            if spec.namespaced:
+            if namespace is not None:
                 return await crd.get_namespaced_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
-                    namespace=self.org_namespace,
+                    namespace=namespace,
                     name=name,
                 )
             return await crd.get_cluster_custom_object(
-                group=_GROUP,
-                version=_VERSION,
+                group=spec.group,
+                version=spec.version,
                 plural=spec.plural,
                 name=name,
             )
@@ -147,20 +196,21 @@ class ClusterOps:
         """List CRD objects. When ``resource_version`` is given it is passed
         through to the Kubernetes list call (e.g. resume/consistency hints)."""
         crd = self._crd()
+        namespace = self._namespace(spec)
         kwargs = {}
         if resource_version is not None:
             kwargs["resource_version"] = resource_version
-        if spec.namespaced:
+        if namespace is not None:
             return await crd.list_namespaced_custom_object(
-                group=_GROUP,
-                version=_VERSION,
+                group=spec.group,
+                version=spec.version,
                 plural=spec.plural,
-                namespace=self.org_namespace,
+                namespace=namespace,
                 **kwargs,
             )
         return await crd.list_cluster_custom_object(
-            group=_GROUP,
-            version=_VERSION,
+            group=spec.group,
+            version=spec.version,
             plural=spec.plural,
             **kwargs,
         )
@@ -193,6 +243,7 @@ class ClusterOps:
         caller handles as a watch failure instead of the watcher crashing.
         """
         crd = self._crd()
+        namespace = self._namespace(spec)
         if resource_version is None:
             resource_version = ((await self._list(spec)).get("metadata") or {}).get(
                 "resourceVersion"
@@ -201,20 +252,20 @@ class ClusterOps:
         if resource_version is not None:
             kwargs["resource_version"] = resource_version
         async with watch.Watch() as w:
-            if spec.namespaced:
+            if namespace is not None:
                 stream = w.stream(
                     crd.list_namespaced_custom_object,
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
-                    namespace=self.org_namespace,
+                    namespace=namespace,
                     **kwargs,
                 )
             else:
                 stream = w.stream(
                     crd.list_cluster_custom_object,
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
                     **kwargs,
                 )
@@ -227,8 +278,9 @@ class ClusterOps:
         and, when namespaced, ``metadata.namespace``.
         """
         metadata = {**body.get("metadata", {})}
-        if spec.namespaced:
-            metadata["namespace"] = self.org_namespace
+        namespace = self._namespace(spec)
+        if namespace is not None:
+            metadata["namespace"] = namespace
         return {
             **body,
             "apiVersion": spec.api_version,
@@ -253,7 +305,11 @@ class ClusterOps:
         consistent post-condition.
         """
         name = body["metadata"]["name"]
-        if spec.namespaced:
+        namespace = self._namespace(spec)
+        # Only the Org namespace is ours to create; a system-namespaced
+        # resource lives in the operator's own namespace, which is already
+        # there and is not GPUStack's to provision.
+        if spec.scope is _Scope.ORG_NAMESPACED:
             await self.ensure_org_namespace()
 
         if ignore_existed:
@@ -265,18 +321,18 @@ class ClusterOps:
 
         crd = self._crd()
         try:
-            if spec.namespaced:
+            if namespace is not None:
                 created = await crd.create_namespaced_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
-                    namespace=self.org_namespace,
+                    namespace=namespace,
                     body=body,
                 )
             else:
                 created = await crd.create_cluster_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
                     body=body,
                 )
@@ -309,7 +365,9 @@ class ClusterOps:
         require last-writer-wins must retry on their side.
         """
         name = body["metadata"]["name"]
-        if spec.namespaced:
+        namespace = self._namespace(spec)
+        # See :meth:`_create`: only the Org namespace is ours to create.
+        if spec.scope is _Scope.ORG_NAMESPACED:
             await self.ensure_org_namespace()
 
         crd = self._crd()
@@ -318,20 +376,20 @@ class ClusterOps:
         patch_body = {"spec": body["spec"]}
 
         try:
-            if spec.namespaced:
+            if namespace is not None:
                 patched = await crd.patch_namespaced_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
-                    namespace=self.org_namespace,
+                    namespace=namespace,
                     name=name,
                     body=patch_body,
                     _content_type="application/merge-patch+json",
                 )
             else:
                 patched = await crd.patch_cluster_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
                     name=name,
                     body=patch_body,
@@ -351,18 +409,18 @@ class ClusterOps:
         create_body = self._envelope(spec, body)
 
         try:
-            if spec.namespaced:
+            if namespace is not None:
                 created = await crd.create_namespaced_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
-                    namespace=self.org_namespace,
+                    namespace=namespace,
                     body=create_body,
                 )
             else:
                 created = await crd.create_cluster_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
                     body=create_body,
                 )
@@ -389,22 +447,23 @@ class ClusterOps:
         spec by merge-patch semantics.
         """
         crd = self._crd()
+        namespace = self._namespace(spec)
         body = {"spec": body_spec}
         try:
-            if spec.namespaced:
+            if namespace is not None:
                 patched = await crd.patch_namespaced_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
-                    namespace=self.org_namespace,
+                    namespace=namespace,
                     name=name,
                     body=body,
                     _content_type="application/merge-patch+json",
                 )
             else:
                 patched = await crd.patch_cluster_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
                     name=name,
                     body=body,
@@ -426,19 +485,20 @@ class ClusterOps:
         """Delete the object by name. Returns whether it existed (``True`` when
         a delete was issued, ``False`` when it was already gone / a 404)."""
         crd = self._crd()
+        namespace = self._namespace(spec)
         try:
-            if spec.namespaced:
+            if namespace is not None:
                 await crd.delete_namespaced_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
-                    namespace=self.org_namespace,
+                    namespace=namespace,
                     name=name,
                 )
             else:
                 await crd.delete_cluster_custom_object(
-                    group=_GROUP,
-                    version=_VERSION,
+                    group=spec.group,
+                    version=spec.version,
                     plural=spec.plural,
                     name=name,
                 )
