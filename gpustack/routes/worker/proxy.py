@@ -70,6 +70,23 @@ async def proxy(path: str, request: Request):  # noqa: C901
             detail="Missing target port; ensure the request includes the routing header",
         )
 
+    target_instance_id = getattr(request.state, "x_target_instance_id", None)
+    begin_fn = getattr(request.app.state, "begin_proxy_request", None)
+    end_fn = getattr(request.app.state, "end_proxy_request", None)
+    # Exactly one of (stream finally, outer finally) must decrement inflight.
+    # After StreamingResponse is created, ownership moves to the stream.
+    decremented = {"done": False}
+    owned_by_stream = False
+
+    def _end_inflight():
+        if decremented["done"] or target_instance_id is None or not end_fn:
+            return
+        decremented["done"] = True
+        end_fn(int(target_instance_id))
+
+    if target_instance_id is not None and begin_fn:
+        begin_fn(int(target_instance_id))
+
     try:
         logger.debug(
             f"Proxying request to worker at port {target_service_port} for path: {path}"
@@ -91,8 +108,11 @@ async def proxy(path: str, request: Request):  # noqa: C901
             content = await request.body()
 
         async def stream_response(resp):
-            async for chunk in resp.content.iter_chunked(1024):
-                yield chunk
+            try:
+                async for chunk in resp.content.iter_chunked(1024):
+                    yield chunk
+            finally:
+                _end_inflight()
 
         use_proxy_env = use_proxy_env_for_url(url)
         http_client: aiohttp.ClientSession = (
@@ -114,7 +134,6 @@ async def proxy(path: str, request: Request):  # noqa: C901
         # For streaming responses the status is available before body
         # transfer, so a mid-stream failure will still be counted — this is
         # acceptable as a best-effort optimisation.
-        target_instance_id = getattr(request.state, "x_target_instance_id", None)
         if resp.status < 400 and target_instance_id:
             record_fn = getattr(request.app.state, "record_successful_inference", None)
             if record_fn:
@@ -130,6 +149,7 @@ async def proxy(path: str, request: Request):  # noqa: C901
         # Starlette's MutableHeaders.update.
         for k, v in _filter_response_headers(resp.headers):
             response.headers.append(k, v)
+        owned_by_stream = True
         return response
 
     except asyncio.TimeoutError as e:
@@ -148,6 +168,9 @@ async def proxy(path: str, request: Request):  # noqa: C901
             message=error_message,
             is_openai_exception=True,
         )
+    finally:
+        if not owned_by_stream:
+            _end_inflight()
 
 
 def localhost_fallback() -> str:
@@ -180,6 +203,30 @@ async def set_port_from_model_name(request: Request, call_next):
     if model_name is None:
         return await call_next(request)
     try:
+        model_instance_id = None
+        try:
+            model_instance_id = get_instance_id_from_header(request.headers)
+        except (HTTPException, NotFoundException):
+            model_instance_id = None
+
+        is_draining_fn = getattr(request.app.state, "is_instance_draining", None)
+        if (
+            model_instance_id is not None
+            and is_draining_fn
+            and is_draining_fn(model_instance_id)
+        ):
+            return JSONResponse(
+                status_code=503,
+                content=ErrorResponse(
+                    code=503,
+                    reason="Service Unavailable",
+                    message=(
+                        f"Model instance {model_instance_id} is draining; "
+                        "rejecting new requests"
+                    ),
+                ).model_dump(),
+            )
+
         port, model_instance_id = get_model_instance_info_from_model_name(request)
         request.scope["path"] = f"/proxy{request.url.path}"
         request.state.x_target_port = str(port)

@@ -111,7 +111,7 @@ After scoring, the scheduler picks the candidate with the highest total score an
 
 ## Scale-Down Scheduling
 
-When the desired replica count is lower than the number of existing model instances, the controller ranks current instances and deletes the lowest-ranked ones first.
+When the desired replica count is lower than the number of existing model instances, the controller ranks current instances and removes the lowest-ranked ones first.
 
 Scale-down uses a separate scorer chain over existing model instances:
 
@@ -120,6 +120,16 @@ Scale-down uses a separate scorer chain over existing model instances:
 3. **Placement Scorer**
 
 The resulting instances are sorted by score in ascending order, and the lowest-scoring instances are removed first.
+
+### Graceful delete (DRAINING)
+
+Running replicas are not hard-deleted immediately. Scale-down (and `DELETE` of a running instance) first moves the instance to `DRAINING`:
+
+- The instance is dropped from load balancing and `ready_replicas` right away (`state == running` filters).
+- The worker keeps the inference workload up until in-flight proxied requests finish (or the drain timeout elapses).
+- A server-side drain finalizer then hard-deletes the row; the worker's existing reap path tears down the workload.
+
+Configure the hard timeout with `GPUSTACK_MODEL_INSTANCE_DRAIN_TIMEOUT` (default 120 seconds). Offline workers still hard-delete without waiting for drain.
 
 ### Status Scorer
 

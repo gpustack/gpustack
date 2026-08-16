@@ -297,6 +297,11 @@ class ModelInstanceController:
             )
 
 
+def _non_draining(instances: List[ModelInstance]) -> List[ModelInstance]:
+    """Active replicas: everything except rows already in graceful delete."""
+    return [i for i in instances if i.state != ModelInstanceStateEnum.DRAINING]
+
+
 async def sync_replicas(session: AsyncSession, model: Model):
     """
     Synchronize the replicas.
@@ -339,24 +344,57 @@ async def sync_replicas(session: AsyncSession, model: Model):
             await ModelInstanceService(session).create(instance)
             logger.debug(f"Created model instance for model {model.name}")
 
-    elif len(instances) > model.replicas:
-        # Get instances for update lock, to avoid race condition with scheduler
-        instances = await ModelInstance.all_by_field(
-            session, "model_id", model.id, for_update=True
-        )
-        candidates = await find_scale_down_candidates(instances, model)
+    else:
+        # Scale-down targets active (non-draining) replicas. DRAINING rows still
+        # count toward len(instances), so we do not create replacements while
+        # graceful delete is in progress.
+        active_instances = _non_draining(instances)
+        if len(active_instances) > model.replicas:
+            # Get instances for update lock, to avoid race condition with scheduler
+            instances = await ModelInstance.all_by_field(
+                session, "model_id", model.id, for_update=True
+            )
+            active_instances = _non_draining(instances)
+            if len(active_instances) <= model.replicas:
+                return
 
-        scale_down_count = len(candidates) - model.replicas
-        if scale_down_count > 0:
-            scale_down_instances = []
-            for candidate in candidates[:scale_down_count]:
-                scale_down_instances.append(candidate.model_instance)
+            candidates = await find_scale_down_candidates(active_instances, model)
 
-            scale_down_instance_names = await ModelInstanceService(
-                session
-            ).batch_delete(scale_down_instances)
-            if scale_down_instance_names:
-                logger.debug(f"Deleted model instances: {scale_down_instance_names}")
+            scale_down_count = len(candidates) - model.replicas
+            if scale_down_count > 0:
+                scale_down_instances = []
+                for candidate in candidates[:scale_down_count]:
+                    scale_down_instances.append(candidate.model_instance)
+
+                # RUNNING → DRAINING (graceful); non-RUNNING → hard-delete.
+                to_drain = [
+                    mi
+                    for mi in scale_down_instances
+                    if mi.state == ModelInstanceStateEnum.RUNNING
+                ]
+                to_delete = [
+                    mi
+                    for mi in scale_down_instances
+                    if mi.state != ModelInstanceStateEnum.RUNNING
+                ]
+
+                if to_drain:
+                    drained_names = await ModelInstanceService(session).begin_drain(
+                        to_drain
+                    )
+                    if drained_names:
+                        logger.debug(
+                            f"Draining model instances for scale-down: {drained_names}"
+                        )
+
+                if to_delete:
+                    deleted_names = await ModelInstanceService(session).batch_delete(
+                        to_delete
+                    )
+                    if deleted_names:
+                        logger.debug(
+                            f"Deleted model instances for scale-down: {deleted_names}"
+                        )
 
 
 async def distribute_models_to_user(

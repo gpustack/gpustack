@@ -604,6 +604,9 @@ class ModelInstanceStateEnum(str, Enum):
                                   |                  ERROR                                       |(Worker unreachable)
                                   └--------------------┘                                         v
                                     (Restart on Error)                                       UNREACHABLE
+
+    Scale-down / DELETE of a RUNNING instance goes RUNNING ---> DRAINING ---> (hard delete).
+    DRAINING is sticky: excluded from LB / ready_replicas; ServeManager must not revive it.
     """
 
     INITIALIZING = "initializing"
@@ -615,6 +618,7 @@ class ModelInstanceStateEnum(str, Enum):
     DOWNLOADING = "downloading"
     ANALYZING = "analyzing"
     UNREACHABLE = "unreachable"
+    DRAINING = "draining"
 
     def __str__(self):
         return self.value
@@ -730,6 +734,12 @@ class ModelInstanceBase(SQLModel, ModelSource):
     last_restart_time: Optional[datetime] = Field(
         sa_column=Column(UTCDateTime), default=None
     )
+    # Set when entering DRAINING; used by the drain finalizer timeout.
+    drain_started_at: Optional[datetime] = Field(
+        sa_column=Column(UTCDateTime), default=None
+    )
+    # Worker reports True when in-flight proxy requests for this instance hit 0.
+    drain_idle: bool = Field(default=False)
     state: ModelInstanceStateEnum = ModelInstanceStateEnum.PENDING
     state_message: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)

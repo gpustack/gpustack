@@ -365,6 +365,9 @@ class Worker:
         app.state.record_successful_inference = (
             self._serve_manager.record_successful_inference
         )
+        app.state.is_instance_draining = self._serve_manager.is_instance_draining
+        app.state.begin_proxy_request = self._serve_manager.begin_proxy_request
+        app.state.end_proxy_request = self._serve_manager.end_proxy_request
         app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
         app.include_router(
             route_config.router,

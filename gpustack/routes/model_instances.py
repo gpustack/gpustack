@@ -2,8 +2,13 @@ import asyncio
 import json
 from typing import List, Optional, Tuple
 import aiohttp
-from fastapi import APIRouter, Request, status, HTTPException
-from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
+from fastapi import APIRouter, Request, status, HTTPException, Response
+from fastapi.responses import (
+    PlainTextResponse,
+    StreamingResponse,
+    RedirectResponse,
+    JSONResponse,
+)
 from urllib.parse import urlencode
 
 from gpustack.api.responses import StreamingResponseWithStatusCode
@@ -508,8 +513,24 @@ async def update_model_instance(
     return model_instance
 
 
+def _drain_accepted_response(model_instance: ModelInstance) -> JSONResponse:
+    """202 Accepted body for RUNNING→DRAINING and idempotent DRAINING DELETE."""
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content=ModelInstancePublic.model_validate(model_instance).model_dump(
+            mode="json"
+        ),
+    )
+
+
 @router.delete("/{id}")
 async def delete_model_instance(session: SessionDep, ctx: TenantContextDep, id: int):
+    """Gracefully delete a RUNNING instance (DRAINING), or hard-delete otherwise.
+
+    RUNNING → DRAINING (202): wait for in-flight requests / drain timeout.
+    Already DRAINING → idempotent 202.
+    Other states → immediate hard-delete (204).
+    """
     model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
     assert_resource_visible(
         ctx,
@@ -518,8 +539,18 @@ async def delete_model_instance(session: SessionDep, ctx: TenantContextDep, id: 
     )
 
     try:
+        if model_instance.state == ModelInstanceStateEnum.DRAINING:
+            return _drain_accepted_response(model_instance)
+
+        if model_instance.state == ModelInstanceStateEnum.RUNNING:
+            await ModelInstanceService(session).begin_drain([model_instance])
+            await model_instance.refresh(session)
+            return _drain_accepted_response(model_instance)
+
         await ModelInstanceService(session).delete(model_instance)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to delete model instance: {e}"
         )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
