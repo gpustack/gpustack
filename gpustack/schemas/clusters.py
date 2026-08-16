@@ -209,9 +209,9 @@ class GpuInstanceOptions(BaseModel):
             "break the payload for every existing client."
         ),
     )
-    instance_type_derived_from_node: Optional[bool] = PydanticField(
+    gpu_instance_type_derived_from_node: Optional[bool] = PydanticField(
         default=None,
-        alias="instanceTypeDerivedFromNode",
+        alias="gpuInstanceTypeDerivedFromNode",
         description=(
             "Whether the operator auto-derives InstanceTypes (and their backing "
             "ClusterQueues) from node hardware. Mirrors the operator's "
@@ -220,9 +220,9 @@ class GpuInstanceOptions(BaseModel):
             "own value stands."
         ),
     )
-    instance_type_mixed_on_node: Optional[bool] = PydanticField(
+    gpu_instance_type_mixed_on_node: Optional[bool] = PydanticField(
         default=None,
-        alias="instanceTypeMixedOnNode",
+        alias="gpuInstanceTypeMixedOnNode",
         description=(
             "Whether one node may surface both an accelerated and a CPU-only "
             "InstanceType. Mirrors the operator's "
