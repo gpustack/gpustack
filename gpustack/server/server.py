@@ -133,6 +133,9 @@ from gpustack.gpu_instances import gateway_client
 from gpustack.gpu_instances.gateway import (
     reconcile_gpustack_operator_subscription,
 )
+from gpustack.gpu_instances.settings import (
+    reconcile_gpustack_operator_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +477,18 @@ class Server:
         self._create_async_task(reconcile_gpustack_operator_subscription())
 
         logger.debug("GPUStack operator subscription started.")
+
+    def _start_gpustack_operator_settings(self):
+        """Converge the operator settings each GPU Service cluster is configured
+        with onto the cluster itself.
+
+        Leader-only, unlike the subscription above: that one feeds this server's
+        own operator subprocess, while this one writes into the cluster, and one
+        writer is enough.
+        """
+        self._create_async_task(reconcile_gpustack_operator_settings(self._config))
+
+        logger.debug("GPUStack operator settings reconciler started.")
 
     def _start_gateway_metrics_flusher(self):
         # Always start — both the gateway report endpoint and the in-process
@@ -1389,3 +1404,7 @@ class Server:
 
         # Scaling Scheduler (drives model replicas on a cron timetable)
         self._start_scaling_scheduler()
+
+        # Operator Settings (converges the operator settings GPU Service
+        # clusters are configured with)
+        self._start_gpustack_operator_settings()

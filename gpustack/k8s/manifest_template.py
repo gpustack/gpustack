@@ -236,7 +236,9 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
         own default stands. See :func:`_env_bool`.
         """
         options = self.k8s_options.gpu_instance_options if self.k8s_options else None
-        return _env_bool(options.instance_type_derived_from_node if options else None)
+        return _env_bool(
+            options.gpu_instance_type_derived_from_node if options else None
+        )
 
     @computed_field
     @property
@@ -247,7 +249,7 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
         :attr:`operator_instance_type_derived_from_node`.
         """
         options = self.k8s_options.gpu_instance_options if self.k8s_options else None
-        return _env_bool(options.instance_type_mixed_on_node if options else None)
+        return _env_bool(options.gpu_instance_type_mixed_on_node if options else None)
 
     @computed_field
     @property

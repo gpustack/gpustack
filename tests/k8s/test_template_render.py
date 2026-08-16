@@ -740,13 +740,13 @@ def test_gpu_instance_options_round_trips_snake_keys():
     options = GpuInstanceOptions.model_validate(
         {
             "gpu_instances_access_static_address": "10.0.0.1",
-            "instance_type_derived_from_node": False,
-            "instance_type_mixed_on_node": True,
+            "gpu_instance_type_derived_from_node": False,
+            "gpu_instance_type_mixed_on_node": True,
         }
     )
     assert options.gpu_instances_access_static_address == "10.0.0.1"
-    assert options.instance_type_derived_from_node is False
-    assert options.instance_type_mixed_on_node is True
+    assert options.gpu_instance_type_derived_from_node is False
+    assert options.gpu_instance_type_mixed_on_node is True
 
 
 def test_gpu_instance_options_round_trips_camel_keys():
@@ -755,16 +755,16 @@ def test_gpu_instance_options_round_trips_camel_keys():
     options = GpuInstanceOptions.model_validate(
         {
             "gpuInstancesAccessStaticAddress": "10.0.0.1",
-            "instanceTypeDerivedFromNode": True,
-            "instanceTypeMixedOnNode": False,
+            "gpuInstanceTypeDerivedFromNode": True,
+            "gpuInstanceTypeMixedOnNode": False,
         }
     )
-    assert options.instance_type_derived_from_node is True
-    assert options.instance_type_mixed_on_node is False
+    assert options.gpu_instance_type_derived_from_node is True
+    assert options.gpu_instance_type_mixed_on_node is False
     assert options.model_dump(by_alias=True, exclude_none=True) == {
         "gpuInstancesAccessStaticAddress": "10.0.0.1",
-        "instanceTypeDerivedFromNode": True,
-        "instanceTypeMixedOnNode": False,
+        "gpuInstanceTypeDerivedFromNode": True,
+        "gpuInstanceTypeMixedOnNode": False,
     }
 
 
@@ -774,8 +774,8 @@ def test_unset_gpu_instance_knobs_are_none_not_false():
     collapsing the two would make it assert a value nobody asked GPUStack to
     own — on a catalog that is also administered by ``kubectl``."""
     options = GpuInstanceOptions()
-    assert options.instance_type_derived_from_node is None
-    assert options.instance_type_mixed_on_node is None
+    assert options.gpu_instance_type_derived_from_node is None
+    assert options.gpu_instance_type_mixed_on_node is None
 
 
 def test_all_unset_gpu_instance_options_persists_as_a_present_object():
@@ -803,13 +803,13 @@ def test_unmanaged_gpu_instance_knob_is_dropped_from_the_persisted_row():
         K8sOptions.model_validate(
             {
                 "gpuInstanceOptions": {
-                    "instanceTypeDerivedFromNode": None,
-                    "instanceTypeMixedOnNode": False,
+                    "gpuInstanceTypeDerivedFromNode": None,
+                    "gpuInstanceTypeMixedOnNode": False,
                 }
             }
         )
     )
-    assert persisted == {"gpuInstanceOptions": {"instanceTypeMixedOnNode": False}}
+    assert persisted == {"gpuInstanceOptions": {"gpuInstanceTypeMixedOnNode": False}}
     assert is_gpu_service_k8s_options(persisted) is True
 
 
@@ -822,8 +822,8 @@ def test_model_service_cluster_persists_without_gpu_instance_options():
 
 def test_operator_env_seeds_set_gpu_instance_knobs():
     env = _gpu_instance_env(
-        instance_type_derived_from_node=True,
-        instance_type_mixed_on_node=True,
+        gpu_instance_type_derived_from_node=True,
+        gpu_instance_type_mixed_on_node=True,
     )
     assert env["GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE"] == "true"
     assert env["GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE"] == "true"
@@ -834,8 +834,8 @@ def test_operator_env_seeds_explicit_false_as_the_string_false():
     not nothing — and as a *string*, because an unquoted YAML ``false`` is a
     boolean and a container env value must be a string."""
     env = _gpu_instance_env(
-        instance_type_derived_from_node=False,
-        instance_type_mixed_on_node=False,
+        gpu_instance_type_derived_from_node=False,
+        gpu_instance_type_mixed_on_node=False,
     )
     assert env["GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE"] == "false"
     assert env["GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE"] == "false"
@@ -854,7 +854,7 @@ def test_operator_env_omits_unset_gpu_instance_knobs():
 
 def test_operator_env_seeds_one_knob_without_the_other():
     """The knobs are independent — managing one must not seed the other."""
-    env = _gpu_instance_env(instance_type_derived_from_node=False)
+    env = _gpu_instance_env(gpu_instance_type_derived_from_node=False)
     assert env["GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE"] == "false"
     assert "GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE" not in env
 
@@ -876,7 +876,7 @@ def test_operator_env_seeds_the_static_access_address():
     """The pre-existing third knob still seeds, alongside the two new ones."""
     env = _gpu_instance_env(
         gpu_instances_access_static_address="10.0.0.1",
-        instance_type_derived_from_node=True,
+        gpu_instance_type_derived_from_node=True,
     )
     assert env["GPUSTACK_INSTANCE_ACCESS_STATIC_ADDRESS"] == "10.0.0.1"
     assert env["GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE"] == "true"

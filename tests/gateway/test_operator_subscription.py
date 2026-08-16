@@ -79,7 +79,7 @@ def harness(monkeypatch):
         h.queries += 1
         return h.ready_workers
 
-    monkeypatch.setattr(gateway, "_count_ready_workers", count_ready_workers)
+    monkeypatch.setattr(gateway, "count_ready_workers", count_ready_workers)
     return h
 
 
@@ -202,6 +202,45 @@ async def test_deleted_cluster_unsubscribes_once(harness):
         )
 
     harness.unsubscribe.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deleted_cluster_unsubscribes_from_an_id_only_event(harness):
+    """G3: a DELETED event carrying only an id still unsubscribes.
+
+    In distributed mode the bus hands subscribers ``Event(data={"id": N})``
+    whenever its change-detector cache holds no entry for the row
+    (``bus.py``: "No cached object, route ID-only event for DELETED"). That is
+    the normal state for a freshly elected leader, because ``cluster`` is not in
+    ``_preload_change_detector_cache``'s topic list. Reading ``provider`` off
+    that dict raises and ``_watch`` swallows it, which leaves the cluster in
+    ``_eligible`` — so the retry sweep, which only unsubscribes what left
+    ``_eligible``, never repairs it and the operator keeps proxying a cluster
+    that is gone.
+    """
+    harness.ready_workers = 1
+    await harness.reconciler._reconcile_cluster(
+        Event(type=EventType.CREATED, data=_cluster())
+    )
+
+    await harness.reconciler._reconcile_cluster(
+        Event(type=EventType.DELETED, data={"id": CLUSTER_ID})
+    )
+
+    harness.unsubscribe.assert_awaited_once()
+    assert harness.reconciler._eligible == {}
+
+
+@pytest.mark.asyncio
+async def test_id_only_event_that_is_not_a_deletion_is_dropped(harness):
+    """An id-only payload on any other event type has no model to read."""
+    harness.ready_workers = 1
+    await harness.reconciler._reconcile_cluster(
+        Event(type=EventType.UPDATED, data={"id": CLUSTER_ID})
+    )
+
+    harness.subscribe.assert_not_awaited()
+    harness.unsubscribe.assert_not_awaited()
 
 
 @pytest.mark.asyncio

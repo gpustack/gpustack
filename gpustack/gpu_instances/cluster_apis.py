@@ -91,6 +91,18 @@ _DEVICES = _CRDSpec(
     kind="Devices",
     scope=_Scope.CLUSTER,
 )
+# The operator's own settings catalog, and the only resource here outside
+# ``worker.gpustack.ai``: it lives in ``gpustack.ai/v1``, namespaced beside the
+# operator in the cluster's system namespace rather than in the per-Org
+# namespace every other namespaced resource uses. Addressing the wrong
+# namespace answers 404, which reads as "absent" everywhere below — see
+# :meth:`ClusterOps.patch_setting_value`.
+_SETTING = _CRDSpec(
+    plural="settings",
+    kind="Setting",
+    scope=_Scope.SYSTEM_NAMESPACED,
+    group="gpustack.ai",
+)
 
 
 class ClusterOps:
@@ -815,3 +827,33 @@ class ClusterOps:
         Returns whether it existed (``False`` when already gone / a 404).
         """
         return await self._delete(_INSTANCE, name)
+
+    #
+    # Operator Setting Operations
+    #
+
+    async def read_setting(self, name: str) -> Optional[dict]:
+        """Read one operator setting by name. Return ``None`` when absent.
+
+        Read and write are asymmetric on this resource: ``spec.value`` is a
+        write-only input that always reads back as ``{}``, and ``status.value``
+        is the read-back (``"(sensitive)"`` for a sensitive setting). A caller
+        comparing a desired value must compare it against ``status.value``.
+        """
+        return await self._read(_SETTING, name)
+
+    async def patch_setting_value(self, name: str, value: str) -> Optional[dict]:
+        """Merge-patch one operator setting's ``spec.value``. Return ``None``
+        when absent.
+
+        Deliberately not an upsert: the settings catalog is fixed upstream and
+        the resource serves no create, so :meth:`_upsert`'s 404-then-create
+        fallthrough would turn a mistake into a ``405 Method Not Allowed``.
+        There is nothing to create here — only a value to write.
+
+        ``None`` is not "absent, so nothing to do": every managed name exists in
+        a healthy cluster, so it means the namespace or the operator is wrong.
+        Callers must treat it as a failure to log and retry, otherwise a
+        mis-namespaced writer loops forever writing nothing.
+        """
+        return await self._patch_spec(_SETTING, name, {"value": value})
