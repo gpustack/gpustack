@@ -52,6 +52,7 @@ from gpustack.api.tenant import (
 from gpustack.gpu_instances import validate_k8s_object_name
 from gpustack.gpu_instances.placeholders import substitute_generated_placeholders
 from gpustack.routes.gpu_instance_persistent_volumes import resolve_pv_type_for_ctx
+from gpustack.routes.gpu_instances_helper import assert_cluster_gpu_service
 from gpustack.schemas.clusters import Cluster
 
 from gpustack.schemas import (
@@ -166,6 +167,7 @@ async def create_gpu_instance(
         assert_cluster_visible(ctx, cluster, not_found_message=not_found)
         if cluster.deleted_at is not None:
             raise NotFoundException(message=not_found)
+        assert_cluster_gpu_service(cluster)
 
     persistent_volume_id = await _validate_create_obj(session, ctx, create_obj)
 

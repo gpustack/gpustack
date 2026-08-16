@@ -15,8 +15,9 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from gpustack.api.exceptions import InvalidException
+from gpustack.api.exceptions import ConflictException, InvalidException
 from gpustack.routes import gpu_instances as routes
+from gpustack.schemas.clusters import GpuInstanceOptions, K8sOptions
 from gpustack.schemas.gpu_instances import (
     GPUInstance,
     GPUInstanceCreate,
@@ -357,6 +358,67 @@ async def test_create_without_cluster_id_rejected():
 
     with pytest.raises(InvalidException):
         await routes.create_gpu_instance(session=None, ctx=None, create_obj=create_obj)
+
+
+def _patch_create_preflight(monkeypatch, *, gpu_service):
+    """Stub everything ahead of the purpose guard in ``create_gpu_instance``.
+
+    Leaves exactly one decision under test: whether a cluster's purpose lets a
+    GPU Instance be created on it. ``_validate_create_obj`` is the first step
+    *after* the guard, so patching it to raise proves the guard runs before any
+    of the payload is resolved against the cluster.
+    """
+    cluster = SimpleNamespace(
+        id=2,
+        name="cluster-2",
+        deleted_at=None,
+        k8s_options=K8sOptions(
+            gpu_instance_options=GpuInstanceOptions() if gpu_service else None
+        ),
+    )
+
+    async def fake_one_by_id(session, id=None, *args, **kwargs):
+        return cluster
+
+    monkeypatch.setattr(routes.Cluster, "one_by_id", fake_one_by_id)
+    monkeypatch.setattr(routes, "assert_cluster_visible", lambda *a, **kw: None)
+    monkeypatch.setattr(routes, "validate_owner_principal", lambda *a, **kw: None)
+
+    async def past_the_guard(*a, **kw):
+        raise RuntimeError("reached the payload validation")
+
+    monkeypatch.setattr(routes, "_validate_create_obj", past_the_guard)
+
+
+@pytest.mark.asyncio
+async def test_create_on_a_model_service_cluster_rejected(monkeypatch):
+    # A GPU Instance is a workload for GPU Service capacity. A Model Service
+    # cluster has none, so create must refuse it with a 409 that says why —
+    # before resolving any of the payload against the cluster.
+    _patch_create_preflight(monkeypatch, gpu_service=False)
+    create_obj = GPUInstanceCreate(
+        name="gi-1", spec=_ephemeral_spec(), cluster_id=2, owner_principal_id=1
+    )
+
+    with pytest.raises(ConflictException) as excinfo:
+        await routes.create_gpu_instance(session=None, ctx=CTX, create_obj=create_obj)
+
+    assert excinfo.value.status_code == 409
+    assert "cluster-2" in excinfo.value.message
+    assert "model service" in excinfo.value.message
+
+
+@pytest.mark.asyncio
+async def test_create_on_a_gpu_service_cluster_passes_the_purpose_guard(monkeypatch):
+    # The negative case above must fail for the right reason: on a GPU Service
+    # cluster the same call gets past the guard and on to payload validation.
+    _patch_create_preflight(monkeypatch, gpu_service=True)
+    create_obj = GPUInstanceCreate(
+        name="gi-1", spec=_ephemeral_spec(), cluster_id=2, owner_principal_id=1
+    )
+
+    with pytest.raises(RuntimeError, match="reached the payload validation"):
+        await routes.create_gpu_instance(session=None, ctx=CTX, create_obj=create_obj)
 
 
 @pytest.mark.asyncio
