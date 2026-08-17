@@ -56,6 +56,8 @@ class BenchmarkRunner:
     _api_url: str
     _api_key: str
     _benchmark_dir: Optional[str]
+    _model_source: Optional[str] = None
+    """Original model source URL (e.g., HuggingFace repo ID) for tokenizer loading."""
     _fallback_registry: Optional[str] = None
     """The fallback container registry to use if needed."""
 
@@ -110,6 +112,15 @@ class BenchmarkRunner:
             self._model_path = instance_snapshot.resolved_path
             self._model_endpoint = f"http://{instance_snapshot.worker_ip}:{instance_snapshot.ports[0] if instance_snapshot.ports else ''}"
             self._model_backend_parameters = instance_snapshot.backend_parameters
+
+            # Get model source for tokenizer loading (needed for GGUF models)
+            if self._benchmark.model_id is not None:
+                try:
+                    model = self._clientset.models.get(id=self._benchmark.model_id)
+                    self._model_source = model.huggingface_repo_id
+                except Exception:
+                    # If we can't get the model source, leave it as None
+                    pass
 
             _api_key = read_worker_token(self._config.data_dir)
             if _api_key is None:
@@ -296,7 +307,7 @@ class BenchmarkRunner:
             "--sample-requests",
             "0",
             "--processor",
-            self._model_path,
+            self._model_source if self._model_source else self._model_path,
             "--output-dir",
             f"{self._benchmark_dir}",
             "--outputs",
