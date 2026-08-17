@@ -14,6 +14,8 @@ from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.envs import ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV as _KNOB
 from gpustack.worker.backends.base import (
     InferenceServer,
+    is_ascend,
+    is_ascend_310p,
     read_lora_max_rank,
     _parse_image_cuda_version,
 )
@@ -1322,3 +1324,59 @@ def test_configured_env_no_injection_when_not_triggered(monkeypatch):
     env = server._get_configured_env()
 
     assert "NVIDIA_DISABLE_REQUIRE" not in env
+
+
+def _gpu(vendor: str, arch_family=None):
+    return types.SimpleNamespace(vendor=vendor, arch_family=arch_family)
+
+
+@pytest.mark.parametrize(
+    "name, devices, expected",
+    [
+        # The regression this guards: `all()` is vacuously true over nothing,
+        # so a model instance that named no device -- one scheduled by GPU
+        # type rather than by device index -- used to be served as Ascend
+        # 310P, and got `--enforce-eager --dtype float16` injected on top of
+        # whatever accelerator it actually landed on.
+        ("no device selected", [], False),
+        ("single 310P", [_gpu("ascend", "Ascend310P1")], True),
+        (
+            "several 310P",
+            [_gpu("ascend", "Ascend310P1"), _gpu("ascend", "Ascend310P3")],
+            True,
+        ),
+        ("Ascend but not 310P", [_gpu("ascend", "Ascend910B4")], False),
+        ("NVIDIA", [_gpu("nvidia")], False),
+        (
+            "310P mixed with another Ascend generation",
+            [_gpu("ascend", "Ascend310P1"), _gpu("ascend", "Ascend910B4")],
+            False,
+        ),
+    ],
+)
+def test_is_ascend_310p(name, devices, expected):
+    actual = is_ascend_310p(devices)
+    assert actual == expected, f"case {name} expected {expected}, but got {actual}"
+
+
+@pytest.mark.parametrize(
+    "name, devices, expected",
+    [
+        ("no device selected", [], False),
+        ("single Ascend", [_gpu("ascend", "Ascend910B4")], True),
+        (
+            "several Ascend",
+            [_gpu("ascend", "Ascend910B4"), _gpu("ascend", "Ascend310P1")],
+            True,
+        ),
+        ("NVIDIA", [_gpu("nvidia")], False),
+        (
+            "Ascend mixed with NVIDIA",
+            [_gpu("ascend", "Ascend910B4"), _gpu("nvidia")],
+            False,
+        ),
+    ],
+)
+def test_is_ascend(name, devices, expected):
+    actual = is_ascend(devices)
+    assert actual == expected, f"case {name} expected {expected}, but got {actual}"
