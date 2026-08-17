@@ -66,7 +66,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
 
     # Worker options
     worker_ifname: Optional[str] = None
-    insecure_tls: bool = True
+    insecure_tls: bool = False
     disable_worker_metrics: bool = False
     worker_port: int = 10150
     worker_metrics_port: int = 10151

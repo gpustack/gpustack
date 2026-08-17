@@ -616,6 +616,14 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         ),
     )
     worker_group.add_argument(
+        "--insecure-tls",
+        action=OptionalBoolAction,
+        help="Skip TLS certificate verification when connecting to the server. "
+        "For private deployments with self-signed or private CA certificates only; "
+        "never enable in production.",
+        default=get_gpustack_env_bool("INSECURE_TLS"),
+    )
+    worker_group.add_argument(
         "--worker-metrics-port",
         type=int,
         help="Port to expose worker metrics.",
@@ -891,6 +899,7 @@ def set_worker_options(args, config_data: dict):
         "worker_name",
         "worker_port",
         "disable_worker_metrics",
+        "insecure_tls",
         "worker_metrics_port",
         "service_port_range",
         "ray_port_range",

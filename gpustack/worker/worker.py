@@ -252,7 +252,6 @@ class Worker:
                 cache=self._runtime_metrics_cache,
                 worker_id_getter=self.worker_id,
                 clientset=self._clientset,
-                insecure_tls=self._config.insecure_tls,
             )
             run_periodically_in_thread(_runtime_metrics_aggregator.aggregate, 3, 30)
 
@@ -319,6 +318,7 @@ class Worker:
                 cidrs=[f"{self.worker_ip()}/32"] if self.worker_ip() else [],
                 unix_sockets=sockets,
                 authenticator=BearerTokenAuthenticator(headers=self._clientset.headers),
+                insecure_tls=self._config.insecure_tls,
             )
             self._create_async_task(self._message_client.run())
         else:
