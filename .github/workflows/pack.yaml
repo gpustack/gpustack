@@ -39,9 +39,9 @@ on:
 
 env:
   INPUT_PYTHON_VERSION: 3.11
-  INPUT_USERNAME: gpustack
+  INPUT_USERNAME: liukuolk
   INPUT_PASSWORD: ${{ secrets.CI_DOCKERHUB_PASSWORD }}
-  INPUT_NAMESPACE: gpustack
+  INPUT_NAMESPACE: liukuolk
   INPUT_REPOSITORY: gpustack
 
 jobs:
