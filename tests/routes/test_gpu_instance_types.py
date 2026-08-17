@@ -211,6 +211,53 @@ async def test_list_maps_metadata_name(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_reads_the_derived_from_node_marker(monkeypatch):
+    # The operator stamps its own instance types with the derived-from-node
+    # label; an admin-created one carries the rest of the schedule labels but
+    # not that marker, and a CR with no labels at all must not blow up.
+    _patch_cluster(monkeypatch, _cluster())
+    _patch_ops(
+        monkeypatch,
+        list_result={
+            "items": [
+                {
+                    "metadata": {
+                        "name": "derived",
+                        "labels": {
+                            "schedule.gpustack.ai/derived-from-node": "true",
+                            "schedule.gpustack.ai/queue-entrance": "gpustack-fnv64-1",
+                        },
+                    },
+                    "spec": {},
+                    "status": {},
+                },
+                {
+                    "metadata": {
+                        "name": "hand-made",
+                        "labels": {
+                            "schedule.gpustack.ai/queue-entrance": "gpustack-fnv64-2",
+                        },
+                    },
+                    "spec": {},
+                    "status": {},
+                },
+                {"metadata": {"name": "bare"}, "spec": {}, "status": {}},
+            ]
+        },
+    )
+
+    out = await it_routes.get_gpu_instance_types(REQUEST, None, CTX, 1)
+
+    assert [(i.name, i.derived_from_node) for i in out.items] == [
+        ("derived", True),
+        ("hand-made", False),
+        ("bare", False),
+    ]
+    # The field reaches the client under its camelCase alias.
+    assert out.items[0].model_dump(by_alias=True)["derivedFromNode"] is True
+
+
+@pytest.mark.asyncio
 async def test_create_sends_spec_and_defaults_missing_status(monkeypatch):
     _patch_cluster(monkeypatch, _cluster())
     capture = {}
