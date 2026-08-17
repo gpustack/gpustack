@@ -116,8 +116,11 @@ class BenchmarkRunner:
             # Get model source for tokenizer loading (needed for GGUF models)
             if self._benchmark.model_id is not None:
                 try:
+                    from gpustack.schemas.models import is_gguf_model
+
                     model = self._clientset.models.get(id=self._benchmark.model_id)
-                    self._model_source = model.huggingface_repo_id
+                    if is_gguf_model(model):
+                        self._model_source = model.huggingface_repo_id
                 except Exception:
                     # If we can't get the model source, leave it as None
                     pass
