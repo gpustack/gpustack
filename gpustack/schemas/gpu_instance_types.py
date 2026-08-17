@@ -716,13 +716,27 @@ class GPUInstanceTypeUpdate(BaseModel):
     """
 
 
+DERIVED_FROM_NODE_LABEL = "schedule.gpustack.ai/derived-from-node"
+"""
+Label the GPUStack Operator stamps on the GPU instance types it derives from a
+node's resource flavors, as opposed to the ones an admin created by hand.
+"""
+
+
 class GPUInstanceTypePublic(GPUInstanceTypeBase):
     """
     Represents the public view of a GPU instance type,
     containing only fields that are safe to expose to clients.
     """
 
-    pass
+    derived_from_node: bool = False
+    """
+    Whether the GPUStack Operator derived this GPU instance type from a node
+    (see :data:`DERIVED_FROM_NODE_LABEL`). While the cluster's
+    ``instance-type-derived-from-node`` setting is on the operator owns such a
+    type's existence and re-creates it as soon as it is deleted, so clients
+    present it as read-only rather than offering a delete that cannot stick.
+    """
 
 
 GPUInstanceTypesPublic = ItemList[GPUInstanceTypePublic]

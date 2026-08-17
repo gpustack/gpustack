@@ -1,6 +1,11 @@
+import contextlib
+from dataclasses import dataclass
+from functools import partial
+import logging
+import time
 from datetime import date, datetime
 from math import ceil
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import APIRouter
 from sqlalchemy import Date, Select, and_, asc, cast, desc
@@ -28,6 +33,7 @@ from gpustack.schemas.usage import (
     USAGE_GROUP_BY_ORGANIZATION,
     USAGE_GROUP_BY_ROUTE,
     USAGE_GROUP_BY_USER,
+    USAGE_GROUP_BYS,
     USAGE_SCOPE_ALL,
     USAGE_SCOPE_SELF,
     USAGE_METRIC_API_KEYS_USED,
@@ -41,11 +47,15 @@ from gpustack.schemas.usage import (
     USAGE_METRIC_OUTPUT_TOKENS,
     USAGE_METRIC_TOTAL_TOKENS,
     USAGE_SORT_DESC,
+    USAGE_EXPORT_SPLIT_AUTO,
     UsageBreakdownDateDimension,
     UsageBreakdownDimension,
     UsageBreakdownItem,
     UsageBreakdownRequest,
     UsageBreakdownResponse,
+    UsageExportEstimateResponse,
+    UsageExportRequest,
+    UsageExportSheetEstimate,
     UsageFilterItem,
     UsageFilterOption,
     UsageFilters,
@@ -57,7 +67,28 @@ from gpustack.schemas.usage import (
     UsageSummary,
 )
 from gpustack.schemas.common import Pagination
+from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
+from gpustack.utils.export_delivery import (
+    ExportSheetPlan,
+    export_response,
+    split_export_response,
+    trailer_context,
+)
+from gpustack.utils.export_limits import (
+    build_export_estimate,
+    effective_export_format,
+    export_columns_payload,
+    export_split_plan,
+    export_too_large,
+    requested_platform_wide,
+)
+from gpustack.utils.tabular_export import ExportStageTimer
+from gpustack.utils.usage_export import (
+    build_export_columns,
+    export_column_keys,
+    export_row,
+)
 from gpustack.utils.usage_snapshots import (
     format_usage_api_key_label,
     format_usage_date_label,
@@ -66,7 +97,13 @@ from gpustack.utils.usage_snapshots import (
     format_usage_user_label,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Names every file this router hands out (``usage_by_user_<dates>.csv``), so a
+# download can be told from the resource tabs' at a glance.
+EXPORT_FILE_PREFIX = "usage"
 
 METRIC_OPTIONS = [
     UsageOption(key=USAGE_METRIC_INPUT_TOKENS, label="Input Tokens"),
@@ -330,6 +367,21 @@ def _row_dimension(
     )
 
 
+def _is_platform_wide(user, ctx) -> bool:
+    """Platform admin acting without a pinned Org — the cross-tenant view.
+
+    The one context where the Organization dimension, the Organization filter
+    and the per-row tenant attribute are meaningful: an Org owner scoped to
+    their own Org would only ever see the one, so all three are hidden there.
+
+    The resource routes have the identical helper.
+    """
+    # Read straight off the user: a defaulted lookup would answer "not an
+    # admin" for a renamed or missing field, which is a permission decision
+    # made by a typo.
+    return bool(user.is_admin) and ctx.current_principal_id is None
+
+
 def _row_org_dimension(
     row: Any, org_info_by_id: Optional[Dict[int, tuple]] = None
 ) -> UsageBreakdownDimension:
@@ -396,6 +448,21 @@ def _identity_label(group_by: str, identity: UsageIdentity) -> str:
     )
 
 
+# One ``IN (...)`` renders one bind parameter per id, and PostgreSQL's wire
+# protocol caps a statement at 65535 of them. A breakdown grouped by a single
+# entity dimension has as many distinct ids as it has rows, so a large export
+# would sail past that ceiling and fail outright. Chunk well under it.
+_ID_LOOKUP_CHUNK = 5000
+
+
+def _id_chunks(ids) -> List[List[Any]]:
+    unique = sorted({i for i in ids if i is not None})
+    return [
+        unique[start : start + _ID_LOOKUP_CHUNK]
+        for start in range(0, len(unique), _ID_LOOKUP_CHUNK)
+    ]
+
+
 async def _existing_entity_ids(session, model, ids) -> set:
     """The subset of ``ids`` that still resolve to a live ``model`` row.
 
@@ -405,11 +472,11 @@ async def _existing_entity_ids(session, model, ids) -> set:
     Existence is by raw id (no soft-delete filter), matching the old FK
     ``SET NULL`` behavior which only fired on hard delete.
     """
-    unique = {i for i in ids if i is not None}
-    if not unique:
-        return set()
-    rows = await _get_rows(session, select(model.id).where(model.id.in_(unique)))
-    return set(rows)
+    existing: set = set()
+    for chunk in _id_chunks(ids):
+        rows = await _get_rows(session, select(model.id).where(model.id.in_(chunk)))
+        existing.update(rows)
+    return existing
 
 
 async def _existing_ids_for_dimension(session, group_by: str, ids) -> Optional[set]:
@@ -430,10 +497,11 @@ async def _organization_info_by_id(session, ids) -> Dict[int, tuple]:
     raw id (no soft-delete filter), matching the FK-less attribution contract
     on model_usages. ``kind`` is the ``PrincipalType`` value.
     """
-    unique = {i for i in ids if i is not None}
-    if not unique:
-        return {}
-    rows = await _get_rows(session, select(Principal).where(Principal.id.in_(unique)))
+    principals = []
+    for chunk in _id_chunks(ids):
+        principals.extend(
+            await _get_rows(session, select(Principal).where(Principal.id.in_(chunk)))
+        )
     # Use the principal ``name`` (the stable slug), NOT ``display_name`` — the
     # Organization breakdown is standardized on ``name`` so the token and
     # resource tabs stay consistent (resource snapshots ``name`` too).
@@ -442,7 +510,7 @@ async def _organization_info_by_id(session, ids) -> Dict[int, tuple]:
             p.name or "",
             p.kind.value if hasattr(p.kind, "value") else p.kind,
         )
-        for p in rows
+        for p in principals
     }
 
 
@@ -824,11 +892,7 @@ async def get_usage_meta(  # noqa: C901
             ModelUsage.consumer_principal_id == ctx.current_principal_id
         )
 
-    # The Organization dimension is the cross-tenant "All" view — platform
-    # admin acting without a selected Org (``current_principal_id is None``).
-    # An Org owner scoped to their own Org would only ever see one Org, so
-    # the dimension is hidden for them.
-    is_platform_wide = user.is_admin and ctx.current_principal_id is None
+    is_platform_wide = _is_platform_wide(user, ctx)
 
     user_options: List[UsageFilterOption] = []
     if scope == USAGE_SCOPE_ALL:
@@ -898,9 +962,7 @@ def _check_permission(user: User, ctx, request, effective_scope: str) -> None:
             raise ForbiddenException(message="No permission to filter by user")
         if request.filters.user_groups:
             raise ForbiddenException(message="No permission to filter by user group")
-    is_platform_wide = (
-        user.is_admin and getattr(ctx, "current_principal_id", None) is None
-    )
+    is_platform_wide = _is_platform_wide(user, ctx)
     if not is_platform_wide:
         if USAGE_GROUP_BY_ORGANIZATION in group_bys:
             raise ForbiddenException(message="No permission to group by organization")
@@ -925,10 +987,28 @@ def _sort_expression(sort_by: str, metric_columns: Dict[str, Any], date_sort_exp
 
 
 def _order_expression(
-    order_by: List[tuple[str, str]], metric_columns: Dict[str, Any], date_sort_expr=None
+    order_by: List[tuple[str, str]],
+    metric_columns: Dict[str, Any],
+    date_sort_expr=None,
+    *,
+    grouped_by_date: bool = False,
 ):
     if not order_by:
-        order_by = [(USAGE_METRIC_TOTAL_TOKENS, USAGE_SORT_DESC)]
+        # A date-grouped result is a time series and has to come out in time
+        # order; sorting it by tokens alone leaves the calendar shuffled. The
+        # metric follows as the tie-break, because a bucket is not one row: a
+        # ["date", "user"] grouping has as many rows per date as it has users,
+        # and ordering by date alone leaves their order to the database — which
+        # a paginated /breakdown turns into rows repeated or skipped across
+        # pages. Only the DEFAULT changes; an explicit sort still wins.
+        order_by = (
+            [
+                (USAGE_METRIC_DATE, USAGE_SORT_DESC),
+                (USAGE_METRIC_TOTAL_TOKENS, USAGE_SORT_DESC),
+            ]
+            if grouped_by_date
+            else [(USAGE_METRIC_TOTAL_TOKENS, USAGE_SORT_DESC)]
+        )
 
     sort_exprs = []
     for sort_by, direction in order_by:
@@ -963,6 +1043,7 @@ def _build_breakdown_item(
     granularity: str,
     existing_ids_by_dim: Optional[Dict[str, set]] = None,
     org_info_by_id: Optional[Dict[int, tuple]] = None,
+    carries_organization: bool = False,
 ) -> UsageBreakdownItem:
     existing_ids_by_dim = existing_ids_by_dim or {}
     api_requests = int(getattr(row, USAGE_METRIC_API_REQUESTS, 0) or 0)
@@ -992,7 +1073,9 @@ def _build_breakdown_item(
         breakdown_item.route = _row_dimension(
             USAGE_GROUP_BY_ROUTE, row, existing_ids_by_dim.get(USAGE_GROUP_BY_ROUTE)
         )
-    if USAGE_GROUP_BY_ORGANIZATION in group_bys:
+    # Same field either way: as the grouped dimension, or as the tenant this
+    # row belongs to. One organization, one representation.
+    if USAGE_GROUP_BY_ORGANIZATION in group_bys or carries_organization:
         breakdown_item.organization = _row_org_dimension(row, org_info_by_id)
 
     if _single_group_by(group_bys, USAGE_GROUP_BY_USER):
@@ -1023,18 +1106,58 @@ def _build_breakdown_item(
     return breakdown_item
 
 
-@router.post(
-    "/breakdown",
-    response_model=UsageBreakdownResponse,
-    response_model_exclude_none=True,
-)
-async def get_usage_breakdown(
-    session: SessionDep,
-    user: CurrentUserDep,
-    ctx: TenantContextDep,
+@dataclass
+class BreakdownQuery:
+    """The statements behind one breakdown request.
+
+    Built once by :func:`_build_breakdown_statement` and shared by the JSON
+    ``/breakdown`` route and the streaming ``/breakdown/export`` route. Sharing
+    is the point: scope resolution, the permission gate and the filter
+    application must not be re-implemented per route, or the export's
+    visibility will drift from the list's — the classic export IDOR.
+
+    ``items_statement`` is ordered but NOT paginated; slicing is the caller's
+    job (the export path deliberately never slices).
+    """
+
+    scoped_statement: Select
+    summary_statement: Select
+    items_statement: Select
+    count_statement: Select
+    granularity: str
+    effective_scope: str
+    # Whether the rows carry the consumer tenant as an attribute — see the
+    # note in ``_build_breakdown_statement``.
+    carries_organization: bool = False
+
+
+async def _build_breakdown_statement(
+    session,
+    user: User,
+    ctx,
     request: UsageBreakdownRequest,
-):
+    *,
+    strict_scope: bool = False,
+) -> BreakdownQuery:
+    """Resolve scope, check permission and build the breakdown statements.
+
+    ``strict_scope`` refuses an unauthorized ``all`` instead of letting
+    :func:`_resolve_effective_scope` downgrade it to ``self``. The export path
+    sets it when the caller EXPLICITLY asked for platform-wide data (see
+    :func:`requested_platform_wide`): the file leaves the page, and whoever
+    opens it cannot tell that "platform-wide usage" is actually one person's
+    rows, so the request is answered with a 403 rather than a differently
+    scoped file. A caller who merely took the default ``all`` — every client
+    that doesn't set ``scope`` — is downgraded as usual and gets their own
+    rows, with the effective scope recorded in the file's trailer.
+    """
     effective_scope = _resolve_effective_scope(user, ctx, request.scope)
+    if (
+        strict_scope
+        and request.scope == USAGE_SCOPE_ALL
+        and effective_scope != USAGE_SCOPE_ALL
+    ):
+        raise ForbiddenException(message="No permission to export platform-wide usage")
     _check_permission(user, ctx, request, effective_scope)
 
     # Expand any user-group filter to its direct USER members before
@@ -1065,9 +1188,7 @@ async def get_usage_breakdown(
         base_statement, request.start_date, request.end_date
     )
     summary_columns = [metric_columns[item].label(item) for item in metric_columns]
-    summary_row = await _get_first_row(
-        session, scoped_statement.with_only_columns(*summary_columns)
-    )
+    summary_statement = scoped_statement.with_only_columns(*summary_columns)
 
     granularity = _breakdown_bucket_granularity(request)
     date_bucket_expr = _date_bucket_expression(session, granularity)
@@ -1097,6 +1218,35 @@ async def get_usage_breakdown(
                 "group_organization_kind"
             ),
         ]
+    # The tenant a row BELONGS TO, carried as an attribute rather than as a
+    # grouping key, so that a cross-tenant export says whose each row is
+    # without changing which rows exist.
+    #
+    # What makes MAX() safe here is that ``consumer_principal_id`` is
+    # denormalized FROM THE API KEY: one api_key has one consumer, so an
+    # api_key-grouped bucket has exactly one, and the three MAX()es cannot
+    # disagree with each other. That invariant is why the condition is
+    # api_key — not user (who can hold keys in several Orgs) and not route
+    # (which Orgs share). Getting this wrong would pair one tenant's id with
+    # another's name, and a wrong attribution is worse than none.
+    #
+    # Labels match the DIMENSION's on purpose: ``_row_org_dimension`` and the
+    # export row then read one organization the same way in either role,
+    # instead of two code paths that can drift into two spellings of one
+    # tenant. The two are mutually exclusive, so the labels cannot collide.
+    carries_organization = (
+        USAGE_GROUP_BY_API_KEY in request.group_by
+        and USAGE_GROUP_BY_ORGANIZATION not in request.group_by
+        and _is_platform_wide(user, ctx)
+    )
+    if carries_organization:
+        aggregate_columns += [
+            func.max(ModelUsage.consumer_principal_id).label("group_organization_id"),
+            func.max(ModelUsage.consumer_name).label("group_organization_name"),
+            func.max(ModelUsage.consumer_principal_kind).label(
+                "group_organization_kind"
+            ),
+        ]
     grouped_statement = scoped_statement.with_only_columns(
         *select_columns, *aggregate_columns
     ).group_by(*group_columns)
@@ -1107,8 +1257,395 @@ async def get_usage_breakdown(
         if USAGE_GROUP_BY_DATE in request.group_by
         else func.max(ModelUsage.date)
     )
-    sort_exprs = _order_expression(request.order_by, metric_columns, date_sort_expr)
-    items_statement = grouped_statement.order_by(*sort_exprs)
+    sort_exprs = _order_expression(
+        request.order_by,
+        metric_columns,
+        date_sort_expr,
+        grouped_by_date=USAGE_GROUP_BY_DATE in request.group_by,
+    )
+    return BreakdownQuery(
+        scoped_statement=scoped_statement,
+        summary_statement=summary_statement,
+        items_statement=grouped_statement.order_by(*sort_exprs),
+        count_statement=count_statement,
+        granularity=granularity,
+        effective_scope=effective_scope,
+        carries_organization=carries_organization,
+    )
+
+
+class _IdentityCache:
+    """What each referenced entity resolved to, for the length of one export.
+
+    Existence and Org info are properties of the ENTITY, not of the batch it
+    landed in, and a ``["date", "user"]`` result repeats every user on every
+    date — so a lookup per batch would ask the same question hundreds of
+    times. Each id is resolved once here and reused for the rest of the run,
+    which also keeps "does this user still exist" answered consistently across
+    a file that takes minutes to write.
+
+    Absence is cached too (``checked``): an id that resolved to nothing is a
+    deleted entity, and without remembering the misses those are exactly the
+    ids that would be re-queried on every batch.
+    """
+
+    def __init__(self):
+        self.existing_by_dim: Dict[str, set] = {}
+        self.checked_by_dim: Dict[str, set] = {}
+        self.org_info: Dict[int, tuple] = {}
+        self.checked_orgs: set = set()
+
+    @property
+    def entities(self) -> int:
+        return sum(len(ids) for ids in self.checked_by_dim.values())
+
+
+async def _resolve_identities(
+    session,
+    cache: _IdentityCache,
+    rows,
+    group_by: List[str],
+    carries_organization: bool,
+) -> None:
+    """Resolve whatever this batch references and the cache doesn't hold yet.
+
+    Runs on ``session`` — a connection of its own, because the export's main
+    connection is busy holding the row cursor open and cannot be asked
+    anything else while it is.
+    """
+    for dimension, id_attr in _DIMENSION_ROW_ID_ATTR.items():
+        if dimension not in group_by:
+            continue
+        checked = cache.checked_by_dim.setdefault(dimension, set())
+        existing = cache.existing_by_dim.setdefault(dimension, set())
+        ids = {
+            entity_id
+            for entity_id in (getattr(row, id_attr, None) for row in rows)
+            if entity_id is not None
+        } - checked
+        if not ids:
+            continue
+        found = await _existing_ids_for_dimension(session, dimension, list(ids))
+        checked |= ids
+        existing |= found or set()
+
+    # Also when organization is only an ATTRIBUTE of the row: the column is
+    # resolved live exactly like the dimension, so it needs the same lookup.
+    if USAGE_GROUP_BY_ORGANIZATION in group_by or carries_organization:
+        org_ids = {
+            org_id
+            for org_id in (getattr(row, "group_organization_id", None) for row in rows)
+            if org_id is not None
+        } - cache.checked_orgs
+        if org_ids:
+            cache.org_info.update(
+                await _organization_info_by_id(session, list(org_ids))
+            )
+            cache.checked_orgs |= org_ids
+
+
+async def _stream_export_rows(
+    session, query: BreakdownQuery, group_by: List[str]
+) -> AsyncIterator[List[Any]]:
+    """Yield export rows straight off a server-side cursor.
+
+    Rows are turned into :func:`_build_breakdown_item` results first, so an
+    exported number is produced by exactly the same code as the number on
+    screen — the two cannot drift.
+
+    Names and deletion flags come from a second query, which cannot run on
+    this connection while the cursor is open, so enrichment borrows a session
+    of its own for the length of the stream and memoizes what it resolves.
+    Memory stays bounded by the batch size and by the number of distinct
+    entities, never by the result set.
+    """
+    timer = ExportStageTimer()
+    cache = _IdentityCache()
+    rows_out = 0
+    batches = 0
+
+    # A date-only export references no entity, so it needs no second
+    # connection at all.
+    needs_enrichment = (
+        any(dimension in group_by for dimension in _DIMENSION_ROW_ID_ATTR)
+        or USAGE_GROUP_BY_ORGANIZATION in group_by
+        or query.carries_organization
+    )
+
+    @contextlib.asynccontextmanager
+    async def _enricher():
+        """One extra connection for the whole stream, not one per batch."""
+        if not needs_enrichment:
+            yield None
+            return
+        async with async_session() as enrich_session:
+            yield enrich_session
+
+    async with _enricher() as enrich_session:
+        result = await session.stream(query.items_statement)
+        try:
+            partitions = result.partitions(envs.USAGE_EXPORT_STREAM_CHUNK_ROWS)
+            while True:
+                # Hand-driven so the wait on the cursor is charged separately,
+                # and the first wait separately again: a GROUP BY ... ORDER BY
+                # produces and sorts every row before releasing one, so the
+                # aggregate's entire cost lands on that first fetch while the
+                # rest are mere transfers.
+                with timer.stage("aggregate" if batches == 0 else "fetch"):
+                    partition = await anext(partitions, None)
+                if partition is None:
+                    break
+                batches += 1
+                if enrich_session is not None:
+                    with timer.stage("enrich"):
+                        await _resolve_identities(
+                            enrich_session,
+                            cache,
+                            partition,
+                            group_by,
+                            query.carries_organization,
+                        )
+                with timer.stage("build"):
+                    batch_rows = [
+                        export_row(
+                            _build_breakdown_item(
+                                group_by,
+                                row,
+                                query.granularity,
+                                cache.existing_by_dim,
+                                cache.org_info,
+                                query.carries_organization,
+                            ),
+                            group_by,
+                            query.carries_organization,
+                        )
+                        for row in partition
+                    ]
+                for row in batch_rows:
+                    rows_out += 1
+                    yield row
+        finally:
+            # Reached on the normal end of the stream and on an abandoned
+            # download alike: the cursor is server-side, so leaving it open
+            # holds a connection for as long as the pool takes to notice.
+            await result.close()
+
+    # Split out so a slow export can be attributed. Enrichment scales with
+    # distinct ENTITIES and the stream with ROWS; a request log shows only
+    # their sum, which is not enough to know which one to go after.
+    logger.info(
+        "usage export streamed: group_by=%s rows=%d batches=%d entities=%d %s",
+        ",".join(group_by),
+        rows_out,
+        batches,
+        cache.entities,
+        timer.summary(),
+    )
+
+
+async def _resolve_export_sheets(
+    session,
+    user: User,
+    ctx,
+    request: UsageExportRequest,
+    *,
+    tolerate_forbidden: bool,
+) -> List[tuple]:
+    """Build (sheet, query_or_None, reason) for every requested sheet.
+
+    ``tolerate_forbidden`` is what separates the two callers. The estimate
+    endpoint reports an unavailable sheet so the UI can grey out just that
+    table; the export endpoint refuses the whole request, because quietly
+    dropping one table produces a file the user believes is complete.
+    """
+    if len(request.resolved_sheets()) > envs.USAGE_EXPORT_MAX_SHEETS:
+        raise InvalidException(
+            message=(
+                f"Too many sheets ({len(request.resolved_sheets())}, limit "
+                f"{envs.USAGE_EXPORT_MAX_SHEETS})."
+            )
+        )
+    resolved = []
+    for sheet in request.resolved_sheets():
+        # The sheet type only checks structure; the legal dimension names are
+        # this endpoint's to define.
+        unsupported = [g for g in sheet.group_by if g not in USAGE_GROUP_BYS]
+        if unsupported:
+            raise InvalidException(
+                message=f"Unsupported group_by: {', '.join(unsupported)}"
+            )
+        breakdown_request = request.to_breakdown_request(sheet)
+        try:
+            query = await _build_breakdown_statement(
+                session,
+                user,
+                ctx,
+                breakdown_request,
+                strict_scope=requested_platform_wide(request),
+            )
+        except ForbiddenException as exc:
+            if not tolerate_forbidden:
+                raise
+            resolved.append((sheet, None, exc.message))
+            continue
+        resolved.append((sheet, query, None))
+    return resolved
+
+
+@router.post(
+    "/breakdown/export/estimate",
+    response_model=UsageExportEstimateResponse,
+)
+async def estimate_usage_breakdown_export(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: UsageExportRequest,
+):
+    """Row counts for an export the user has not committed to yet.
+
+    Exists so the UI can say "this will be 183,000 rows" *before* the click,
+    instead of surfacing a failure thirty seconds in. For a multi-table export
+    this replaces one probe request per table.
+    """
+    sheets = await _resolve_export_sheets(
+        session, user, ctx, request, tolerate_forbidden=True
+    )
+    estimates = []
+    total = 0
+    for sheet, query, reason in sheets:
+        if query is None:
+            estimates.append(
+                UsageExportSheetEstimate(
+                    key=sheet.key,
+                    name=sheet.name,
+                    total=0,
+                    available=False,
+                    reason=reason,
+                )
+            )
+            continue
+        sheet_total = _row_count_value(
+            await _get_first_row(session, query.count_statement)
+        )
+        total += sheet_total
+        estimates.append(
+            UsageExportSheetEstimate(
+                key=sheet.key,
+                name=sheet.name,
+                total=sheet_total,
+                columns=export_columns_payload(
+                    export_column_keys(sheet.group_by, query.carries_organization),
+                    build_export_columns(sheet.group_by, query.carries_organization),
+                ),
+            )
+        )
+    return build_export_estimate(request, estimates, total)
+
+
+@router.post("/breakdown/export")
+async def export_usage_breakdown(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: UsageExportRequest,
+):
+    """Stream the full filtered result set as a downloadable file."""
+    sheets = await _resolve_export_sheets(
+        session, user, ctx, request, tolerate_forbidden=False
+    )
+
+    # Count every sheet before writing a byte: once the response starts the
+    # status code is committed, so an over-limit sheet has to fail here or not
+    # at all.
+    totals: Dict[str, int] = {}
+    over_limit = None
+    sizing_started = time.monotonic()
+    for sheet, query, _ in sheets:
+        totals[sheet.key] = _row_count_value(
+            await _get_first_row(session, query.count_statement)
+        )
+        if over_limit is None and totals[sheet.key] > envs.USAGE_EXPORT_MAX_ROWS:
+            over_limit = (sheet, totals[sheet.key])
+
+    # Counting replays the same GROUP BY the stream is about to run, so the
+    # export pays for the aggregate twice and the user waits through this half
+    # before the download starts. It is also the purest measurement we have —
+    # no Python, no encoding, no network — so a slow number here is the query.
+    logger.info(
+        "usage export sized: sheets=%d rows=%d count=%.1fs",
+        len(sheets),
+        sum(totals.values()),
+        time.monotonic() - sizing_started,
+    )
+
+    def plans() -> List[ExportSheetPlan]:
+        """What each sheet writes — resolved only once a file will be written."""
+        return [
+            ExportSheetPlan(
+                key=sheet.key,
+                name=sheet.name,
+                columns=build_export_columns(
+                    sheet.group_by, query.carries_organization
+                ),
+                total=totals[sheet.key],
+                rows=partial(_stream_export_rows, session, query, sheet.group_by),
+            )
+            for sheet, query, _ in sheets
+        ]
+
+    context = trailer_context(sheets[0][1].effective_scope, ctx.current_principal_id)
+
+    if over_limit is not None:
+        # Every sheet's count is in hand, which is what the splitter needs to
+        # size its parts. Splitting works for ANY grouping — parts are slices
+        # of the row stream, not narrower date ranges — so there is no "this
+        # one cannot be split" branch.
+        if request.split == USAGE_EXPORT_SPLIT_AUTO:
+            return split_export_response(
+                plans(),
+                request=request,
+                prefix=EXPORT_FILE_PREFIX,
+                context=context,
+                limit=envs.USAGE_EXPORT_MAX_ROWS,
+            )
+        sheet, sheet_total = over_limit
+        members = sum(export_split_plan(totals, envs.USAGE_EXPORT_MAX_ROWS).values())
+        raise export_too_large(
+            request,
+            sheet.key,
+            sheet_total,
+            envs.USAGE_EXPORT_MAX_ROWS,
+            split_parts=(
+                members if members <= envs.USAGE_EXPORT_MAX_SPLIT_MEMBERS else None
+            ),
+        )
+
+    return await export_response(
+        plans(),
+        request=request,
+        prefix=EXPORT_FILE_PREFIX,
+        export_format=effective_export_format(request.format, totals.values()),
+        context=context,
+    )
+
+
+@router.post(
+    "/breakdown",
+    response_model=UsageBreakdownResponse,
+    response_model_exclude_none=True,
+)
+async def get_usage_breakdown(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: UsageBreakdownRequest,
+):
+    query = await _build_breakdown_statement(session, user, ctx, request)
+    summary_row = await _get_first_row(session, query.summary_statement)
+    granularity = query.granularity
+
+    items_statement = query.items_statement
     # ``page <= 0`` is the project-wide "no pagination" sentinel (mirrors
     # ActiveRecordMixin.page_query): return every bucket unsliced. The trend
     # chart needs the full date series — a token-sorted page would drop the
@@ -1118,7 +1655,7 @@ async def get_usage_breakdown(
             (request.page - 1) * request.perPage
         ).limit(request.perPage)
 
-    total = _row_count_value(await _get_first_row(session, count_statement))
+    total = _row_count_value(await _get_first_row(session, query.count_statement))
     # No-pagination (page <= 0) returns the whole series. ``total`` (the bucket
     # count) is already computed above, so reject an over-large result before
     # fetching its rows — narrowing the range / adding filters beats silently
@@ -1146,7 +1683,7 @@ async def get_usage_breakdown(
     # Organization: resolve live (name, kind) as the fallback for rows without
     # a snapshot, and to detect deletion (id no longer among live principals).
     org_info_by_id: Dict[int, tuple] = {}
-    if USAGE_GROUP_BY_ORGANIZATION in request.group_by:
+    if USAGE_GROUP_BY_ORGANIZATION in request.group_by or query.carries_organization:
         org_info_by_id = await _organization_info_by_id(
             session,
             [getattr(r, "group_organization_id", None) for r in item_rows],
@@ -1173,6 +1710,7 @@ async def get_usage_breakdown(
                 granularity,
                 existing_ids_by_dim,
                 org_info_by_id,
+                query.carries_organization,
             )
             for row in item_rows
         ],

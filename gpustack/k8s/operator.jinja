@@ -201,9 +201,26 @@ data:
                 - name: GPUSTACK_IMAGE_PULL_SECRETS
                   value: {{  config.image_pull_secrets | map(attribute='name') | join(',') }}
                 {%- endif %}
+                {#- JSON-quoted like the free-form operator_env entries below:
+                    an administrator's address is arbitrary text, and an
+                    unquoted YAML scalar carrying a `: ` would parse as a
+                    mapping rather than the string an env value has to be. #}
                 {%- if config.operator_instance_access_static_address  %}
                 - name: GPUSTACK_INSTANCE_ACCESS_STATIC_ADDRESS
-                  value: {{ config.operator_instance_access_static_address }}
+                  value: {{ config.operator_instance_access_static_address | tojson }}
+                {%- endif %}
+                {#- The two tri-state knobs test `is not none`, never truthiness:
+                    an unmanaged knob renders no entry so the operator's own
+                    default applies, while an explicit off must still render the
+                    literal "false". Quoted, because an unquoted YAML `false` is
+                    a boolean and a container env value must be a string. #}
+                {%- if config.operator_instance_type_derived_from_node is not none %}
+                - name: GPUSTACK_INSTANCE_TYPE_DERIVED_FROM_NODE
+                  value: "{{ config.operator_instance_type_derived_from_node }}"
+                {%- endif %}
+                {%- if config.operator_instance_type_mixed_on_node is not none %}
+                - name: GPUSTACK_INSTANCE_TYPE_MIXED_ON_NODE
+                  value: "{{ config.operator_instance_type_mixed_on_node }}"
                 {%- endif %}
                 {%- if config.operator_env %}
                 {%- for k, v in config.operator_env.items() %}

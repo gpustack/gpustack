@@ -24,10 +24,13 @@ from gpustack.routes import clusters as clusters_route
 from gpustack.routes import cloud_credentials as cloud_credentials_route
 from gpustack.routes import gpu_instances as gpu_instances_route
 from gpustack.routes import model_instances as model_instances_route
-from gpustack.schemas.clusters import ClusterProvider
+from gpustack.schemas.clusters import (
+    ClusterProvider,
+    GpuInstanceOptions,
+    K8sOptions,
+)
 from gpustack.schemas.principals import PrincipalType
 from gpustack.server import services as services_module
-
 
 OWNER_PRINCIPAL = 999
 CALLER_PRINCIPAL = 7
@@ -314,6 +317,11 @@ async def test_gpu_instance_create_allows_granted_cluster(monkeypatch):
         deleted_at=None,
         owner_principal_id=OWNER_PRINCIPAL,
         provider=ClusterProvider.Kubernetes,
+        # Registered for GPU Service: a cluster that can host a GPU instance at
+        # all. This test is about visibility-vs-ownership, so the purpose has to
+        # be the one that lets the call through — otherwise it would be
+        # asserting against a refusal that has nothing to do with access.
+        k8s_options=K8sOptions(gpu_instance_options=GpuInstanceOptions()),
     )
     monkeypatch.setattr(
         gpu_instances_route.Cluster,
@@ -342,7 +350,7 @@ async def test_gpu_instance_create_allows_granted_cluster(monkeypatch):
         owner_principal_id=CALLER_PRINCIPAL,
         cluster_id=2,
         name="x",
-        spec=SimpleNamespace(type_=None),
+        spec=SimpleNamespace(type_=None, command=None, ports=None),
         model_dump=lambda: {"cluster_id": 2, "name": "x"},
     )
     ctx = _user_ctx()

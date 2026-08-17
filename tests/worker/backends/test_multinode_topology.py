@@ -7,6 +7,8 @@ Covers:
   (``dp_only`` / ``mp_only`` / ``nested``).
 - Heterogeneous worker groups (vLLM allows per-node DP-Local).
 - Failure paths: TP/PP that cannot fit, mismatched user-supplied DP, etc.
+- ``VLLM_PORT`` / ``VLLM_DP_MASTER_PORT`` injection per shape (Issues #5657,
+  #6019).
 """
 
 from unittest.mock import MagicMock
@@ -784,3 +786,65 @@ def test_create_candidate_skips_topology_check_for_single_worker():
     candidate, reason = _create_candidate(model, [_mock_worker("a", 8)])
     assert candidate is not None
     assert reason is None
+
+
+# ---------------------------------------------------------------------------
+# VLLM_PORT / VLLM_DP_MASTER_PORT injection per shape (#5657, #6019)
+# ---------------------------------------------------------------------------
+
+
+def _distributed_env(shape, executor_backend="mp", with_deployment_metadata=True):
+    """Drive _set_distributed_env with a stubbed topology shape.
+
+    The ports layout mirrors what _assign_ports hands a distributed mp
+    instance: [http, dp_rpc, master, VLLM_PORT, connecting].
+    """
+    server = object.__new__(VLLMServer)
+    server._model = MagicMock(
+        backend_parameters=["--distributed-executor-backend", executor_backend],
+        backend_version=None,
+    )
+    server._model_instance = MagicMock(ports=[40000, 40001, 40002, 40042, 40063])
+    server._worker = MagicMock(ip="10.0.0.1", ifname="eth0")
+    server._resolve_multinode_shape = MagicMock(return_value=shape)
+    server._get_selected_gpu_devices = MagicMock(return_value=[])
+
+    env = {}
+    if with_deployment_metadata:
+        server._set_distributed_env(env, MagicMock())
+    else:
+        server._set_distributed_env(env)
+    return env
+
+
+@pytest.mark.parametrize(
+    "shape, vllm_port, dp_master_port",
+    [
+        # dp_only leaves --nnodes unset, so vLLM derives its TCPStore port from
+        # get_next_dp_init_port() and needs a reserved start port (#5657).
+        ("dp_only", "40042", "40063"),
+        # nnodes > 1 shapes take --master-port instead, and every cross-node
+        # WorkerProc calls get_open_port() once for its XPUB socket — a shared
+        # start port makes them collide deterministically (#6019).
+        ("mp_only", None, None),
+        ("nested", None, "40063"),
+        # Topology inference failed: stay out of the way.
+        (None, None, None),
+    ],
+)
+def test_mp_port_injection_matrix(shape, vllm_port, dp_master_port):
+    env = _distributed_env(shape)
+    assert env.get("VLLM_PORT") == vllm_port
+    assert env.get("VLLM_DP_MASTER_PORT") == dp_master_port
+
+
+def test_mp_skips_injection_without_deployment_metadata():
+    env = _distributed_env(None, with_deployment_metadata=False)
+    assert "VLLM_PORT" not in env
+    assert "VLLM_DP_MASTER_PORT" not in env
+
+
+def test_ray_path_still_pins_vllm_port_to_connecting_port():
+    env = _distributed_env("dp_only", executor_backend="ray")
+    assert env["VLLM_PORT"] == "40063"
+    assert "VLLM_DP_MASTER_PORT" not in env

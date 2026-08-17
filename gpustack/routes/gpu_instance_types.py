@@ -11,6 +11,7 @@ from gpustack.api.tenant import cluster_visibility_conditions
 from gpustack.gpu_instances import gateway_client
 from gpustack.gpu_instances.cluster_apis import ClusterOps
 from gpustack.routes.gpu_instances_helper import (
+    assert_cluster_gpu_service,
     build_cluster_ops,
     ensure_visible,
     ensure_writable,
@@ -27,7 +28,8 @@ from gpustack.schemas import (
     GPUInstanceTypePublic,
     GPUInstanceTypesPublic,
 )
-from gpustack.schemas.clusters import ClusterProvider
+from gpustack.schemas.clusters import ClusterProvider, is_gpu_service_cluster
+from gpustack.schemas.gpu_instance_types import DERIVED_FROM_NODE_LABEL
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 
@@ -57,13 +59,20 @@ async def get_gpu_aggregated_instance_types(
             extra_conditions=cluster_visibility_conditions(ctx, Cluster),
         )
 
+    # ...then narrow to the ones registered for GPU Service. A Model Service
+    # cluster's operator still derives instance types from its nodes, but they
+    # describe capacity committed to model deployment, so offering them here
+    # would let a caller launch a GPU Instance against a cluster that was never
+    # provisioned to host one. Purpose lives inside the ``k8s_options`` JSON
+    # column, so it narrows here rather than in the query's ``fields``.
     # gateway_client list/watch take cluster ids as strings.
-    cluster_ids = [str(c.id) for c in clusters]
+    cluster_ids = [str(c.id) for c in clusters if is_gpu_service_cluster(c)]
 
     if not cluster_ids:
-        # No visible clusters → return an empty aggregate. The gateway treats an
-        # empty cluster filter as "all clusters", so forwarding the empty set
-        # would leak the whole fleet to a caller who can see nothing.
+        # No visible GPU Service clusters → return an empty aggregate. The
+        # gateway treats an empty cluster filter as "all clusters", so
+        # forwarding the empty set would leak the whole fleet to a caller who
+        # can see nothing.
         return GPUAggregatedInstanceTypesPublic(items=[])
 
     if watch:
@@ -140,6 +149,7 @@ async def create_gpu_instance_type(
         ),
         ctx,
     )
+    assert_cluster_gpu_service(cluster)
     ops = await build_cluster_ops(request, session, cluster)
 
     spec = create.spec.model_dump(by_alias=True, exclude_none=True)
@@ -167,6 +177,7 @@ async def update_gpu_instance_type(
         ),
         ctx,
     )
+    assert_cluster_gpu_service(cluster)
     ops = await build_cluster_ops(request, session, cluster)
 
     spec = update.spec.model_dump(by_alias=True, exclude_none=True)
@@ -192,6 +203,7 @@ async def delete_gpu_instance_type(
         ),
         ctx,
     )
+    assert_cluster_gpu_service(cluster)
     ops = await build_cluster_ops(request, session, cluster)
 
     async with ops, handle_error():
@@ -219,6 +231,7 @@ async def deactivate_gpu_instance_type(
         ),
         ctx,
     )
+    assert_cluster_gpu_service(cluster)
     ops = await build_cluster_ops(request, session, cluster)
 
     async with ops, handle_error():
@@ -247,6 +260,7 @@ async def activate_gpu_instance_type(
         ),
         ctx,
     )
+    assert_cluster_gpu_service(cluster)
     ops = await build_cluster_ops(request, session, cluster)
 
     async with ops, handle_error():
@@ -301,13 +315,17 @@ async def _aggregated_instance_type_events(
 
 def _to_instance_type_public(item: dict) -> GPUInstanceTypePublic:
     """Map a raw ``worker.gpustack.ai/v1`` InstanceType dict into the public
-    schema, hoisting ``metadata.name`` to ``name``. A freshly-created CR may
-    lack a reconciled status, so an empty status maps to ``{}`` (every
+    schema, hoisting ``metadata.name`` to ``name`` and the operator's
+    derived-from-node marker out of ``metadata.labels``. A freshly-created CR
+    may lack a reconciled status, so an empty status maps to ``{}`` (every
     ``GPUInstanceTypeStatus`` field is Optional)."""
+    metadata = item.get("metadata") or {}
+    labels = metadata.get("labels") or {}
     return GPUInstanceTypePublic(
-        name=item.get("metadata", {}).get("name"),
+        name=metadata.get("name"),
         spec=item.get("spec") or {},
         status=item.get("status") or {},
+        derived_from_node=labels.get(DERIVED_FROM_NODE_LABEL) == "true",
     )
 
 

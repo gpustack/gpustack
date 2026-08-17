@@ -479,10 +479,11 @@ class VLLMServer(InferenceServer):
             )
             if shape in ("dp_only", "nested") and ports:
                 env["VLLM_DP_MASTER_PORT"] = str(ports[-1])
-            # Pin vLLM's internal init port to a reserved one so get_open_port()
-            # can't grab a kernel-stealable ephemeral port (#5657). Needs the
-            # runner patch that makes get_open_port() honor VLLM_PORT.
-            if len(ports) > 3:
+            # Only dp_only needs a reserved start port for vLLM's TCPStore
+            # (#5657); with nnodes > 1 that port comes from --master-port, and a
+            # shared start port makes cross-node WorkerProcs racing for their
+            # XPUB socket collide (#6019).
+            if shape == "dp_only" and len(ports) > 3:
                 env["VLLM_PORT"] = str(ports[3])
         else:
             if ports:

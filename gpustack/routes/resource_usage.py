@@ -12,10 +12,25 @@ The token tabs keep using ``gpustack/routes/usage.py`` (``model_usages``)
 unchanged; this module only serves the time-based resources.
 """
 
+import contextlib
 import json
+import logging
+import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from functools import partial
 from math import ceil
-from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
+from typing import (
+    Any,
+    AsyncIterator,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Type,
+    Union,
+)
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
@@ -49,14 +64,42 @@ from gpustack.schemas.principals import (
     is_reserved_principal_name,
 )
 from gpustack.schemas.usage import (
+    USAGE_EXPORT_SPLIT_AUTO,
+    UsageExportEstimateResponse,
+    UsageExportShape,
+    UsageExportSheet,
+    UsageExportSheetEstimate,
     USAGE_GRANULARITY_DAY,
+    USAGE_GRANULARITY_HOUR,
     USAGE_GRANULARITY_MONTH,
     USAGE_GRANULARITY_WEEK,
     USAGE_SCOPE_ALL,
     USAGE_SCOPE_SELF,
 )
 from gpustack.schemas.resource_events import ResourceEvent
+from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, SessionDep, TenantContextDep
+from gpustack.utils.export_delivery import (
+    ExportSheetPlan,
+    export_response,
+    split_export_response,
+    trailer_context,
+)
+from gpustack.utils.export_limits import (
+    build_export_estimate,
+    effective_export_format,
+    export_columns_payload,
+    export_split_plan,
+    export_too_large,
+    requested_platform_wide,
+)
+from gpustack.utils.tabular_export import ExportStageTimer
+from gpustack.utils.usage_export import (
+    UNTRACKED_ORGANIZATION_NAME,
+    build_resource_export_columns,
+    resource_export_column_keys,
+    resource_export_row,
+)
 from gpustack.utils.rollup_tz import (
     resolve_rollup_tz,
     rollup_fixed_tz,
@@ -64,10 +107,9 @@ from gpustack.utils.rollup_tz import (
     to_rollup_aware,
 )
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
 
-# metered_usage is hourly; token usage (model_usages) has no hour granularity.
-USAGE_GRANULARITY_HOUR = "hour"
+router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +219,11 @@ def _is_platform_wide(user, ctx) -> bool:
     """Platform admin acting without a pinned Org — the only context where the
     cross-tenant Organization dimension / filter is meaningful (mirrors
     ``/usage`` and the meta gating)."""
-    return bool(getattr(user, "is_admin", False)) and (
+    # Read straight off the user: a defaulted lookup would answer "not an
+    # admin" for a renamed or missing field, which is a permission decision
+    # made by a typo. ``ctx`` is optional by contract — the GET endpoints call
+    # in without one.
+    return bool(user.is_admin) and (
         ctx is None or getattr(ctx, "current_principal_id", None) is None
     )
 
@@ -413,7 +459,42 @@ def _apply_scope(
     return statement
 
 
-async def _enrich_items(session, gb: str, items: List[dict]) -> None:  # noqa: C901
+class ExportEnrichmentCache:
+    """Remembers what an entity resolved to, for the length of one export.
+
+    Enrichment is a property of the ENTITY, not of the batch it landed in —
+    and the streaming export calls ``_enrich_items`` once per 1000-row batch,
+    while a ``group_by: ["date", "volume"]`` result repeats every volume on
+    every date. Without memoizing, a 145k-row storage export re-resolves the
+    same ~1200 volumes 145 times, including a MAX()-per-resource aggregate
+    across ``metered_usage`` that costs far more than the batch it serves.
+    Cached, the cost scales with distinct entities instead of with rows — the
+    same shape the token export's ``_IdentityCache`` has.
+
+    Scoped to one export, so "does this volume still exist" is answered once
+    per run — consistent with the single query snapshot the rows come from.
+    """
+
+    def __init__(self):
+        self.entity_exists: Dict[Any, bool] = {}
+        self.entity_names: Dict[Any, str] = {}
+        self.creator_exists: Dict[Any, bool] = {}
+        self.org_info: Dict[Any, Any] = {}
+        self.dimensions: Dict[Any, dict] = {}
+
+    async def resolve(self, known: Dict, keys, fetch) -> None:
+        """Fill ``known`` for whatever ``keys`` it is missing, and only those."""
+        missing = [key for key in set(keys) if key not in known]
+        if missing:
+            known.update(await fetch(missing))
+
+
+async def _enrich_items(  # noqa: C901
+    session,
+    gb: str,
+    items: List[dict],
+    cache: Optional[ExportEnrichmentCache] = None,
+) -> None:
     """Post-query enrichment of breakdown rows (mutates ``items`` in place).
 
     * entity groupings (user / instance / volume): resolve display names
@@ -428,34 +509,45 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:  # noqa: C
         return
     if gb in ("user", "instance", "volume"):
         ids = [i["id"] for i in items if i.get("id") is not None]
-        existing: set[int] = set()
-        names: dict[int, str] = {}
-        if ids:
+        exists: Dict[Any, bool] = cache.entity_exists if cache else {}
+        names: Dict[Any, str] = cache.entity_names if cache else {}
+
+        async def fetch_entities(missing):
             if gb == "user":
                 principals = (
-                    await session.exec(select(Principal).where(Principal.id.in_(ids)))
+                    await session.exec(
+                        select(Principal).where(Principal.id.in_(missing))
+                    )
                 ).all()
                 # Show the login name (``name``), not ``display_name`` — the
                 # Tokens tab groups users by login name too, so both usage
                 # surfaces stay consistent. Resolving live (by id) reflects a
                 # rename; rows whose principal is gone keep the snapshot
                 # ``creator_name`` (also a login name) set as ``key`` above.
-                names = {p.id: p.name for p in principals}
-                existing = set(names)
+                names.update({p.id: p.name for p in principals})
+                live = {p.id for p in principals}
             else:
                 model = GPUInstance if gb == "instance" else GPUInstancePersistentVolume
-                existing = set(
+                live = set(
                     (
-                        await session.exec(select(model.id).where(model.id.in_(ids)))
+                        await session.exec(
+                            select(model.id).where(model.id.in_(missing))
+                        )
                     ).all()
                 )
+            return {rid: rid in live for rid in missing}
+
+        if cache is not None:
+            await cache.resolve(exists, ids, fetch_entities)
+        elif ids:
+            exists.update(await fetch_entities(list(set(ids))))
         for i in items:
             rid = i.get("id")
             if rid is None:
                 continue
             if gb == "user" and names.get(rid):
                 i["key"] = names[rid]
-            i["deleted"] = rid not in existing
+            i["deleted"] = not exists.get(rid, False)
 
     # Organization grouping: prefer the LIVE principal name (fresh on rename,
     # consistent with the token breakdown); fall back to the row
@@ -466,7 +558,19 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:  # noqa: C
     # left keyless ("Untracked").
     if gb == "organization":
         ids = [i["id"] for i in items if i.get("id") is not None]
-        info = await _organization_info_by_id(session, ids)
+        info: Dict[Any, Any] = cache.org_info if cache else {}
+
+        async def fetch_orgs(missing):
+            found = await _organization_info_by_id(session, missing)
+            # Record the misses too. A gone Org that stays out of the cache
+            # would be re-queried by every batch it appears in — which is the
+            # cost this cache exists to remove.
+            return {oid: found.get(oid) for oid in missing}
+
+        if cache is not None:
+            await cache.resolve(info, ids, fetch_orgs)
+        elif ids:
+            info = await _organization_info_by_id(session, ids)
         for i in items:
             rid = i.get("id")
             if rid is None:
@@ -489,28 +593,96 @@ async def _enrich_items(session, gb: str, items: List[dict]) -> None:  # noqa: C
         creator_ids = {
             i["creator_id"] for i in items if i.get("creator_id") is not None
         }
-        existing_creators: set[int] = set()
-        if creator_ids:
+        creator_exists: Dict[Any, bool] = cache.creator_exists if cache else {}
+
+        async def fetch_creators(missing):
             # Exclude soft-deleted principals (``deleted_at`` set) — they're
             # "deleted" everywhere else (see organization_members), so a
             # soft-deleted owner must flag ``creator_deleted`` too, not just a
             # hard-deleted / never-existed id.
-            existing_creators = set(
+            live = set(
                 (
                     await session.exec(
                         select(Principal.id).where(
-                            Principal.id.in_(creator_ids),
+                            Principal.id.in_(missing),
                             Principal.deleted_at.is_(None),
                         )
                     )
                 ).all()
             )
+            return {cid: cid in live for cid in missing}
+
+        if cache is not None:
+            await cache.resolve(creator_exists, creator_ids, fetch_creators)
+        elif creator_ids:
+            creator_exists.update(await fetch_creators(list(creator_ids)))
         for i in items:
             cid = i.get("creator_id")
             if cid is not None:
-                i["creator_deleted"] = cid not in existing_creators
+                i["creator_deleted"] = not creator_exists.get(cid, False)
 
-    await _attach_dimensions(session, gb, items)
+    await _attach_organization(session, items, cache=cache)
+    await _attach_dimensions(session, gb, items, cache=cache)
+
+
+async def _attach_organization(session, items: List[dict], cache=None) -> None:
+    """Resolve the organization an entity row BELONGS TO (mutates in place).
+
+    This is the attribute form of the organization dimension: an instance or
+    volume has exactly one consumer, so naming it adds a column without
+    changing which rows exist. A no-op unless the statement carried the
+    consumer columns (see ``carries_organization``).
+
+    Resolution deliberately mirrors the dimension in ``_enrich_items``: live
+    principal name by id, the row's own snapshot when that principal is gone,
+    ``Org {id}`` as the last resort, and ``Untracked`` for usage with no
+    consumer at all. One organization must read the same whether it is the
+    thing being grouped or an attribute of the thing being grouped — two
+    spellings of one tenant is precisely what makes an export unusable for
+    reconciliation.
+    """
+    tagged = [item for item in items if "organization_id" in item]
+    if not tagged:
+        return
+
+    ids = [item["organization_id"] for item in tagged if item["organization_id"]]
+    info: Dict[Any, Any] = cache.org_info if cache is not None else {}
+
+    async def fetch_orgs(missing):
+        found = await _organization_info_by_id(session, missing)
+        return {oid: found.get(oid) for oid in missing}
+
+    if cache is not None:
+        await cache.resolve(info, ids, fetch_orgs)
+    elif ids:
+        info = await _organization_info_by_id(session, ids)
+
+    for item in tagged:
+        oid = item["organization_id"]
+        snapshot_name = item.pop("_consumer_name", None)
+        snapshot_kind = item.pop("_consumer_kind", None)
+        if not oid:
+            # NULL consumer is un-attributed usage, not missing data (§3.10.4).
+            item["organization_name"] = UNTRACKED_ORGANIZATION_NAME
+            item["organization_kind"] = None
+            item["organization_deleted"] = False
+            continue
+        live = info.get(oid)
+        item["organization_name"] = (
+            (live[0] if live else None) or snapshot_name or f"Org {oid}"
+        )
+        item["organization_kind"] = (live[1] if live else None) or snapshot_kind
+        item["organization_deleted"] = live is None
+
+
+async def _fill_missing(awaitable, keys) -> dict:
+    """Await a lookup and record an entry for every key, hits and misses alike.
+
+    A key whose lookup found nothing must still land in the cache, or every
+    batch containing it re-runs the query that already came back empty.
+    """
+    found = await awaitable
+    return {key: found.get(key) or {} for key in keys}
 
 
 async def _dims_by_representative(session, *, group_col, keys, extra_filter):
@@ -567,21 +739,39 @@ async def _dims_by_shape(session, shapes):
     return {(r[0], r[1]): (r[2] or {}) for r in rows}
 
 
-async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
+async def _attach_dimensions(
+    session,
+    gb: str,
+    items: List[dict],
+    cache: Optional[ExportEnrichmentCache] = None,
+) -> None:
     """Attach the ``dimensions`` the UI needs per grouping (in place).
 
     Only the ``instance_type`` / ``instance`` / ``volume`` groupings carry
     dimensions; for any other grouping (e.g. ``user`` / ``date``) this is a
     no-op.
+
+    The lookups here are the expensive half of enrichment — a MAX(id) per
+    group over ``metered_usage`` — and their answers are flavor- or
+    resource-constant. Given a cache they run once per entity for the whole
+    export instead of once per batch.
     """
     if gb == "instance_type":
         # One representative row per (sku, sku_count) supplies the whole shape's
         # display blob (product / per-unit specs / VRAM are flavor-constant;
         # cpu/mem/cards are constant within the shape).
-        dims = await _dims_by_shape(
-            session,
-            {(i.get("sku"), i.get("_sku_count")) for i in items},
-        )
+        shapes = {(i.get("sku"), i.get("_sku_count")) for i in items}
+        dims: Dict[Any, dict] = cache.dimensions if cache else {}
+        if cache is not None:
+            await cache.resolve(
+                dims,
+                shapes,
+                lambda missing: _fill_missing(
+                    _dims_by_shape(session, missing), missing
+                ),
+            )
+        else:
+            dims = await _dims_by_shape(session, shapes)
         for i in items:
             d = dims.get((i.get("sku"), i.pop("_sku_count", None))) or {}
             i["dimensions"] = {
@@ -603,12 +793,29 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
         # popover like the GPU Instances list. Keyed by resource_id since the
         # sku is count-independent. ``persistent_mib`` was snapshotted at
         # metering time, so it survives the PV being deleted later.
-        dims = await _dims_by_representative(
-            session,
-            group_col=MeteredUsage.resource_id,
-            keys=[i.get("id") for i in items if i.get("id") is not None],
-            extra_filter=_UPTIME,
-        )
+        keys = [i.get("id") for i in items if i.get("id") is not None]
+        dims: Dict[Any, dict] = cache.dimensions if cache else {}
+        if cache is not None:
+            await cache.resolve(
+                dims,
+                keys,
+                lambda missing: _fill_missing(
+                    _dims_by_representative(
+                        session,
+                        group_col=MeteredUsage.resource_id,
+                        keys=missing,
+                        extra_filter=_UPTIME,
+                    ),
+                    missing,
+                ),
+            )
+        else:
+            dims = await _dims_by_representative(
+                session,
+                group_col=MeteredUsage.resource_id,
+                keys=keys,
+                extra_filter=_UPTIME,
+            )
         for i in items:
             d = dims.get(i.get("id")) or {}
             i["dimensions"] = {
@@ -630,12 +837,29 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
     elif gb == "volume":
         # Per-volume storage type + provisioned capacity (constant per volume),
         # for the Storage tab's Type / Capacity columns.
-        dims = await _dims_by_representative(
-            session,
-            group_col=MeteredUsage.resource_id,
-            keys=[i.get("id") for i in items if i.get("id") is not None],
-            extra_filter=MeteredUsage.meter_key == METER_STORAGE_CAPACITY,
-        )
+        keys = [i.get("id") for i in items if i.get("id") is not None]
+        dims: Dict[Any, dict] = cache.dimensions if cache else {}
+        if cache is not None:
+            await cache.resolve(
+                dims,
+                keys,
+                lambda missing: _fill_missing(
+                    _dims_by_representative(
+                        session,
+                        group_col=MeteredUsage.resource_id,
+                        keys=missing,
+                        extra_filter=MeteredUsage.meter_key == METER_STORAGE_CAPACITY,
+                    ),
+                    missing,
+                ),
+            )
+        else:
+            dims = await _dims_by_representative(
+                session,
+                group_col=MeteredUsage.resource_id,
+                keys=keys,
+                extra_filter=MeteredUsage.meter_key == METER_STORAGE_CAPACITY,
+            )
         for i in items:
             d = dims.get(i.get("id")) or {}
             i["dimensions"] = {
@@ -644,7 +868,27 @@ async def _attach_dimensions(session, gb: str, items: List[dict]) -> None:
             }
 
 
-async def _run_breakdown(  # noqa: C901
+@dataclass
+class ResourceBreakdownQuery:
+    """The statements behind one resource-breakdown request.
+
+    Mirrors ``BreakdownQuery`` on the token side: built once by
+    :func:`_build_resource_breakdown_statement` and shared by the JSON routes
+    and the streaming export routes, so scope resolution and the permission
+    gate exist in exactly one place. ``items_statement`` is ordered but not
+    paginated — slicing belongs to the caller.
+    """
+
+    summary_statement: Any
+    items_statement: Any
+    count_statement: Any
+    metric_keys: List[str]
+    carries_creator: bool
+    carries_organization: bool
+    effective_scope: str
+
+
+async def _build_resource_breakdown_statement(  # noqa: C901
     session,
     *,
     user,
@@ -654,8 +898,22 @@ async def _run_breakdown(  # noqa: C901
     metric_keys: List[str],
     join_instances: bool = True,
     join_volumes: bool = True,
-):
+    strict_scope: bool = False,
+) -> ResourceBreakdownQuery:
+    """Resolve scope, check permission and build the breakdown statements.
+
+    ``strict_scope`` makes an unauthorized ``all`` a 403 instead of a silent
+    downgrade to ``self``. The export path sets it only when the caller
+    explicitly asked for platform-wide data — see the token-side
+    ``_build_breakdown_statement`` for the full reasoning.
+    """
     effective_scope = _resolve_effective_scope(user, ctx, request.scope)
+    if (
+        strict_scope
+        and request.scope == USAGE_SCOPE_ALL
+        and effective_scope != USAGE_SCOPE_ALL
+    ):
+        raise ForbiddenException(message="No permission to export platform-wide usage")
     _check_resource_permission(user, ctx, request, effective_scope)
     metrics = _metric_columns()
     metric_keys = [k for k in metric_keys if k in metrics]
@@ -727,7 +985,7 @@ async def _run_breakdown(  # noqa: C901
         func.count(func.distinct(active_resource_id)).label("resources"),
         func.count(func.distinct(MeteredUsage.creator_id)).label("active_users"),
     ]
-    summary_row = (await session.exec(base.with_only_columns(*summary_cols))).first()
+    summary_statement = base.with_only_columns(*summary_cols)
 
     # Combine each grouping dimension left-to-right (e.g. ["date",
     # "instance_type"] → one (date, sku) row per bucket per group). Only "date"
@@ -735,8 +993,11 @@ async def _run_breakdown(  # noqa: C901
     # group_key/group_id) don't clash.
     select_cols: List[Any] = []
     group_cols: List[Any] = []
+    date_expr = None
     for gb in request.group_by:
         sc, gc = _group_columns(gb, session, request.granularity)
+        if gb == "date":
+            date_expr = gc[0]
         select_cols.extend(sc)
         group_cols.extend(gc)
     agg_cols = [metrics[k].label(k) for k in metric_keys]
@@ -772,17 +1033,201 @@ async def _run_breakdown(  # noqa: C901
             func.max(MeteredUsage.consumer_name).label("org_name"),
             func.max(MeteredUsage.consumer_principal_kind).label("org_kind"),
         ]
+    # The organization an entity BELONGS TO, carried as an attribute of the row
+    # rather than as a grouping key — exactly like the creator above, and safe
+    # for exactly the same reason: an instance or volume has one consumer, so
+    # MAX collapses to that one row's values and the three stay consistent with
+    # each other. Coarser groupings span many consumers and get nothing.
+    #
+    # Only in the platform-wide "All" view: with an Org pinned, every row has
+    # the same one and the columns would be three constants. Deciding that here
+    # rather than letting the client ask keeps the file's shape server-owned —
+    # and the client cannot know it anyway, since it is a property of the
+    # caller's tenancy, not of the query.
+    carries_organization = carries_creator and _is_platform_wide(user, ctx)
+    if carries_organization:
+        agg_cols += [
+            func.max(MeteredUsage.consumer_principal_id).label("consumer_id"),
+            func.max(MeteredUsage.consumer_name).label("consumer_name"),
+            func.max(MeteredUsage.consumer_principal_kind).label("consumer_kind"),
+        ]
     grouped = base.with_only_columns(*select_cols, *agg_cols).group_by(*group_cols)
 
-    order_key = request.order_by or (metric_keys[0] if metric_keys else None)
-    if order_key and order_key in metrics:
-        order_expr = metrics[order_key]
-        grouped = grouped.order_by(
-            desc(order_expr) if request.descending else order_expr
-        )
+    # An ``order_by`` this tab does not meter counts as no preference at all.
+    # The alternative is worse than a 400: it would suppress the date default
+    # (the caller "expressed a preference") and then find no column to sort by,
+    # leaving the statement with NO ordering — the shuffled Date column this
+    # ordering exists to prevent. Which keys are legal is per-endpoint
+    # (``gb_days`` on Storage, ``gpu_hours`` on GPU Instances), so the schema
+    # cannot check it and this is the only place that can.
+    requested_key = request.order_by if request.order_by in metric_keys else None
 
-    count_stmt = select(func.count()).select_from(grouped.subquery())
-    total = (await session.exec(count_stmt)).first() or 0
+    order_exprs: List[Any] = []
+    # A date-grouped result is a time series and has to come out in time
+    # order. Sorting by the metric alone leaves ties — and a flat metric (every
+    # bucket the same GB-Days, say) makes EVERY row a tie, so the database is
+    # free to return them shuffled. That shows up as a downloaded file whose
+    # Date column jumps around. The metric follows as the tie-break, so a
+    # ["date", "volume"] grouping has an order within a date too.
+    #
+    # Only applied when the caller expressed no preference, so an explicit
+    # ``order_by`` still wins — but ``descending`` is honoured either way,
+    # since one request cannot sensibly mean newest-first and smallest-first.
+    if date_expr is not None and requested_key is None:
+        order_exprs.append(desc(date_expr) if request.descending else date_expr)
+    order_key = requested_key or (metric_keys[0] if metric_keys else None)
+    if order_key:
+        order_expr = metrics[order_key]
+        order_exprs.append(desc(order_expr) if request.descending else order_expr)
+    if order_exprs:
+        grouped = grouped.order_by(*order_exprs)
+
+    return ResourceBreakdownQuery(
+        summary_statement=summary_statement,
+        items_statement=grouped,
+        count_statement=select(func.count()).select_from(grouped.subquery()),
+        metric_keys=metric_keys,
+        carries_creator=carries_creator,
+        carries_organization=carries_organization,
+        effective_scope=effective_scope,
+    )
+
+
+def _metrics_of(row, metric_keys: List[str]) -> Dict[str, Any]:
+    out = {k: round(float(getattr(row, k, 0) or 0), 2) for k in metric_keys}
+    out["resources"] = int(getattr(row, "resources", 0) or 0)
+    out["active_users"] = int(getattr(row, "active_users", 0) or 0)
+    return out
+
+
+# The grouping columns a breakdown statement may or may not have selected.
+_OPTIONAL_ROW_COLUMNS = (
+    "group_date",
+    "group_key",
+    "group_id",
+    "group_sku_count",
+    "org_name",
+    "consumer_id",
+    "sku",
+)
+
+
+def _columns_present(row) -> Set[str]:
+    """Which of the optional columns this statement selected.
+
+    Answered once per batch rather than once per row, because it is a property
+    of the STATEMENT. That matters more than it looks: a missing key on a
+    SQLAlchemy Row goes through its exception machinery — ``_key_fallback``
+    builds an error object that ``hasattr`` immediately discards — so five
+    probes a row is over a million throwaway calls on a 100k-row export.
+
+    Reads the result's own key map where there is one, and falls back to
+    probing the attributes for row objects that have none (tests pass plain
+    namespaces); either way the cost is paid once.
+    """
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return set(mapping.keys())
+    return {name for name in _OPTIONAL_ROW_COLUMNS if hasattr(row, name)}
+
+
+def _rows_to_items(
+    rows,
+    *,
+    request: ResourceBreakdownRequest,
+    metric_keys: List[str],
+    carries_creator: bool,
+    aware_tz,
+    fixed_tz,
+) -> List[dict]:
+    """Aggregated rows → breakdown items.
+
+    Extracted so the streaming export builds items with the same code as the
+    JSON route; the two must not diverge in what a row means.
+    """
+    items = []
+    if not rows:
+        return items
+    present = _columns_present(rows[0])
+    has_date = "group_date" in present
+    has_key = "group_key" in present
+    has_id = "group_id" in present
+    has_sku_count = "group_sku_count" in present
+    has_org = "org_name" in present
+    has_consumer = "consumer_id" in present
+    has_sku = "sku" in present
+
+    for row in rows:
+        item = {"metrics": _metrics_of(row, metric_keys)}
+        # Carry whichever grouping columns this query selected — a compound
+        # (date + dimension) trend row has both ``group_date`` and ``group_key``.
+        if has_date:
+            item["date"] = _localize_bucket(
+                row.group_date, request.granularity, fixed_tz
+            )
+        if has_key:
+            item["key"] = row.group_key
+        if has_id:
+            item["id"] = row.group_id
+        # instance_type rows are grouped by (sku, sku_count); carry sku_count so
+        # enrichment can fetch the right per-shape representative for display.
+        if has_sku_count:
+            item["_sku_count"] = row.group_sku_count
+        # Organization grouping: carry the consumer name / kind snapshot for
+        # ``_enrich_items`` (popped there once the display key is resolved).
+        if has_org:
+            item["_org_name"] = row.org_name
+            item["_org_kind"] = getattr(row, "org_kind", None)
+        # The consumer this entity belongs to. Carried under its own keys, not
+        # the dimension's: when organization IS the grouping these are absent,
+        # and mixing the two would leave "whose row is this" ambiguous.
+        if has_consumer:
+            item["organization_id"] = row.consumer_id
+            item["_consumer_name"] = getattr(row, "consumer_name", None)
+            item["_consumer_kind"] = getattr(row, "consumer_kind", None)
+        item["sku"] = row.sku if has_sku else None
+        # Owner of the resource, present only for resource-dimension groupings
+        # (see ``carries_creator``) so per-instance / per-volume (and
+        # date+instance) rows show their creator without a ``user`` grouping.
+        if carries_creator:
+            item["creator_id"] = getattr(row, "creator_id", None)
+            item["creator_name"] = getattr(row, "creator_name", None)
+        # max(bucket_start) is a UTC instant → show it in the rollup tz, aware
+        # (carries an offset) so the API is self-describing and the UI renders
+        # the rollup wall clock via parseZone without re-converting.
+        item["metrics"]["last_active"] = to_rollup_aware(
+            getattr(row, "last_active", None), aware_tz
+        )
+        items.append(item)
+    return items
+
+
+async def _run_breakdown(
+    session,
+    *,
+    user,
+    ctx,
+    request: ResourceBreakdownRequest,
+    base_filter,
+    metric_keys: List[str],
+    join_instances: bool = True,
+    join_volumes: bool = True,
+):
+    query = await _build_resource_breakdown_statement(
+        session,
+        user=user,
+        ctx=ctx,
+        request=request,
+        base_filter=base_filter,
+        metric_keys=metric_keys,
+        join_instances=join_instances,
+        join_volumes=join_volumes,
+    )
+    metric_keys = query.metric_keys
+    carries_creator = query.carries_creator
+    grouped = query.items_statement
+    summary_row = (await session.exec(query.summary_statement)).first()
+    total = (await session.exec(query.count_statement)).first() or 0
 
     # No-pagination returns the whole series; ``total`` (bucket count) is known
     # here, so reject an over-large result before fetching its rows rather than
@@ -808,54 +1253,20 @@ async def _run_breakdown(  # noqa: C901
     rows = (await session.exec(items_stmt)).all()
 
     def metrics_of(row) -> Dict[str, Any]:
-        out = {k: round(float(getattr(row, k, 0) or 0), 2) for k in metric_keys}
-        out["resources"] = int(getattr(row, "resources", 0) or 0)
-        out["active_users"] = int(getattr(row, "active_users", 0) or 0)
-        return out
+        return _metrics_of(row, metric_keys)
 
     # Resolve the rollup tz once per request (not per row): the DST-correct tz
     # for instants, plus the fixed-offset tz that labels the SQL-shifted buckets.
     aware_tz = resolve_rollup_tz()
     fixed_tz = rollup_fixed_tz()
-    items = []
-    for row in rows:
-        item = {"metrics": metrics_of(row)}
-        # Carry whichever grouping columns this query selected — a compound
-        # (date + dimension) trend row has both ``group_date`` and ``group_key``.
-        if hasattr(row, "group_date"):
-            item["date"] = _localize_bucket(
-                getattr(row, "group_date", None), request.granularity, fixed_tz
-            )
-        if hasattr(row, "group_key"):
-            item["key"] = getattr(row, "group_key", None)
-        if hasattr(row, "group_id"):
-            item["id"] = getattr(row, "group_id", None)
-        # instance_type rows are grouped by (sku, sku_count); carry sku_count so
-        # enrichment can fetch the right per-shape representative for display.
-        if hasattr(row, "group_sku_count"):
-            item["_sku_count"] = getattr(row, "group_sku_count", None)
-        # Organization grouping: carry the consumer name / kind snapshot for
-        # ``_enrich_items`` (popped there once the display key is resolved).
-        if hasattr(row, "org_name"):
-            item["_org_name"] = getattr(row, "org_name", None)
-            item["_org_kind"] = getattr(row, "org_kind", None)
-        item["sku"] = getattr(row, "sku", None)
-        # Owner of the resource, present only for resource-dimension groupings
-        # (see ``carries_creator``) so per-instance / per-volume (and
-        # date+instance) rows show their creator without a ``user`` grouping.
-        # Coarser groupings omit these columns entirely, so the row won't carry
-        # them — guard on presence rather than emit a misleading null/mismatch.
-        # ``creator_name`` is the metering-time snapshot.
-        if carries_creator:
-            item["creator_id"] = getattr(row, "creator_id", None)
-            item["creator_name"] = getattr(row, "creator_name", None)
-        # max(bucket_start) is a UTC instant → show it in the rollup tz, aware
-        # (carries an offset) so the API is self-describing and the UI renders
-        # the rollup wall clock via parseZone without re-converting.
-        item["metrics"]["last_active"] = to_rollup_aware(
-            getattr(row, "last_active", None), aware_tz
-        )
-        items.append(item)
+    items = _rows_to_items(
+        rows,
+        request=request,
+        metric_keys=metric_keys,
+        carries_creator=carries_creator,
+        aware_tz=aware_tz,
+        fixed_tz=fixed_tz,
+    )
 
     # Resolve display fields for the secondary dimension regardless of whether
     # a date axis is present — a grouped trend (["date", <dim>]) needs them too,
@@ -953,6 +1364,453 @@ async def storage_breakdown(
         base_filter=(MeteredUsage.meter_key == METER_STORAGE_CAPACITY),
         metric_keys=["gb_days", "gb_hours"],
         join_instances=False,  # PV rows never resolve against the instance table
+    )
+
+
+class ResourceExportRequest(ResourceBreakdownRequest, UsageExportShape):
+    """``/{gpu-instances,storage}/breakdown/export`` payload.
+
+    Same filters as the breakdown request — the file and the table must come
+    from one predicate — plus the export-only knobs, which come from
+    :class:`UsageExportShape` so both exports enforce the same ones.
+    ``group_by`` is narrowed to optional so the single-table and multi-table
+    shapes stay mutually exclusive.
+    """
+
+    group_by: Optional[List[str]] = None
+
+    def to_breakdown_request(self, sheet: UsageExportSheet) -> ResourceBreakdownRequest:
+        # A sheet's ``sort_by`` is the token side's spelling of an order — a
+        # metric key, optionally with a leading ``-`` for descending — which
+        # this request pair keeps as two fields. Translated rather than
+        # ignored, so a multi-sheet payload can order a date sheet and a
+        # top-N sheet differently the way the other export can.
+        order_by, descending = self.order_by, self.descending
+        if sheet.sort_by:
+            descending = sheet.sort_by.startswith("-")
+            # ``removeprefix``, not ``lstrip``: the latter strips EVERY leading
+            # dash, so a malformed "--x" would arrive as the key "x".
+            order_by = sheet.sort_by.removeprefix("-")
+        # ``page=-1``: an export is the whole result set by definition.
+        return ResourceBreakdownRequest(
+            **{
+                **self.model_dump(
+                    exclude={
+                        "group_by",
+                        "sheets",
+                        "format",
+                        "split",
+                        "page",
+                        "order_by",
+                        "descending",
+                    }
+                ),
+                "group_by": sheet.group_by,
+                "order_by": order_by,
+                "descending": descending,
+                "page": -1,
+            }
+        )
+
+
+async def _resolve_resource_export_sheets(
+    session,
+    user,
+    ctx,
+    request: ResourceExportRequest,
+    *,
+    base_filter,
+    metric_keys: List[str],
+    join_instances: bool,
+    join_volumes: bool,
+    allowed: Set[str],
+    tolerate_forbidden: bool,
+) -> List[Tuple[UsageExportSheet, Optional[ResourceBreakdownQuery], Optional[str]]]:
+    sheets = request.resolved_sheets()
+    if len(sheets) > envs.USAGE_EXPORT_MAX_SHEETS:
+        raise InvalidException(
+            message=(
+                f"Too many sheets ({len(sheets)}, limit "
+                f"{envs.USAGE_EXPORT_MAX_SHEETS})."
+            )
+        )
+    resolved = []
+    for sheet in sheets:
+        unsupported = [g for g in sheet.group_by if g not in allowed]
+        if unsupported:
+            raise InvalidException(
+                message=(
+                    f"Unsupported group_by for this export: "
+                    f"{', '.join(unsupported)}"
+                )
+            )
+        # At most one dimension besides ``date``. ``_group_columns`` labels
+        # EVERY dimension's columns ``group_id`` / ``group_key``, so a second
+        # one collides with the first and the row only ever carries one pair
+        # (see the note there — only ``date`` was ever meant to be paired).
+        # The JSON route survives that as a single ambiguous label; an export
+        # cannot, because it spells the dimensions out into their own columns
+        # and would fill "User" with the volume's name. Refuse rather than
+        # write a file that states something untrue.
+        dimensions = [g for g in sheet.group_by if g != "date"]
+        if len(dimensions) > 1:
+            raise InvalidException(
+                message=(
+                    "Only one grouping dimension (optionally with 'date') can "
+                    f"be exported at a time; got: {', '.join(dimensions)}. "
+                    "Export them as separate sheets instead."
+                )
+            )
+        breakdown_request = request.to_breakdown_request(sheet)
+        try:
+            query = await _build_resource_breakdown_statement(
+                session,
+                user=user,
+                ctx=ctx,
+                request=breakdown_request,
+                base_filter=base_filter,
+                metric_keys=metric_keys,
+                join_instances=join_instances,
+                join_volumes=join_volumes,
+                strict_scope=requested_platform_wide(request),
+            )
+        except ForbiddenException as exc:
+            if not tolerate_forbidden:
+                raise
+            resolved.append((sheet, None, exc.message))
+            continue
+        resolved.append((sheet, query, None))
+    return resolved
+
+
+async def _stream_resource_export_rows(
+    session,
+    query: ResourceBreakdownQuery,
+    request: ResourceBreakdownRequest,
+) -> AsyncIterator[List[Any]]:
+    """Stream export rows off a server-side cursor, enriching per batch.
+
+    Display names and deletion flags come from a second query, which cannot
+    run on this connection while the cursor is open — so enrichment borrows a
+    session of its own for the length of the stream. Memory stays bounded by
+    the batch size instead of the result set.
+    """
+    aware_tz = resolve_rollup_tz()
+    fixed_tz = rollup_fixed_tz()
+    dims = [g for g in request.group_by if g != "date"]
+
+    @contextlib.asynccontextmanager
+    async def _enricher():
+        """One extra connection for the whole stream, not one per batch."""
+        if not dims:
+            yield None
+            return
+        async with async_session() as enrich_session:
+            yield enrich_session
+
+    # One cache for the whole stream. Without it every batch re-resolves the
+    # same entities — see ``ExportEnrichmentCache``.
+    cache = ExportEnrichmentCache()
+    timer = ExportStageTimer()
+    rows_out = 0
+    batches = 0
+
+    async with _enricher() as enrich_session:
+        result = await session.stream(query.items_statement)
+        try:
+            partitions = result.partitions(envs.USAGE_EXPORT_STREAM_CHUNK_ROWS)
+            while True:
+                # Driven by hand rather than ``async for`` so the wait on the
+                # cursor can be charged separately — and the FIRST wait charged
+                # separately again. A GROUP BY ... ORDER BY cannot hand back one
+                # row before it has produced and sorted them all, so the whole
+                # cost of the aggregate lands on that first fetch; every later
+                # one is just transferring an already-computed result. Two
+                # numbers that behave completely differently, and summing them
+                # hides the only one worth optimizing.
+                with timer.stage("aggregate" if batches == 0 else "fetch"):
+                    partition = await anext(partitions, None)
+                if partition is None:
+                    break
+                batches += 1
+                with timer.stage("build"):
+                    items = _rows_to_items(
+                        partition,
+                        request=request,
+                        metric_keys=query.metric_keys,
+                        carries_creator=query.carries_creator,
+                        aware_tz=aware_tz,
+                        fixed_tz=fixed_tz,
+                    )
+                if enrich_session is not None:
+                    with timer.stage("enrich"):
+                        await _enrich_items(enrich_session, dims[0], items, cache=cache)
+                with timer.stage("build"):
+                    batch_rows = [
+                        resource_export_row(
+                            item,
+                            request.group_by,
+                            query.metric_keys,
+                            granularity=request.granularity,
+                            carries_organization=query.carries_organization,
+                        )
+                        for item in items
+                    ]
+                # Built first, then yielded, so formatting time is attributed
+                # to ``build`` instead of disappearing into the suspension at
+                # yield.
+                for row in batch_rows:
+                    rows_out += 1
+                    yield row
+        finally:
+            # Reached on the normal end of the stream and on an abandoned
+            # download alike: the cursor is server-side, so leaving it open
+            # holds a connection for as long as the pool takes to notice.
+            await result.close()
+
+    # A slow export is otherwise invisible: the request logs one 200 and the
+    # duration of the whole download, with no way to tell an expensive
+    # aggregate from expensive enrichment. Entity counts are the number that
+    # explains enrichment — its cost tracks them, not row count.
+    logger.info(
+        "usage export streamed: group_by=%s rows=%d batches=%d "
+        "entities=%d creators=%d dimensions=%d %s",
+        ",".join(request.group_by),
+        rows_out,
+        batches,
+        len(cache.entity_exists),
+        len(cache.creator_exists),
+        len(cache.dimensions),
+        timer.summary(),
+    )
+
+
+async def _resource_export_response(
+    session,
+    user,
+    ctx,
+    request: ResourceExportRequest,
+    *,
+    base_filter,
+    metric_keys: List[str],
+    join_instances: bool,
+    join_volumes: bool,
+    allowed: Set[str],
+    prefix: str,
+):
+    sheets = await _resolve_resource_export_sheets(
+        session,
+        user,
+        ctx,
+        request,
+        base_filter=base_filter,
+        metric_keys=metric_keys,
+        join_instances=join_instances,
+        join_volumes=join_volumes,
+        allowed=allowed,
+        tolerate_forbidden=False,
+    )
+
+    # Size every sheet before a byte goes out: the status code is committed as
+    # soon as streaming starts, so an over-limit sheet must fail here.
+    totals: Dict[str, int] = {}
+    over_limit = None
+    sizing_started = time.monotonic()
+    for sheet, query, _ in sheets:
+        totals[sheet.key] = int(
+            (await session.exec(query.count_statement)).first() or 0
+        )
+        if over_limit is None and totals[sheet.key] > envs.USAGE_EXPORT_MAX_ROWS:
+            over_limit = (sheet, totals[sheet.key])
+
+    # This counts rows of the same GROUP BY the stream is about to replay, so
+    # the export pays for the aggregate TWICE and the user waits through this
+    # one before the download even begins. It is also the cleanest measurement
+    # available: no Python, no encoding, no network — a slow number here is
+    # the query and nothing else.
+    logger.info(
+        "usage export sized: group_by=%s sheets=%d rows=%d count=%.1fs",
+        ",".join(request.group_by or []),
+        len(sheets),
+        sum(totals.values()),
+        time.monotonic() - sizing_started,
+    )
+
+    def plans() -> List[ExportSheetPlan]:
+        """What each sheet writes — resolved only once a file will be written."""
+        return [
+            ExportSheetPlan(
+                key=sheet.key,
+                name=sheet.name,
+                columns=build_resource_export_columns(
+                    sheet.group_by, query.metric_keys, query.carries_organization
+                ),
+                total=totals[sheet.key],
+                rows=partial(
+                    _stream_resource_export_rows,
+                    session,
+                    query,
+                    request.to_breakdown_request(sheet),
+                ),
+            )
+            for sheet, query, _ in sheets
+        ]
+
+    context = trailer_context(
+        sheets[0][1].effective_scope, getattr(ctx, "current_principal_id", None)
+    )
+
+    if over_limit is not None:
+        # Splitting works for any grouping — parts are row slices, not date
+        # ranges — so there is no "cannot be split" branch.
+        if request.split == USAGE_EXPORT_SPLIT_AUTO:
+            return split_export_response(
+                plans(),
+                request=request,
+                prefix=prefix,
+                context=context,
+                limit=envs.USAGE_EXPORT_MAX_ROWS,
+            )
+        sheet, total = over_limit
+        members = sum(export_split_plan(totals, envs.USAGE_EXPORT_MAX_ROWS).values())
+        raise export_too_large(
+            request,
+            sheet.key,
+            total,
+            envs.USAGE_EXPORT_MAX_ROWS,
+            split_parts=(
+                members if members <= envs.USAGE_EXPORT_MAX_SPLIT_MEMBERS else None
+            ),
+        )
+
+    return await export_response(
+        plans(),
+        request=request,
+        prefix=prefix,
+        export_format=effective_export_format(request.format, totals.values()),
+        context=context,
+    )
+
+
+async def _resource_export_estimate(
+    session, user, ctx, request: ResourceExportRequest, **kwargs
+) -> UsageExportEstimateResponse:
+    sheets = await _resolve_resource_export_sheets(
+        session, user, ctx, request, tolerate_forbidden=True, **kwargs
+    )
+    estimates = []
+    total = 0
+    for sheet, query, reason in sheets:
+        if query is None:
+            estimates.append(
+                UsageExportSheetEstimate(
+                    key=sheet.key,
+                    name=sheet.name,
+                    total=0,
+                    available=False,
+                    reason=reason,
+                )
+            )
+            continue
+        sheet_total = int((await session.exec(query.count_statement)).first() or 0)
+        total += sheet_total
+        estimates.append(
+            UsageExportSheetEstimate(
+                key=sheet.key,
+                name=sheet.name,
+                total=sheet_total,
+                columns=export_columns_payload(
+                    resource_export_column_keys(
+                        sheet.group_by,
+                        query.metric_keys,
+                        query.carries_organization,
+                    ),
+                    build_resource_export_columns(
+                        sheet.group_by,
+                        query.metric_keys,
+                        query.carries_organization,
+                    ),
+                ),
+            )
+        )
+    # Same assembly as the token estimate, so the two dialogs offer the same
+    # remedies for the same numbers.
+    return build_export_estimate(request, estimates, total)
+
+
+_GPU_EXPORT_KWARGS = dict(
+    base_filter=and_(
+        MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
+        MeteredUsage.resource_type.in_(
+            [RESOURCE_TYPE_GPU_INSTANCE, RESOURCE_TYPE_CPU_INSTANCE]
+        ),
+    ),
+    metric_keys=["gpu_hours", "instance_hours"],
+    join_instances=True,
+    join_volumes=False,
+    allowed={"instance_type", "instance", "user", "date", "organization"},
+)
+
+_STORAGE_EXPORT_KWARGS = dict(
+    base_filter=(MeteredUsage.meter_key == METER_STORAGE_CAPACITY),
+    metric_keys=["gb_days", "gb_hours"],
+    join_instances=False,
+    join_volumes=True,
+    allowed={"type", "volume", "user", "date", "organization"},
+)
+
+
+@router.post("/gpu-instances/breakdown/export")
+async def export_gpu_instances_breakdown(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: ResourceExportRequest,
+):
+    return await _resource_export_response(
+        session, user, ctx, request, prefix="gpu-instances", **_GPU_EXPORT_KWARGS
+    )
+
+
+@router.post(
+    "/gpu-instances/breakdown/export/estimate",
+    response_model=UsageExportEstimateResponse,
+)
+async def estimate_gpu_instances_breakdown_export(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: ResourceExportRequest,
+):
+    return await _resource_export_estimate(
+        session, user, ctx, request, **_GPU_EXPORT_KWARGS
+    )
+
+
+@router.post("/storage/breakdown/export")
+async def export_storage_breakdown(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: ResourceExportRequest,
+):
+    return await _resource_export_response(
+        session, user, ctx, request, prefix="storage", **_STORAGE_EXPORT_KWARGS
+    )
+
+
+@router.post(
+    "/storage/breakdown/export/estimate",
+    response_model=UsageExportEstimateResponse,
+)
+async def estimate_storage_breakdown_export(
+    session: SessionDep,
+    user: CurrentUserDep,
+    ctx: TenantContextDep,
+    request: ResourceExportRequest,
+):
+    return await _resource_export_estimate(
+        session, user, ctx, request, **_STORAGE_EXPORT_KWARGS
     )
 
 

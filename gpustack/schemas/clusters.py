@@ -180,8 +180,20 @@ class GpuInstanceOptions(BaseModel):
     for this cluster — leaving the field unset opts the cluster out, so
     no separate boolean flag is needed.
 
-    Not wired into manifest rendering yet; persisted so the operator /
-    future render paths can pick it up without another schema change.
+    Each knob mirrors a gpustack-operator ``Setting`` of the same name and is
+    **tri-state**: ``None`` means GPUStack does not manage that setting and the
+    cluster's own value is left alone, which is a different instruction from an
+    explicit ``True`` or ``False``. The operator catalog is also administered by
+    ``kubectl``, so an unmanaged knob must never be asserted.
+
+    Every default stays ``None``. The column persists with ``exclude_none`` /
+    ``exclude_unset`` / ``exclude_defaults`` (see ``ClusterUpdate.k8s_options``),
+    so a non-``None`` default would be stripped back out of the JSON and read
+    back as unmanaged. That same serialization is why an all-unset
+    ``GpuInstanceOptions()`` still lands as a *present* ``{}`` rather than
+    ``null`` — and its presence is the cluster-purpose signal
+    (:func:`is_gpu_service_k8s_options`), so a knob-less GPU Service cluster
+    must never serialize itself into a Model Service one.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -190,7 +202,33 @@ class GpuInstanceOptions(BaseModel):
         alias="gpuInstancesAccessStaticAddress",
         description=(
             "Static address surfaced to the operator for accessing GPU "
-            "instances in this cluster (e.g. LoadBalancer VIP)."
+            "instances in this cluster (e.g. LoadBalancer VIP). Mirrors the "
+            "operator's ``instance-access-static-address`` setting (operator "
+            "default: blank, i.e. the address is generated from host IPs). "
+            "Keeps its legacy name: renaming it to match the operator would "
+            "break the payload for every existing client."
+        ),
+    )
+    gpu_instance_type_derived_from_node: Optional[bool] = PydanticField(
+        default=None,
+        alias="gpuInstanceTypeDerivedFromNode",
+        description=(
+            "Whether the operator auto-derives InstanceTypes (and their backing "
+            "ClusterQueues) from node hardware. Mirrors the operator's "
+            "``instance-type-derived-from-node`` setting (operator default: "
+            "true). Unset means GPUStack does not manage it and the cluster's "
+            "own value stands."
+        ),
+    )
+    gpu_instance_type_mixed_on_node: Optional[bool] = PydanticField(
+        default=None,
+        alias="gpuInstanceTypeMixedOnNode",
+        description=(
+            "Whether one node may surface both an accelerated and a CPU-only "
+            "InstanceType. Mirrors the operator's "
+            "``instance-type-mixed-on-node`` setting (operator default: true). "
+            "Unset means GPUStack does not manage it and the cluster's own "
+            "value stands."
         ),
     )
 
@@ -277,6 +315,48 @@ class K8sOptions(BaseModel):
         alias="operator",
         description="Operator-specific deployment options for the cluster.",
     )
+
+
+def is_gpu_service_k8s_options(k8s_options: Any) -> bool:
+    """Whether a ``k8s_options`` value opts the cluster in to GPU Service.
+
+    A cluster carries no purpose column: ``k8s_options.gpu_instance_options``
+    being set *is* the signal — present means GPU Service, absent means Model
+    Service. This is the single home for that test; the route layer
+    (``routes/clusters.py``) and the gateway subscription
+    (``gpu_instances/gateway.py``) both delegate here, so the two halves of the
+    product can never disagree about what a cluster is for.
+
+    Runs once per cluster on every list/watch tick, so we look at the raw shape
+    instead of re-running ``K8sOptions.model_validate`` — a full nested parse on
+    the hot path would also propagate any future schema drift as a
+    request-level ``ValidationError``. The dict branch tolerates both serialized
+    key forms (snake from ``model_dump``, camel from API/UI submissions).
+
+    Presence, not validity, is what is read: a dict carrying an unparseable
+    ``gpu_instance_options`` value still counts as GPU Service. Nothing writes
+    such a row — the column is only ever written from a validated model — and
+    answering by presence keeps a malformed row from raising on a watch tick.
+    Any other shape reads as Model Service, so a cluster whose purpose cannot be
+    established is excluded from GPU Service rather than included.
+    """
+    if isinstance(k8s_options, K8sOptions):
+        return k8s_options.gpu_instance_options is not None
+    if isinstance(k8s_options, dict):
+        return (
+            k8s_options.get("gpu_instance_options") is not None
+            or k8s_options.get("gpuInstanceOptions") is not None
+        )
+    return False
+
+
+def is_gpu_service_cluster(cluster: "Cluster") -> bool:
+    """Whether the cluster is registered for GPU Service rather than Model Service.
+
+    The cluster-shaped entry point onto :func:`is_gpu_service_k8s_options`,
+    which carries the invariant and the reason for the shape.
+    """
+    return is_gpu_service_k8s_options(cluster.k8s_options)
 
 
 class CloudOptions(BaseModel):

@@ -21,6 +21,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    ConflictException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
@@ -33,6 +34,7 @@ from gpustack.api.tenant import (
 from gpustack.gpu_instances.cluster_apis import ClusterOps
 from gpustack.gpu_instances.cluster_apis_util import principal_namespace_identifier
 from gpustack.schemas import Cluster
+from gpustack.schemas.clusters import is_gpu_service_cluster
 from gpustack.schemas.principals import PLATFORM_PRINCIPAL_NAME, Principal
 from gpustack.server.bus import Event, EventType
 
@@ -74,6 +76,33 @@ def ensure_writable(obj: Cluster, ctx: TenantContext) -> Cluster:
     assert_cluster_visible(ctx, obj)
     assert_cluster_writable(ctx, obj)
     return obj
+
+
+def assert_cluster_gpu_service(cluster: Cluster) -> None:
+    """Refuse a cluster that is not registered for GPU Service.
+
+    A cluster's purpose is decided at registration and is the presence of
+    ``k8s_options.gpu_instance_options`` (see ``schemas/clusters.py``). A Model
+    Service cluster's capacity is committed to model deployment, so it has no
+    GPU-instance infrastructure to write to.
+
+    409 rather than 404 or 403: the caller may well see the cluster and own it
+    — what is wrong is the cluster's purpose, which is a thing the caller can
+    change. Run it *after* the visibility/ownership checks so a cluster the
+    caller cannot see still 404s and never has its purpose disclosed.
+
+    Writes only. The per-cluster instance-type **read** deliberately keeps
+    serving Model Service clusters: it is what the model deploy form's slicing
+    picker reads.
+    """
+    if is_gpu_service_cluster(cluster):
+        return
+    raise ConflictException(
+        message=(
+            f"Cluster '{cluster.name}' is registered for model service, "
+            f"not GPU service. Switch the cluster to GPU service first."
+        )
+    )
 
 
 async def build_cluster_ops(

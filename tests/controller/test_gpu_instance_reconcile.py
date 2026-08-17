@@ -472,7 +472,7 @@ async def test_failed_is_noop(engine, controller):
     assert (await _get(engine)).status.phase == GPUInstancePhase.CREATE_FAILED
 
 
-# --- SSH resync on spec change --------------------------------------------- #
+# --- SSH provisioning and resync ------------------------------------------- #
 
 
 @pytest.mark.asyncio
@@ -483,6 +483,24 @@ async def test_spec_change_resyncs_ssh_public_key(engine, controller):
     await controller._reconcile_instance(1, {"spec": (None, None)})
 
     ops.upsert_ssh_public_key.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_creating_provisions_the_key_even_with_no_keys_referenced(
+    engine, controller
+):
+    # ``to_kuberes`` writes ``spec.sshPublicKey`` unconditionally, so the
+    # operator always mounts a secret named after the instance. Skipping the
+    # upsert when nothing is referenced leaves that mount dangling and the pod
+    # sits in ContainerCreating forever on a secret that will never appear.
+    # An empty body is the right answer, not a missing one: the operator
+    # renders it as an empty ``authorized_keys``.
+    await _seed(engine, phase=None)  # is_creating; spec has no ssh_public_keys
+    ops = _with_ops(controller, FakeOps(read_return=None))
+
+    await controller._reconcile_instance(1, {})
+
+    ops.upsert_ssh_public_key.assert_awaited_once_with(name="gi-1", spec={"data": ""})
 
 
 # --- _process backoff wiring ----------------------------------------------- #

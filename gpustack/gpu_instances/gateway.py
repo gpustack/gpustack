@@ -16,7 +16,7 @@ import logging
 from typing import Dict, Optional, Set
 
 from gpustack.gpu_instances import gateway_client
-from gpustack.schemas.clusters import Cluster, ClusterProvider, K8sOptions
+from gpustack.schemas.clusters import Cluster, ClusterProvider, is_gpu_service_cluster
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import async_session
@@ -108,7 +108,24 @@ class OperatorSubscriptionReconciler:
             return
 
         cluster: Cluster = event.data
-        if cluster is None or cluster.provider != ClusterProvider.Kubernetes:
+        if cluster is None:
+            return
+
+        # A DELETED event can arrive as the raw row id rather than a Cluster
+        # (see :func:`deleted_cluster_id`). The id is all this path needs — the
+        # cluster is gone either way — and reading ``provider`` off that dict
+        # would raise, be swallowed by the watcher, and leave the operator
+        # proxying a deleted cluster forever: the retry sweep only unsubscribes
+        # what left ``_eligible``, which is exactly what the raise skipped.
+        if isinstance(cluster, dict):
+            cluster_id = deleted_cluster_id(event)
+            if cluster_id is not None:
+                async with self._lock:
+                    self._eligible.pop(cluster_id, None)
+                    await self._unsubscribe(cluster_id)
+            return
+
+        if cluster.provider != ClusterProvider.Kubernetes:
             return
 
         async with self._lock:
@@ -120,7 +137,7 @@ class OperatorSubscriptionReconciler:
             self._eligible[cluster.id] = cluster.registration_token
             if cluster.id in self._subscribed:
                 return
-            if await _count_ready_workers(cluster.id) > 0:
+            if await count_ready_workers(cluster.id) > 0:
                 await self._subscribe(cluster.id)
 
     async def _retry_stale_subscriptions(self):
@@ -147,7 +164,7 @@ class OperatorSubscriptionReconciler:
             # heartbeat. That is the price of recovering a lost subscribe.
             for cluster_id in sorted(set(self._eligible) - self._subscribed):
                 try:
-                    if await _count_ready_workers(cluster_id) > 0:
+                    if await count_ready_workers(cluster_id) > 0:
                         await self._subscribe(cluster_id)
                 except Exception as e:
                     logger.error(f"Failed to retry subscribing {cluster_id}: {e}")
@@ -183,7 +200,7 @@ class OperatorSubscriptionReconciler:
             # for that case alone, keeping worker status events cheap.
             if cluster_id not in self._subscribed:
                 return
-            if await _count_ready_workers(cluster_id) == 0:
+            if await count_ready_workers(cluster_id) == 0:
                 await self._unsubscribe(cluster_id)
 
     async def _subscribe(self, cluster_id: int):
@@ -204,16 +221,41 @@ class OperatorSubscriptionReconciler:
 
 def _has_gpu_instances(cluster: Cluster) -> bool:
     # Over the bus the ``k8s_options`` JSON column can arrive as a plain dict
-    # (nested pydantic_column_type isn't re-validated on replay), so coerce it
-    # back to the model before reading nested fields.
-    k8s_options = cluster.k8s_options
-    if isinstance(k8s_options, dict):
-        k8s_options = K8sOptions.model_validate(k8s_options)
-    return k8s_options is not None and k8s_options.gpu_instance_options is not None
+    # (nested pydantic_column_type isn't re-validated on replay). The schema-level
+    # predicate reads that raw shape directly — both key spellings — so the dict no
+    # longer has to be re-validated back into a model here just to read one field.
+    return is_gpu_service_cluster(cluster)
 
 
-async def _count_ready_workers(cluster_id: int) -> int:
+async def count_ready_workers(cluster_id: int) -> int:
+    """How many of a cluster's workers are READY — its reachability.
+
+    Public because ``settings.py``'s reconciler decides reachability the same
+    way and from the same query: a cluster with no READY worker has no reachable
+    proxy, so every call would 503. Shared rather than copied so the two cannot
+    drift apart on what "reachable" means.
+    """
     async with async_session() as session:
         return await Worker.count_by_fields(
             session, {"cluster_id": cluster_id, "state": WorkerStateEnum.READY}
         )
+
+
+def deleted_cluster_id(event: Event) -> Optional[int]:
+    """The row id a cluster DELETED event carries when its payload never became
+    a ``Cluster``, or ``None`` when the event is anything else.
+
+    The bus enriches a DELETED event from the change-detector cache, and that
+    cache is empty for clusters — the topic is not preloaded (see
+    ``Server._preload_change_detector_cache``) — so the event is routed carrying
+    nothing but ``{"id": ...}``. Every reconciler watching clusters therefore
+    has to read the id off a raw dict, and a deletion is all the id is needed
+    for; ``None`` for any other event type on such a payload, which has no model
+    to read and nothing safe to do.
+    """
+    if event.type != EventType.DELETED:
+        return None
+    if event.id is not None:
+        return event.id
+    data = event.data
+    return data.get("id") if isinstance(data, dict) else None

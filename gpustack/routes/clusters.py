@@ -53,6 +53,8 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudOptions,
     K8sOptions,
+    is_gpu_service_cluster,
+    is_gpu_service_k8s_options,
 )
 from gpustack.schemas.cluster_access import ClusterAccess
 from gpustack.schemas.gpu_instances import GPUInstance
@@ -148,28 +150,15 @@ def _cluster_manageable_conditions(ctx: TenantContext) -> List[Any]:
 def _k8s_options_has_gpu_instance_options(k8s_options: Any) -> bool:
     """Whether a ``k8s_options`` value opts in to GPU-instance handling.
 
-    Mirrors the gateway-side check (``gpu_instances/gateway.py``):
-    ``k8s_options.gpu_instance_options`` being set is the signal. Runs
-    once per cluster on every list/watch tick, so we look at the raw
-    shape instead of re-running ``K8sOptions.model_validate`` — a full
-    nested parse on the hot path would also propagate any future
-    schema drift as a request-level ``ValidationError``. The dict
-    branch tolerates both serialized key forms (snake from
-    ``model_dump``, camel from API/UI submissions).
+    Delegates to the schema-level home of the purpose signal
+    (``schemas/clusters.py``), which the gateway subscription reads too.
     """
-    if isinstance(k8s_options, K8sOptions):
-        return k8s_options.gpu_instance_options is not None
-    if isinstance(k8s_options, dict):
-        return (
-            k8s_options.get("gpu_instance_options") is not None
-            or k8s_options.get("gpuInstanceOptions") is not None
-        )
-    return False
+    return is_gpu_service_k8s_options(k8s_options)
 
 
 def _cluster_has_gpu_instance_options(cluster: Cluster) -> bool:
     """Whether the cluster opts in to GPU-instance handling."""
-    return _k8s_options_has_gpu_instance_options(cluster.k8s_options)
+    return is_gpu_service_cluster(cluster)
 
 
 @router.get("", response_model=ClustersPublic, response_model_exclude_none=True)

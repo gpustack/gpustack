@@ -8,20 +8,23 @@ Exercised directly over a real in-memory sqlite DB with a fake ``ctx``.
 
 from datetime import datetime
 from types import SimpleNamespace
+import re
 
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from gpustack.api.exceptions import InvalidException
+from gpustack.api.exceptions import ConflictException, InvalidException
 from gpustack.routes import gpu_instances as routes
+from gpustack.schemas.clusters import GpuInstanceOptions, K8sOptions
 from gpustack.schemas.gpu_instances import (
     GPUInstance,
     GPUInstanceCreate,
     GPUInstanceEphemeralVolume,
     GPUInstancePersistentVolumeReference,
     GPUInstancePhase,
+    GPUInstancePort,
     GPUInstancePublic,
     GPUInstanceSpec,
     GPUInstanceSSHPublicKeyReference,
@@ -238,6 +241,27 @@ async def test_spec_edit_stopped_swap_to_missing_pv_rejected(engine):
         await _build(engine, GPUInstanceUpdate(spec=_persistent_spec(name="nope")), row)
 
 
+@pytest.mark.asyncio
+async def test_update_stopped_resolves_generated_token(engine):
+    # A spec replacement may carry {{generated_token}} (e.g. re-applying a
+    # template); it must resolve to a concrete value just like at create.
+    await _seed(engine, phase=GPUInstancePhase.STOPPED)
+    row = await _row(engine)
+
+    new_spec = _ephemeral_spec()
+    new_spec.command = ["jupyter", "lab", "--ServerApp.token={{generated_token}}"]
+    new_spec.ports = [
+        GPUInstancePort(
+            name="JUPYTER", port=8888, access_params={"token": "{{generated_token}}"}
+        )
+    ]
+    source = await _build(engine, GPUInstanceUpdate(spec=new_spec), row)
+
+    token = source["spec"].command[2].split("=", 1)[1]
+    assert re.fullmatch(r"[0-9a-f]{32}", token)
+    assert source["spec"].ports[0].access_params["token"] == token
+
+
 # --- type_snapshot column -------------------------------------------------- #
 
 
@@ -307,6 +331,25 @@ def test_build_create_source_stamps_type_snapshot():
     assert source["type_snapshot"] == "sha1:stamped"
 
 
+def test_build_create_source_resolves_generated_token():
+    # The persisted spec carries the concrete token, so stop/start replays and
+    # the UI's accessParams link building always see the same value.
+    spec = _ephemeral_spec()
+    spec.command = ["jupyter", "lab", "--ServerApp.token={{generated_token}}"]
+    spec.ports = [
+        GPUInstancePort(
+            name="JUPYTER", port=8888, access_params={"token": "{{generated_token}}"}
+        )
+    ]
+    create_obj = GPUInstanceCreate(name="gi-1", spec=spec, cluster_id=2)
+
+    source = routes._build_create_source(create_obj, 1, None, "sha1:stamped")
+
+    token = source["spec"]["command"][2].split("=", 1)[1]
+    assert re.fullmatch(r"[0-9a-f]{32}", token)
+    assert source["spec"]["ports"][0]["access_params"]["token"] == token
+
+
 @pytest.mark.asyncio
 async def test_create_without_cluster_id_rejected():
     # cluster_id is required to resolve the instance type; omitting it must be a
@@ -315,6 +358,67 @@ async def test_create_without_cluster_id_rejected():
 
     with pytest.raises(InvalidException):
         await routes.create_gpu_instance(session=None, ctx=None, create_obj=create_obj)
+
+
+def _patch_create_preflight(monkeypatch, *, gpu_service):
+    """Stub everything ahead of the purpose guard in ``create_gpu_instance``.
+
+    Leaves exactly one decision under test: whether a cluster's purpose lets a
+    GPU Instance be created on it. ``_validate_create_obj`` is the first step
+    *after* the guard, so patching it to raise proves the guard runs before any
+    of the payload is resolved against the cluster.
+    """
+    cluster = SimpleNamespace(
+        id=2,
+        name="cluster-2",
+        deleted_at=None,
+        k8s_options=K8sOptions(
+            gpu_instance_options=GpuInstanceOptions() if gpu_service else None
+        ),
+    )
+
+    async def fake_one_by_id(session, id=None, *args, **kwargs):
+        return cluster
+
+    monkeypatch.setattr(routes.Cluster, "one_by_id", fake_one_by_id)
+    monkeypatch.setattr(routes, "assert_cluster_visible", lambda *a, **kw: None)
+    monkeypatch.setattr(routes, "validate_owner_principal", lambda *a, **kw: None)
+
+    async def past_the_guard(*a, **kw):
+        raise RuntimeError("reached the payload validation")
+
+    monkeypatch.setattr(routes, "_validate_create_obj", past_the_guard)
+
+
+@pytest.mark.asyncio
+async def test_create_on_a_model_service_cluster_rejected(monkeypatch):
+    # A GPU Instance is a workload for GPU Service capacity. A Model Service
+    # cluster has none, so create must refuse it with a 409 that says why —
+    # before resolving any of the payload against the cluster.
+    _patch_create_preflight(monkeypatch, gpu_service=False)
+    create_obj = GPUInstanceCreate(
+        name="gi-1", spec=_ephemeral_spec(), cluster_id=2, owner_principal_id=1
+    )
+
+    with pytest.raises(ConflictException) as excinfo:
+        await routes.create_gpu_instance(session=None, ctx=CTX, create_obj=create_obj)
+
+    assert excinfo.value.status_code == 409
+    assert "cluster-2" in excinfo.value.message
+    assert "model service" in excinfo.value.message
+
+
+@pytest.mark.asyncio
+async def test_create_on_a_gpu_service_cluster_passes_the_purpose_guard(monkeypatch):
+    # The negative case above must fail for the right reason: on a GPU Service
+    # cluster the same call gets past the guard and on to payload validation.
+    _patch_create_preflight(monkeypatch, gpu_service=True)
+    create_obj = GPUInstanceCreate(
+        name="gi-1", spec=_ephemeral_spec(), cluster_id=2, owner_principal_id=1
+    )
+
+    with pytest.raises(RuntimeError, match="reached the payload validation"):
+        await routes.create_gpu_instance(session=None, ctx=CTX, create_obj=create_obj)
 
 
 @pytest.mark.asyncio

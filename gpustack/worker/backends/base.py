@@ -1092,7 +1092,10 @@ exec "$@"
 
         backend_variant = None
         service = self._model.backend.lower()
-        model_service_version = self._model.backend_version
+        # A blank backend version means "Auto", same as None. Legacy/migrated data
+        # and API clients can store "", which would otherwise be used as an exact
+        # version filter and match no runner at all.
+        model_service_version = self._model.backend_version or None
         service_version = model_service_version
 
         # Default variant for some backends.
@@ -1308,9 +1311,14 @@ def _parse_image_cuda_version(image: Optional[str]) -> Optional[str]:
 def is_ascend_310p(devices: GPUDevicesStatus) -> bool:
     """
     Check if the model instance is running on VLLM Ascend 310P.
+
+    An empty device list is not a match: callers gate Ascend 310P specifics on
+    this, and ``all()`` is vacuously true over nothing, so a model instance
+    that named no device -- one scheduled by GPU type rather than by device
+    index, for instance -- would be served as if it ran on 310P.
     """
 
-    return all(
+    return bool(devices) and all(
         gpu.vendor == ManufacturerEnum.ASCEND.value
         and get_ascend_cann_variant(gpu.arch_family) == "310p"
         for gpu in devices
@@ -1320,9 +1328,14 @@ def is_ascend_310p(devices: GPUDevicesStatus) -> bool:
 def is_ascend(devices: GPUDevicesStatus) -> bool:
     """
     Check if all devices are Ascend.
+
+    An empty device list is not a match, for the same reason as
+    :func:`is_ascend_310p`.
     """
 
-    return all(gpu.vendor == ManufacturerEnum.ASCEND.value for gpu in devices)
+    return bool(devices) and all(
+        gpu.vendor == ManufacturerEnum.ASCEND.value for gpu in devices
+    )
 
 
 def cal_distributed_parallelism_arguments(

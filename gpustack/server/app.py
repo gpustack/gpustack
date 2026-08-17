@@ -48,6 +48,13 @@ def create_app(cfg: Config) -> FastAPI:
         redoc_url=None if (cfg and cfg.disable_openapi_docs) else "/redoc",
         openapi_url=None if (cfg and cfg.disable_openapi_docs) else "/openapi.json",
     )
+    # Before patch_docs: it auto-mounts its own plain StaticFiles at /static
+    # unless that path is already taken, and whichever mount lands first wins
+    # every request under it. Registering ours first means the docs assets
+    # (swagger-ui, redoc — the largest files in there) get served from the
+    # build's precompressed .gz like the rest of the UI, instead of shadowing
+    # our mount into dead code.
+    ui.register(app)
     patch_docs(app, Path(__file__).parents[1] / "ui" / "static")
     app.add_middleware(
         ForwardedHostPortMiddleware, trusted_hosts=cfg.get_trusted_hosts()
@@ -64,7 +71,6 @@ def create_app(cfg: Config) -> FastAPI:
             allow_headers=cfg.allow_headers,
         )
     app.include_router(api_router)
-    ui.register(app)
     _load_extension_plugins(app, cfg)
     exceptions.register_handlers(app)
 

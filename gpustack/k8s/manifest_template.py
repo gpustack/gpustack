@@ -47,6 +47,24 @@ _RUNTIME_ORDER: Dict[ManufacturerEnum, int] = {
 }
 
 
+def _env_bool(value: Optional[bool]) -> Optional[str]:
+    """
+    Render one tri-state ``GpuInstanceOptions`` knob as the string its
+    ``GPUSTACK_*`` environment variable carries.
+
+    A *string*, not a bool, for two reasons. A Kubernetes env value is a string,
+    so the template quotes it and YAML never turns it back into a boolean. And
+    the template has to tell "unmanaged" apart from an explicit off: ``None``
+    stays ``None`` so no entry is rendered at all and the operator's own default
+    applies, while ``False`` must render the literal ``"false"``. A jinja
+    truthiness test on a raw bool would collapse those two into the same
+    (wrong) answer, which is why the template tests ``is not none`` instead.
+    """
+    if value is None:
+        return None
+    return "true" if value else "false"
+
+
 class ImagePullSecretRenderSpec(BaseModel):
     """
     One materialised ``kubernetes.io/dockerconfigjson`` Secret derived from
@@ -202,6 +220,36 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
                 self.k8s_options.gpu_instance_options.gpu_instances_access_static_address
             )
         return None
+
+    @computed_field
+    @property
+    def operator_instance_type_derived_from_node(self) -> Optional[str]:
+        """
+        First-deploy seed for the operator's ``instance-type-derived-from-node``
+        setting. The operator seeds each ``Setting`` from ``GPUSTACK_<NAME>``
+        on first deploy and never overwrites a stored value afterwards, so this
+        is what keeps a cluster from deriving instance types the administrator
+        asked it not to derive in the window before anything else can reach it.
+
+        ``None`` when the knob is unmanaged (or the cluster is not a GPU Service
+        cluster at all) — the template then renders no entry and the operator's
+        own default stands. See :func:`_env_bool`.
+        """
+        options = self.k8s_options.gpu_instance_options if self.k8s_options else None
+        return _env_bool(
+            options.gpu_instance_type_derived_from_node if options else None
+        )
+
+    @computed_field
+    @property
+    def operator_instance_type_mixed_on_node(self) -> Optional[str]:
+        """
+        First-deploy seed for the operator's ``instance-type-mixed-on-node``
+        setting, on the same terms as
+        :attr:`operator_instance_type_derived_from_node`.
+        """
+        options = self.k8s_options.gpu_instance_options if self.k8s_options else None
+        return _env_bool(options.gpu_instance_type_mixed_on_node if options else None)
 
     @computed_field
     @property

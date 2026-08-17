@@ -21,7 +21,7 @@ from gpustack.schemas import (
     GPUInstanceTypeFlavorPublic,
     GPUInstanceTypeFlavorsPublic,
 )
-from gpustack.schemas.clusters import ClusterProvider
+from gpustack.schemas.clusters import ClusterProvider, is_gpu_service_cluster
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 
@@ -51,13 +51,20 @@ async def get_gpu_aggregated_instance_type_flavors(
             extra_conditions=cluster_visibility_conditions(ctx, Cluster),
         )
 
+    # ...then narrow to the ones registered for GPU Service. A Model Service
+    # cluster's operator still publishes flavors for its nodes, but they
+    # describe capacity committed to model deployment, so offering them here
+    # would let a caller launch a GPU Instance against a cluster that was never
+    # provisioned to host one. Purpose lives inside the ``k8s_options`` JSON
+    # column, so it narrows here rather than in the query's ``fields``.
     # gateway_client list/watch take cluster ids as strings.
-    cluster_ids = [str(c.id) for c in clusters]
+    cluster_ids = [str(c.id) for c in clusters if is_gpu_service_cluster(c)]
 
     if not cluster_ids:
-        # No visible clusters → return an empty aggregate. The gateway treats an
-        # empty cluster filter as "all clusters", so forwarding the empty set
-        # would leak the whole fleet to a caller who can see nothing.
+        # No visible GPU Service clusters → return an empty aggregate. The
+        # gateway treats an empty cluster filter as "all clusters", so
+        # forwarding the empty set would leak the whole fleet to a caller who
+        # can see nothing.
         return GPUAggregatedInstanceTypeFlavorsPublic(items=[])
 
     if watch:

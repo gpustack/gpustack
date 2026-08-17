@@ -5,7 +5,7 @@ import secrets
 import socket
 import uuid
 from enum import Enum
-from typing import List, Optional, Dict
+from typing import Any, List, Literal, Optional, Dict
 from urllib.parse import urlparse
 
 import httpx
@@ -17,7 +17,7 @@ from gpustack_runtime.detector import (
     available_manufacturers,
     available_backends,
 )
-from pydantic import model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
@@ -57,6 +57,42 @@ from gpustack.utils import platform
 _config = None
 
 logger = logging.getLogger(__name__)
+
+
+class GatewayPluginEntry(BaseModel):
+    """Operator-supplied overrides for one gateway plugin.
+
+    Deliberately a generic envelope: this module knows nothing about any
+    individual plugin's settings, so adding a knob to a plugin never touches
+    config.py. ``config`` is handed to the plugin's own module, which validates
+    its slice against a model declaring exactly the fields it is willing to let
+    an operator set -- for a plugin that makes access decisions that whitelist
+    is load-bearing, since some of its config fields would be a way to grant
+    access rather than to configure it.
+
+    The scope of this section is "what ends up in the WasmPlugin CR". Knobs
+    that govern how the *server* maintains that CR stay in ``gpustack.envs``,
+    which keeps the two mechanisms honest about when a change takes effect:
+    here, on the next reconcile; there, on restart.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Where Envoy pulls the module from, replacing the URL derived from the
+    # plugin manifest. Set both this and ``sha256`` when pointing at a build
+    # the manifest does not carry.
+    url: Optional[str] = None
+    sha256: Optional[str] = None
+    # Constrained rather than free text: an unrecognised value is only refused
+    # by the Kubernetes API, i.e. once per reconcile, forever, with the failure
+    # nowhere near the thing that caused it.
+    image_pull_policy: Optional[
+        Literal["UNSPECIFIED_POLICY", "IfNotPresent", "Always"]
+    ] = None
+    # Passed through to the plugin module for validation; shaped like the CR's
+    # own ``defaultConfig`` so an operator can transcribe field paths straight
+    # out of the plugin's documentation.
+    config: Dict[str, Any] = {}
 
 
 class WorkerConfig(PredefinedConfig):
@@ -121,9 +157,9 @@ class Config(WorkerConfig, BaseSettings):
         allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
         server_external_url: Specified external URL for the server.
-        system_default_container_registry: Default registry for container images (server and inference images).
+        system_default_container_registry: Default registry for container images (server and inference images). Images are expected under the 'gpustack' namespace; for multi-level namespaces keep 'gpustack' as the last level and set this to the parent path.
         image_name_override: Force override of the image name.
-        image_repo: Repository for the container images.
+        image_repo: Repository for the container images. When the image lives outside the 'gpustack' namespace (e.g. 'gpustack-ai/gpustack'), point system_default_container_registry to the parent namespace path and set this to the remaining repository path.
         service_discovery_name: Name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.
         gateway_mode: Gateway deployment mode. Options are 'auto', 'embedded', 'incluster', 'external', 'disabled'. Default is 'auto'.
         gateway_kubeconfig: Path to the kubeconfig file for gateway. Only used when gateway_mode is 'external'.
@@ -248,6 +284,13 @@ class Config(WorkerConfig, BaseSettings):
     gateway_concurrency: int = 16
     gateway_plugin_server_url: Optional[str] = None
     gateway_ingress_class: str = "higress"
+    # Per-plugin overrides, keyed by the plugin's *manifest* name -- the one
+    # ``supported_plugins`` and the module URL are built from, which for five of
+    # the eight plugins differs from the WasmPlugin resource name they appear
+    # under in the cluster (``transformer`` vs ``gpustack-header-transformer``,
+    # ``ai-statistics`` vs ``gpustack-ai-statistics``, ...). See
+    # ``gpustack.gateway.plugins.plugin_spec_overrides``.
+    gateway_plugin: Dict[str, GatewayPluginEntry] = {}
     disable_builtin_observability: bool = False
     builtin_prometheus_port: int = 19090
     builtin_grafana_port: int = 13000
@@ -270,6 +313,7 @@ class Config(WorkerConfig, BaseSettings):
 
     _set_worker_fields = {}
     _derive_gateway_token = None
+    _derive_auth_cache_key = None
     _jwt_secret_key_user_provided = False
     _data_dir_was_fresh = False
 
@@ -358,6 +402,20 @@ class Config(WorkerConfig, BaseSettings):
 
         self._derive_gateway_token = hmac.new(
             self.jwt_secret_key.encode(), b"gateway-metrics-push", hashlib.sha256
+        ).hexdigest()
+        # Signing key for the ``x-gpustack-auth-cache`` marker, which the gateway
+        # plugin issues and verifies on its own (see the API-key auth design,
+        # §3.5). Derived rather than reused for two independent reasons:
+        #
+        # * ``jwt_secret_key`` itself also signs user session JWTs, so putting it
+        #   in a WasmPlugin CR would ship the ability to forge an admin session
+        #   cookie to every gateway pod via xDS.
+        # * the derived *gateway token* is no substitute either -- that one is
+        #   sent to the server in plaintext on every request and compared for
+        #   equality, i.e. designed to be transmitted, whereas a signing key is
+        #   designed never to be.
+        self._derive_auth_cache_key = hmac.new(
+            self.jwt_secret_key.encode(), b"gateway-auth-cache", hashlib.sha256
         ).hexdigest()
 
     @model_validator(mode="after")
@@ -978,6 +1036,9 @@ class Config(WorkerConfig, BaseSettings):
 
     def get_derived_gateway_token(self) -> str:
         return self._derive_gateway_token
+
+    def get_derived_auth_cache_key(self) -> str:
+        return self._derive_auth_cache_key
 
 
 def get_image_name(
