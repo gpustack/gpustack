@@ -29,6 +29,7 @@ from gpustack.schemas import (
     GPUInstanceTypesPublic,
 )
 from gpustack.schemas.clusters import ClusterProvider, is_gpu_service_cluster
+from gpustack.schemas.gpu_instance_types import DERIVED_FROM_NODE_LABEL
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 
@@ -314,13 +315,17 @@ async def _aggregated_instance_type_events(
 
 def _to_instance_type_public(item: dict) -> GPUInstanceTypePublic:
     """Map a raw ``worker.gpustack.ai/v1`` InstanceType dict into the public
-    schema, hoisting ``metadata.name`` to ``name``. A freshly-created CR may
-    lack a reconciled status, so an empty status maps to ``{}`` (every
+    schema, hoisting ``metadata.name`` to ``name`` and the operator's
+    derived-from-node marker out of ``metadata.labels``. A freshly-created CR
+    may lack a reconciled status, so an empty status maps to ``{}`` (every
     ``GPUInstanceTypeStatus`` field is Optional)."""
+    metadata = item.get("metadata") or {}
+    labels = metadata.get("labels") or {}
     return GPUInstanceTypePublic(
-        name=item.get("metadata", {}).get("name"),
+        name=metadata.get("name"),
         spec=item.get("spec") or {},
         status=item.get("status") or {},
+        derived_from_node=labels.get(DERIVED_FROM_NODE_LABEL) == "true",
     )
 
 
