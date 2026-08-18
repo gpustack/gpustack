@@ -350,7 +350,7 @@ class BenchmarkRunner:
             and self._benchmark.dataset_input_tokens is not None
             and self._benchmark.dataset_output_tokens is not None
         ):
-            data = f"prompt_tokens={self._benchmark.dataset_input_tokens},output_tokens={self._benchmark.dataset_output_tokens}"
+            data = f"kind=synthetic_text,prompt_tokens={self._benchmark.dataset_input_tokens},output_tokens={self._benchmark.dataset_output_tokens}"
             # Data distribution — spread token lengths around the mean
             # (guidellm prompt_tokens_stdev/min/max + output_tokens_stdev/min/max).
             for attr, key in (
