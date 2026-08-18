@@ -8,6 +8,10 @@ Under the hood, each GPU Service Instance is backed by a Kubernetes Pod, so mixi
 
 GPUStack manages multiple Kubernetes clusters and provides a unified interface for launching GPU Service Instances on any of them.
 
+!!! note "Upgrading from GPUStack 2.2?"
+
+    GPUStack 2.3 ships a new GPUStack Operator (post-v0.5) with a different instance type model. If you upgraded from GPUStack 2.2, follow the operator's [migration guide](https://github.com/gpustack/gpustack-operator/blob/main/docs/migration/from-v0.5.md) first, and run its [cleanup script](https://github.com/gpustack/gpustack-operator/blob/main/docs/migration/cleanup-v0.5-orphans.sh) to remove orphaned v0.5 resources.
+
 ## Prerequisites
 
 To use GPU Service Instances, you need at least one Kubernetes cluster.
@@ -30,17 +34,31 @@ The Create Cluster wizard walks through `Select Provider` (choose `Kubernetes`) 
 
 When adding a cluster for `GPU Service`, expand the `Advanced` options to configure more settings.
 
+#### Derive Instance Types from Nodes
+
+Enabled by default. The operator discovers every node's devices and derives the matching instance types automatically — one per accelerator model, plus a CPU-only type — with per-product unit CPU/RAM presets. Set it to `Disabled` if you prefer to author every instance type yourself; the operator then stops creating types, and the derived ones can be deleted permanently.
+
+![Screenshot: Derive Instance Types from Nodes setting, default Enabled](../assets/gpuservice/instances/cluster-instance-type-derived.png)
+
+See [GPU Service Instance Types](gpuservice-instance-types.md) for managing the derived types.
+
+#### Allow Mixed Instance Types on a Node
+
+Enabled by default. It lets a node serve different instance types at the same time — for example, a GPU node can host both GPU instances and CPU-only instances. Set it to `Disabled` to dedicate each node to a single instance type.
+
+![Screenshot: Allow Mixed Instance Types on a Node setting, default Enabled](../assets/gpuservice/instances/cluster-instance-type-mixed.png)
+
 #### Allow GPU Service Instances to Be Accessed
 
 Usually all Kubernetes nodes sit behind a NAT or firewall, so the node IPs may not be reachable from outside the cluster:
 
 ```bash
 $ kubectl get nodes -o wide
-NAME                           STATUS   ROLES    AGE    VERSION               INTERNAL-IP    EXTERNAL-IP      OS-IMAGE                        KERNEL-VERSION                    CONTAINER-RUNTIME
-ip-172-31-1-170.ec2.internal   Ready    <none>   125m   v1.34.8-eks-0de9cde   172.31.1.170                    Amazon Linux 2023.12.20260608   6.12.90-120.164.amzn2023.x86_64   containerd://2.2.4+unknown
-ip-172-31-1-36.ec2.internal    Ready    <none>   125m   v1.34.8-eks-0de9cde   172.31.1.36                     Amazon Linux 2023.12.20260608   6.12.90-120.164.amzn2023.x86_64   containerd://2.2.4+unknown
-ip-172-31-2-137.ec2.internal   Ready    <none>   119m   v1.34.8-eks-0de9cde   172.31.2.137                    Amazon Linux 2023.12.20260608   6.12.90-120.164.amzn2023.x86_64   containerd://2.2.4+unknown
-ip-172-31-2-89.ec2.internal    Ready    <none>   125m   v1.34.8-eks-0de9cde   172.31.2.89                     Amazon Linux 2023.12.20260608   6.12.90-120.164.amzn2023.x86_64   containerd://2.2.4+unknown
+NAME                                 STATUS   ROLES    AGE   VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE              KERNEL-VERSION         CONTAINER-RUNTIME
+computeinstance-e00agjsc8n3yhxqkh6   Ready    <none>   2h    v1.33.7   10.0.51.32    <none>        Ubuntu 24.04.4 LTS   6.11.0-1016-nvidia     containerd://1.7.34
+computeinstance-e00bemd340vg9ypxrv   Ready    <none>   2h    v1.33.7   10.0.51.13    <none>        Ubuntu 24.04.4 LTS   6.11.0-1016-nvidia     containerd://1.7.34
+computeinstance-e00g7g0y04ga384xj7   Ready    <none>   2h    v1.33.7   10.2.0.0      <none>        Ubuntu 24.04.4 LTS   6.11.0-1016-nvidia     containerd://1.7.34
+computeinstance-e00prd70dh2mne0ajb   Ready    <none>   2h    v1.33.7   10.0.0.57     <none>        Ubuntu 24.04.4 LTS   6.11.0-1016-nvidia     containerd://1.7.34
 ```
 
 In this case, set an address in `GPU Service Static Access Address` (for example, a LoadBalancer VIP) so the GPU Service Instances can be reached.
@@ -79,28 +97,29 @@ Each instance type card shows the following information:
 
 ![Screenshot: An instance type card](../assets/gpuservice/instances/type-item.png)
 
-- **Name**: The product name of the instance type, such as `Tesla-T4`. Products that contain special characters are sanitized to be Kubernetes-safe.
+- **Name**: The product name of the instance type, such as `NVIDIA-H100-80GB-HBM3`. Products that contain special characters are sanitized to be Kubernetes-safe.
 - **Manufacturer/Vendor**: A top-right label showing the manufacturer or vendor (for example, `NVIDIA`, or `GENERIC` for CPU-only).
-- **VRAM**: The device memory capacity, in GB.
-- **Max**: The maximum number of devices you can select at once.
-- **(Unit) RAM/CPU**: The resources of a single device.
-- **OS**: The operating system, such as `Linux` — useful when choosing a compatible image.
-- **Arch**: The CPU architecture, such as `AMD64` or `ARM64` — also useful when choosing a compatible image.
+- **RAM/VRAM/CPU**: The host RAM, device memory capacity, and CPU cores granted per unit of this type.
+- **Arch**: The CPU architecture, such as `AMD64` or `ARM64` — useful when choosing a compatible image.
+- **Max**: The maximum number of devices you can select at once. When **Max** is 0, all devices of that instance type are allocated, and you cannot select it until some are released.
+- **Sliceable**: How the devices of this type can be split — the logical-slice budget (as a percentage) and, on partition-capable devices, the number of hardware partitions still available.
 
 #### Unit Resources of an Instance Type
 
-What are unit resources? Take the `Tesla-T4` card above: it is a Kubernetes node with 4 NVIDIA Tesla T4 devices (16 GB VRAM each), 192 GB RAM, and 48 CPU cores. After the node's reserved resources, the usable RAM is about 184 GB. The unit resources of one device are then:
+The unit resources are the host CPU and RAM granted per unit of a type — for an accelerator type, per whole device. Types derived from nodes are sized from per-product presets maintained by the operator (see the [unit resources reference](https://github.com/gpustack/gpustack-operator/blob/main/docs/reference/instance-type-unit-resources.md)); a logical slice or physical partition is then sized from the preset by its VRAM share. You can also [author your own types](gpuservice-instance-types.md#adding-an-instance-type) with custom unit resources.
 
-- **(Unit) RAM** = 184 GB / 4 = 46 GB
-- **(Unit) CPU** = 48 / 4 = 12 cores
+#### Selecting a Whole, Sliced, or Partitioned Device
 
-#### Maximum Selectable Devices
+For an accelerator type, the `Configuration` panel offers up to three allocation modes:
 
-A single Kubernetes node holds up to 4 devices in this example, so even across 10 nodes, **Max** is still 4 — you cannot select 8 devices in one operation.
+- **Full GPU** — exclusive use of the whole device.
+- **By Ratio** — a logical slice: pick a `VRAM Percentage` and a `Compute Percentage`. The device stays whole and serves other slices at the same time, each budget enforced at runtime.
 
-**Max** decreases when the total remaining devices of an instance type drop below a single node's capacity.
+![Screenshot: selecting a logical slice by VRAM and compute ratio](../assets/gpuservice/instances/type-select-sliced.png)
 
-When **Max** is 0, all devices of that instance type are allocated, and you cannot select it until some are released.
+- **By Profile** — a physical partition of a MIG-enabled device: pick a `Partition Profile` (for example `1g.10gb` on an H100). The operator materializes the MIG instance for you. This tab appears only when a node in the cluster has MIG enabled; enabling MIG is a per-node administrator operation, see [GPU Service Instance Types](gpuservice-instance-types.md#physical-partitioning-with-nvidia-mig).
+
+![Screenshot: selecting a physical partition by MIG profile](../assets/gpuservice/instances/type-select-partitioned.png)
 
 #### CPU-Only Instance Type
 
@@ -119,7 +138,7 @@ Templates are managed on the `GPU Service` > `Instance Templates` page; see [GPU
 The rightmost `Configuration` form lets you set the details of the new instance. It is divided into five sections: `Basic`, `Instance Type`, `Instance Template`, `Storage`, and `SSH Access`.
 
 - **Basic**: The instance name and display name.
-- **Instance Type**: The instance type and the number of devices to allocate.
+- **Instance Type**: The instance type and the allocation mode — whole device, logical slice, or physical partition.
 - **Instance Template**: The template to inherit from (image, command, environment variables, and so on). You can still adjust the configuration after selecting a template.
 - **Storage**: Either `Ephemeral` storage or [`Persistent` storage](gpuservice-storage.md).
 - **SSH Access**: The [SSH public keys](gpuservice-ssh-public-keys.md) to assign to the instance, or the option to disable SSH access.
@@ -128,7 +147,7 @@ After completing the form, click `Save` to create the instance.
 
 ## Browse Instances
 
-After creation, you return to the `GPU Service` > `GPU Instances` page, where all instances are listed with columns such as `Name` (display name if set), `Connect`, `Status`, `Instance Type`, `Cluster`, `Creator`, `Created`, and `Operations`.
+After creation, you return to the `GPU Service` > `GPU Instances` page, where all instances are listed with columns such as `Name` (display name if set), `Connect`, `Status`, `Instance Type`, `GPU`, `VRAM`, `CPU`, `RAM`, `Storage`, `Cluster`, `Creator`, `Created`, and `Operations`.
 
 ![Screenshot: GPU Instances list](../assets/gpuservice/instances/list.png)
 
@@ -141,6 +160,18 @@ The `Connect` column shows the instance's access addresses — a copy-paste SSH 
 For example, paste the SSH command into your terminal to connect to the instance directly.
 
 ![Screenshot: Copying the SSH command from the Connect column](../assets/gpuservice/instances/list-item-ssh-access.png)
+
+### Metrics
+
+The `GPU`, `VRAM`, `CPU`, `RAM`, and `Storage` columns show live utilization gauges for each running instance, refreshed every few seconds while the page is visible. Each gauge reports the instance's **own** usage against its **own** quota, whatever the allocation mode: an exclusive instance reads the whole device, a slice reads its share, and a physical partition reads the partition's own capacity.
+
+A figure that cannot be measured is shown as empty rather than zero — for example, a MIG partition reports no GPU core utilization (the driver cannot measure it), so its `GPU` gauge stays `--` while its `VRAM` gauge still works.
+
+The figures come from the operator's instance metrics subresource and node exporter; see the [Instance Metrics reference](https://github.com/gpustack/gpustack-operator/blob/main/docs/reference/instance-metrics.md) for every field, its source, and its limits.
+
+!!! note "About the gauges above"
+
+    The list screenshot shows three demo instances under an artificial load: each ran a Python/PyTorch loop allocating host RAM plus repeating an 8192×8192 matrix multiplication on its device (`a = a @ a` in a loop). That is why the `GPU` gauge reads 100% on the exclusive L40S and on the 50%-sliced H100 (a slice saturating its own compute allowance reads 100%), and why the MIG instance's `GPU` gauge shows `--` while its `CPU` reads 100%.
 
 ## Editing an Instance
 
