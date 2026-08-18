@@ -23,6 +23,13 @@ from gpustack.gateway import (
 from gpustack.gateway.ext_auth import ext_auth_override
 
 
+def _manifest_suffix(name: str) -> str:
+    """The tail of a module URL for the version the plugin package ships, so a
+    bump does not need this file edited."""
+    version = next(p.version for p in supported_plugins if p.name == name)
+    return f"/{name}/{version}/plugin.wasm"
+
+
 def make_cfg(plugin_server_url: str, gateway_plugin=None):
     cfg = MagicMock()
     cfg.gateway_plugin_server_url = plugin_server_url
@@ -98,9 +105,27 @@ class TestGetPluginUrlWithNameAndVersion:
             == f"http://127.0.0.1:8080/{http_path_prefix}/{known.name}/{known.version}/plugin.wasm"
         )
 
+    def test_the_version_is_optional_and_resolves_to_the_shipped_one(self):
+        """What every caller in gpustack.gateway does. The manifest carries one
+        version per plugin, so a pinned version could only assert what the
+        package already shipped -- and pinning meant editing every call site on
+        a gpustack-higress-plugins bump."""
+        known = supported_plugins[0]
+        cfg = make_cfg("http://127.0.0.1:8080")
+
+        assert get_plugin_url_with_name_and_version(
+            known.name, cfg=cfg
+        ) == get_plugin_url_with_name_and_version(known.name, known.version, cfg)
+
     def test_unknown_plugin_raises(self):
         with pytest.raises(ValueError, match="not supported"):
             get_plugin_url_with_name_and_version("nonexistent-plugin", "1.0.0")
+
+    def test_unknown_plugin_raises_without_a_version_too(self):
+        # The name is still checked when the version is left out; a plugin the
+        # package does not carry must not resolve to some other plugin's module.
+        with pytest.raises(ValueError, match="not supported"):
+            get_plugin_url_with_name_and_version("nonexistent-plugin")
 
     def test_wrong_version_raises(self):
         with pytest.raises(ValueError, match="not supported"):
@@ -204,15 +229,15 @@ class TestExtAuthPlugin:
         assert spec.sha256 == "ab"
 
     def test_a_module_the_package_does_not_carry_is_refused(self, monkeypatch):
-        """Nothing is defaulted when the pinned version is not in the plugin
-        package -- typically after bumping the version here without upgrading
-        the package. The alternative failure is Envoy unable to pull the
-        module: the filter then does not load, and under FAIL_OPEN every
-        inference route is served unauthenticated, silently. Refusing to start
-        is the loud version of the same problem, and the message names the
-        config key that overrides it."""
+        """Nothing is defaulted when the plugin package carries no ext-auth
+        module. The alternative failure is Envoy unable to pull the module: the
+        filter then does not load, and under FAIL_OPEN every inference route is
+        served unauthenticated, silently. Refusing to start is the loud version
+        of the same problem, and the message names the config key that
+        overrides it."""
         monkeypatch.setattr(
-            "gpustack.gateway.ext_auth.ext_auth_plugin_version", "0.0.0-nope"
+            "gpustack.gateway.plugins.supported_plugins",
+            [p for p in supported_plugins if p.name != "gpustack-ext-auth"],
         )
         registry = MagicMock()
         registry.get_service_name.return_value = "gpustack.static"
@@ -311,7 +336,7 @@ class TestGatewayPluginOverrides:
 
         _, spec = transformer_plugin(cfg=cfg)
 
-        assert spec.url.endswith("/transformer/2.0.0/plugin.wasm")
+        assert spec.url.endswith(_manifest_suffix("transformer"))
         assert spec.sha256 is None
 
     def test_the_key_is_the_manifest_name_not_the_resource_name(self):
@@ -325,7 +350,7 @@ class TestGatewayPluginOverrides:
 
         _, spec = transformer_plugin(cfg=cfg)
 
-        assert spec.url.endswith("/transformer/2.0.0/plugin.wasm")
+        assert spec.url.endswith(_manifest_suffix("transformer"))
 
     def test_plugin_config_reaches_the_default_config(self):
         cfg = make_cfg(
