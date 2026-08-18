@@ -38,6 +38,15 @@ class CustomConfig(BaseModel):
     qwenEnableCompatible: Optional[bool] = None
     modelVersion: Optional[str] = None
     tritonDomain: Optional[str] = None
+    # Generic in the plugin, not per-provider: providerDomain overrides whatever
+    # authority the provider hardcoded, providerBasePath is prepended to the
+    # rewritten path, and protocol chooses between exposing OpenAI ("openai",
+    # the plugin's default) and passing the provider's own protocol through
+    # ("original"). ClaudeConfig.claudeCustomUrl is expressed with the first
+    # two; protocol is left to whoever writes the provider config.
+    protocol: Optional[str] = None
+    providerDomain: Optional[str] = None
+    providerBasePath: Optional[str] = None
 
 
 class ActiveConfig(BaseModel):

@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from gpustack.schemas.model_provider import (
+    ANTHROPIC_API_VERSION,
     MaskedAPIToken,
     ModelProvider,
     ModelProviderCreate,
@@ -21,6 +22,7 @@ from gpustack.schemas.model_provider import (
     TestProviderModelResult,
     ProviderModel,
     OpenAIConfig,
+    V1_MODELS_URI,
 )
 from gpustack.schemas.models import CategoryEnum
 from gpustack.schemas.model_routes import ModelRouteTarget
@@ -42,7 +44,6 @@ from openai.pagination import SyncPage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-ANTHROPIC_API_VERSION = "2023-06-01"
 
 
 @router.get("", response_model=ModelProvidersPublic, response_model_exclude_none=True)
@@ -336,6 +337,63 @@ class CustomOAIModel(OAIModel):
     categories: Optional[List[str]] = None
 
 
+def _model_list(response: httpx.Response) -> List[Dict[str, Any]]:
+    """The ``data`` array of a model-list response.
+
+    A path that is not a model list often answers 200 anyway -- a gateway's UI,
+    an error object, a bare array -- so a body that cannot be read as one counts
+    as a failed candidate rather than a 500. Both the decode and the shape raise
+    ``ValueError``, leaving the caller one thing to catch.
+    """
+    content = response.json()
+    if not isinstance(content, dict):
+        raise ValueError(
+            f"expected a JSON object with a data array, got {type(content).__name__}"
+        )
+    return content.get("data") or []
+
+
+async def _first_model_list(
+    client: httpx.AsyncClient,
+    uris: List[str],
+    headers: Dict[str, str],
+    provider_type: ModelProviderTypeEnum,
+) -> List[Dict[str, Any]]:
+    """The model list from the first candidate path that has one.
+
+    The first failure is the one reported, because that is the path the provider
+    config points at -- any candidate after it is a guess at a different way of
+    mounting the same API. A transport failure ends the walk instead of
+    contributing to it: that is about the host, and another path on the same host
+    cannot do better.
+    """
+    failure: Optional[Exception] = None
+    failure_detail: Optional[str] = None
+    for uri in uris:
+        try:
+            response = await client.get(url=uri, headers=headers, timeout=30)
+            response.raise_for_status()
+            return _model_list(response)
+        except (httpx.HTTPStatusError, ValueError) as exc:
+            detail = (
+                f"{exc.response.status_code} {exc.response.text}"
+                if isinstance(exc, httpx.HTTPStatusError)
+                else f"{exc}"
+            )
+            if failure is None:
+                failure, failure_detail = exc, detail
+            logger.debug(
+                f"Failed to get models from {provider_type} at {uri}: {detail}"
+            )
+        except httpx.RequestError as exc:
+            raise InternalServerErrorException(
+                message=f"Network error: {exc.__class__.__name__}: {exc}"
+            ) from exc
+    raise InvalidException(
+        message=f"Failed to get models from {provider_type}: {failure_detail}"
+    ) from failure
+
+
 @router.post(
     "/get-models",
 )
@@ -359,7 +417,8 @@ async def get_models_from_provider(
             f"provider type {input.config.type} not supported for fetching models"
         )
         return result
-    data = []
+
+    model_uris = [model_uri]
     async with httpx.AsyncClient(
         base_url=base_url,
         proxy=input.proxy_url,
@@ -371,21 +430,17 @@ async def get_models_from_provider(
             headers["anthropic-version"] = (
                 getattr(input.config, "claudeVersion", None) or ANTHROPIC_API_VERSION
             )
+            # An Anthropic-compatible endpoint behind a base path may mount its
+            # whole API under that prefix, or only /v1/messages while the model
+            # list stays at the root -- both shapes exist in the wild and the
+            # config cannot tell them apart. The path the config derives is tried
+            # first and the bare one only as a fallback, so the common case (they
+            # are the same path, or the first one answers) is one request.
+            if model_uri != V1_MODELS_URI:
+                model_uris.append(V1_MODELS_URI)
         else:
             headers["Authorization"] = f"Bearer {input.api_token}"
-        try:
-            response = await client.get(url=model_uri, headers=headers, timeout=30)
-            response.raise_for_status()
-            content = response.json()
-            data: List[Dict[str, Any]] = content.get("data") or []
-        except httpx.HTTPStatusError as exc:
-            raise InvalidException(
-                message=f"Failed to get models from {input.config.type}: {exc.response.status_code} {exc.response.text}"
-            )
-        except httpx.RequestError as exc:
-            raise InternalServerErrorException(
-                message=f"Network error: {exc.__class__.__name__}: {exc}"
-            )
+        data = await _first_model_list(client, model_uris, headers, input.config.type)
     fallback_created = int(datetime.now(timezone.utc).timestamp())
     for item in data:
         if input.config.type == ModelProviderTypeEnum.DOUBAO:

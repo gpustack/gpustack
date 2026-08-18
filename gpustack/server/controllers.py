@@ -2948,12 +2948,14 @@ class ModelProviderController:
         # - openaiCustomUrl
         # - ollamaServerHost
         # - difyApiUrl
+        # - claudeCustomUrl
         # The above fields will affect the registry type of the provider_registry,
         # it requires notifying ingress to regenerate registry destination.
         related_fields = [
             "openaiCustomUrl",
             "ollamaServerHost",
             "difyApiUrl",
+            "claudeCustomUrl",
         ]
         for field in related_fields:
             if old_config.get(field) != new_config.get(field):
