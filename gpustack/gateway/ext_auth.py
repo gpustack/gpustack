@@ -49,7 +49,6 @@ logger = logging.getLogger(__name__)
 ext_auth_resource_name = "gpustack-llm-ext-auth"
 
 ext_auth_plugin_name = "gpustack-ext-auth"
-ext_auth_plugin_version = "0.1.2"
 
 # Access-policy value the plugin understands. Lower-case on purpose: it mirrors
 # ``AccessPolicyEnum.PUBLIC``'s wire value, which is what the reconciler
@@ -179,16 +178,16 @@ def ext_auth_override(cfg: Config) -> ExtAuthOverride:
 def ext_auth_module_source(cfg: Config) -> Dict[str, Any]:
     """Where Envoy pulls the module from, as ``WasmPluginSpec`` fields.
 
-    Resolved from the bundled plugin package, unless
-    ``gateway_plugin.gpustack-ext-auth.url`` overrides it. Nothing is defaulted
-    when neither yields a URL -- typically after bumping the pinned version here
-    without upgrading the package. The alternative failure is Envoy unable to
-    pull the module, which means the filter does not load, which under
-    ``FAIL_OPEN`` serves every inference route unauthenticated and silently. A
-    refused startup is the loud form of the same problem.
+    Resolved from the bundled plugin package at whatever version that package
+    ships, unless ``gateway_plugin.gpustack-ext-auth.url`` overrides it. Nothing
+    is defaulted when neither yields a URL -- a package carrying no such plugin
+    at all. The alternative failure is Envoy unable to pull the module, which
+    means the filter does not load, which under ``FAIL_OPEN`` serves every
+    inference route unauthenticated and silently. A refused startup is the loud
+    form of the same problem.
     """
     try:
-        return plugin_spec_overrides(ext_auth_plugin_name, ext_auth_plugin_version, cfg)
+        return plugin_spec_overrides(ext_auth_plugin_name, cfg=cfg)
     except ValueError as e:
         raise ValueError(
             f"{e} Upgrade the gpustack-higress-plugins package, or point "

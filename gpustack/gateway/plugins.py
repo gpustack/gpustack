@@ -39,13 +39,34 @@ supported_plugins: List[HigressPlugin] = _load_plugins_from_manifest()
 
 
 def get_plugin_url_with_name_and_version(
-    name: str, version: str, cfg: Optional[Config] = None
+    name: str, version: Optional[str] = None, cfg: Optional[Config] = None
 ) -> str:
+    """The module URL for one plugin, resolved from the bundled plugin package.
+
+    ``version`` is normally omitted, and callers here do omit it. The manifest
+    carries one version per plugin -- the build actually shipped in the package,
+    read as ``latest`` into ``supported_plugins`` -- so a version passed in can
+    only assert what the package already decided; it cannot select an older
+    build, because no older build is present to select. Leaving it out is what
+    keeps a ``gpustack-higress-plugins`` bump from having to touch every call
+    site, at the cost of that assertion: a plugin whose config schema changed
+    across the bump is then caught by the gateway rejecting the config rather
+    than by a startup error here.
+
+    Pass a version only where following the package silently is the worse
+    failure.
+    """
     target = next(
-        (p for p in supported_plugins if p.name == name and p.version == version), None
+        (
+            p
+            for p in supported_plugins
+            if p.name == name and (version is None or p.version == version)
+        ),
+        None,
     )
     if target is None:
-        raise ValueError(f"Plugin {name} with version {version} is not supported.")
+        wanted = name if version is None else f"{name} with version {version}"
+        raise ValueError(f"Plugin {wanted} is not supported.")
     return target.get_path(cfg)
 
 
@@ -90,7 +111,7 @@ def plugin_entry(name: str, cfg: Optional[Config]) -> Optional[GatewayPluginEntr
 
 
 def plugin_spec_overrides(
-    name: str, version: str, cfg: Optional[Config] = None
+    name: str, version: Optional[str] = None, cfg: Optional[Config] = None
 ) -> Dict[str, Any]:
     """The distribution half of a ``WasmPluginSpec``: where the module comes
     from and how it is verified.
