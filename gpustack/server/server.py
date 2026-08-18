@@ -91,6 +91,7 @@ from gpustack.server.usage_archiver import TableArchiver
 from gpustack.schemas.metered_usage import MeteredUsage, MeteredUsageArchive
 from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
+from gpustack.server.model_instance_drain_finalizer import ModelInstanceDrainFinalizer
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.server.scaling_scheduler import ScalingScheduler
 from gpustack.utils.platform import is_inside_kubernetes
@@ -509,6 +510,12 @@ class Server:
         self._create_async_task(worker_instance_cleaner.start())
 
         logger.debug("Worker instance cleaner started.")
+
+    def _start_model_instance_drain_finalizer(self):
+        drain_finalizer = ModelInstanceDrainFinalizer()
+        self._create_async_task(drain_finalizer.start())
+
+        logger.debug("Model instance drain finalizer started.")
 
     def _start_scaling_scheduler(self):
         scaling_scheduler = ScalingScheduler()
@@ -1398,6 +1405,9 @@ class Server:
 
         # Worker Instance Cleaner
         self._start_worker_instance_cleaner()
+
+        # Model instance drain finalizer (graceful replica delete)
+        self._start_model_instance_drain_finalizer()
 
         # Usage Details Archiver (move aged rows to archive table)
         self._start_usage_details_archiver()

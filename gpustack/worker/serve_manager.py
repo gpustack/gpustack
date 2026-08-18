@@ -271,6 +271,12 @@ class ServeManager:
         # Track last health check time per model instance
         self._last_health_check_time: Dict[int, float] = {}
 
+        # Graceful drain: instances waiting for in-flight proxy requests to finish
+        self._draining_instance_ids: Set[int] = set()
+        self._inflight_requests: Dict[int, int] = {}
+        # Avoid spamming drain_idle PATCHes once the server already knows.
+        self._drain_idle_reported: Set[int] = set()
+
         # Timestamp of the last authoritative (uncached) DB reconciliation in
         # the state sync, for the optional periodic backstop. Starts "now" so
         # the first forced reconciliation is one full period in, not immediate.
@@ -281,6 +287,63 @@ class ServeManager:
     def record_successful_inference(self, instance_id: int):
         """Called by worker proxy on successful inference response."""
         self._last_successful_inference[instance_id] = time.time()
+
+    def is_instance_draining(self, instance_id: int) -> bool:
+        return instance_id in self._draining_instance_ids
+
+    def begin_proxy_request(self, instance_id: int):
+        """Increment in-flight count for a proxied inference request."""
+        self._inflight_requests[instance_id] = (
+            self._inflight_requests.get(instance_id, 0) + 1
+        )
+
+    def end_proxy_request(self, instance_id: int):
+        """Decrement in-flight count; report drain idle when it hits zero."""
+        count = self._inflight_requests.get(instance_id, 0) - 1
+        if count <= 0:
+            self._inflight_requests.pop(instance_id, None)
+            if instance_id in self._draining_instance_ids:
+                self._report_drain_idle(instance_id)
+        else:
+            self._inflight_requests[instance_id] = count
+
+    def _mark_draining(self, mi: ModelInstance):
+        self._draining_instance_ids.add(mi.id)
+        self._model_instance_by_instance_id[mi.id] = mi
+        if mi.drain_idle:
+            self._drain_idle_reported.add(mi.id)
+        elif self._inflight_requests.get(mi.id, 0) == 0:
+            self._report_drain_idle(mi.id)
+
+    def _report_drain_idle(self, instance_id: int):
+        """Tell the server this draining instance has no in-flight requests.
+
+        Idempotent: once reported (or already drain_idle on the cached row),
+        further calls are no-ops so health sync does not PATCH every tick.
+
+        The HTTP call is offloaded to a daemon thread to avoid blocking the
+        async event loop (this is called from the proxy route handler).
+        """
+        if instance_id in self._drain_idle_reported:
+            return
+        cached = self._model_instance_by_instance_id.get(instance_id)
+        if cached is not None and cached.drain_idle:
+            self._drain_idle_reported.add(instance_id)
+            return
+
+        def do_report():
+            try:
+                self._update_model_instance(instance_id, drain_idle=True)
+                self._drain_idle_reported.add(instance_id)
+                if cached is not None:
+                    cached.drain_idle = True
+                logger.info(f"Reported drain idle for model instance id={instance_id}")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to report drain idle for model instance id={instance_id}: {e}"
+                )
+
+        threading.Thread(target=do_report, daemon=True).start()
 
     async def watch_models(self):
         """
@@ -457,6 +520,32 @@ class ServeManager:
                 logger.trace(
                     f"Model instance {model_instance.name} is provisioning. Skipping sync."
                 )
+                continue
+
+            # DRAINING is sticky: do not revive to RUNNING / ERROR via health sync.
+            # If the workload is already gone, report idle so the finalizer can finish.
+            if model_instance.state == ModelInstanceStateEnum.DRAINING:
+                self._draining_instance_ids.add(model_instance.id)
+                if model_instance.drain_idle:
+                    self._drain_idle_reported.add(model_instance.id)
+                is_main_worker = model_instance.worker_id == self._worker_id
+                if is_main_worker:
+                    workload = get_workload(model_instance.name)
+                else:
+                    deployment_metadata = model_instance.get_deployment_metadata(
+                        self._worker_id
+                    )
+                    workload_name = (
+                        deployment_metadata.name
+                        if deployment_metadata
+                        else model_instance.name
+                    )
+                    workload = get_workload(workload_name)
+                if (
+                    not workload
+                    and self._inflight_requests.get(model_instance.id, 0) == 0
+                ):
+                    self._report_drain_idle(model_instance.id)
                 continue
 
             is_main_worker = model_instance.worker_id == self._worker_id
@@ -1054,6 +1143,9 @@ class ServeManager:
             # DELETEDs missed during a watch disconnect. Tearing down here too
             # would give a second concurrent caller racing the reap on
             # delete_workload, so just let the reap reap it (within one tick).
+            self._draining_instance_ids.discard(mi.id)
+            self._inflight_requests.pop(mi.id, None)
+            self._drain_idle_reported.discard(mi.id)
             logger.trace(
                 f"DELETED event for model instance {mi.name}; "
                 "teardown deferred to reap."
@@ -1061,6 +1153,16 @@ class ServeManager:
             return
 
         if event.type == EventType.UPDATED:
+            # Graceful drain: keep workload alive, reject new proxy traffic,
+            # report idle when in-flight hits zero. Do not restart or stop.
+            if mi.state == ModelInstanceStateEnum.DRAINING:
+                self._mark_draining(mi)
+                logger.trace(
+                    f"UPDATED event: model instance {mi.name} is draining; "
+                    "teardown deferred until hard-delete."
+                )
+                return
+
             # Caching matched ERROR instances for restart handling.
             if mi.state == ModelInstanceStateEnum.ERROR:
                 model = self._get_model(mi)
@@ -1836,6 +1938,9 @@ class ServeManager:
         self._inference_health_check_failures.pop(mi.id, None)
         self._last_health_check_time.pop(mi.id, None)
         self._last_successful_inference.pop(mi.id, None)
+        self._draining_instance_ids.discard(mi.id)
+        self._inflight_requests.pop(mi.id, None)
+        self._drain_idle_reported.discard(mi.id)
 
         logger.info(f"Stopped model instance {mi.name or mi.id}")
 
