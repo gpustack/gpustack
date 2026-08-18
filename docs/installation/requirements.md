@@ -53,6 +53,10 @@ Ensure all required drivers and toolkits are installed before running GPUStack.
 - [NVIDIA GPU Driver](https://www.nvidia.com/en-us/drivers/) that supports NVIDIA CUDA 12.8 or higher.
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit)
 
+!!! note "Kubernetes GPU Nodes"
+
+    When the GPUs are provided by Kubernetes nodes, install the driver and toolkit on each node as above, or let the [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/overview.html) manage them. If the NVIDIA GPU Operator is already installed, disable its device plugin, GPU Feature Discovery, Node Feature Discovery, MIG Manager, and CDI components, which conflict with GPUStack's device management. See [Vendor Prerequisites](https://github.com/gpustack/gpustack-operator/blob/main/docs/vendor-prerequisites.md#nvidia) for details.
+
 Run the following commands to verify:
 
 ```bash
@@ -77,6 +81,10 @@ sudo docker info 2>/dev/null | grep -q "nvidia" \
 
 - [AMD GPU Driver](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/) that supports AMD ROCm 7.0 or higher.
 - [AMD Container Runtime](https://instinct.docs.amd.com/projects/container-toolkit/en/latest/container-runtime/overview.html)
+
+!!! note "Kubernetes GPU Nodes"
+
+    When the GPUs are provided by Kubernetes nodes, install the driver on each node as above, or let the [AMD GPU Operator](https://instinct.docs.amd.com/projects/gpu-operator/en/latest/index.html) manage it. If the AMD GPU Operator is already installed, disable its device plugin, node labeller, bundled Node Feature Discovery, and Kernel Module Management components, which conflict with GPUStack's device management. See [Vendor Prerequisites](https://github.com/gpustack/gpustack-operator/blob/main/docs/vendor-prerequisites.md#amd) for details.
 
 Run the following commands to verify:
 
@@ -133,6 +141,10 @@ sudo docker info 2>/dev/null | grep -q "ascend" \
 - [Hygon DCU Driver](https://developer.sourcefind.cn/tool/)
 - [Hygon DTK Toolkit](https://developer.sourcefind.cn/tool/)
 
+!!! note "Kubernetes GPU Nodes"
+
+    When the DCUs are provided by Kubernetes nodes, install the driver and toolkit on each node as above, or let the [Hygon DCU Operator](https://developer.sourcefind.cn/document/7541efc4-54b1-11f1-8265-0242ac150003) manage them. If the Hygon DCU Operator is already installed, disable its device plugin and node labeller components, which conflict with GPUStack's device management. See [Vendor Prerequisites](https://github.com/gpustack/gpustack-operator/blob/main/docs/vendor-prerequisites.md#hygon) for details.
+
 Run the following commands to verify:
 
 ```bash
@@ -155,6 +167,10 @@ sudo hy-smi
 - [MetaX GPU Driver](https://developer.metax-tech.com/softnova/download?package_kind=Driver)
 - [MetaX MACA SDK](https://developer.metax-tech.com/softnova/download?package_kind=SDK)
 
+!!! note "Kubernetes GPU Nodes"
+
+    When the GPUs are provided by Kubernetes nodes, install the driver and SDK on each node as above, or let the [MetaX GPU Operator](https://developer.metax-tech.com/api/client/document/preview/1411/k8s/00_overview.html) manage them. The MetaX GPU Operator's device plugin cannot be disabled, so if the operator is already installed, uninstall it — keeping the driver and SDK on the node — before adding the nodes to GPUStack. See [Vendor Prerequisites](https://github.com/gpustack/gpustack-operator/blob/main/docs/vendor-prerequisites.md#metax) for details.
+
 Run the following commands to verify:
 
 ```bash
@@ -173,6 +189,10 @@ sudo mx-smi
 
 - [MThreads GPU Driver](https://docs.mthreads.com/)
 - [MThreads Container Toolkit](https://developer.mthreads.com/sdk/download/CloudNative)
+
+!!! note "Kubernetes GPU Nodes"
+
+    When the GPUs are provided by Kubernetes nodes, install the driver and toolkit on each node as above, or let the [MT GPU Operator](https://docs.mthreads.com/cloud-native/cloud-native-doc-online/introduction/) manage them. The MT GPU Operator's device plugin cannot be disabled in its default `full` mode, so if the operator is already installed, switch to `core` mode without the device plugin or uninstall the operator — keeping the driver and toolkit on the node — before adding the nodes to GPUStack. See [Vendor Prerequisites](https://github.com/gpustack/gpustack-operator/blob/main/docs/vendor-prerequisites.md#moore-threads) for details.
 
 Run the following commands to verify:
 
@@ -197,6 +217,10 @@ sudo docker info 2>/dev/null | grep -q "mthreads" \
 
 - [Iluvatar GPU Driver](https://support.iluvatar.com/#/login)
 - [Iluvatar Container Toolkit](https://github.com/Deep-Spark/ix-container-toolkit)
+
+!!! note "Kubernetes GPU Nodes"
+
+    When the GPUs are provided by Kubernetes nodes, install the driver and toolkit on each node as above, or let the [ix-GPU-Operator](https://developer.iluvatar.com/docs/generaldocs_ix_gpu_operator) manage them. If the ix-GPU-Operator is already installed, disable its device plugin and feature discovery components, which conflict with GPUStack's device management. See [Vendor Prerequisites](https://github.com/gpustack/gpustack-operator/blob/main/docs/vendor-prerequisites.md#iluvatar) for details.
 
 Run the following commands to verify:
 
