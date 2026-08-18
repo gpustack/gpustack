@@ -1,0 +1,74 @@
+---
+title: GLM-5.2-W4A8C8 (vLLM-Ascend)
+description: "Deploy GLM-5.2 with vLLM — Z.ai's DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model with MTP speculative decoding and 800K context, on 910C."
+tag: NEW
+---
+
+# Deploying GLM-5.2-W4A8C8 with GPUStack and vLLM
+
+This tutorial guides you through setting up **GLM-5.2-W4A8C8**—the official unquantized/FP8 Mixture-of-Experts model with massive long-context capabilities—using **vLLM (v0.22.0)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `quay.io/ascend/vllm-ascend:v0.22.1rc1-a3`
+* **Hardware Requirements**: 910C
+
+### 2. Model Weights Source
+* **Model Name**: `GLM-5.2-FP8-W4A8C8`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/Eco-Tech/GLM-5.2-w4a8c8`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to Models -> deployment, and select the model deploy / modelscope mode.
+
+### 1. Basic Information
+* **Model Name**: `GLM-5.2-W4A8C8`
+* **Container Image**: `quay.io/ascend/vllm-ascend:v0.22.1rc1-a3`
+* **GPUSTACK ->inference backend->vllm->edit->add version 
+name glm-5.2
+image name : quay.io/ascend/vllm-ascend:v0.22.1rc1-a3
+
+### 2.gpustack->deployment->modelscope deployment-> Backend Arguments 
+You can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--api-server-count 1 \
+--data-parallel-size 2 \
+--enable-expert-parallel \
+--tensor-parallel-size 8 \
+--seed 1024 \
+--served-model-name glm-5 \
+--tool-call-parser glm47 \
+--reasoning-parser glm45 \
+--enable-auto-tool-choice \
+--max-num-seqs 12 \
+--max-model-len 135000 \
+--max-num-batched-tokens 8192 \
+--trust-remote-code \
+--gpu-memory-utilization 0.92 \
+--quantization ascend \
+--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
+--additional-config '{"enable_dsa_cp": true,"enable_sparse_sfa_c8": false, "enable_sparse_li_c8": true,"enable_balance_scheduling": true,"multistream_overlap_shared_expert":true}' \
+--speculative-config '{"num_speculative_tokens": 3, "method": "deepseek_mtp","enforce_eager":true}'
+```
+
+ENV:
+
+```text
+HCCL_OP_EXPANSION_MODE="AIV"
+OMP_PROC_BIND=false
+OMP_NUM_THREADS=1
+HCCL_BUFFSIZE=200
+PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+VLLM_ASCEND_ENABLE_FLASHCOMM1=1
+VLLM_ASCEND_ENABLE_FUSED_MC2=0
+```
+
+### 3. more config
+
+https://docs.vllm.ai/projects/vllm-ascend-cn/zh-cn/latest/tutorials/models/GLM5.2.html
