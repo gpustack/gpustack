@@ -43,6 +43,25 @@ if TYPE_CHECKING:
     from gpustack.schemas.model_routes import ModelRouteTarget
 
 
+# The ``anthropic-version`` every Claude request carries. Lives here rather than
+# in the route module because both paths to a Claude provider need it and they
+# are not the same code: the gateway gets it from the provider config, and
+# get-models / test-model call the provider directly and set the header
+# themselves. Two copies of the value drift into a provider that tests fine from
+# the UI and fails in inference, or the reverse.
+#
+# ai-proxy would default this on its own (``claudeDefaultVersion``, same value
+# today), but the default is the plugin's and can move under us on a re-sync. It
+# is sent explicitly so the version in effect is the one recorded here.
+ANTHROPIC_API_VERSION = "2023-06-01"
+
+# The model-listing path of the OpenAI API, which most providers -- and
+# Anthropic -- serve unchanged. Named here rather than repeated per config so a
+# route that has to speak the path itself (rather than getting it back from
+# ``get_model_url``) references the same string the configs do.
+V1_MODELS_URI = "/v1/models"
+
+
 # The provider types should be synced with higress ai-proxy supported providers
 class ModelProviderTypeEnum(str, Enum):
     AI360 = "ai360"
@@ -59,6 +78,7 @@ class ModelProviderTypeEnum(str, Enum):
     DIFY = "dify"
     DOUBAO = "doubao"
     FIREWORKS = "fireworks"
+    GALADRIEL = "galadriel"
     GEMINI = "gemini"
     GENERIC = "generic"
     GITHUB = "github"
@@ -127,6 +147,18 @@ class BaseProviderConfig(BaseModel):
             base_url = base_url.rstrip("/")
         return base_url, self._chat_uri
 
+    def ai_proxy_derived_fields(self) -> Dict[str, Any]:
+        """ai-proxy fields this config implies but does not store.
+
+        For the knobs where our field and the plugin's are the same thing under
+        the same name, the dump carries them across on its own. This is for the
+        ones where they are not: a single URL of ours that the plugin expects
+        split across several of its own fields. Ranked below explicitly set
+        values, same as ``_default_override``, so the escape hatch of writing
+        the plugin's own field names into the config still wins.
+        """
+        return {}
+
     def model_dump_with_default_override(self) -> Dict[str, Any]:
         """Dumps the model, excluding unset fields, and then merges with `_default_override` values.
 
@@ -141,6 +173,7 @@ class BaseProviderConfig(BaseModel):
         default_override = getattr(self, "_default_override", {})
         values = {
             **default_override,
+            **self.ai_proxy_derived_fields(),
             **self.model_dump(exclude_unset=True, exclude={"type"}),
         }
         return values
@@ -164,13 +197,13 @@ class AzureOpenAIConfig(BaseProviderConfig):
 class BaichuanConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.BAICHUAN]
     _public_endpoint: str = "api.baichuan-ai.com"
-    _model_uri = "/v1/models"
+    _model_uri = V1_MODELS_URI
 
 
 class BaiduConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.BAIDU]
     _public_endpoint: str = "qianfan.baidubce.com"
-    _model_uri = "/v1/models"
+    _model_uri = V1_MODELS_URI
 
 
 class BedrockConfig(BaseProviderConfig):
@@ -193,11 +226,136 @@ class BedrockConfig(BaseProviderConfig):
 
 
 class ClaudeConfig(BaseProviderConfig):
+    """Anthropic, or anything that speaks its API.
+
+    ``claudeCustomUrl`` is the Anthropic-side counterpart of
+    ``openaiCustomUrl``, but it reaches the plugin differently. ai-proxy's
+    claude provider hardcodes ``api.anthropic.com`` and has no per-provider URL
+    field, so the custom endpoint is expressed with the generic knobs instead --
+    see ``ai_proxy_derived_fields``.
+    """
+
     type: Literal[ModelProviderTypeEnum.CLAUDE]
-    claudeVersion: Optional[str] = None
+    claudeVersion: Optional[str] = ANTHROPIC_API_VERSION
+    claudeCustomUrl: Optional[str] = None
     _public_endpoint: str = "api.anthropic.com"
-    _model_uri = "/v1/models"
+    _model_uri = V1_MODELS_URI
     _chat_uri = "/v1/messages"
+    # Also in the override, not just as the field default: the field default is
+    # dropped by ``exclude_unset``, so a provider stored before this default
+    # existed would still send no version at all and fall back to the plugin's.
+    # This does add a key to the deployed config of every existing Claude
+    # provider, which is the cost not paid for ``protocol``. The difference is
+    # what the key decides: the version has to be the same on both paths into a
+    # provider and is only ever the value above, while the protocol decides
+    # whether requests are translated at all, so writing one is recording a fact
+    # and writing the other would be making a choice on the operator's behalf.
+    _default_override = {"claudeVersion": ANTHROPIC_API_VERSION}
+
+    @field_validator("claudeCustomUrl")
+    @classmethod
+    def check_claude_custom_url(cls, value: Optional[str]) -> Optional[str]:
+        """An origin, optionally a path prefix, and nothing else.
+
+        The host becomes an McpBridge registry, and a value like
+        ``192.168.50.14`` parses as a *path* with no host at all -- which yields
+        the base URL ``https://`` and a registry Higress rejects. The scheme
+        picks the registry protocol, so ``http`` against a plain-HTTP endpoint
+        is the difference between working and a TLS handshake against a server
+        that does not speak it.
+
+        Credentials are refused rather than quietly dropped, because the netloc
+        travels on as ``providerDomain`` and ai-proxy writes that to
+        ``:authority`` verbatim (``OverwriteRequestHostHeader``): a
+        ``user:pw@host`` URL would put them in the header of every proxied
+        request, and in the access logs of everything on the way. A query or a
+        fragment is refused for the plainer reason that only the origin and the
+        path are ever read -- accepting them would imply they are sent.
+        """
+        if value is None:
+            return value
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                "claudeCustomUrl must be an absolute http(s) URL, "
+                f"e.g. http://192.168.50.14:8080; got {value!r}"
+            )
+        if parsed.username or parsed.password:
+            raise ValueError(
+                "claudeCustomUrl must not carry credentials: they would be sent "
+                "as the Host header of every request. Configure the endpoint's "
+                f"key as the provider API key instead; got {value!r}"
+            )
+        if parsed.query or parsed.fragment:
+            raise ValueError(
+                "claudeCustomUrl takes an origin and an optional path prefix "
+                f"only; the query or fragment in {value!r} would be dropped"
+            )
+        return value
+
+    def _custom_base_path(self) -> str:
+        """The path prefix of the custom URL, without its trailing slash.
+
+        Empty when there is none, which is the common case: an Anthropic-
+        compatible server usually serves ``/v1/messages`` at the root.
+        """
+        if not self.claudeCustomUrl:
+            return ""
+        return urlparse(self.claudeCustomUrl).path.rstrip("/")
+
+    def get_base_url(self) -> Optional[str]:
+        if self.claudeCustomUrl:
+            parsed = urlparse(self.claudeCustomUrl)
+            return f"{parsed.scheme}://{parsed.netloc}"
+        return super().get_base_url()
+
+    def get_model_url(self) -> Tuple[Optional[str], Optional[str]]:
+        base_url, model_uri = super().get_model_url()
+        return base_url, self._prefix_custom_base_path(model_uri)
+
+    def get_chat_url(self) -> Tuple[Optional[str], Optional[str]]:
+        base_url, chat_uri = super().get_chat_url()
+        return base_url, self._prefix_custom_base_path(chat_uri)
+
+    def _prefix_custom_base_path(self, uri: Optional[str]) -> Optional[str]:
+        base_path = self._custom_base_path()
+        if not base_path or uri is None:
+            return uri
+        return f"{base_path}{uri}"
+
+    def ai_proxy_derived_fields(self) -> Dict[str, Any]:
+        """``claudeCustomUrl`` as the two knobs ai-proxy actually reads.
+
+        ``providerDomain`` and ``providerBasePath`` are generic: the plugin
+        applies them in ``handleRequestHeaders`` *after* the claude provider has
+        overwritten the authority with ``api.anthropic.com``, so they win. The
+        netloc rather than the hostname, so a non-default port reaches the
+        upstream in the authority the way HTTP expects.
+
+        An endpoint mounted at the root sends no ``providerBasePath`` at all
+        rather than ``/``. ``applyProviderBasePath`` prepends the value only
+        when the path does not already start with it, so ``/`` is a no-op on
+        every path there is -- and the shorter config is the one whose diff
+        against what is deployed means something.
+
+        ``protocol`` is deliberately not derived here. Unset, the plugin's own
+        default applies and the provider is exposed as OpenAI, converted both
+        ways; ``protocol: original`` -- set by hand on the config, through the
+        ``extra="allow"`` escape hatch -- forwards unconverted instead, keeping
+        what has no OpenAI equivalent (``cache_control``, thinking blocks,
+        tool-use shapes) at the cost of serving the Anthropic protocol only.
+        Which of the two an endpoint should be exposed as is not something its
+        URL implies, so it stays the operator's choice.
+        """
+        if not self.claudeCustomUrl:
+            return {}
+        derived: Dict[str, Any] = {
+            "providerDomain": urlparse(self.claudeCustomUrl).netloc,
+        }
+        base_path = self._custom_base_path()
+        if base_path:
+            derived["providerBasePath"] = base_path
+        return derived
 
 
 class CloudflareConfig(BaseProviderConfig):
@@ -231,7 +389,7 @@ class DeeplConfig(BaseProviderConfig):
 class DeepseekConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.DEEPSEEK]
     _public_endpoint: str = "api.deepseek.com"
-    _model_uri = "/v1/models"
+    _model_uri = V1_MODELS_URI
 
 
 class DifyConfig(BaseProviderConfig):
@@ -264,7 +422,13 @@ class DoubaoConfig(BaseProviderConfig):
 class FireworksConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.FIREWORKS]
     _public_endpoint: str = "api.fireworks.ai"
-    _model_uri = "/v1/models"
+    _model_uri = V1_MODELS_URI
+
+
+class GaladrielConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.GALADRIEL]
+    _public_endpoint: str = "api.galadriel.com"
+    _model_uri = V1_MODELS_URI
 
 
 class GeminiConfig(BaseProviderConfig):
@@ -313,7 +477,7 @@ class HunyuanConfig(BaseProviderConfig):
 class LongcatConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.LONGCAT]
     _public_endpoint: str = "api.longcat.chat"
-    _model_uri = "/v1/models"
+    _model_uri = V1_MODELS_URI
 
 
 class MinimaxConfig(BaseProviderConfig):
@@ -333,7 +497,7 @@ class MoonshotConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.MOONSHOT]
     moonshotFileId: Optional[str] = None
     _public_endpoint: str = "api.moonshot.cn"
-    _model_uri = "/v1/models"
+    _model_uri = V1_MODELS_URI
 
 
 class OllamaConfig(BaseProviderConfig):
@@ -345,7 +509,7 @@ class OllamaConfig(BaseProviderConfig):
         default=None, json_schema_extra={"field_required": True}
     )
     _default_schema = "http"
-    _model_uri = "/v1/models"
+    _model_uri = V1_MODELS_URI
 
     def get_base_url(self):
         if not self.ollamaServerHost:
@@ -360,7 +524,7 @@ class OpenAIConfig(BaseProviderConfig):
     openaiCustomUrl: Optional[str] = None
     responseJsonSchema: Optional[dict] = None
     _public_endpoint: str = "api.openai.com"
-    _model_uri = "/v1/models"
+    _model_uri = V1_MODELS_URI
 
     def get_base_url(self) -> Optional[str]:
         if self.openaiCustomUrl:
@@ -450,6 +614,7 @@ ProviderConfigType = Union[
     DifyConfig,
     DoubaoConfig,
     FireworksConfig,
+    GaladrielConfig,
     GeminiConfig,
     GithubConfig,
     GrokConfig,
