@@ -64,6 +64,7 @@ jobs:
           images: "${{ env.INPUT_NAMESPACE }}/${{ env.INPUT_REPOSITORY }}"
           tags: |
             type=ref,event=pr
+            type=ref,event=workflow_dispatch
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=dev-,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=branch,enable=${{ contains(github.ref, 'refs/heads/v') && endsWith(github.ref, '-dev') }}
