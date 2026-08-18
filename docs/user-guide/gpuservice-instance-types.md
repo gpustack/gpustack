@@ -1,240 +1,108 @@
 # GPU Service Instance Types
 
-GPU Service Instance Types describe the compute shapes — CPU-only or accelerator-backed — that [GPU Service Instances](gpuservice-instances.md) can be created from.
+GPU Service Instance Types describe the compute shapes — CPU-only or accelerator-backed — that [GPU Service Instances](gpuservice-instances.md) are created from.
 
-Unlike the other GPU Service resources, instance types are not created by hand. The [GPUStack Operator](https://github.com/gpustack/gpustack-operator) discovers the hardware of every node in a cluster and generates the instance types automatically. They appear as the cards in the leftmost column of the *Add GPU Instance* form.
+The [GPUStack Operator](https://github.com/gpustack/gpustack-operator) supports accelerators from multiple manufacturers — AMD, Ascend, Cambricon, Hygon, Iluvatar, MetaX, Moore Threads, NVIDIA, and T-Head. For each manufacturer, an accelerator can be allocated **exclusively** (a whole device), **shared**, or **logically sliced** (software splitting with independent VRAM and compute budgets). NVIDIA and T-Head additionally support **physical partitioning** (MIG), where the device is split by hardware. See the operator's [accelerator support matrix](https://github.com/gpustack/gpustack-operator#accelerator-support) for the per-manufacturer details.
 
-There is no dedicated UI page to edit instance types. Instead, you tune them as an administrator with `kubectl`, by editing each node's `NodeFeature` resource on the target Kubernetes cluster (detailed below). This page covers those operations.
+## Browsing Instance Types
 
-## How Instance Types Are Generated
+Open `GPU Service` > `Instance Types` and select a cluster. The page lists every instance type the cluster offers:
 
-For every node, the Operator derives two kinds of capacity views:
+![Screenshot: the Instance Types page listing the derived instance types](../assets/gpuservice/instance-types/list.png)
 
-- A **general (CPU-only)** view, shared by all nodes of the same OS and architecture. Its key is `generic-ln-x64` here (`ln` = Linux, `x64` = amd64). It backs the CPU-only instance type.
-- One **accelerator** view per distinct device model on the node — for example `nvidia-tesla-t4` or `nvidia-a10g`. Each backs an instance type for that model.
+- **Name / Flavor**: The type name (or its display name) and the flavor it belongs to — a device model such as `NVIDIA-H100-80GB-HBM3`, or `CPU-only`.
+- **Unit CPU / Unit RAM / Storage**: The host resources granted per unit of this type. For an accelerator flavor, one unit is one whole device; logical slices and physical partitions are sized from these at creation time.
+- **Platform**: The operating system and CPU architecture, useful when choosing a compatible image.
+- **Status**: `Active` types can be selected in the *Add GPU Instance* form; `Inactive` ones cannot.
 
-Each view reports the node's resources through labels — `.cpu`, `.ram`, and `.storage` — and those values drive the generated instance type. The Operator also writes derived `z-flavor`, `z-queue`, and `z-cohort` labels; you do not set those.
-
-!!! warning
-
-    Every view reports the node's **full** CPU, RAM, and storage. A node that has accelerators therefore advertises its whole machine to its CPU-only view **and** to each accelerator view at the same time. This is intentional — it lets you pack a CPU-only instance and a GPU instance onto the same node — but it means a node's capacity is offered more than once, so the totals across instance types can be over-subscribed. [Right-Size a Node](#right-size-a-node-to-avoid-over-subscription) shows how to bound this.
-
-## Inspecting Instance Types
-
-List the instance types generated across the cluster:
+You can also read the live capacity of each type with `kubectl`. The four accelerator views are **EX**clusive, **SH**ared, **SL**iced (logical), and **PT** (physically partitioned); the accelerator views and the `CPU` column alike read `onceMaxRequest/remaining`:
 
 ```bash
-kubectl get instancetypes -o wide
+kubectl get instancetypes
 ```
 
 ```
-NAME                                                   ACCELERATOR   CPU     RAM           LOCAL-STORAGE   PHASE    AGE
-gpustack--generic-ln-x64-12c-46g--nvidia-tesla-t4-1d   3/3           36/36   140Gi/140Gi   83Gi/83Gi       Active   5h53m
-gpustack--generic-ln-x64-1c-2g                         0/0           48/71   96Gi/142Gi    98Gi/377Gi      Active   5h53m
-gpustack--generic-ln-x64-4c-16g--nvidia-a10g-1d        0/0           0/0     0/0           0/83Gi          Active   5h53m
-gpustack--generic-ln-x64-4c-16g--nvidia-tesla-t4-1d    1/1           4/4     16Gi/16Gi     98Gi/98Gi       Active   5h53m
+NAME                                          ENTRANCE                          UNIT(CPU/RAM)/STORAGE   ACCELERATOR(EX/SH/SL/PT)   CPU     PHASE
+gpustack--generic-linux-amd64                 gpustack-fnv64-3b93966fd73eb9ec   1/2Gi/100Gi             0/0 0/0 0/0 0/0            16/44   Active
+gpustack--nvidia-h100-80gb-hbm3-linux-amd64   gpustack-fnv64-e4768a65ca0ce96b   4/16Gi/100Gi            1/1 10/10 100/100 1/7      0/0     Active
+gpustack--nvidia-l40s-linux-amd64             gpustack-fnv64-a730f1dca9e26fca   4/16Gi/100Gi            1/1 10/10 100/100 0/0      0/0     Active
 ```
 
-- **NAME** encodes the general key, the per-instance unit (`12c-46g` = 12 CPU and 46 Gi RAM per device), the accelerator key, and the device count per instance (`1d`). A name without an accelerator segment (`…-1c-2g`) is the CPU-only type.
-- **ACCELERATOR**, **CPU**, **RAM**, and **LOCAL-STORAGE** are shown as `largest single request / remaining`.
-- **PHASE** is `Active`, `Activating`, or `Inactive`. A draining type reports `Inactive` and zero capacity.
+In this reading of a freshly added cluster, the H100 type offers one whole device exclusively (`EX 1/1`), ten shared slots (`SH 10/10`), a full logical-slice budget (`SL 100/100`), and seven MIG partition slots (`PT 1/7`, from a second H100 node with MIG enabled). The L40S type offers its single device the same way minus partitioning (`PT 0/0` — L40S has no MIG), and the generic CPU-only type carries no accelerator capacity at all.
 
-The Operator publishes each node's capacity labels in a `NodeFeature` resource named `<node-name>-gpustack-worker` in the `gpustack-system` namespace; [Node Feature Discovery](https://github.com/kubernetes-sigs/node-feature-discovery) mirrors them onto the node, and the scheduling chain reads them from there. This `NodeFeature` is also where you tune a node (see [Tuning Instance Types](#tuning-instance-types)).
+## Derived Instance Types
 
-Inspect the labels of a node — for example, the node with four Tesla T4 devices:
+When `Derive Instance Types from Nodes` is **Enabled** (the default) on a GPU Service cluster, the operator discovers every node's devices and authors the matching instance types automatically — one per accelerator model, plus a CPU-only type. The list above is such a derived set.
 
-```bash
-kubectl -n gpustack-system get nodefeature ip-172-31-2-137.ec2.internal-gpustack-worker \
-  -o jsonpath='{.spec.labels}' | jq -S .
-```
+The unit CPU/RAM of a derived type comes from per-product presets maintained by the operator, documented in the [Instance Type Unit Resources reference](https://github.com/gpustack/gpustack-operator/blob/main/docs/reference/instance-type-unit-resources.md). Storage is always 100 GiB, and a derived CPU-only type is always 1 CPU / 2 GiB RAM.
 
-```json
-{
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.cpu": "48",
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.ram": "186Gi",
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.storage": "98Gi",
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.z-cohort": "12c-46g-1d",
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.z-flavor": "48c-186g-98g-4d",
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.z-queue": "12c-46g-1d",
-  "general.feature.gpustack.ai/generic": "true",
-  "general.feature.gpustack.ai/generic-ln-x64": "true",
-  "general.feature.gpustack.ai/generic-ln-x64.cpu": "48",
-  "general.feature.gpustack.ai/generic-ln-x64.ram": "96Gi",
-  "general.feature.gpustack.ai/generic-ln-x64.storage": "98Gi",
-  "general.feature.gpustack.ai/generic-ln-x64.z-cohort": "1c-2g",
-  "general.feature.gpustack.ai/generic-ln-x64.z-flavor": "48c-96g-98g",
-  "general.feature.gpustack.ai/generic-ln-x64.z-queue": "1c-2g",
-  "gpustack.ai/managed": "true"
-}
-```
+Derived types are owned by the operator:
 
-This node exposes both a general view (`generic-ln-x64`, claiming the full 48 CPU / 96 Gi) and a Tesla T4 view (`nvidia-tesla-t4`, claiming the full 48 CPU / 186 Gi across its 4 devices) — the over-subscription described above. The labels you edit are `gpustack.ai/managed` and each view's `.cpu`, `.ram`, and `.storage`. The `.z-flavor`, `.z-queue`, `.z-cohort`, and `=true` marker labels are derived by the Operator — leave them alone.
+- **They cannot be deleted from the UI** — the `Delete` action is disabled for them:
 
-## Tuning Instance Types
+![Screenshot: the Delete action is disabled for a derived instance type](../assets/gpuservice/instance-types/derived-delete-disabled.png)
 
-You tune instance types by editing the `spec.labels` of a node's `<node-name>-gpustack-worker` `NodeFeature`. The Operator reads your `gpustack.ai/managed`, `.cpu`, `.ram`, and `.storage` values, recomputes the affected instance types, and re-publishes them.
+- Deleting one with `kubectl` does not stick either: the operator re-authors it on its next reconcile. (Re-creating a derived type this way is in fact the supported way to re-size it after an operator upgrade, because unit resources are stamped once at creation.)
+
+To remove a derived type permanently, set `Derive Instance Types from Nodes` to **Disabled** on the cluster first (see [Advanced Options](gpuservice-instances.md#advanced-options) of the cluster); the operator then stops authoring types, and the existing derived ones can be deleted.
+
+## Adding an Instance Type
+
+Add a custom instance type when the derived ones do not fit — for example, a larger CPU-only shape. Click `Add Instance Type` and fill in the form:
+
+![Screenshot: the Add Instance Type form](../assets/gpuservice/instance-types/add-form.png)
+
+- **Name**: The type name. Lowercase and Kubernetes-safe, since it becomes part of the underlying resource name.
+- **Display Name**: An optional friendly name shown in the UI.
+- **Flavor**: `CPU-only`, or an accelerator flavor the cluster carries.
+- **OS / Arch**: The platform the type targets.
+- **Unit CPU / Unit RAM / Storage**: The host resources granted per unit.
+
+Click `Save`. The new type appears in the list and in the *Add GPU Instance* form:
+
+![Screenshot: the custom CPU-Large instance type in the list](../assets/gpuservice/instance-types/added.png)
 
 !!! note
 
-    Edit the `NodeFeature`, not the node. Node Feature Discovery owns these labels on the node and reverts any change made there directly.
+    A custom instance type is never modified by the operator — the derivation only ever creates types, and never touches one it did not just create.
 
-A few rules apply to the values you set:
+## Deactivating and Activating an Instance Type
 
-- Setting any of a view's `.cpu`, `.ram`, or `.storage` to `0` removes that view's instance type from the node entirely.
-- RAM is rounded **up** to an integer number of Gi and is never set below the CPU count.
-- Storage is rounded **down** to an even number of Gi.
+Deactivate a type to stop new instances from being created from it, without deleting it. Click the deactivate action on the type's row and confirm:
 
-!!! warning
+![Screenshot: confirming deactivation of an instance type](../assets/gpuservice/instance-types/deactivate-confirm.png)
 
-    Changing a node's labels reshapes or removes the instance types it backs. When an instance type is removed (or drained to zero capacity), GPUStack evicts the GPU Service Instances running under it and marks them `Stopped`. Stopped instances are **not** restarted automatically — you start them again from the [GPU Service Instances](gpuservice-instances.md) page once a matching instance type is available. An instance's `Type` itself cannot be changed yet; reconfiguring the `Type` of a Stopped instance is planned for a future release. Apply these changes during a maintenance window.
+The type turns `Inactive` and can no longer be selected in the *Add GPU Instance* form:
 
-### Exclude a Node
+![Screenshot: an Inactive instance type](../assets/gpuservice/instance-types/inactive.png)
 
-Set `gpustack.ai/managed` to `false` to take a node out of GPU Service entirely. The Operator stops generating instance types from it, so no new instances are scheduled there, and any instance already running on the node is stopped.
+Click the same action again and confirm to activate it back:
 
-```bash
-kubectl -n gpustack-system patch nodefeature ip-172-31-2-89.ec2.internal-gpustack-worker \
-  --type merge -p '{"spec":{"labels":{"gpustack.ai/managed":"false"}}}'
-```
+![Screenshot: confirming activation of an instance type](../assets/gpuservice/instance-types/activate-confirm.png)
 
-After the Operator reconciles, the instance types backed solely by this node drop to zero capacity, and any pooled type (such as the CPU-only type) loses this node's share:
+## Deleting an Instance Type
 
-```
-NAME                                                   ACCELERATOR   CPU     RAM           LOCAL-STORAGE   PHASE    AGE
-gpustack--generic-ln-x64-12c-46g--nvidia-tesla-t4-1d   3/3           36/36   140Gi/140Gi   83Gi/83Gi       Active   6h15m
-gpustack--generic-ln-x64-1c-2g                         0/0           48/67   96Gi/134Gi    98Gi/279Gi      Active   6h15m
-gpustack--generic-ln-x64-4c-16g--nvidia-a10g-1d        0/0           0/0     0/0           0/83Gi          Active   6h15m
-gpustack--generic-ln-x64-4c-16g--nvidia-tesla-t4-1d    0/0           0/0     0/0           0/0             Active   6h15m
-```
+Open the actions menu on the type's row and click `Delete`:
 
-Node `ip-172-31-2-89` was the only node backing `…-4c-16g--nvidia-tesla-t4-1d`, so that type now reports `0/0` capacity: in the *Add GPU Instance* form its **Tesla-T4** card (16 GB RAM, 4 CPU) shows **Max 0** and can no longer be selected. The CPU-only type (`…-1c-2g`) keeps running but drops from 71 to 67 CPU as this node leaves the shared pool.
+![Screenshot: the Delete action in the instance type's actions menu](../assets/gpuservice/instance-types/delete-menu.png)
 
-![Screenshot: the excluded node's single-device Tesla T4 instance type shows Max 0 in the Add GPU Instance form](../assets/gpuservice/instance-types/guide-1-add-instance.png)
+Confirm the deletion:
 
-To bring the node back, set the label to `true` again:
+![Screenshot: confirming deletion of an instance type](../assets/gpuservice/instance-types/delete-confirm.png)
+
+A custom type is removed permanently. Derived types cannot be deleted while derivation is enabled — see [Derived Instance Types](#derived-instance-types).
+
+## Physical Partitioning with NVIDIA MIG
+
+A physically partitioned (MIG) device does not get its own instance type: its partitions appear as partition capacity (the `PT` view) on the device's instance type, and you pick a partition profile when [adding an instance](gpuservice-instances.md#instance-type-selection).
+
+MIG mode itself is a **per-node, administrator-managed** property — the operator observes it but never enables, disables, or reconfigures it. To offer partitions on an NVIDIA node, enable MIG on the node and restart the operator's device manager there:
 
 ```bash
-kubectl -n gpustack-system patch nodefeature ip-172-31-2-89.ec2.internal-gpustack-worker \
-  --type merge -p '{"spec":{"labels":{"gpustack.ai/managed":"true"}}}'
+# On the node, per GPU or for all GPUs:
+sudo nvidia-smi -i <id> -mig 1
+# Then, from anywhere with cluster access:
+kubectl -n gpustack-system rollout restart ds/gpustack-operator-device-manager-nvidia
 ```
 
-### Disable the CPU-Only Type on a Node
-
-A node with accelerators also offers a CPU-only instance type by default. To stop a node from offering CPU-only instances — for example, to reserve a GPU node for GPU workloads only — set its general `.cpu` to `0`:
-
-```bash
-kubectl -n gpustack-system patch nodefeature ip-172-31-2-137.ec2.internal-gpustack-worker \
-  --type merge -p '{"spec":{"labels":{"general.feature.gpustack.ai/generic-ln-x64.cpu":"0"}}}'
-```
-
-The CPU-only type is pooled across every node, so it stays available — it just loses this node's share. Node `ip-172-31-2-137` contributed 48 CPU and 96 Gi to the pool, so the type's remaining capacity drops by exactly that much (CPU `71` → `23`, RAM `142Gi` → `46Gi`), and the largest CPU-only instance you can launch shrinks because the 48-CPU node left the pool:
-
-```
-NAME                                                   ACCELERATOR   CPU     RAM           LOCAL-STORAGE   PHASE    AGE
-gpustack--generic-ln-x64-12c-46g--nvidia-tesla-t4-1d   3/3           36/36   140Gi/140Gi   83Gi/83Gi       Active   6h32m
-gpustack--generic-ln-x64-1c-2g                         0/0           15/23   30Gi/46Gi     83Gi/279Gi      Active   6h32m
-gpustack--generic-ln-x64-4c-16g--nvidia-a10g-1d        0/0           0/0     0/0           0/83Gi          Active   6h32m
-gpustack--generic-ln-x64-4c-16g--nvidia-tesla-t4-1d    1/1           4/4     16Gi/16Gi     98Gi/98Gi       Active   6h32m
-```
-
-In the *Add GPU Instance* form, the **CPU Only** card's **Max** drops from `48` to `15`.
-
-!!! note
-
-    A CPU-only instance already running on the node keeps running — opting the node out only stops **new** CPU-only instances from landing there. Running instances are stopped only when a type is removed entirely and drains to zero.
-
-![Screenshot: the CPU Only card's Max drops after disabling the CPU-only type on a node](../assets/gpuservice/instance-types/guide-2-cpu-only.png)
-
-Revert by removing the override; the Operator restores the discovered value:
-
-```bash
-kubectl -n gpustack-system patch nodefeature ip-172-31-2-137.ec2.internal-gpustack-worker \
-  --type merge -p '{"spec":{"labels":{"general.feature.gpustack.ai/generic-ln-x64.cpu":null}}}'
-```
-
-### Right-Size a Node to Avoid Over-Subscription
-
-Because every view reports the node's full machine, a node's CPU-only type and each of its accelerator types all advertise the whole node. If you run a CPU-only instance and a GPU instance on the same node, their combined requests can exceed what the node actually has.
-
-When you want a node split between CPU and GPU along a plan of your own — or want it used for GPU instances only — set explicit `.cpu`, `.ram`, and `.storage` on each view so their sums stay within the machine. The ratio is yours to choose. For node `ip-172-31-2-137` (48 CPU, 186 Gi RAM, 98 Gi disk), this reserves a small slice for CPU-only instances and the rest for the four T4 devices:
-
-```bash
-kubectl -n gpustack-system patch nodefeature ip-172-31-2-137.ec2.internal-gpustack-worker --type merge -p '{"spec":{"labels":{
-  "general.feature.gpustack.ai/generic-ln-x64.cpu":"8",
-  "general.feature.gpustack.ai/generic-ln-x64.ram":"16Gi",
-  "general.feature.gpustack.ai/generic-ln-x64.storage":"40Gi",
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.cpu":"40",
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.ram":"160Gi",
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.storage":"56Gi"
-}}}'
-```
-
-The sums (48 CPU, 176 Gi, 96 Gi) now fit the machine. The Tesla T4 type is reshaped from `12c-46g` to `10c-40g` per device (40 CPU / 160 Gi split across the 4 devices), and the node's CPU-only contribution shrinks to 8 CPU / 16 Gi:
-
-```
-NAME                                                   ACCELERATOR   CPU     RAM           LOCAL-STORAGE   PHASE    AGE
-gpustack--generic-ln-x64-10c-40g--nvidia-tesla-t4-1d   4/4           40/40   160Gi/160Gi   56Gi/56Gi       Active   24s
-gpustack--generic-ln-x64-1c-2g                         0/0           15/31   30Gi/62Gi     83Gi/319Gi      Active   6h37m
-gpustack--generic-ln-x64-4c-16g--nvidia-a10g-1d        0/0           0/0     0/0           0/83Gi          Active   6h37m
-gpustack--generic-ln-x64-4c-16g--nvidia-tesla-t4-1d    1/1           4/4     16Gi/16Gi     98Gi/98Gi       Active   6h37m
-```
-
-The original `…-12c-46g--nvidia-tesla-t4-1d` type no longer matches any node, so it is removed — and because the `jupyter` instance was running under it, that instance is evicted and marked `Stopped`:
-
-```
-NAMESPACE          NAME      TYPE                                                   ACCESS          PORT(S)        PHASE
-gpustack-default   jupyter   gpustack--generic-ln-x64-12c-46g--nvidia-tesla-t4-1d                                  Stopped
-gpustack-default   pytorch   gpustack--generic-ln-x64-4c-16g--nvidia-a10g-1d        34.230.88.63    22:31025/TCP   Ready
-gpustack-default   ubuntu    gpustack--generic-ln-x64-1c-2g                         100.58.100.48   22:30975/TCP   Ready
-```
-
-![Screenshot: the reshaped Tesla T4 instance type now shows 10 CPU and 40 GB RAM per device](../assets/gpuservice/instance-types/guide-3-add-instance.png)
-
-![Screenshot: the jupyter instance is Stopped after its instance type was reshaped](../assets/gpuservice/instance-types/guide-3-instance-stopped.png)
-
-!!! tip
-
-    To favor GPU workloads, give the accelerator view most of the machine and the general view a small slice (or `0`, as in the previous section, to dedicate the node to GPU instances). Only the per-view sums need to stay within the node.
-
-Revert by removing the overrides:
-
-```bash
-kubectl -n gpustack-system patch nodefeature ip-172-31-2-137.ec2.internal-gpustack-worker --type merge -p '{"spec":{"labels":{
-  "general.feature.gpustack.ai/generic-ln-x64.cpu":null,
-  "general.feature.gpustack.ai/generic-ln-x64.ram":null,
-  "general.feature.gpustack.ai/generic-ln-x64.storage":null,
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.cpu":null,
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.ram":null,
-  "acceleratable.feature.gpustack.ai/nvidia-tesla-t4.storage":null
-}}}'
-```
-
-Once the original type is back, start the stopped instance again from the [GPU Service Instances](gpuservice-instances.md) page.
-
-### Disable a Specific Accelerator Model on a Node
-
-This is the accelerator counterpart of [Disable the CPU-Only Type](#disable-the-cpu-only-type-on-a-node), and it is more surgical than [Exclude a Node](#exclude-a-node): it removes one accelerator model's instance type from a node while the node keeps serving its other types — the CPU-only type and any other accelerator models. Set the model's `.cpu` to `0`:
-
-```bash
-kubectl -n gpustack-system patch nodefeature ip-172-31-2-89.ec2.internal-gpustack-worker \
-  --type merge -p '{"spec":{"labels":{"acceleratable.feature.gpustack.ai/nvidia-tesla-t4.cpu":"0"}}}'
-```
-
-Node `ip-172-31-2-89` was the only node backing `…-4c-16g--nvidia-tesla-t4-1d`, so that type drops to zero. Unlike excluding the node, its CPU-only contribution stays in the pool — the CPU-only type holds at `48/71`:
-
-```
-NAME                                                   ACCELERATOR   CPU     RAM           LOCAL-STORAGE   PHASE    AGE
-gpustack--generic-ln-x64-12c-46g--nvidia-tesla-t4-1d   4/4           48/48   186Gi/186Gi   98Gi/98Gi       Active   2m24s
-gpustack--generic-ln-x64-1c-2g                         0/0           48/71   96Gi/142Gi    98Gi/377Gi      Active   6h53m
-gpustack--generic-ln-x64-4c-16g--nvidia-a10g-1d        0/0           0/0     0/0           0/83Gi          Active   6h53m
-gpustack--generic-ln-x64-4c-16g--nvidia-tesla-t4-1d    0/0           0/0     0/0           0/0             Active   6h53m
-```
-
-On a node with several accelerator models, this removes only the targeted model and leaves the others untouched.
-
-Revert by removing the override:
-
-```bash
-kubectl -n gpustack-system patch nodefeature ip-172-31-2-89.ec2.internal-gpustack-worker \
-  --type merge -p '{"spec":{"labels":{"acceleratable.feature.gpustack.ai/nvidia-tesla-t4.cpu":null}}}'
-```
+See the operator's [NVIDIA MIG operations runbook](https://github.com/gpustack/gpustack-operator/blob/main/docs/operation/nvidia-mig.md#what-gpustack-operator-does-not-do) for the full procedure, prerequisites, and limitations — including that MIG instances never survive a node reboot, and that on Hopper and newer the mode itself does not persist across reboots either.
