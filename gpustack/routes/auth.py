@@ -29,6 +29,7 @@ from gpustack.api.auth import (
     OIDC_ID_TOKEN_COOKIE_NAME,
     OIDC_STATE_COOKIE_NAME,
     SSO_LOGIN_COOKIE_NAME,
+    auth_cookie_attrs,
     authenticate_user,
 )
 from gpustack.server.deps import CurrentUserDep, SessionDep
@@ -154,6 +155,10 @@ async def get_oidc_user_data(
 #     than into a URL exposed to an unauthenticated caller.
 SOURCE_CONFLICT_ERROR_CODE = "source_conflict"
 AUTH_FAILED_ERROR_CODE = "auth_failed"
+
+# The OIDC state cookie only has to outlive the round trip to the IdP, so it
+# expires long before the session cookies do.
+OIDC_STATE_COOKIE_MAX_AGE_SECONDS = 600
 
 
 def _ui_relative_url(request: Request, error_code: Optional[str] = None) -> str:
@@ -709,20 +714,12 @@ async def saml_callback(request: Request, session: SessionDep):
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=access_token,
-        httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        samesite="lax",
-        secure=request.url.scheme == "https",
+        **auth_cookie_attrs(request, envs.JWT_TOKEN_EXPIRE_MINUTES * 60),
     )
     response.set_cookie(
         key=SSO_LOGIN_COOKIE_NAME,
         value="true",
-        httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        samesite="lax",
-        secure=request.url.scheme == "https",
+        **auth_cookie_attrs(request, envs.JWT_TOKEN_EXPIRE_MINUTES * 60),
     )
 
     return response
@@ -879,10 +876,7 @@ async def oidc_login(request: Request):
     response.set_cookie(
         key=OIDC_STATE_COOKIE_NAME,
         value=state,
-        httponly=True,
-        max_age=600,
-        samesite="lax",
-        secure=request.url.scheme == "https",
+        **auth_cookie_attrs(request, OIDC_STATE_COOKIE_MAX_AGE_SECONDS),
     )
     return response
 
@@ -987,11 +981,7 @@ async def oidc_callback(request: Request, session: SessionDep):
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=access_token,
-        httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        samesite="lax",
-        secure=request.url.scheme == "https",
+        **auth_cookie_attrs(request, envs.JWT_TOKEN_EXPIRE_MINUTES * 60),
     )
     try:
         id_token = res_data.get("id_token")
@@ -999,20 +989,12 @@ async def oidc_callback(request: Request, session: SessionDep):
             response.set_cookie(
                 key=OIDC_ID_TOKEN_COOKIE_NAME,
                 value=id_token,
-                httponly=True,
-                max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-                expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-                samesite="lax",
-                secure=request.url.scheme == "https",
+                **auth_cookie_attrs(request, envs.JWT_TOKEN_EXPIRE_MINUTES * 60),
             )
             response.set_cookie(
                 key=SSO_LOGIN_COOKIE_NAME,
                 value="true",
-                httponly=True,
-                max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-                expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-                samesite="lax",
-                secure=request.url.scheme == "https",
+                **auth_cookie_attrs(request, envs.JWT_TOKEN_EXPIRE_MINUTES * 60),
             )
     except Exception as e:
         logger.warning(f"Failed to set id_token cookie: {str(e)}")
@@ -1244,20 +1226,12 @@ async def cas_callback(request: Request, session: SessionDep):
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=access_token,
-        httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        samesite="lax",
-        secure=request.url.scheme == "https",
+        **auth_cookie_attrs(request, envs.JWT_TOKEN_EXPIRE_MINUTES * 60),
     )
     response.set_cookie(
         key=SSO_LOGIN_COOKIE_NAME,
         value="true",
-        httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        samesite="lax",
-        secure=request.url.scheme == "https",
+        **auth_cookie_attrs(request, envs.JWT_TOKEN_EXPIRE_MINUTES * 60),
     )
     return response
 
@@ -1281,11 +1255,7 @@ async def login(
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=access_token,
-        httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        samesite="lax",
-        secure=request.url.scheme == "https",
+        **auth_cookie_attrs(request, envs.JWT_TOKEN_EXPIRE_MINUTES * 60),
     )
 
 
