@@ -50,7 +50,6 @@ from gpustack.server.services import provision_bootstrap_admin_orgs
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.config import registration
-from gpustack.server.catalog import init_model_catalog
 from gpustack.server.controllers import (
     ModelController,
     ModelFileController,
@@ -59,6 +58,8 @@ from gpustack.server.controllers import (
     ClusterController,
     WorkerPoolController,
     InferenceBackendController,
+    RunnerSourceController,
+    CatalogSourceController,
     ModelRouteController,
     ModelRouteTargetController,
     ModelProviderController,
@@ -69,6 +70,8 @@ from gpustack.gpu_instances.controllers import (
     GPUInstancePersistentVolumeTypeController,
     GPUInstanceTypeController,
 )
+from gpustack.schemas.catalog_source import normalize_catalog_yaml
+from gpustack.server.catalog import read_builtin_catalog_text
 from gpustack.server.db import async_session
 from gpustack.server.gateway_auth_reconciler import GatewayAuthReconciler
 from gpustack.server.lora_model_routes import (
@@ -79,6 +82,7 @@ from gpustack.utils.lora_model_source import normalized_lora_list
 from gpustack.server.init_db import init_db, get_query_count
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
+from gpustack.server.sources.probe import SourceRefresher
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.worker_status_buffer import flush_worker_status_to_db
 from gpustack.server.metrics_collector import flush_gateway_metrics_to_db
@@ -275,7 +279,8 @@ class Server:
         self._run_migrations()
         await self._prepare_data()
 
-        init_model_catalog(self._config.model_catalog_file)
+        self._validate_configured_model_catalog()
+
         # it's safe to determine server_role after migration
         if self._config.server_role() == Config.ServerRole.BOTH:
             self._after_healthy_sub_processes.append(self._worker_process)
@@ -388,6 +393,26 @@ class Server:
 
         logger.debug("Data initialization completed.")
 
+    def _validate_configured_model_catalog(self):
+        """Reject a ``--model-catalog-file`` this server cannot read or parse.
+
+        The leader seeds the catalog source from it, but a controller task that
+        raises dies without taking the server down — a typo'd path would surface as
+        an empty Model Catalog and one ERROR line. Read here, where a start-up
+        failure still stops the process. Only an explicit file is fatal.
+        """
+        if not self._config.model_catalog_file:
+            return
+        try:
+            normalize_catalog_yaml(
+                read_builtin_catalog_text(self._config.model_catalog_file)
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load the configured model catalog "
+                f"{self._config.model_catalog_file}: {e}"
+            ) from e
+
     def _start_scheduler(self):
         """Start the scheduler and return the task."""
         scheduler = Scheduler(self._config)
@@ -428,6 +453,12 @@ class Server:
 
         inference_backend_controller = InferenceBackendController()
         tasks.append(asyncio.create_task(inference_backend_controller.start()))
+
+        runner_source_controller = RunnerSourceController()
+        tasks.append(asyncio.create_task(runner_source_controller.start()))
+
+        catalog_source_controller = CatalogSourceController(self._config)
+        tasks.append(asyncio.create_task(catalog_source_controller.start()))
 
         gpu_instance_controller = GPUInstanceController(self._config)
         tasks.append(asyncio.create_task(gpu_instance_controller.start()))
@@ -601,6 +632,21 @@ class Server:
         update_checker = UpdateChecker(update_check_url=self._config.update_check_url)
         self._create_async_task(update_checker.start())
         logger.debug("Update checker started.")
+
+    def _start_source_probe(self):
+        """Start the source refresher (leader-only): each OFFICIAL slot tracks
+        what the OTA server publishes, and opted-in user URL sources auto-refresh.
+        Turning a kind off is per kind, on its OFFICIAL row's
+        ``auto_update_hours``.
+        """
+        source_refresher = SourceRefresher(
+            ota_server_url=self._config.ota_server_url,
+        )
+        # The status API and the manual trigger reach the refresher through app
+        # state; its absence tells them this server isn't the one refreshing.
+        self._app.state.source_probe = source_refresher
+        self._create_async_task(source_refresher.start())
+        logger.debug("Source refresher started.")
 
     async def _monitor_sub_processes(self):
         while self.all_processes:
@@ -1395,6 +1441,9 @@ class Server:
 
         # Update Checker
         self._start_update_checker()
+
+        # Official Source Probe
+        self._start_source_probe()
 
         # Worker Instance Cleaner
         self._start_worker_instance_cleaner()

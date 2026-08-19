@@ -8,8 +8,11 @@ from gpustack.schemas.inference_backend import (
     InferenceBackend,
     VersionConfig,
 )
+from gpustack.schemas.runner_source import (
+    RunnerOverrideEntry,
+    merged_service_runners,
+)
 from gpustack.server.db import async_session
-from gpustack_runner import list_service_runners
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime.detector import ManufacturerEnum
 
@@ -87,6 +90,7 @@ class BackendFrameworkFilter(WorkerFilter):
     async def _has_supported_runners(
         self,
         inference_backends: List[InferenceBackend],
+        overrides: List[RunnerOverrideEntry],
         gpu_type: str,
         backend_version: Optional[str],
         variant: Optional[str],
@@ -138,7 +142,7 @@ class BackendFrameworkFilter(WorkerFilter):
         if backend_version:
             kwargs["service_version"] = backend_version
 
-        runners_list = list_service_runners(**kwargs)
+        runners_list = merged_service_runners(overrides, **kwargs)
         if runners_list and len(runners_list) > 0:
             return True
 
@@ -166,6 +170,7 @@ class BackendFrameworkFilter(WorkerFilter):
 
         async with async_session() as session:
             inference_backends = await InferenceBackend.all(session)
+            overrides = await RunnerOverrideEntry.all(session)
 
         filtered_workers = []
         filtered_messages = []
@@ -187,6 +192,7 @@ class BackendFrameworkFilter(WorkerFilter):
                 # Get supported runners for this GPU configuration
                 is_supported = await self._has_supported_runners(
                     inference_backends,
+                    overrides,
                     gpu_type,
                     backend_version,
                     variant,

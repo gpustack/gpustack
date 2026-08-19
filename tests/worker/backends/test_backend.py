@@ -1097,7 +1097,10 @@ def test_resolve_image_fallback_matches_host_major(
             _make_versioned_runner("12.8", "gpustack/runner:cuda12.8-vllm0.10.2"),
         ]
     )
-    monkeypatch.setattr(base_module, "list_backend_runners", lambda **_: [runner])
+    # merged_backend_runners takes the override rows positionally, then the filters.
+    monkeypatch.setattr(
+        base_module, "merged_backend_runners", lambda *_, **__: [runner]
+    )
 
     server = VLLMServer.__new__(VLLMServer)
     server._model = types.SimpleNamespace(
@@ -1105,6 +1108,8 @@ def test_resolve_image_fallback_matches_host_major(
     )
     server.inference_backend = None
     server._get_device_info = lambda: ("cuda", runtime_version, None)
+    # The real fetch needs a clientset, and its failure is fatal by design.
+    server._fetch_runner_overrides = lambda: []
 
     image_name, _ = server._resolve_image()
     assert image_name == expected_image
@@ -1130,7 +1135,8 @@ def test_resolve_image_treats_blank_backend_version_as_auto(
 
     captured = {}
 
-    def fake_list_backend_runners(**kwargs):
+    # merged_backend_runners takes the override rows positionally, then the filters.
+    def fake_merged_backend_runners(_overrides, **kwargs):
         captured.update(kwargs)
         return [
             types.SimpleNamespace(
@@ -1142,7 +1148,9 @@ def test_resolve_image_treats_blank_backend_version_as_auto(
             )
         ]
 
-    monkeypatch.setattr(base_module, "list_backend_runners", fake_list_backend_runners)
+    monkeypatch.setattr(
+        base_module, "merged_backend_runners", fake_merged_backend_runners
+    )
 
     server = VLLMServer.__new__(VLLMServer)
     server._model = types.SimpleNamespace(
@@ -1150,6 +1158,8 @@ def test_resolve_image_treats_blank_backend_version_as_auto(
     )
     server.inference_backend = None
     server._get_device_info = lambda: ("cuda", "13.0", None)
+    # The real fetch needs a clientset, and its failure is fatal by design.
+    server._fetch_runner_overrides = lambda: []
 
     image_name, _ = server._resolve_image()
 

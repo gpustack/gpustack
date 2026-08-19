@@ -599,7 +599,11 @@ async def test_select_candidates(
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await placement_scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        # find_candidate takes a session only to resolve a draft model's source, and
+        # returns before touching it when the model declares no speculative decoding.
+        actual_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         try:
             assert len(actual_candidates) == len(expected_candidates)
@@ -859,7 +863,9 @@ async def test_select_candidates_headless(
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await placement_scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        actual_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         try:
             assert len(actual_candidates) == len(expected_candidates)
@@ -1108,7 +1114,9 @@ async def test_select_candidates_from_different_gpu_types(
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        actual_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         try:
             assert len(actual_candidates) == len(expected_candidates)

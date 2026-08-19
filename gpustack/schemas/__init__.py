@@ -20,6 +20,19 @@ from gpustack.schemas.inference_backend import (
     InferenceBackendCreate,
     InferenceBackendUpdate,
 )
+from gpustack.schemas.runner_source import (
+    InferenceRunnerSource,
+    RunnerOverrideEntry,
+    RunnerOverrideEntryPublic,
+    RunnerOverrideEntriesPublic,
+)
+from gpustack.schemas.catalog_source import (  # noqa: F401  table registration
+    CatalogSource,
+    CatalogModelEntry,
+)
+from gpustack.schemas.inference_backend_source import (  # noqa: F401  table registration
+    InferenceBackendSource,
+)
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -278,6 +291,13 @@ __all__ = [
     "InferenceBackendsPublic",
     "InferenceBackendCreate",
     "InferenceBackendUpdate",
+    "InferenceRunnerSource",
+    "RunnerOverrideEntry",
+    "RunnerOverrideEntryPublic",
+    "RunnerOverrideEntriesPublic",
+    "CatalogSource",
+    "CatalogModelEntry",
+    "InferenceBackendSource",
     "Benchmark",
     "BenchmarkCreate",
     "BenchmarkUpdate",

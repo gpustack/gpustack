@@ -14,6 +14,8 @@ GPUStack supports three types of inference backends:
 - **Community**: Backends shared by the Community Backend Marketplace. You can enable them as needed.
 - **Custom**: Backends you create with your own configurations. These can be freely added, edited, and deleted.
 
+The Built-in and Community lists are updated over the air, without upgrading GPUStack. You can also point either list at a document of your own. See [OTA Content Updates](ota-content-updates.md).
+
 ## Parameter Description
 
 | Parameter Name                | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Required |

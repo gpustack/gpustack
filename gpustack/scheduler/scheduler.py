@@ -347,7 +347,7 @@ class Scheduler:
             if workers and model:
                 try:
                     candidate, messages = await find_candidate(
-                        self._config, model, workers, model_instances
+                        session, self._config, model, workers, model_instances
                     )
                 except Exception as e:
                     state_message = f"Failed to find candidate: {e}"
@@ -407,6 +407,7 @@ class Scheduler:
 
 
 async def find_candidate(
+    session: AsyncSession,
     config: Config,
     model: Model,
     workers: List[Worker],
@@ -482,7 +483,7 @@ async def find_candidate(
         candidate_scorers.append(
             ModelFileLocalityScorer(
                 model,
-                draft_model_source=get_draft_model_source(model),
+                draft_model_source=await get_draft_model_source(session, model),
                 max_score=locality_max_score,
             )
         )

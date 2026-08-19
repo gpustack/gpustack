@@ -146,7 +146,9 @@ async def test_schedule_to_single_worker_single_gpu(config):
 
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        # find_candidate takes a session only to resolve a draft model's source, and
+        # returns before touching it when the model declares no speculative decoding.
+        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -236,7 +238,7 @@ async def test_schedule_to_single_worker_multi_gpu(config):
         # filter
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -299,7 +301,9 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
 
         spread_candidates = await resource_fit_selector.select_candidates(workers)
         spread_candidates = await placement_scorer_spread.score(spread_candidates)
-        spread_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        spread_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         expected_candidates = [
             {
@@ -414,7 +418,9 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         expected_candidates = [
             {
@@ -489,7 +495,9 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
             workers
         )
         spread_candidates = await placement_scorer_spread.score(spread_candidates)
-        spread_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        spread_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         expected_candidates = [
             {
@@ -561,7 +569,9 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         expected_candidates = [
             {
@@ -668,7 +678,9 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         expected_candidates = [
             {
@@ -705,7 +717,9 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
             workers
         )
         spread_candidates = await placement_policy_spread.score(spread_candidates)
-        spread_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        spread_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         expected_spread_candidates = [
             {"worker_id": 7, "score": 90.0},
@@ -770,7 +784,9 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         expected_candidates = [
             {
@@ -867,7 +883,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         expected_candidates = [
             {
@@ -960,7 +978,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
             workers
         )
         spread_candidates = await placement_scorer_spread.score(spread_candidates)
-        spread_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        spread_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         expected_candidates = [
             {
@@ -1090,7 +1110,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
 
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
 
         expected_candidates = [
             {

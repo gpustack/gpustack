@@ -10,6 +10,7 @@ from sqlalchemy import JSON, Column, ForeignKey, Integer, Text, UniqueConstraint
 from sqlmodel import SQLModel, Field as SQLField
 
 from gpustack.mixins import BaseModelMixin
+from gpustack.schemas.source import SourceTypeEnum
 from .common import pydantic_column_type, PaginatedList
 from .models import BackendEnum, BackendSourceEnum
 
@@ -48,6 +49,11 @@ class VersionConfig(BaseModel):
     built_in_frameworks: Optional[List[str]] = Field(None)
     custom_framework: Optional[str] = Field(None)
     env: Optional[Dict[str, str]] = Field(None)
+    # Per-version source origin: which managed source produced this version
+    # (FILE-yaml / URL / BUILTIN). None for user-added versions and packaged
+    # runner-catalog versions the UI renders without a badge.
+    source_name: Optional[str] = Field(None)
+    source_type: Optional[SourceTypeEnum] = Field(None)
 
 
 class VersionConfigDict(RootModel[Dict[str, VersionConfig]]):
@@ -111,6 +117,11 @@ class InferenceBackendBase(SQLModel):
     backend_source: Optional[BackendSourceEnum] = SQLField(default=None)
     enabled: Optional[bool] = SQLField(default=None)
     icon: Optional[str] = SQLField(default=None)
+    # Card-level source origin: which managed source last produced this
+    # community backend (BUILTIN packaged / FILE-yaml / URL). NULL on built-in
+    # engine rows and user-created custom backends.
+    source_name: Optional[str] = SQLField(default=None)
+    source_type: Optional[SourceTypeEnum] = SQLField(default=None)
     default_env: Optional[Dict[str, str]] = SQLField(
         sa_column=Column(JSON), default=None
     )
@@ -329,6 +340,8 @@ class VersionListItem(BaseModel):
     version: str = Field(...)
     is_deprecated: bool = Field(default=False)
     env: Optional[Dict[str, str]] = Field(None)
+    source_name: Optional[str] = Field(None)
+    source_type: Optional[SourceTypeEnum] = Field(None)
 
 
 class InferenceBackendListItem(BaseModel):
@@ -346,6 +359,8 @@ class InferenceBackendListItem(BaseModel):
     default_env: Optional[Dict[str, str]] = Field(None)
     parameter_format: Optional[ParameterFormatEnum] = Field(None)
     common_parameters: Optional[List[str]] = Field(None)
+    source_name: Optional[str] = Field(None)
+    source_type: Optional[SourceTypeEnum] = Field(None)
 
 
 class InferenceBackendResponse(BaseModel):

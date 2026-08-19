@@ -11,7 +11,6 @@ from typing import Dict, Optional, List, Tuple, Union
 from abc import ABC, abstractmethod
 from transformers import PretrainedConfig
 
-from gpustack_runner import list_backend_runners
 from gpustack_runner.runner import BackendVersionedRunner
 from gpustack_runtime.deployer import ContainerResources, ContainerMount, ContainerPort
 from gpustack_runtime.deployer.__utils__ import compare_versions
@@ -36,6 +35,11 @@ from gpustack.schemas.inference_backend import (
     InferenceBackend,
     ContainerEnvConfig,
     ParameterFormatEnum,
+)
+from gpustack.schemas.runner_source import (
+    RunnerOverrideEntriesPublic,
+    RunnerOverrideEntryPublic,
+    merged_backend_runners,
 )
 from gpustack.schemas.models import (
     BackendEnum,
@@ -162,6 +166,9 @@ class InferenceServer(ABC):
 
     _fallback_registry: Optional[str] = None
     """The fallback container registry to use if needed."""
+
+    _runner_overrides: Optional[List[RunnerOverrideEntryPublic]] = None
+    """The runner overrides this deploy resolved images against, fetched once."""
 
     @time_decorator
     def __init__(
@@ -1024,6 +1031,41 @@ exec "$@"
             self._config, image_name, self._fallback_registry
         )
 
+    def _fetch_runner_overrides(self) -> List[RunnerOverrideEntryPublic]:
+        """Fetch runner overrides fresh from the server at deploy time.
+
+        Read directly (unpaginated) so the worker resolves images against the
+        same DB-fresh override set the scheduler saw — no stale cache, so a
+        version the scheduler allowed can't fail to resolve here.
+
+        Held for the rest of this deploy: ``_resolve_image`` is reached three times
+        (image, environment, serving command) and the whole set is one unpaginated
+        response.
+
+        A failure raises rather than degrading to an empty list: empty means "no
+        custom source is configured, layer over the packaged catalog", and a
+        custom source *replaces* that catalog — so degrading would deploy the
+        very images an admin replaced, silently and with the wrong registry.
+        Failing the deploy is recoverable; a running model on the wrong image is
+        not.
+        """
+        if self._runner_overrides is not None:
+            return self._runner_overrides
+        try:
+            resp = self._clientset.http_client.get_httpx_client().get(
+                "/runner-override-entries", params={"page": -1}
+            )
+            resp.raise_for_status()
+            self._runner_overrides = RunnerOverrideEntriesPublic.model_validate(
+                resp.json()
+            ).items
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to fetch runner overrides from the server: {e}. "
+                f"The image cannot be resolved without them"
+            ) from e
+        return self._runner_overrides
+
     def _resolve_image(  # noqa: C901
         self,
         backend: Optional[str] = None,
@@ -1109,7 +1151,9 @@ exec "$@"
             f"_resolve_image query: backend={backend}, backend_variant={backend_variant}, service={service}, service_version={service_version}, platform={platform.system_arch()}, runtime_version={runtime_version}"
         )
 
-        runners = list_backend_runners(
+        overrides = self._fetch_runner_overrides()
+        runners = merged_backend_runners(
+            overrides,
             backend=backend,
             backend_variant=backend_variant,
             service=service,

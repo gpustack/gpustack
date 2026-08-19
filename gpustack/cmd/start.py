@@ -19,7 +19,6 @@ from gpustack.config import Config
 from gpustack.server.server import Server
 from gpustack.gateway import initialize_gateway
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -263,6 +262,15 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         type=str,
         help=argparse.SUPPRESS,
         default=get_gpustack_env("UPDATE_CHECK_URL"),
+    )
+    server_group.add_argument(
+        "--ota-server-url",
+        type=str,
+        help="URL of the OTA server the official content sources are read from — the "
+        "index and the documents sit directly under it, e.g. "
+        "https://ota.example.com/gpustack. Defaults to the public OTA server; point "
+        "it at a copy of your own when that one is unreachable.",
+        default=get_gpustack_env("OTA_SERVER_URL"),
     )
     server_group.add_argument(
         "--model-catalog-file",
@@ -830,6 +838,7 @@ def set_server_options(args, config_data: dict):
         "disable_update_check",
         "disable_openapi_docs",
         "update_check_url",
+        "ota_server_url",
         "model_catalog_file",
         "enable_cors",
         "allow_origins",
