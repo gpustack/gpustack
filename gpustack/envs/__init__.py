@@ -203,6 +203,16 @@ ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY = os.getenv(
     ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV, "false"
 ).lower() in ["true", "1"]
 
+# Host IPC namespace for inference containers. Unset (the default) derives
+# it from the instance: only a deployment attached to a shared cache
+# service runs host-IPC, which its CUDA-IPC zero-copy transfer path
+# requires. Setting the env (globally here, or per-model via the same name
+# in the model's env) overrides the derivation either way — e.g. "false"
+# on PodSecurity-enforcing Kubernetes clusters, where hostIPC pods are
+# rejected. Docker ignores shm_size under host IPC.
+HOST_IPC_ENV = "GPUSTACK_HOST_IPC"
+HOST_IPC = os.getenv(HOST_IPC_ENV)
+
 # GPU instance configuration
 # Interval at which the controller re-observes a still-transitioning (non-
 # settled) GPU instance via an in-memory requeue, instead of writing its own

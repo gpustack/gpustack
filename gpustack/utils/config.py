@@ -18,6 +18,7 @@ READ_ONLY_CONFIG_FIELDS = WHITELIST_CONFIG_FIELDS.union(
         "disable_builtin_observability",
         "grafana_worker_dashboard_uid",
         "grafana_model_dashboard_uid",
+        "grafana_cache_service_dashboard_uid",
     }
 )
 logger = logging.getLogger(__name__)
