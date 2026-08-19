@@ -899,8 +899,28 @@ class ActiveRecordMixin:
 
     @classmethod
     def _match_fields(cls, event: Any, fields: Optional[dict]) -> bool:
-        """Match fields using AND condition."""
+        """Match fields using AND condition.
+
+        ``deleted_at: None`` is exempt on a DELETED event. Callers pass it to
+        mean "stream the live rows", but :meth:`delete` stamps ``deleted_at``
+        before the after-commit hook publishes, so matching it here dropped the
+        one event that says the row is gone — leaving it rendered on every open
+        page until a reload. :meth:`_format_event` already assumes the opposite,
+        keeping id-only payloads for DELETED alone so "clients can still remove
+        by ID from their cache".
+
+        The exemption is per-key, not per-event: every other filter still
+        applies, so a stream scoped to one cluster (or one name) never learns
+        about another's deletions. And only ``None`` is exempt — a concrete
+        timestamp would mean "this retirement", not "live rows".
+        """
         for key, value in (fields or {}).items():
+            if (
+                key == "deleted_at"
+                and value is None
+                and event.type == EventType.DELETED
+            ):
+                continue
             if getattr(event.data, key, None) != value:
                 return False
         return True
