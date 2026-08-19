@@ -37,6 +37,7 @@ from gpustack.schemas.gpu_instance_persistent_volume_types import (
     GPUInstancePersistentVolumeTypeStatus,
 )
 from gpustack.schemas.gpu_instance_types import (
+    DERIVED_FROM_NODE_LABEL,
     GPUInstanceType,
     GPUInstanceTypeSpec,
     GPUInstanceTypeStatusPublic,
@@ -1750,6 +1751,12 @@ class GPUInstanceTypeController:
         status: Optional[GPUInstanceTypeStatusPublic] = None
         if "status" in obj:
             status = GPUInstanceTypeStatusPublic.model_validate(obj.get("status") or {})
+        # Provenance marker: the operator stamps this label on the types it
+        # derives from node flavors. It is deliberately outside both snapshots,
+        # so it cannot ride in on the row's identity — a label that only appears
+        # on a later MODIFIED has to be projected by ``_revive`` too.
+        labels = (obj.get("metadata") or {}).get("labels") or {}
+        derived_from_node = labels.get(DERIVED_FROM_NODE_LABEL) == "true"
         candidate = GPUInstanceType(cluster_id=cluster_id, name=name, spec=spec)
         snapshot = candidate.compute_snapshot()
         definition_snapshot = candidate.compute_definition_snapshot()
@@ -1757,7 +1764,9 @@ class GPUInstanceTypeController:
             session, fields={"snapshot": snapshot}
         )
         if existing is not None:
-            await self._revive(session, existing, spec, status, definition_snapshot)
+            await self._revive(
+                session, existing, spec, status, derived_from_node, definition_snapshot
+            )
             return
         # A new definition supersedes the current active row for this name, so at
         # most one snapshot is ever active per ``(cluster_id, name)``. Retire
@@ -1775,6 +1784,7 @@ class GPUInstanceTypeController:
                     "status": status,
                     "snapshot": snapshot,
                     "definition_snapshot": definition_snapshot,
+                    "derived_from_node": derived_from_node,
                 },
             )
         except IntegrityError:
@@ -1789,7 +1799,14 @@ class GPUInstanceTypeController:
             )
             if existing is not None:
                 await self._retire_active(session, cluster_id, name, auto_commit=False)
-                await self._revive(session, existing, spec, status, definition_snapshot)
+                await self._revive(
+                    session,
+                    existing,
+                    spec,
+                    status,
+                    derived_from_node,
+                    definition_snapshot,
+                )
 
     @staticmethod
     async def _revive(
@@ -1797,6 +1814,7 @@ class GPUInstanceTypeController:
         existing: GPUInstanceType,
         spec: GPUInstanceTypeSpec,
         status: Optional[GPUInstanceTypeStatusPublic],
+        derived_from_node: bool,
         definition_snapshot: Optional[str] = None,
     ):
         """Refresh ``spec`` (a ``display_name`` edit) and ``status`` (the
@@ -1807,6 +1825,16 @@ class GPUInstanceTypeController:
         is left untouched. The ``snapshot`` is unchanged by definition (it
         identified this row). Mirrors the ``deleted_at`` revive idiom in
         ``server/services.py``.
+
+        That skip is load-bearing: a status rewrite that only moved the
+        (unpersisted) resource ledger must not reach the DB, because every row
+        write publishes on the internal bus and the list route puts one SSE
+        stream per open page on the other end of it. The persisted status fields
+        enter the comparison on their own — Pydantic's ``__eq__`` compares every
+        field — so widening ``GPUInstanceTypeStatusPublic`` needs no edit here.
+        ``derived_from_node`` does need its own clause: it is a real column, not
+        a field of ``status``, so without it a marker stamped on a later
+        MODIFIED would be swallowed by the skip.
 
         ``definition_snapshot`` is also written when the row predates that
         column (upgrade backfill): the migration adds it NULL, and the first
@@ -1823,10 +1851,15 @@ class GPUInstanceTypeController:
             existing.deleted_at is None
             and existing.spec == spec
             and (status is None or existing.status == status)
+            and existing.derived_from_node == derived_from_node
             and not needs_definition_snapshot
         ):
             return
-        source: Dict[str, Any] = {"spec": spec, "deleted_at": None}
+        source: Dict[str, Any] = {
+            "spec": spec,
+            "deleted_at": None,
+            "derived_from_node": derived_from_node,
+        }
         if status is not None:
             source["status"] = status
         if needs_definition_snapshot:

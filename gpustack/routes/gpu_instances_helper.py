@@ -25,6 +25,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
+    ServiceUnavailableException,
 )
 from gpustack.api.tenant import (
     TenantContext,
@@ -137,8 +138,8 @@ async def build_cluster_ops(
 @asynccontextmanager
 async def handle_error():
     """Translate a Kubernetes ``ApiException`` into the project's HTTP
-    exceptions so a client-caused failure surfaces as the right status
-    instead of a blanket 500."""
+    exceptions so a failure surfaces as the right status instead of a
+    blanket 500."""
     try:
         yield
     except client.exceptions.ApiException as e:
@@ -149,6 +150,17 @@ async def handle_error():
             raise AlreadyExistsException(message=message)
         if e.status == http.HTTPStatus.BAD_REQUEST:
             raise InvalidException(message=message)
+        # One branch for all three: to the caller they are the same thing —
+        # the upstream never answered and a retry may help. Most often it is a
+        # cluster with no ready worker, whose proxy 503s. Folding them into the
+        # 500 fallback made the response contradict itself: a 500 whose own
+        # message read "Service Unavailable" (#6071).
+        if e.status in (
+            http.HTTPStatus.BAD_GATEWAY,
+            http.HTTPStatus.SERVICE_UNAVAILABLE,
+            http.HTTPStatus.GATEWAY_TIMEOUT,
+        ):
+            raise ServiceUnavailableException(message=message)
         raise InternalServerErrorException(message=message)
 
 

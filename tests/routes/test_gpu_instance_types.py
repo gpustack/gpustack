@@ -1,30 +1,49 @@
-"""Per-cluster GPU instance-type route tests.
+"""GPU instance-type route tests.
 
-Handlers are called directly with a fake ``ctx`` / ``request`` and a
-monkeypatched ``ClusterOps`` / ``Cluster.one_by_id`` — no live cluster or DB.
+The list route reads the ``gpu_instance_types`` record table, so its tests run
+the handler against a real in-memory sqlite table: the fuzzy name search and the
+``deleted_at IS NULL`` filter are claims about the SQL ``paginated_by_query``
+builds, which asserting on captured kwargs cannot verify.
+
+The write routes still proxy into one cluster, so theirs call the handlers
+directly with a fake ``ctx`` / ``request`` and a monkeypatched ``ClusterOps`` /
+``Cluster.one_by_id`` — no live cluster.
 """
 
 import asyncio
+import inspect
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 from kubernetes_asyncio import client
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
+    BadRequestException,
     ConflictException,
     ForbiddenException,
+    InvalidException,
     NotFoundException,
+    ServiceUnavailableException,
 )
 from gpustack.routes import gpu_instance_types as it_routes
 from gpustack.routes import gpu_instances_helper as helper
-from gpustack.schemas.clusters import GpuInstanceOptions, K8sOptions
+from gpustack.schemas.clusters import ClusterProvider, GpuInstanceOptions, K8sOptions
 from gpustack.schemas.gpu_instance_types import (
+    GPUInstanceType,
     GPUInstanceTypeCreate,
+    GPUInstanceTypeDetail,
+    GPUInstanceTypeListParams,
     GPUInstanceTypeSpec,
     GPUInstanceTypeSpecUpdate,
+    GPUInstanceTypeStatusPublic,
     GPUInstanceTypeUpdate,
+    GPUInstanceTypesPublic,
 )
 from gpustack.schemas.principals import OrgRole, PrincipalType
 
@@ -68,6 +87,7 @@ def _patch_ops(
     monkeypatch,
     *,
     list_result=None,
+    list_error=None,
     create_result=None,
     delete_existed=True,
     patch_absent=False,
@@ -88,6 +108,8 @@ def _patch_ops(
             return False
 
         async def list_instance_types(self, resource_version=None):
+            if list_error is not None:
+                raise list_error
             return list_result
 
         async def create_instance_type(self, name, spec, ignore_existed=True):
@@ -180,81 +202,728 @@ def _cluster(id_=1, owner_principal_id=None, gpu_service=True):
     )
 
 
-@pytest.mark.asyncio
-async def test_list_maps_metadata_name(monkeypatch):
-    _patch_cluster(monkeypatch, _cluster())
-    _patch_ops(
-        monkeypatch,
-        list_result={
-            "items": [
-                {
-                    "metadata": {"name": "it-a"},
-                    "spec": {
-                        "acceleratable": True,
-                        "manufacturer": "nvidia",
-                        "displayName": "A10G Pool",
-                    },
-                    "status": {"phase": "Active"},
-                }
-            ]
-        },
+#
+# Table-backed list (GET "") tests.
+#
+# The list serves the ``gpu_instance_types`` record table, so these run the
+# handler against a real in-memory sqlite table and stub only the visible-cluster
+# query. Asserting on the kwargs handed to ``paginated_by_query`` would not show
+# what matters here: which rows the SQL actually returns.
+#
+
+
+@pytest_asyncio.fixture
+async def engine():
+    e = create_async_engine("sqlite+aiosqlite://")
+    async with e.begin() as conn:
+        await conn.run_sync(GPUInstanceType.__table__.create)
+    yield e
+    await e.dispose()
+
+
+def _row(
+    cluster_id=1,
+    name="a10g",
+    *,
+    display_name=None,
+    accelerator_group=None,
+    phase=None,
+    phase_message=None,
+    detail=None,
+    derived_from_node=False,
+    deleted_at=None,
+):
+    """A record row as ``GPUInstanceTypeController`` would have projected it.
+
+    ``snapshot`` is computed rather than faked because it is UNIQUE: two rows of
+    the same ``(cluster_id, name, spec)`` collide here exactly as they would in
+    production, which is why a retired row differs by a definitional field.
+    """
+    status = None
+    if phase or phase_message or detail:
+        status = GPUInstanceTypeStatusPublic(
+            phase=phase, phase_message=phase_message, detail=detail
+        )
+    row = GPUInstanceType(
+        cluster_id=cluster_id,
+        name=name,
+        spec=GPUInstanceTypeSpec(
+            display_name=display_name, accelerator_group=accelerator_group
+        ),
+        status=status,
+        derived_from_node=derived_from_node,
+        deleted_at=deleted_at,
+    )
+    row.snapshot = row.compute_snapshot()
+    return row
+
+
+async def _seed(engine, *rows):
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        for row in rows:
+            session.add(row)
+        await session.commit()
+
+
+def _patch_db(monkeypatch, engine):
+    """Point the route's session factory at the sqlite engine."""
+    monkeypatch.setattr(
+        it_routes, "async_session", lambda: AsyncSession(engine, expire_on_commit=False)
     )
 
-    out = await it_routes.get_gpu_instance_types(REQUEST, None, CTX, 1)
 
-    assert len(out.items) == 1
-    assert out.items[0].name == "it-a"
-    assert out.items[0].spec.acceleratable is True
-    # displayName from the raw CR spec survives the CR→public read mapping.
-    assert out.items[0].spec.display_name == "A10G Pool"
-    assert out.items[0].status.phase == "Active"
+def _patch_visible_clusters(monkeypatch, *clusters, capture=None):
+    """Stub the query the route resolves its allowed cluster set from.
+
+    Session-agnostic on purpose: the sqlite engine holds the instance-type table
+    only, and what these tests exercise is what the route does with the set.
+    """
+    capture = capture if capture is not None else {}
+
+    async def fake_all(session, fields=None, extra_conditions=None, **kw):
+        capture["fields"] = fields
+        capture["extra_conditions"] = extra_conditions
+        # Honour the ``id`` narrowing the route pushes into the query, so a test
+        # asking for one cluster still exercises what the route returns and not
+        # merely the kwargs it passed. ``extra_conditions`` stays unmodelled:
+        # visibility is asserted through ``capture``, since these tests hold no
+        # clusters table to evaluate it against.
+        wanted = (fields or {}).get("id")
+        if wanted is None:
+            return list(clusters)
+        return [c for c in clusters if c.id == wanted]
+
+    monkeypatch.setattr(it_routes.Cluster, "all_by_fields", fake_all)
+
+
+def _patch_streaming(monkeypatch):
+    """Capture the kwargs the watch path hands to ``GPUInstanceType.streaming``."""
+    capture = {}
+
+    def fake_streaming(**kwargs):
+        capture.update(kwargs)
+
+        async def _events():
+            for frame in ():
+                yield frame
+
+        return _events()
+
+    monkeypatch.setattr(it_routes.GPUInstanceType, "streaming", fake_streaming)
+    return capture
+
+
+async def _list(ctx=CTX, **kwargs):
+    """Call the list handler, splitting the ``ListParams`` out of the filters."""
+    params = GPUInstanceTypeListParams(
+        **{
+            key: kwargs.pop(key)
+            for key in ("page", "perPage", "watch", "sort_by")
+            if key in kwargs
+        }
+    )
+    return await it_routes.get_gpu_instance_types(REQUEST, ctx, params, **kwargs)
 
 
 @pytest.mark.asyncio
-async def test_list_reads_the_derived_from_node_marker(monkeypatch):
-    # The operator stamps its own instance types with the derived-from-node
-    # label; an admin-created one carries the rest of the schedule labels but
-    # not that marker, and a CR with no labels at all must not blow up.
-    _patch_cluster(monkeypatch, _cluster())
-    _patch_ops(
-        monkeypatch,
-        list_result={
-            "items": [
-                {
-                    "metadata": {
-                        "name": "derived",
-                        "labels": {
-                            "schedule.gpustack.ai/derived-from-node": "true",
-                            "schedule.gpustack.ai/queue-entrance": "gpustack-fnv64-1",
-                        },
-                    },
-                    "spec": {},
-                    "status": {},
-                },
-                {
-                    "metadata": {
-                        "name": "hand-made",
-                        "labels": {
-                            "schedule.gpustack.ai/queue-entrance": "gpustack-fnv64-2",
-                        },
-                    },
-                    "spec": {},
-                    "status": {},
-                },
-                {"metadata": {"name": "bare"}, "spec": {}, "status": {}},
-            ]
-        },
+async def test_list_spans_every_visible_cluster(monkeypatch, engine):
+    # The page opens without picking a cluster: one request returns the types of
+    # every visible cluster, each row carrying the cluster that owns it.
+    await _seed(
+        engine,
+        _row(1, "a10g"),
+        _row(1, "h100"),
+        _row(1, "cpu"),
+        _row(2, "l40s"),
+        _row(2, "a100"),
     )
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1), _cluster(2))
 
-    out = await it_routes.get_gpu_instance_types(REQUEST, None, CTX, 1)
+    out = await _list()
 
-    assert [(i.name, i.derived_from_node) for i in out.items] == [
-        ("derived", True),
-        ("hand-made", False),
-        ("bare", False),
+    assert {(i.cluster_id, i.name) for i in out.items} == {
+        (1, "a10g"),
+        (1, "h100"),
+        (1, "cpu"),
+        (2, "l40s"),
+        (2, "a100"),
+    }
+    assert out.pagination.total == 5
+
+
+@pytest.mark.asyncio
+async def test_list_projects_a_row_into_the_public_model(monkeypatch, engine):
+    # Replaces the CR→public mapping test: nothing maps ``metadata.name`` on the
+    # read path any more, the row IS the projection. Validating the handler's
+    # return through the response model is the path FastAPI takes, so it pins the
+    # wire shape the frontend codes against — ``clusterId`` / ``derivedFromNode``
+    # camelCase while ``id`` and the timestamps stay literal.
+    await _seed(
+        engine,
+        _row(
+            2,
+            "a10g",
+            display_name="A10G Pool",
+            phase="Active",
+            phase_message="ClusterQueue is admitting workloads",
+            detail=GPUInstanceTypeDetail(manufacturer="nvidia", memory="24576Mi"),
+            derived_from_node=True,
+        ),
+    )
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(2))
+
+    out = await _list()
+
+    served = GPUInstanceTypesPublic.model_validate(out.model_dump(by_alias=True))
+    (item,) = served.items
+    assert (item.cluster_id, item.name) == (2, "a10g")
+    assert item.spec.display_name == "A10G Pool"
+    assert item.status.phase == "Active"
+    assert item.status.phase_message == "ClusterQueue is admitting workloads"
+    assert item.status.detail.manufacturer == "nvidia"
+    assert item.derived_from_node is True
+    # The record table supplies the identity and timestamps the live CR cannot.
+    assert item.id is not None
+    assert item.created_at is not None and item.updated_at is not None
+    # The resource ledger is not persisted: absent means "not served here",
+    # never zero. Remaining capacity comes from /aggregated only.
+    assert item.status.accelerator is None
+    assert item.status.cpu is None
+
+    wire = item.model_dump(by_alias=True, exclude_none=True)
+    assert set(wire) == {
+        "id",
+        "clusterId",
+        "name",
+        "spec",
+        "status",
+        "derivedFromNode",
+        "created_at",
+        "updated_at",
+    }
+    assert wire["spec"]["displayName"] == "A10G Pool"
+
+
+@pytest.mark.asyncio
+async def test_list_reads_the_derived_from_node_marker(monkeypatch, engine):
+    # Retargeted at the persisted column: the marker was read off the CR's labels
+    # on every request and is now projected once by the controller.
+    await _seed(
+        engine,
+        _row(1, "derived", derived_from_node=True),
+        _row(1, "hand-made"),
+    )
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    out = await _list()
+
+    assert {i.name: i.derived_from_node for i in out.items} == {
+        "derived": True,
+        "hand-made": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cluster_id_narrows_the_list(monkeypatch, engine):
+    # cluster_id is a filter now, not the scope: the same route serves one
+    # cluster when asked and the whole visible fleet when not.
+    await _seed(engine, _row(1, "a10g"), _row(2, "l40s"))
+    _patch_db(monkeypatch, engine)
+    capture = {}
+    _patch_visible_clusters(monkeypatch, _cluster(1), _cluster(2), capture=capture)
+
+    out = await _list(cluster_id=2)
+
+    assert [(i.cluster_id, i.name) for i in out.items] == [(2, "l40s")]
+    assert out.pagination.total == 1
+    # Narrowed by the query, not by filtering its results: asking for one
+    # cluster must not load every visible cluster to keep one.
+    assert capture["fields"]["id"] == 2
+
+
+@pytest.mark.asyncio
+async def test_foreign_cluster_id_returns_an_empty_page_rather_than_403(
+    monkeypatch, engine
+):
+    """A cluster_id outside the caller's visible set is answered with an empty
+    page, never 403/404: a status that differs from an empty result is itself a
+    probe for the existence of another tenant's cluster."""
+    await _seed(engine, _row(9, "a10g"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    out = await _list(cluster_id=9)
+
+    assert out.items == []
+    assert (out.pagination.total, out.pagination.totalPage) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_purpose_gpu_service_excludes_a_model_service_cluster(
+    monkeypatch, engine
+):
+    # Naming the cluster explicitly must not get round the filter: purpose
+    # narrows the allowed set, and cluster_id intersects with it.
+    await _seed(engine, _row(1, "a10g"), _row(2, "l40s"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1), _cluster(2, gpu_service=False))
+
+    everything = await _list(purpose="gpu_service")
+    named = await _list(purpose="gpu_service", cluster_id=2)
+
+    assert [i.name for i in everything.items] == ["a10g"]
+    assert named.items == []
+
+
+@pytest.mark.asyncio
+async def test_purpose_model_service_returns_only_model_service_clusters(
+    monkeypatch, engine
+):
+    await _seed(engine, _row(1, "a10g"), _row(2, "l40s"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1), _cluster(2, gpu_service=False))
+
+    out = await _list(purpose="model_service")
+
+    assert [i.name for i in out.items] == ["l40s"]
+
+
+@pytest.mark.asyncio
+async def test_search_matches_the_name_case_insensitively(monkeypatch, engine):
+    await _seed(engine, _row(1, "A10G"), _row(1, "h100"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    out = await _list(search="a10")
+
+    assert [i.name for i in out.items] == ["A10G"]
+    # CAUTION: this passes here only because the fixture engine is SQLite, whose
+    # LIKE is ASCII-case-insensitive. ``paginated_by_query`` lowers both sides for
+    # the item query but neither side for the COUNT, so on PostgreSQL this same
+    # request returns the item while reporting ``total == 0``. The assertion below
+    # therefore does NOT protect production — it would keep passing straight
+    # through that failure. It is kept as the tripwire that fires the first time
+    # this suite is run against PostgreSQL; do not read it as coverage of the
+    # count path. Recorded in the spec's Open Questions; the fix is one
+    # ``func.lower`` on each side of the count predicate in a shared mixin, which
+    # is outside this change's scope.
+    assert out.pagination.total == 1
+
+
+@pytest.mark.asyncio
+async def test_search_does_not_match_the_spec_display_name(monkeypatch, engine):
+    # Only real columns are fuzzy-filterable: ``paginated_by_query`` builds its
+    # LIKE predicates with ``getattr(cls, key)``, and display_name lives inside
+    # the ``spec`` JSON column.
+    await _seed(engine, _row(1, "h100", display_name="A10G Pool"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    out = await _list(search="a10")
+
+    assert out.items == []
+
+
+@pytest.mark.asyncio
+async def test_retired_rows_are_excluded(monkeypatch, engine):
+    # A definition change retires the superseded row and inserts a new one, so
+    # ``deleted_at IS NULL`` is what keeps one name from appearing twice.
+    await _seed(
+        engine,
+        _row(1, "a10g", accelerator_group="nvidia-a10g"),
+        _row(
+            1,
+            "a10g",
+            accelerator_group="nvidia-a10g-superseded",
+            deleted_at=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        ),
+    )
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    out = await _list()
+
+    assert [(i.name, i.spec.accelerator_group) for i in out.items] == [
+        ("a10g", "nvidia-a10g")
     ]
-    # The field reaches the client under its camelCase alias.
-    assert out.items[0].model_dump(by_alias=True)["derivedFromNode"] is True
+    assert out.pagination.total == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_visible_set_returns_an_empty_page_without_querying(
+    monkeypatch, engine
+):
+    # An empty allowed set is answered directly. Letting it reach the query is the
+    # shape of the tenant leak guarded against in the aggregated route: an empty
+    # filter that reads as "everything".
+    await _seed(engine, _row(1, "a10g"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch)
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("must not query with an empty allowed-cluster set")
+
+    monkeypatch.setattr(it_routes.GPUInstanceType, "paginated_by_query", boom)
+
+    out = await _list()
+
+    assert out.items == []
+    assert (out.pagination.page, out.pagination.perPage) == (1, 100)
+    assert (out.pagination.total, out.pagination.totalPage) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_visible_clusters_come_from_the_cluster_visibility_filter(
+    monkeypatch, engine
+):
+    # The table carries no owner_principal_id, so the authorization boundary is
+    # the cluster set — resolved with the same filter the cluster list uses
+    # (own-principal OR cluster_access grant), over Kubernetes clusters only:
+    # no other provider has an InstanceType catalog to project.
+    await _seed(engine, _row(1, "a10g"))
+    _patch_db(monkeypatch, engine)
+    capture = {}
+    _patch_visible_clusters(monkeypatch, _cluster(1), capture=capture)
+
+    await _list(ctx=CTX_NON_WRITER)
+
+    assert capture["fields"] == {"provider": ClusterProvider.Kubernetes}
+    assert [str(c) for c in capture["extra_conditions"]] == [
+        str(c)
+        for c in it_routes.cluster_visibility_conditions(
+            CTX_NON_WRITER, it_routes.Cluster
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sort_by_orders_the_list(monkeypatch, engine):
+    await _seed(engine, _row(1, "b"), _row(1, "a"), _row(1, "c"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    ascending = await _list(sort_by="name")
+    descending = await _list(sort_by="-name")
+
+    assert [i.name for i in ascending.items] == ["a", "b", "c"]
+    assert [i.name for i in descending.items] == ["c", "b", "a"]
+
+
+#
+# source=live tests: the per-cluster proxy read the model deploy form's slicing
+# GPU type picker needs, because the record table does not persist the ledger.
+#
+
+# A live CR as the operator reports it, ledger included. The picker reads
+# ``status.acceleratorSliced.onceMaxRequest`` to size and enable its sliced input
+# and ``status.acceleratorPartitioned`` to fill its profile dropdown.
+LIVE_ITEM = {
+    "metadata": {
+        "name": "a10g",
+        "labels": {"schedule.gpustack.ai/derived-from-node": "true"},
+    },
+    "spec": {
+        "acceleratable": True,
+        "displayName": "A10G Pool",
+        "acceleratorGroup": "nvidia-a10g",
+    },
+    "status": {
+        "phase": "Active",
+        "detail": {"manufacturer": "nvidia"},
+        "accelerator": {"onceMaxRequest": "1", "remaining": "2", "capacity": "4"},
+        "acceleratorSliced": {
+            "onceMaxRequest": "4",
+            "remaining": "8",
+            "capacity": "16",
+        },
+        "acceleratorPartitioned": {
+            "onceMaxRequest": "1",
+            "remaining": "3",
+            "capacity": "7",
+            "remainingProfiles": [{"name": "1g.10gb", "count": 3}],
+        },
+        "cpu": {"onceMaxRequest": "4", "remaining": "8", "capacity": "16"},
+    },
+}
+
+
+def _patch_no_cluster_contact(monkeypatch):
+    """Fail the test if the route builds a client for any cluster.
+
+    ``build_cluster_ops`` is resolved from this module's globals, so the route's
+    own reference is what has to be replaced.
+    """
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("must not contact a cluster on this path")
+
+    monkeypatch.setattr(it_routes, "build_cluster_ops", boom)
+
+
+@pytest.mark.asyncio
+async def test_source_live_returns_the_resource_ledger(monkeypatch, engine):
+    # The record table deliberately does not persist the ledger, and the model
+    # deploy picker sizes its inputs from it: a missing acceleratorSliced makes
+    # onceMaxRequest read 0, which renders the sliced input disabled and makes its
+    # validator reject every value, and a missing acceleratorPartitioned empties
+    # the profile dropdown. So the live read has to carry both, under the
+    # camelCase aliases the client actually reads.
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(2))
+    _patch_cluster(monkeypatch, _cluster(2))
+    _patch_ops(monkeypatch, list_result={"items": [LIVE_ITEM]})
+
+    out = await _list(cluster_id=2, source="live")
+
+    (item,) = out.items
+    assert item.name == "a10g"
+    assert item.derived_from_node is True
+    assert item.status.accelerator_sliced.once_max_request == "4"
+    assert item.status.accelerator_partitioned.remaining_profiles[0].name == "1g.10gb"
+    status = item.model_dump(by_alias=True, exclude_none=True)["status"]
+    assert status["acceleratorSliced"]["onceMaxRequest"] == "4"
+    assert status["acceleratorPartitioned"]["remainingProfiles"][0]["count"] == 3
+    # One synthesized page: the cluster's list is not paginated, so it is served
+    # whole rather than sliced.
+    assert (out.pagination.page, out.pagination.total, out.pagination.totalPage) == (
+        1,
+        1,
+        1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_live_requires_a_cluster_id(monkeypatch):
+    # A live read proxies into exactly one cluster's apiserver, so it has to name
+    # one. Rejected before anything is resolved: the request is malformed, which
+    # is not the same as a request whose answer is empty.
+    _patch_no_cluster_contact(monkeypatch)
+
+    # 400, not the project's 422 ``InvalidException``: the parameter combination is
+    # malformed rather than a field failing validation, and F8 specifies 400.
+    with pytest.raises(BadRequestException) as exc:
+        await _list(source="live")
+    assert exc.value.status_code == 400
+    assert "cluster_id" in exc.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filter_kwargs", [{"name": "a10g"}, {"search": "a10"}])
+async def test_source_live_rejects_the_record_only_filters(monkeypatch, filter_kwargs):
+    # The upstream list takes no filters, so narrowing cannot be honoured. Refusing
+    # loudly beats answering with everything: a filter that silently vanishes is
+    # the same failure shape as a parameter read as something it is not. Rejected
+    # before the cluster is contacted, so a malformed request costs no round trip.
+    _patch_no_cluster_contact(monkeypatch)
+
+    with pytest.raises(BadRequestException) as exc:
+        await _list(cluster_id=2, source="live", **filter_kwargs)
+
+    assert exc.value.status_code == 400
+    assert "name and search" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_source_live_does_not_apply_pagination_or_sort(monkeypatch, engine):
+    # Pagination and sort differ in kind from the filters above: they are not
+    # applied, and the response says so, because the synthesized block reports the
+    # single page actually returned rather than the slice that was asked for. A
+    # caller can therefore see that it got everything.
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(2))
+    _patch_cluster(monkeypatch, _cluster(2))
+    _patch_ops(
+        monkeypatch,
+        list_result={
+            "items": [
+                {"metadata": {"name": "b"}, "spec": {}},
+                {"metadata": {"name": "a"}, "spec": {}},
+                {"metadata": {"name": "c"}, "spec": {}},
+            ]
+        },
+    )
+
+    out = await _list(cluster_id=2, source="live", page=2, perPage=1, sort_by="-name")
+
+    # Upstream order, whole catalog: neither the page window nor the sort applied.
+    assert [i.name for i in out.items] == ["b", "a", "c"]
+    assert (
+        out.pagination.page,
+        out.pagination.perPage,
+        out.pagination.total,
+        out.pagination.totalPage,
+    ) == (1, 3, 3, 1)
+
+
+@pytest.mark.asyncio
+async def test_source_live_empty_catalog_matches_the_record_empty_page(
+    monkeypatch, engine
+):
+    # One shape for "nothing here" across both sources. A frontend that switches
+    # source must not have to special-case the empty response.
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(2))
+    _patch_cluster(monkeypatch, _cluster(2))
+    _patch_ops(monkeypatch, list_result={"items": []})
+
+    live = await _list(cluster_id=2, source="live", page=2, perPage=5)
+
+    # Same params against the record read with nothing visible — its empty page.
+    _patch_visible_clusters(monkeypatch)
+    record = await _list(page=2, perPage=5)
+
+    assert live.items == record.items == []
+    assert live.pagination == record.pagination
+    assert (live.pagination.total, live.pagination.totalPage) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_source_live_with_a_foreign_cluster_id_is_invisible(monkeypatch, engine):
+    # Same answer the record read gives, for the same reason: a status that differs
+    # from an empty result is a probe for another tenant's cluster. The cluster is
+    # never contacted either — visibility is decided before any client is built.
+    await _seed(engine, _row(9, "a10g"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+    _patch_no_cluster_contact(monkeypatch)
+
+    out = await _list(cluster_id=9, source="live")
+
+    assert out.items == []
+    assert (out.pagination.total, out.pagination.totalPage) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_source_live_applies_purpose_like_the_record_read(monkeypatch, engine):
+    # purpose is independent of source: it narrows the same allowed cluster set,
+    # so a Model Service cluster is out of a gpu_service-filtered live read too.
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(2, gpu_service=False))
+    _patch_no_cluster_contact(monkeypatch)
+
+    out = await _list(cluster_id=2, source="live", purpose="gpu_service")
+
+    assert out.items == []
+
+
+@pytest.mark.asyncio
+async def test_source_live_reports_an_unreachable_cluster_as_503(monkeypatch, engine):
+    """A live read against a cluster with no ready worker legitimately fails, and
+    reports the cluster's own failure. #6071 is about the page, which never asks
+    for a live read; a caller that explicitly asked to touch the cluster gets
+    503 ServiceUnavailable rather than a 500 contradicting its own message."""
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(2))
+    _patch_cluster(monkeypatch, _cluster(2))
+    _patch_ops(
+        monkeypatch,
+        list_error=client.exceptions.ApiException(
+            status=503, reason="Service Unavailable"
+        ),
+    )
+
+    with pytest.raises(ServiceUnavailableException) as exc:
+        await _list(cluster_id=2, source="live")
+
+    assert exc.value.status_code == 503
+    assert "Service Unavailable" in exc.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", [None, "record"], ids=["omitted", "record"])
+async def test_a_cluster_id_alone_stays_table_backed(monkeypatch, engine, source):
+    # The case an implicit switch on cluster_id would have broken: this is the
+    # page's cluster filter, and it must keep reading the record table, or a
+    # worker-less cluster would 5xx the page again (#6071).
+    await _seed(engine, _row(2, "recorded"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(2))
+    _patch_no_cluster_contact(monkeypatch)
+
+    out = await _list(cluster_id=2, source=source)
+
+    assert [i.name for i in out.items] == ["recorded"]
+
+
+@pytest.mark.asyncio
+async def test_watch_source_live_uses_the_cluster_watch(monkeypatch, engine):
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(2))
+    _patch_cluster(monkeypatch, _cluster(2))
+    _patch_watch_ops(
+        monkeypatch,
+        [
+            {
+                "type": "ADDED",
+                "raw_object": {
+                    "metadata": {"name": "it-a"},
+                    "spec": {"acceleratable": True},
+                    "status": LIVE_ITEM["status"],
+                },
+            },
+            {"type": "BOOKMARK", "raw_object": {"metadata": {"resourceVersion": "9"}}},
+            {
+                "type": "DELETED",
+                "raw_object": {
+                    "metadata": {"name": "it-a"},
+                    "spec": {},
+                    "status": {"phase": "Terminating"},
+                },
+            },
+        ],
+    )
+
+    def boom(**kwargs):
+        raise AssertionError("source=live must not stream from the bus")
+
+    monkeypatch.setattr(it_routes.GPUInstanceType, "streaming", boom)
+
+    resp = await _list(watch=True, source="live", cluster_id=2)
+
+    assert isinstance(resp, StreamingResponse)
+    assert resp.media_type == "text/event-stream"
+    frames = [frame async for frame in resp.body_iterator]
+    payloads = [json.loads(f) for f in frames if f != "\n\n"]
+    # ADDED→1, BOOKMARK dropped, DELETED→3.
+    assert [p["type"] for p in payloads] == [1, 3]
+    assert payloads[0]["data"]["name"] == "it-a"
+    # The ledger rides the live watch too — the picker watches while it is open.
+    assert payloads[0]["data"]["status"]["acceleratorSliced"]["onceMaxRequest"] == "4"
+
+
+@pytest.mark.asyncio
+async def test_watch_source_live_with_a_foreign_cluster_id_streams_nothing(
+    monkeypatch, engine
+):
+    # An unreadable cluster leaves nothing to watch, so this falls through to the
+    # record path's watch answer: an empty stream, never a 404, and the cluster is
+    # not contacted.
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+    _patch_no_cluster_contact(monkeypatch)
+    capture = _patch_streaming(monkeypatch)
+
+    resp = await _list(watch=True, source="live", cluster_id=9)
+
+    assert isinstance(resp, StreamingResponse)
+    assert capture["filter_func"](_row(9, "a10g")) is False
+
+
+def test_list_declares_the_sortable_params_class():
+    # The declared params type is what makes FastAPI run ``validate_sort_by``, so
+    # an unsortable field is rejected before it can reach ORDER BY. Which four
+    # fields are allowed is locked down in tests/schemas.
+    annotation = (
+        inspect.signature(it_routes.get_gpu_instance_types)
+        .parameters["params"]
+        .annotation
+    )
+    assert annotation is GPUInstanceTypeListParams
+    with pytest.raises(InvalidException, match="not sortable"):
+        GPUInstanceTypeListParams(sort_by="bogus")
 
 
 @pytest.mark.asyncio
@@ -373,16 +1042,6 @@ async def test_delete_absent_raises_404(monkeypatch):
 
     with pytest.raises(NotFoundException) as exc:
         await it_routes.delete_gpu_instance_type(REQUEST, None, CTX, "gone", 1)
-    assert exc.value.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_invisible_cluster_raises_404(monkeypatch):
-    _patch_cluster(monkeypatch, None)
-    _patch_ops(monkeypatch, list_result={"items": []})
-
-    with pytest.raises(NotFoundException) as exc:
-        await it_routes.get_gpu_instance_types(REQUEST, None, CTX, 1)
     assert exc.value.status_code == 404
 
 
@@ -594,17 +1253,19 @@ async def test_aggregated_all_model_service_short_circuits(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_per_cluster_read_still_serves_a_model_service_cluster(monkeypatch):
-    # The guard is on writes only. This read is what the model deploy form's
-    # Scheduling > Manual > Slicing GPU Type picker calls, and that picker
-    # targets Model Service clusters by definition.
-    _patch_cluster(monkeypatch, _cluster(gpu_service=False))
-    _patch_ops(
-        monkeypatch,
-        list_result={"items": [{"metadata": {"name": "it-a"}, "spec": {}}]},
-    )
+async def test_per_cluster_read_still_serves_a_model_service_cluster(
+    monkeypatch, engine
+):
+    # The purpose guard is on writes only, and on the read ``purpose`` is opt-in,
+    # so omitting it narrows nothing. This read is what the model deploy form's
+    # Scheduling > Manual > Slicing GPU Type picker calls, and that picker targets
+    # Model Service clusters by definition — narrowing this route to GPU Service
+    # unconditionally would silently break it.
+    await _seed(engine, _row(1, "it-a"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1, gpu_service=False))
 
-    out = await it_routes.get_gpu_instance_types(REQUEST, None, CTX, 1)
+    out = await _list(cluster_id=1)
 
     assert [i.name for i in out.items] == ["it-a"]
 
@@ -797,61 +1458,57 @@ async def test_activation_write_to_invisible_cluster_raises_404(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_watch_returns_streamed_frames(monkeypatch):
-    _patch_cluster(monkeypatch, _cluster())
-    _patch_watch_ops(
-        monkeypatch,
-        [
-            {
-                "type": "ADDED",
-                "raw_object": {
-                    "metadata": {"name": "it-a"},
-                    "spec": {"acceleratable": True},
-                    "status": {"phase": "Active"},
-                },
-            },
-            {"type": "BOOKMARK", "raw_object": {"metadata": {"resourceVersion": "9"}}},
-            {
-                "type": "DELETED",
-                "raw_object": {
-                    "metadata": {"name": "it-a"},
-                    "spec": {},
-                    "status": {"phase": "Terminating"},
-                },
-            },
-        ],
-    )
+async def test_watch_streams_from_the_bus_under_the_same_narrowing(monkeypatch, engine):
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1), _cluster(2))
+    capture = _patch_streaming(monkeypatch)
 
-    resp = await it_routes.get_gpu_instance_types(REQUEST, None, CTX, 1, watch=True)
+    resp = await _list(watch=True, search="a10")
 
     assert isinstance(resp, StreamingResponse)
     assert resp.media_type == "text/event-stream"
-    frames = [frame async for frame in resp.body_iterator]
-    payloads = [json.loads(f) for f in frames if f != "\n\n"]
-    # ADDED→1, BOOKMARK dropped, DELETED→3.
-    assert [p["type"] for p in payloads] == [1, 3]
-    assert payloads[0]["data"]["name"] == "it-a"
+    assert capture["fields"] == {"deleted_at": None}
+    assert capture["fuzzy_fields"] == {"name": "a10"}
+    # Bus events never see the SQL extra_conditions, so visibility has to ride on
+    # the filter_func or the stream leaks rows the REST read hides.
+    visible = capture["filter_func"]
+    assert visible(_row(1, "a10g")) is True
+    assert visible(_row(3, "a10g")) is False
+    # A DELETED event can carry an id-only dict (no cached object to enrich it
+    # with). A bare attribute read would raise, and ``streaming`` swallows that
+    # and silently ends the whole stream, so it must be handled, not trusted.
+    assert visible({"id": 7}) is False
 
 
 @pytest.mark.asyncio
-async def test_get_watch_invisible_cluster_raises_404(monkeypatch):
-    # The visibility check must 404 before any stream is opened.
-    _patch_cluster(monkeypatch, None)
-    _patch_watch_ops(monkeypatch, [{"type": "ADDED", "raw_object": {}}])
+async def test_watch_with_no_visible_cluster_streams_nothing(monkeypatch, engine):
+    """No visible cluster answers ``watch=true`` with an empty stream — not a 404
+    (a status that differs from an empty result is a probe) and not a JSON page
+    (the caller asked for text/event-stream, and a body its reader cannot parse
+    is the class of failure this route is being fixed for)."""
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch)
+    capture = _patch_streaming(monkeypatch)
 
-    with pytest.raises(NotFoundException) as exc:
-        await it_routes.get_gpu_instance_types(REQUEST, None, CTX, 1, watch=True)
-    assert exc.value.status_code == 404
+    async def boom(*args, **kwargs):
+        raise AssertionError("the watch path must not query")
+
+    monkeypatch.setattr(it_routes.GPUInstanceType, "paginated_by_query", boom)
+
+    resp = await _list(watch=True)
+
+    assert isinstance(resp, StreamingResponse)
+    assert capture["filter_func"](_row(1, "a10g")) is False
 
 
 #
 # Per-cluster watch stream tests: the shared SSE helper fed by the per-cluster
-# source, exactly as the watch route composes it inline.
+# source, exactly as the ``source=live`` watch route composes it inline.
 #
 
 
-def _cluster_stream(ops):
-    """Rebuild the per-cluster watch stream the route composes inline —
+def _ops_stream(ops):
+    """Rebuild the per-cluster watch stream the live watch route composes inline —
     ``watch_event_stream`` fed by the per-cluster source + CR→public mapper."""
     return helper.watch_event_stream(
         it_routes._cluster_instance_type_events(ops),
@@ -913,7 +1570,7 @@ async def test_watch_stream_maps_verbs_and_drops_bookmark():
         ]
     )
 
-    frames = await _collect(_cluster_stream(ops))
+    frames = await _collect(_ops_stream(ops))
     payloads = [json.loads(f) for f in frames if f != "\n\n"]
 
     # ADDED→1, MODIFIED→2, DELETED→3; BOOKMARK produces no frame.
@@ -929,7 +1586,7 @@ async def test_watch_stream_emits_heartbeat_when_idle(monkeypatch):
     monkeypatch.setattr(helper, "_HEARTBEAT_INTERVAL", 0.01)
     ops = _watch_ops([_watch_evt("ADDED", "it-a")], pre_delay=0.05)
 
-    frames = await _collect(_cluster_stream(ops))
+    frames = await _collect(_ops_stream(ops))
 
     assert "\n\n" in frames  # ≥1 keepalive during the idle gap
     data_frames = [f for f in frames if f != "\n\n"]
@@ -946,7 +1603,7 @@ async def test_watch_stream_absorbs_error_without_error_frame():
         error=client.exceptions.ApiException(status=500, reason="boom"),
     )
 
-    frames = await _collect(_cluster_stream(ops))
+    frames = await _collect(_ops_stream(ops))
     payloads = [json.loads(f) for f in frames if f != "\n\n"]
 
     # Only the CREATED frame; the watch error ends the stream, never a frame.
@@ -990,7 +1647,7 @@ async def test_watch_stream_cancellation_does_not_deadlock_on_full_queue(monkeyp
     monkeypatch.setattr(helper, "_WATCH_QUEUE_MAXSIZE", 1)
     ops = _watch_ops_unbounded()
 
-    agen = _cluster_stream(ops)
+    agen = _ops_stream(ops)
     # Pull one frame so the producer is running; then let it refill the size-1
     # queue and block on the next put while the consumer is idle at the yield.
     first = await agen.__anext__()
