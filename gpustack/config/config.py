@@ -157,6 +157,7 @@ class Config(WorkerConfig, BaseSettings):
         allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
         server_external_url: Specified external URL for the server.
+        forwarded_allow_ips: Comma-separated peers whose X-Forwarded-For and X-Forwarded-Proto headers are trusted, or '*' to trust any. Defaults to '127.0.0.1', so a reverse proxy reaching this port over the network must be listed here for the server to detect HTTPS termination.
         system_default_container_registry: Default registry for container images (server and inference images). Images are expected under the 'gpustack' namespace; for multi-level namespaces keep 'gpustack' as the last level and set this to the parent path.
         image_name_override: Force override of the image name.
         image_repo: Repository for the container images. When the image lives outside the 'gpustack' namespace (e.g. 'gpustack-ai/gpustack'), point system_default_container_registry to the parent namespace path and set this to the remaining repository path.
@@ -278,6 +279,23 @@ class Config(WorkerConfig, BaseSettings):
     # ["*"] (trust any host), which is not recommended unless the server is only
     # reachable via a trusted proxy.
     trusted_hosts: Optional[List[str]] = None
+    # Peers whose X-Forwarded-For / X-Forwarded-Proto uvicorn will believe. The
+    # loopback default means a proxy reaching this port over the network is not
+    # trusted, so request.url.scheme stays "http" behind TLS termination and
+    # every scheme-dependent decision (most visibly the Secure flag on the
+    # session cookie) silently takes the wrong branch. Set it to the proxy's
+    # address, or "*" when nothing but the proxy can reach this port.
+    #
+    # "Over the network" is the distinction that matters, not "in a container":
+    # a container reaching the host through Docker Desktop's gateway arrives as
+    # loopback and is trusted by the default, while the same proxy addressing
+    # the host by its LAN address is not.
+    #
+    # Distinct from trusted_hosts above, which allowlists forwarded *host
+    # values*; this allowlists *who may forward at all*. A client that can reach
+    # the port directly and is listed here can claim any scheme, so widening it
+    # past the proxy is a real downgrade vector.
+    forwarded_allow_ips: Optional[str] = None
     # custom post-logout redirection key for compatibility with different IdPs.
     external_auth_post_logout_redirect_key: Optional[str] = None
     # Number of concurrent connections for the embedded gateway.
@@ -954,6 +972,22 @@ class Config(WorkerConfig, BaseSettings):
             if hostname:
                 return [hostname]
         return ["*"]
+
+    def get_forwarded_allow_ips(self) -> str:
+        """Peers uvicorn will accept X-Forwarded-* from.
+
+        Deliberately does *not* widen itself the way ``get_trusted_hosts`` does.
+        That one falls back to ``["*"]`` because a wrong ``Host`` mostly produces
+        wrong links; believing a wrong ``X-Forwarded-Proto`` from an untrusted
+        peer lets a caller dictate the scheme the server thinks it is speaking,
+        so opening this up is the operator's call and stays explicit.
+
+        Returning uvicorn's own default when unset keeps the value in one place
+        rather than relying on two defaults that agree today.
+        """
+        if self.forwarded_allow_ips and self.forwarded_allow_ips.strip():
+            return self.forwarded_allow_ips.strip()
+        return "127.0.0.1"
 
     def get_tls_secret_name(self) -> Optional[str]:
         if not self.ssl_certfile or not self.ssl_keyfile:
