@@ -2,7 +2,6 @@ import logging
 import random
 import string
 import asyncio
-import yaml
 from importlib.resources import files
 from functools import partial
 from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
@@ -26,8 +25,6 @@ from gpustack.policies.scorers.status_scorer import StatusScorer
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
     get_built_in_backend,
-    VersionConfig,
-    VersionConfigDict,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
@@ -90,6 +87,25 @@ from gpustack.schemas.users import (
     User,
     is_default_cluster_principal,
 )
+from gpustack.schemas.runner_source import (
+    InferenceRunnerSource,
+    reconcile_runner_overrides,
+)
+from gpustack.schemas.catalog_source import (
+    BUILTIN_CATALOG_SOURCE_NAME,
+    CatalogSource,
+    normalize_catalog_yaml,
+    reconcile_catalog,
+)
+from gpustack.schemas.inference_backend_source import (
+    BUILTIN_BACKEND_SOURCE_NAME,
+    InferenceBackendSource,
+    normalize_backend_yaml,
+    reconcile_backend,
+)
+from gpustack.server.catalog import read_builtin_catalog_text
+from gpustack.schemas.source import SourceTypeEnum
+from gpustack.server.sources.core import gather_and_merge, sha256_of
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.cache import delete_cache_by_key
 from gpustack.utils.model_source import get_draft_model_source
@@ -331,7 +347,7 @@ async def sync_replicas(session: AsyncSession, model: Model):
                 # default of platform_principal_id() would otherwise
                 # land instances of a non-Default-Org Model in Default.
                 owner_principal_id=model.owner_principal_id,
-                draft_model_source=get_draft_model_source(model),
+                draft_model_source=await get_draft_model_source(session, model),
                 backend=get_backend(model),
                 backend_version=model.backend_version,
             )
@@ -1532,16 +1548,29 @@ class WorkerController:
 
 class InferenceBackendController:
     """
-    Inference backend controller initializes built-in and community backends in the database.
+    Leader-only controller that seeds the built-in inference engines and the
+    BUILTIN community-backend source, then materializes the Platform-NULL
+    community backends from all enabled InferenceBackendSource rows.
+
+    On start it seeds the packaged community-inference-backends.yaml as the
+    BUILTIN source, then (like RunnerSourceController) subscribes and
+    smart-merges on any source change; the initial replay of existing sources
+    drives the first reconcile.
     """
 
     async def start(self):
         async with async_session() as session:
-            # Initialize built-in backends
             await self._init_built_in_backends(session)
-
-            # Initialize community backends
-            await self._init_community_backends(session)
+        await self._seed_builtin_source()
+        async for event in InferenceBackendSource.subscribe(
+            source="inference_backend_source_controller"
+        ):
+            if event.type in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                await self._reconcile()
 
     async def _init_built_in_backends(self, session: AsyncSession):
         """Initialize built-in backends in the database."""
@@ -1586,220 +1615,72 @@ class InferenceBackendController:
                         f"Updated backend_source for existing built-in backend {backend.backend_name}"
                     )
 
-    async def _init_community_backends(self, session: AsyncSession):  # noqa: C901
-        """Load community backends from community-inference-backends.yaml into database."""
+    async def _reconcile(self):
         try:
-            # Get the path to community-inference-backends.yaml
+            async with async_session() as session:
+                await gather_and_merge(
+                    session, InferenceBackendSource, reconcile_backend
+                )
+        except Exception as e:
+            logger.error(f"Failed to reconcile community backends: {e}")
+
+    async def _seed_builtin_source(self):
+        """Upsert the BUILTIN InferenceBackendSource from the packaged
+        community-inference-backends.yaml.
+
+        The content is refreshed to the newest packaged catalog on every start
+        (so a GPUStack upgrade ships it), while the user's ``enabled`` toggle on
+        the built-in source is left untouched.
+        """
+        try:
             yaml_file = files("gpustack.assets").joinpath(
                 "community-inference-backends.yaml"
             )
-
             if not yaml_file.is_file():
                 logger.debug(
-                    "community-inference-backends.yaml not found, skipping community backend initialization"
+                    "community-inference-backends.yaml not found, skipping seed"
                 )
                 return
-
-            yaml_data = yaml.safe_load(yaml_file.read_text())
-
-            if not yaml_data:
-                logger.debug(
-                    "No community backends found in community-inference-backends.yaml"
-                )
-                return
-
-            if not isinstance(yaml_data, list):
-                logger.error(
-                    f"Invalid community-inference-backends.yaml format: expected list, got {type(yaml_data).__name__}"
-                )
-                return
-
-            # Collect backend names from YAML
-            yaml_backend_names = set()
-            for backend_config in yaml_data:
-                backend_name = backend_config.get("backend_name")
-                if backend_name:
-                    yaml_backend_names.add(backend_name)
-                await self._upsert_community_backend(session, backend_config)
-
-            # Query all community backends from database. Only Platform
-            # rows are owned by the catalog yaml; Org-private community
-            # additions stay untouched.
-            all_backends = await InferenceBackend.all(session)
-            db_community_backends = [
-                backend
-                for backend in all_backends
-                if backend.backend_source == BackendSourceEnum.COMMUNITY
-                and backend.owner_principal_id is None
-            ]
-
-            # Delete community backends that are no longer in YAML
-            for backend in db_community_backends:
-                if backend.backend_name in yaml_backend_names:
-                    continue
-
-                if backend.enabled:
-                    # Convert to custom backend to preserve user's custom versions
-                    # Convert all built_in_frameworks versions to custom_framework versions
-                    converted_versions = {}
-                    if backend.version_configs and backend.version_configs.root:
-                        for version, config in backend.version_configs.root.items():
-                            config_data = config.model_dump()
-                            if config_data.get("built_in_frameworks"):
-                                config_data["custom_framework"] = config_data[
-                                    "built_in_frameworks"
-                                ][0]
-                                config_data["built_in_frameworks"] = None
-                            converted_versions[version] = VersionConfig(**config_data)
-
-                    # Prepare update data
-                    update_data = {
-                        "backend_source": BackendSourceEnum.CUSTOM,
-                        "enabled": False,
-                        "version_configs": VersionConfigDict(root=converted_versions),
-                    }
-                    flag_modified(backend, "version_configs")
-                    await backend.update(session, update_data)
-                    logger.info(
-                        f"Converted community backend '{backend.backend_name}' to custom backend"
-                    )
-                else:
-                    # Delete if no custom versions
-                    await backend.delete(session)
-                    logger.info(
-                        f"Deleted community backend '{backend.backend_name}' "
-                        f"(no longer in community-inference-backends.yaml)"
-                    )
-
-            logger.debug(
-                "Community backends initialized from community-inference-backends.yaml"
-            )
-
-        except (ModuleNotFoundError, FileNotFoundError):
-            # community_backends directory or yaml file does not exist
-            logger.debug(
-                "Community backends directory or file not found, skipping initialization"
-            )
+            raw = await asyncio.to_thread(yaml_file.read_text)
+            content = normalize_backend_yaml(raw)
         except Exception as e:
-            logger.error(f"Failed to initialize community backends: {e}")
-
-    async def _upsert_community_backend(self, session: AsyncSession, config: dict):
-        """Create or update a community backend from YAML configuration."""
-        backend_name = config.get("backend_name")
-        if not backend_name:
+            logger.error(f"Failed to seed built-in inference backend source: {e}")
             return
 
-        # Prepare backend data
-        allowed_keys = [
-            "backend_name",
-            "version_configs",
-            "default_version",
-            "default_backend_param",
-            "default_run_command",
-            "default_entrypoint",
-            "health_check_path",
-            "description",
-            "icon",
-            "default_env",
-            "parameter_format",
-            "common_parameters",
-        ]
-        backend_data = {k: config[k] for k in allowed_keys if k in config}
-
-        # Set backend source
-        backend_data["backend_source"] = BackendSourceEnum.COMMUNITY
-        backend_data["enabled"] = False
-
-        # Convert version_configs to VersionConfigDict
-        if 'version_configs' in backend_data and backend_data['version_configs']:
-            version_config_dict = {}
-            for version, ver_config in backend_data['version_configs'].items():
-                # All versions loaded from YAML are predefined versions
-                # Convert framework information to built_in_frameworks
-
-                frameworks = None
-                if 'built_in_frameworks' in ver_config:
-                    frameworks = ver_config['built_in_frameworks']
-                elif (
-                    'custom_framework' in ver_config and ver_config['custom_framework']
-                ):
-                    # Even if YAML uses custom_framework, convert it to built_in_frameworks
-                    frameworks = [ver_config['custom_framework']]
-
-                # Set built_in_frameworks and clear custom_framework
-                if frameworks:
-                    ver_config['built_in_frameworks'] = (
-                        frameworks if isinstance(frameworks, list) else [frameworks]
-                    )
-                else:
-                    # If no framework specified, use empty list to mark as predefined version
-                    ver_config['built_in_frameworks'] = []
-
-                # Ensure custom_framework is None (predefined versions should not have custom_framework)
-                ver_config['custom_framework'] = None
-
-                version_config_dict[version] = VersionConfig(**ver_config)
-
-            backend_data['version_configs'] = VersionConfigDict(
-                root=version_config_dict
+        content_hash = sha256_of(content)
+        async with async_session() as session:
+            existing = await InferenceBackendSource.one_by_field(
+                session, "name", BUILTIN_BACKEND_SOURCE_NAME
             )
-
-        # Upsert: update if exists, create if not. Community backends seed
-        # at the Platform scope (owner_principal_id IS NULL) — Org-private
-        # extensions live in additional rows owned by Orgs.
-        existing = await InferenceBackend.one_by_fields(
-            session, {"backend_name": backend_name, "owner_principal_id": None}
-        )
-        if existing:
-            # Smart merge logic to preserve user customizations
-
-            # 1. Merge version_configs: preserve user custom versions, update YAML versions
-            if 'version_configs' in backend_data and backend_data['version_configs']:
-                yaml_versions = backend_data['version_configs'].root
-                existing_versions = (
-                    existing.version_configs.root if existing.version_configs else {}
+            if existing:
+                # Skip the write (and its UPDATED event → redundant reconcile)
+                # when a restart re-seeds the same packaged content. Judged by
+                # the same hash every other writer in the source layer uses, so
+                # "did this change" has one answer everywhere.
+                if (
+                    existing.content_hash == content_hash
+                    and existing.source_type == SourceTypeEnum.BUILTIN
+                ):
+                    return
+                await existing.update(
+                    session,
+                    {
+                        "content": content,
+                        "content_hash": content_hash,
+                        "source_type": SourceTypeEnum.BUILTIN,
+                    },
                 )
-
-                # Create merged version dictionary
-                merged_versions = {}
-
-                # First add all YAML versions (overwrite old versions with same name)
-                for version, config in yaml_versions.items():
-                    merged_versions[version] = config
-
-                # Then add user custom versions (built_in_frameworks is None)
-                for version, config in existing_versions.items():
-                    if (
-                        config.built_in_frameworks is None
-                        and version not in yaml_versions
-                    ):
-                        # This is a user custom version not in YAML, preserve it
-                        merged_versions[version] = config
-
-                backend_data['version_configs'] = VersionConfigDict(
-                    root=merged_versions
+            else:
+                await InferenceBackendSource.create(
+                    session,
+                    InferenceBackendSource(
+                        name=BUILTIN_BACKEND_SOURCE_NAME,
+                        source_type=SourceTypeEnum.BUILTIN,
+                        content=content,
+                        content_hash=content_hash,
+                        enabled=True,
+                    ),
                 )
-
-            # 2. Preserve user-modified enabled status (if user enabled it, don't reset to False)
-            if existing.enabled:
-                backend_data['enabled'] = True
-
-            # 3. Merge default_env (preserve user-added environment variables)
-            if existing.default_env:
-                if 'default_env' in backend_data and backend_data['default_env']:
-                    # Merge: YAML environment variables + user-added environment variables
-                    merged_env = dict(existing.default_env)
-                    merged_env.update(backend_data['default_env'])
-                    backend_data['default_env'] = merged_env
-                else:
-                    # YAML doesn't define it, preserve user's
-                    backend_data['default_env'] = existing.default_env
-
-            # 4. Update database
-            await existing.update(session, backend_data)
-        else:
-            backend = InferenceBackend(**backend_data)
-            await InferenceBackend.create(session, backend)
 
 
 class ModelFileController:
@@ -1842,6 +1723,116 @@ class ModelFileController:
                     await sync_instance_files_state(session, instance, [file])
         except Exception as e:
             logger.error(f"Failed to reconcile model file {file.id}: {e}")
+
+
+class RunnerSourceController:
+    """
+    Leader-only controller that materializes RunnerOverrideEntry from
+    InferenceRunnerSource. On any source change (and the initial replay), it
+    gathers all enabled sources, merges them in a stable order, and
+    full-rewrites the override table (pure derived materialization).
+    """
+
+    async def start(self):
+        async for event in InferenceRunnerSource.subscribe(
+            source="runner_source_controller"
+        ):
+            if event.type in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                await self._reconcile()
+
+    async def _reconcile(self):
+        try:
+            async with async_session() as session:
+                await gather_and_merge(
+                    session, InferenceRunnerSource, reconcile_runner_overrides
+                )
+        except Exception as e:
+            logger.error(f"Failed to reconcile runner override entries: {e}")
+
+
+class CatalogSourceController:
+    """
+    Leader-only controller that materializes CatalogModelEntry from
+    CatalogSource. On start it seeds the BUILTIN source from the packaged
+    model-catalog.yaml, then (like RunnerSourceController) subscribes and
+    full-rewrites the materialized table on any source change; the initial
+    replay of existing sources drives the first reconcile.
+    """
+
+    def __init__(self, config: Config):
+        self._config = config
+
+    async def start(self):
+        await self._seed_builtin_source()
+        async for event in CatalogSource.subscribe(source="catalog_source_controller"):
+            if event.type in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                await self._reconcile()
+
+    async def _reconcile(self):
+        try:
+            async with async_session() as session:
+                await gather_and_merge(session, CatalogSource, reconcile_catalog)
+        except Exception as e:
+            logger.error(f"Failed to reconcile catalog model entries: {e}")
+
+    async def _seed_builtin_source(self):
+        """Upsert the BUILTIN CatalogSource from the packaged catalog.
+
+        The content is refreshed to the newest packaged catalog on every start
+        (so a GPUStack upgrade ships it), while the user's ``enabled`` toggle on
+        the built-in source is left untouched.
+        """
+        try:
+            raw = await asyncio.to_thread(
+                read_builtin_catalog_text, self._config.model_catalog_file
+            )
+            content = normalize_catalog_yaml(raw)
+        except Exception as e:
+            logger.error(f"Failed to seed built-in catalog source: {e}")
+            return
+
+        content_hash = sha256_of(content)
+        async with async_session() as session:
+            existing = await CatalogSource.one_by_field(
+                session, "name", BUILTIN_CATALOG_SOURCE_NAME
+            )
+            if existing:
+                # Skip the write (and its UPDATED event → redundant reconcile)
+                # when a restart re-seeds the same packaged content. Judged by
+                # the same hash every other writer in the source layer uses, so
+                # "did this change" has one answer everywhere.
+                if (
+                    existing.content_hash == content_hash
+                    and existing.source_type == SourceTypeEnum.BUILTIN
+                ):
+                    return
+                await existing.update(
+                    session,
+                    {
+                        "content": content,
+                        "content_hash": content_hash,
+                        "source_type": SourceTypeEnum.BUILTIN,
+                    },
+                )
+            else:
+                await CatalogSource.create(
+                    session,
+                    CatalogSource(
+                        name=BUILTIN_CATALOG_SOURCE_NAME,
+                        source_type=SourceTypeEnum.BUILTIN,
+                        content=content,
+                        content_hash=content_hash,
+                        enabled=True,
+                    ),
+                )
 
 
 async def sync_instance_files_state(

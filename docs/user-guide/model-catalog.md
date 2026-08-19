@@ -16,6 +16,8 @@ You can deploy a model from the Model Catalog by clicking the model card. A mode
 
 You can customize the Model Catalog by providing a YAML file via GPUStack server configuration using the `--model-catalog-file` flag. It accepts either a local file path or a URL. You can refer to the built-in model catalog file [here](https://github.com/gpustack/gpustack/blob/main/gpustack/assets/model-catalog.yaml) for the schema.
 
+To customize the catalog without restarting the server, configure a catalog source instead — your document replaces the packaged catalog, and the drawer hands you that catalog to start from. See [OTA Content Updates](ota-content-updates.md).
+
 The following is an example of a custom model catalog YAML file:
 
 ```yaml

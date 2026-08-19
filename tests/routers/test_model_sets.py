@@ -184,8 +184,8 @@ def test_filter_specs_by_gpu(
 
 
 # --- GET /model-sets and GET /draft-models: search, filters, pagination -------
-# Both handlers hold the catalog in memory and receive it as a dependency, so
-# they can be driven directly without a database.
+# Both handlers read the catalog from the database and then search, filter and
+# paginate it in Python; stubbing that read drives them without one.
 
 CATALOG = [
     ModelSetPublic(id=1, name="Qwen3-235B-A22B-Instruct-2507", categories=["llm"]),
@@ -197,13 +197,29 @@ CATALOG = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def stub_catalog(monkeypatch):
+    async def model_sets(_session):
+        return CATALOG
+
+    async def draft_models(_session):
+        return DRAFT_MODELS
+
+    monkeypatch.setattr(
+        "gpustack.routes.model_sets.list_catalog_model_sets", model_sets
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.draft_models.get_catalog_draft_models", draft_models
+    )
+
+
 def params(page=1, perPage=100):
     return ListParams(page=page, perPage=perPage, watch=False, sort_by=None)
 
 
 async def call(**kwargs):
     kwargs.setdefault("params", params())
-    kwargs.setdefault("model_sets", CATALOG)
+    kwargs.setdefault("session", None)
     # Both are declared with FastAPI defaults, which are marker objects rather
     # than None when the handler is called directly.
     kwargs.setdefault("search", None)
@@ -288,7 +304,7 @@ DRAFT_MODELS = [
 
 async def call_drafts(**kwargs):
     kwargs.setdefault("params", params())
-    kwargs.setdefault("draft_models", DRAFT_MODELS)
+    kwargs.setdefault("session", None)
     kwargs.setdefault("search", None)
     kwargs.setdefault("algorithm", None)
     return await get_draft_models(**kwargs)

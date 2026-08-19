@@ -7,14 +7,19 @@ from gpustack.schemas.models import (
     ModelSource,
     ModelSpecBase,
 )
+from gpustack.schemas.source import SourceTypeEnum
 
 
 class GPUFilters(BaseModel):
-    vendor: Optional[Union[str, List[str]]] = None
+    # These two default to [] rather than None because a mode="before" validator
+    # never runs on a missing field: a None default would serialize as null and
+    # only collapse to [] on the next pass, breaking normalize_catalog_yaml's
+    # idempotence (every re-save of an unchanged catalog would look changed).
+    vendor: Optional[Union[str, List[str]]] = Field(default_factory=list)
     """List of GPU vendors, e.g., ['nvidia', 'amd'] or 'nvidia'."""
     compute_capability: Optional[str] = None
     """Compute capability filter expressed using pip-style version specifiers. E.g., '>=7.0,<8.0'."""
-    vendor_variant: Optional[Union[str, List[str]]] = None
+    vendor_variant: Optional[Union[str, List[str]]] = Field(default_factory=list)
     """List of GPU vendor variants. For example, ['910b', '310p'] or '910b' for Ascend NPUs."""
 
     @field_validator("vendor", "vendor_variant", mode="before")
@@ -81,7 +86,10 @@ class ModelSetBase(BaseModel):
 
 
 class ModelSetPublic(ModelSetBase):
-    pass
+    # Source-origin display: which source this set came from (None for the
+    # packaged built-in catalog, which the UI shows without a badge).
+    source_name: Optional[str] = None
+    source_type: Optional[SourceTypeEnum] = None
 
 
 class ModelSet(ModelSetBase):
