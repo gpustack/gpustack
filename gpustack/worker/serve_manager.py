@@ -50,6 +50,7 @@ from gpustack.routes.worker.logs import (
     extract_restart_count,
 )
 from gpustack.worker.model_meta import get_meta_from_running_instance
+from gpustack.utils.hub import detect_voice_cloning_support
 from gpustack.client import ClientSet
 from gpustack.schemas.models import (
     BackendEnum,
@@ -162,6 +163,11 @@ class ServeManager:
         self._error_model_instances = {}
         self._model_cache_by_instance = {}
         self._model_instance_by_instance_id = {}
+
+        # Per-instance voice-cloning (ref_audio) support, detected once from the
+        # checkpoint: True/False for Voxtral-TTS-family models, None otherwise.
+        # Reported through the model meta so the UI can warn about ref_audio.
+        self._voice_cloning_support: Dict[int, Optional[bool]] = {}
 
         # Instance-level port tracking to avoid conflicts
         self._assigned_ports: Dict[int, Set[int]] = {}
@@ -475,6 +481,16 @@ class ServeManager:
                         meta = get_meta_from_running_instance(
                             model_instance, backend, model
                         )
+                        # Detect voice-cloning (ref_audio) support from the
+                        # checkpoint so the UI can warn before a ref_audio
+                        # request crashes the engine.
+                        voice_cloning = self._resolve_voice_cloning_support(
+                            model_instance, model, backend
+                        )
+                        if voice_cloning is not None:
+                            # get_meta_from_running_instance can return None, so
+                            # keep the guard the `if meta:` below already assumes.
+                            meta = {**(meta or {}), "voice_cloning": voice_cloning}
                         if meta:
                             # Some meta is set in server evaluation and should be preserved, so we update meta instead of overwrite.
                             merged_meta = dict(model.meta or {})
@@ -1607,6 +1623,7 @@ class ServeManager:
         self._inference_health_check_failures.pop(mi.id, None)
         self._last_health_check_time.pop(mi.id, None)
         self._last_successful_inference.pop(mi.id, None)
+        self._voice_cloning_support.pop(mi.id, None)
 
         logger.info(f"Stopped model instance {mi.name or mi.id}")
 
@@ -1736,6 +1753,38 @@ class ServeManager:
             if instance and instance.state == ModelInstanceStateEnum.RUNNING
             else None
         )
+
+    def _resolve_voice_cloning_support(
+        self, model_instance: ModelInstance, model: Model, backend: str
+    ) -> Optional[bool]:
+        """
+        Detect once whether the instance's TTS checkpoint supports voice cloning
+        (the ref_audio path), caching the result per instance so the checkpoint is
+        inspected only on the first sync after the instance goes RUNNING.
+
+        Returns True/False for Voxtral-TTS-family checkpoints and None otherwise
+        (or when detection cannot tell); None claims nothing and is not reported.
+        """
+        instance_id = model_instance.id
+        if instance_id in self._voice_cloning_support:
+            return self._voice_cloning_support[instance_id]
+
+        supported: Optional[bool] = None
+        if (
+            CategoryEnum.TEXT_TO_SPEECH in (model.categories or [])
+            and backend == BackendEnum.VLLM
+        ):
+            supported = detect_voice_cloning_support(
+                model,
+                # The instance only reaches RUNNING once its files are downloaded,
+                # so the weights are on this node whatever the source.
+                local_dir=model_instance.resolved_path,
+            )
+        # Cache only a definitive verdict; leave None uncached so a later
+        # RUNNING transition can retry an unknown/failed detection.
+        if supported is not None:
+            self._voice_cloning_support[instance_id] = supported
+        return supported
 
 
 def is_ready(
