@@ -6,14 +6,19 @@ The [GPUStack Operator](https://github.com/gpustack/gpustack-operator) supports 
 
 ## Browsing Instance Types
 
-Open `GPU Service` > `Instance Types` and select a cluster. The page lists every instance type the cluster offers:
+Open `GPU Service` > `Instance Types`. The page lists the instance types of every GPU Service cluster you can see, with the owning cluster named on each row:
 
-![Screenshot: the Instance Types page listing the derived instance types](../assets/gpuservice/instance-types/list.png)
+![Screenshot: the Instance Types page listing instance types across clusters](../assets/gpuservice/instance-types/list.png)
 
 - **Name / Flavor**: The type name (or its display name) and the flavor it belongs to — a device model such as `NVIDIA-H100-80GB-HBM3`, or `CPU-only`.
 - **Unit CPU / Unit RAM / Storage**: The host resources granted per unit of this type. For an accelerator flavor, one unit is one whole device; logical slices and physical partitions are sized from these at creation time.
 - **Platform**: The operating system and CPU architecture, useful when choosing a compatible image.
+- **Cluster**: The cluster the type belongs to.
 - **Status**: `Active` types can be selected in the *Add GPU Instance* form; `Inactive` ones cannot.
+
+Use the `Filter by cluster` selector in the toolbar to narrow the list to a single cluster, and the search box to match types by name; filtering, sorting, and pagination are all applied server-side. Row actions — deactivate, activate, delete — always act on the cluster named in the row's Cluster column.
+
+The list is a control-plane record rather than a live read from each cluster: while a cluster is unreachable, its rows read as last observed. The live capacity view below remains the authority for current remaining capacity.
 
 You can also read the live capacity of each type with `kubectl`. The four accelerator views are **EX**clusive, **SH**ared, **SL**iced (logical), and **PT** (physically partitioned); the accelerator views and the `CPU` column alike read `onceMaxRequest/remaining`:
 
@@ -23,9 +28,9 @@ kubectl get instancetypes
 
 ```
 NAME                                          ENTRANCE                          UNIT(CPU/RAM)/STORAGE   ACCELERATOR(EX/SH/SL/PT)   CPU     PHASE
-gpustack--generic-linux-amd64                 gpustack-fnv64-3b93966fd73eb9ec   1/2Gi/100Gi             0/0 0/0 0/0 0/0            16/44   Active
-gpustack--nvidia-h100-80gb-hbm3-linux-amd64   gpustack-fnv64-e4768a65ca0ce96b   4/16Gi/100Gi            1/1 10/10 100/100 1/7      0/0     Active
-gpustack--nvidia-l40s-linux-amd64             gpustack-fnv64-a730f1dca9e26fca   4/16Gi/100Gi            1/1 10/10 100/100 0/0      0/0     Active
+gpustack--generic-linux-amd64                 gpustack-fnv64-3b93966fd73eb9ec   1/2Gi/100Gi             0/0 0/0 0/0 0/0            16/40   Active
+gpustack--nvidia-h100-80gb-hbm3-linux-amd64   gpustack-fnv64-e4768a65ca0ce96b   12/192Gi/100Gi          1/1 10/10 100/100 1/7      0/0     Active
+gpustack--nvidia-l40s-linux-amd64             gpustack-fnv64-a730f1dca9e26fca   12/128Gi/100Gi          1/1 10/10 100/100 0/0      0/0     Active
 ```
 
 In this reading of a freshly added cluster, the H100 type offers one whole device exclusively (`EX 1/1`), ten shared slots (`SH 10/10`), a full logical-slice budget (`SL 100/100`), and seven MIG partition slots (`PT 1/7`, from a second H100 node with MIG enabled). The L40S type offers its single device the same way minus partitioning (`PT 0/0` — L40S has no MIG), and the generic CPU-only type carries no accelerator capacity at all.
@@ -52,9 +57,10 @@ Add a custom instance type when the derived ones do not fit — for example, a l
 
 ![Screenshot: the Add Instance Type form](../assets/gpuservice/instance-types/add-form.png)
 
+- **Cluster**: The cluster the type is created in.
 - **Name**: The type name. Lowercase and Kubernetes-safe, since it becomes part of the underlying resource name.
 - **Display Name**: An optional friendly name shown in the UI.
-- **Flavor**: `CPU-only`, or an accelerator flavor the cluster carries.
+- **Flavor**: `CPU-only`, or an accelerator flavor the selected cluster carries. The choices follow the Cluster field.
 - **OS / Arch**: The platform the type targets.
 - **Unit CPU / Unit RAM / Storage**: The host resources granted per unit.
 
