@@ -42,6 +42,7 @@ from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
 from gpustack.worker.benchmark_manager import BenchmarkManager
+from gpustack.worker.cache_service_manager import CacheServiceManager
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.runtime_metrics_aggregator import RuntimeMetricsAggregator
@@ -70,6 +71,7 @@ class Worker:
     _worker_manager: WorkerManager
     _serve_manager: ServeManager
     _benchmark_manager: BenchmarkManager
+    _cache_service_manager: CacheServiceManager
     _workload_cleaner: WorkloadCleaner
     _config: Config
     _worker_ip: Optional[str] = None
@@ -146,6 +148,12 @@ class Worker:
         )
 
         self._benchmark_manager = BenchmarkManager(
+            worker_id_getter=self.worker_id,
+            clientset_getter=self.clientset,
+            cfg=self._config,
+        )
+
+        self._cache_service_manager = CacheServiceManager(
             worker_id_getter=self.worker_id,
             clientset_getter=self.clientset,
             cfg=self._config,
@@ -297,11 +305,17 @@ class Worker:
             self._workload_cleaner.cleanup_orphan_workloads, 120, 15
         )
         run_periodically_in_thread(self._benchmark_manager.sync_benchmark_state, 3, 15)
+        run_periodically_in_thread(
+            self._cache_service_manager.sync_cache_service_instances_state, 15, 15
+        )
 
         self._create_async_task(self._serve_manager.watch_models())
         self._create_async_task(self._serve_manager.watch_model_instances_event())
         self._create_async_task(self._serve_manager.watch_model_instances())
         self._create_async_task(self._benchmark_manager.watch_benchmarks_event())
+        self._create_async_task(
+            self._cache_service_manager.watch_cache_service_instances_event()
+        )
 
         model_file_manager = ModelFileManager(
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config

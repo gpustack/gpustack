@@ -236,6 +236,7 @@ class SGLangServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
+            host_ipc=self._host_ipc_enabled(),
             shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=[run_container],
             run_as_user=container_config.user,
@@ -272,6 +273,19 @@ class SGLangServer(InferenceServer):
         # Apply Ascend-specific environment variables
         if is_ascend(self._get_selected_gpu_devices()):
             self._set_ascend_env(env)
+
+        # Shared-cache connector env resolved server-side is snapshotted
+        # onto the instance (e.g. the pinned hash seed keeping chunk keys
+        # consistent across engine processes).
+        extended_kv_cache = self._model.extended_kv_cache
+        if (
+            extended_kv_cache
+            and extended_kv_cache.enabled
+            and extended_kv_cache.is_shared()
+        ):
+            cache_config = getattr(self._model_instance, "cache_config", None)
+            if cache_config and cache_config.injected:
+                env.update(cache_config.env or {})
 
         return env
 
@@ -517,6 +531,19 @@ class SGLangServer(InferenceServer):
         """
         extended_kv_cache = self._model.extended_kv_cache
         if not (extended_kv_cache and extended_kv_cache.enabled):
+            return []
+
+        if extended_kv_cache.is_shared():
+            # Shared mode: connector args resolved server-side are
+            # snapshotted onto the instance (--enable-lmcache plus the
+            # config file the serving script writes). Without an injected
+            # snapshot the instance starts degraded, and the hicache flags
+            # below must not fire either way.
+            cache_config = getattr(
+                getattr(self, "_model_instance", None), "cache_config", None
+            )
+            if cache_config and cache_config.injected:
+                return list(cache_config.args or [])
             return []
 
         arguments = ["--enable-hierarchical-cache"]

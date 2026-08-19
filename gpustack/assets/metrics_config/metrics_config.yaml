@@ -31,6 +31,14 @@ gpustack_metrics:
     type: Counter
     description: "Number of prefix cache hits, measured by the total hit tokens."
 
+  gpustack:external_prefix_cache_queries:
+    type: Counter
+    description: "Number of external KV cache (shared cache service) queries, measured by the total queried tokens."
+
+  gpustack:external_prefix_cache_hits:
+    type: Counter
+    description: "Number of external KV cache (shared cache service) hits, measured by the total hit tokens."
+
   gpustack:prompt_tokens:
     type: Counter
     description: "Total number of prefill tokens processed."
@@ -126,6 +134,10 @@ runtime_mapping:
       vllm:num_requests_waiting: gpustack:num_requests_waiting
       vllm:prefix_cache_hits: gpustack:prefix_cache_hits
       vllm:prefix_cache_queries: gpustack:prefix_cache_queries
+      # Reported by the KV connector when the instance attaches to a
+      # shared cache service; absent otherwise.
+      vllm:external_prefix_cache_hits: gpustack:external_prefix_cache_hits
+      vllm:external_prefix_cache_queries: gpustack:external_prefix_cache_queries
       vllm:kv_cache_usage_perc: gpustack:kv_cache_usage_ratio
       vllm:prompt_tokens: gpustack:prompt_tokens
       vllm:prompt_tokens_cached: gpustack:prompt_tokens_cached

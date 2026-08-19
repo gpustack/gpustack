@@ -34,6 +34,7 @@ from gpustack.schemas.model_routes import (
     AccessPolicyEnum,
 )
 from gpustack.schemas.principals import _platform_principal_id
+from gpustack.schemas.cache_services import CacheConfigSnapshot
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
@@ -201,9 +202,23 @@ class LoraListEntry(BaseModel):
     """ID of the ModelFile record backing this adapter."""
 
 
+class KVCacheModeEnum(str, Enum):
+    LOCAL = "local"
+    SHARED = "shared"
+
+    def __str__(self):
+        return self.value
+
+
 class ExtendedKVCacheConfig(BaseModel):
     enabled: bool = False
     """ Enable extended KV cache for the model."""
+
+    mode: Optional[KVCacheModeEnum] = KVCacheModeEnum.LOCAL
+    """ "local": per-instance cache offloaded to CPU memory. "shared": attach to a shared cache service. Absent means local. """
+
+    cache_service_id: Optional[int] = None
+    """ ID of the CacheService to attach to. Required when mode is "shared". """
 
     ram_ratio: Optional[float] = 1.2
     """ RAM-to-VRAM ratio for KV cache. For example, 2.0 means the RAM is twice the size of the VRAM. """
@@ -213,6 +228,12 @@ class ExtendedKVCacheConfig(BaseModel):
 
     chunk_size: Optional[int] = None
     """ Size for each KV cache chunk (unit: number of tokens). """
+
+    def is_shared(self) -> bool:
+        return bool(self.enabled and self.mode == KVCacheModeEnum.SHARED)
+
+    def is_local(self) -> bool:
+        return bool(self.enabled and not self.is_shared())
 
 
 # A window may span at most a year. Longer values are meaningless for a
@@ -737,6 +758,10 @@ class ModelInstanceBase(SQLModel, ModelSource):
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
         sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
     )
+    cache_config: Optional[CacheConfigSnapshot] = Field(
+        sa_column=Column(pydantic_column_type(CacheConfigSnapshot)), default=None
+    )
+    """Resolved shared-cache connection info; None for local/disabled KV cache."""
     gpu_type: Optional[str] = None
     gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
     gpu_addresses: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
