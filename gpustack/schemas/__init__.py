@@ -184,6 +184,7 @@ from gpustack.schemas.gpu_instance_templates import (
 )
 from gpustack.schemas.gpu_instance_types import (
     GPUInstanceType,
+    GPUInstanceTypeListParams,
     GPUInstanceTypeCreate,
     GPUInstanceTypeUpdate,
     GPUInstanceTypePublic,
@@ -354,6 +355,7 @@ __all__ = [
     "GPUInstanceTemplatePublic",
     "GPUInstanceTemplatesPublic",
     "GPUInstanceType",
+    "GPUInstanceTypeListParams",
     "GPUInstanceTypeCreate",
     "GPUInstanceTypeUpdate",
     "GPUInstanceTypePublic",

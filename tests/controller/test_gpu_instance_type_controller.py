@@ -24,6 +24,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.gpu_instances.controllers import GPUInstanceTypeController
 from gpustack.schemas.clusters import ClusterProvider
 from gpustack.schemas.gpu_instance_types import (
+    DERIVED_FROM_NODE_LABEL,
     GPUInstanceType,
     GPUInstanceTypeSpec,
 )
@@ -234,11 +235,13 @@ def controller(engine, monkeypatch):
     return _controller()
 
 
-def _event(etype, *, cluster_id=1, name="a10g", spec=None, status=None):
+def _event(etype, *, cluster_id=1, name="a10g", spec=None, status=None, labels=None):
     obj = {
         "metadata": {"name": name},
         "spec": spec or {},
     }
+    if labels is not None:
+        obj["metadata"]["labels"] = labels
     if status is not None:
         obj["status"] = status
     wtype = {
@@ -308,7 +311,17 @@ async def test_modified_backfills_status_detail(engine, controller):
         _event(
             "MODIFIED",
             spec={"acceleratorGroup": "nvidia-a10g"},
-            status={"phase": "Active", "detail": detail},
+            status={
+                "phase": "Active",
+                "detail": detail,
+                # Carried by the same event and deliberately NOT persisted, so
+                # the field set below is an assertion rather than a restatement.
+                "accelerator": {
+                    "onceMaxRequest": "1",
+                    "remaining": "3",
+                    "capacity": "8",
+                },
+            },
         )
     )
     after = await _active(engine)
@@ -317,8 +330,10 @@ async def test_modified_backfills_status_detail(engine, controller):
     assert after.snapshot == before.snapshot  # status is not hashed
     assert after.status.detail.manufacturer == "nvidia"
     assert after.status.detail.product == "A10G"
-    # Only ``detail`` is persisted; the rest of the status is read live.
-    assert set(after.status.model_dump(exclude_none=True)) == {"detail"}
+    # Only the named subset is persisted (detail + the phase pair); the resource
+    # ledger is dropped and read live from the aggregated route instead.
+    assert set(after.status.model_dump(exclude_none=True)) == {"detail", "phase"}
+    assert after.status.phase == "Active"
     assert len(await _all(engine)) == 1
 
 
@@ -331,7 +346,7 @@ async def test_status_less_modified_keeps_persisted_detail(engine, controller):
         _event(
             "ADDED",
             spec={"acceleratorGroup": "nvidia-a10g"},
-            status={"detail": detail},
+            status={"detail": detail, "phase": "Active"},
         )
     )
 
@@ -347,6 +362,147 @@ async def test_status_less_modified_keeps_persisted_detail(engine, controller):
     row = await _active(engine)
     assert row.spec.display_name == "Renamed"
     assert row.status.detail.manufacturer == "nvidia"
+    assert row.status.phase == "Active"  # the whole persisted subset survives
+
+
+@pytest.mark.asyncio
+async def test_added_persists_phase_and_derived_from_node_marker(engine, controller):
+    # The phase pair drives the list's phase badge and its activate / deactivate
+    # actions; the label marks a type the operator authored from node hardware.
+    # Neither can be derived from anything else the row holds.
+    await controller._reconcile(
+        _event(
+            "ADDED",
+            spec={"acceleratorGroup": "nvidia-a10g"},
+            status={"phase": "Active", "phaseMessage": "queue admitting"},
+            labels={DERIVED_FROM_NODE_LABEL: "true"},
+        )
+    )
+
+    row = await _active(engine)
+    assert row.status.phase == "Active"
+    assert row.status.phase_message == "queue admitting"
+    assert row.derived_from_node is True
+
+
+@pytest.mark.asyncio
+async def test_hand_authored_type_persists_no_marker(engine, controller):
+    # No label -> an admin authored it, so a delete of it sticks.
+    await controller._reconcile(
+        _event("ADDED", spec={"acceleratorGroup": "nvidia-a10g"})
+    )
+
+    assert (await _active(engine)).derived_from_node is False
+
+
+@pytest.mark.asyncio
+async def test_marker_appearing_on_a_later_modified_lands(engine, controller):
+    # The marker is outside both snapshots, so it cannot ride in on identity: a
+    # label that only appears on a later MODIFIED has to be picked up by the
+    # revive path, whose skip would otherwise swallow it (spec and status here
+    # are deliberately unchanged, so the marker is the ONLY difference).
+    await controller._reconcile(
+        _event("ADDED", spec={"acceleratorGroup": "nvidia-a10g"})
+    )
+    before = await _active(engine)
+
+    await controller._reconcile(
+        _event(
+            "MODIFIED",
+            spec={"acceleratorGroup": "nvidia-a10g"},
+            labels={DERIVED_FROM_NODE_LABEL: "true"},
+        )
+    )
+
+    after = await _active(engine)
+    assert after.id == before.id  # same row, not a duplicate
+    assert after.snapshot == before.snapshot  # the marker is not hashed
+    assert after.derived_from_node is True
+
+
+def _status_with_ledger(remaining: str) -> dict:
+    """A full operator status: the persisted subset plus the resource ledger,
+    whose numbers are recomputed on every workload movement in the cluster."""
+    return {
+        "phase": "Active",
+        "detail": {"manufacturer": "nvidia", "product": "A10G"},
+        "accelerator": {
+            "onceMaxRequest": "1",
+            "remaining": remaining,
+            "capacity": "8",
+        },
+        "acceleratorPartitioned": {
+            "onceMaxRequest": "1",
+            "remaining": remaining,
+            "capacity": "7",
+            "remainingProfiles": [{"name": "1g.10gb", "count": int(remaining)}],
+        },
+        "cpu": {"onceMaxRequest": "4", "remaining": remaining, "capacity": "64"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_resource_ledger_churn_reaches_neither_the_db_nor_the_bus(
+    engine, controller, monkeypatch
+):
+    # THE regression guard. The ledger moves with cluster-wide workload activity,
+    # and every row write publishes on the internal bus, which the list route puts
+    # one SSE stream per open page on the other end of — so a MODIFIED that only
+    # moved the ledger must reach neither.
+    #
+    # Asserted by SPYING, never by comparing the persisted values: a value
+    # comparison would still pass if a future change widened the persisted status
+    # and reintroduced exactly the churn this spec exists to avoid, whereas these
+    # spies fail immediately.
+    spec = {"acceleratorGroup": "nvidia-a10g"}
+    await controller._reconcile(
+        _event("ADDED", spec=spec, status=_status_with_ledger("3"))
+    )
+
+    updates = []
+    original_update = GPUInstanceType.update
+
+    async def _counting_update(self, *a, **k):
+        updates.append(1)
+        return await original_update(self, *a, **k)
+
+    published = []
+
+    def _recording_publish(cls, session, event_type, data):
+        published.append(event_type)
+
+    # Every write path enqueues its bus event here (create / update / delete),
+    # and the after_commit listener drains the queue into
+    # ``asyncio.create_task(event_bus.publish(...))``. Spying on the enqueue is
+    # what keeps this deterministic: asserting on the far side of that
+    # create_task would make the test depend on event-loop timing.
+    monkeypatch.setattr(GPUInstanceType, "update", _counting_update)
+    monkeypatch.setattr(
+        GPUInstanceType,
+        "_publish_event_after_commit",
+        classmethod(_recording_publish),
+    )
+
+    await controller._reconcile(
+        _event("MODIFIED", spec=spec, status=_status_with_ledger("2"))
+    )
+
+    assert updates == []  # no DB UPDATE
+    assert published == []  # and therefore no bus event, no SSE fan-out
+
+    # Positive control, same spies: a real change DOES write and DOES publish.
+    # Without it this test could pass simply because the spies were attached to
+    # something the controller no longer calls.
+    await controller._reconcile(
+        _event(
+            "MODIFIED",
+            spec={**spec, "displayName": "Renamed"},
+            status=_status_with_ledger("2"),
+        )
+    )
+
+    assert updates == [1]
+    assert published == [EventType.UPDATED]
 
 
 @pytest.mark.asyncio

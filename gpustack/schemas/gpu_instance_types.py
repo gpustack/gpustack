@@ -1,9 +1,10 @@
 import hashlib
 import json
-from typing import Optional, List
+from datetime import datetime
+from typing import ClassVar, Optional, List
 
 from pydantic import ConfigDict, BaseModel
-from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
+from sqlalchemy import UniqueConstraint, Column, Index, Integer, ForeignKey
 from sqlmodel import SQLModel, Field
 
 from gpustack.mixins import BaseModelMixin
@@ -11,6 +12,8 @@ from gpustack.schemas.common import (
     pydantic_camel_case_generator,
     pydantic_column_type,
     ItemList,
+    ListParams,
+    PaginatedList,
 )
 
 
@@ -466,6 +469,11 @@ class GPUInstanceTypeStatus(BaseModel):
     model_config = ConfigDict(
         alias_generator=pydantic_camel_case_generator,
         populate_by_name=True,
+        # The table-backed read validates a ``GPUInstanceType`` row into
+        # ``GPUInstanceTypePublic``, and that row's ``status`` is a
+        # ``GPUInstanceTypeStatusPublic`` INSTANCE rather than a dict — so this
+        # annotation has to be able to read it attribute by attribute.
+        from_attributes=True,
     )
 
     detail: Optional[GPUInstanceTypeDetail] = None
@@ -518,10 +526,20 @@ class GPUInstanceTypeStatusPublic(BaseModel):
     """
     Represents the persisted status of a GPU instance type.
 
-    The server-side projection records only the observed hardware descriptor:
-    the operator backfills ``status.detail`` asynchronously (via a MODIFIED
-    event, not the initial ADDED), while the remaining status fields (phase,
-    resource views) are read live from the gateway rather than persisted.
+    The server-side projection records the observed hardware descriptor — the
+    operator backfills ``status.detail`` asynchronously (via a MODIFIED event,
+    not the initial ADDED) — plus the phase pair that drives the list's phase
+    badge and its activate / deactivate actions.
+
+    The resource ledger (``accelerator*``, ``cpu``, the partitioned profile
+    ledger) is deliberately NOT persisted, and a new field joins this subset only
+    after its change frequency is weighed: every row write publishes on the
+    internal bus, which the list route puts one SSE stream per open page on the
+    other end of, so a volatile field turns cluster-wide workload churn into a
+    fan-out of events. The ledger is recomputed on every workload movement,
+    whereas the three fields here move on real state transitions. Current
+    remaining capacity is read live from the gateway instead, via the aggregated
+    route.
     """
 
     model_config = ConfigDict(
@@ -533,6 +551,21 @@ class GPUInstanceTypeStatusPublic(BaseModel):
     """
     The observed hardware descriptor of the GPU instance type, mirrored from
     the operator's ``status.detail``.
+    """
+
+    phase: Optional[str] = None
+    """
+    The phase of the GPU instance type, e.g. "Active", "Draining", "Inactive".
+    Mirrored from the operator's ``status.phase``, which upstream derives in
+    ``apistatus.GetSummaryOfClusterQueue`` from the backing ClusterQueue's stop
+    policy and conditions.
+    """
+
+    phase_message: Optional[str] = None
+    """
+    Phase message is the message of the phase. It comes out of the same upstream
+    ``apistatus.GetSummaryOfClusterQueue`` call as ``phase``, so the two always
+    move together and are projected together.
     """
 
 
@@ -551,6 +584,20 @@ class GPUInstanceType(SQLModel, BaseModelMixin, table=True):
         # global identity: enforcing its uniqueness de-duplicates identical
         # types and backs the controller's query-first upsert / revive.
         UniqueConstraint("snapshot", name="uq_gpu_instance_type_snapshot"),
+        # Covers this table's one hot read, the fleet-wide list:
+        # ``WHERE deleted_at IS NULL AND cluster_id IN (...) ORDER BY
+        # created_at DESC`` plus its COUNT, on every page load and every watch
+        # open. The same prefix serves the controller's and the model deploy
+        # validation's ``(cluster_id, deleted_at)`` lookups. Sibling tables
+        # carry the two-column form of this for the identical pattern
+        # (``idx_clusters_deleted_at_created_at`` and friends); ``cluster_id``
+        # sits in the middle because every query on this table names it.
+        Index(
+            "idx_gpu_instance_types_deleted_at_cluster_id_created_at",
+            "deleted_at",
+            "cluster_id",
+            "created_at",
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -586,9 +633,9 @@ class GPUInstanceType(SQLModel, BaseModelMixin, table=True):
         sa_type=pydantic_column_type(GPUInstanceTypeStatusPublic),
     )
     """
-    Status mirrored from the operator InstanceType — only the observed
-    ``detail`` is persisted (see ``GPUInstanceTypeStatusPublic``). ``None``
-    until the operator backfills it.
+    Status mirrored from the operator InstanceType — only the named subset is
+    persisted (see ``GPUInstanceTypeStatusPublic``). ``None`` until the operator
+    backfills it.
     """
 
     snapshot: str
@@ -609,6 +656,19 @@ class GPUInstanceType(SQLModel, BaseModelMixin, table=True):
     ``(name, spec)`` — the same value on every cluster that offers this exact
     definition. NOT unique: N clusters offering one definition are N rows
     sharing it. See ``compute_definition_snapshot``.
+    """
+
+    derived_from_node: bool = Field(default=False)
+    """
+    Whether the GPUStack Operator derived this type from a node's resource
+    flavors, mirrored from ``metadata.labels[DERIVED_FROM_NODE_LABEL]``. It
+    cannot be derived from anything else the row holds — the cluster's
+    derived-from-node setting is a fleet switch, not a row provenance, and a
+    derived spec is byte-identical in shape to a hand-authored one.
+
+    Deliberately outside both snapshots: identity is ``(cluster_id, name, spec)``
+    and ``snapshot`` doubles as ``metered_usage.sku``, so a provenance marker
+    must not be able to move it.
     """
 
     def is_deleted(self) -> bool:
@@ -688,9 +748,11 @@ class GPUInstanceTypeBase(BaseModel):
     Specification of the GPU instance type.
     """
 
-    status: GPUInstanceTypeStatus
+    status: Optional[GPUInstanceTypeStatus] = None
     """
-    Status of the GPU instance type.
+    Status of the GPU instance type. ``None`` on a table-backed read until the
+    operator first reports one; the live write responses always carry it (an
+    unreconciled CR maps to ``{}``, not to ``None``).
     """
 
 
@@ -768,19 +830,75 @@ class GPUInstanceTypePublic(GPUInstanceTypeBase):
     """
     Represents the public view of a GPU instance type,
     containing only fields that are safe to expose to clients.
+
+    Served from two sources: the ``gpu_instance_types`` record table (the list
+    and its watch stream, which carry the row's identity and timestamps) and a
+    cluster's live CR (the write routes, which carry neither). Every field the
+    table alone supplies is therefore optional.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+        # The watch path validates a ``GPUInstanceType`` ORM row straight into
+        # this model — ``ActiveRecordMixin._convert_to_public_class`` resolves
+        # "<model>Public" by name and calls ``model_validate`` on the row — so it
+        # has to read attributes, not only a dict.
+        from_attributes=True,
+    )
+
+    id: Optional[int] = None
+    """
+    Identifier of the record-table row. Absent on the write routes' responses,
+    which return the cluster's live CR rather than a row.
+    """
+
+    cluster_id: Optional[int] = None
+    """
+    Reference to the cluster this GPU instance type belongs to — the fleet-wide
+    list's only cluster reference, matching ``WorkerPublic`` (the name is
+    resolved client-side). Absent on the write routes' responses, which are
+    already cluster-scoped by their request.
+    """
+
+    created_at: Optional[datetime] = None
+    """
+    When the projection first recorded this GPU instance type. Absent on the
+    write routes' responses.
+    """
+
+    updated_at: Optional[datetime] = None
+    """
+    When the projection last refreshed this GPU instance type. Absent on the
+    write routes' responses.
     """
 
     derived_from_node: bool = False
     """
-    Whether the GPUStack Operator derived this GPU instance type from a node
-    (see :data:`DERIVED_FROM_NODE_LABEL`). While the cluster's
-    ``instance-type-derived-from-node`` setting is on the operator owns such a
-    type's existence and re-creates it as soon as it is deleted, so clients
-    present it as read-only rather than offering a delete that cannot stick.
+    Whether the GPUStack Operator derived this GPU instance type from a node's
+    resource flavors (see :data:`DERIVED_FROM_NODE_LABEL`). It records
+    provenance, not immutability: upstream authors a derived type create-only and
+    never updates it, so an admin's edits to it are preserved — but while the
+    cluster's ``instance-type-derived-from-node`` setting is on, a DELETE is
+    undone by the next flavor reconcile, so clients should present a delete as
+    one that will not stick.
     """
 
 
-GPUInstanceTypesPublic = ItemList[GPUInstanceTypePublic]
+class GPUInstanceTypeListParams(ListParams):
+    # ``status.phase`` is deliberately not sortable: it lives inside the
+    # ``status`` JSON column rather than in a real column, and a JSON-path sort
+    # over a nullable status buys nothing — fuzzy name search is this list's
+    # discovery affordance.
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "cluster_id",
+        "created_at",
+        "updated_at",
+    ]
+
+
+GPUInstanceTypesPublic = PaginatedList[GPUInstanceTypePublic]
 
 
 class GPUAggregatedInstanceTypeOnceMaxRequestCandidate(BaseModel):

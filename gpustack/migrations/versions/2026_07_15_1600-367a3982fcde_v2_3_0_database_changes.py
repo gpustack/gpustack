@@ -10,6 +10,13 @@ Bundles the pre-release schema changes for v2.3.0:
    onto — the catalog, the instance's frozen copy, and the model's choice being
    one feature.
 
+   ``gpu_instance_types.derived_from_node`` records whether the operator derived
+   the type from a node's resource flavors (the
+   ``schedule.gpustack.ai/derived-from-node`` label). It cannot be inferred from
+   anything else the row holds — the cluster-level setting is a fleet switch, not
+   a row provenance — and it is deliberately outside ``snapshot``, which is the
+   row's identity and doubles as ``metered_usage.sku``.
+
 2. ``models.scaling_schedule`` for scheduled scaling: a per-model cron
    timetable that drives the model's replica count. The column stores the
    serialized ``ScalingSchedule`` (enabled flag, ``baseline_replicas``, and the
@@ -210,6 +217,34 @@ _BENCHMARK_COLUMNS = [
 ]
 
 
+def _gpu_instance_type_late_columns() -> List[sa.Column]:
+    """The ``gpu_instance_types`` columns added after the pre-release revision.
+
+    Returned as fresh objects because they are consumed by either
+    ``create_table`` or ``add_column`` — a ``Column`` cannot be attached twice.
+    """
+    return [
+        # Cluster-independent twin of ``snapshot``: the same definition rolled
+        # out to N clusters gives N snapshots but one of these. Non-unique by
+        # design.
+        sa.Column(
+            'definition_snapshot',
+            sqlmodel.sql.sqltypes.AutoString(),
+            nullable=True,
+        ),
+        # Provenance of the type: set when the operator derived it from a node's
+        # resource flavors. ``server_default`` is what lets the same definition
+        # serve the ``add_column`` path, where the table may already hold rows a
+        # NOT NULL column would otherwise reject.
+        sa.Column(
+            'derived_from_node',
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.false(),
+        ),
+    ]
+
+
 def upgrade() -> None:
     """Every step checks for its own object first.
 
@@ -242,31 +277,28 @@ def upgrade() -> None:
             sa.Column('spec', gpustack.schemas.common.JSON(), nullable=False),
             sa.Column('status', gpustack.schemas.common.JSON(), nullable=True),
             sa.Column('snapshot', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-            # Cluster-independent twin of ``snapshot``: the same definition
-            # rolled out to N clusters gives N snapshots but one of these.
-            # Non-unique by design.
-            sa.Column(
-                'definition_snapshot',
-                sqlmodel.sql.sqltypes.AutoString(),
-                nullable=True,
-            ),
+            *_gpu_instance_type_late_columns(),
             sa.ForeignKeyConstraint(
                 ['cluster_id'], ['clusters.id'], ondelete='CASCADE'
             ),
             sa.PrimaryKeyConstraint('id'),
             sa.UniqueConstraint('snapshot', name='uq_gpu_instance_type_snapshot'),
         )
-    elif not column_exists('gpu_instance_types', 'definition_snapshot'):
-        # The table predates this column on databases that ran the pre-release
-        # revision which created it.
-        with op.batch_alter_table('gpu_instance_types', schema=None) as batch_op:
-            batch_op.add_column(
-                sa.Column(
-                    'definition_snapshot',
-                    sqlmodel.sql.sqltypes.AutoString(),
-                    nullable=True,
-                )
-            )
+    else:
+        # The table predates these columns on databases that ran the pre-release
+        # revisions which created it. One batch over whichever are missing, not a
+        # block per column: on SQLite each block recreates and copies the whole
+        # table. An `elif` chain would be outright wrong — a database missing BOTH
+        # columns would take the first branch and never get the second one.
+        missing = [
+            c
+            for c in _gpu_instance_type_late_columns()
+            if not column_exists('gpu_instance_types', c.name)
+        ]
+        if missing:
+            with op.batch_alter_table('gpu_instance_types', schema=None) as batch_op:
+                for column in missing:
+                    batch_op.add_column(column)
 
     if not _index_exists(
         'gpu_instance_types', 'ix_gpu_instance_types_definition_snapshot'
@@ -275,6 +307,21 @@ def upgrade() -> None:
             'ix_gpu_instance_types_definition_snapshot',
             'gpu_instance_types',
             ['definition_snapshot'],
+            unique=False,
+        )
+
+    # Backs the fleet-wide list read: WHERE deleted_at IS NULL AND cluster_id
+    # IN (...) ORDER BY created_at DESC, plus its COUNT. The table previously
+    # only ever served a single cluster's rows to the controller, so it never
+    # needed this; the list route now scans it on every page load.
+    if not _index_exists(
+        'gpu_instance_types',
+        'idx_gpu_instance_types_deleted_at_cluster_id_created_at',
+    ):
+        op.create_index(
+            'idx_gpu_instance_types_deleted_at_cluster_id_created_at',
+            'gpu_instance_types',
+            ['deleted_at', 'cluster_id', 'created_at'],
             unique=False,
         )
 
@@ -335,6 +382,10 @@ def downgrade() -> None:
     with op.batch_alter_table('gpu_instances', schema=None) as batch_op:
         batch_op.drop_column('type_snapshot')
 
+    op.drop_index(
+        'idx_gpu_instance_types_deleted_at_cluster_id_created_at',
+        table_name='gpu_instance_types',
+    )
     op.drop_index(
         'ix_gpu_instance_types_definition_snapshot',
         table_name='gpu_instance_types',
