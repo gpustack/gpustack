@@ -24,9 +24,11 @@ from gpustack.schemas.models import (
     BackendEnum,
     ModelListParams,
 )
+from gpustack.schemas.cache_services import CacheService
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.gpu_instance_types import GPUInstanceType
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
+from gpustack.utils.version import version_in_range
 from gpustack.api.tenant import (
     TenantContext,
     bypass_tenant_filter,
@@ -66,6 +68,7 @@ from gpustack.server.services import (
     revoke_model_access_cache,
 )
 from gpustack.server.scaling_scheduler import compute_desired_replicas
+from gpustack.server.cache_provider_catalog import get_cache_provider
 from gpustack.server.lora_adapters_discovery import list_adapters_for_base
 from gpustack.server.lora_model_routes import (
     cleanup_orphan_lora_routes,
@@ -759,6 +762,140 @@ async def assert_cluster_belongs_to_org(
         )
 
 
+async def validate_shared_kv_cache(
+    session: AsyncSession,
+    model_in: Union[ModelCreate, ModelUpdate],
+    owner_principal_id: int,
+    effective_cluster_id: Optional[int],
+) -> None:
+    """Validate the extended-KV-cache configuration against its target
+    cache service.
+
+    "shared" mode attaches the model's inference engine to a CacheService
+    row, so the service must exist, belong to the model's Org (a
+    cross-tenant id is reported as missing so service ids can't be probed),
+    run in the model's cluster (the engine connects over the cluster
+    network), and have a provider that knows how to inject connector
+    config for the model's backend. "local" mode uses no service, so a
+    stray cache_service_id is rejected as a mis-configuration rather than
+    silently ignored.
+    """
+    ext = model_in.extended_kv_cache
+    if not ext or not ext.enabled:
+        return
+
+    if ext.is_local():
+        if ext.cache_service_id:
+            raise BadRequestException(
+                message="cache_service_id is only valid when mode is 'shared'"
+            )
+        return
+
+    if not ext.cache_service_id:
+        raise BadRequestException(
+            message=(
+                "cache_service_id is required when extended KV cache "
+                "mode is 'shared'"
+            )
+        )
+
+    cache_service = await CacheService.one_by_id(session, ext.cache_service_id)
+    if (
+        cache_service is None
+        or cache_service.deleted_at is not None
+        or cache_service.owner_principal_id != owner_principal_id
+    ):
+        raise NotFoundException(message="Cache service not found")
+
+    if (
+        effective_cluster_id is not None
+        and cache_service.cluster_id != effective_cluster_id
+    ):
+        raise BadRequestException(
+            message="The cache service must be in the same cluster as the model."
+        )
+
+    # The MP-style connectors share KV node-locally (CUDA IPC has no
+    # cross-host path) and the resolver attaches node-local only, while a
+    # multi-worker distributed instance runs one engine across several
+    # nodes with a single snapshot — its subordinate workers would face a
+    # remote server on the node-local contract. Reject the combination.
+    if model_in.distributed_inference_across_workers:
+        raise BadRequestException(
+            message=(
+                "Shared KV cache attaches node-locally and does not "
+                "support instances distributed across workers."
+            )
+        )
+
+    provider = get_cache_provider(cache_service.provider_name)
+    backend = model_in.backend or BackendEnum.VLLM.value
+    if provider is None or provider.integration_for(backend) is None:
+        raise BadRequestException(
+            message=(
+                f"Cache service provider '{cache_service.provider_name}' is "
+                f"not compatible with backend '{backend}'."
+            )
+        )
+
+    # Every built-in integration is framework-scoped, so a cluster whose
+    # accelerators are all outside the provider's support matrix would
+    # pass the framework-less check above and then degrade on every
+    # instance. Pre-check against the cluster's actual accelerators;
+    # accelerator-less clusters are left to scheduling.
+    workers = await Worker.all_by_fields(
+        session,
+        fields={"cluster_id": cache_service.cluster_id},
+        extra_conditions=[Worker.deleted_at.is_(None)],
+    )
+    frameworks = {
+        device.type
+        for worker in workers
+        for device in (
+            worker.status.gpu_devices
+            if worker.status and worker.status.gpu_devices
+            else []
+        )
+        if device.type
+    }
+    if frameworks and not any(
+        provider.integration_for(backend, framework) for framework in frameworks
+    ):
+        raise BadRequestException(
+            message=(
+                f"Cache service provider '{cache_service.provider_name}' "
+                f"has no '{backend}' integration for the cluster's "
+                f"accelerators ({', '.join(sorted(frameworks))})."
+            )
+        )
+
+    # A pinned engine version below an integration's declared floor would
+    # receive injected args the engine does not accept (e.g.
+    # --shutdown-timeout) and fail to start. Reject when the version
+    # falls outside every candidate integration's range; unparseable
+    # versions fail open, and an unpinned version is resolved at deploy
+    # time (the injection resolver re-checks it there).
+    engine_version = model_in.backend_version
+    if engine_version:
+        candidates = (
+            [provider.integration_for(backend, framework) for framework in frameworks]
+            if frameworks
+            else [provider.integration_for(backend)]
+        )
+        ranged = [c for c in candidates if c is not None and c.versions]
+        if ranged and all(
+            version_in_range(engine_version, c.versions) is False for c in ranged
+        ):
+            ranges = ", ".join(sorted({c.versions for c in ranged}))
+            raise BadRequestException(
+                message=(
+                    f"Backend version {engine_version} is outside the "
+                    f"cache provider's supported '{backend}' range "
+                    f"({ranges})."
+                )
+            )
+
+
 @router.post(
     "",
     response_model=ModelPublic,
@@ -820,6 +957,9 @@ async def create_model(
     # Server-side assignment, after validation: validation must see the replica
     # count the caller submitted, not the schedule-driven one.
     apply_scaling_schedule_baseline(model_in)
+    await validate_shared_kv_cache(
+        session, model_in, target_org_id, model_in.cluster_id
+    )
     model_in_dict = model_in.model_dump(exclude={"enable_model_route"})
 
     # Stamp tenant scope. ModelBase has owner_principal_id defaulted to
@@ -934,6 +1074,12 @@ async def update_model(
     # Server-side assignment, after validation: validation must see the replica
     # count the caller submitted, not the schedule-driven one.
     apply_scaling_schedule_baseline(model_in)
+    await validate_shared_kv_cache(
+        session,
+        model_in,
+        model.owner_principal_id,
+        model_in.cluster_id or model.cluster_id,
+    )
 
     if model_in.backend != BackendEnum.CUSTOM.value and (
         model.run_command or model.image_name

@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from starlette.requests import Request
 import pytest
 
@@ -83,3 +86,56 @@ async def test_prometheus_proxy_uses_configured_builtin_port(monkeypatch, tmp_pa
     expected_url = f"http://127.0.0.1:{custom_port}/prometheus/api/v1/query?query=up"
     assert response == {"url": expected_url}
     assert captured["url"] == expected_url
+
+
+def test_cache_service_dashboard_json_matches_route_contract(tmp_path):
+    """The bundled dashboard must carry the uid the redirect endpoint uses
+    by default and the template variables the redirect query string sets."""
+    dashboard_path = (
+        Path(__file__).resolve().parents[2]
+        / "docker-compose"
+        / "grafana"
+        / "grafana_dashboards"
+        / "gpustack-cache-service.json"
+    )
+    with dashboard_path.open() as f:
+        dashboard = json.load(f)
+
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    assert dashboard["uid"] == cfg.grafana_cache_service_dashboard_uid
+    assert dashboard["title"] == "GPUStack Cache Service"
+
+    # The redirect query string sets these two; further variables (worker
+    # filter, attached-models chain) are dashboard-internal.
+    var_names = [var["name"] for var in dashboard["templating"]["list"]]
+    assert var_names[:2] == ["cluster_name", "cache_service_name"]
+
+
+def test_provider_dashboard_json_matches_declaration():
+    """Every provider declaring a dashboard_uid must ship a provisioned
+    dashboard JSON with that uid and the template variables the redirect
+    query string sets."""
+    from gpustack.server.cache_provider_catalog import load_cache_providers
+
+    dashboards_dir = (
+        Path(__file__).resolve().parents[2]
+        / "docker-compose"
+        / "grafana"
+        / "grafana_dashboards"
+    )
+    dashboards_by_uid = {}
+    for path in dashboards_dir.glob("*.json"):
+        with path.open() as f:
+            dashboard = json.load(f)
+        dashboards_by_uid[dashboard["uid"]] = dashboard
+
+    declared = [p for p in load_cache_providers(reload=True) if p.dashboard_uid]
+    assert declared, "XSKY MeshFusion declares a provider dashboard"
+    for provider in declared:
+        dashboard = dashboards_by_uid.get(provider.dashboard_uid)
+        assert dashboard is not None, (
+            f"provider '{provider.name}' declares dashboard_uid "
+            f"'{provider.dashboard_uid}' but no dashboard JSON ships with it"
+        )
+        var_names = [var["name"] for var in dashboard["templating"]["list"]]
+        assert var_names[:2] == ["cluster_name", "cache_service_name"]

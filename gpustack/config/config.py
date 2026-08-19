@@ -172,6 +172,7 @@ class Config(WorkerConfig, BaseSettings):
         grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
         grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
         grafana_model_dashboard_uid: Grafana dashboard UID for model dashboard.
+        grafana_cache_service_dashboard_uid: Grafana dashboard UID for cache service dashboard.
         gateway_plugin_server_url: URL to fetch gateway plugin manifest for embedded gateway.
     """
 
@@ -300,6 +301,7 @@ class Config(WorkerConfig, BaseSettings):
     grafana_url: Optional[str] = None
     grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"
     grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
+    grafana_cache_service_dashboard_uid: Optional[str] = "gpustack-cache-service"
 
     # Server-wide default for the GPUStack Operator image. Cluster-level
     # ``k8s_options.operator_image`` overrides this when set.

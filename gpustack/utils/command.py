@@ -167,6 +167,111 @@ def extend_args_no_exist(
                 arguments.append(arg)
 
 
+def drop_empty_flag_values(arguments: List[str]) -> List[str]:
+    """
+    Remove flags whose value is an empty string from an argv token list.
+
+    Handles the token shapes produced by rendering optional template
+    placeholders that resolve to nothing:
+
+    - a ``("--flag", "")`` pair is dropped entirely
+    - a ``"--flag="`` token (empty inline value) is dropped
+    - a standalone ``""`` token (empty positional) is dropped
+
+    Bare flags followed by another flag (e.g. ``--verbose``) are kept.
+    """
+    result: List[str] = []
+    i = 0
+    n = len(arguments)
+    while i < n:
+        token = arguments[i]
+        if is_parameter_key(token):
+            key, sep, value = token.partition("=")
+            if sep and not value:
+                i += 1
+                continue
+            if not sep and i + 1 < n and arguments[i + 1] == "":
+                i += 2
+                continue
+        elif token == "":
+            i += 1
+            continue
+        result.append(token)
+        i += 1
+    return result
+
+
+def merge_flag_arguments(base: List[str], overrides: List[str]) -> List[str]:
+    """
+    Merge user-supplied flag overrides into a base argv token list.
+
+    Every flag named in ``overrides`` (recognized in both ``--key value`` and
+    ``--key=value`` forms) is first removed from ``base`` together with its
+    value tokens, then the override tokens are appended verbatim, so the
+    user-specified form is what reaches the command line.
+
+    Flag arity is unknowable from an argv alone, so every consecutive
+    non-flag token after a removed flag is treated as its value. This
+    requires positional arguments to precede the first flag in ``base``
+    (the docker-CMD convention catalog run commands follow); a positional
+    trailing a bare flag would be consumed with the flag's removal.
+    """
+    override_keys = {
+        token.partition("=")[0].lstrip("-")
+        for token in overrides
+        if is_parameter_key(token)
+    }
+
+    result: List[str] = []
+    i = 0
+    n = len(base)
+    while i < n:
+        token = base[i]
+        if is_parameter_key(token):
+            key, sep, _ = token.partition("=")
+            if key.lstrip("-") in override_keys:
+                i += 1
+                if not sep:
+                    # Skip the flag's value tokens (multi-value flags carry
+                    # several consecutive non-key tokens).
+                    while i < n and not is_parameter_key(base[i]):
+                        i += 1
+                continue
+        result.append(token)
+        i += 1
+
+    result.extend(overrides)
+    return result
+
+
+def extract_flag_arguments(args: List[str], flag: str) -> Tuple[List[str], List[str]]:
+    """
+    Split an argv token list into (remaining, extracted) around every
+    occurrence of ``flag`` (recognized in both ``--key value`` and
+    ``--key=value`` forms), preserving each list's original order.
+    """
+    flag_key = flag.lstrip("-").partition("=")[0]
+    remaining: List[str] = []
+    extracted: List[str] = []
+    i = 0
+    n = len(args)
+    while i < n:
+        token = args[i]
+        if is_parameter_key(token):
+            key, sep, _ = token.partition("=")
+            if key.lstrip("-") == flag_key:
+                extracted.append(token)
+                i += 1
+                if not sep:
+                    while i < n and not is_parameter_key(args[i]):
+                        extracted.append(args[i])
+                        i += 1
+                continue
+        remaining.append(token)
+        i += 1
+    return remaining, extracted
+
+
 def format_backend_parameters(parameters: Optional[List[str]]) -> List[str]:
     """
     Format flattened command-line tokens as backend parameter entries.

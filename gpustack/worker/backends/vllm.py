@@ -340,6 +340,11 @@ class VLLMServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
+            # Host IPC only when a shared cache service is attached: its
+            # CUDA-IPC transfer path imports the engine's KV buffers by IPC
+            # handle. Everything else keeps the private /dev/shm sized by
+            # shm_size.
+            host_ipc=self._host_ipc_enabled(),
             shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=(
                 [run_container]
@@ -421,6 +426,21 @@ class VLLMServer(InferenceServer):
         """
         extended_kv_cache = self._model.extended_kv_cache
         if not (extended_kv_cache and extended_kv_cache.enabled):
+            return
+
+        if extended_kv_cache.is_shared():
+            # Shared mode: connector env resolved server-side is snapshotted
+            # onto the instance; local CPU cache sizing does not apply.
+            cache_config = self._model_instance.cache_config
+            if cache_config and cache_config.injected:
+                env.update(cache_config.env or {})
+            else:
+                reason = (
+                    f" Reason: {cache_config.reason}"
+                    if cache_config and cache_config.reason
+                    else ""
+                )
+                logger.warning(f"Starting without shared KV cache.{reason}")
             return
 
         if extended_kv_cache.chunk_size and extended_kv_cache.chunk_size > 0:
@@ -825,13 +845,27 @@ class VLLMServer(InferenceServer):
         if not (extended and extended.enabled):
             return []
 
+        if extended.is_shared():
+            # Shared mode: accelerator support is the provider catalog's
+            # call — the server-side resolver picks the integration by the
+            # worker's framework and snapshots the outcome, so the worker
+            # applies the snapshot verbatim. Without an injected snapshot
+            # the instance starts degraded (no shared cache), so no
+            # connector args apply.
+            cache_config = self._model_instance.cache_config
+            if cache_config and cache_config.injected:
+                return list(cache_config.args or [])
+            return []
+
+        # Local mode wires the in-process LMCache connector, which only
+        # supports CUDA/ROCm builds of vLLM.
         vendor, _, _ = self._get_device_info()
         if vendor not in {
             manufacturer_to_backend(ManufacturerEnum.NVIDIA),
             manufacturer_to_backend(ManufacturerEnum.AMD),
         }:
             logger.warning(
-                "Extended KV cache for vLLM is only supported on NVIDIA and AMD GPUs. Skipping LMCache configuration."
+                "Local extended KV cache for vLLM is only supported on NVIDIA and AMD GPUs. Skipping LMCache configuration."
             )
             return []
 

@@ -20,6 +20,7 @@ from gpustack.api.exceptions import (
     ServiceUnavailableException,
 )
 from gpustack.api.tenant import TenantContext
+from gpustack.routes import cache_services as cache_services_route
 from gpustack.routes import clusters as clusters_route
 from gpustack.routes import cloud_credentials as cloud_credentials_route
 from gpustack.routes import gpu_instances as gpu_instances_route
@@ -490,6 +491,88 @@ async def test_serving_logs_denies_cross_tenant(monkeypatch):
             id=3,
             log_options=MagicMock(),
         )
+
+
+# ---- cache services ----
+
+
+def _cache_service(owner_principal_id: int):
+    return SimpleNamespace(
+        id=9,
+        name="svc",
+        owner_principal_id=owner_principal_id,
+        cluster_id=5,
+        provider_name="LMCache",
+        mode="managed",
+        deleted_at=None,
+        update=AsyncMock(),
+        delete=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_service_get_denies_cross_tenant(monkeypatch):
+    victim = _cache_service(OWNER_PRINCIPAL)
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=victim)
+    )
+
+    with pytest.raises(NotFoundException):
+        await cache_services_route.get_cache_service(
+            session=MagicMock(), ctx=_user_ctx(), id=9
+        )
+
+
+@pytest.mark.asyncio
+async def test_cache_service_update_denies_cross_tenant(monkeypatch):
+    victim = _cache_service(OWNER_PRINCIPAL)
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=victim)
+    )
+
+    with pytest.raises(NotFoundException):
+        await cache_services_route.update_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            id=9,
+            cache_service_in=MagicMock(),
+        )
+    victim.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cache_service_delete_denies_cross_tenant(monkeypatch):
+    victim = _cache_service(OWNER_PRINCIPAL)
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=victim)
+    )
+    # An unreferenced service would delete cleanly, so a raised NotFound
+    # proves the visibility gate fired before the protection scan.
+    monkeypatch.setattr(
+        cache_services_route.Model, "all_by_fields", AsyncMock(return_value=[])
+    )
+
+    with pytest.raises(NotFoundException):
+        await cache_services_route.delete_cache_service(
+            session=MagicMock(), ctx=_user_ctx(), id=9
+        )
+    victim.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cache_service_delete_allows_owner(monkeypatch):
+    owned = _cache_service(CALLER_PRINCIPAL)
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=owned)
+    )
+    monkeypatch.setattr(
+        cache_services_route.Model, "all_by_fields", AsyncMock(return_value=[])
+    )
+
+    await cache_services_route.delete_cache_service(
+        session=MagicMock(), ctx=_user_ctx(), id=9
+    )
+    owned.delete.assert_awaited_once()
 
 
 # ---- unprefixed model-name route resolution ----

@@ -7,6 +7,7 @@ from gpustack_runtime.deployer.docker import DockerWorkloadPlan
 from gpustack_runtime.deployer import WorkloadPlan, DockerDeployer, WorkloadStatus
 
 from gpustack.config.config import Config
+from gpustack.schemas.cache_services import CACHE_SERVICE_WORKLOAD_TYPE
 from gpustack.utils.config import apply_registry_override_to_image
 
 
@@ -51,3 +52,21 @@ def is_benchmark_workload(status: WorkloadStatus) -> bool:
     if not status.labels:
         return False
     return status.labels.get("type") == "benchmark"
+
+
+def is_cache_service_workload(status: WorkloadStatus) -> bool:
+    """
+    Check if a workload is a cache service workload.
+
+    A workload is considered a cache service workload if it has the 'type'
+    label set to 'cache-service'.
+
+    Args:
+        status: The workload status to check.
+
+    Returns:
+        True if the workload is a cache service workload, False otherwise.
+    """
+    if not status.labels:
+        return False
+    return status.labels.get("type") == CACHE_SERVICE_WORKLOAD_TYPE

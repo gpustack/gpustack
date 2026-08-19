@@ -1,0 +1,592 @@
+# Declarative, read-only cache-provider catalog. Loaded by
+# gpustack/server/cache_provider_catalog.py and served via
+# GET /v2/cache-providers. Providers are shipped with GPUStack releases
+# and are not user-editable resources.
+#
+# Template placeholders available in run_command / env / injection:
+#   {{host}}         bind or connect address
+#   {{port}}         cache server port
+#   {{metrics_port}} Prometheus metrics port (managed mode)
+#   {{ram_size}}     cache capacity in GiB (service config)
+#   {{chunk_size}}   tokens per KV chunk (service or deployment config)
+# A provider's `managed_fields` add {{<name>}} placeholders carrying
+# UI-configured values (falling back to declared defaults); a flag whose
+# placeholder renders empty is dropped together with the flag.
+# Env entries whose rendered value is empty are dropped.
+# run_command is the container argument vector (docker CMD): an image
+# that defines its own ENTRYPOINT declares just the arguments; with no
+# run_command the entrypoint runs as-is and user parameters become its
+# arguments.
+- name: LMCache
+  display_name: LMCache
+  source: built_in
+  icon: /static/catalog_icons/lmcache.png
+  description: >-
+    LMCache is a KV cache layer for LLM serving. As a shared cache service it
+    runs a cache server on every worker; deployments and replicas on the same
+    node share KV cache through it, and a shared L2 storage backend extends
+    the reuse across nodes.
+  links:
+    - { label: Documentation, url: "https://docs.lmcache.ai" }
+    - { label: GitHub, url: "https://github.com/LMCache/LMCache" }
+  # Managed only: LMCache is the out-of-box single-container engine
+  # GPUStack runs itself. Its distributed form (operator + coordinator +
+  # per-node servers) is a self-deployed fleet that overlaps this managed
+  # per_node topology; genuinely reference-only distributed caches (e.g.
+  # Mooncake) are what external mode is for.
+  supported_modes: [managed]
+  # The MP server keeps KV transfers node-local: every worker runs its
+  # own cache server instance and engines attach to the one on their
+  # node, so managed deployments follow the cluster's workers.
+  topology: per_node
+  default_version: "v0.5.2"
+  # A service may pin a user-supplied image ("custom" version); it runs
+  # with the default version's run command and env templates, so the image
+  # must be command-compatible.
+  custom_version: true
+  versions:
+    "v0.5.2":
+      # The full CLI entry: {{port}} is the ZMQ control-plane port, and
+      # the HTTP frontend on --http-port serves /metrics (via the
+      # dynamically discovered internal_api_server router — the OTel
+      # Prometheus reader and the frontend share one registry, so the
+      # exposition matches the standalone server's), plus /healthcheck,
+      # /status, and the admin APIs. --prometheus-port is ignored on
+      # this entry; the frontend port doubles as the metrics port.
+      # --supported-transfer-mode auto lets the server accept the
+      # CUDA-IPC (lmcache_driven) path when the engine offers it; the
+      # worker attaches the node's GPUs to this container so the server
+      # can open the IPC handles. A dead engine's KV VRAM stays mapped
+      # until its registration is reaped, so the reap timeout aligns
+      # with the platform's short workload lifecycles (upstream default
+      # 120s; the never-pinged 3600s grace is not safely tunable — the
+      # lazy heartbeat makes silence indistinguishable from idleness).
+      image: "lmcache/vllm-openai:v0.5.2"
+      # The bare v0.5.2 tag is the CUDA 13 build; -cu129 serves CUDA 12
+      # nodes. The worker resolves per node at instance start, so a
+      # heterogeneous per_node fleet mixes images correctly.
+      runtime_images:
+        cuda:
+          "13": "lmcache/vllm-openai:v0.5.2"
+          "12": "lmcache/vllm-openai:v0.5.2-cu129"
+      run_command: "lmcache server --host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --supported-transfer-mode auto --worker-reap-timeout-seconds 60 --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
+  resource_profile:
+    ram_gib: "{{ram_size}}"
+    cpu: 2
+    # The server attaches to the node's GPUs to open CUDA IPC handles into
+    # the engines' KV buffers; budget ~0.5-1 GiB VRAM per GPU for its CUDA
+    # context (not modeled by the scheduler — leave that headroom free).
+  # L2 storage: the MP server takes one flag whose value is a JSON object
+  # of the form {"type": <backend key>, ...backend-specific fields}.
+  # Fields with env_name are read by the server from that env var when
+  # absent from the JSON, keeping credentials off the command line.
+  # Eviction knobs promoted to structured advanced fields, wired into
+  # the run command via their {{name}} placeholders; values and defaults
+  # follow the v0.5.2 storage-manager argument group. The eviction
+  # policy is required upstream, so its default always renders.
+  managed_fields:
+    - name: eviction_policy
+      label: Eviction Policy
+      default: LRU
+      options: [LRU, IsolatedLRU, noop]
+      description: >-
+        LRU evicts least-recently-used chunks. IsolatedLRU keeps one LRU
+        list per cache salt and requires per-salt quotas via the HTTP
+        API. noop never evicts.
+    - name: eviction_trigger_watermark
+      label: Eviction Trigger Watermark
+      type: number
+      default: 0.85
+      min: 0
+      max: 1
+      step: 0.05
+      description: Memory usage fraction (0-1) that triggers eviction.
+    - name: eviction_ratio
+      label: Eviction Ratio
+      type: number
+      default: 0.1
+      min: 0
+      max: 1
+      step: 0.05
+      description: Fraction of memory (0-1) evicted per trigger.
+  l2_adapter_flag: "--l2-adapter"
+  l2_backends:
+    fs_native:
+      display_name: Local Filesystem
+      description: >-
+        Spills KV cache to a local directory (e.g. NVMe) on the worker.
+        max_capacity_gb caps disk usage; 0 or unset means uncapped.
+      fields:
+        - { name: base_path, label: Base Path, required: true }
+        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
+        - { name: num_workers, label: I/O Workers, type: number }
+        - { name: use_odirect, label: Direct I/O (O_DIRECT), type: boolean }
+    resp:
+      display_name: Redis / Valkey
+      icon: /static/catalog_icons/redis.svg
+      description: Shared L2 in a Redis or Valkey server; cache survives cache-server restarts.
+      fields:
+        - { name: host, label: Host, required: true }
+        - { name: port, label: Port, type: number, required: true }
+        - { name: username, label: Username, env_name: LMCACHE_RESP_USERNAME }
+        - name: password
+          label: Password
+          type: password
+          env_name: LMCACHE_RESP_PASSWORD
+        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
+    s3:
+      display_name: S3
+      icon: /static/catalog_icons/s3.svg
+      description: >-
+        Shared L2 in an S3-compatible object store (AWS S3, MinIO, Ceph
+        RGW). The endpoint uses virtual-hosted style — the bucket name is
+        part of the host, e.g. "kvcache.s3.example.com"; path-style
+        addressing is not supported. max_capacity_gb caps aggregate
+        usage; 0 or unset means uncapped.
+      fields:
+        - { name: s3_endpoint, label: Bucket Endpoint, required: true }
+        - { name: s3_region, label: Region, required: true }
+        - { name: aws_access_key_id, label: Access Key ID, env_name: AWS_ACCESS_KEY_ID }
+        - name: aws_secret_access_key
+          label: Secret Access Key
+          type: password
+          env_name: AWS_SECRET_ACCESS_KEY
+        - { name: disable_tls, label: Disable TLS (HTTP Endpoint), type: boolean }
+        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
+  # Completion hints for the extra-parameters editor. Deliberately
+  # excludes the flags GPUStack always renders from structured config.
+  common_parameters:
+    - --l2-adapter
+    # CLI-entry-only groups (coordinator / P2P), valid again now that the
+    # run command uses `lmcache server` instead of the module entry.
+    - --coordinator-url
+    - --p2p-advertise-url
+    - --max-workers
+    - --max-gpu-workers
+    - --max-cpu-workers
+    - --hash-algorithm
+    - --enable-segmented-prefix
+    - --shm-name
+    - --worker-reap-timeout-seconds
+    - --worker-registration-grace-seconds
+    - --l1-use-lazy
+    - --l1-init-size-gb
+    - --l1-align-bytes
+    - --l1-read-ttl-seconds
+    - --l1-write-ttl-seconds
+    - --gds-l1-path
+    - --gds-l1-use-direct-io
+    - --l1-devdax-path
+    - --l2-store-policy
+    - --l2-prefetch-policy
+    - --l2-prefetch-max-in-flight
+    - --metrics-sample-rate
+    - --disable-metrics
+    - --disable-logging
+    - --disable-observability
+    - --enable-tracing
+    - --otlp-endpoint
+    - --event-bus-queue-size
+    - --trace-level
+    - --trace-output
+  # /healthcheck verifies the engine is initialized (503 until then) —
+  # a stronger signal than a TCP connect on the ZMQ port. It lives on
+  # the HTTP frontend, which is the metrics port in our port model.
+  health_check:
+    scheme: http
+    path: /healthcheck
+    target: metrics
+  # Exposition follows the LMCache MP observability docs
+  # (https://docs.lmcache.ai/mp/observability.html); semantic metric
+  # mappings will return with the native-UI metrics integration.
+  metrics:
+    path: /metrics
+  inference_backend_integrations:
+    # The MP server speaks ZMQ: clients attach through the MP connector
+    # pointed at tcp://host:port (the server's --port), and the connector
+    # requires the non-hybrid KV cache manager. Engines attach node-local
+    # only (the per_node resolver degrades instead of crossing nodes:
+    # the engine-driven copy path measures slower than no cache at all),
+    # so the placement fact always renders {{mp_transfer_mode}} "auto" —
+    # the CUDA-IPC zero-copy path, both containers sharing the host IPC
+    # namespace, with host-copy fallback on CPU-only workers.
+    # Scoped to the accelerators the connector is validated on — the
+    # catalog is the single accelerator gate: on other frameworks the
+    # resolver finds no integration and the instance starts degraded
+    # with an explicit reason (no half-injection on the worker).
+    - backend: vLLM
+      frameworks: [cuda]
+      # Floor set by the newer of the two requirements: the MP connector
+      # integration line validated in-house (v0.25.x) and the injected
+      # --shutdown-timeout flag (vllm-project/vllm#36666, first released
+      # in v0.25.0).
+      versions: ">=0.25.0"
+      injection:
+        env:
+          # The MP token hasher falls back to Python's builtin hash when
+          # vLLM's hash function cannot be loaded; without a pinned seed
+          # every engine process hashes chunks differently and
+          # cross-instance sharing silently never hits.
+          PYTHONHASHSEED: "0"
+        locality_params:
+          node_local: { mp_transfer_mode: auto }
+        kv_transfer_config:
+          kv_connector: LMCacheMPConnector
+          kv_role: kv_both
+          kv_connector_extra_config:
+            lmcache.mp.host: "tcp://{{host}}"
+            lmcache.mp.port: "{{port}}"
+            lmcache.mp.mp_transfer_mode: "{{mp_transfer_mode}}"
+        args:
+          - "--disable-hybrid-kv-cache-manager"
+          # vLLM defaults --shutdown-timeout to 0: on SIGTERM the engine
+          # dies without closing its CUDA IPC handles and the driver
+          # keeps its KV VRAM charged to the cache server until the
+          # server reaps the dead worker. A graceful window inside the
+          # container stop grace period (runtime default 30s) releases
+          # the VRAM with the instance — best-effort: a lowered
+          # termination grace (e.g. k8s terminationGracePeriodSeconds)
+          # can still SIGKILL first. User parameters may override.
+          - "--shutdown-timeout"
+          - "20"
+    # SGLang attaches through --enable-lmcache with a YAML config file
+    # carrying the MP server address (the adapter pulls the chunk size
+    # from the server itself). Its MP connector shares KV via CUDA IPC
+    # with no cross-node fallback, so a SGLang deployment needs a cache
+    # instance on its own worker — the per_node topology provides one
+    # unless the worker selector excludes that node.
+    - backend: SGLang
+      frameworks: [cuda]
+      # LMCache MP support landed in sglang PR #24089 (merged 2026-05-28);
+      # v0.5.13 is the first release carrying it.
+      versions: ">=0.5.13"
+      injection:
+        env:
+          # Same builtin-hash fallback guard as the vLLM side.
+          PYTHONHASHSEED: "0"
+        args:
+          - "--enable-lmcache"
+          - "--lmcache-config-file"
+          - "/tmp/gpustack-lmcache-sgl.yaml"
+        files:
+          /tmp/gpustack-lmcache-sgl.yaml: |
+            mp_host: "{{host}}"
+            mp_port: {{port}}
+- name: Mooncake
+  display_name: Mooncake
+  source: built_in
+  icon: /static/catalog_icons/mooncake.png
+  description: >-
+    Mooncake Store is a distributed KV cache pool with a cluster-wide master
+    and per-node clients that transfer KV blocks peer-to-peer over RDMA/TCP.
+    It is deployed and operated outside GPUStack; register the master address
+    and GPUStack attaches inference engines to it, probes it, and (once
+    calibrated) scrapes its metrics.
+  links:
+    - { label: Documentation, url: "https://kvcache-ai.github.io/Mooncake/" }
+    - { label: GitHub, url: "https://github.com/kvcache-ai/Mooncake" }
+  # Provider-specific Grafana dashboard provisioned from
+  # docker-compose/grafana/grafana_dashboards/gpustack-mooncake.json,
+  # built on the master's pool/keys/eviction/request metrics.
+  dashboard_uid: gpustack-mooncake
+  supported_modes: [external]
+  # External connection parameters. The master address is the endpoint
+  # (host+port, default RPC port 50051); these feed the rest of the
+  # connector config. metadata_server P2PHANDSHAKE keeps peer discovery
+  # decentralized (no separate etcd/redis); a cluster with an external
+  # metadata service registers its "etcd://" / "http://" address instead.
+  external_fields:
+    - name: metadata_server
+      label: Metadata Server
+      description: >-
+        Transfer Engine peer-discovery backend: P2PHANDSHAKE (decentralized),
+        or an etcd:// / redis:// / http:// address.
+      default: P2PHANDSHAKE
+    - name: protocol
+      label: Transport Protocol
+      description: RDMA for production performance; TCP for functional setups.
+      default: tcp
+      options: [tcp, rdma]
+    - name: device_name
+      label: RDMA Device
+      description: NIC device(s) for the RDMA protocol; leave empty for TCP.
+    - name: local_buffer_size
+      label: Local Buffer Size
+      description: >-
+        Per-GPU staging buffer for the engine's own store operations
+        (e.g. 1GB).
+      default: 1GB
+  health_check:
+    scheme: tcp
+  # The master serves Prometheus text on its metrics port (GET /metrics,
+  # enable_metric_reporting defaults to true); default_port seeds the
+  # registration form's metrics-port field.
+  metrics:
+    path: /metrics
+    default_port: 9003
+  inference_backend_integrations:
+    # MooncakeStoreConnector uses the Mooncake distributed store as a
+    # shared KV pool. The connector reads its configuration solely from
+    # the JSON file MOONCAKE_CONFIG_PATH points at (no per-field env
+    # support), so the injection writes that file into the engine
+    # container. mode standalone-store with global_segment_size 0 makes
+    # the engine a pure requester: the externally deployed cluster owns
+    # the pool. The mode field is recent in vLLM; behavior on older
+    # connectors is a calibration surface for integration testing.
+    - backend: vLLM
+      frameworks: [cuda]
+      versions: ">=0.9.0"
+      injection:
+        env:
+          MOONCAKE_CONFIG_PATH: /tmp/gpustack-mooncake.json
+          # The TCP transport opens a fresh connection per transfer slice
+          # by default; under prefill bursts the client-side TIME_WAIT
+          # backlog exhausts ephemeral ports (connect() fails with
+          # EADDRNOTAVAIL). Pooling is the sane default for LLM traffic;
+          # the RDMA path never reads this switch.
+          MC_TCP_ENABLE_CONNECTION_POOL: "1"
+        files:
+          /tmp/gpustack-mooncake.json: |
+            {
+              "mode": "standalone-store",
+              "metadata_server": "{{metadata_server}}",
+              "master_server_address": "{{master_server_address}}",
+              "global_segment_size": 0,
+              "local_buffer_size": "{{local_buffer_size}}",
+              "protocol": "{{protocol}}",
+              "device_name": "{{device_name}}"
+            }
+        kv_transfer_config:
+          kv_connector: MooncakeStoreConnector
+          kv_role: kv_both
+# PLACEHOLDER. Change as needed.
+- name: XSKY MeshFusion
+  display_name: XSKY MeshFusion
+  source: partner
+  icon: /static/catalog_icons/xsky.png
+  description: >-
+    XSKY MeshFusion is a KV cache layer for LLM serving. As a shared cache
+    service it runs a cache server on every worker; deployments and replicas
+    on the same node share KV cache through it, and a shared L2 storage
+    backend (e.g. XSKY's store) extends the reuse across nodes.
+  links:
+    - { label: Product Page, url: "https://www.xsky.com" }
+  supported_modes: [managed]
+  topology: per_node
+  default_version: "v0.5.2"
+  custom_version: true
+  versions:
+    "v0.5.2":
+      image: "lmcache/vllm-openai:v0.5.2"
+      runtime_images:
+        cuda:
+          "13": "lmcache/vllm-openai:v0.5.2"
+          "12": "lmcache/vllm-openai:v0.5.2-cu129"
+        # PLACEHOLDER. Change as needed.
+        cann:
+          "8": "registry.example.com/lmcache/vllm-openai:v0.5.2-cann"
+      run_command: "lmcache server --host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --supported-transfer-mode auto --worker-reap-timeout-seconds 60 --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
+  resource_profile:
+    ram_gib: "{{ram_size}}"
+    cpu: 2
+  managed_fields:
+    - name: eviction_policy
+      label: Eviction Policy
+      default: LRU
+      options: [LRU, IsolatedLRU, noop]
+      description: >-
+        LRU evicts least-recently-used chunks. IsolatedLRU keeps one LRU
+        list per cache salt and requires per-salt quotas via the HTTP
+        API. noop never evicts.
+    - name: eviction_trigger_watermark
+      label: Eviction Trigger Watermark
+      type: number
+      default: 0.85
+      min: 0
+      max: 1
+      step: 0.05
+      description: Memory usage fraction (0-1) that triggers eviction.
+    - name: eviction_ratio
+      label: Eviction Ratio
+      type: number
+      default: 0.1
+      min: 0
+      max: 1
+      step: 0.05
+      description: Fraction of memory (0-1) evicted per trigger.
+  l2_adapter_flag: "--l2-adapter"
+  l2_backends:
+    fs_native:
+      display_name: Local Filesystem
+      description: >-
+        Spills KV cache to a local directory (e.g. NVMe) on the worker.
+        max_capacity_gb caps disk usage; 0 or unset means uncapped.
+      fields:
+        - { name: base_path, label: Base Path, required: true }
+        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
+        - { name: num_workers, label: I/O Workers, type: number }
+        - { name: use_odirect, label: Direct I/O (O_DIRECT), type: boolean }
+    xdfs:
+      display_name: XSKY MeshFusion Store
+      icon: /static/catalog_icons/xsky.png
+      description: >-
+        XSKY MeshFusion Store distributed storage as the L2 tier; capacity
+        and durability scale with the external storage cluster.
+      fields:
+        - { name: metadata_endpoint, label: Metadata Endpoint, required: true }
+        - { name: sdk_config_file, label: SDK Config File, default: /opt/meshfusion/sdk.flags }
+        - { name: num_workers, label: Workers, type: number, default: 32 }
+        - { name: io_depth, label: IO Depth, type: number, default: 256 }
+        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number, default: 30720 }
+        - { name: policy_id, label: Policy ID, type: number, default: 1 }
+        - { name: timeout_ms, label: Timeout (ms), type: number, default: 60000 }
+        - { name: tenant_id, label: Tenant ID, default: nixl }
+        - { name: max_write_inflight_bytes, label: Max Write Inflight (Bytes), type: number, default: 536870912 }
+    resp:
+      display_name: Redis / Valkey
+      icon: /static/catalog_icons/redis.svg
+      description: Shared L2 in a Redis or Valkey server; cache survives cache-server restarts.
+      fields:
+        - { name: host, label: Host, required: true }
+        - { name: port, label: Port, type: number, required: true }
+        - { name: username, label: Username, env_name: LMCACHE_RESP_USERNAME }
+        - name: password
+          label: Password
+          type: password
+          env_name: LMCACHE_RESP_PASSWORD
+        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
+    s3:
+      display_name: S3
+      icon: /static/catalog_icons/s3.svg
+      description: >-
+        Shared L2 in an S3-compatible object store (AWS S3, MinIO, Ceph
+        RGW). The endpoint uses virtual-hosted style — the bucket name is
+        part of the host, e.g. "kvcache.s3.example.com"; path-style
+        addressing is not supported. max_capacity_gb caps aggregate
+        usage; 0 or unset means uncapped.
+      fields:
+        - { name: s3_endpoint, label: Bucket Endpoint, required: true }
+        - { name: s3_region, label: Region, required: true }
+        - { name: aws_access_key_id, label: Access Key ID, env_name: AWS_ACCESS_KEY_ID }
+        - name: aws_secret_access_key
+          label: Secret Access Key
+          type: password
+          env_name: AWS_SECRET_ACCESS_KEY
+        - { name: disable_tls, label: Disable TLS (HTTP Endpoint), type: boolean }
+        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
+  common_parameters:
+    - --l2-adapter
+    # CLI-entry-only groups (coordinator / P2P), valid again now that the
+    # run command uses `lmcache server` instead of the module entry.
+    - --coordinator-url
+    - --p2p-advertise-url
+    - --max-workers
+    - --max-gpu-workers
+    - --max-cpu-workers
+    - --hash-algorithm
+    - --enable-segmented-prefix
+    - --shm-name
+    - --worker-reap-timeout-seconds
+    - --worker-registration-grace-seconds
+    - --l1-use-lazy
+    - --l1-init-size-gb
+    - --l1-align-bytes
+    - --l1-read-ttl-seconds
+    - --l1-write-ttl-seconds
+    - --gds-l1-path
+    - --gds-l1-use-direct-io
+    - --l1-devdax-path
+    - --l2-store-policy
+    - --l2-prefetch-policy
+    - --l2-prefetch-max-in-flight
+    - --metrics-sample-rate
+    - --disable-metrics
+    - --disable-logging
+    - --disable-observability
+    - --enable-tracing
+    - --otlp-endpoint
+    - --event-bus-queue-size
+    - --trace-level
+    - --trace-output
+  health_check:
+    scheme: http
+    path: /healthcheck
+    target: metrics
+  metrics:
+    path: /metrics
+  inference_backend_integrations:
+    - backend: vLLM
+      frameworks: [cuda]
+      # Floor set by the newer of the two requirements: the MP connector
+      # integration line validated in-house (v0.25.x) and the injected
+      # --shutdown-timeout flag (vllm-project/vllm#36666, first released
+      # in v0.25.0).
+      versions: ">=0.25.0"
+      injection:
+        env:
+          PYTHONHASHSEED: "0"
+        locality_params:
+          node_local: { mp_transfer_mode: auto }
+        kv_transfer_config:
+          kv_connector: LMCacheMPConnector
+          kv_role: kv_both
+          kv_connector_extra_config:
+            lmcache.mp.host: "tcp://{{host}}"
+            lmcache.mp.port: "{{port}}"
+            lmcache.mp.mp_transfer_mode: "{{mp_transfer_mode}}"
+        args:
+          - "--disable-hybrid-kv-cache-manager"
+          # vLLM defaults --shutdown-timeout to 0: on SIGTERM the engine
+          # dies without closing its CUDA IPC handles and the driver
+          # keeps its KV VRAM charged to the cache server until the
+          # server reaps the dead worker. A graceful window inside the
+          # container stop grace period (runtime default 30s) releases
+          # the VRAM with the instance — best-effort: a lowered
+          # termination grace (e.g. k8s terminationGracePeriodSeconds)
+          # can still SIGKILL first. User parameters may override.
+          - "--shutdown-timeout"
+          - "20"
+    # PLACEHOLDER. Change as needed.
+    - backend: vLLM
+      frameworks: [cann]
+      versions: ">=0.25.0"
+      injection:
+        env:
+          PYTHONHASHSEED: "0"
+        locality_params:
+          node_local: { mp_transfer_mode: auto }
+        kv_transfer_config:
+          kv_connector: LMCacheMPConnector
+          kv_role: kv_both
+          kv_connector_extra_config:
+            lmcache.mp.host: "tcp://{{host}}"
+            lmcache.mp.port: "{{port}}"
+            lmcache.mp.mp_transfer_mode: "{{mp_transfer_mode}}"
+        args:
+          - "--disable-hybrid-kv-cache-manager"
+          # vLLM defaults --shutdown-timeout to 0: on SIGTERM the engine
+          # dies without closing its CUDA IPC handles and the driver
+          # keeps its KV VRAM charged to the cache server until the
+          # server reaps the dead worker. A graceful window inside the
+          # container stop grace period (runtime default 30s) releases
+          # the VRAM with the instance — best-effort: a lowered
+          # termination grace (e.g. k8s terminationGracePeriodSeconds)
+          # can still SIGKILL first. User parameters may override.
+          - "--shutdown-timeout"
+          - "20"
+    - backend: SGLang
+      frameworks: [cuda]
+      # LMCache MP support landed in sglang PR #24089 (merged 2026-05-28);
+      # v0.5.13 is the first release carrying it.
+      versions: ">=0.5.13"
+      injection:
+        env:
+          PYTHONHASHSEED: "0"
+        args:
+          - "--enable-lmcache"
+          - "--lmcache-config-file"
+          - "/tmp/gpustack-lmcache-sgl.yaml"
+        files:
+          /tmp/gpustack-lmcache-sgl.yaml: |
+            mp_host: "{{host}}"
+            mp_port: {{port}}

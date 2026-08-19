@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#569A31" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- generic object-storage bucket, outline style; deliberately not the AWS-trademarked S3 glyph -->
+  <ellipse cx="12" cy="5.2" rx="7.8" ry="2.7"/>
+  <path d="M4.2 5.2l2.15 13c.3 2 2.7 3.6 5.65 3.6s5.35-1.6 5.65-3.6l2.15-13"/>
+  <path d="M7.6 12.1c1.2.55 2.75.88 4.4.88s3.2-.33 4.4-.88"/>
+</svg>
