@@ -136,10 +136,15 @@ async def build_cluster_ops(
 
 
 @asynccontextmanager
-async def handle_error():
+async def handle_error(already_exists_message: Optional[str] = None):
     """Translate a Kubernetes ``ApiException`` into the project's HTTP
     exceptions so a failure surfaces as the right status instead of a
-    blanket 500."""
+    blanket 500.
+
+    ``already_exists_message`` overrides the message of the 409 branch: the
+    upstream exception only carries the bare HTTP reason phrase
+    (``"Conflict"``), which does not tell the caller what already exists.
+    """
     try:
         yield
     except client.exceptions.ApiException as e:
@@ -147,7 +152,7 @@ async def handle_error():
         if e.status == http.HTTPStatus.NOT_FOUND:
             raise NotFoundException(message=message)
         if e.status == http.HTTPStatus.CONFLICT:
-            raise AlreadyExistsException(message=message)
+            raise AlreadyExistsException(message=already_exists_message or message)
         if e.status == http.HTTPStatus.BAD_REQUEST:
             raise InvalidException(message=message)
         # One branch for all three: to the caller they are the same thing —

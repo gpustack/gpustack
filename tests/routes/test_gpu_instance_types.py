@@ -24,6 +24,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
+    AlreadyExistsException,
     BadRequestException,
     ConflictException,
     ForbiddenException,
@@ -89,6 +90,7 @@ def _patch_ops(
     list_result=None,
     list_error=None,
     create_result=None,
+    create_error=None,
     delete_existed=True,
     patch_absent=False,
     capture=None,
@@ -115,6 +117,9 @@ def _patch_ops(
         async def create_instance_type(self, name, spec, ignore_existed=True):
             capture["name"] = name
             capture["spec"] = spec
+            capture["ignore_existed"] = ignore_existed
+            if create_error is not None:
+                raise create_error
             return (
                 create_result
                 if create_result is not None
@@ -951,6 +956,33 @@ async def test_create_sends_spec_and_defaults_missing_status(monkeypatch):
     # The ack dict carries no status → maps to an all-None status.
     assert out.name == "new-it"
     assert out.status.phase is None
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_a_duplicate_name(monkeypatch):
+    """#6087: a taken name must surface as an actionable 409, not a 200 that
+    reads the pre-existing object back — so the create must run with
+    ``ignore_existed=False`` and the upstream conflict must be reported
+    naming the instance type."""
+    _patch_cluster(monkeypatch, _cluster())
+    capture = {}
+    _patch_ops(
+        monkeypatch,
+        create_error=client.exceptions.ApiException(status=409, reason="Conflict"),
+        capture=capture,
+    )
+
+    body = GPUInstanceTypeCreate(
+        name="test",
+        spec=GPUInstanceTypeSpec(acceleratable=False, os="linux"),
+    )
+    with pytest.raises(AlreadyExistsException) as excinfo:
+        await it_routes.create_gpu_instance_type(REQUEST, None, CTX, body, 1)
+
+    assert excinfo.value.status_code == 409
+    assert "test" in excinfo.value.message
+    assert "cluster-1" in excinfo.value.message
+    assert capture["ignore_existed"] is False
 
 
 @pytest.mark.asyncio

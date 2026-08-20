@@ -75,6 +75,20 @@ async def test_conflict_maps_to_already_exists():
 
 
 @pytest.mark.asyncio
+async def test_conflict_uses_already_exists_message_when_given():
+    """#6087: the upstream 409 only carries the bare reason phrase, so a
+    caller-supplied message must replace it with something actionable."""
+    with pytest.raises(AlreadyExistsException) as excinfo:
+        async with handle_error(
+            already_exists_message="Instance type test already exists in cluster k3s"
+        ):
+            raise _api_exception(http.HTTPStatus.CONFLICT, reason="Conflict")
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.message == "Instance type test already exists in cluster k3s"
+
+
+@pytest.mark.asyncio
 async def test_bad_request_maps_to_invalid():
     # Asserted on the exception type, not the status code: ``InvalidException``
     # is 422, which is a pre-existing choice this change does not revisit.
