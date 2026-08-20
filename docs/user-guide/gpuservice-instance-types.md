@@ -58,7 +58,7 @@ Add a custom instance type when the derived ones do not fit — for example, a l
 ![Screenshot: the Add Instance Type form](../assets/gpuservice/instance-types/add-form.png)
 
 - **Cluster**: The cluster the type is created in.
-- **Name**: The type name. Lowercase and Kubernetes-safe, since it becomes part of the underlying resource name.
+- **Name**: The type name. Lowercase and Kubernetes-safe, since it becomes part of the underlying resource name. It must be unique within the cluster: reusing the name of an existing type — including a derived one — is rejected rather than overwriting it.
 - **Display Name**: An optional friendly name shown in the UI.
 - **Flavor**: `CPU-only`, or an accelerator flavor the selected cluster carries. The choices follow the Cluster field.
 - **OS / Arch**: The platform the type targets.

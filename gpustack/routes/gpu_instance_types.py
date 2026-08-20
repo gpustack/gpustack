@@ -273,8 +273,18 @@ async def create_gpu_instance_type(
     ops = await build_cluster_ops(request, session, cluster)
 
     spec = create.spec.model_dump(by_alias=True, exclude_none=True)
-    async with ops, handle_error():
-        result = await ops.create_instance_type(create.name, spec)
+    async with (
+        ops,
+        handle_error(
+            already_exists_message=(
+                f"Instance type {create.name} already exists in cluster {cluster.name}"
+            )
+        ),
+    ):
+        # ignore_existed=False: with the idempotent default the create is never
+        # attempted and the pre-existing object is read back as a 200 — a
+        # "successful" create that created nothing (#6087).
+        result = await ops.create_instance_type(create.name, spec, ignore_existed=False)
     return _to_instance_type_public(result)
 
 
