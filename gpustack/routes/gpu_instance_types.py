@@ -19,6 +19,7 @@ from gpustack.api.exceptions import BadRequestException, NotFoundException
 from gpustack.api.tenant import TenantContext, cluster_visibility_conditions
 from gpustack.gpu_instances import gateway_client
 from gpustack.gpu_instances.cluster_apis import ClusterOps
+from gpustack.gpu_instances.gateway import count_ready_workers
 from gpustack.routes.gpu_instances_helper import (
     assert_cluster_gpu_service,
     build_cluster_ops,
@@ -157,11 +158,14 @@ async def get_gpu_instance_types(
     hold: the record projection deliberately drops the volatile resource ledger
     (see ``GPUInstanceTypeStatusPublic``), which the model deploy form's slicing
     GPU type picker sizes its inputs from, so that caller asks for the cluster's
-    live catalog instead. It reads one named cluster and accepts that cluster's
-    failures, including a ``503`` when no worker is ready. The cluster hands back
-    its catalog whole, so ``name`` / ``search`` are rejected rather than silently
-    ignored, while ``page`` / ``perPage`` / ``sort_by`` are simply not applied — the
-    synthesized single-page ``pagination`` in the response states that.
+    live catalog instead. It reads one named cluster. A cluster with no READY
+    worker has no reachable proxy — the read could only 503 (#6096) — and no
+    GPUs to type, so it answers the empty page instead; a reachable cluster's
+    own failures (a transient proxy ``503`` included) still surface. The cluster
+    hands back its catalog whole, so ``name`` / ``search`` are rejected rather
+    than silently ignored, while ``page`` / ``perPage`` / ``sort_by`` are simply
+    not applied — the synthesized single-page ``pagination`` in the response
+    states that.
     """
     if source == "live":
         # Both rejected before anything is resolved: these are malformed requests,
@@ -200,9 +204,7 @@ async def get_gpu_instance_types(
                     media_type="text/event-stream",
                 )
 
-            async with ops, handle_error():
-                result = await ops.list_instance_types()
-            return _to_instance_types_public(result, params)
+            return await _live_instance_types_page(ops, cluster_id, params)
 
         # No cluster to read — a foreign or invisible ``cluster_id``, or a cluster
         # deleted between the two queries. Fall through to the record read rather
@@ -421,6 +423,36 @@ async def _build_instance_type_ops(
         if cluster is None:
             return None
         return await build_cluster_ops(request, session, cluster)
+
+
+async def _live_instance_types_page(
+    ops: ClusterOps,
+    cluster_id: int,
+    params: GPUInstanceTypeListParams,
+) -> GPUInstanceTypesPublic:
+    """Serve one cluster's live catalog, or the empty page when it has no worker.
+
+    A cluster with no READY worker has no reachable proxy — the list could only
+    503 (#6096) — and no GPUs to type, so the empty page IS the catalog, in the
+    same shape the record read gives. The probe answers before the cluster is
+    contacted: the picker gets its empty state without paying for a round trip
+    that must fail. Both probe races stay benign: a worker dropping between the
+    probe and the call is a genuine transient failure and still surfaces as
+    such through ``handle_error`` rather than being masked as empty, and a
+    worker becoming READY just after the probe yields one stale empty page that
+    self-heals on the next read.
+
+    ``ops`` is entered unconditionally — its client is created eagerly, so even
+    the early empty-page return must pass through the context manager to close
+    it.
+    """
+    async with ops:
+        if await count_ready_workers(cluster_id) == 0:
+            return _empty_instance_types_page(params)
+
+        async with handle_error():
+            result = await ops.list_instance_types()
+    return _to_instance_types_public(result, params)
 
 
 async def _cluster_instance_type_events(

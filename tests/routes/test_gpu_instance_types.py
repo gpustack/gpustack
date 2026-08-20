@@ -187,6 +187,19 @@ def _patch_watch_ops(monkeypatch, watch_events):
     monkeypatch.setattr(helper, "ClusterOps", FakeWatchOps)
 
 
+def _patch_ready_workers(monkeypatch, count=1):
+    """Stub the route's reachability probe (``count_ready_workers``).
+
+    A live read whose ops are faked simulates a contactable cluster, so the
+    tests default to one READY worker; the worker-less test passes 0.
+    """
+
+    async def fake_count(cluster_id: int) -> int:
+        return count
+
+    monkeypatch.setattr(it_routes, "count_ready_workers", fake_count)
+
+
 def _cluster(id_=1, owner_principal_id=None, gpu_service=True):
     """A cluster fixture, GPU Service by default.
 
@@ -679,6 +692,7 @@ async def test_source_live_returns_the_resource_ledger(monkeypatch, engine):
     _patch_db(monkeypatch, engine)
     _patch_visible_clusters(monkeypatch, _cluster(2))
     _patch_cluster(monkeypatch, _cluster(2))
+    _patch_ready_workers(monkeypatch)
     _patch_ops(monkeypatch, list_result={"items": [LIVE_ITEM]})
 
     out = await _list(cluster_id=2, source="live")
@@ -740,6 +754,7 @@ async def test_source_live_does_not_apply_pagination_or_sort(monkeypatch, engine
     _patch_db(monkeypatch, engine)
     _patch_visible_clusters(monkeypatch, _cluster(2))
     _patch_cluster(monkeypatch, _cluster(2))
+    _patch_ready_workers(monkeypatch)
     _patch_ops(
         monkeypatch,
         list_result={
@@ -772,6 +787,7 @@ async def test_source_live_empty_catalog_matches_the_record_empty_page(
     _patch_db(monkeypatch, engine)
     _patch_visible_clusters(monkeypatch, _cluster(2))
     _patch_cluster(monkeypatch, _cluster(2))
+    _patch_ready_workers(monkeypatch)
     _patch_ops(monkeypatch, list_result={"items": []})
 
     live = await _list(cluster_id=2, source="live", page=2, perPage=5)
@@ -815,14 +831,44 @@ async def test_source_live_applies_purpose_like_the_record_read(monkeypatch, eng
 
 
 @pytest.mark.asyncio
-async def test_source_live_reports_an_unreachable_cluster_as_503(monkeypatch, engine):
-    """A live read against a cluster with no ready worker legitimately fails, and
-    reports the cluster's own failure. #6071 is about the page, which never asks
-    for a live read; a caller that explicitly asked to touch the cluster gets
-    503 ServiceUnavailable rather than a 500 contradicting its own message."""
+async def test_source_live_with_no_ready_worker_returns_an_empty_page(
+    monkeypatch, engine
+):
+    """A cluster with no READY worker has no reachable proxy — the read could
+    only 503 — and no GPUs to type, so the empty page IS the answer (#6096),
+    in the same shape the record read gives for "nothing here". The catalog is
+    never listed: the guard answers before the cluster is contacted."""
     _patch_db(monkeypatch, engine)
     _patch_visible_clusters(monkeypatch, _cluster(2))
     _patch_cluster(monkeypatch, _cluster(2))
+    _patch_ready_workers(monkeypatch, 0)
+    _patch_ops(
+        monkeypatch,
+        list_error=client.exceptions.ApiException(
+            status=503, reason="Service Unavailable"
+        ),
+    )
+
+    out = await _list(cluster_id=2, source="live", page=2, perPage=5)
+
+    assert out.items == []
+    assert (out.pagination.total, out.pagination.totalPage) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_source_live_with_ready_workers_still_surfaces_an_upstream_503(
+    monkeypatch, engine
+):
+    """The empty-page guard (#6096) answers only a cluster with no READY
+    worker. A reachable cluster's own failure still surfaces: a transient
+    proxy 503 — e.g. the last worker dropping between the probe and the
+    call — is reported as ServiceUnavailable rather than masked as an empty
+    catalog, and never downgraded to the 500 that contradicted its own
+    message (#6071)."""
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(2))
+    _patch_cluster(monkeypatch, _cluster(2))
+    _patch_ready_workers(monkeypatch, 1)
     _patch_ops(
         monkeypatch,
         list_error=client.exceptions.ApiException(
