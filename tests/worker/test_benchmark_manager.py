@@ -294,6 +294,7 @@ class TestBuildCommandArgs:
             _benchmark=benchmark,
             _model_endpoint="http://127.0.0.1:8000",
             _model_path="/models/qwen3-0.6b",
+            _model_source=None,
             _model_backend_parameters=None,
             _benchmark_dir="/var/lib/gpustack/benchmarks",
             _api_url="http://127.0.0.1:80/v2/benchmarks/1/state",
