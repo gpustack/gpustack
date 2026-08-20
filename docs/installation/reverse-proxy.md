@@ -54,7 +54,7 @@ server {
         proxy_pass http://gpustack-server:80/;
 
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
@@ -90,9 +90,18 @@ required: with `--server-external-url` set, the server also routes requests that
 still carry the prefix. See
 [Proxies that preserve the prefix](#proxies-that-preserve-the-prefix).
 
-`proxy_set_header Host $host` passes the browser's hostname through. GPUStack
-gates that header with `--trusted-hosts`, which defaults to the host in
-`--server-external-url`, so no extra configuration is needed once that is set.
+`proxy_set_header Host $http_host` passes the browser's own `Host` through, port
+included. **Prefer it over `$host`**, which is the same value with the port
+stripped — identical on 443 and 80, wrong anywhere else, and wrong in a way that
+surfaces far from its cause: the server builds absolute URLs from this header, so
+what breaks is the address handed to a registering cluster, or the
+`post_logout_redirect_uri` sent to an identity provider.
+
+`Host` is taken as sent. `--trusted-hosts` is a separate control: it gates
+`X-Forwarded-Host`, which the server honors in place of `Host` only from a host on
+that allowlist. It defaults to the host in `--server-external-url`, and matching
+ignores the port, so a proxy that sends `X-Forwarded-Host` needs no extra
+configuration once the external URL is set.
 
 ## Ports: which one to proxy to
 
