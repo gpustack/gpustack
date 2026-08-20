@@ -3,6 +3,7 @@
 
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urljoin
 
 import pytest
 
@@ -359,10 +360,22 @@ async def test_cas_callback_rejects_existing_user_from_other_source(monkeypatch)
     request.app.state.server_config.external_auth_default_inactive = False
     request.app.url_path_for.return_value = "/auth/cas/callback"
     request.query_params = {"ticket": "ST-attacker"}
+    # The failure redirect climbs one level per segment of the callback's own
+    # path, so both have to be real values rather than mocks.
+    request.url.path = "/auth/cas/callback"
+    request.scope = {}
 
     response = await auth_route.cas_callback(request=request, session=MagicMock())
     assert response.status_code in (302, 303, 307)
-    assert response.headers["location"] == auth_route.SOURCE_CONFLICT_LOGIN_URL
+    # Relative, so it resolves to the UI root whether the server sits at the
+    # origin root or under a proxy subpath. Asserted by resolving it the way a
+    # browser would — a hop miscount is invisible at the root, where RFC 3986
+    # clamps ``..`` at ``/``. ``?error=`` stays outside the fragment because the
+    # login form reads it from ``window.location.search``.
+    assert urljoin(
+        "http://gpustack.example.com/inner/gpustack/auth/cas/callback",
+        response.headers["location"],
+    ) == ("http://gpustack.example.com/inner/gpustack/?error=source_conflict#/login")
 
 
 @pytest.mark.asyncio
@@ -415,10 +428,18 @@ async def test_cas_callback_translates_other_failures_to_auth_failed(monkeypatch
     request.app.state.server_config.server_external_url = "https://gpustack.example.com"
     request.app.url_path_for.return_value = "/auth/cas/callback"
     request.query_params = {"ticket": "ST-bad"}
+    request.url.path = "/auth/cas/callback"
+    request.scope = {}
 
     response = await auth_route.cas_callback(request=request, session=MagicMock())
     assert response.status_code in (302, 303, 307)
-    assert response.headers["location"] == auth_route.AUTH_FAILED_LOGIN_URL
+    assert (
+        urljoin(
+            "http://gpustack.example.com/inner/gpustack/auth/cas/callback",
+            response.headers["location"],
+        )
+        == "http://gpustack.example.com/inner/gpustack/?error=auth_failed#/login"
+    )
 
 
 class _AsyncClientFake:
