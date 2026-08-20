@@ -165,6 +165,11 @@ def test_renewal_sets_every_attribute_the_shared_helper_defines():
         "expires": "expires",
         "samesite": "samesite",
         "secure": "secure",
+        # The one the guard was written for. Renewal that omits it writes a
+        # *second* cookie of the same name at Path=/; both get sent, and
+        # Starlette's parser keeps the last — the stale one. Symptom is a session
+        # that drops at random.
+        "path": "path",
     }
     helper_kwargs = auth_cookie_attrs(
         SimpleNamespace(url=SimpleNamespace(scheme="https")), 60

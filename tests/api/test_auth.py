@@ -1,7 +1,9 @@
+import ast
 import asyncio
 import ssl
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import urljoin
@@ -10,13 +12,17 @@ import pytest
 from fastapi import FastAPI
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 from gpustack.api.exceptions import register_handlers
 from gpustack.api.auth import (
     GATEWAY_AUTH_TOKEN_HEADER,
+    auth_cookie_attrs,
+    auth_cookie_path,
     client_ip_getter,
     get_current_user,
     worker_auth,
 )
+from gpustack.config.config import Config, get_global_config, set_global_config
 from gpustack.api.exceptions import BadRequestException, UnauthorizedException
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.users import AuthProviderEnum
@@ -2009,3 +2015,116 @@ def test_ui_relative_url_puts_error_code_outside_the_fragment():
     assert landed == (
         "http://gpustack.example.com/inner/gpustack/?error=auth_failed#/login"
     )
+
+
+# --- Cookie Path under a mount prefix --------------------------------------
+
+
+@pytest.fixture
+def mounted_config(tmp_path):
+    """Install a server mounted at ``/gpustack`` as the process-wide config.
+
+    ``auth_cookie_path`` reads the global rather than ``request.app.state`` so the
+    renewal middleware can call it too, so this is the seam to drive it from. The
+    previous config is put back because conftest installs a root-path one for the
+    whole module.
+    """
+    previous = get_global_config()
+    set_global_config(
+        Config(
+            token="test",
+            jwt_secret_key="test",
+            data_dir=str(tmp_path / "data"),
+            server_external_url="https://example.com/gpustack",
+        )
+    )
+    yield
+    set_global_config(previous)
+
+
+def _cookie_attr(header: str, name: str):
+    for part in header.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == name.lower():
+            return value
+    return None
+
+
+def _http_request():
+    return SimpleNamespace(url=SimpleNamespace(scheme="http"))
+
+
+def test_cookies_are_scoped_to_the_mount_prefix(mounted_config):
+    response = Response()
+    response.set_cookie(
+        key="gpustack_session", value="token", **auth_cookie_attrs(_http_request(), 60)
+    )
+
+    assert _cookie_attr(response.headers["set-cookie"], "path") == "/gpustack"
+
+
+def test_cookie_path_degrades_to_the_root_without_a_config(monkeypatch):
+    # The renewal middleware and the routes both reach for this, and a request
+    # can arrive before a config is installed — a raise there would turn every
+    # response into a 500 rather than an unscoped cookie.
+    monkeypatch.setattr("gpustack.api.auth.get_global_config", lambda: None)
+
+    assert auth_cookie_path() == "/"
+
+
+@pytest.mark.asyncio
+async def test_logout_deletes_the_cookie_it_actually_set(mounted_config):
+    """Deletion has to name the same ``Path`` as the cookie it is removing.
+
+    A cookie is identified by name+domain+path, so a ``delete_cookie`` that omits
+    ``path`` addresses the one at ``/`` — a cookie login never created. The
+    request succeeds, the response looks right, and the session survives logout.
+    Asserted against the set side rather than the literal prefix so the two
+    cannot drift apart in opposite directions and still pass.
+    """
+    set_header = Response()
+    set_header.set_cookie(
+        key="gpustack_session", value="token", **auth_cookie_attrs(_http_request(), 60)
+    )
+    expected_path = _cookie_attr(set_header.headers["set-cookie"], "path")
+
+    request = MagicMock()
+    request.app.state.server_config = SimpleNamespace(external_auth_type=None)
+    request.cookies = {}
+
+    response = await auth_route.logout(request)
+
+    deletions = response.headers.getlist("set-cookie")
+    assert len(deletions) == 3
+    for header in deletions:
+        assert _cookie_attr(header, "path") == expected_path
+        # Max-Age=0 is what makes it a deletion rather than a fresh cookie.
+        assert _cookie_attr(header, "max-age") == "0"
+
+
+def test_every_cookie_deletion_names_a_path():
+    """Structural, because the six call sites are not reachable from one test.
+
+    They sit across SAML logout, OIDC callback and ``/auth/logout``, each with its
+    own prerequisites, and the omission is invisible where it is easiest to look:
+    at the root deployment the prefix is ``""`` and Starlette's default ``path``
+    is already ``"/"``, so the header comes out byte-identical either way.
+    """
+    tree = ast.parse(Path(auth_route.__file__).read_text())
+    deletions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "delete_cookie"
+    ]
+
+    # Guard the guard: an empty list would pass the assertion below vacuously if
+    # the deletions ever moved to another module.
+    assert deletions
+    missing = [
+        node.lineno
+        for node in deletions
+        if not any(keyword.arg == "path" for keyword in node.keywords)
+    ]
+    assert missing == []

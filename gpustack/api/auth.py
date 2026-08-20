@@ -8,7 +8,7 @@ import aiohttp
 from aiocache import cached
 from fastapi import Depends, Request, WebSocket
 from starlette.datastructures import Headers
-from gpustack.config.config import Config
+from gpustack.config.config import Config, get_global_config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import async_session
 from typing import Annotated, Any, Optional, Set, Tuple, List, Dict
@@ -60,11 +60,10 @@ def auth_cookie_attrs(request: Request, max_age: int) -> Dict[str, Any]:
 
     One source for them, because they are set from a dozen places and a site
     that spells them out by hand is a site that can fall behind. What makes that
-    hard to notice is that Starlette's own defaults are ``samesite="lax"`` and
-    ``path="/"`` — the same values the explicit call sites pass. A site can
-    therefore omit an attribute and still behave identically, right up until one
-    of those values stops being the default we want. ``path`` is exactly that
-    case once the server learns its mount prefix.
+    hard to notice is that Starlette's own default ``samesite`` is ``"lax"``, the
+    same value we want: a site can omit it and behave identically, right up until
+    that stops being the default. ``path`` was the same story and is no longer,
+    because under a mount prefix the value we want is not ``"/"``.
 
     ``secure`` has no such cover: it defaults to ``False``, so omitting it
     downgrades the cookie outright.
@@ -90,7 +89,23 @@ def auth_cookie_attrs(request: Request, max_age: int) -> Dict[str, Any]:
         "expires": max_age,
         "samesite": "lax",
         "secure": request.url.scheme == "https",
+        "path": auth_cookie_path(),
     }
+
+
+def auth_cookie_path() -> str:
+    """``Path`` for the cookies this server sets and deletes.
+
+    Its own function because deletion needs it without the rest: a
+    ``delete_cookie`` that omits ``path`` addresses a *different* cookie than the
+    one that was set, so logout would appear to work and change nothing.
+
+    Reads the global config rather than ``request.app.state`` so that both the
+    routes and the renewal middleware can call it, and so it degrades to the root
+    before a config is installed instead of raising.
+    """
+    cfg = get_global_config()
+    return cfg.get_cookie_path() if cfg else "/"
 
 
 SYSTEM_USER_PREFIX = "system/"

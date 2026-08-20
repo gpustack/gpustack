@@ -30,6 +30,7 @@ from gpustack.api.auth import (
     OIDC_STATE_COOKIE_NAME,
     SSO_LOGIN_COOKIE_NAME,
     auth_cookie_attrs,
+    auth_cookie_path,
     authenticate_user,
 )
 from gpustack.server.deps import CurrentUserDep, SessionDep
@@ -733,8 +734,8 @@ async def saml_logout_callback(request: Request):
     except Exception:
         pass
     response = RedirectResponse(url=_ui_relative_url(request))
-    response.delete_cookie(key=SESSION_COOKIE_NAME)
-    response.delete_cookie(key=SSO_LOGIN_COOKIE_NAME)
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path=auth_cookie_path())
+    response.delete_cookie(key=SSO_LOGIN_COOKIE_NAME, path=auth_cookie_path())
     return response
 
 
@@ -977,7 +978,7 @@ async def oidc_callback(request: Request, session: SessionDep):
         username=username,
     )
     response = RedirectResponse(url=_ui_relative_url(request))
-    response.delete_cookie(key=OIDC_STATE_COOKIE_NAME)
+    response.delete_cookie(key=OIDC_STATE_COOKIE_NAME, path=auth_cookie_path())
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=access_token,
@@ -1304,9 +1305,13 @@ async def logout(request: Request):
     sso_login = request.cookies.get(SSO_LOGIN_COOKIE_NAME)
     content = json.dumps({"logout_url": external_logout_url}) if sso_login else ""
     resp = Response(content=content, media_type="application/json")
-    resp.delete_cookie(key=SESSION_COOKIE_NAME)
-    resp.delete_cookie(key=OIDC_ID_TOKEN_COOKIE_NAME)
-    resp.delete_cookie(key=SSO_LOGIN_COOKIE_NAME)
+    # ``path`` is not optional here. A cookie is identified by name+domain+path,
+    # so a deletion that omits it addresses the one at ``/`` — a different cookie
+    # than the one login set once the server is mounted under a prefix. Logout
+    # would return 200 and leave the session intact.
+    resp.delete_cookie(key=SESSION_COOKIE_NAME, path=auth_cookie_path())
+    resp.delete_cookie(key=OIDC_ID_TOKEN_COOKIE_NAME, path=auth_cookie_path())
+    resp.delete_cookie(key=SSO_LOGIN_COOKIE_NAME, path=auth_cookie_path())
     return resp
 
 
