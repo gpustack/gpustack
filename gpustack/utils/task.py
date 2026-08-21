@@ -3,11 +3,13 @@ from functools import partial
 import logging
 import threading
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Coroutine, Iterable, Optional, TypeVar
 from gpustack.utils.process import threading_stop_event
 
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 def run_periodically(
@@ -85,3 +87,39 @@ async def run_in_thread(sync_func, timeout: Optional[float] = None, *args, **kwa
         return await task
 
     return await asyncio.wait_for(task, timeout=timeout)
+
+
+async def first_successful(
+    coros: Iterable[Coroutine[Any, Any, T]],
+    is_success: Callable[[T], bool] = bool,
+) -> Optional[T]:
+    """
+    Run coroutines concurrently and return the first result accepted by is_success.
+
+    Every task is cancelled and awaited before returning, so no losing task, nor
+    the client session it holds, outlives the call, and the exception of a loser
+    that already finished is retrieved rather than logged as never retrieved.
+
+    Args:
+        coros: The coroutines to race against each other.
+        is_success: Predicate deciding whether a result ends the race.
+
+    Returns:
+        The first accepted result, or None if every coroutine was rejected.
+    """
+    tasks = []
+    try:
+        for coro in coros:
+            tasks.append(asyncio.create_task(coro))
+        for completed_task in asyncio.as_completed(tasks):
+            result = await completed_task
+            if is_success(result):
+                return result
+        return None
+    finally:
+        # Cancelling an already finished task is a no-op, so this covers both the
+        # pending losers and the exceptions of the ones that already finished.
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
