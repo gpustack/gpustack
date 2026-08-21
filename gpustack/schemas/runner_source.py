@@ -21,6 +21,10 @@ from gpustack_runner.runner import (
 )
 
 from gpustack.mixins import BaseModelMixin
+from .inference_backend import (
+    built_in_backend_names_by_service,
+    deployed_backend_versions,
+)
 from .source import SourceContent, SourceMixin, SourceTypeEnum
 from .common import PaginatedList
 
@@ -321,21 +325,71 @@ def proposed_runner_versions(sources: List[SourceContent]) -> Set[Tuple[str, str
     return runner_versions(_entries_from_sources(sources))
 
 
+async def _pinned_coordinates(
+    session: AsyncSession,
+) -> Dict[Tuple[str, str], List[str]]:
+    """The ``(service, service_version)`` coordinates a live deployment pins, to
+    the models pinning them: ``deployed_backend_versions`` across the same name
+    bridge the pre-write check crosses (a model says ``vLLM``, a runner
+    ``vllm``)."""
+    service_by_backend = {
+        backend_name: service
+        for service, backend_name in built_in_backend_names_by_service().items()
+    }
+    return {
+        (service_by_backend[backend_name], version): models
+        for (backend_name, version), models in (
+            await deployed_backend_versions(session)
+        ).items()
+        if backend_name in service_by_backend
+    }
+
+
 async def reconcile_runner_overrides(
     session: AsyncSession, sources: List[SourceContent]
 ) -> None:
-    """Full-rewrite ``RunnerOverrideEntry`` from the ordered sources: each is
-    parsed and merged by natural key (later source wins), then the whole table is
-    replaced atomically. Empty input clears it, falling the cluster back to the
-    packaged catalog.
+    """Rewrite ``RunnerOverrideEntry`` from the ordered sources: each is parsed and
+    merged by natural key (later source wins), then the table is replaced
+    atomically. Empty input clears it, falling the cluster back to the packaged
+    catalog.
+
+    Coordinates a live deployment pins survive a document that dropped them, so
+    an upstream mistake cannot leave a pinned model with no image; the rest of
+    the document still applies, and the survivor's rows go on the first reconcile
+    after its deployment does. Whole-group per coordinate: one
+    ``(service, service_version)`` spans a row per platform / variant, and half of
+    one resolves for some hardware and fails for the rest. Never on empty input,
+    where the baseline taking over is complete and a single surviving row would
+    stop ``merged_runners`` falling back to it at all.
 
     Nothing readable raises before any write, rather than making every model
     pinned to a remote-only version unschedulable.
     """
     entries = _entries_from_sources(sources)
+    existing_rows = await RunnerOverrideEntry.all(session)
+    # Off the rows, not ``runner_versions``: that falls back to the package on an
+    # empty table, so every packaged coordinate would read as dropped.
+    proposed = {(entry.service, entry.service_version) for entry in entries}
+    dropped = {(row.service, row.service_version) for row in existing_rows} - proposed
+    survivors: Dict[Tuple[str, str], List[str]] = {}
+    if entries and dropped:
+        pinned = await _pinned_coordinates(session)
+        survivors = {
+            coordinate: models
+            for coordinate, models in pinned.items()
+            if coordinate in dropped
+        }
+        for (service, version), models in sorted(survivors.items()):
+            logger.warning(
+                f"Runner source no longer carries {service} {version}, kept because "
+                f"it is deployed by: {', '.join(sorted(models))}. Migrate those "
+                f"models off it; the coordinate goes away once they are gone."
+            )
     # Delete + insert in one transaction so a partial failure never empties the
     # table. Nothing subscribes to RunnerOverrideEntry, so no watch event.
-    for existing in await RunnerOverrideEntry.all(session):
+    for existing in existing_rows:
+        if (existing.service, existing.service_version) in survivors:
+            continue
         await existing.delete(session, auto_commit=False)
     for entry in entries:
         await RunnerOverrideEntry.create(session, entry, auto_commit=False)

@@ -10,6 +10,7 @@ from sqlmodel import SQLModel, Field as SQLField
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.mixins import BaseModelMixin
+from .models import Model
 from .model_sets import Catalog, DraftModel, ModelSet, ModelSpec
 from .source import SourceContent, SourceMixin, SourceTypeEnum, validate_icon
 
@@ -187,12 +188,31 @@ def build_catalog_entries(sources: List[SourceContent]) -> List[CatalogModelEntr
     return list(merged.values())
 
 
+async def _pinned_draft_names(session: AsyncSession) -> Dict[str, List[str]]:
+    """Every draft model name a live deployment pins, to the models pinning it. A
+    model stores the name, not a resolved source, so the catalog entry is what
+    turns it into a repository (``get_draft_model_source``)."""
+    pinned: Dict[str, List[str]] = {}
+    for model in await Model.all(session):
+        speculative_config = model.speculative_config
+        if model.replicas > 0 and speculative_config and speculative_config.draft_model:
+            pinned.setdefault(speculative_config.draft_model, []).append(model.name)
+    return pinned
+
+
 async def reconcile_catalog(
     session: AsyncSession, sources: List[SourceContent]
 ) -> None:
     """Full-rewrite ``CatalogModelEntry`` from the ordered sources, upserting by
     ``(kind, name)`` so an entry's ``id`` stays stable (``/model-sets/{id}/specs``
     depends on it); vanished keys are deleted, empty input clears the table.
+
+    A draft model a live deployment pins is kept even when no source carries it
+    any more, and released on the first reconcile after that deployment goes.
+    Losing one does not fail loudly: ``get_draft_model_source`` reads the name as
+    a repository id instead, so it becomes a 404 naming a repository nobody
+    published, with the catalog never mentioned. ``model_sets`` needs no guard —
+    ``set_default_spec`` only fills fields a model left empty.
 
     Nothing readable raises before any write, so the table keeps serving.
     """
@@ -219,8 +239,21 @@ async def reconcile_catalog(
         else:
             await CatalogModelEntry.create(session, entry, auto_commit=False)
 
-    for key, row in existing.items():
-        if key not in desired:
-            await row.delete(session, auto_commit=False)
+    vanished = [key for key in existing if key not in desired]
+    pinned = (
+        await _pinned_draft_names(session)
+        if any(kind == KIND_DRAFT for kind, _ in vanished)
+        else {}
+    )
+    for key in vanished:
+        kind, name = key
+        if kind == KIND_DRAFT and name in pinned:
+            logger.warning(
+                f"No catalog source carries draft model {name} any more, kept "
+                f"because it is deployed by: {', '.join(sorted(pinned[name]))}. "
+                f"Migrate those models off it; it goes away once they are gone."
+            )
+            continue
+        await existing[key].delete(session, auto_commit=False)
 
     await session.commit()

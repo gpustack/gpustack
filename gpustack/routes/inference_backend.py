@@ -32,6 +32,8 @@ from gpustack.schemas.inference_backend import (
     InferenceBackendsPublic,
     VersionConfig,
     VersionConfigDict,
+    built_in_backend_names_by_service,
+    deployed_backend_versions,
     get_built_in_backend,
     InferenceBackendPublic,
     VersionListItem,
@@ -164,31 +166,6 @@ async def _source_owned_versions(session: AsyncSession) -> Set[Tuple[str, str]]:
     return owned
 
 
-async def _deployed_backend_versions(
-    session: AsyncSession,
-) -> Dict[Tuple[str, str], List[str]]:
-    """Every ``(backend_name, version)`` a live deployment pins, to the models
-    pinning it.
-
-    Read in one query rather than one per pair: a first custom runner document
-    takes the whole packaged catalog away at once — dozens of coordinates — and
-    asking about each separately is both slow and only ever answers about the
-    first violation.
-
-    Deliberately not ``check_backend_in_use``: that helper answers ``False`` on a
-    database error, which for a check gating a destructive write reads as
-    "nothing is in use" and lets it through. A model pinning no version is left
-    out, because Auto resolves at placement rather than against a fixed version.
-    """
-    deployed: Dict[Tuple[str, str], List[str]] = {}
-    for model in await Model.all(session):
-        if model.replicas > 0 and model.backend_version:
-            deployed.setdefault((model.backend, model.backend_version), []).append(
-                model.name
-            )
-    return deployed
-
-
 async def _reject_versions_in_use(
     session: AsyncSession, disappearing: Set[Tuple[str, str]]
 ) -> None:
@@ -203,7 +180,7 @@ async def _reject_versions_in_use(
     """
     if not disappearing:
         return
-    deployed = await _deployed_backend_versions(session)
+    deployed = await deployed_backend_versions(session)
     blocked = [
         f"version name '{version}' of backend '{backend_name}' "
         f"(used by: {', '.join(sorted(deployed[(backend_name, version)]))})"
@@ -228,9 +205,10 @@ async def _reject_taking_away_a_version_in_use(
     merge the write would actually produce.
 
     The probe's automatic path deliberately isn't covered: one deployment must
-    not be able to freeze official updates, and the reconcile carries those
-    deployments itself (a community backend no source publishes any more is
-    downgraded to custom rather than deleted).
+    not be able to freeze official updates. Each reconcile carries its own
+    deployments instead — a dropped community backend is downgraded rather than
+    deleted, a pinned runner coordinate or draft model is kept — so that path
+    takes nothing in use away either.
     """
     await _reject_versions_in_use(
         session,
@@ -238,17 +216,6 @@ async def _reject_taking_away_a_version_in_use(
             proposed, await _source_owned_versions(session)
         ),
     )
-
-
-def _built_in_backend_names() -> Dict[str, str]:
-    """Built-in backend names keyed by their runner ``service``: a model row says
-    ``vLLM`` where the runner catalog says ``vllm``, the same bridge
-    ``get_runner_versions_and_configs`` crosses."""
-    return {
-        backend.backend_name.lower(): backend.backend_name
-        for backend in get_built_in_backend()
-        if backend.backend_name != BackendEnum.CUSTOM.value
-    }
 
 
 async def _reject_taking_away_a_runner_version_in_use(
@@ -268,7 +235,7 @@ async def _reject_taking_away_a_runner_version_in_use(
     placement; catching that would need the cluster's hardware inventory, which
     is a scheduling question rather than a write-time one.
     """
-    names = _built_in_backend_names()
+    names = built_in_backend_names_by_service()
 
     def named(versions: Set[Tuple[str, str]]) -> Set[Tuple[str, str]]:
         return {
@@ -477,9 +444,9 @@ async def get_runner_override_entries(
 ) -> RunnerOverrideEntriesPublic:
     """Worker-facing read-only list of runner override entries.
 
-    Workers fetch this fresh at deploy time (unpaginated) and fill-gap merge
-    it with the packaged catalog in ``_resolve_image``. Mounted on the worker
-    client router in ``routes.py``.
+    Workers fetch this fresh at deploy time (unpaginated); any row here replaces
+    the packaged catalog outright in ``_resolve_image``, as it does on the server.
+    Mounted on the worker client router in ``routes.py``.
     """
     async with async_session() as session:
         return await RunnerOverrideEntry.paginated_by_query(
