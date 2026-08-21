@@ -178,6 +178,22 @@ These are essentially custom backends with a "community" source label, allowing 
 
 On the Inference Backend page, click anywhere on the backend card (except the action buttons) to open a modal where you can browse all built-in and custom-added versions.
 
+## Disable Backends or Versions
+
+In air-gapped environments you may not have synced every backend image to your hosts or private registry. Selecting a version whose image is missing makes a deployment fail later, when the image is pulled. To prevent this, you can hide backends or specific versions so they no longer appear in the deployment version dropdown and cannot be selected.
+
+There are two independent controls:
+
+- **Disable a whole backend** — set the backend's `enabled` flag to `false`. This applies to built-in, community, and custom backends. A disabled backend is removed from the deployment dropdown but stays listed on the Inference Backend management page, so you can re-enable it later.
+- **Disable specific versions** — list the version keys to hide in the backend's `disabled_versions`. Only the listed versions are removed from that backend's version dropdown; the remaining versions stay selectable. This works uniformly for built-in (runner catalog), community, and custom versions. If the backend's default version is disabled, the dropdown default falls back to an available version.
+
+Both controls only affect the deployment version dropdown:
+
+- Already-running model instances on a now-disabled backend or version keep running; they are not stopped.
+- They do not hard-block deployment. A model created directly through the API against a disabled backend or version is still accepted (and, as before, will fail at image pull if the image is unavailable).
+
+In a hybrid (Platform + Organization) setup, a version disabled at either the Platform or the Organization layer stays hidden — the two sets are combined.
+
 ## Flexible Testing Deployment
 
 Use this mode to quickly verify or tweak the image and startup command without editing the backend definition.
