@@ -24,7 +24,23 @@ DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS = int(
 )
 
 # Proxy configuration
+#
+# The inference proxy budget is segmented at the first response body chunk,
+# because silence means different things on either side of it (#6012). Before
+# the first chunk, silence is indistinguishable from queueing or the prefill of
+# a long prompt, so the bound has to stay generous; after it, a healthy engine
+# emits tokens continuously and a gap of tens of seconds means the upstream is
+# wedged. A single idle value cannot express both.
 PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
+# Backstop on the wait for the first body chunk of a streaming response.
+PROXY_TTFT_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TTFT_TIMEOUT_SECONDS", 300))
+# Inter-chunk budget, applied only once a streaming response has started.
+PROXY_STREAM_IDLE_TIMEOUT = int(
+    os.getenv("GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS", 60)
+)
+# Unrelated to request duration: this maps to the upstream cluster's
+# connection-pool reaping (common_http_protocol_options.idle_timeout) in the
+# gateway, not to how long a request may take.
 PROXY_UPSTREAM_IDLE_TIMEOUT = int(
     os.getenv("GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS", 3)
 )

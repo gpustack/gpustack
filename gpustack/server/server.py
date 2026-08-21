@@ -125,7 +125,8 @@ from gpustack.server import cache as cache_module
 from alembic import command
 from alembic.config import Config as AlembicConfig
 
-from gpustack.websocket_proxy.proxy_server import HTTPSProxyServer
+from gpustack.websocket_proxy.proxy_server import HTTPSProxyServer, StallPolicy
+from gpustack.utils.stall import stall_error_json, stall_error_sse
 from gpustack.api.auth import (
     authenticate_worker_by_request_headers,
 )
@@ -1219,6 +1220,13 @@ class Server:
                 headers, validate_proxy=None
             ),
             header_router=resolve_instance_address_from_model_header,
+            stall_policy=StallPolicy(
+                ttft_timeout=envs.PROXY_TTFT_TIMEOUT,
+                idle_timeout=envs.PROXY_STREAM_IDLE_TIMEOUT,
+                total_timeout=envs.PROXY_TIMEOUT,
+                error_body=stall_error_json(),
+                error_sse=stall_error_sse(),
+            ),
         )
         self._create_async_task(_proxy_server.start())
 
