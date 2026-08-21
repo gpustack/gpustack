@@ -33,6 +33,10 @@ from gpustack.server.db import async_session
 
 logger = logging.getLogger(__name__)
 
+# How often a watch stream emits a heartbeat while it has nothing else to send.
+# Must stay well under the client's read timeout (45s in the generated clients).
+HEARTBEAT_INTERVAL = timedelta(seconds=15)
+
 
 class CommitEvent:
     name: str
@@ -816,25 +820,45 @@ class ActiveRecordMixin:
                 for item in initial_items:
                     yield Event(type=EventType.CREATED, data=item)
 
-        heartbeat_interval = timedelta(seconds=15)
-        last_event_time = datetime.now(timezone.utc)
+        # Monotonic clock, the same one asyncio.wait times out against, so a
+        # wall-clock step adjustment can never stall the heartbeat.
+        loop = asyncio.get_running_loop()
+        interval = HEARTBEAT_INTERVAL.total_seconds()
+        pending_receive = None
+        next_heartbeat = loop.time() + interval
 
         try:
             while True:
-                try:
-                    event = await asyncio.wait_for(
-                        subscriber.receive(), timeout=heartbeat_interval.total_seconds()
-                    )
+                now = loop.time()
+                # Deadline-driven, not "the queue went quiet": a topic busier
+                # than one event per interval would otherwise starve the
+                # heartbeat, and streaming() filters those events out.
+                if now >= next_heartbeat:
+                    yield Event(type=EventType.HEARTBEAT, data=None)
+                    next_heartbeat = now + interval
+                    continue
+
+                if pending_receive is None:
+                    pending_receive = asyncio.create_task(subscriber.receive())
+                # asyncio.wait, not wait_for: a heartbeat must not cancel an
+                # in-flight receive() that already took an event off the queue.
+                done, _ = await asyncio.wait(
+                    {pending_receive}, timeout=next_heartbeat - now
+                )
+                if pending_receive in done:
+                    event = pending_receive.result()
+                    pending_receive = None
                     yield event
-                except asyncio.TimeoutError:
-                    if (
-                        datetime.now(timezone.utc) - last_event_time
-                        >= heartbeat_interval
-                    ):
-                        yield Event(type=EventType.HEARTBEAT, data=None)
-                        last_event_time = datetime.now(timezone.utc)
         finally:
+            # Unsubscribe first: it has to run even if awaiting the cancelled
+            # receive raises, or the bus retains the subscriber forever.
             event_bus.unsubscribe(cls.__name__.lower(), subscriber)
+            if pending_receive is not None:
+                pending_receive.cancel()
+                try:
+                    await pending_receive
+                except asyncio.CancelledError:
+                    pass
 
     @classmethod
     async def streaming(
