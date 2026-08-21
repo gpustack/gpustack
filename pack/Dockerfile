@@ -307,6 +307,11 @@ FROM --platform=linux/amd64 rocm/dev-ubuntu-22.04:${GPUSTACK_RUNTIME_ROCM_VERSIO
 FROM base AS docs
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
+# The stamp the site shows in its header. Passed in because this stage copies
+# sources without .git, so it cannot work the commit out for itself; without it
+# the site falls back to showing only a build date.
+ARG GIT_COMMIT
+
 COPY docs/ /workspace/docs/
 COPY hack/build-docs.sh /workspace/hack/build-docs.sh
 COPY mkdocs.yml mkdocs.offline.yml pyproject.toml uv.lock /workspace/
@@ -319,6 +324,7 @@ RUN --mount=type=cache,target=/root/.cache \
 
     export UV_NO_CACHE=0
     export UV_LINK_MODE=copy
+    export DOCS_COMMIT="${GIT_COMMIT}"
 
     # The dependency group only, never the project: the site does not import
     # gpustack, and installing it here would drag in its whole runtime tree.
