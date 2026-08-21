@@ -51,12 +51,24 @@ def test_read_only_sqlstate_is_recognised_when_wrapped():
     assert is_read_only_transaction_error(wrapper)
 
 
+def test_read_only_sqlstate_is_recognised_through_orig():
+    """Code that catches SQLAlchemy's wrapped DBAPIError sees the driver error
+    as .orig rather than __cause__, so check that shape too.
+    """
+    wrapper = Exception("wrapped by SQLAlchemy")
+    wrapper.orig = _AsyncpgError(READ_ONLY_SQL_TRANSACTION_SQLSTATE)
+    assert is_read_only_transaction_error(wrapper)
+
+
 def test_other_database_errors_are_not_read_only_failures():
     """Only the read-only state means the connection is on the wrong node. A
     constraint violation must not tear the pool down.
     """
     assert not is_read_only_transaction_error(_AsyncpgError("23505"))
     assert not is_read_only_transaction_error(Exception("no sqlstate at all"))
+    unrelated = Exception("wrapped by SQLAlchemy")
+    unrelated.orig = _AsyncpgError("23505")
+    assert not is_read_only_transaction_error(unrelated)
 
 
 def test_handler_flags_a_read_only_failure_as_a_disconnect():
