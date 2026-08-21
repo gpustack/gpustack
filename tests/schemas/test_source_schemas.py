@@ -3,6 +3,7 @@ catalog (``catalog_source.py``), community backends (``inference_backend_source.
 and runner overrides (``runner_source.py``)."""
 
 import json
+import logging
 from importlib.resources import files
 
 import pytest
@@ -30,7 +31,13 @@ from gpustack.schemas.inference_backend_source import (
     normalize_backend_yaml,
     reconcile_backend,
 )
-from gpustack.schemas.models import BackendSourceEnum
+from gpustack.schemas.models import (
+    BackendEnum,
+    BackendSourceEnum,
+    Model,
+    SourceEnum,
+    SpeculativeConfig,
+)
 from gpustack.schemas.runner_source import (
     RunnerOverrideEntry,
     merged_runners,
@@ -243,7 +250,8 @@ async def test_reconcile_keeps_ids_stable_and_rewrites():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(
-            SQLModel.metadata.create_all, tables=[CatalogModelEntry.__table__]
+            SQLModel.metadata.create_all,
+            tables=[CatalogModelEntry.__table__, Model.__table__],
         )
 
     async def _entries(session):
@@ -289,6 +297,79 @@ async def test_reconcile_keeps_ids_stable_and_rewrites():
         assert set(after) == {("model_set", "Qwen3"), ("model_set", "Gemma")}
         assert after[("model_set", "Qwen3")].id == qwen_id  # stable across reconcile
         assert after[("model_set", "Qwen3")].payload["order"] == 9
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_draft_model_survives_only_while_a_deployment_pins_it(caplog):
+    """Written as the likely scenario rather than an upstream mistake:
+    ``draft_models`` is optional and normalizes to ``[]``, so an admin writing a
+    catalog of their own takes the packaged ones away without ever seeing the key.
+    Model sets get no such treatment."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            SQLModel.metadata.create_all,
+            tables=[CatalogModelEntry.__table__, Model.__table__],
+        )
+
+    async with AsyncSession(engine) as session:
+
+        async def keys():
+            return {
+                (row.kind, row.name) for row in await CatalogModelEntry.all(session)
+            }
+
+        await reconcile_catalog(
+            session,
+            [
+                _catalog_source(
+                    "builtin",
+                    SourceTypeEnum.BUILTIN,
+                    {
+                        "model_sets": [_model_set("Qwen3", [_spec("Qwen/Qwen3-8B")])],
+                        "draft_models": [
+                            _draft("eagle-deployed", "draft/deployed"),
+                            _draft("eagle-idle", "draft/idle"),
+                        ],
+                    },
+                )
+            ],
+        )
+        await Model.create(
+            session,
+            Model(
+                name="pinned-model",
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id="org/repo",
+                speculative_config=SpeculativeConfig(
+                    enabled=True, draft_model="eagle-deployed"
+                ),
+                replicas=1,
+            ),
+        )
+
+        # A custom catalog carrying only model sets: draft_models is absent, which
+        # is indistinguishable from an empty one by the time it is stored.
+        custom = _catalog_source(
+            "custom",
+            SourceTypeEnum.URL,
+            {"model_sets": [_model_set("Gemma", [_spec("google/gemma-2b")])]},
+        )
+        with caplog.at_level(logging.WARNING):
+            await reconcile_catalog(session, [custom])
+        assert await keys() == {
+            ("model_set", "Gemma"),
+            ("draft", "eagle-deployed"),
+        }
+        assert "pinned-model" in caplog.text
+
+        # Once nothing pins it, the next reconcile lets it go.
+        model = await Model.one_by_field(session, "name", "pinned-model")
+        await model.delete(session)
+        await reconcile_catalog(session, [custom])
+        assert await keys() == {("model_set", "Gemma")}
 
     await engine.dispose()
 
@@ -646,12 +727,25 @@ def test_override_rows_replace_the_packaged_runner_catalog(monkeypatch):
     ] == [("vllm", ["0.12.0"])]
 
 
+def _vllm_entry(service_version, platform="linux/amd64"):
+    """An entry on a real built-in backend's ``service``, so the reconcile's name
+    bridge resolves it — ``_SYNTHETIC_SERVICE`` is deliberately not a built-in."""
+    return {
+        "backend": "cuda",
+        "service": BackendEnum.VLLM.value.lower(),
+        "service_version": service_version,
+        "platform": platform,
+        "docker_image": f"img:{service_version}",
+    }
+
+
 @pytest.mark.asyncio
 async def test_reconcile_rewrites_the_table_from_the_merged_sources():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(
-            SQLModel.metadata.create_all, tables=[RunnerOverrideEntry.__table__]
+            SQLModel.metadata.create_all,
+            tables=[RunnerOverrideEntry.__table__, Model.__table__],
         )
 
     async with AsyncSession(engine) as session:
@@ -686,6 +780,129 @@ async def test_reconcile_rewrites_the_table_from_the_merged_sources():
         assert set(rows) == {"8.8.8", "7.7.7"}
         assert rows["8.8.8"].source_name == "custom"
         assert rows["8.8.8"].source_type == SourceTypeEnum.URL
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_coordinate_survives_only_while_a_deployment_pins_it(caplog):
+    """Survival takes the whole coordinate (a row per platform), spares nothing
+    nobody deploys, does not hold back the rest of the document, and is announced
+    rather than silent. It ends the moment the deployment does."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            SQLModel.metadata.create_all,
+            tables=[RunnerOverrideEntry.__table__, Model.__table__],
+        )
+
+    async with AsyncSession(engine) as session:
+
+        async def platforms_by_version():
+            grouped = {}
+            for row in await RunnerOverrideEntry.all(session):
+                grouped.setdefault(row.service_version, set()).add(row.platform)
+            return grouped
+
+        await reconcile_runner_overrides(
+            session,
+            [
+                _runner_source(
+                    "official",
+                    SourceTypeEnum.OFFICIAL,
+                    _vllm_entry("0.11.0", "linux/amd64"),
+                    _vllm_entry("0.11.0", "linux/arm64"),
+                    _vllm_entry("0.10.0"),
+                )
+            ],
+        )
+        await Model.create(
+            session,
+            Model(
+                name="pinned-model",
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id="org/repo",
+                backend=BackendEnum.VLLM.value,
+                backend_version="0.11.0",
+                replicas=1,
+            ),
+        )
+
+        # The document drops both old versions and publishes a new one. 0.11.0 is
+        # deployed, so both of its platform rows stay; 0.10.0 is nobody's, so it
+        # goes; 0.12.0 lands either way — the deployment does not freeze the update.
+        with caplog.at_level(logging.WARNING):
+            await reconcile_runner_overrides(
+                session,
+                [
+                    _runner_source(
+                        "official", SourceTypeEnum.OFFICIAL, _vllm_entry("0.12.0")
+                    )
+                ],
+            )
+        assert await platforms_by_version() == {
+            "0.11.0": {"linux/amd64", "linux/arm64"},
+            "0.12.0": {"linux/amd64"},
+        }
+        assert "pinned-model" in caplog.text
+
+        # Once nothing pins it, the next reconcile lets it go.
+        model = await Model.one_by_field(session, "name", "pinned-model")
+        await model.delete(session)
+        await reconcile_runner_overrides(
+            session,
+            [
+                _runner_source(
+                    "official", SourceTypeEnum.OFFICIAL, _vllm_entry("0.12.0")
+                )
+            ],
+        )
+        assert await platforms_by_version() == {"0.12.0": {"linux/amd64"}}
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_falling_back_to_the_packaged_catalog_keeps_nothing():
+    """Keeping a survivor here would defeat the fall-back it looks like it
+    protects: ``merged_runners`` steps the packaged catalog aside for any row at
+    all, so one row would leave the cluster on that single coordinate instead of
+    the complete baseline."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            SQLModel.metadata.create_all,
+            tables=[RunnerOverrideEntry.__table__, Model.__table__],
+        )
+
+    async with AsyncSession(engine) as session:
+        await reconcile_runner_overrides(
+            session,
+            [
+                _runner_source(
+                    "official",
+                    SourceTypeEnum.OFFICIAL,
+                    _vllm_entry("0.11.0"),
+                    _vllm_entry("0.9.0"),
+                )
+            ],
+        )
+        await Model.create(
+            session,
+            Model(
+                name="pinned-model",
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id="org/repo",
+                backend=BackendEnum.VLLM.value,
+                backend_version="0.11.0",
+                replicas=1,
+            ),
+        )
+
+        # What ``remote_enabled: false`` comes to: every source out of service, so
+        # the merge input is empty.
+        await reconcile_runner_overrides(session, [])
+        assert await RunnerOverrideEntry.all(session) == []
 
     await engine.dispose()
 

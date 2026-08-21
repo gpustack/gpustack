@@ -2,17 +2,18 @@ import re
 import shlex
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from pydantic import BaseModel, Field, RootModel
 from sqlalchemy import JSON, Column, ForeignKey, Integer, Text, UniqueConstraint
 from sqlmodel import SQLModel, Field as SQLField
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.source import SourceTypeEnum
 from .common import pydantic_column_type, PaginatedList
-from .models import BackendEnum, BackendSourceEnum
+from .models import BackendEnum, BackendSourceEnum, Model
 
 
 class ParameterFormatEnum(str, Enum):
@@ -400,6 +401,46 @@ def get_built_in_backend() -> List[InferenceBackend]:
         InferenceBackend(backend_name=BackendEnum.VOX_BOX.value, is_built_in=True),
         InferenceBackend(backend_name=BackendEnum.CUSTOM.value, is_built_in=True),
     ]
+
+
+def built_in_backend_names_by_service() -> Dict[str, str]:
+    """Built-in backend names keyed by their runner ``service``: a model row says
+    ``vLLM`` where the runner catalog says ``vllm``, the same bridge
+    ``get_runner_versions_and_configs`` crosses."""
+    return {
+        backend.backend_name.lower(): backend.backend_name
+        for backend in get_built_in_backend()
+        if backend.backend_name != BackendEnum.CUSTOM.value
+    }
+
+
+async def deployed_backend_versions(
+    session: AsyncSession,
+) -> Dict[Tuple[str, str], List[str]]:
+    """Every ``(backend_name, version)`` a live deployment pins, to the models
+    pinning it.
+
+    Read in one query rather than one per pair: a first custom runner document
+    takes the whole packaged catalog away at once — dozens of coordinates — and
+    asking about each separately is both slow and only ever answers about the
+    first violation.
+
+    Deliberately not ``check_backend_in_use``: that helper answers ``False`` on a
+    database error, which reads as "nothing is in use" — letting a destructive
+    write through, or deleting the rows a deployment runs on. A model pinning no
+    version is left out, because Auto resolves at placement rather than against a
+    fixed version.
+
+    Shared by the pre-write checks and the reconciles, so "in use" means one thing
+    on every path that can take content away.
+    """
+    deployed: Dict[Tuple[str, str], List[str]] = {}
+    for model in await Model.all(session):
+        if model.replicas > 0 and model.backend_version:
+            deployed.setdefault((model.backend, model.backend_version), []).append(
+                model.name
+            )
+    return deployed
 
 
 def is_built_in_backend(backend_name: Optional[str]) -> bool:
