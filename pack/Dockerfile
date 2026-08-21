@@ -294,6 +294,42 @@ ENV S6_KEEP_ENV=1 \
 # platform explicitly; the build host itself can be any platform.
 FROM --platform=linux/amd64 rocm/dev-ubuntu-22.04:${GPUSTACK_RUNTIME_ROCM_VERSION} AS rocm-base
 
+# Stage Docs
+#
+# Builds the user documentation the server serves at /help/, so an air-gapped
+# deployment has it. Kept out of the gpustack stage because mkdocs-material and
+# its plugins are needed to build the site and never to serve it: shipping them
+# would add a few hundred packages a vulnerability scan has to answer for.
+#
+# Example build command:
+#   docker build --tag=gpustack/gpustack:docs --file=pack/Dockerfile --target=docs --progress=plain .
+#
+FROM base AS docs
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+COPY docs/ /workspace/docs/
+COPY hack/build-docs.sh /workspace/hack/build-docs.sh
+COPY mkdocs.yml mkdocs.offline.yml pyproject.toml uv.lock /workspace/
+
+WORKDIR /workspace
+
+RUN --mount=type=cache,target=/root/.cache \
+    --mount=type=cache,target=/workspace/.cache <<EOF
+    # Build the offline documentation site
+
+    export UV_NO_CACHE=0
+    export UV_LINK_MODE=copy
+
+    # The dependency group only, never the project: the site does not import
+    # gpustack, and installing it here would drag in its whole runtime tree.
+    uv sync --frozen --only-group dev --no-install-project
+
+    # UV_NO_SYNC stops the `uv run` inside the script from doing it anyway. The
+    # cache mount above is where the privacy plugin keeps the external assets it
+    # downloads, so a rebuild does not depend on those hosts being up.
+    UV_NO_SYNC=1 bash hack/build-docs.sh --offline
+EOF
+
 FROM ${GPUSTACK_BASE_IMAGE} AS gpustack
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
@@ -747,6 +783,24 @@ ENV GPUSTACK_RUNTIME_LOG_EXCEPTION="false" \
 
 COPY --from=gpustack-operator /usr/bin/gpustack-operator /usr/bin/gpustack-operator
 COPY --chmod=755 pack/entrypoint.sh /usr/bin/entrypoint.sh
+
+## Install the user documentation
+#
+# Last of the content on purpose: the site is rebuilt whenever docs/ changes, and
+# a layer this size sitting above the accelerator layers would make a typo in a
+# guide cost a full image rebuild.
+
+COPY --from=docs /workspace/gpustack/help /tmp/help
+RUN <<EOF
+    # Install the user documentation
+
+    # Beside the UI inside the installed package, which is where
+    # gpustack.routes.ui looks for it. The wheel deliberately does not carry the
+    # site -- see .gitignore and the artifacts list in pyproject.toml -- so the
+    # image is what places it.
+    cp -a /tmp/help "$(pip show gpustack | grep Location: | head -n 1 | cut -d" " -f 2)/gpustack/help"
+    rm -rf /tmp/help
+EOF
 
 ## KUBE_FEATURE_WatchListClient=false: Disable WatchListClient to avoid potential issues with Kubernetes API server versions that do not support it.
 ENV KUBE_FEATURE_WatchListClient="false"
