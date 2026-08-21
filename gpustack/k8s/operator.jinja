@@ -109,6 +109,16 @@ data:
         app.kubernetes.io/name: gpustack-operator-worker
     spec:
       replicas: 1
+      {#- Kept as a Jinja comment on purpose: this template is post-processed by ytt,
+          and ytt rejects plain '#' YAML comments in any file that carries '#@'
+          annotations. The worker fronts the aggregated API and finishes its whole
+          install (Prepare) before it serves, so a RollingUpdate keeps the OLD replica
+          answering the old API until the new one turns Ready — which a failed install
+          makes never. Recreate takes the old replica down first: the API pauses during
+          an upgrade instead of serving a stale surface. Mirrors the chart's
+          worker.strategyType default. #}
+      strategy:
+        type: Recreate
       selector:
         matchLabels:
           app.kubernetes.io/part-of: gpustack-operator
@@ -231,8 +241,20 @@ data:
               ports:
                 - name: https
                   containerPort: 31443
+              {#- Jinja comment, not '#', because ytt post-processes this template and
+                  rejects plain YAML comments in annotated files. The startup budget has
+                  to cover everything Prepare() does before the server serves, because
+                  none of it answers this probe. In the worst case: an image-mode
+                  install of the bundled chart (which can also self-heal a stranded
+                  Kueue), plus the two custom resources it then installs — each polls
+                  for a CRD another component owns for up to
+                  cpuInfoNodeFeatureRuleTimeout / nodeDevicesAdmissionCheckTimeout (5
+                  minutes each, sequential). 180 x 5s = 900s leaves 300s for the
+                  install on top of those 600s. A budget below their sum turns "waiting
+                  for the CRD owner" into a CrashLoopBackOff whose cause never
+                  prints. #}
               startupProbe:
-                failureThreshold: 10
+                failureThreshold: 180
                 periodSeconds: 5
                 httpGet:
                   scheme: HTTPS
