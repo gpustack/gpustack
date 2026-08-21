@@ -2,12 +2,33 @@ import os
 import time
 import pytest
 from tenacity import retry, stop_after_attempt, wait_fixed
+from gpustack.schemas.catalog_source import (
+    KIND_MODEL_SET,
+    build_catalog_entries,
+    normalize_catalog_yaml,
+)
+from gpustack.schemas.model_sets import ModelSet
 from gpustack.schemas.models import SourceEnum
-from gpustack.server.catalog import get_model_set_specs, init_model_catalog
+from gpustack.server.catalog import read_builtin_catalog_text
+from gpustack.schemas.source import SourceContent, SourceTypeEnum
 from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
 from gpustack.utils.compat_importlib import pkg_resources
 from huggingface_hub import HfApi
 from modelscope.hub.api import HubApi
+
+
+def _packaged_model_set_specs(catalog_file=None):
+    """Model set name -> specs, loaded from the packaged catalog via the source
+    pipeline (no DB). Mirrors what CatalogSourceController materializes."""
+    content = normalize_catalog_yaml(read_builtin_catalog_text(catalog_file))
+    entries = build_catalog_entries(
+        [SourceContent("builtin", SourceTypeEnum.BUILTIN, content)]
+    )
+    return {
+        entry.name: ModelSet(**entry.payload).specs
+        for entry in entries
+        if entry.kind == KIND_MODEL_SET
+    }
 
 
 @pytest.mark.skipif(
@@ -15,15 +36,13 @@ from modelscope.hub.api import HubApi
     reason="Skipped by default unless HF_TOKEN is set. Unauthed requests are rate limited.",
 )
 def test_model_catalog():
-    init_model_catalog()
-
-    model_set_specs = get_model_set_specs()
+    model_set_specs = _packaged_model_set_specs()
 
     Hfapi = HfApi()
 
     model_name_filter = os.getenv("TEST_CATALOG_MODEL_NAME_FILTER")
-    for model_set_id, model_specs in model_set_specs.items():
-        assert model_set_id is not None
+    for model_set_name, model_specs in model_set_specs.items():
+        assert model_set_name
         assert len(model_specs) > 0
         for model_spec in model_specs:
             assert (
@@ -60,15 +79,13 @@ def test_model_catalog_modelscope():
         "model-catalog-modelscope.yaml"
     )
 
-    init_model_catalog(str(modelscope_catalog_file))
-
-    model_set_specs = get_model_set_specs()
+    model_set_specs = _packaged_model_set_specs(str(modelscope_catalog_file))
 
     Msapi = HubApi()
 
     model_name_filter = os.getenv("TEST_CATALOG_MODEL_NAME_FILTER")
-    for model_set_id, model_specs in model_set_specs.items():
-        assert model_set_id is not None
+    for model_set_name, model_specs in model_set_specs.items():
+        assert model_set_name
         assert len(model_specs) > 0
         for model_spec in model_specs:
             assert (

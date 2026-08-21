@@ -18,7 +18,7 @@ from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack import envs
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
-from gpustack.server.catalog import model_set_specs_by_key
+from gpustack.server.catalog import get_catalog_spec_by_source_key
 from gpustack.schemas.model_evaluations import (
     ModelEvaluationResult,
     ModelSpec,
@@ -198,7 +198,7 @@ async def evaluate_model(
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
-    if set_default_spec(model):
+    if await set_default_spec(session, model):
         result.default_spec = model.model_copy()
 
     await set_gguf_model_file_path(config, model)
@@ -227,7 +227,7 @@ async def evaluate_model(
             inst for inst in model_instances if inst.cluster_id == cluster_id
         ]
         candidate, schedule_messages = await scheduler.find_candidate(
-            config, model, cluster_workers, cluster_model_instances
+            session, config, model, cluster_workers, cluster_model_instances
         )
         if not candidate:
             result.scheduling_messages.extend(schedule_messages)
@@ -422,11 +422,13 @@ async def evaluate_model_input(
     return True, []
 
 
-def set_default_spec(model: ModelSpec) -> bool:
+async def set_default_spec(session: AsyncSession, model: ModelSpec) -> bool:
     """
     Set the default spec for the model if it matches the catalog spec.
     """
-    model_spec_in_catalog = model_set_specs_by_key.get(model.model_source_key)
+    model_spec_in_catalog = await get_catalog_spec_by_source_key(
+        session, model.model_source_key
+    )
 
     modified = False
     if model_spec_in_catalog:

@@ -131,6 +131,8 @@ class Config(WorkerConfig, BaseSettings):
                               Retained for backwards compatibility.
         disable_update_check: Disable update check.
         update_check_url: URL to check for updates.
+        ota_server_url: URL of the OTA server the official content sources are read
+                        from. Defaults to the public OTA server.
         model_catalog_file: Path or URL to the model catalog file.
 
         token: Shared secret used to register worker.
@@ -200,6 +202,7 @@ class Config(WorkerConfig, BaseSettings):
     disable_update_check: bool = False
     disable_openapi_docs: bool = False
     update_check_url: Optional[str] = None
+    ota_server_url: Optional[str] = None
     model_catalog_file: Optional[str] = None
     enable_cors: bool = False
     allow_origins: Optional[List[str]] = ['*']

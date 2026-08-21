@@ -1,11 +1,12 @@
 import logging
 import math
-from typing import List, Tuple, Optional, Dict
+from typing import List, Set, Tuple, Optional, Dict
 
 import yaml
 from fastapi import APIRouter, Body
 from gpustack_runner.runner import ServiceVersionedRunner
 from pydantic import ValidationError
+from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -31,15 +32,35 @@ from gpustack.schemas.inference_backend import (
     InferenceBackendsPublic,
     VersionConfig,
     VersionConfigDict,
+    built_in_backend_names_by_service,
+    deployed_backend_versions,
     get_built_in_backend,
     InferenceBackendPublic,
     VersionListItem,
     is_built_in_backend,
 )
 from gpustack.schemas.models import BackendEnum, Model, BackendSourceEnum
+from gpustack.schemas.runner_source import (
+    CUSTOM_RUNNER_SOURCE_NAME,
+    InferenceRunnerSource,
+    RunnerOverrideEntry,
+    RunnerOverrideEntriesPublic,
+    proposed_runner_versions,
+    runner_versions,
+    merged_service_runners,
+    normalize_runner_json,
+)
+from gpustack.schemas.inference_backend_source import (
+    BUILTIN_BACKEND_SOURCE_NAME,
+    CUSTOM_BACKEND_SOURCE_NAME,
+    InferenceBackendSource,
+    compute_disappearing_backend_versions,
+    normalize_backend_yaml,
+)
 from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
-from gpustack_runner import list_service_runners
+from gpustack.schemas.source import SourceContent, SourceTypeEnum
+from gpustack.server.sources.routes import SourceConfigSpec
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime.detector import ManufacturerEnum
 
@@ -122,15 +143,152 @@ async def check_backend_in_use(
         return False, []
 
 
+async def _source_owned_versions(session: AsyncSession) -> Set[Tuple[str, str]]:
+    """The ``(backend_name, version)`` pairs the community sources currently own.
+
+    A version is source-owned when ``built_in_frameworks`` is not None — the very
+    rule the upsert's smart merge uses to tell a source version from one the user
+    added by hand. Not ``if config.built_in_frameworks``: a source version that
+    declares no framework normalizes to ``[]``, and treating that as "not ours"
+    would quietly exclude it from the check below.
+    """
+    owned: Set[Tuple[str, str]] = set()
+    for backend in await InferenceBackend.all(session):
+        if (
+            backend.backend_source != BackendSourceEnum.COMMUNITY
+            or backend.owner_principal_id is not None
+            or not backend.version_configs
+        ):
+            continue
+        for version, version_config in backend.version_configs.root.items():
+            if version_config.built_in_frameworks is not None:
+                owned.add((backend.backend_name, version))
+    return owned
+
+
+async def _reject_versions_in_use(
+    session: AsyncSession, disappearing: Set[Tuple[str, str]]
+) -> None:
+    """Refuse when any of the ``(backend_name, version)`` pairs about to
+    disappear is still carrying a deployment. Shared by the community-backend
+    and the built-in-backend checks so one wording, and one definition of "in
+    use", covers both.
+
+    Every offending pair is named in one message: an admin whose document is
+    missing three deployed versions should not have to submit three times to
+    learn all three.
+    """
+    if not disappearing:
+        return
+    deployed = await deployed_backend_versions(session)
+    blocked = [
+        f"version name '{version}' of backend '{backend_name}' "
+        f"(used by: {', '.join(sorted(deployed[(backend_name, version)]))})"
+        for backend_name, version in sorted(disappearing)
+        if (backend_name, version) in deployed
+    ]
+    if blocked:
+        raise BadRequestException(
+            message="Cannot remove versions that are currently being used by "
+            f"deployed models: {'; '.join(blocked)}",
+        )
+
+
+async def _reject_taking_away_a_version_in_use(
+    session: AsyncSession, proposed: List[SourceContent]
+) -> None:
+    """Refuse a source write that would take a running model's version away.
+
+    Injected as the source configuration's ``pre_write_check``, so all three
+    manual ways to shrink the merged set — a smaller document, the baseline
+    switched off, a delete — are covered by this one check, judged against the
+    merge the write would actually produce.
+
+    The probe's automatic path deliberately isn't covered: one deployment must
+    not be able to freeze official updates. Each reconcile carries its own
+    deployments instead — a dropped community backend is downgraded rather than
+    deleted, a pinned runner coordinate or draft model is kept — so that path
+    takes nothing in use away either.
+    """
+    await _reject_versions_in_use(
+        session,
+        compute_disappearing_backend_versions(
+            proposed, await _source_owned_versions(session)
+        ),
+    )
+
+
+async def _reject_taking_away_a_runner_version_in_use(
+    session: AsyncSession, proposed: List[SourceContent]
+) -> None:
+    """The same check for built-in backend versions, which the runner catalog
+    supplies rather than ``version_configs``.
+
+    It matters more here: a custom runner document replaces the packaged catalog
+    outright, so a forgotten version leaves every model pinned to it with no
+    image to schedule — a failure that surfaces at the next placement, far from
+    the write that caused it.
+
+    It compares ``(service, service_version)`` only, which is the coordinate a
+    model actually pins. A document that keeps a version but only for the wrong
+    platform or accelerator still passes here and still fails to resolve at
+    placement; catching that would need the cluster's hardware inventory, which
+    is a scheduling question rather than a write-time one.
+    """
+    names = built_in_backend_names_by_service()
+
+    def named(versions: Set[Tuple[str, str]]) -> Set[Tuple[str, str]]:
+        return {
+            (names[service], version)
+            for service, version in versions
+            if service in names
+        }
+
+    current = named(runner_versions(await RunnerOverrideEntry.all(session)))
+    await _reject_versions_in_use(
+        session, current - named(proposed_runner_versions(proposed))
+    )
+
+
+# Community-backend source configuration, exposed through
+# ``routes/ota_sources.py``. The leader's InferenceBackendController reconciles
+# the source rows into the Platform-NULL community backends (smart-merge).
+COMMUNITY_BACKEND_SPEC = SourceConfigSpec(
+    source_cls=InferenceBackendSource,
+    normalize=normalize_backend_yaml,
+    builtin_name=BUILTIN_BACKEND_SOURCE_NAME,
+    custom_name=CUSTOM_BACKEND_SOURCE_NAME,
+    # URL-only: a community-backend source is offline-override / official, never
+    # an inline document a user hand-writes.
+    allowed_types=(SourceTypeEnum.URL,),
+    pre_write_check=_reject_taking_away_a_version_in_use,
+)
+
+# The built-in-backend (runner) version source. URL-only and with no BUILTIN row
+# — its baseline is the in-code gpustack-runner catalog. Reopened narrowly for
+# offline / version-chasing overrides; a user never hand-writes version records
+# (that footgun stays shut behind the absent FILE type).
+# (Distinct from BUILTIN_BACKEND_SOURCE_NAME, which is the community source's own
+# packaged-baseline row, not this runner source.)
+BUILTIN_BACKEND_SPEC = SourceConfigSpec(
+    source_cls=InferenceRunnerSource,
+    normalize=normalize_runner_json,
+    custom_name=CUSTOM_RUNNER_SOURCE_NAME,
+    allowed_types=(SourceTypeEnum.URL,),
+    pre_write_check=_reject_taking_away_a_runner_version_in_use,
+)
+
+
 def get_runner_versions_and_configs(
-    backend_name: str, **kwargs
+    backend_name: str, overrides: List[RunnerOverrideEntry], **kwargs
 ) -> Tuple[Dict[str, ServiceVersionedRunner], VersionConfigDict, Optional[str]]:
     """
     Get runner versions and version configs for a given backend.
 
     Args:
         backend_name: The name of the backend service
-        kwargs: Others keyword arguments to pass to list_service_runners()
+        overrides: Official override rows layered over the packaged catalog
+        kwargs: Others keyword arguments to pass to merged_service_runners()
 
     Returns:
         A tuple containing:
@@ -138,8 +296,10 @@ def get_runner_versions_and_configs(
         - VersionConfigDict with version configurations
         - Default version (first available version or None)
     """
-    runners_list = list_service_runners(
-        service=backend_name.lower(),
+    service = backend_name.lower()
+    runners_list = merged_service_runners(
+        overrides,
+        service=service,
         **kwargs,
     )
     runner_versions: Dict[str, ServiceVersionedRunner] = {}
@@ -153,6 +313,9 @@ def get_runner_versions_and_configs(
                 backend_list = [
                     f"{backend_runner.backend}" for backend_runner in version.backends
                 ]
+                # No source badge: a built-in backend version is either packaged
+                # or corrected by the official layer, and platform content is not
+                # attributed to a source the user configured.
                 version_configs.root[version.version] = VersionConfig(
                     built_in_frameworks=backend_list,
                 )
@@ -194,17 +357,18 @@ def get_runner_deprecate(runners: List[ServiceVersionedRunner]) -> bool:
 
 
 def merge_list_runners(  # noqa: C901
-    backend_name: str, workers: List[Worker]
+    backend_name: str, workers: List[Worker], overrides: List[RunnerOverrideEntry]
 ) -> Tuple[Dict[str, List[ServiceVersionedRunner]], VersionConfigDict, Optional[str]]:
     """
     Merge runner versions and configs from multiple workers.
 
     Extracts gpu.type and gpu.runtime_version from each worker's GPU devices
-    and uses them as query conditions for list_service_runners.
+    and uses them as query conditions for merged_service_runners.
 
     Args:
         backend_name: The name of the backend service
         workers: List of workers to extract GPU information from
+        overrides: Runner override rows to fill-gap merge with the packaged catalog
 
     Returns:
         A tuple containing:
@@ -237,7 +401,7 @@ def merge_list_runners(  # noqa: C901
 
         # List all versions regardless of the detected runtime version.
         runner_versions, version_configs, default_version = (
-            get_runner_versions_and_configs(backend_name, **kwargs)
+            get_runner_versions_and_configs(backend_name, overrides, **kwargs)
         )
 
         # For the first condition, use its results as base
@@ -275,6 +439,23 @@ def merge_list_runners(  # noqa: C901
     return merged_runner_versions, merged_version_configs, merged_default_version
 
 
+async def get_runner_override_entries(
+    params: ListParamsDep,
+) -> RunnerOverrideEntriesPublic:
+    """Worker-facing read-only list of runner override entries.
+
+    Workers fetch this fresh at deploy time (unpaginated); any row here replaces
+    the packaged catalog outright in ``_resolve_image``, as it does on the server.
+    Mounted on the worker client router in ``routes.py``.
+    """
+    async with async_session() as session:
+        return await RunnerOverrideEntry.paginated_by_query(
+            session=session,
+            page=params.page,
+            per_page=params.perPage,
+        )
+
+
 @router.get("/list", response_model=InferenceBackendResponse)
 async def list_backend_configs(  # noqa: C901
     session: SessionDep,
@@ -298,6 +479,8 @@ async def list_backend_configs(  # noqa: C901
         workers = await Worker.all_by_field(session, "cluster_id", cluster_id)
     else:
         workers = await Worker.all(session)
+
+    overrides = await RunnerOverrideEntry.all(session)
 
     # Process all backends from database (includes both built-in and custom backends)
     try:
@@ -366,9 +549,12 @@ async def list_backend_configs(  # noqa: C901
             if effective_version_configs and effective_version_configs.root:
                 versions = [
                     VersionListItem(
-                        version=version, env=backend.get_backend_env(version)
+                        version=version,
+                        env=backend.get_backend_env(version),
+                        source_name=version_config.source_name,
+                        source_type=version_config.source_type,
                     )
-                    for version in effective_version_configs.root.keys()
+                    for version, version_config in effective_version_configs.root.items()
                 ]
 
             if backend.is_built_in:
@@ -376,6 +562,7 @@ async def list_backend_configs(  # noqa: C901
                 runner_versions, version_configs, default_version = merge_list_runners(
                     backend.backend_name,
                     workers,
+                    overrides,
                 )
                 # Merge runner versions with existing versions
                 for version, config in version_configs.root.items():
@@ -432,6 +619,8 @@ async def list_backend_configs(  # noqa: C901
                     default_env=backend.default_env,
                     parameter_format=backend.parameter_format,
                     common_parameters=backend.common_parameters,
+                    source_name=backend.source_name,
+                    source_type=backend.source_type,
                 )
 
             items.append(backend_item)
@@ -513,10 +702,12 @@ def _enrich_built_in_with_runner_versions(
     db_backend: InferenceBackendPublic,
     backend_name: str,
     with_deprecated: bool,
+    overrides: List[RunnerOverrideEntry],
 ) -> None:
     """Layer runner-discovered versions on top of the DB row in place."""
     _, runner_versions, default_version = get_runner_versions_and_configs(
         backend_name,
+        overrides,
         with_deprecated=with_deprecated,
     )
     for runner_version, version_config in runner_versions.root.items():
@@ -656,11 +847,12 @@ async def merge_runner_versions_to_db(
         for b in get_built_in_backend()
         if b.backend_name != BackendEnum.CUSTOM.value
     }
+    overrides = await RunnerOverrideEntry.all(session)
     merged_backends: List[InferenceBackendPublic] = []
     for public in publics:
         if public.backend_name in built_in_names:
             _enrich_built_in_with_runner_versions(
-                public, public.backend_name, with_deprecated
+                public, public.backend_name, with_deprecated, overrides
             )
         else:
             _migrate_community_built_in_versions(public)
@@ -670,7 +862,7 @@ async def merge_runner_versions_to_db(
 
 
 def _generate_framework_index_map(  # noqa: C901
-    version_config_dicts: List[Dict[str, VersionConfig]]
+    version_config_dicts: List[Dict[str, VersionConfig]],
 ) -> Dict[str, List[str]]:
     """
     Generate framework index map from a list of version config dictionaries.
@@ -1181,7 +1373,12 @@ async def update_inference_backend(  # noqa: C901
     if backend.backend_source == BackendSourceEnum.CUSTOM or (
         backend.backend_source is None and not backend.is_built_in
     ):
-        validate_custom_suffix(backend_in.backend_name, None)
+        # A row a source downgraded to custom keeps the source's name, which
+        # carries no ``-custom`` suffix: requiring one would reject every write
+        # to the row until a source adopts it back. The name itself is checked
+        # on create, and cannot be changed above, so nothing is left unguarded.
+        if backend.source_name is None:
+            validate_custom_suffix(backend_in.backend_name, None)
     else:
         validate_custom_suffix(None, backend_in.version_configs)
 
@@ -1453,7 +1650,10 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         if backend.backend_source == BackendSourceEnum.CUSTOM or (
             backend.backend_source is None and not backend.is_built_in
         ):
-            validate_custom_suffix(yaml_data['backend_name'], None)
+            # Same exemption as the JSON update route: a downgraded row's name
+            # comes from the source and carries no ``-custom`` suffix.
+            if backend.source_name is None:
+                validate_custom_suffix(yaml_data['backend_name'], None)
         else:
             validate_custom_suffix(None, yaml_data.get('version_configs'))
 
