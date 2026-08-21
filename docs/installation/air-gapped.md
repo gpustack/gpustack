@@ -20,7 +20,7 @@ If your system supports a container toolkit, install and configure it as needed 
 
 ### Container Images
 
-GPUStack offers an [Image Selector](https://docs.gpustack.ai/latest/image-selector/) site to help users easily pick the images they want to download. It runs in the browser, so use it from the machine that still has internet access — the one you sync images from. For more advanced or automated syncing, GPUStack also provides image management commands:
+GPUStack offers an [Image Selector](../image-selector/index.html) to help users easily pick the images they want to download. It runs entirely in the browser against data shipped with these docs, so it works without internet access; its version list only covers releases up to the one it shipped with. For more advanced or automated syncing, GPUStack also provides image management commands:
 
 - `gpustack copy-images`: Sync images from one registry to another
 - `gpustack save-images`: Download images and save them locally

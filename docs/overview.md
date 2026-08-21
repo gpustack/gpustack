@@ -74,7 +74,7 @@ GPUStack's automated engine selection and parameter optimization deliver strong 
 
 ![h200-throughput-comparison](assets/h200-throughput-comparison.png)
 
-For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
+For detailed benchmarking methods and results, visit our [Inference Performance Lab](performance-lab/overview.md).
 
 ## Supported Accelerators
 
