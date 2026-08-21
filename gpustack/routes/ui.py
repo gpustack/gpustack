@@ -215,8 +215,11 @@ def _content_type_for(path: str) -> str:
     return media_type
 
 
+PACKAGE_DIR = os.path.dirname(os.path.dirname(__file__))
+
+
 def register(app: FastAPI):
-    ui_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ui")
+    ui_dir = os.path.join(PACKAGE_DIR, "ui")
     if not os.path.isdir(ui_dir):
         raise RuntimeError(f"directory '{ui_dir}' does not exist")
 
@@ -229,6 +232,22 @@ def register(app: FastAPI):
             f"/{name}",
             PrecompressedStaticFiles(directory=os.path.join(ui_dir, name)),
             name=name,
+        )
+
+    help_dir = os.path.join(PACKAGE_DIR, "help")
+    if os.path.isdir(help_dir):
+        # Absence is not an error, unlike the UI above: the documentation is an
+        # optional build artifact, and a server without it has to start and
+        # serve the console regardless — leaving /help a plain 404.
+        #
+        # html=True is what makes the site addressable at all. MkDocs builds it
+        # with use_directory_urls, so every page is an index.html inside a
+        # directory and every link points at the directory; without html mode
+        # each of those is a 404.
+        app.mount(
+            "/help",
+            PrecompressedStaticFiles(directory=help_dir, html=True),
+            name="help",
         )
 
     @app.get("/", include_in_schema=False)
