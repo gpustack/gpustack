@@ -694,6 +694,42 @@ def test_worker_ports_override_propagates_everywhere():
 
 
 # ---------------------------------------------------------------------------
+# NVIDIA MIG capability env — the NVIDIA container runtime only exposes the
+# driver's MIG capability subtree to a container that declares it manages MIG,
+# so without these the worker cannot even read a MIG instance the Operator
+# carved. The declaration is that one runtime's contract, so it must land on
+# the nvidia DaemonSet and on nothing else.
+# ---------------------------------------------------------------------------
+
+
+def test_nvidia_daemonset_declares_mig_capabilities():
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    container = _worker_container(_daemonsets(docs)[f"{WORKER_DS_BASENAME}-nvidia"])
+    env = _container_env_map(container)
+    assert env["NVIDIA_MIG_CONFIG_DEVICES"] == "all"
+    assert env["NVIDIA_MIG_MONITOR_DEVICES"] == "all"
+
+
+def test_cpu_daemonset_omits_mig_capabilities():
+    """Rendered in the same pass as the nvidia DS, so this pins the branch to
+    the vendor worker rather than to the render as a whole."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    container = _worker_container(_daemonsets(docs)[WORKER_DS_BASENAME])
+    env = _container_env_map(container)
+    assert "NVIDIA_MIG_CONFIG_DEVICES" not in env
+    assert "NVIDIA_MIG_MONITOR_DEVICES" not in env
+
+
+def test_non_nvidia_daemonset_omits_mig_capabilities():
+    """A sibling vendor DS in a multi-vendor render carries neither."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA, ManufacturerEnum.ASCEND])
+    container = _worker_container(_daemonsets(docs)[f"{WORKER_DS_BASENAME}-ascend"])
+    env = _container_env_map(container)
+    assert "NVIDIA_MIG_CONFIG_DEVICES" not in env
+    assert "NVIDIA_MIG_MONITOR_DEVICES" not in env
+
+
+# ---------------------------------------------------------------------------
 # GPU Service operator knobs — the three settings GPUStack manages on a GPU
 # Service cluster. Each is tri-state: unset means GPUStack does not manage it
 # and the cluster's own value stands, which is a different instruction from an
