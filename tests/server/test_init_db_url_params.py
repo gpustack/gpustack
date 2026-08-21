@@ -89,13 +89,16 @@ def test_search_path_option_still_becomes_a_server_setting():
 def test_unsupported_parameter_is_reported_not_silently_dropped(caplog):
     """A parameter asyncpg cannot accept is still dropped, because forwarding it
     would break startup, but it gets named in the log instead of vanishing.
+
+    The name here is deliberately one asyncpg will never grow, so the test keeps
+    checking the behaviour rather than the status of one real parameter.
     """
     with caplog.at_level("WARNING"):
         db_url, connect_args = build_postgres_connect_args(
-            f"{BASE_URL}?connect_timeout=10", opengauss=False
+            f"{BASE_URL}?invalid_parameter=10", opengauss=False
         )
-    assert "connect_timeout" not in effective_asyncpg_kwargs(db_url, connect_args)
-    assert "connect_timeout" in caplog.text
+    assert "invalid_parameter" not in effective_asyncpg_kwargs(db_url, connect_args)
+    assert "invalid_parameter" in caplog.text
 
 
 def test_url_scheme_is_rewritten_for_asyncpg():
