@@ -2,6 +2,8 @@
 
 GPUStack can be installed in an air-gapped (offline) environment with no internet access.
 
+Once it is running, it serves this documentation itself — see [Documentation](#documentation) below.
+
 ## Prerequisites
 
 ### Driver
@@ -18,7 +20,7 @@ If your system supports a container toolkit, install and configure it as needed 
 
 ### Container Images
 
-GPUStack offers an [Image Selector](https://docs.gpustack.ai/latest/image-selector/) site to help users easily pick the images they want to download. For more advanced or automated syncing, GPUStack also provides image management commands:
+GPUStack offers an [Image Selector](https://docs.gpustack.ai/latest/image-selector/) site to help users easily pick the images they want to download. It runs in the browser, so use it from the machine that still has internet access — the one you sync images from. For more advanced or automated syncing, GPUStack also provides image management commands:
 
 - `gpustack copy-images`: Sync images from one registry to another
 - `gpustack save-images`: Download images and save them locally
@@ -176,3 +178,13 @@ set the following environment variable when starting the GPUStack worker to allo
      <your_internal_registry>/gpustack/gpustack \
      --system-default-container-registry <your_internal_registry>
 ```
+
+## Documentation
+
+The server carries this documentation and serves it at `/help/`, so an air-gapped environment does not need access to the online site:
+
+```
+http://<your_gpustack_server>/help/
+```
+
+It is the same documentation as the online site, at the version the server image was built from, and its search works offline.
