@@ -81,12 +81,19 @@ async def init_db(db_url: str):
 def is_read_only_transaction_error(exc: BaseException) -> bool:
     """Report whether the error says the server refuses to accept writes.
 
-    SQLAlchemy wraps the driver error in its own type and keeps the asyncpg
-    exception as ``__cause__``, so both are inspected. Keying on the SQLSTATE
-    rather than on the exception class also covers PostgreSQL-compatible
-    backends that raise an error type of their own.
+    Three places are checked because the SQLSTATE turns up in a different one
+    depending on where the error was caught. The ``handle_error`` event hands
+    over the driver exception itself, the asyncpg dialect keeps the underlying
+    exception as ``__cause__``, and anything catching SQLAlchemy's wrapped
+    ``DBAPIError`` finds it as ``orig``. Keying on the SQLSTATE rather than on
+    the exception class also covers PostgreSQL-compatible backends that raise
+    an error type of their own.
     """
-    for candidate in (exc, getattr(exc, "__cause__", None)):
+    for candidate in (
+        exc,
+        getattr(exc, "__cause__", None),
+        getattr(exc, "orig", None),
+    ):
         if getattr(candidate, "sqlstate", None) == READ_ONLY_SQL_TRANSACTION_SQLSTATE:
             return True
     return False
