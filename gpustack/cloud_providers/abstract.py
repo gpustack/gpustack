@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from abc import ABC, abstractmethod
 from enum import Enum
 from gpustack.schemas.clusters import Volume
@@ -12,7 +12,21 @@ class InstanceState(str, Enum):
     STOPPING = "stopping"
     STOPPED = "stopped"
     TERMINATED = "terminated"
+    # Provisioning failed on the provider side. Terminal: unlike CREATED it
+    # will never become RUNNING, so waiters must give up instead of polling to
+    # their timeout.
+    FAILED = "failed"
     UNKNOWN = "unknown"
+
+
+class InstanceProvisioningFailed(Exception):
+    """
+    The provider gave up creating the instance.
+
+    Distinct from a timeout: waiting longer or polling again cannot help, so
+    callers should surface it instead of retrying. The provisioning controller
+    treats it as terminal and moves the worker to ERROR.
+    """
 
 
 @dataclass
@@ -21,9 +35,15 @@ class CloudInstanceCreate:
     image: str
     type: str
     region: str
-    ssh_key_id: str
+    # None when the provider has no SSH key API, i.e. create_ssh_key
+    # registered nothing to attach by id.
+    ssh_key_id: Optional[str] = None
     user_data: Optional[str] = None
     labels: Optional[Dict[str, str]] = None
+    # Token identifying one attempt at creating this instance, for providers
+    # that offer replay protection. Stable across retries of the same attempt,
+    # different for a later one. See construct_cloud_instance.
+    idempotency_key: Optional[str] = None
 
 
 @dataclass
@@ -33,6 +53,12 @@ class CloudInstance(CloudInstanceCreate):
     ip_address: Optional[str] = None
     ssh_key_id: Optional[str] = None
     volume_ids: Optional[List[str]] = None
+    # ``(host, port)`` SSH actually answers on, when that is not
+    # ``ip_address:22``. Providers that publish instances behind a shared
+    # address with mapped ports need it, and it is the only way a caller can
+    # build a working connection hint. None means use ip_address:22.
+    ssh_endpoint: Optional[Tuple[str, int]] = None
+    ssh_user: Optional[str] = None
 
 
 class ProviderClientBase(ABC):
@@ -72,7 +98,16 @@ class ProviderClientBase(ABC):
         pass
 
     @abstractmethod
-    async def create_ssh_key(self, worker_name: str, public_key: str) -> str:
+    async def create_ssh_key(self, worker_name: str, public_key: str) -> Optional[str]:
+        """
+        Register the public key with the provider and return its id, which the
+        caller records on ``Credential.external_id``.
+
+        Return None when there is nothing to register, i.e. the provider has no
+        SSH key API and the key travels inside the user data instead (see
+        :meth:`construct_user_data`). The caller then leaves ``external_id``
+        NULL and skips :meth:`delete_ssh_key` on teardown.
+        """
         pass
 
     @abstractmethod
@@ -97,7 +132,19 @@ class ProviderClientBase(ABC):
         os_image: str,
         worker_name: str,
         secret_configs: Dict[str, Any] = {},
+        ssh_public_key: Optional[str] = None,
     ) -> UserDataTemplate:
+        """
+        Build the cloud-init document for a worker.
+
+        ``ssh_public_key`` is the key created by :meth:`create_ssh_key`, handed
+        over so each provider can decide how the instance ends up trusting it.
+        The base implementation ignores it: providers with an SSH key API
+        (DigitalOcean) pass the key's id on ``CloudInstanceCreate.ssh_key_id``
+        and let the API inject it. A provider without such an API overrides
+        this and calls ``user_data.add_ssh_authorized_keys(ssh_public_key)``,
+        so the key travels inside the user data instead.
+        """
         user_data = UserDataTemplate(
             server_url=server_url,
             token=token,

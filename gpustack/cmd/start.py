@@ -302,6 +302,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         help=argparse.SUPPRESS,
         default=get_gpustack_env("GATEWAY_INGRESS_CLASS"),
     )
+    server_group.add_argument(
+        "--shuihua-api-base-url",
+        type=str,
+        help=argparse.SUPPRESS,
+        default=get_gpustack_env("SHUIHUA_API_BASE_URL"),
+    )
 
     # Observability settings
     server_group.add_argument(
@@ -879,6 +885,7 @@ def set_server_options(args, config_data: dict):
         "gateway_concurrency",
         "gateway_plugin_server_url",
         "gateway_ingress_class",
+        "shuihua_api_base_url",
         "disable_builtin_observability",
         "builtin_prometheus_port",
         "builtin_grafana_port",

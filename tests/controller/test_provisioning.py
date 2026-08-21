@@ -10,7 +10,7 @@ from gpustack.schemas.clusters import (
     CloudOptions,
 )
 from gpustack.server.controllers import WorkerProvisioningController
-from gpustack.cloud_providers.abstract import InstanceState, Volume
+from gpustack.cloud_providers.abstract import CloudInstance, InstanceState, Volume
 
 
 @pytest.mark.asyncio
@@ -115,12 +115,15 @@ async def test_provisioning_flow(monkeypatch):
     mock_instance.id = "instance-id"
     mock_instance.ip_address = "1.2.3.4"
     mock_instance.status = InstanceState.RUNNING
+    # A provider that serves SSH on the instance itself reports no mapping.
+    mock_instance.ssh_endpoint = None
     client.get_instance.return_value = mock_instance
     client.wait_for_public_ip.return_value = mock_instance
     await WorkerProvisioningController._provisioning_instance(
         session, client, worker, cfg
     )
     assert worker.state_message == "Waiting for volumes to attach"
+    assert "ssh_endpoint" not in (worker.provider_config or {})
 
     # Sixth call, should create and attach volumes
     client.create_volumes_and_attach.return_value = ["vol-1", "vol-2"]
@@ -135,6 +138,132 @@ async def test_provisioning_flow(monkeypatch):
         session, client, worker, cfg
     )
     assert worker.state == WorkerStateEnum.INITIALIZING
+
+
+@pytest.mark.asyncio
+async def test_provisioning_records_mapped_ssh_endpoint():
+    """A provider that maps SSH elsewhere gets that recorded for the UI.
+
+    Shuihua publishes every instance behind one shared IP on an
+    instance-specific port, so advertise_address:22 answers nothing and the
+    mapping is the only way to reach the host.
+    """
+    session = AsyncMock()
+    client = AsyncMock()
+    worker = Worker(
+        id=1,
+        name="w",
+        hostname="h",
+        ip="",
+        advertise_address="",
+        external_id="33",
+        state=WorkerStateEnum.PROVISIONING,
+        provider_config={"volume_ids": []},
+    )
+    worker.worker_pool = WorkerPool(id=1, cloud_options=CloudOptions())
+    instance = CloudInstance(
+        name="w",
+        image="",
+        type="",
+        region="",
+        ip_address="172.16.46.22",
+        status=InstanceState.RUNNING,
+        ssh_endpoint=("125.67.215.17", 33004),
+        ssh_user="ubuntu",
+    )
+    client.wait_for_public_ip = AsyncMock(return_value=instance)
+
+    changed = await WorkerProvisioningController._provisioning_started(
+        session, client, worker, instance
+    )
+
+    assert changed
+    # The private per-instance address stays the identity, the mapping is only
+    # a connection hint.
+    assert worker.advertise_address == "172.16.46.22"
+    assert worker.provider_config["ssh_endpoint"] == {
+        "host": "125.67.215.17",
+        "port": 33004,
+        "user": "ubuntu",
+    }
+    # Pre-existing keys survive the write.
+    assert worker.provider_config["volume_ids"] == []
+
+    # An unreported user is left out rather than stored as "".
+    worker.provider_config = {"volume_ids": []}
+    worker.advertise_address = ""
+    instance.ssh_user = None
+    await WorkerProvisioningController._provisioning_started(
+        session, client, worker, instance
+    )
+    assert worker.provider_config["ssh_endpoint"] == {
+        "host": "125.67.215.17",
+        "port": 33004,
+    }
+
+
+@pytest.mark.asyncio
+async def test_provisioning_backfills_late_ssh_endpoint():
+    """A mapping published after the address appears still gets recorded.
+
+    wait_for_public_ip returns as soon as an address exists, which can be
+    before the provider has published the port mapping. That branch only runs
+    while advertise_address is empty, so the endpoint has to be picked up on a
+    later pass or it would stay missing for good.
+    """
+    session = AsyncMock()
+    client = AsyncMock()
+    worker = Worker(
+        id=1,
+        name="w",
+        hostname="h",
+        ip="",
+        advertise_address="",
+        external_id="33",
+        state=WorkerStateEnum.PROVISIONING,
+        provider_config={},
+    )
+    worker.worker_pool = WorkerPool(id=1, cloud_options=CloudOptions())
+    worker.cluster = Cluster(id=1, name="c", state=ClusterStateEnum.PROVISIONED)
+
+    def instance(ssh_endpoint):
+        return CloudInstance(
+            name="w",
+            image="",
+            type="",
+            region="",
+            ip_address="172.16.46.22",
+            status=InstanceState.RUNNING,
+            ssh_endpoint=ssh_endpoint,
+            ssh_user="ubuntu",
+        )
+
+    # First pass: an address but no mapping yet.
+    client.wait_for_public_ip = AsyncMock(return_value=instance(None))
+    await WorkerProvisioningController._provisioning_started(
+        session, client, worker, instance(None)
+    )
+    assert worker.advertise_address == "172.16.46.22"
+    assert "ssh_endpoint" not in worker.provider_config
+
+    # Later pass: the mapping is published, and advertise_address is set by now.
+    worker.state = WorkerStateEnum.PROVISIONING
+    changed = await WorkerProvisioningController._provisioning_started(
+        session, client, worker, instance(("125.67.215.17", 33004))
+    )
+    assert changed
+    assert worker.provider_config["ssh_endpoint"] == {
+        "host": "125.67.215.17",
+        "port": 33004,
+        "user": "ubuntu",
+    }
+
+    # A later poll without the mapping must not erase what was recorded.
+    worker.state = WorkerStateEnum.PROVISIONING
+    await WorkerProvisioningController._provisioning_started(
+        session, client, worker, instance(None)
+    )
+    assert worker.provider_config["ssh_endpoint"]["port"] == 33004
 
 
 @pytest.mark.asyncio

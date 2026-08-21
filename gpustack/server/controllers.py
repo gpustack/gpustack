@@ -141,6 +141,7 @@ from gpustack.cloud_providers.common import (
 from gpustack.cloud_providers.abstract import (
     ProviderClientBase,
     CloudInstance,
+    InstanceProvisioningFailed,
     InstanceState,
 )
 from kubernetes_asyncio import client as k8s_client
@@ -2893,6 +2894,32 @@ class WorkerPoolController:
             )
 
 
+def _record_ssh_endpoint(
+    provider_config: Dict[str, Any], instance: Optional[CloudInstance]
+) -> bool:
+    """Note where SSH answers, when the provider doesn't serve it on the
+    instance's own address. Returns whether anything was written.
+
+    Only providers that publish instances behind a mapped address report one;
+    for the rest ``advertise_address:22`` is the answer and nothing is stored.
+    Already-recorded endpoints are left alone so a later poll that happens to
+    come back without the mapping can't erase it.
+    """
+    if instance is None or not instance.ssh_endpoint:
+        return False
+    if "ssh_endpoint" in provider_config:
+        return False
+    host, port = instance.ssh_endpoint
+    ssh_endpoint: Dict[str, Any] = {"host": host, "port": port}
+    # Omit an unknown user rather than storing "": the provider only fills it
+    # in once the instance is up, and a consumer shouldn't have to tell an
+    # empty string apart from an absent key.
+    if instance.ssh_user:
+        ssh_endpoint["user"] = instance.ssh_user
+    provider_config["ssh_endpoint"] = ssh_endpoint
+    return True
+
+
 class WorkerProvisioningController:
     def __init__(self, cfg: Config):
         self._cfg = cfg
@@ -2921,7 +2948,10 @@ class WorkerProvisioningController:
             ),
         )
         ssh_key_id = await client.create_ssh_key(worker.name, public_key)
-        ssh_key.external_id = str(ssh_key_id)
+        # None means the provider registered nothing (no SSH key API); leave
+        # external_id NULL rather than storing the string "None", so teardown
+        # knows there is no upstream key to delete.
+        ssh_key.external_id = str(ssh_key_id) if ssh_key_id is not None else None
         ssh_key_rtn = await Credential.create(session, ssh_key, auto_commit=False)
         return ssh_key_rtn.id
 
@@ -2939,6 +2969,9 @@ class WorkerProvisioningController:
             if worker.cluster.worker_config
             else {}
         )
+        ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
+        if ssh_key is None:
+            raise ValueError(f"SSH key {worker.ssh_key_id} not found")
         user_data = await client.construct_user_data(
             server_url=worker.cluster.server_url or cfg.server_external_url,
             token=worker.cluster.registration_token,
@@ -2949,10 +2982,10 @@ class WorkerProvisioningController:
             os_image=worker.worker_pool.os_image,
             secret_configs=secret_configs,
             worker_name=worker.name,
+            # Providers with no SSH key API embed this in the cloud-config;
+            # the ones that have one attach it by id instead and ignore it.
+            ssh_public_key=ssh_key.public_key,
         )
-        ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
-        if ssh_key is None:
-            raise ValueError(f"SSH key {worker.ssh_key_id} not found")
         to_create = construct_cloud_instance(worker, ssh_key, user_data.format())
         logger.info(f"Creating cloud instance for worker {worker.name}")
         logger.debug(f"Cloud instance configuration: {to_create}")
@@ -2967,11 +3000,23 @@ class WorkerProvisioningController:
         instance: CloudInstance,
     ) -> bool:
         changed = True
-        provider_config = worker.provider_config or {}
+        # Copy rather than alias: provider_config is a plain JSON column, so
+        # SQLAlchemy only notices a write when the attribute is set to a
+        # different object. Mutating the loaded dict in place and assigning it
+        # back would leave the change unsaved.
+        provider_config = dict(worker.provider_config or {})
         volumes = list(
             (getattr(worker.worker_pool.cloud_options, "volumes", None) or [])
         )
         volume_ids = provider_config.get("volume_ids", [])
+        # Backfill a mapping that wasn't published yet the first time round.
+        # wait_for_public_ip returns as soon as an address appears, which for a
+        # provider that maps SSH elsewhere can be before the mapping exists —
+        # and the branch below only runs while advertise_address is still
+        # empty, so without this the hint would stay missing for good.
+        backfilled = _record_ssh_endpoint(provider_config, instance)
+        if backfilled:
+            worker.provider_config = provider_config
         if worker.advertise_address is None or worker.advertise_address == "":
             try:
                 instance = await client.wait_for_public_ip(worker.external_id)
@@ -2979,6 +3024,13 @@ class WorkerProvisioningController:
                     instance.ip_address if instance.ip_address else ""
                 )
                 worker.state_message = "Waiting for volumes to attach"
+                # Last in the branch on purpose: this is a display aid, and
+                # failing to read it must not hold back the state machine.
+                if _record_ssh_endpoint(provider_config, instance):
+                    worker.provider_config = provider_config
+            except InstanceProvisioningFailed:
+                # Terminal on the provider side; see _provisioning_before_started.
+                raise
             except Exception as e:
                 logger.warning(
                     f"Failed to wait for instance {worker.external_id} to get public ip: {e}"
@@ -2993,7 +3045,11 @@ class WorkerProvisioningController:
             len(volumes) == len(volume_ids)
             and worker.state == WorkerStateEnum.PROVISIONING
         ):
-            if not hasattr(provider_config, "volume_ids"):
+            # Membership, not hasattr: provider_config is a dict, so hasattr
+            # was always False and this overwrote the ids of volumes that had
+            # just been created -- losing the only record of them, so teardown
+            # could never find the volumes to delete.
+            if "volume_ids" not in provider_config:
                 provider_config["volume_ids"] = []
             worker.provider_config = provider_config
             worker.state = WorkerStateEnum.INITIALIZING
@@ -3002,7 +3058,7 @@ class WorkerProvisioningController:
                 await worker.cluster.update(session=session, auto_commit=False)
             worker.state_message = "Initializing: installing required drivers and software. The worker will start automatically after setup."
         else:
-            changed = False
+            changed = backfilled
         return changed
 
     @classmethod
@@ -3040,6 +3096,11 @@ class WorkerProvisioningController:
                 # depress the timeout exception
                 instance = await client.wait_for_started(worker.external_id)
                 worker.state_message = "Waiting for instance's public ip"
+            except InstanceProvisioningFailed:
+                # The provider gave up on the instance, so polling it again on
+                # the next reconcile would spin forever. Let it through to the
+                # caller, which parks the worker in ERROR.
+                raise
             except Exception as e:
                 logger.warning(
                     f"Failed to wait for instance {worker.external_id} to start: {e}"

@@ -45,17 +45,21 @@ def modify_mysql_table_column_enum(
     to_add_values: List[str],
     to_remove_values: List[str],
 ):
-    result = conn.execute(
+    definition = conn.execute(
         sa.text(
             f"""
-            SELECT COLUMN_TYPE
+            SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT
             FROM information_schema.COLUMNS
             WHERE TABLE_NAME = '{table_name}'
             AND COLUMN_NAME = '{column_name}'
             AND TABLE_SCHEMA = DATABASE()
         """
         )
-    ).scalar()
+    ).first()
+    if definition is None:
+        # No such table/column in this database; nothing to rewrite.
+        return
+    result, is_nullable, default = definition
 
     existing_values = []
     if result:
@@ -67,9 +71,16 @@ def modify_mysql_table_column_enum(
     if set(new_values) != set(existing_values):
         new_enum_str = "enum('" + "','".join(new_values) + "')"
 
+        # MODIFY COLUMN restates the column in full, so NOT NULL and DEFAULT
+        # have to be carried over explicitly or MySQL silently drops them.
+        constraints = "" if is_nullable == 'YES' else " NOT NULL"
+        if default is not None:
+            constraints += f" DEFAULT '{default}'"
+
         # Construct new ALTER TABLE statement
         alter_sql = (
-            f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {new_enum_str};"
+            f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} "
+            f"{new_enum_str}{constraints};"
         )
 
         # Execute modification
