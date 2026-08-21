@@ -1,5 +1,19 @@
 {% extends "base.html" %}
 
+{% block extrahead %}
+  {{ super() }}
+  {#
+    The build stamp the bundled documentation shows beside the site name. It is a
+    property rather than markup so that the rule that draws it can live in
+    stylesheets/extra.css, and so this template needs no knowledge of Material's
+    header structure. The online site never sets extra.docs_stamp, so its
+    pseudo-element resolves to `none` and nothing renders.
+  #}
+  {% if config.extra.docs_stamp %}
+    <style>:root { --gpustack-docs-stamp: "{{ config.extra.docs_stamp }}"; }</style>
+  {% endif %}
+{% endblock %}
+
 {% block outdated %}
   You're not viewing the latest version.
   <a href="{{ '../' ~ base_url }}">

@@ -67,6 +67,7 @@ function pack() {
         --progress plain \
         --build-arg "GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS=$(printf "%s;" "${LABELS[@]}")" \
         --build-arg "UI_DOWNLOAD=${PACKAGE_UI_DOWNLOAD}" \
+        --build-arg "GIT_COMMIT=${GIT_COMMIT}" \
         "${EXTRA_ARGS[@]}" \
         "${ROOT_DIR}"
     set +x
