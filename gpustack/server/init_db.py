@@ -1,10 +1,13 @@
 import asyncio
+import inspect
 import logging
 import threading
 import time
 import traceback
 import re
-from urllib.parse import urlparse, parse_qs, urlunparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+import asyncpg
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     create_async_engine,
@@ -46,6 +49,20 @@ logger = logging.getLogger(__name__)
 
 SLOW_QUERY_THRESHOLD_SECOND = 0.5
 
+# libpq calls the TLS mode "sslmode"; asyncpg accepts the same values under the
+# name "ssl".
+LIBPQ_TO_ASYNCPG_PARAMS = {"sslmode": "ssl"}
+
+# asyncpg.connect() parameters that cannot come from a URL query string: the URL
+# itself supplies the DSN, and the rest are Python objects or are built here.
+NON_URL_ASYNCPG_PARAMS = {
+    "dsn",
+    "loop",
+    "connection_class",
+    "record_class",
+    "server_settings",
+}
+
 # Query counter for performance monitoring
 _query_counter = 0
 _query_counter_lock = threading.Lock()
@@ -72,6 +89,68 @@ async def init_db(db_url: str):
     await create_db_and_tables(db.engine)
 
 
+def supported_asyncpg_params() -> set:
+    """Connection parameters asyncpg.connect() accepts from a URL query string."""
+    return set(inspect.signature(asyncpg.connect).parameters) - NON_URL_ASYNCPG_PARAMS
+
+
+def build_postgres_connect_args(db_url: str, opengauss: bool):
+    """Translate a libpq-style PostgreSQL URL into asyncpg's spelling.
+
+    asyncpg does not accept every libpq connection parameter, so the query
+    string cannot simply be handed over as-is. The parameters that do have an
+    asyncpg equivalent are translated and passed on, and anything left over is
+    logged instead of being discarded without a trace.
+
+    ``target_session_attrs`` matters most here: in a replicated cluster it is
+    what keeps the server on a node that accepts writes, so it has to survive
+    this rewrite to be of any use at all.
+    """
+    db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
+    parsed = urlparse(db_url)
+    query_params = parse_qs(parsed.query)
+
+    # libpq's "options=-csearch_path=..." has no asyncpg counterpart, so it
+    # becomes a server setting instead.
+    server_settings = {}
+    qoptions = query_params.pop('options', None)
+    if qoptions is not None and len(qoptions) > 0:
+        option = qoptions[0]
+        if option.startswith('-csearch_path='):
+            server_settings['search_path'] = option[len('-csearch_path=') :]
+    if not opengauss and envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS > 0:
+        server_settings['idle_in_transaction_session_timeout'] = str(
+            envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS * 1000
+        )
+
+    for libpq_name, asyncpg_name in LIBPQ_TO_ASYNCPG_PARAMS.items():
+        values = query_params.pop(libpq_name, None)
+        if values:
+            query_params[asyncpg_name] = values
+
+    # Anything asyncpg accepts stays in the query string: SQLAlchemy's asyncpg
+    # dialect turns those into connect keyword arguments, and it is also what
+    # splits a comma-separated host/port list into the form asyncpg wants, so a
+    # multi-host DSN keeps working. Parameters it would choke on are reported
+    # rather than dropped in silence.
+    supported = supported_asyncpg_params()
+    forwarded = {k: v for k, v in query_params.items() if k in supported}
+    ignored = sorted(set(query_params) - set(forwarded))
+    if ignored:
+        logger.warning(
+            "Ignoring database URL parameter(s) the asyncpg driver does not "
+            "accept: %s",
+            ", ".join(ignored),
+        )
+
+    connect_args = {}
+    if server_settings:
+        connect_args['server_settings'] = server_settings
+
+    db_url = urlunparse(parsed._replace(query=urlencode(forwarded, doseq=True)))
+    return db_url, connect_args
+
+
 async def init_db_engine(db_url: str):
     connect_args = {}
     if db_url.startswith("postgresql://"):
@@ -79,28 +158,7 @@ async def init_db_engine(db_url: str):
         # as PostgreSQL but rejects PG's millisecond-scale value for
         # ``idle_in_transaction_session_timeout``. Skip the setting on openGauss.
         opengauss = await is_opengauss(db_url)
-
-        db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
-        parsed = urlparse(db_url)
-        # rewrite the parameters to use asyncpg with custom database schema
-        query_params = parse_qs(parsed.query)
-        qoptions = query_params.pop('options', None)
-        schema_name = None
-        if qoptions is not None and len(qoptions) > 0:
-            option = qoptions[0]
-            if option.startswith('-csearch_path='):
-                schema_name = option[len('-csearch_path=') :]
-        server_settings = {}
-        if schema_name:
-            server_settings['search_path'] = schema_name
-        if not opengauss and envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS > 0:
-            server_settings['idle_in_transaction_session_timeout'] = str(
-                envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS * 1000
-            )
-        if server_settings:
-            connect_args['server_settings'] = server_settings
-        new_parsed = parsed._replace(query={})
-        db_url = urlunparse(new_parsed)
+        db_url, connect_args = build_postgres_connect_args(db_url, opengauss)
 
     elif db_url.startswith("mysql://"):
         db_url = re.sub(r'^mysql://', 'mysql+asyncmy://', db_url)

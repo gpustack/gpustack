@@ -9,17 +9,27 @@ from sqlalchemy.dialects.postgresql import base as pg_base
 _pg_version_patched = False
 
 
+# Query parameters dropped before the probe connects. ``options`` uses libpq's
+# ``-c...`` syntax, which asyncpg does not accept. ``target_session_attrs``
+# would refuse a node that cannot accept writes, and this probe only reads
+# ``version()``, which every node in a cluster reports identically; leaving it
+# in place would fail startup whenever the DSN happens to name a standby.
+PROBE_EXCLUDED_PARAMS = {'options', 'target_session_attrs'}
+
+
 async def is_opengauss(db_url: str) -> bool:
     """Return True when the PostgreSQL-shaped URL points at openGauss.
 
     Opens a one-off asyncpg connection and inspects ``SELECT version()`` —
     openGauss reports itself with ``openGauss`` in the version string
-    rather than ``PostgreSQL``. Only the ``options`` query parameter is
-    stripped from the DSN (asyncpg does not accept libpq's ``-c...``
-    syntax); other params such as ``sslmode`` are preserved.
+    rather than ``PostgreSQL``. Parameters listed in
+    ``PROBE_EXCLUDED_PARAMS`` are stripped from the DSN; others such as
+    ``sslmode`` are preserved.
     """
     parsed = urlparse(db_url)
-    filtered = [(k, v) for k, v in parse_qsl(parsed.query) if k != 'options']
+    filtered = [
+        (k, v) for k, v in parse_qsl(parsed.query) if k not in PROBE_EXCLUDED_PARAMS
+    ]
     dsn = urlunparse(parsed._replace(query=urlencode(filtered)))
     conn = await asyncpg.connect(dsn=dsn)
     try:
