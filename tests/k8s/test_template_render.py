@@ -582,9 +582,9 @@ def test_container_namespace_strips_embedded_registry_with_port():
 # ---------------------------------------------------------------------------
 
 
-def _operator_deployment_env(docs):
-    """Extract the operator Deployment container env list from the embedded
-    ConfigMap's template.yaml data (ytt-processed)."""
+def _operator_deployment(docs):
+    """Extract the operator worker Deployment from the embedded ConfigMap's
+    template.yaml data (ytt-processed)."""
     cm = next(
         d
         for d in docs
@@ -596,7 +596,13 @@ def _operator_deployment_env(docs):
     # YAML after the last ytt directive. Parse all YAML docs and find the
     # Deployment.
     inner_docs = [d for d in yaml.safe_load_all(template_yaml) if d]
-    deploy = next(d for d in inner_docs if d.get("kind") == "Deployment")
+    return next(d for d in inner_docs if d.get("kind") == "Deployment")
+
+
+def _operator_deployment_env(docs):
+    """Extract the operator worker Deployment container env list from the
+    embedded ConfigMap's template.yaml data (ytt-processed)."""
+    deploy = _operator_deployment(docs)
     return deploy["spec"]["template"]["spec"]["containers"][0].get("env") or []
 
 
@@ -620,6 +626,55 @@ def test_operator_env_vars_absent_when_not_set():
     env_names = {e["name"] for e in env}
     assert "MY_VAR" not in env_names
     assert "OTHER_VAR" not in env_names
+
+
+# ---------------------------------------------------------------------------
+# Worker Deployment upgrade shape — the worker fronts the aggregated API and
+# finishes its whole install (Prepare) before it serves, so a RollingUpdate
+# would keep the OLD replica answering the old API until the new one turns
+# Ready, and Prepare's sequential CRD polls need a startup budget that covers
+# them. The chart pins both; the image-mode template must match.
+# ---------------------------------------------------------------------------
+
+
+def test_operator_worker_deployment_uses_recreate_strategy():
+    """The old worker goes down before the new one comes up — the API pauses
+    during an upgrade instead of serving a stale surface."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    deploy = _operator_deployment(docs)
+    assert deploy["spec"]["strategy"] == {"type": "Recreate"}
+
+
+def test_operator_worker_startup_probe_covers_prepare():
+    """180 x 5s = 900s: the two sequential CRD polls Prepare() can sit in
+    (5 minutes each) plus 300s for the install itself."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    container = _operator_deployment(docs)["spec"]["template"]["spec"]["containers"][0]
+    probe = container["startupProbe"]
+    assert probe["failureThreshold"] * probe["periodSeconds"] >= 900
+
+
+def test_operator_template_has_no_plain_yaml_comments():
+    """The ConfigMap's values.yaml/template.yaml are post-processed by ytt,
+    and ytt rejects plain '#' comments in any file that carries '#@'
+    annotations ("Expected ytt-formatted string"). Rationale comments belong
+    in '{#- -#}' Jinja comments, which never reach ytt. This guard fails on a
+    plain comment that YAML parsing alone (as in _operator_deployment)
+    silently tolerates."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    cm = next(
+        d
+        for d in docs
+        if d.get("kind") == "ConfigMap"
+        and d["metadata"]["name"] == "gpustack-operator-worker-deployment"
+    )
+    offenders = [
+        f"{key}: {line}"
+        for key in ("values.yaml", "template.yaml")
+        for line in cm["data"][key].splitlines()
+        if line.lstrip().startswith("#") and not line.lstrip().startswith(("#@", "#!"))
+    ]
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------
