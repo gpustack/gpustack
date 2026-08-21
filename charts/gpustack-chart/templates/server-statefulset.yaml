@@ -185,6 +185,9 @@ spec:
     - metadata:
         name: gpustack-data-dir
       spec:
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
         accessModes: [ "ReadWriteOnce" ]
         resources:
           requests:
