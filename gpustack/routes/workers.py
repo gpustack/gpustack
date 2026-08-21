@@ -56,7 +56,12 @@ from gpustack.server.worker_allocated_cache import (
     get_worker_allocated,
     vram_allocated_for_index,
 )
-from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
+from gpustack.schemas.clusters import (
+    Cluster,
+    ClusterProvider,
+    Credential,
+    ClusterStateEnum,
+)
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.config import (
@@ -323,6 +328,24 @@ def update_worker_data(
             and existing.maintenance is not None
         ):
             incoming_data["maintenance"] = existing.maintenance
+
+        # A worker reports external_id by reading $data_dir/external_id, which
+        # its cloud-init writes from the instance metadata service. Shuihua has
+        # no such service, so its workers always report None and this full-dump
+        # merge would erase the id provisioning recorded — after which deleting
+        # the worker takes the hard-delete path, never tells the provider, and
+        # leaks the instance.
+        #
+        # Scoped to this one provider deliberately: everywhere else the
+        # reported value stays authoritative, which is what stops a worker
+        # booted from a cloned OS image from inheriting another worker's
+        # identity.
+        if (
+            cluster is not None
+            and cluster.provider == ClusterProvider.Shuihua
+            and incoming_data.get("external_id") is None
+        ):
+            incoming_data["external_id"] = existing.external_id
 
         to_create_worker = Worker.model_validate(
             {

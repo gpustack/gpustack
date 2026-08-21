@@ -174,6 +174,8 @@ class Config(WorkerConfig, BaseSettings):
         grafana_model_dashboard_uid: Grafana dashboard UID for model dashboard.
         grafana_cache_service_dashboard_uid: Grafana dashboard UID for cache service dashboard.
         gateway_plugin_server_url: URL to fetch gateway plugin manifest for embedded gateway.
+        shuihua_api_base_url: Base URL of the Shuihua API. Has no default; Shuihua clusters
+                            and credentials cannot be created until it is set.
     """
 
     # Server options
@@ -295,6 +297,14 @@ class Config(WorkerConfig, BaseSettings):
     # ``ai-statistics`` vs ``gpustack-ai-statistics``, ...). See
     # ``gpustack.gateway.plugins.plugin_spec_overrides``.
     gateway_plugin: Dict[str, GatewayPluginEntry] = {}
+
+    # Base URL of the Shuihua API. Deliberately no default: that provider serves
+    # its integration and production environments from different hosts, so a
+    # built-in guess would point provisioning at the wrong account while looking
+    # like it worked. Creating a Shuihua cluster or credential is rejected until
+    # this is set.
+    shuihua_api_base_url: Optional[str] = None
+
     disable_builtin_observability: bool = False
     builtin_prometheus_port: int = 19090
     builtin_grafana_port: int = 13000

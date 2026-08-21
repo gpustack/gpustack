@@ -458,6 +458,7 @@ class ClusterProvider(Enum):
     Docker = "Docker"
     Kubernetes = "Kubernetes"
     DigitalOcean = "DigitalOcean"
+    Shuihua = "Shuihua"
 
 
 class CloudCredentialBase(SQLModel):
