@@ -72,8 +72,24 @@ class PredefinedConfig(SensitivePredefinedConfig):
     service_port_range: Optional[str] = "40000-40063"
     ray_port_range: Optional[str] = "41000-41999"
     benchmark_max_duration_seconds: Optional[int] = None
+    # How many restart generations of a model instance's serve logs the worker
+    # keeps, counting back from the current restart. The log from restart 0 is
+    # always kept on top of this window, so a crash loop cannot destroy the
+    # first-failure log (issue #6019).
+    serve_log_retention_count: int = 2
     system_reserved: Optional[dict] = None
     pipx_path: Optional[str] = None
+
+    @field_validator("serve_log_retention_count")
+    @classmethod
+    def _validate_serve_log_retention_count(cls, v):
+        # None only reaches here via PredefinedConfigNoDefaults, where an unset
+        # option means "inherit", not "keep zero generations".
+        if v is None:
+            return v
+        if v < 1:
+            raise ValueError(f"serve_log_retention_count must be at least 1, got {v!r}")
+        return v
 
     @field_validator("system_reserved", mode="before")
     @classmethod
@@ -110,6 +126,7 @@ class PredefinedConfigNoDefaults(PredefinedConfig):
     service_port_range: Optional[str] = None
     ray_port_range: Optional[str] = None
     benchmark_max_duration_seconds: Optional[int] = None
+    serve_log_retention_count: Optional[int] = None
     image_repo: Optional[str] = None
     benchmark_image_repo: Optional[str] = None
     gateway_mode: Optional[str] = None

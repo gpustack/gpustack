@@ -147,6 +147,7 @@ class Config(WorkerConfig, BaseSettings):
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
         benchmark_dir: Directory to store benchmark results.
         benchmark_max_duration_seconds: Max duration for a benchmark before timeout. Disabled when unset.
+        serve_log_retention_count: Number of restart generations of model instance logs kept on the worker, counting back from the current restart. The log from restart 0 is always kept in addition. Default is 2.
         pipx_path: Path to the pipx executable, used to install versioned backends.
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
