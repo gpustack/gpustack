@@ -59,26 +59,30 @@ theme:
   icon:
     repo: fontawesome/brands/github
   language: en
+# A mapping rather than a list, because mkdocs.offline.yml adds a plugin to this
+# set through INHERIT. A child config replaces a list wholesale but merges a
+# mapping, so the list form would force that file to restate every entry below —
+# and to silently lose whichever one a later edit here forgot to copy over.
 plugins:
-  - glightbox
-  - search
-  - redirects:
-      redirect_maps:
-        'installation/nvidia/installation.md': 'installation/requirements.md'
-        'installation/amd/installation.md': 'installation/requirements.md'
-        'installation/ascend/installation.md': 'installation/requirements.md'
-        'installation/hygon/installation.md': 'installation/requirements.md'
-        'installation/mthreads/installation.md': 'installation/requirements.md'
-        'installation/iluvatar/installation.md': 'installation/requirements.md'
-        'installation/cambricon/installation.md': 'installation/requirements.md'
-        'installation/metax/installation.md': 'installation/requirements.md'
-  - minify:
-      minify_html: true
-      minify_css: true
-      minify_js: true
-      cache_safe: true
-      htmlmin_opts:
-        remove_comments: true
+  glightbox: {}
+  search: {}
+  redirects:
+    redirect_maps:
+      'installation/nvidia/installation.md': 'installation/requirements.md'
+      'installation/amd/installation.md': 'installation/requirements.md'
+      'installation/ascend/installation.md': 'installation/requirements.md'
+      'installation/hygon/installation.md': 'installation/requirements.md'
+      'installation/mthreads/installation.md': 'installation/requirements.md'
+      'installation/iluvatar/installation.md': 'installation/requirements.md'
+      'installation/cambricon/installation.md': 'installation/requirements.md'
+      'installation/metax/installation.md': 'installation/requirements.md'
+  minify:
+    minify_html: true
+    minify_css: true
+    minify_js: true
+    cache_safe: true
+    htmlmin_opts:
+      remove_comments: true
 extra:
   generator: false
   version:
