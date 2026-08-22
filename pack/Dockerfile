@@ -310,8 +310,11 @@ SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
 # The stamp the site shows in its header. Required, not optional: this stage
 # copies sources without .git, so the build script cannot work the commit out for
-# itself, and it refuses to stamp a site it cannot identify. hack/package.sh
-# passes it; a hand-run docker build has to as well.
+# itself, and it refuses to stamp a site it cannot identify.
+#
+# Every caller has to pass it. That is all three of them: .github/workflows/pack.yaml
+# builds the published images and never goes through hack/package.sh, hack/package.sh
+# covers a local `make package`, and a hand-run docker build has to say so itself.
 ARG GIT_COMMIT
 
 COPY docs/ /workspace/docs/
