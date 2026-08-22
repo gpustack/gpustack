@@ -171,3 +171,20 @@
         grid-template-columns: 1fr;
     }
 }
+
+/* The bundled documentation's build stamp, beside the site name in the header.
+   Only the offline build defines the property; everywhere else the pseudo-element
+   resolves to `none` and no box is generated, so the online site is untouched.
+
+   The selector deliberately excludes the topic carrying data-md-component, which
+   is the page title Material swaps in while scrolling — the stamp belongs to the
+   site name alone. */
+.md-header__topic:not([data-md-component]) .md-ellipsis::after {
+    content: var(--gpustack-docs-stamp, none);
+    margin-left: 0.6rem;
+    padding-left: 0.6rem;
+    border-left: 1px solid rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.6rem;
+    font-weight: 400;
+}
