@@ -22,6 +22,7 @@ from gpustack.policies.scorers.score_chain import (
     ModelInstanceScoreChain,
 )
 from gpustack.policies.base import ModelInstanceScore
+from gpustack.policies.worker_filters.label_matching_filter import label_matching
 from gpustack.policies.scorers.status_scorer import StatusScorer
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
@@ -70,6 +71,16 @@ from gpustack.schemas.config import (
     GatewayModeEnum,
     SensitivePredefinedConfig,
 )
+from gpustack.schemas.cache_services import (
+    cache_service_spec_digest,
+    CacheService,
+    CacheServiceInstance,
+    CacheServiceInstanceCreate,
+    CacheServiceModeEnum,
+    CacheServiceStateEnum,
+)
+from gpustack.server.cache_provider_catalog import get_cache_provider
+from gpustack.server.cache_services import resolve_instance_cache_config_safe
 from gpustack.schemas.workers import (
     Worker,
     WorkerStateEnum,
@@ -295,6 +306,502 @@ class ModelInstanceController:
             logger.error(
                 f"Failed to reconcile model instance {model_instance.name}: {e}"
             )
+
+
+class CacheServiceController:
+    """
+    Reconciles managed cache services onto their desired CacheServiceInstance
+    set and aggregates instance states back onto the service row.
+
+    The provider declaration's topology dictates the desired set: singleton
+    services run exactly one instance on the user-picked worker; per_node
+    services run one instance per non-deleted worker of the service's cluster
+    (narrowed to workers matching the service's worker_selector labels when
+    one is set), following workers as they join and leave. Instances whose
+    worker left the desired set are hard-deleted; their workloads are
+    cleaned up by the worker-side orphan cleaner. External services are
+    untouched.
+    """
+
+    RESYNC_INTERVAL_SECONDS = 60
+
+    def __init__(self, cfg: Config):
+        self._config = cfg
+
+    async def start(self):
+        """
+        Start the controller.
+        """
+        await asyncio.gather(
+            self._watch_cache_services(),
+            self._watch_workers(),
+            self._watch_instances(),
+            self._resync_loop(),
+        )
+
+    async def _watch_cache_services(self):
+        async for event in CacheService.subscribe(source="cache_service_controller"):
+            if event.type not in (EventType.CREATED, EventType.UPDATED):
+                # Service deletion is a hard delete; the instances table's
+                # ON DELETE CASCADE drops the rows with it.
+                continue
+            cache_service: CacheService = event.data
+            if (
+                cache_service is None
+                or cache_service.mode != CacheServiceModeEnum.MANAGED
+            ):
+                continue
+            await self._reconcile_service_by_id(cache_service.id)
+
+    async def _watch_workers(self):
+        # The resync loop covers startup, so the initial CREATED replay
+        # would only duplicate it.
+        async for event in Worker.subscribe(
+            source="cache_service_controller_workers", replay_existing=False
+        ):
+            if event.type not in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                continue
+            worker: Worker = event.data
+            if worker is None or worker.cluster_id is None:
+                continue
+            # Of the update stream, only (un)soft-deletion and label
+            # changes (which move a worker in or out of per_node services'
+            # selector scopes) change the desired instance set.
+            changed_fields = event.changed_fields or {}
+            if event.type == EventType.UPDATED and not (
+                "deleted_at" in changed_fields or "labels" in changed_fields
+            ):
+                continue
+            await self._reconcile_cluster_services(worker.cluster_id)
+
+    async def _watch_instances(self):
+        async for event in CacheServiceInstance.subscribe(
+            source="cache_service_controller_instances", replay_existing=False
+        ):
+            if event.type not in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                continue
+            instance: CacheServiceInstance = event.data
+            if instance is None or instance.cache_service_id is None:
+                continue
+            try:
+                async with async_session() as session:
+                    service = await CacheService.one_by_id(
+                        session, instance.cache_service_id
+                    )
+                    if (
+                        service is None
+                        or service.deleted_at is not None
+                        or service.mode != CacheServiceModeEnum.MANAGED
+                    ):
+                        continue
+                    if event.type == EventType.DELETED:
+                        # A deleted instance whose worker is still in the
+                        # desired set gets a fresh PENDING replacement row
+                        # right away instead of on the next resync pass, so
+                        # instance deletion doubles as a relaunch from
+                        # scratch.
+                        await self._reconcile_service(session, service)
+                        # Deletion also invalidates engines attached to the
+                        # instance (e.g. a narrowed worker_selector).
+                        await self._refresh_attached_snapshots(session, service)
+                    else:
+                        await self._sync_service_aggregate(session, service)
+                        changed = set(event.changed_fields or {})
+                        # Both directions matter: turning RUNNING attaches
+                        # waiting engines, leaving RUNNING (or moving
+                        # ports) invalidates attached ones.
+                        if event.type == EventType.CREATED or (
+                            {"state", "port"} & changed
+                        ):
+                            await self._refresh_attached_snapshots(session, service)
+            except Exception as e:
+                logger.error(
+                    f"Failed to reconcile cache service "
+                    f"{instance.cache_service_id} on instance event: {e}"
+                )
+
+    _PRE_START_STATES = frozenset(
+        {
+            ModelInstanceStateEnum.SCHEDULED,
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.DOWNLOADING,
+        }
+    )
+    """Model-instance states whose engine has not consumed the snapshot
+    yet: the serve process re-reads the row at the STARTING transition,
+    so a rewrite made in any of these states still reaches the engine.
+    STARTING itself is excluded — the container launch races the write."""
+
+    _CACHE_READY_HINT = "cache service is now ready; restart the instance to attach"
+
+    async def _refresh_attached_snapshots(
+        self, session: AsyncSession, service: CacheService
+    ):
+        """A cache instance changing (turning RUNNING, moving ports,
+        stopping, being deleted) makes the cache_config snapshots
+        resolved before it stale. The snapshot has no other owner, so
+        this is the convergence point, in both directions:
+
+        - degraded instances whose engine has not started yet get a
+          fresh resolve written to the row, closing the
+          create-service-then-model window (cache image pull and model
+          download overlap);
+        - RUNNING engines keep their snapshot — it records what the
+          engine actually started with — but its endpoint_live view
+          tracks the present: it flips off when the recorded endpoint is
+          no longer what a fresh resolve yields (cache gone, or moved to
+          another port), and back on upon recovery, so the "attached"
+          indicators never report a cache that is not there. A degraded
+          RUNNING engine gains a restart hint when a fresh resolve would
+          now attach (never for takeover/incompatibility, which a
+          restart would not fix)."""
+        models = await Model.all_by_fields(
+            session,
+            fields={"cluster_id": service.cluster_id},
+            extra_conditions=[Model.deleted_at.is_(None)],
+        )
+        attached = [
+            model
+            for model in models
+            if model.extended_kv_cache
+            and model.extended_kv_cache.is_shared()
+            and model.extended_kv_cache.cache_service_id == service.id
+        ]
+        if not attached:
+            return
+        workers_by_id = {
+            worker.id: worker
+            for worker in await Worker.all_by_fields(
+                session,
+                fields={"cluster_id": service.cluster_id},
+                extra_conditions=[Worker.deleted_at.is_(None)],
+            )
+        }
+        for model in attached:
+            instances = await ModelInstance.all_by_fields(
+                session, {"model_id": model.id}
+            )
+            for mi in instances:
+                if mi.worker_id is None:
+                    # Pre-scheduling instances resolve at placement.
+                    continue
+                refreshable = mi.state in self._PRE_START_STATES
+                running = mi.state == ModelInstanceStateEnum.RUNNING
+                if not (refreshable or running):
+                    continue
+                snapshot = await resolve_instance_cache_config_safe(
+                    session, model, workers_by_id.get(mi.worker_id)
+                )
+                if snapshot is None:
+                    continue
+                if refreshable:
+                    if snapshot == mi.cache_config:
+                        continue
+                    mi.cache_config = snapshot
+                    await ModelInstanceService(session).update(mi)
+                    continue
+                current = mi.cache_config
+                if current is None:
+                    continue
+                if current.injected:
+                    live = bool(
+                        snapshot.injected
+                        and snapshot.endpoint is not None
+                        and current.endpoint is not None
+                        and snapshot.endpoint.host == current.endpoint.host
+                        and snapshot.endpoint.port == current.endpoint.port
+                    )
+                    unchanged = (
+                        current.endpoint_live is False
+                        if not live
+                        else current.endpoint_live in (None, True)
+                    )
+                    if unchanged:
+                        continue
+                    mi.cache_config = current.model_copy(update={"endpoint_live": live})
+                    await ModelInstanceService(session).update(mi)
+                elif snapshot.injected and self._CACHE_READY_HINT not in (
+                    current.reason or ""
+                ):
+                    reason = current.reason
+                    mi.cache_config = current.model_copy(
+                        update={
+                            "reason": (
+                                f"{reason}; {self._CACHE_READY_HINT}"
+                                if reason
+                                else self._CACHE_READY_HINT
+                            )
+                        }
+                    )
+                    await ModelInstanceService(session).update(mi)
+
+    async def _resync_loop(self):
+        """Periodic full pass over managed services, catching drift the
+        event paths missed (e.g. events dropped on a full queue)."""
+        while True:
+            await asyncio.sleep(self.RESYNC_INTERVAL_SECONDS)
+            try:
+                async with async_session() as session:
+                    services = await CacheService.all_by_fields(
+                        session,
+                        fields={"mode": CacheServiceModeEnum.MANAGED},
+                        extra_conditions=[CacheService.deleted_at.is_(None)],
+                    )
+                for service in services:
+                    await self._reconcile_service_by_id(service.id)
+                    # The snapshot convergence path is event-driven; the
+                    # resync exists to catch dropped events, so it must
+                    # cover this path too (idempotent).
+                    async with async_session() as session:
+                        refreshed = await CacheService.one_by_id(session, service.id)
+                        if refreshed is not None and refreshed.deleted_at is None:
+                            await self._refresh_attached_snapshots(session, refreshed)
+            except Exception as e:
+                logger.error(f"Failed to resync cache services: {e}")
+
+    async def _reconcile_cluster_services(self, cluster_id: int):
+        try:
+            async with async_session() as session:
+                services = await CacheService.all_by_fields(
+                    session,
+                    fields={
+                        "mode": CacheServiceModeEnum.MANAGED,
+                        "cluster_id": cluster_id,
+                    },
+                    extra_conditions=[CacheService.deleted_at.is_(None)],
+                )
+            for service in services:
+                await self._reconcile_service_by_id(service.id)
+        except Exception as e:
+            logger.error(
+                f"Failed to reconcile cache services of cluster {cluster_id}: {e}"
+            )
+
+    async def _reconcile_service_by_id(self, cache_service_id: int):
+        try:
+            async with async_session() as session:
+                service = await CacheService.one_by_id(session, cache_service_id)
+                if (
+                    service is None
+                    or service.deleted_at is not None
+                    or service.mode != CacheServiceModeEnum.MANAGED
+                ):
+                    return
+                await self._reconcile_service(session, service)
+        except Exception as e:
+            logger.error(f"Failed to reconcile cache service {cache_service_id}: {e}")
+
+    async def _reconcile_service(self, session: AsyncSession, service: CacheService):
+        """Drive the service's instance rows to the desired worker set,
+        then refresh the service-level aggregate state."""
+        desired_worker_ids, error_message, reconcile = await self._desired_worker_ids(
+            session, service
+        )
+        if error_message is not None and not reconcile:
+            await self._set_service_state(
+                session,
+                service,
+                state=CacheServiceStateEnum.ERROR,
+                state_message=error_message,
+                healthy=False,
+            )
+            return
+
+        instances = await CacheServiceInstance.all_by_fields(
+            session, {"cache_service_id": service.id}
+        )
+        existing_worker_ids = set()
+        for instance in instances:
+            if instance.worker_id not in desired_worker_ids:
+                await instance.delete(session)
+                logger.info(
+                    f"Deleted instance {instance.id} of cache service "
+                    f"{service.name}: worker {instance.worker_id} left "
+                    "the desired set"
+                )
+            else:
+                existing_worker_ids.add(instance.worker_id)
+
+        for worker_id in sorted(desired_worker_ids - existing_worker_ids):
+            # Same display-name convention as model instances: the parent's
+            # name (as of instance creation; a later service rename does not
+            # rename instances) plus a short random suffix.
+            name_suffix = ''.join(
+                random.choices(string.ascii_lowercase + string.digits, k=5)
+            )
+            await CacheServiceInstance.create(
+                session,
+                CacheServiceInstanceCreate(
+                    name=f"{service.name}-{name_suffix}",
+                    cache_service_id=service.id,
+                    worker_id=worker_id,
+                    cluster_id=service.cluster_id,
+                    state=CacheServiceStateEnum.PENDING,
+                    spec_digest=cache_service_spec_digest(service),
+                ),
+            )
+            logger.info(
+                f"Created instance of cache service {service.name} "
+                f"on worker {worker_id}"
+            )
+
+        if error_message is not None:
+            await self._set_service_state(
+                session,
+                service,
+                state=CacheServiceStateEnum.ERROR,
+                state_message=error_message,
+                healthy=False,
+            )
+            return
+        await self._sync_service_aggregate(session, service)
+
+    async def _desired_worker_ids(
+        self, session: AsyncSession, service: CacheService
+    ) -> Tuple[Set[int], Optional[str], bool]:
+        """The workers the service should have instances on, an error
+        message when the desired set is unsatisfiable, and whether the
+        instance rows should still be reconciled onto that set. A per_node
+        selector matching nothing is an authoritative empty set — labels
+        change only by explicit edits, so the instances follow (the
+        selector can scale the service to zero) and the service parks in
+        ERROR to say why. A singleton service whose picked worker is gone
+        parks without touching its rows: the identity worker vanishing is
+        a fault, not a narrowing."""
+        provider = get_cache_provider(service.provider_name)
+        topology = provider.topology if provider else "singleton"
+        if topology == "per_node":
+            workers = await Worker.all_by_fields(
+                session,
+                fields={"cluster_id": service.cluster_id},
+                extra_conditions=[Worker.deleted_at.is_(None)],
+            )
+            if not workers:
+                return (
+                    set(),
+                    "Cluster has no active workers to run cache instances.",
+                    True,
+                )
+            selector = service.worker_selector
+            if selector:
+                workers = [
+                    worker
+                    for worker in workers
+                    if label_matching(selector, worker.labels or {})
+                ]
+                if not workers:
+                    return (
+                        set(),
+                        f"No workers match the worker selector: {selector}.",
+                        True,
+                    )
+            return {worker.id for worker in workers}, None, True
+
+        if not service.worker_id:
+            return set(), "No worker assigned.", False
+        worker = await Worker.one_by_id(session, service.worker_id)
+        if (
+            worker is None
+            or worker.deleted_at is not None
+            or worker.cluster_id != service.cluster_id
+        ):
+            return set(), "Assigned worker no longer exists.", False
+        return {service.worker_id}, None, True
+
+    async def _sync_service_aggregate(
+        self, session: AsyncSession, service: CacheService
+    ):
+        """Fold the instances' states into the service row: all RUNNING →
+        RUNNING/healthy; some RUNNING → RUNNING/unhealthy with an N/M
+        breakdown; none RUNNING but a cache server already launching →
+        STARTING; none launched yet → PENDING; otherwise ERROR."""
+        instances = await CacheServiceInstance.all_by_fields(
+            session, {"cache_service_id": service.id}
+        )
+        total = len(instances)
+        running = sum(
+            1
+            for instance in instances
+            if instance.state == CacheServiceStateEnum.RUNNING
+        )
+        starting = any(
+            instance.state == CacheServiceStateEnum.STARTING for instance in instances
+        )
+        pending = any(
+            instance.state == CacheServiceStateEnum.PENDING for instance in instances
+        )
+
+        if total and running == total:
+            state, healthy, message = CacheServiceStateEnum.RUNNING, True, None
+        elif running:
+            state, healthy, message = (
+                CacheServiceStateEnum.RUNNING,
+                False,
+                f"{running}/{total} instances running",
+            )
+        elif starting:
+            state, healthy, message = CacheServiceStateEnum.STARTING, None, None
+        elif pending:
+            state, healthy, message = CacheServiceStateEnum.PENDING, None, None
+        else:
+            state, healthy, message = (
+                CacheServiceStateEnum.ERROR,
+                False,
+                f"0/{total} instances running" if total else "no instances running",
+            )
+
+        # A spec edit does not touch running containers (the controller
+        # reconciles the instance set, not the spec; recovery is
+        # delete-to-recreate) — say so instead of silently returning the
+        # new spec from the API while containers run the old one.
+        # Instances predating the digest (None) are never flagged.
+        current_digest = cache_service_spec_digest(service)
+        if any(
+            instance.spec_digest and instance.spec_digest != current_digest
+            for instance in instances
+        ):
+            drift_message = (
+                "configuration changed after instances started; delete "
+                "instances to recreate them with the current configuration"
+            )
+            message = f"{message}; {drift_message}" if message else drift_message
+
+        await self._set_service_state(
+            session, service, state=state, state_message=message, healthy=healthy
+        )
+
+    async def _set_service_state(
+        self,
+        session: AsyncSession,
+        service: CacheService,
+        state: CacheServiceStateEnum,
+        state_message: Optional[str],
+        healthy: Optional[bool],
+    ):
+        """Write the aggregate only on change, so steady state produces no
+        UPDATE events for watchers to churn on."""
+        if (
+            service.state == state
+            and service.state_message == state_message
+            and service.healthy == healthy
+        ):
+            return
+        await service.update(
+            session,
+            {
+                "state": state,
+                "state_message": state_message,
+                "healthy": healthy,
+            },
+        )
 
 
 async def sync_replicas(session: AsyncSession, model: Model):

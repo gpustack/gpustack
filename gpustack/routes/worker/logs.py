@@ -9,7 +9,10 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse
 
+from gpustack_runtime.deployer import logs_workload
+
 from gpustack.api.exceptions import NotFoundException
+from gpustack.schemas.cache_services import cache_service_instance_workload_name
 from gpustack.schemas.models import (
     ModelInstanceLogRestartEntry,
     ServeLogOptionsResponse,
@@ -607,6 +610,37 @@ async def get_serve_logs(
         ),
         media_type="application/octet-stream",
     )
+
+
+@router.get("/cacheServiceInstanceLogs/{instance_id}")
+async def get_cache_service_instance_logs(
+    instance_id: int,
+    log_options: LogOptionsDep,
+    cache_service_id: int = Query(),
+):
+    """Stream a managed cache service instance's container logs.
+
+    Logs are read live from the container runtime rather than from
+    persisted files, so the ``previous`` option has no effect here.
+    """
+    workload_name = cache_service_instance_workload_name(cache_service_id, instance_id)
+
+    def iter_logs():
+        try:
+            logs = logs_workload(
+                name=workload_name,
+                tail=log_options.tail,
+                follow=log_options.follow,
+            )
+        except Exception as e:
+            yield f"Failed to fetch cache service logs: {e}\n"
+            return
+        if isinstance(logs, (bytes, str)):
+            yield logs
+            return
+        yield from logs
+
+    return StreamingResponse(iter_logs(), media_type="application/octet-stream")
 
 
 @router.get("/benchmark_logs/{id}")

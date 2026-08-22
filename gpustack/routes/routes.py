@@ -5,6 +5,9 @@ from fastapi import APIRouter, Depends
 from gpustack.routes import (
     api_keys,
     auth,
+    cache_providers,
+    cache_service_instances,
+    cache_services,
     cluster_access,
     config,
     dashboard,
@@ -182,6 +185,18 @@ model_routers = [
         "dependencies": _org_owner_only,
     },
     {
+        "router": cache_services.router,
+        "prefix": "/cache-services",
+        "tags": ["Cache Services"],
+        "dependencies": _org_owner_only,
+    },
+    {
+        "router": cache_service_instances.router,
+        "prefix": "/cache-service-instances",
+        "tags": ["Cache Service Instances"],
+        "dependencies": _org_owner_only,
+    },
+    {
         "router": benchmarks.router,
         "prefix": "/benchmarks",
         "tags": ["Benchmarks"],
@@ -297,6 +312,11 @@ tenant_routers = model_routers + [
         "router": draft_models.router,
         "prefix": "/draft-models",
         "tags": ["Draft Models"],
+    },
+    {
+        "router": cache_providers.router,
+        "prefix": "/cache-providers",
+        "tags": ["Cache Providers"],
     },
     # Inference backends are platform-wide (admin curates) but every Org
     # owner/manager needs to read them to pick a backend at deploy time.

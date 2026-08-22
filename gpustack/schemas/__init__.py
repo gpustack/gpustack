@@ -99,6 +99,24 @@ from gpustack.schemas.benchmark import (
     BenchmarkPublic,
     BenchmarksPublic,
 )
+from gpustack.schemas.cache_services import (
+    CacheService,
+    CacheServiceCreate,
+    CacheServiceUpdate,
+    CacheServicePublic,
+    CacheServicesPublic,
+    CacheServiceInstance,
+    CacheServiceInstanceCreate,
+    CacheServiceInstanceUpdate,
+    CacheServiceInstancePublic,
+    CacheServiceInstancesPublic,
+    CacheServiceModeEnum,
+    CacheServiceStateEnum,
+    CacheConfigSnapshot,
+)
+from gpustack.schemas.cache_providers import (
+    CacheProvider,
+)
 from gpustack.schemas.filesystem import (
     FileExistsResponse,
 )
@@ -292,6 +310,20 @@ __all__ = [
     "GPUSnapshots",
     "BenchmarkSnapshot",
     "BenchmarkMetrics",
+    "CacheService",
+    "CacheServiceCreate",
+    "CacheServiceUpdate",
+    "CacheServicePublic",
+    "CacheServicesPublic",
+    "CacheServiceInstance",
+    "CacheServiceInstanceCreate",
+    "CacheServiceInstanceUpdate",
+    "CacheServiceInstancePublic",
+    "CacheServiceInstancesPublic",
+    "CacheServiceModeEnum",
+    "CacheServiceStateEnum",
+    "CacheConfigSnapshot",
+    "CacheProvider",
     "FileExistsResponse",
     "ModelProvider",
     "ModelProviderCreate",

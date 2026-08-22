@@ -66,6 +66,7 @@ from gpustack.scheduler.calculator import (
     calculate_gguf_model_resource_claim,
     check_diffusers_model_index_from_workers,
 )
+from gpustack.server.cache_services import resolve_instance_cache_config_safe
 from gpustack.server.services import (
     ModelInstanceService,
     ModelService,
@@ -396,6 +397,17 @@ class Scheduler:
                 ):
                     model_instance.distributed_servers.mode = (
                         DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                    )
+
+                if model.extended_kv_cache and model.extended_kv_cache.is_shared():
+                    # The assigned worker is known now; re-resolve the
+                    # shared-cache snapshot so worker-dependent injection
+                    # (e.g. the client's own local_hostname) binds to this
+                    # instance's node.
+                    model_instance.cache_config = (
+                        await resolve_instance_cache_config_safe(
+                            session, model, worker=candidate.worker
+                        )
                     )
 
                 await ModelInstanceService(session).update(model_instance)
