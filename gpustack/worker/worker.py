@@ -318,6 +318,7 @@ class Worker:
                 cidrs=[f"{self.worker_ip()}/32"] if self.worker_ip() else [],
                 unix_sockets=sockets,
                 authenticator=BearerTokenAuthenticator(headers=self._clientset.headers),
+                insecure_tls=self._config.insecure_tls,
             )
             self._create_async_task(self._message_client.run())
         else:
