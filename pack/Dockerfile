@@ -302,14 +302,16 @@ FROM --platform=linux/amd64 rocm/dev-ubuntu-22.04:${GPUSTACK_RUNTIME_ROCM_VERSIO
 # would add a few hundred packages a vulnerability scan has to answer for.
 #
 # Example build command:
-#   docker build --tag=gpustack/gpustack:docs --file=pack/Dockerfile --target=docs --progress=plain .
+#   docker build --tag=gpustack/gpustack:docs --file=pack/Dockerfile --target=docs \
+#     --build-arg GIT_COMMIT="$(git rev-parse HEAD)" --progress=plain .
 #
 FROM base AS docs
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
-# The stamp the site shows in its header. Passed in because this stage copies
-# sources without .git, so it cannot work the commit out for itself; without it
-# the site falls back to showing only a build date.
+# The stamp the site shows in its header. Required, not optional: this stage
+# copies sources without .git, so the build script cannot work the commit out for
+# itself, and it refuses to stamp a site it cannot identify. hack/package.sh
+# passes it; a hand-run docker build has to as well.
 ARG GIT_COMMIT
 
 COPY docs/ /workspace/docs/
