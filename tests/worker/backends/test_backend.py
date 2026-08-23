@@ -29,6 +29,7 @@ from gpustack.worker.backends.sglang import (
     SGLangServer,
     extend_sglang_mounted_lora_arguments,
     get_access_log_arguments as get_sglang_access_log_arguments,
+    get_auto_parallelism_arguments as get_sglang_auto_parallelism_arguments,
     get_cache_report_arguments as get_sglang_cache_report_arguments,
 )
 from gpustack.worker.backends.vllm import (
@@ -754,6 +755,17 @@ def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
         "--port",
         "4000",
     ]
+
+
+def test_sglang_tp_alias_prevents_conflicting_auto_parallelism_arguments():
+    model_instance = types.SimpleNamespace(gpu_indexes=[0, 1])
+
+    assert (
+        get_sglang_auto_parallelism_arguments(
+            ["--tp", "2"], model_instance, is_distributed=False
+        )
+        == []
+    )
 
 
 def test_vox_box_command_args_return_injected_parameters():

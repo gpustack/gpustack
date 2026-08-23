@@ -6,6 +6,9 @@ from tests.utils.mock import mock_async_session
 
 from tests.utils.model import make_model, new_model, new_model_instance
 from gpustack.policies.candidate_selectors import SGLangResourceFitSelector
+from gpustack.policies.candidate_selectors.sglang_resource_fit_selector import (
+    MemFractionStaticCalculator,
+)
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.scheduler import scheduler
 from gpustack.schemas.models import (
@@ -1242,12 +1245,11 @@ async def test_sglang_backend_parameters(config):
 
 @pytest.mark.asyncio
 async def test_sglang_tensor_parallel_size(config):
-    """Test SGLang tensor parallel size handling"""
+    """The SGLang --tp abbreviation must drive GPUStack scheduling too."""
     workers = [
         linux_nvidia_4_4080_16gx4(),
     ]
 
-    # Test with tensor parallel size
     m = new_model(
         1,
         "test_name",
@@ -1255,7 +1257,7 @@ async def test_sglang_tensor_parallel_size(config):
         huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
         cpu_offloading=False,
         backend_parameters=[
-            "--tp-size=2",
+            "--tp=2",
         ],
     )
 
@@ -1286,10 +1288,33 @@ async def test_sglang_tensor_parallel_size(config):
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
 
-        # Should handle tensor parallel size correctly
-        if candidates:
-            # If candidates are found, they should respect the tp-size parameter
-            assert len(candidates) >= 0
+        assert resource_fit_selector._tp_size == 2
+        assert resource_fit_selector._gpu_count == 2
+        assert candidates
+        assert all(len(candidate.gpu_indexes) == 2 for candidate in candidates)
+
+
+def test_sglang_tp_alias_drives_world_size_and_memory_calculation():
+    model = new_model(
+        1,
+        "test_name",
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        backend_parameters=["--tp", "2"],
+    )
+
+    assert SGLangResourceFitSelector.get_world_size_from_backend_parameters(model) == (
+        2,
+        ["tp"],
+    )
+
+    calculator = MemFractionStaticCalculator(
+        model=model,
+        model_instances=[],
+        model_params=SimpleNamespace(),
+        gpu_type="cuda",
+        selected_gpu_indexes_by_gpu_type_and_worker={},
+    )
+    assert calculator._tp_size == 2
 
 
 @pytest.mark.asyncio
