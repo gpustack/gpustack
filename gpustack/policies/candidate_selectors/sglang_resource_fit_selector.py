@@ -101,7 +101,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         model: Model,
     ) -> Tuple[Optional[int], Optional[List[str]]]:
         tp = find_int_parameter(
-            model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+            model.backend_parameters, ["tp-size", "tensor-parallel-size", "tp"]
         )
         pp = find_int_parameter(
             model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
@@ -146,7 +146,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         model = self._model
         self._tp_size = (
             find_int_parameter(
-                model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+                model.backend_parameters, ["tp-size", "tensor-parallel-size", "tp"]
             )
             or 1
         )
@@ -954,7 +954,7 @@ class MemFractionStaticCalculator:
         )
         self._tp_size = (
             find_int_parameter(
-                model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+                model.backend_parameters, ["tp-size", "tensor-parallel-size", "tp"]
             )
             or 1
         )

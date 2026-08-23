@@ -733,6 +733,7 @@ def get_auto_parallelism_arguments(
         [
             "tensor-parallel-size",
             "tp-size",
+            "tp",
             "pipeline-parallel-size",
             "pp-size",
             "data-parallel-size",
