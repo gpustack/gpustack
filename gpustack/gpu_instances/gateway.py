@@ -18,7 +18,7 @@ from typing import Dict, Optional, Set
 from gpustack.gpu_instances import gateway_client
 from gpustack.schemas.clusters import Cluster, ClusterProvider, is_gpu_service_cluster
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventType, event_field, resolve_event_id
 from gpustack.server.db import async_session
 
 logger = logging.getLogger(__name__)
@@ -171,7 +171,26 @@ class OperatorSubscriptionReconciler:
 
     async def _reconcile_worker(self, event: Event):
         worker: Worker = event.data
-        if worker is None or worker.cluster_id is None:
+        # Same id-only payload as the cluster path above, for the same reason
+        # (see :func:`deleted_cluster_id`) -- but here the id is not enough:
+        # this reconciler is keyed on the worker's cluster, which a deleted
+        # row can no longer name.
+        #
+        # Known gap, and the heartbeat does not close it: the retry sweep only
+        # reconciles _subscribed against _eligible, so it never revisits a
+        # cluster that is still eligible but has just lost its last READY
+        # worker. That is exactly the transition this event carries, so
+        # dropping it leaves this instance proxying an unreachable cluster
+        # until the cluster itself leaves _eligible. Every instance runs this
+        # reconciler over its own _subscribed set, so the instance that served
+        # the delete fixes only itself.
+        cluster_id = event_field(worker, "cluster_id")
+        if cluster_id is None:
+            logger.warning(
+                f"Worker {resolve_event_id(event)} {event.type} not reconciled: "
+                f"the event carries only an id, so its cluster is unknown; a "
+                f"subscription to it may be left in place"
+            )
             return
 
         if event.type == EventType.UPDATED and "state" not in (
@@ -183,7 +202,6 @@ class OperatorSubscriptionReconciler:
             return
 
         async with self._lock:
-            cluster_id = worker.cluster_id
             if cluster_id not in self._eligible:
                 return
 
@@ -255,7 +273,4 @@ def deleted_cluster_id(event: Event) -> Optional[int]:
     """
     if event.type != EventType.DELETED:
         return None
-    if event.id is not None:
-        return event.id
-    data = event.data
-    return data.get("id") if isinstance(data, dict) else None
+    return resolve_event_id(event)

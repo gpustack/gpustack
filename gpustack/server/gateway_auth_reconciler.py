@@ -69,7 +69,7 @@ from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.model_routes import AccessPolicyEnum, ModelRoute
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.security import gateway_digest
-from gpustack.server.bus import EventType
+from gpustack.server.bus import EventType, event_field
 from gpustack.server.db import async_session
 
 logger = logging.getLogger(__name__)
@@ -407,21 +407,6 @@ def public_route_ingresses(route_ids: List[int], cfg: Config) -> List[List[str]]
     ]
 
 
-def _event_field(data: Any, name: str) -> Any:
-    """Read one field off an event payload, whatever shape it arrived in.
-
-    Distributed mode delivers some events as an id-only dict rather than a
-    hydrated model, so both have to be handled -- and a field that is simply
-    not there must read as None so the caller can fall back to doing the work
-    rather than guessing.
-    """
-    if data is None:
-        return None
-    if isinstance(data, dict):
-        return data.get(name)
-    return getattr(data, name, None)
-
-
 def _is_public_policy(policy: Any) -> bool:
     """Whether an access policy read off an event payload means PUBLIC.
 
@@ -521,12 +506,12 @@ class GatewayAuthReconciler:
         applied = self._applied_public_route_ids
         if applied is None:
             return True
-        route_id = _event_field(event.data, "id")
+        route_id = event_field(event.data, "id")
         if route_id is None:
             return True
         if route_id in applied:
             return True
-        policy = _event_field(event.data, "access_policy")
+        policy = event_field(event.data, "access_policy")
         if policy is None:
             return True
         return _is_public_policy(policy)

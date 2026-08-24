@@ -117,7 +117,13 @@ from gpustack.schemas.inference_backend_source import (
 from gpustack.server.catalog import read_builtin_catalog_text
 from gpustack.schemas.source import SourceTypeEnum
 from gpustack.server.sources.core import gather_and_merge, sha256_of
-from gpustack.server.bus import Event, EventType, event_bus
+from gpustack.server.bus import (
+    Event,
+    EventType,
+    event_bus,
+    event_field,
+    resolve_event_id,
+)
 from gpustack.server.cache import delete_cache_by_key
 from gpustack.utils.model_source import get_draft_model_source
 from gpustack import envs
@@ -230,6 +236,15 @@ class ModelController:
         Reconcile the model.
         """
         model: Model = event.data
+        # Unhydrated means a delete whose row is gone (see Event), and every
+        # callee below reads model fields. Leader-only controller, so nothing
+        # else picks it up -- warn rather than drop it quietly.
+        if not isinstance(model, Model):
+            logger.warning(
+                f"Model {resolve_event_id(event)} {event.type} not reconciled: "
+                f"the event carries only an id and the row is gone"
+            )
+            return
         try:
             async with async_session() as session:
                 await sync_replicas(session, model)
@@ -265,22 +280,46 @@ class ModelInstanceController:
         """
 
         model_instance: ModelInstance = event.data
+        # A cross-instance DELETE may carry only the id (see Event), so take
+        # what the payload can give: the id always resolves, model_id only
+        # when the event is hydrated.
+        instance_id = resolve_event_id(event)
+        model_id = event_field(model_instance, "model_id")
         try:
             async with async_session() as session:
                 if event.type == EventType.DELETED and model_instance is not None:
                     # Cover cascade deletes that bypass ModelInstanceService.
+                    #
+                    # Known gap: with an id-only payload model_id is unknown,
+                    # so the get_running_instances entry -- the one that feeds
+                    # routing, and so the more important of the two -- is not
+                    # dropped. Deletes through ModelInstanceService are fine
+                    # (it invalidates itself, and delete_cache_by_key
+                    # broadcasts), but the cascade path this block exists for
+                    # is not, and the controller is leader-only so no other
+                    # process retries it. Closing it needs the deleted row's
+                    # model_id, which no event can carry.
                     instance_service = ModelInstanceService(session)
-                    if model_instance.model_id is not None:
+                    if model_id is not None:
                         await delete_cache_by_key(
                             instance_service.get_running_instances,
-                            model_instance.model_id,
+                            model_id,
                         )
-                    if model_instance.id is not None:
+                    if instance_id is not None:
                         await delete_cache_by_key(
-                            instance_service.get_by_id, model_instance.id
+                            instance_service.get_by_id, instance_id
                         )
 
-                model = await Model.one_by_id(session, model_instance.model_id)
+                # Everything past this point needs the row's fields, and
+                # model_id is the way in. Return explicitly rather than
+                # letting one_by_id take a None primary key: it warns today
+                # ("fully NULL primary key identity cannot load any object")
+                # and SQLAlchemy reserves the right to raise on it later.
+                # Nothing is lost -- the replica sync is level-triggered, and
+                # the deleting instance ran it against the hydrated row.
+                if model_id is None:
+                    return
+                model = await Model.one_by_id(session, model_id)
                 if not model:
                     return
                 model_deleting = model.deleted_at is not None
@@ -321,7 +360,8 @@ class ModelInstanceController:
                     await revoke_model_access_cache(session=session)
         except Exception as e:
             logger.error(
-                f"Failed to reconcile model instance {model_instance.name}: {e}"
+                "Failed to reconcile model instance "
+                f"{event_field(model_instance, 'name', instance_id)}: {e}"
             )
 
 
@@ -382,8 +422,11 @@ class CacheServiceController:
                 EventType.DELETED,
             ):
                 continue
-            worker: Worker = event.data
-            if worker is None or worker.cluster_id is None:
+            # An id-only DELETE payload (see Event) cannot tell us which
+            # cluster to reconcile, which reads the same as a worker with no
+            # cluster: nothing to do here, and the resync loop heals it.
+            cluster_id = event_field(event.data, "cluster_id")
+            if cluster_id is None:
                 continue
             # Of the update stream, only (un)soft-deletion and label
             # changes (which move a worker in or out of per_node services'
@@ -393,7 +436,7 @@ class CacheServiceController:
                 "deleted_at" in changed_fields or "labels" in changed_fields
             ):
                 continue
-            await self._reconcile_cluster_services(worker.cluster_id)
+            await self._reconcile_cluster_services(cluster_id)
 
     async def _watch_instances(self):
         async for event in CacheServiceInstance.subscribe(
@@ -1851,6 +1894,17 @@ class WorkerController:
         async for event in Worker.subscribe(source="worker_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
+            # All three handlers below branch on worker fields (state,
+            # cluster_id, name), none of which survive an unhydrated payload
+            # (see Event). Guarding once keeps one the first handler cannot
+            # read from costing the other two as well.
+            if not isinstance(event.data, Worker):
+                logger.warning(
+                    f"Worker {resolve_event_id(event)} {event.type} not "
+                    f"reconciled: the event carries only an id and the row is "
+                    f"gone"
+                )
+                continue
             try:
                 await self._reconcile(event)
                 await self._provisioning._reconcile(event)
@@ -2864,10 +2918,19 @@ class WorkerPoolController:
         """
         Reconcile the worker pool state with the current event.
         """
-        logger.info(f"Reconcile worker pool {event.data.id} with event {event.type}")
+        # Only the id is needed -- the pool is re-read below either way -- so
+        # an id-only payload (see Event) is as good as a hydrated one here.
+        # On a DELETE the row is gone and one_by_id returns None.
+        pool_event_id = resolve_event_id(event)
+        if pool_event_id is None:
+            # No row to reconcile. Return rather than passing None to
+            # one_by_id, which warns ("fully NULL primary key identity cannot
+            # load any object") and may raise in a future SQLAlchemy.
+            return
+        logger.info(f"Reconcile worker pool {pool_event_id} with event {event.type}")
         async with async_session() as session:
             pool = await WorkerPool.one_by_id(
-                session, event.data.id, options=[selectinload(WorkerPool.cluster)]
+                session, pool_event_id, options=[selectinload(WorkerPool.cluster)]
             )
             if pool is None or pool.deleted_at is not None:
                 return
@@ -3308,10 +3371,15 @@ class ClusterController:
         """
         if self._cfg.gateway_mode == GatewayModeEnum.disabled:
             return
-        cluster: Cluster = event.data
+        # This runs on DELETED too -- cleaning up after a deleted cluster is
+        # the point -- and the id is all it needs, so an id-only payload
+        # (see Event) serves it just as well as a hydrated row.
+        cluster_id = resolve_event_id(event)
+        if cluster_id is None:
+            return
         mcp_resource_name = mcp_handler.default_mcp_bridge_name
         desired_registries = []
-        to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster.id)
+        to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster_id)
         try:
             await mcp_handler.ensure_mcp_bridge(
                 client=self._higress_network_api,
@@ -3321,7 +3389,10 @@ class ClusterController:
                 to_delete_prefix=to_delete_prefix,
             )
         except Exception as e:
-            logger.error(f"Failed to ensure MCPBridge for cluster {cluster.name}: {e}")
+            logger.error(
+                "Failed to ensure MCPBridge for cluster "
+                f"{event_field(event.data, 'name', cluster_id)}: {e}"
+            )
             raise
 
 
@@ -3417,26 +3488,32 @@ class ModelProviderController:
         model_provider: ModelProvider,
         event: Event,
     ):
-        provider_registry = mcp_handler.provider_registry(model_provider)
-        registry_to_remove = (
-            provider_registry is None or event.type == EventType.DELETED
+        # On DELETED both desired sets are empty and only the id is read, so
+        # this path works off an id-only payload (see Event) -- which is what
+        # a cross-instance delete carries, and skipping it would strand the
+        # registry and proxy of a provider that no longer exists. Deriving
+        # the two specs first would defeat that: they need a hydrated row and
+        # their values are discarded here anyway.
+        deleted = event.type == EventType.DELETED
+        provider_id = resolve_event_id(event)
+        provider_registry = (
+            None if deleted else mcp_handler.provider_registry(model_provider)
         )
+        registry_to_remove = provider_registry is None or deleted
         # Match by exact name (not prefix) so that deleting provider id "1" does
         # not also drop other providers whose id shares that numeric prefix
         # (e.g. "provider-10", "provider-11").
         to_delete_names = (
-            [mcp_handler.provider_registry_name(model_provider.id)]
+            [mcp_handler.provider_registry_name(provider_id)]
             if registry_to_remove
             else None
         )
         desired_registries = [] if registry_to_remove else [provider_registry]
 
-        provider_proxy = mcp_handler.provider_proxy(model_provider)
-        proxy_to_remove = provider_proxy is None or event.type == EventType.DELETED
+        provider_proxy = None if deleted else mcp_handler.provider_proxy(model_provider)
+        proxy_to_remove = provider_proxy is None or deleted
         to_delete_proxy_names = (
-            [mcp_handler.provider_proxy_name(model_provider.id)]
-            if proxy_to_remove
-            else None
+            [mcp_handler.provider_proxy_name(provider_id)] if proxy_to_remove else None
         )
         desired_proxies = [] if proxy_to_remove else [provider_proxy]
 
@@ -3452,7 +3529,8 @@ class ModelProviderController:
             )
         except Exception as e:
             logger.error(
-                f"Failed to ensure MCPRegistry for model provider {model_provider.name}: {e}"
+                "Failed to ensure MCPRegistry for model provider "
+                f"{event_field(model_provider, 'name', provider_id)}: {e}"
             )
             raise
 
@@ -3682,6 +3760,20 @@ class ModelRouteTargetController:
         target: ModelRouteTarget = event.data
         if not target:
             return
+        # Every branch below keys off target fields (route_name, route_id,
+        # model_id, state), none of which an unhydrated payload has (see
+        # Event). Known gap: this controller exists to cover cascades that
+        # bypass ModelRouteService, and it is leader-only, so nothing else
+        # invalidates the route caches or transfers an orphaned route.
+        # Closing it needs the deleted row's route_name, which no event can
+        # carry, so it belongs in a periodic pass.
+        if not isinstance(target, ModelRouteTarget):
+            logger.warning(
+                f"Model route target {resolve_event_id(event)} {event.type} "
+                f"not reconciled: the event carries only an id and the row is "
+                f"gone; route caches may be stale until the next write"
+            )
+            return
         async with async_session() as session:
             # Cover cascade create/delete that bypass ModelRouteService.
             # UPDATED is skipped — it cannot change the resolved target set.
@@ -3734,12 +3826,10 @@ class ModelRouteController:
         model_route: ModelRoute = event.data
         if not model_route:
             return False
-        # Handle ID-only events from distributed mode
-        model_route_id = (
-            model_route.id
-            if hasattr(model_route, 'id')
-            else model_route.get('id') if isinstance(model_route, dict) else None
-        )
+        # Reached only with a hydrated route -- the caller guards, and a
+        # DELETE returned above -- so this is just the canonical way to read
+        # the id, not id-only handling.
+        model_route_id = resolve_event_id(event)
         if not model_route_id:
             return False
         model_route: ModelRoute = await ModelRoute.one_by_id(
@@ -3779,6 +3869,22 @@ class ModelRouteController:
         """
         model_route: ModelRoute = event.data
         if not model_route:
+            return
+        # sync_gateway and distribute_models_to_user both need the row's
+        # fields (name for the ingress names, model_dump for the per-user
+        # copies), which an unhydrated payload does not have (see Event).
+        # Known gap, not a safe skip: re-reading is not an option either
+        # (ModelRouteService.delete takes the default hard-delete path), and
+        # this controller is leader-only. Deletes through the API are still
+        # covered -- the service drops the route caches itself, and that
+        # invalidation is broadcast -- so what is uncovered is the cascade
+        # path this controller exists for.
+        if not isinstance(model_route, ModelRoute):
+            logger.warning(
+                f"Model route {resolve_event_id(event)} {event.type} not "
+                f"reconciled: the event carries only an id and the row is "
+                f"gone; gateway config for it may be stale"
+            )
             return
         async with async_session() as session:
             # sync targets will update model route record so make sure to do it before other operations
