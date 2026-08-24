@@ -137,13 +137,13 @@ async def _resolve_managed_endpoint(
     ("node_local" | "remote"); provider declarations map it to their own
     connector vocabulary via injection.locality_params.
 
-    per_node topologies attach node-local only: measured remote transfer
-    (the engine-driven copy path) is slower than running without the
-    cache at all, and falling back would also funnel every uncovered
-    engine onto a single instance — so an engine on a worker without a
-    RUNNING cache instance starts degraded instead. singleton topologies
-    serve the whole cluster from their one instance, where remote attach
-    is inherent. Returns (None, reason) when no instance is usable.
+    Providers declaring attach_locality node_local attach node-local
+    only: measured remote transfer (the engine-driven copy path) is
+    slower than running without the cache at all, and falling back would
+    also funnel every uncovered engine onto a single instance — so an
+    engine on a worker without a RUNNING cache instance starts degraded
+    instead. Cluster-attachable providers serve any worker from any
+    instance. Returns (None, reason) when no instance is usable.
     """
     instances = await CacheServiceInstance.all_by_fields(
         session, {"cache_service_id": service.id}
@@ -170,7 +170,7 @@ async def _resolve_managed_endpoint(
         )
     node_local = target is not None
     if target is None:
-        if provider.topology == "per_node":
+        if provider.attach_locality == "node_local":
             if worker is None:
                 return None, (
                     "Cache endpoint resolves with the instance's worker "
@@ -205,7 +205,10 @@ async def _resolve_managed_endpoint(
 
 
 async def resolve_instance_cache_config(
-    session: AsyncSession, model: Model, worker: Optional[Worker] = None
+    session: AsyncSession,
+    model: Model,
+    worker: Optional[Worker] = None,
+    spans_workers: bool = False,
 ) -> Optional[CacheConfigSnapshot]:
     """
     Resolve the shared-cache connection snapshot for an instance of the
@@ -216,6 +219,13 @@ async def resolve_instance_cache_config(
     ``worker`` is the instance's assigned worker. Node-local external
     endpoints resolve to it, so calls made before scheduling yield an
     explicit pending snapshot for such services.
+
+    ``spans_workers`` marks an instance actually placed across several
+    workers (subordinate workers assigned at scheduling). The
+    distributed_inference_across_workers model flag is only a
+    permission — most single-node placements carry it — so the
+    node-local incompatibility is decided here, where the real
+    placement is known, not at model validation.
     """
     ext = model.extended_kv_cache
     if not ext or not ext.is_shared():
@@ -258,6 +268,26 @@ async def resolve_instance_cache_config(
             reason=(
                 f"Unknown cache provider '{service.provider_name}'; "
                 "instance starts without shared KV cache"
+            ),
+        )
+
+    if spans_workers and provider.attach_locality == "node_local":
+        # Declared attach contract, the same predicate
+        # _resolve_managed_endpoint keys its no-remote-fallback rule on:
+        # node_local connectors (MP-style, CUDA IPC) have no cross-host
+        # path, so every subordinate worker of a spanning instance would
+        # face a remote server. Cluster-attachable providers (e.g.
+        # Mooncake's distributed pool) serve spanning instances by
+        # design and pass through — with a known calibration caveat: the
+        # snapshot renders once with the main worker, so subordinate
+        # workers see its local_hostname.
+        return CacheConfigSnapshot(
+            **snapshot_base,
+            injected=False,
+            reason=(
+                f"Cache provider '{provider.name}' attaches node-locally; "
+                "this instance spans multiple workers and starts without "
+                "the shared KV cache"
             ),
         )
 
@@ -420,7 +450,10 @@ async def resolve_instance_cache_config(
 
 
 async def resolve_instance_cache_config_safe(
-    session: AsyncSession, model: Model, worker: Optional[Worker] = None
+    session: AsyncSession,
+    model: Model,
+    worker: Optional[Worker] = None,
+    spans_workers: bool = False,
 ) -> Optional[CacheConfigSnapshot]:
     """
     resolve_instance_cache_config that degrades instead of raising: an
@@ -428,7 +461,9 @@ async def resolve_instance_cache_config_safe(
     callers on critical paths (e.g. the scheduler) keep going.
     """
     try:
-        return await resolve_instance_cache_config(session, model, worker)
+        return await resolve_instance_cache_config(
+            session, model, worker=worker, spans_workers=spans_workers
+        )
     except Exception as e:
         logger.error(
             f"Failed to resolve shared cache config for model {model.name}: {e}"

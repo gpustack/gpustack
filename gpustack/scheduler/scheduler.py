@@ -406,7 +406,10 @@ class Scheduler:
                     # instance's node.
                     model_instance.cache_config = (
                         await resolve_instance_cache_config_safe(
-                            session, model, worker=candidate.worker
+                            session,
+                            model,
+                            worker=candidate.worker,
+                            spans_workers=model_instance.spans_workers,
                         )
                     )
 

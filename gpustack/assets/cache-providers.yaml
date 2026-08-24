@@ -39,6 +39,9 @@
   # own cache server instance and engines attach to the one on their
   # node, so managed deployments follow the cluster's workers.
   topology: per_node
+  # The MP connector's zero-copy path is CUDA IPC: engines can only
+  # attach the cache server on their own node.
+  attach_locality: node_local
   default_version: "v0.5.2"
   # A service may pin a user-supplied image ("custom" version); it runs
   # with the default version's run command and env templates, so the image
@@ -373,6 +376,9 @@
     - { label: Product Page, url: "https://www.xsky.com" }
   supported_modes: [managed]
   topology: per_node
+  # The MP connector's zero-copy path is CUDA IPC: engines can only
+  # attach the cache server on their own node.
+  attach_locality: node_local
   default_version: "v0.5.2"
   custom_version: true
   versions:

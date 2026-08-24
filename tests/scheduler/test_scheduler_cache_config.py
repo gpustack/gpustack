@@ -49,6 +49,9 @@ def _shared_cache_model():
 
 
 def _instance():
+    # the scheduler assigns distributed_servers then reads the real
+    # ModelInstance.spans_workers property; the fake mirrors the
+    # single-worker placement (_candidate has no subordinate workers)
     return SimpleNamespace(
         id=11,
         name="m-1",
@@ -56,6 +59,7 @@ def _instance():
         state=ModelInstanceStateEnum.PENDING,
         state_message="",
         worker_id=None,
+        spans_workers=False,
         cache_config="unchanged-sentinel",
     )
 

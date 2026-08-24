@@ -515,7 +515,10 @@ class CacheServiceController:
                 if not (refreshable or running):
                     continue
                 snapshot = await resolve_instance_cache_config_safe(
-                    session, model, workers_by_id.get(mi.worker_id)
+                    session,
+                    model,
+                    workers_by_id.get(mi.worker_id),
+                    spans_workers=mi.spans_workers,
                 )
                 if snapshot is None:
                     continue
