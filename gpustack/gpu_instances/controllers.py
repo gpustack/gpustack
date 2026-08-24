@@ -56,7 +56,7 @@ from gpustack.schemas.clusters import (
     ClusterProvider,
 )
 
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventType, event_field, resolve_event_id
 from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
 from gpustack import envs
 from gpustack.server.db import async_session
@@ -263,7 +263,11 @@ class GPUInstanceController:
 
     def _enqueue(self, event: Event):
         """Map a bus event onto the work queue (coalescing happens in the queue)."""
-        iid = event.data.id if event.data is not None else event.id
+        # resolve_event_id rather than ``event.data.id``: the latter raises on
+        # an id-only payload (see Event). This topic is not registered for
+        # cross-instance enrichment today, so nothing reaches here in that
+        # shape -- registering it later should not be what discovers that.
+        iid = resolve_event_id(event)
         if iid is None:
             return
         self._queue.add(self._to_work_event(iid, event))
@@ -1190,7 +1194,8 @@ class _PersistentVolumeFinalizeController:
 
     def _enqueue(self, event: Event):
         """Map a bus event onto the work queue (coalescing happens in the queue)."""
-        row_id = event.data.id if event.data is not None else event.id
+        # See the note on GPUInstanceController._enqueue.
+        row_id = resolve_event_id(event)
         if row_id is None:
             return
         self._queue.add(self._to_work_event(row_id, event))
@@ -1556,11 +1561,17 @@ class GPUInstanceTypeController:
 
         if (
             event.type == EventType.DELETED
-            or cluster.provider != ClusterProvider.Kubernetes
+            or event_field(cluster, "provider") != ClusterProvider.Kubernetes
         ):
             # A deleted cluster's rows go with it (``cluster_id`` is ON DELETE
-            # CASCADE), so stopping the watcher is the whole cleanup.
-            self._stop_watcher(cluster.id)
+            # CASCADE), so stopping the watcher is the whole cleanup, and the
+            # id is all of it. Take that off the event rather than the payload:
+            # a cross-instance DELETE arrives id-only (see Event, and the
+            # cluster topic is not preloaded into the change-detector cache),
+            # and a watcher left running here outlives the process.
+            cluster_id = resolve_event_id(event)
+            if cluster_id is not None:
+                self._stop_watcher(cluster_id)
             return
 
         existing = self._watchers.get(cluster.id)

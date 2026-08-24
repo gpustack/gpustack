@@ -36,7 +36,7 @@ from gpustack.gpu_instances.gateway import count_ready_workers, deleted_cluster_
 from gpustack.schemas.clusters import Cluster, ClusterProvider, is_gpu_service_cluster
 from gpustack.schemas.principals import PLATFORM_PRINCIPAL_NAME
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventType, event_field
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +233,15 @@ class OperatorSettingsReconciler:
 
     async def _reconcile_worker(self, event: Event):
         worker: Worker = event.data
-        if worker is None or worker.cluster_id is None:
+        # Same id-only payload as the cluster path above, for the same reason
+        # (see :func:`~gpustack.gpu_instances.gateway.deleted_cluster_id`).
+        # Unlike there the id alone is no use: this reconciler is keyed on the
+        # worker's cluster, which a deleted row cannot name. Nothing is lost
+        # here though -- unlike its counterpart in gateway.py, this reconciler
+        # only ever acts on a worker becoming READY, and returns on DELETE a
+        # few lines below regardless.
+        cluster_id = event_field(worker, "cluster_id")
+        if cluster_id is None:
             return
 
         if event.type == EventType.UPDATED and "state" not in (
@@ -250,10 +258,10 @@ class OperatorSettingsReconciler:
             return
 
         async with self._lock:
-            stale = worker.cluster_id in self._pending
+            stale = cluster_id in self._pending
 
         if stale:
-            await self._converge(worker.cluster_id)
+            await self._converge(cluster_id)
 
     async def _on_heartbeat(self):
         """Retry stale work, and periodically re-read what already converged.
