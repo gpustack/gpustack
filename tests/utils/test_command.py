@@ -2,6 +2,7 @@ import shutil
 import pytest
 
 from gpustack.utils.command import (
+    REDACTED,
     is_command_available,
     find_parameter,
     find_bool_parameter,
@@ -11,6 +12,7 @@ from gpustack.utils.command import (
     format_backend_parameters,
     is_parameter_key,
     safe_split,
+    sanitize_args,
 )
 
 
@@ -415,3 +417,45 @@ def test_find_bool_parameter_argv_stream():
         ['--tp 8 --max-model-len 1024'],
         ['enable-expert-parallel'],
     )
+
+
+class TestSanitizeArgs:
+    """Credential redaction for logged command lines.
+
+    ``--progress-auth`` carries the worker token, so the container command line
+    printed at workload creation would otherwise hand it to anyone who can read
+    the worker log.
+    """
+
+    def test_the_value_after_the_flag_is_redacted(self):
+        args = ['benchmark', 'run', '--progress-auth', 'sk-worker-token', '--rate', '4']
+        assert sanitize_args(args) == [
+            'benchmark',
+            'run',
+            '--progress-auth',
+            REDACTED,
+            '--rate',
+            '4',
+        ]
+
+    def test_the_inline_form_is_redacted(self):
+        assert sanitize_args(['--progress-auth=sk-worker-token']) == [
+            f'--progress-auth={REDACTED}'
+        ]
+
+    def test_everything_else_is_left_alone(self):
+        # Only GPUStack-injected credentials are redacted. A blanket match on
+        # "token" would also swallow values an operator needs to read.
+        args = ['--token-timeout', '60', '--max-tokens', '128', '--target', 'http://x']
+        assert sanitize_args(args) == args
+
+    def test_a_trailing_flag_without_a_value_does_not_crash(self):
+        assert sanitize_args(['--rate', '4', '--progress-auth']) == [
+            '--rate',
+            '4',
+            '--progress-auth',
+        ]
+
+    def test_non_string_elements_survive(self):
+        # _build_command_args stringifies most values, but not all of them.
+        assert sanitize_args(['--rate', 4]) == ['--rate', '4']
