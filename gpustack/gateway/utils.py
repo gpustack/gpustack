@@ -928,7 +928,7 @@ async def ensure_model_ingress(
         included_generic_route (bool): Whether to include a generic '/' route for fallback traffic. Used in worker gateway.
         included_proxy_route (bool): Whether to include a proxy route for model traffic (e.g., /model/proxy/{model_name}). Used in server gateway.
     """
-    if event_type == EventType.DELETED:
+    if event_type == EventType.DELETED or not destinations:
         try:
             await networking_api.delete_namespaced_ingress(
                 name=ingress_name, namespace=namespace
