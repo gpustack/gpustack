@@ -815,19 +815,6 @@ async def validate_shared_kv_cache(
             message="The cache service must be in the same cluster as the model."
         )
 
-    # The MP-style connectors share KV node-locally (CUDA IPC has no
-    # cross-host path) and the resolver attaches node-local only, while a
-    # multi-worker distributed instance runs one engine across several
-    # nodes with a single snapshot — its subordinate workers would face a
-    # remote server on the node-local contract. Reject the combination.
-    if model_in.distributed_inference_across_workers:
-        raise BadRequestException(
-            message=(
-                "Shared KV cache attaches node-locally and does not "
-                "support instances distributed across workers."
-            )
-        )
-
     provider = get_cache_provider(cache_service.provider_name)
     backend = model_in.backend or BackendEnum.VLLM.value
     if provider is None or provider.integration_for(backend) is None:

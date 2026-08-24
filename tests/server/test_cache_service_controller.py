@@ -553,6 +553,7 @@ def _model_instance(state, injected=False, reason="not ready", worker_id=5):
         model_id=3,
         worker_id=worker_id,
         state=state,
+        spans_workers=False,
         cache_config=CacheConfigSnapshot(
             cache_service_id=9, injected=injected, reason=reason
         ),
@@ -718,6 +719,7 @@ async def test_refresh_tracks_endpoint_liveness_on_running_instance():
         model_id=3,
         worker_id=5,
         state=ModelInstanceStateEnum.RUNNING,
+        spans_workers=False,
         cache_config=CacheConfigSnapshot(
             cache_service_id=9,
             injected=True,

@@ -323,6 +323,27 @@ async def test_resolve_degrades_when_engine_version_below_floor():
 
 
 @pytest.mark.asyncio
+async def test_resolve_degrades_when_instance_spans_workers():
+    """The distributed permission flag rides on most vLLM/SGLang models;
+    only an instance actually placed across workers conflicts with the
+    per_node providers' node-local contract — decided here with the real
+    placement, and degrading keeps the engine running without the
+    cache."""
+    model = shared_cache_model()
+    with patch_lookups(managed_cache_service()):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            spans_workers=True,
+        )
+
+    assert snapshot.injected is False
+    assert "spans multiple workers" in snapshot.reason
+    assert not snapshot.args
+
+
+@pytest.mark.asyncio
 async def test_resolve_per_node_degrades_without_node_local_instance():
     """per_node never attaches across nodes: the engine-driven copy path
     measures slower than running without the cache, and a silent
@@ -469,6 +490,26 @@ async def test_resolve_external_mooncake_injects_store_connector():
     assert config["metadata_server"] == "P2PHANDSHAKE"
     assert config["protocol"] == "tcp"
     assert config["local_buffer_size"] == "1GB"
+    assert '"kv_connector":"MooncakeStoreConnector"' in snapshot.args[1]
+
+
+@pytest.mark.asyncio
+async def test_resolve_external_provider_attaches_spanning_instances():
+    """Node-locality is the per_node providers' contract, not a
+    shared-cache property: a cross-host pool (Mooncake, external mode,
+    singleton topology) serves multi-worker instances by design — every
+    subordinate worker's engine reaches the master over the network."""
+    model = shared_cache_model()
+    instance_worker = SimpleNamespace(id=7, ip="10.0.0.7", deleted_at=None)
+    with patch_lookups(mooncake_cache_service(), worker=None, instances=[]):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=instance_worker,
+            spans_workers=True,
+        )
+
+    assert snapshot.injected is True
     assert '"kv_connector":"MooncakeStoreConnector"' in snapshot.args[1]
 
 

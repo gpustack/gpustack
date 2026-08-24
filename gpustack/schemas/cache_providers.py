@@ -297,6 +297,16 @@ class CacheProvider(BaseModel):
     per active worker of the service's cluster, following workers as they
     join and leave."""
 
+    attach_locality: str = "cluster"
+    """Where an engine may attach from: "node_local" means the connector
+    only works against a cache server on the engine's own node (e.g.
+    LMCache MP's CUDA-IPC transport), so remote fallback and multi-worker
+    instances degrade; "cluster" (default) means the endpoint is
+    network-reachable from any worker. Deliberately separate from
+    ``topology``: placement and attach contract only coincide for
+    LMCache-style providers — a distributed pool may run per-node data
+    components while engines attach its cluster-wide endpoint."""
+
     default_version: Optional[str] = None
     versions: Dict[str, CacheProviderVersionConfig] = {}
 

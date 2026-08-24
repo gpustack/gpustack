@@ -194,20 +194,18 @@ async def test_shared_skips_cluster_check_without_effective_cluster(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_shared_rejects_distributed_across_workers(monkeypatch):
-    """Shared cache attaches node-locally; a multi-worker distributed
-    instance would leave subordinate workers facing a remote server on
-    the node-local contract."""
+async def test_shared_allows_distributed_permission_flag(monkeypatch):
+    """distributed_inference_across_workers defaults to True for vLLM and
+    SGLang as a permission, not a placement plan — creation must not
+    reject it; the node-local incompatibility is decided at scheduling,
+    where the real placement is known (see the injection resolver)."""
     _patch_lookups(monkeypatch, _service())
-    with pytest.raises(BadRequestException) as exc_info:
-        await models_route.validate_shared_kv_cache(
-            MagicMock(),
-            _model_in(_shared_ext(), distributed=True),
-            OWNER_PRINCIPAL,
-            1,
-        )
-
-    assert "distributed across workers" in exc_info.value.message
+    await models_route.validate_shared_kv_cache(
+        MagicMock(),
+        _model_in(_shared_ext(), distributed=True),
+        OWNER_PRINCIPAL,
+        1,
+    )
 
 
 @pytest.mark.asyncio

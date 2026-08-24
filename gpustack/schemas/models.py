@@ -798,6 +798,15 @@ class ModelInstanceBase(SQLModel, ModelSource):
         sa_column=Column(pydantic_column_type(List[LoraListEntry]), nullable=True),
     )
 
+    @property
+    def spans_workers(self) -> bool:
+        """Whether this instance is actually placed across several
+        workers (subordinate workers assigned at scheduling) — the
+        placement fact, as opposed to the model's
+        distributed_inference_across_workers permission flag."""
+        dservers = self.distributed_servers
+        return bool(dservers and dservers.subordinate_workers)
+
     def get_deployment_metadata(
         self,
         worker_id: int,

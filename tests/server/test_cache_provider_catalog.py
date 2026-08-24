@@ -26,8 +26,13 @@ def test_lmcache_provider_declaration():
     # itself; reference-only distributed caches are what external is for.
     assert provider.supported_modes == [CacheServiceModeEnum.MANAGED.value]
     # The MP server keeps KV transfers node-local, so managed deployments
-    # run one instance per worker of the cluster.
+    # run one instance per worker of the cluster; attach_locality is the
+    # declared contract the resolver's node-local rules key on —
+    # deliberately separate from topology (a distributed pool may run
+    # per-node data components while engines attach its cluster-wide
+    # endpoint).
     assert provider.topology == "per_node"
+    assert provider.attach_locality == "node_local"
     # /healthcheck verifies engine readiness (503 until initialized) and
     # lives on the HTTP frontend — the metrics port in our port model.
     assert provider.health_check.scheme == "http"
@@ -181,6 +186,9 @@ def test_mooncake_provider_declaration():
     # Shipped and supported as part of the GPUStack catalog, like LMCache;
     # "partner" is reserved for vendor-branded providers.
     assert provider.source.value == "built_in"
+    # A distributed pool is network-attachable from any worker — spanning
+    # (multi-worker) instances attach by design.
+    assert provider.attach_locality == "cluster"
     assert provider.icon == "/static/catalog_icons/mooncake.png"
     # Mooncake is a self-deployed distributed store; GPUStack only references
     # it, so it is external-only and runs no managed container.
