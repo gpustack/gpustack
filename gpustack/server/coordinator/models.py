@@ -40,6 +40,14 @@ class _ModelRegistry:
         'modelprovider': lambda: _import_model(
             'gpustack.schemas.model_provider', 'ModelProvider'
         ),
+        # Identity consolidation made ``User`` an alias of ``Principal``, and
+        # ``subscribe()`` keys the topic off ``cls.__name__`` -- so everything
+        # publishes to 'principal' and the 'user' entry below has been dead
+        # since. Without 'principal' registered, every cross-instance
+        # principal event was dropped by _process_coordinator_event. Keep the
+        # stale key as an alias rather than deleting it: it costs nothing and
+        # covers anything still constructing the topic string by hand.
+        'principal': lambda: _import_model('gpustack.schemas.principals', 'Principal'),
         'user': lambda: _import_model('gpustack.schemas.users', 'User'),
         'apikey': lambda: _import_model('gpustack.schemas.api_keys', 'ApiKey'),
         'benchmark': lambda: _import_model('gpustack.schemas.benchmark', 'Benchmark'),

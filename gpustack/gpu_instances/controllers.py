@@ -48,7 +48,7 @@ from gpustack.schemas.clusters import (
     Cluster,
 )
 
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventType, resolve_event_id
 from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
 from gpustack import envs
 from gpustack.server.db import async_session
@@ -209,7 +209,11 @@ class GPUInstanceController:
 
     def _enqueue(self, event: Event):
         """Map a bus event onto the work queue (coalescing happens in the queue)."""
-        iid = event.data.id if event.data is not None else event.id
+        # resolve_event_id rather than ``event.data.id``: the latter raises on
+        # an id-only payload (see Event). This topic is not registered for
+        # cross-instance enrichment today, so nothing reaches here in that
+        # shape -- registering it later should not be what discovers that.
+        iid = resolve_event_id(event)
         if iid is None:
             return
         self._queue.add(self._to_work_event(iid, event))
@@ -1039,7 +1043,8 @@ class _PersistentVolumeFinalizeController:
 
     def _enqueue(self, event: Event):
         """Map a bus event onto the work queue (coalescing happens in the queue)."""
-        row_id = event.data.id if event.data is not None else event.id
+        # See the note on GPUInstanceController._enqueue.
+        row_id = resolve_event_id(event)
         if row_id is None:
             return
         self._queue.add(self._to_work_event(row_id, event))

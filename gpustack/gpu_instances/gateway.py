@@ -9,7 +9,7 @@ import logging
 
 from gpustack.gpu_instances import gateway_client
 from gpustack.schemas.clusters import Cluster, ClusterProvider, K8sOptions
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventType, resolve_event_id
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,24 @@ async def reconcile_gpustack_operator_subscription():
 
 async def _reconcile(event: Event):
     cluster: Cluster = event.data
-    if cluster is None or cluster.provider != ClusterProvider.Kubernetes:
+    if cluster is None:
+        return
+
+    # A cross-instance DELETE arrives carrying nothing but the row id (see
+    # Event): the cluster topic is not preloaded into the change-detector
+    # cache, and by the time the event lands the row is gone. Reading
+    # ``provider`` off that dict would raise, the caller would swallow it, and
+    # this server's operator subprocess would go on proxying a cluster that no
+    # longer exists -- with no further event to recover from. The id is all the
+    # unsubscribe needs, and unsubscribing a cluster that was never subscribed
+    # is a no-op, so do not try to re-derive the provider first.
+    if isinstance(cluster, dict):
+        cluster_id = resolve_event_id(event)
+        if cluster_id is not None:
+            await gateway_client.unsubscribe_worker(str(cluster_id))
+        return
+
+    if cluster.provider != ClusterProvider.Kubernetes:
         return
     # Over the bus the ``k8s_options`` JSON column can arrive as a plain dict
     # (nested pydantic_column_type isn't re-validated on replay), so coerce it
