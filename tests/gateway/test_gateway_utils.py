@@ -1,8 +1,10 @@
 from gpustack.gateway import generic_proxy_router_spec_diff
 import re
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
+from kubernetes_asyncio.client import ApiException
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.gateway.utils import (
@@ -10,6 +12,7 @@ from gpustack.gateway.utils import (
     cleanup_generic_proxy_router_spec_diff,
     diff_proxies,
     diff_registries,
+    ensure_model_ingress,
     generate_model_ingress,
     generic_proxy_router_diff_spec,
     get_instance_id_from_header,
@@ -33,6 +36,7 @@ from gpustack.gateway.client.networking_higress_io_v1_api import (
     McpBridgeProxy,
     McpBridgeRegistry,
 )
+from gpustack.server.bus import EventType
 
 
 def test_flattened_prefixes():
@@ -696,3 +700,79 @@ def test_diff_proxies_nameless_entry_is_kept_not_crashed():
     )
     assert need_update is True
     assert result == [nameless]
+
+
+def _model_ingress_api(existing_ingress=None, existing_status=404):
+    api = MagicMock()
+    if existing_ingress is not None:
+        api.read_namespaced_ingress = AsyncMock(return_value=existing_ingress)
+    else:
+        api.read_namespaced_ingress = AsyncMock(
+            side_effect=ApiException(status=existing_status)
+        )
+    api.create_namespaced_ingress = AsyncMock()
+    api.replace_namespaced_ingress = AsyncMock()
+    api.delete_namespaced_ingress = AsyncMock()
+    return api
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_ingress_with_no_destinations_and_no_existing_ingress_is_noop():
+    api = _model_ingress_api(existing_status=404)
+    await ensure_model_ingress(
+        ingress_name="model-route-1",
+        ingress_class_name="higress",
+        route_name="route-1",
+        namespace="gpustack",
+        destinations=[],
+        event_type=EventType.CREATED,
+        networking_api=api,
+    )
+    api.delete_namespaced_ingress.assert_awaited_once_with(
+        name="model-route-1", namespace="gpustack"
+    )
+    api.create_namespaced_ingress.assert_not_awaited()
+    api.replace_namespaced_ingress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_ingress_with_no_destinations_deletes_existing():
+    api = _model_ingress_api()
+    await ensure_model_ingress(
+        ingress_name="model-route-1",
+        ingress_class_name="higress",
+        route_name="route-1",
+        namespace="gpustack",
+        destinations=[],
+        event_type=EventType.UPDATED,
+        networking_api=api,
+    )
+    api.delete_namespaced_ingress.assert_awaited_once_with(
+        name="model-route-1", namespace="gpustack"
+    )
+    api.create_namespaced_ingress.assert_not_awaited()
+    api.replace_namespaced_ingress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_ingress_with_destinations_still_creates():
+    api = _model_ingress_api(existing_status=404)
+    registry = MagicMock()
+    registry.get_service_name_with_port.return_value = (
+        "svc.gpustack.svc.cluster.local:80"
+    )
+    await ensure_model_ingress(
+        ingress_name="model-route-1",
+        ingress_class_name="higress",
+        route_name="route-1",
+        namespace="gpustack",
+        destinations=[(100, "downstream-model", registry)],
+        event_type=EventType.CREATED,
+        networking_api=api,
+    )
+    api.create_namespaced_ingress.assert_awaited_once()
+    body = api.create_namespaced_ingress.await_args.kwargs["body"]
+    assert (
+        body.metadata.annotations["higress.io/destination"]
+        == "100% svc.gpustack.svc.cluster.local:80"
+    )
