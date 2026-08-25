@@ -10,6 +10,7 @@ the gateway pushes Instance change events for the downstream watcher.
 """
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -437,3 +438,47 @@ async def test_non_kubernetes_cluster_is_ignored(harness):
 
     harness.subscribe.assert_not_awaited()
     harness.unsubscribe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_worker_heartbeat_is_dropped_before_it_reads_the_payload(harness, caplog):
+    """A heartbeat carries ``data=None``, so every field read off it is unknown.
+
+    Falling through instead put the id-only warning on the heartbeat cadence,
+    once every 15s forever, for an event that had nothing to reconcile in the
+    first place. The cluster path has its own heartbeat branch (the retry
+    sweep); the worker path has no work to do.
+    """
+    harness.ready_workers = 1
+    await harness.reconciler._reconcile_cluster(
+        Event(type=EventType.CREATED, data=_cluster())
+    )
+    harness.queries = 0
+    harness.subscribe.reset_mock()
+
+    with caplog.at_level(logging.WARNING, logger=gateway.logger.name):
+        await harness.reconciler._reconcile_worker(
+            Event(type=EventType.HEARTBEAT, data=None)
+        )
+
+    assert caplog.records == []
+    assert harness.queries == 0
+    harness.subscribe.assert_not_awaited()
+    harness.unsubscribe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_id_only_worker_delete_still_warns(harness, caplog):
+    """What the warning was written for, and what the heartbeat was drowning.
+
+    This reconciler is keyed on the worker's cluster, which a deleted row can
+    no longer name, so the subscription may be left in place -- worth a warning
+    precisely because nothing else recovers it.
+    """
+    with caplog.at_level(logging.WARNING, logger=gateway.logger.name):
+        await harness.reconciler._reconcile_worker(
+            Event(type=EventType.DELETED, data={"id": 5}, id=5)
+        )
+
+    assert "not reconciled" in caplog.text
+    assert "its cluster is unknown" in caplog.text

@@ -170,6 +170,8 @@ class OperatorSubscriptionReconciler:
                     logger.error(f"Failed to retry subscribing {cluster_id}: {e}")
 
     async def _reconcile_worker(self, event: Event):
+        if event.type == EventType.HEARTBEAT:
+            return
         worker: Worker = event.data
         # Same id-only payload as the cluster path above, for the same reason
         # (see :func:`deleted_cluster_id`) -- but here the id is not enough:
