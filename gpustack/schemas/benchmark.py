@@ -370,14 +370,17 @@ class BenchmarkBase(SQLModel):
     # guidellm `sweep` profile (removed).
     auto_tune: Optional[bool] = Field(default=None)
     # Auto-tune budget / bounds (used when auto_tune=true). None -> runner default.
-    lower_bound: Optional[float] = Field(default=None)  # knob floor (default 4)
+    # The values themselves are deliberately NOT named here: the runner's
+    # AutoTuneConfig owns them, the shipped presets in profiles_config.yaml
+    # override them per goal, and a copy in this comment would be a second
+    # source of truth that drifts the moment either is retuned.
+    lower_bound: Optional[float] = Field(default=None)  # knob floor
     upper_bound: Optional[float] = Field(default=None)  # knob ceiling (anti-runaway)
     # Per-point requests = max(min_requests, round(knob * multiplier)) is computed
-    # by the runner's ramp engine with its own defaults (multiplier 10 conc / 30
-    # rate, min_requests 100 — a percentile floor, see the runner's AutoTuneConfig);
-    # not surfaced or stored here.
-    max_points: Optional[int] = Field(default=None)  # max measured points (12)
-    max_total_seconds: Optional[float] = Field(default=None)  # whole-run cap (3600)
+    # by the runner's ramp engine from its own defaults (see AutoTuneConfig);
+    # neither knob is surfaced or stored here.
+    max_points: Optional[int] = Field(default=None)  # max measured points
+    max_total_seconds: Optional[float] = Field(default=None)  # whole-run cap
 
     # Latency SLO: optional "<= threshold" targets used to pick the max load that
     # still meets the SLO. Each is independent; a point meets the SLO when every
