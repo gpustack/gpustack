@@ -77,9 +77,15 @@ class WorkerSyncer:
         }
 
         async with async_session() as session:
+            # One fresh, uncached read of every worker instead of N. Worker.all()
+            # bypasses get_by_id's cache the same way a per-id fetch did, since
+            # neither goes through the @locked_cached get_by_id path that
+            # flush_heartbeats() never invalidates.
+            fresh_workers_by_id = {w.id: w for w in await Worker.all(session)}
+
+            workers_to_update = []
             for worker in all_workers:
-                # bypasses get_by_id's cache, which flush_heartbeats() never invalidates
-                to_update_worker = await Worker.one_by_id(session, worker.id)
+                to_update_worker = fresh_workers_by_id.get(worker.id)
                 if to_update_worker is None:
                     continue
 
@@ -96,11 +102,13 @@ class WorkerSyncer:
                 ):
                     continue
 
-                await WorkerService(session).update(to_update_worker)
+                workers_to_update.append(to_update_worker)
                 if to_update_worker.state in state_to_worker_name:
                     state_to_worker_name[to_update_worker.state].append(
                         to_update_worker.name
                     )
+
+            await WorkerService(session).batch_update(workers_to_update)
 
         for state, worker_names in state_to_worker_name.items():
             if worker_names:

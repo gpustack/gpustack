@@ -45,15 +45,15 @@ async def test_sync_workers_states_does_not_clobber_a_fresher_status_flush():
     # Already past the heartbeat grace period at the moment it was read.
     stale_read.heartbeat_time = now - timedelta(seconds=200)
 
-    # What the per-worker fetch sees at write time: flush_worker_status()
-    # already committed a fresh heartbeat and confirmed READY in between.
+    # What the batch fetch sees at write time: flush_worker_status() already
+    # committed a fresh heartbeat and confirmed READY in between.
     fresh_row = copy.deepcopy(stale_read)
     fresh_row.heartbeat_time = now
 
-    one_by_id = AsyncMock(return_value=fresh_row)
-    update = AsyncMock()
+    all_workers_mock = AsyncMock(side_effect=[[stale_read], [fresh_row]])
+    batch_update = AsyncMock()
     worker_service = MagicMock()
-    worker_service.update = update
+    worker_service.batch_update = batch_update
 
     with (
         patch(
@@ -62,11 +62,7 @@ async def test_sync_workers_states_does_not_clobber_a_fresher_status_flush():
         ),
         patch(
             "gpustack.server.worker_syncer.Worker.all",
-            AsyncMock(return_value=[stale_read]),
-        ),
-        patch(
-            "gpustack.server.worker_syncer.Worker.one_by_id",
-            one_by_id,
+            all_workers_mock,
         ),
         patch(
             "gpustack.server.worker_syncer.envs.WORKER_UNREACHABLE_CHECK_MODE",
@@ -81,7 +77,7 @@ async def test_sync_workers_states_does_not_clobber_a_fresher_status_flush():
 
     # The fresh row is already correctly READY; recomputing from its own
     # heartbeat_time must agree, so nothing should be written back.
-    update.assert_not_awaited()
+    batch_update.assert_awaited_once_with([])
     assert fresh_row.state == WorkerStateEnum.READY
 
 
@@ -100,14 +96,14 @@ async def test_sync_workers_states_still_persists_a_genuine_state_change():
     stale_read.unreachable = False
     stale_read.heartbeat_time = now - timedelta(seconds=200)
 
-    # The per-worker fetch sees a row just as offline as the initial read: no
+    # The batch fetch sees a row just as offline as the initial read: no
     # fresher heartbeat landed in between, so the transition to NOT_READY is real.
     fresh_row = copy.deepcopy(stale_read)
 
-    one_by_id = AsyncMock(return_value=fresh_row)
-    update = AsyncMock()
+    all_workers_mock = AsyncMock(side_effect=[[stale_read], [fresh_row]])
+    batch_update = AsyncMock()
     worker_service = MagicMock()
-    worker_service.update = update
+    worker_service.batch_update = batch_update
 
     with (
         patch(
@@ -116,11 +112,7 @@ async def test_sync_workers_states_still_persists_a_genuine_state_change():
         ),
         patch(
             "gpustack.server.worker_syncer.Worker.all",
-            AsyncMock(return_value=[stale_read]),
-        ),
-        patch(
-            "gpustack.server.worker_syncer.Worker.one_by_id",
-            one_by_id,
+            all_workers_mock,
         ),
         patch(
             "gpustack.server.worker_syncer.envs.WORKER_UNREACHABLE_CHECK_MODE",
@@ -133,13 +125,13 @@ async def test_sync_workers_states_still_persists_a_genuine_state_change():
     ):
         await _syncer()._sync_workers_states()
 
-    update.assert_awaited_once_with(fresh_row)
+    batch_update.assert_awaited_once_with([fresh_row])
     assert fresh_row.state == WorkerStateEnum.NOT_READY
 
 
 @pytest.mark.asyncio
 async def test_sync_workers_states_skips_a_worker_deleted_mid_sync():
-    """The per-worker fetch returning None (deleted between the initial read
+    """A worker missing from the batch fetch (deleted between the initial read
     and the fetch) must be skipped, not raise."""
     stale_read = linux_nvidia_1_4090_24gx1()
     stale_read.id = 3
@@ -149,10 +141,12 @@ async def test_sync_workers_states_skips_a_worker_deleted_mid_sync():
     stale_read.maintenance = None
     stale_read.unreachable = False
 
-    one_by_id = AsyncMock(return_value=None)
-    update = AsyncMock()
+    # The second Worker.all() call, taken inside the write-phase session,
+    # comes back empty: the worker was deleted in between.
+    all_workers_mock = AsyncMock(side_effect=[[stale_read], []])
+    batch_update = AsyncMock()
     worker_service = MagicMock()
-    worker_service.update = update
+    worker_service.batch_update = batch_update
 
     with (
         patch(
@@ -161,11 +155,7 @@ async def test_sync_workers_states_skips_a_worker_deleted_mid_sync():
         ),
         patch(
             "gpustack.server.worker_syncer.Worker.all",
-            AsyncMock(return_value=[stale_read]),
-        ),
-        patch(
-            "gpustack.server.worker_syncer.Worker.one_by_id",
-            one_by_id,
+            all_workers_mock,
         ),
         patch(
             "gpustack.server.worker_syncer.envs.WORKER_UNREACHABLE_CHECK_MODE",
@@ -178,7 +168,7 @@ async def test_sync_workers_states_skips_a_worker_deleted_mid_sync():
     ):
         await _syncer()._sync_workers_states()
 
-    update.assert_not_awaited()
+    batch_update.assert_awaited_once_with([])
 
 
 @pytest.mark.asyncio
@@ -188,10 +178,16 @@ async def test_sync_workers_states_ignores_get_by_ids_stale_cache():
     get_by_id is @locked_cached with a 10-minute TTL that flush_heartbeats()'s
     raw bulk UPDATE never invalidates (confirmed by reading flush_heartbeats(),
     which updates via a bare `update(Worker)...` statement with no
-    delete_cache_by_key call). If the syncer's per-worker fetch went through
+    delete_cache_by_key call). If the syncer's batch fetch went through
     that cache, a heartbeat recorded after the cache was warmed would be
     invisible to it. Warm the cache first via a real get_by_id call, then
     apply the same kind of bulk update, and confirm the sync still sees it.
+
+    Worker.all() is mocked only for its FIRST call (the initial read, kept as
+    the pre-bulk-update snapshot to match how the real syncer would have read
+    it moments earlier); the second call, inside the write-phase session, is
+    the real classmethod against the real DB, so it must observe the bulk
+    UPDATE with no cache in the way.
     """
     worker_id = 9_460_001  # unlikely to collide with another test's cache key
     now = datetime.now(timezone.utc)
@@ -230,6 +226,16 @@ async def test_sync_workers_states_ignores_get_by_ids_stale_cache():
         )
         await session.commit()
 
+    real_all = Worker.all
+
+    async def fake_all(session, options=None):
+        fake_all.calls += 1
+        if fake_all.calls == 1:
+            return [worker]
+        return await real_all(session, options=options)
+
+    fake_all.calls = 0
+
     try:
         with (
             patch(
@@ -238,7 +244,7 @@ async def test_sync_workers_states_ignores_get_by_ids_stale_cache():
             ),
             patch(
                 "gpustack.server.worker_syncer.Worker.all",
-                AsyncMock(return_value=[worker]),
+                AsyncMock(side_effect=fake_all),
             ),
             patch(
                 "gpustack.server.worker_syncer.envs.WORKER_UNREACHABLE_CHECK_MODE",
