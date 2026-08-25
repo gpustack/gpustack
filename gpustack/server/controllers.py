@@ -2874,7 +2874,14 @@ async def new_workers_from_pool(
         if worker.state in [WorkerStateEnum.PROVISIONING]
     ]
     # if has enough provisioning workers, no need to create more
-    if pool.batch_size <= len(provisioning_workers):
+    #
+    # ``batch_size`` is optional and means "provision at most this many at a
+    # time", so an unset one caps nothing -- exactly as the delta above already
+    # reads it. Comparing it anyway raises TypeError on ``None <= 0``, which
+    # the caller catches as a failed reconcile: the pool logs one line and then
+    # never creates a worker, for any provider, because the retry hits the same
+    # comparison.
+    if pool.batch_size is not None and pool.batch_size <= len(provisioning_workers):
         return []
     new_workers = []
     for _ in range(delta):
@@ -2914,8 +2921,14 @@ class WorkerPoolController:
                 continue
             try:
                 await self._reconcile(event)
-            except Exception as e:
-                logger.error(f"Failed to reconcile worker pool: {e}")
+            except Exception:
+                # With the traceback: a pool that cannot reconcile creates no
+                # workers at all, and the message alone ("'<=' not supported
+                # between instances of 'NoneType' and 'int'") says nothing
+                # about which pool or which line refused. ``logger.exception``
+                # appends the exception itself, so interpolating it here would
+                # only print it twice.
+                logger.exception("Failed to reconcile worker pool")
 
     async def _reconcile(self, event: Event):
         """
