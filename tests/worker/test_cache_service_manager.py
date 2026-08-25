@@ -1700,6 +1700,33 @@ def test_start_instance_without_run_command_runs_image_entrypoint():
     assert execution.args == ["--host", "0.0.0.0"]
 
 
+def test_start_instance_with_run_args_keeps_the_image_entrypoint():
+    """A version declaring run_args launches through the image's own
+    entrypoint — which may do setup around the cache server — so the
+    provider's templated flags reach it as arguments instead of replacing
+    it, and the user parameters merge into that same vector."""
+    manager, clientset = _build_manager(worker_id=1)
+    provider = _new_provider(
+        versions={
+            "v1": CacheProviderVersionConfig(
+                image="registry.example.com/mooncake/server:v1",
+                run_args="--host {{host}} --port {{port}} --ram {{ram_size}}",
+            )
+        }
+    )
+
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(ram_size=8, parameters=["--ram", "16"])
+    )
+    create, _ = _run_start(manager, clientset, cache_service, provider)
+    execution = create.call_args[0][0].containers[0].execution
+    assert execution.command is None
+    assert execution.args[:2] == ["--host", "0.0.0.0"]
+    # A user parameter still overrides the declared flag it repeats.
+    assert "--ram" in execution.args
+    assert execution.args[execution.args.index("--ram") + 1] == "16"
+
+
 def test_start_instance_without_run_command_carries_l2_adapter_as_arguments():
     """The L2 adapter flag reaches an entrypoint-carrying image the same
     way user parameters do — as appended arguments — so a provider whose

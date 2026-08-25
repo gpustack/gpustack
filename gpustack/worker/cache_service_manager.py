@@ -284,19 +284,21 @@ class CacheServiceManager:
             )
 
             # A declared run command is the whole argument vector and takes
-            # the image's ENTRYPOINT slot; without one the image's own
-            # entrypoint stays and everything below rides as CMD arguments
-            # appended to it (container semantics: args alone append,
-            # a command replaces).
+            # the image's ENTRYPOINT slot; run_args instead keeps the
+            # image's own entrypoint and rides as the CMD arguments
+            # appended to it (container semantics: args alone append, a
+            # command replaces). The user parameters and L2 flags below
+            # join whichever vector the version declared.
             overrides_entrypoint = bool(version_config.run_command)
+            launch_template = version_config.run_command or version_config.run_args
             argv: Optional[List[str]] = None
-            if version_config.run_command:
+            if launch_template:
                 # Render per token so an optional placeholder resolving to
                 # None yields an empty token that is dropped together with
                 # the flag it belongs to.
                 rendered_tokens = [
                     render_template(token, params)
-                    for token in shlex.split(version_config.run_command)
+                    for token in shlex.split(launch_template)
                 ]
                 argv = drop_empty_flag_values(rendered_tokens)
             user_parameters = (

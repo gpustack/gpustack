@@ -60,9 +60,16 @@ class CacheProviderVersionConfig(BaseModel):
     run_command: Optional[str] = None
     """Argument-vector template with {{placeholder}} substitution, taking
     the image's ENTRYPOINT slot — it names the executable, not just its
-    flags. None inherits the provider's default_run_command; an empty
-    string keeps the image's own entrypoint, and the L2 adapter flags and
-    user parameters ride as the arguments appended to it."""
+    flags. For an image whose entrypoint already starts the cache server
+    (and may do setup around it) declare run_args instead, which keeps
+    that entrypoint."""
+
+    run_args: Optional[str] = None
+    """Argument template appended to the image's own entrypoint, for
+    images that start the cache server themselves. Same substitution as
+    run_command; the two are alternatives — a version declares at most
+    one, since a command and its arguments concatenate into the same
+    vector either way."""
 
     env: Optional[Dict[str, str]] = None
     """Env template for the managed container. Values support {{placeholder}}."""
@@ -317,13 +324,15 @@ class CacheProvider(BaseModel):
     versions: Dict[str, CacheProviderVersionConfig] = {}
 
     default_run_command: Optional[str] = None
-    """Run-command template shared by versions that declare none. A
-    provider whose CLI is stable across its release line states the
-    command once here; a version departing from it declares its own
-    run_command, and one that must run the image entrypoint as-is opts
-    out with an empty string. Resolved into each version at model
-    construction, so every consumer (including the catalog API) reads
-    the effective command off the version config."""
+    default_run_args: Optional[str] = None
+    """Launch template shared by versions that declare none of their own.
+    A provider whose CLI is stable across its release line states it once
+    here; a version departing from it declares its own run_command or
+    run_args, and one that must run the image entrypoint bare opts out
+    with an empty run_command. The pair is inherited as a unit — a
+    version declaring either owns its launch — and resolved into each
+    version at model construction, so every consumer (including the
+    catalog API) reads the effective launch off the version config."""
 
     default_image: Optional[str] = None
     default_runtime_images: Dict[str, Dict[str, str]] = {}
@@ -378,8 +387,20 @@ class CacheProvider(BaseModel):
         the catalog API all read one effective image and command off it,
         with no second lookup on the provider."""
         for version, config in self.versions.items():
-            if config.run_command is None:
+            # run_command and run_args are two slots of one launch, so a
+            # version opts out of both together: a version declaring args
+            # for its own entrypoint must not also inherit a command that
+            # replaces that entrypoint.
+            if config.run_command is None and config.run_args is None:
                 config.run_command = self.default_run_command
+                config.run_args = self.default_run_args
+            if config.run_command and config.run_args:
+                raise ValueError(
+                    f"Cache provider '{self.name}' version '{version}' "
+                    "declares both run_command and run_args: a command and "
+                    "its arguments form one vector, so state it as whichever "
+                    "one the image's entrypoint calls for"
+                )
             # image and runtime_images describe one image layout, so a
             # version opts out of both together: inheriting half a layout
             # would serve some accelerators from the version's own

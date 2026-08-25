@@ -122,6 +122,41 @@ def test_version_without_any_image_is_rejected():
         CacheProvider(name="Imageless", versions={"v1.0": {}})
 
 
+def test_own_launch_takes_over_the_pair_whole():
+    """run_command and run_args are two slots of one launch: a version
+    supplying arguments for the image's own entrypoint must not also
+    inherit a command that replaces that entrypoint."""
+    provider = CacheProvider(
+        name="Launched",
+        default_image="registry/cache:{{version}}",
+        default_run_command="cache serve --port {{port}}",
+        versions={
+            "v1.0": {},
+            "v2.0": {"run_args": "--port {{port}}"},
+        },
+    )
+
+    inherited = provider.versions["v1.0"]
+    assert inherited.run_command == "cache serve --port {{port}}"
+    assert inherited.run_args is None
+
+    own = provider.versions["v2.0"]
+    assert own.run_command is None
+    assert own.run_args == "--port {{port}}"
+
+
+def test_version_declaring_both_launch_slots_is_rejected():
+    """A command and its arguments concatenate into one vector either
+    way, so declaring both states the same launch twice — and only one of
+    them can decide whether the image's entrypoint survives."""
+    with pytest.raises(ValidationError):
+        CacheProvider(
+            name="Ambiguous",
+            default_image="registry/cache:v1",
+            versions={"v1.0": {"run_command": "cache serve", "run_args": "--port 1"}},
+        )
+
+
 def test_lmcache_provider_declaration():
     provider = get_cache_provider("LMCache")
     assert provider is not None
@@ -406,6 +441,10 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
         # The staged Ascend build lives in the image templates; the CUDA
         # layout and the run command are asserted equal below.
         "default_runtime_images",
+        # The two launch through different slots: MeshFusion's image is
+        # expected to start the cache server itself.
+        "default_run_command",
+        "default_run_args",
         "inference_backend_integrations",
     }
     meshfusion_dump = meshfusion.model_dump()
@@ -420,11 +459,10 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
 
     # The versions diverge from LMCache's only by the staged Ascend
     # build (an assumed image for XSKY to correct) and by which version
-    # each provider defaults to; at a given version the CUDA builds and
-    # the run command stay LMCache's.
+    # each provider defaults to; at a given version the CUDA builds stay
+    # LMCache's.
     mf_version = meshfusion.versions[meshfusion.default_version]
     lm_version = lmcache.versions[meshfusion.default_version]
-    assert mf_version.run_command == lm_version.run_command
     assert mf_version.runtime_images["cuda"] == lm_version.runtime_images["cuda"]
     assert "cann" in mf_version.runtime_images
     assert "cann" not in lm_version.runtime_images
