@@ -877,6 +877,20 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
                     namespace=cfg.gateway_namespace,
                     spec_diff=spec_diff_func,
                 )
+            # Envoy starts loading these the moment Higress pushes the ECDS
+            # resource, which is now -- and where a module is fetched over
+            # HTTP, that is while the server serving it is still several
+            # startup steps from binding its port. Logging the URLs is what
+            # makes that visible at all; verify_published_plugin_modules
+            # checks them once the API is up.
+            logger.info(
+                "Published %d WasmPlugin resources in namespace %s: %s",
+                len(plugin_list),
+                cfg.gateway_namespace,
+                ", ".join(
+                    f"{name}={spec.url}" for name, spec in plugin_list if spec.url
+                ),
+            )
 
         try:
             asyncio.run(prepare())
