@@ -62,6 +62,12 @@ class Event:
     explicitly over the wire, so it survives both paths. It is ``None`` for
     an event that stands for no row -- HEARTBEAT, and anything built with
     ``data=None`` -- so callers still check before using it.
+
+    Deriving at construction is not always enough. A CREATED event is built
+    before the INSERT that assigns the primary key, so its ``data`` has no id
+    yet; the commit hook that publishes it calls :meth:`refresh_id` once the
+    key is settled. Anywhere else, construction is the only chance and the
+    row already has its id.
     """
 
     type: EventType
@@ -73,6 +79,17 @@ class Event:
         if isinstance(self.type, int):
             self.type = EventType(self.type)
 
+        self.refresh_id()
+
+    def refresh_id(self) -> None:
+        """Fill ``id`` from ``data`` if it is not set yet.
+
+        Only fills a gap, never overwrites: an id that came in explicitly is
+        authoritative -- over the wire it is all that survives, and ``data``
+        there is a stripped ``{"id": N}`` at best. A primary key does not
+        change once assigned, so for a locally built event the two sources
+        agree wherever both exist.
+        """
         if self.id is None:
             self.id = self._derive_id_from_data()
 
