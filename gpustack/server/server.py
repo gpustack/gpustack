@@ -352,8 +352,34 @@ class Server:
 
         server = uvicorn.Server(config)
         self._create_async_task(server.serve())
+        self._create_async_task(self._check_gateway_startup(server))
 
         await asyncio.gather(*self._async_tasks)
+
+    async def _check_gateway_startup(self, server: uvicorn.Server):
+        """Confirm the gateway actually came up.
+
+        Reports, never raises: this runs alongside a server that is already
+        serving and must not be the reason one fails to start. What it finds
+        is a gateway problem, and the log is the only place it surfaces --
+        Envoy failing this way is silent.
+        """
+        if self._config.gateway_mode == GatewayModeEnum.disabled:
+            return
+        try:
+            # Wait until uvicorn is accepting, so a gateway still waiting on
+            # this server is not reported as broken. ``started`` never flips if
+            # the bind fails, so give the loop its own way out rather than
+            # leaving it to the cancellation that follows.
+            while not server.started:
+                if server.should_exit:
+                    return
+                await asyncio.sleep(0.05)
+            await self._wait_for_gateway_ready()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Gateway startup check failed to complete: {e}")
 
     def _start_default_registry_checker(self):
         registration.determine_default_registry(
@@ -752,6 +778,17 @@ class Server:
         self._create_async_task(wait_and_start_after_healthy())
 
     async def _wait_for_gateway_ready(self):
+        """Wait for the gateway to actually be listening, and say so if it is not.
+
+        Only ``embedded`` can be observed from here -- that is the one mode
+        where Envoy shares this network namespace.
+
+        Failure is reported, never raised: a gateway that never binds its port
+        is a total outage, but killing the server on top of it removes the
+        only process still able to explain why. Envoy gives no other signal --
+        a listener stuck warming just never appears -- so without this the
+        whole product is unreachable and nothing says so.
+        """
         if self._config.gateway_mode != GatewayModeEnum.embedded:
             return
         # http port is always started
@@ -759,8 +796,20 @@ class Server:
         if self._config.get_tls_secret_name() is not None:
             ports.append(self._config.tls_port)
         logger.info(f"Waiting for ports {ports} of GPUStack to be ready...")
-        # wait for gateway ready for about 60s
-        await self._check_ports_ready(*ports)
+        try:
+            # wait for gateway ready for about 60s
+            await self._check_ports_ready(*ports)
+        except Exception as e:
+            logger.error(
+                "Gateway port(s) %s never became ready after %ss: %s. Inspect "
+                "Envoy on the gateway: a listener reported in `warming_state` "
+                "by `curl localhost:15000/config_dump?resource=dynamic_"
+                "listeners` is waiting on a Wasm module it could not load.",
+                ports,
+                GATEWAY_PORT_CHECK_RETRY_COUNT * GATEWAY_PORT_CHECK_INTERVAL,
+                e,
+            )
+            return
         logger.info("GPUStack Server is ready.")
 
     @tenacity.retry(
