@@ -3,7 +3,7 @@ import re
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from gpustack.utils.version import pick_runtime_version
 
@@ -40,9 +40,10 @@ class CacheProviderHealthCheck(BaseModel):
 
 
 class CacheProviderVersionConfig(BaseModel):
-    image: str
+    image: Optional[str] = None
     """Container image for the managed cache server; the fallback when
-    runtime_images has no entry for the node's accelerator runtime."""
+    runtime_images has no entry for the node's accelerator runtime. A
+    version resolving to no image at all is a catalog error."""
 
     runtime_images: Dict[str, Dict[str, str]] = {}
     """Images keyed by accelerator backend (e.g. "cuda") then runtime
@@ -50,13 +51,18 @@ class CacheProviderVersionConfig(BaseModel):
     node at instance start with the platform-wide runtime-match rule
     (see pick_runtime_version), so a heterogeneous per_node fleet mixes
     images correctly. All entries must be command-compatible with
-    run_command."""
+    run_command.
+
+    Together with image this forms the version's image layout, inherited
+    from the provider's defaults as a unit: a version declaring either
+    field owns both."""
 
     run_command: Optional[str] = None
     """Container argument-vector template (docker CMD) with
     {{placeholder}} substitution. An image defining its own ENTRYPOINT
-    declares just the arguments; None runs the image entrypoint as-is,
-    with user parameters (if any) as its arguments."""
+    declares just the arguments; None inherits the provider's
+    default_run_command, and an empty string runs the image entrypoint
+    as-is with user parameters (if any) as its arguments."""
 
     env: Optional[Dict[str, str]] = None
     """Env template for the managed container. Values support {{placeholder}}."""
@@ -310,6 +316,27 @@ class CacheProvider(BaseModel):
     default_version: Optional[str] = None
     versions: Dict[str, CacheProviderVersionConfig] = {}
 
+    default_run_command: Optional[str] = None
+    """Run-command template shared by versions that declare none. A
+    provider whose CLI is stable across its release line states the
+    command once here; a version departing from it declares its own
+    run_command, and one that must run the image entrypoint as-is opts
+    out with an empty string. Resolved into each version at model
+    construction, so every consumer (including the catalog API) reads
+    the effective command off the version config."""
+
+    default_image: Optional[str] = None
+    default_runtime_images: Dict[str, Dict[str, str]] = {}
+    """Image layout shared by versions that declare none of their own, in
+    the same shape as a version's image / runtime_images. {{version}}
+    stands for the version key, so a provider whose tags embed the
+    version declares the layout once and each version is just its key —
+    the version string is stated once instead of copied into every tag.
+    The placeholder is optional: a provider whose versions all share one
+    image states it here without it. A version whose images depart from
+    the layout (a one-off registry, a build only it has) declares its
+    own, which takes over the layout whole."""
+
     custom_version: bool = False
     """Whether a service may pin a user-supplied container image instead of
     a declared version; the default version's run command and env templates
@@ -343,6 +370,42 @@ class CacheProvider(BaseModel):
     l2_backends: Dict[str, CacheProviderL2Backend] = {}
     """Adapter type identifier (the "type" value in the adapter JSON)
     -> backend declaration."""
+
+    @model_validator(mode="after")
+    def resolve_version_defaults(self) -> "CacheProvider":
+        """Fold the provider-level templates into each version so that a
+        version config is self-contained: the worker, the validators and
+        the catalog API all read one effective image and command off it,
+        with no second lookup on the provider."""
+        for version, config in self.versions.items():
+            if config.run_command is None:
+                config.run_command = self.default_run_command
+            # image and runtime_images describe one image layout, so a
+            # version opts out of both together: inheriting half a layout
+            # would serve some accelerators from the version's own
+            # registry and the rest from the provider's.
+            if config.image is None and not config.runtime_images:
+                config.image = self.default_image
+                config.runtime_images = {
+                    backend: dict(images)
+                    for backend, images in self.default_runtime_images.items()
+                }
+            params = {"version": version}
+            if config.image:
+                config.image = render_template(config.image, params)
+            config.runtime_images = {
+                backend: {
+                    runtime: render_template(image, params)
+                    for runtime, image in images.items()
+                }
+                for backend, images in config.runtime_images.items()
+            }
+            if not config.image:
+                raise ValueError(
+                    f"Cache provider '{self.name}' version '{version}' "
+                    "declares no image and the provider has no default_image"
+                )
+        return self
 
     def get_version_config(
         self, version: Optional[str] = None

@@ -30,7 +30,16 @@ def load_cache_providers(reload: bool = False) -> List[CacheProvider]:
         if yaml_file.is_file():
             raw = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
             for entry in raw or []:
-                provider = CacheProvider(**entry)
+                try:
+                    provider = CacheProvider(**entry)
+                except Exception as e:
+                    # One malformed declaration costs its own provider,
+                    # not the catalog: the others still serve.
+                    logger.error(
+                        f"Skipping malformed cache provider "
+                        f"{(entry or {}).get('name')}: {e}"
+                    )
+                    continue
                 # A provider violating the injection placeholder contract
                 # is excluded outright: its failure modes are silent at
                 # runtime (literal placeholders corrupting connector

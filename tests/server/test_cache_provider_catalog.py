@@ -1,5 +1,8 @@
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from gpustack.schemas.cache_providers import (
     CacheProvider,
     CacheProviderVersionConfig,
@@ -17,6 +20,70 @@ from gpustack.server.cache_provider_catalog import (
 def test_catalog_asset_loads():
     providers = load_cache_providers(reload=True)
     assert providers, "bundled cache-providers.yaml should yield at least one provider"
+
+
+def test_provider_defaults_fold_into_every_version():
+    """The provider-level templates are resolved at construction, so a
+    version config is self-contained: consumers read one effective image
+    and command off it, and {{version}} keeps the version string stated
+    once instead of copied into every tag."""
+    provider = CacheProvider(
+        name="Templated",
+        default_image="registry/cache:{{version}}",
+        default_runtime_images={"cuda": {"12": "registry/cache:{{version}}-cu12"}},
+        default_run_command="cache serve --port {{port}}",
+        versions={
+            "v1.0": {},
+            # A version departing from the layout keeps its own images,
+            # and its declared map replaces the default whole.
+            "v2.0": {
+                "image": "other/cache:2.0",
+                "runtime_images": {"cann": {"8": "other/cache:2.0-cann"}},
+            },
+        },
+    )
+
+    templated = provider.versions["v1.0"]
+    assert templated.image == "registry/cache:v1.0"
+    assert templated.runtime_images == {"cuda": {"12": "registry/cache:v1.0-cu12"}}
+    assert templated.run_command == "cache serve --port {{port}}"
+
+    explicit = provider.versions["v2.0"]
+    assert explicit.image == "other/cache:2.0"
+    assert explicit.runtime_images == {"cann": {"8": "other/cache:2.0-cann"}}
+    # runtime_images doubles as the support matrix, so a replaced map
+    # narrows the accelerators the version serves.
+    assert explicit.supports_runtime("cann") is True
+    assert explicit.supports_runtime("cuda") is False
+
+    # Resolution is per version: the default map is copied, never shared.
+    assert templated.runtime_images is not provider.default_runtime_images
+
+
+def test_own_image_takes_over_the_layout_whole():
+    """image and runtime_images are one layout: a version off the
+    provider's tag scheme must not serve some accelerators from its own
+    registry and the rest from the provider's template."""
+    provider = CacheProvider(
+        name="Templated",
+        default_image="registry/cache:{{version}}",
+        default_runtime_images={"cuda": {"12": "registry/cache:{{version}}-cu12"}},
+        versions={"v1.0": {"image": "vendor/cache:one-off"}},
+    )
+
+    version = provider.versions["v1.0"]
+    assert version.image == "vendor/cache:one-off"
+    assert version.runtime_images == {}
+    # With no layout of its own, every node runs the declared image.
+    assert version.resolve_image("cuda", "12.8") == "vendor/cache:one-off"
+
+
+def test_version_without_any_image_is_rejected():
+    """An image is the one thing a managed version cannot do without;
+    silently declaring none would only surface as a container that never
+    starts."""
+    with pytest.raises(ValidationError):
+        CacheProvider(name="Imageless", versions={"v1.0": {}})
 
 
 def test_lmcache_provider_declaration():
@@ -41,24 +108,24 @@ def test_lmcache_provider_declaration():
 
     # The declared version pins a verified image tag; a service may also
     # pin its own image via the reserved "custom" version.
-    assert provider.default_version == "v0.5.2"
-    assert set(provider.versions) == {"v0.5.2"}
+    assert provider.default_version == "v0.5.3"
+    assert set(provider.versions) == {"v0.5.2", "v0.5.3", "v0.5.4"}
     assert provider.custom_version is True
 
     version_config, version = provider.get_version_config()
     assert version_config is not None
     assert version == provider.default_version
-    assert version_config.image == "lmcache/vllm-openai:v0.5.2"
+    assert version_config.image == "lmcache/vllm-openai:v0.5.3"
     # The bare tag is the CUDA 13 build; cu129 serves CUDA 12 nodes. The
     # worker resolves per node, so a heterogeneous per_node fleet mixes
     # images; unknown runtimes and accelerator-less workers get the
     # plain image.
-    assert version_config.resolve_image("cuda", "13.0") == "lmcache/vllm-openai:v0.5.2"
+    assert version_config.resolve_image("cuda", "13.0") == "lmcache/vllm-openai:v0.5.3"
     assert (
         version_config.resolve_image("cuda", "12.8")
-        == "lmcache/vllm-openai:v0.5.2-cu129"
+        == "lmcache/vllm-openai:v0.5.3-cu129"
     )
-    assert version_config.resolve_image(None, None) == "lmcache/vllm-openai:v0.5.2"
+    assert version_config.resolve_image(None, None) == "lmcache/vllm-openai:v0.5.3"
     # The full CLI entry: the HTTP frontend on --http-port serves
     # /metrics (same registry as the standalone exposition) plus
     # /healthcheck and the admin APIs; --prometheus-port is ignored
@@ -73,6 +140,11 @@ def test_lmcache_provider_declaration():
         "--eviction-trigger-watermark {{eviction_trigger_watermark}} "
         "--eviction-ratio {{eviction_ratio}}"
     )
+    # The server's argument groups are unchanged across the declared
+    # release line, so every version inherits the one command template
+    # and consumers read the effective command off the version config.
+    for declared in provider.versions.values():
+        assert declared.run_command == provider.default_run_command
     # The eviction knobs are declared fields: structured in the UI, wired
     # into the run command through their placeholders. The eviction policy
     # is required upstream, so its default renders even untouched.
@@ -288,7 +360,15 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
         "links",
         "dashboard_uid",
     }
-    diverging_fields = {"l2_backends", "versions", "inference_backend_integrations"}
+    diverging_fields = {
+        "l2_backends",
+        "versions",
+        "default_version",
+        # The staged Ascend build lives in the image templates; the CUDA
+        # layout and the run command are asserted equal below.
+        "default_runtime_images",
+        "inference_backend_integrations",
+    }
     meshfusion_dump = meshfusion.model_dump()
     lmcache_dump = lmcache.model_dump()
     differing = {
@@ -300,10 +380,11 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     assert differing == set()
 
     # The versions diverge from LMCache's only by the staged Ascend
-    # build (an assumed image for XSKY to correct); the CUDA builds and
+    # build (an assumed image for XSKY to correct) and by which version
+    # each provider defaults to; at a given version the CUDA builds and
     # the run command stay LMCache's.
     mf_version = meshfusion.versions[meshfusion.default_version]
-    lm_version = lmcache.versions[lmcache.default_version]
+    lm_version = lmcache.versions[meshfusion.default_version]
     assert mf_version.run_command == lm_version.run_command
     assert mf_version.runtime_images["cuda"] == lm_version.runtime_images["cuda"]
     assert "cann" in mf_version.runtime_images

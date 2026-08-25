@@ -14,9 +14,18 @@
 # placeholder renders empty is dropped together with the flag.
 # Env entries whose rendered value is empty are dropped.
 # run_command is the container argument vector (docker CMD): an image
-# that defines its own ENTRYPOINT declares just the arguments; with no
-# run_command the entrypoint runs as-is and user parameters become its
-# arguments.
+# that defines its own ENTRYPOINT declares just the arguments. A version
+# declaring none inherits the provider's default_run_command; an empty
+# string runs the entrypoint as-is with user parameters as its arguments.
+#
+# A version entry inherits default_run_command / default_image /
+# default_runtime_images from its provider, so a release line with a
+# uniform tag layout declares each version as a bare key. {{version}} in
+# the image templates renders the version key — optional, for providers
+# whose tags embed it. image and runtime_images are inherited as one
+# layout: a version declaring either owns both. The defaults are folded
+# into every version at load, so consumers read one effective image and
+# command off the version config.
 - name: LMCache
   display_name: LMCache
   source: built_in
@@ -42,37 +51,23 @@
   # The MP connector's zero-copy path is CUDA IPC: engines can only
   # attach the cache server on their own node.
   attach_locality: node_local
-  default_version: "v0.5.2"
+  default_version: "v0.5.4"
   # A service may pin a user-supplied image ("custom" version); it runs
   # with the default version's run command and env templates, so the image
   # must be command-compatible.
   custom_version: true
+  default_run_command: "lmcache server --host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --supported-transfer-mode auto --worker-reap-timeout-seconds 60 --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
+  default_image: "lmcache/vllm-openai:{{version}}"
+  default_runtime_images:
+    cuda:
+      "13": "lmcache/vllm-openai:{{version}}"
+      "12": "lmcache/vllm-openai:{{version}}-cu129"
+  # Declared versions, each built from the layout above. A version off
+  # that tag scheme declares image / runtime_images itself instead.
   versions:
-    "v0.5.2":
-      # The full CLI entry: {{port}} is the ZMQ control-plane port, and
-      # the HTTP frontend on --http-port serves /metrics (via the
-      # dynamically discovered internal_api_server router — the OTel
-      # Prometheus reader and the frontend share one registry, so the
-      # exposition matches the standalone server's), plus /healthcheck,
-      # /status, and the admin APIs. --prometheus-port is ignored on
-      # this entry; the frontend port doubles as the metrics port.
-      # --supported-transfer-mode auto lets the server accept the
-      # CUDA-IPC (lmcache_driven) path when the engine offers it; the
-      # worker attaches the node's GPUs to this container so the server
-      # can open the IPC handles. A dead engine's KV VRAM stays mapped
-      # until its registration is reaped, so the reap timeout aligns
-      # with the platform's short workload lifecycles (upstream default
-      # 120s; the never-pinged 3600s grace is not safely tunable — the
-      # lazy heartbeat makes silence indistinguishable from idleness).
-      image: "lmcache/vllm-openai:v0.5.2"
-      # The bare v0.5.2 tag is the CUDA 13 build; -cu129 serves CUDA 12
-      # nodes. The worker resolves per node at instance start, so a
-      # heterogeneous per_node fleet mixes images correctly.
-      runtime_images:
-        cuda:
-          "13": "lmcache/vllm-openai:v0.5.2"
-          "12": "lmcache/vllm-openai:v0.5.2-cu129"
-      run_command: "lmcache server --host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --supported-transfer-mode auto --worker-reap-timeout-seconds 60 --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
+    "v0.5.4": {}
+    "v0.5.3": {}
+    "v0.5.2": {}
   resource_profile:
     ram_gib: "{{ram_size}}"
     cpu: 2
@@ -381,17 +376,17 @@
   attach_locality: node_local
   default_version: "v0.5.2"
   custom_version: true
+  default_run_command: "lmcache server --host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --supported-transfer-mode auto --worker-reap-timeout-seconds 60 --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
+  default_image: "lmcache/vllm-openai:{{version}}"
+  default_runtime_images:
+    cuda:
+      "13": "lmcache/vllm-openai:{{version}}"
+      "12": "lmcache/vllm-openai:{{version}}-cu129"
+    # PLACEHOLDER. Change as needed.
+    cann:
+      "8": "registry.example.com/lmcache/vllm-openai:{{version}}-cann"
   versions:
-    "v0.5.2":
-      image: "lmcache/vllm-openai:v0.5.2"
-      runtime_images:
-        cuda:
-          "13": "lmcache/vllm-openai:v0.5.2"
-          "12": "lmcache/vllm-openai:v0.5.2-cu129"
-        # PLACEHOLDER. Change as needed.
-        cann:
-          "8": "registry.example.com/lmcache/vllm-openai:v0.5.2-cann"
-      run_command: "lmcache server --host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --supported-transfer-mode auto --worker-reap-timeout-seconds 60 --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
+    "v0.5.2": {}
   resource_profile:
     ram_gib: "{{ram_size}}"
     cpu: 2
