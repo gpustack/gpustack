@@ -15,7 +15,7 @@ from gpustack.routes.benchmarks import (
 from gpustack.schemas.benchmark import (
     DATASET_SEED_MAX,
     DATASET_SEED_MIN,
-    SLA_THRESHOLDS,
+    SLO_THRESHOLDS,
     Benchmark,
     BenchmarkCreate,
     BenchmarkFullPublic,
@@ -188,8 +188,8 @@ class TestValidateLoadConfig:
             _validate_load_config(_create(stages=stages))
         assert "stages" in str(e.value.message)
 
-    @pytest.mark.parametrize("t", SLA_THRESHOLDS, ids=lambda t: t.attr)
-    def test_every_sla_threshold_must_be_positive(self, t):
+    @pytest.mark.parametrize("t", SLO_THRESHOLDS, ids=lambda t: t.attr)
+    def test_every_slo_threshold_must_be_positive(self, t):
         # Parametrized off the single source of truth, so a threshold added there is
         # covered here without editing this test.
         with pytest.raises(BadRequestException) as e:
@@ -453,7 +453,7 @@ class TestCreateCannotFabricateAConclusion:
         "progress",
         "pid",
         "peak_rate",
-        "sla_met_rate",
+        "slo_met_rate",
         "recommended_rate",
         "validity",
     )
@@ -468,14 +468,14 @@ class TestCreateCannotFabricateAConclusion:
             state=BenchmarkStateEnum.COMPLETED,
             progress=100,
             peak_rate=9999,
-            sla_met_rate=9999,
+            slo_met_rate=9999,
             recommended_rate=9999,
             validity={"sufficient": True, "warnings": []},
         )
         assert not set(forged.model_dump()) & set(self.RUNTIME_FIELDS)
         row = Benchmark(**forged.model_dump())
         assert row.state is BenchmarkStateEnum.PENDING
-        assert (row.peak_rate, row.sla_met_rate, row.recommended_rate) == (
+        assert (row.peak_rate, row.slo_met_rate, row.recommended_rate) == (
             None,
             None,
             None,
@@ -500,11 +500,11 @@ class TestCreateCannotFabricateAConclusion:
         # PATCH /{id}/state is the one door in, and it stays open.
         for field in ("state", "state_message", "progress", "pid"):
             assert field in BenchmarkStateUpdate.model_fields
-        for field in ("peak_rate", "sla_met_rate", "recommended_rate", "validity"):
+        for field in ("peak_rate", "slo_met_rate", "recommended_rate", "validity"):
             assert field in BenchmarkStateUpdate.model_fields
 
     def test_the_config_fields_are_untouched(self):
         # Sanity guard on the split: what the client legitimately configures has to
         # stay on the create body.
-        for field in ("auto_tune", "lower_bound", "max_points", "sla_avg_ttft_ms"):
+        for field in ("auto_tune", "lower_bound", "max_points", "slo_avg_ttft_ms"):
             assert field in BenchmarkCreate.model_fields

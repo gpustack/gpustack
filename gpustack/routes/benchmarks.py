@@ -37,7 +37,7 @@ from gpustack.schemas.benchmark import (
     DATASET_SEED_MAX,
     DATASET_SEED_MIN,
     DATASET_SHAREGPT,
-    SLA_THRESHOLDS,
+    SLO_THRESHOLDS,
     Benchmark,
     BenchmarkCreate,
     BenchmarkFullPublic,
@@ -370,10 +370,10 @@ def _validate_search_range(benchmark_in: BenchmarkCreate) -> None:
 
 
 def _validate_positive_knobs(benchmark_in: BenchmarkCreate) -> None:
-    """Budgets and SLA thresholds are all "<= N"-style quantities: 0 or less is not
+    """Budgets and SLO thresholds are all "<= N"-style quantities: 0 or less is not
     a stricter setting, it is a value the runner cannot act on."""
     fields = ["max_points", "max_total_seconds", "max_seconds", "turns"]
-    fields += [t.attr for t in SLA_THRESHOLDS]
+    fields += [t.attr for t in SLO_THRESHOLDS]
     for field in fields:
         value = getattr(benchmark_in, field, None)
         if value is not None and value <= 0:

@@ -101,15 +101,15 @@ def benchmark_load_axis(benchmark) -> str:
 
 
 @dataclass(frozen=True)
-class SLAThreshold:
+class SLOThreshold:
     r"""
-    One optional latency SLA target ("this metric must stay <= N ms").
+    One optional latency SLO target ("this metric must stay <= N ms").
 
     Single source of truth for the 3 metrics x 3 aggregations grid, consumed by
     everything that has to walk it:
 
     - the runner, to forward the threshold to benchmark-runner (`flag`);
-    - the analysis, to decide whether a measured point meets the SLA and how much
+    - the analysis, to decide whether a measured point meets the SLO and how much
       of its budget the point used (`metric`, `scale`).
 
     Each of those used to carry its own hand-written copy of the nine rows, so
@@ -128,19 +128,19 @@ class SLAThreshold:
     scale: float
     flag: str
     # Second column to read when `metric` was not measured on a point (absent or
-    # non-positive). Only the TPOT rows need one — see SLA_THRESHOLDS.
+    # non-positive). Only the TPOT rows need one — see SLO_THRESHOLDS.
     fallback: Optional[str] = None
 
 
-SLA_THRESHOLDS: List[SLAThreshold] = [
-    SLAThreshold(
-        "sla_avg_ttft_ms", "time_to_first_token_mean", 1.0, "--sla-avg-ttft-ms"
+SLO_THRESHOLDS: List[SLOThreshold] = [
+    SLOThreshold(
+        "slo_avg_ttft_ms", "time_to_first_token_mean", 1.0, "--slo-avg-ttft-ms"
     ),
-    SLAThreshold(
-        "sla_p95_ttft_ms", "time_to_first_token_p95", 1.0, "--sla-p95-ttft-ms"
+    SLOThreshold(
+        "slo_p95_ttft_ms", "time_to_first_token_p95", 1.0, "--slo-p95-ttft-ms"
     ),
-    SLAThreshold(
-        "sla_p99_ttft_ms", "time_to_first_token_p99", 1.0, "--sla-p99-ttft-ms"
+    SLOThreshold(
+        "slo_p99_ttft_ms", "time_to_first_token_p99", 1.0, "--slo-p99-ttft-ms"
     ),
     # TPOT thresholds bound the DECODE-ONLY per-token time, which guidellm files
     # under `inter_token_latency_ms` — (last_token - first_token) / (tokens - 1),
@@ -150,7 +150,7 @@ SLA_THRESHOLDS: List[SLAThreshold] = [
     # per-token metric: (last_token - request_start) / tokens, i.e. TTFT folded
     # into the decode average. That charged prefill and queue wait to the decode
     # loop; the error is TTFT / (n * TPOT), so ~5% on a 128-token run and ~40% at
-    # 16 output tokens, and it grew with load exactly where the SLA decides
+    # 16 output tokens, and it grew with load exactly where the SLO decides
     # capacity.
     #
     # It stays as the FALLBACK because the decode-only metric is not always
@@ -162,35 +162,35 @@ SLA_THRESHOLDS: List[SLAThreshold] = [
     # judged instead of failing it (a threshold that fails wherever the server
     # batched its stream would bracket the ramp on its first point) and without
     # waiving it (0 ms would clear every budget).
-    SLAThreshold(
-        "sla_avg_tpot_ms",
+    SLOThreshold(
+        "slo_avg_tpot_ms",
         "inter_token_latency_mean",
         1.0,
-        "--sla-avg-tpot-ms",
+        "--slo-avg-tpot-ms",
         fallback="time_per_output_token_mean",
     ),
-    SLAThreshold(
-        "sla_p95_tpot_ms",
+    SLOThreshold(
+        "slo_p95_tpot_ms",
         "inter_token_latency_p95",
         1.0,
-        "--sla-p95-tpot-ms",
+        "--slo-p95-tpot-ms",
         fallback="time_per_output_token_p95",
     ),
-    SLAThreshold(
-        "sla_p99_tpot_ms",
+    SLOThreshold(
+        "slo_p99_tpot_ms",
         "inter_token_latency_p99",
         1.0,
-        "--sla-p99-tpot-ms",
+        "--slo-p99-tpot-ms",
         fallback="time_per_output_token_p99",
     ),
-    SLAThreshold(
-        "sla_avg_latency_ms", "request_latency_mean", 1000.0, "--sla-avg-latency-ms"
+    SLOThreshold(
+        "slo_avg_latency_ms", "request_latency_mean", 1000.0, "--slo-avg-latency-ms"
     ),
-    SLAThreshold(
-        "sla_p95_latency_ms", "request_latency_p95", 1000.0, "--sla-p95-latency-ms"
+    SLOThreshold(
+        "slo_p95_latency_ms", "request_latency_p95", 1000.0, "--slo-p95-latency-ms"
     ),
-    SLAThreshold(
-        "sla_p99_latency_ms", "request_latency_p99", 1000.0, "--sla-p99-latency-ms"
+    SLOThreshold(
+        "slo_p99_latency_ms", "request_latency_p99", 1000.0, "--slo-p99-latency-ms"
     ),
 ]
 
@@ -345,8 +345,8 @@ class BenchmarkBase(SQLModel):
     # (throughput / custom-sweep). Stage runs carry max_seconds per stage instead.
     max_seconds: Optional[float] = Field(default=None)
 
-    # The load axis (knob) — see BenchmarkLoadTypeEnum. The latency-SLA scenario
-    # is concurrency + any sla_* threshold set.
+    # The load axis (knob) — see BenchmarkLoadTypeEnum. The latency-SLO scenario
+    # is concurrency + any slo_* threshold set.
     #
     # Typed as the enum so an unknown value is a 422 at the API boundary instead
     # of silently falling through to the rate axis, but stored as a plain string
@@ -365,7 +365,7 @@ class BenchmarkBase(SQLModel):
     # Auto-tune (adaptive ramp): when true, the runner ramps the load_type axis
     # (fixed_rate=req/s, concurrency=streams) with a geometric bracket + binary
     # search instead of running user-specified stages, and auto-detects the
-    # answer. Target is derived: sla_* set -> SLA boundary (max knob meeting SLA);
+    # answer. Target is derived: slo_* set -> SLO boundary (max knob meeting SLO);
     # otherwise -> throughput saturation (peak output tok/s). Replaces the old
     # guidellm `sweep` profile (removed).
     auto_tune: Optional[bool] = Field(default=None)
@@ -379,32 +379,32 @@ class BenchmarkBase(SQLModel):
     max_points: Optional[int] = Field(default=None)  # max measured points (12)
     max_total_seconds: Optional[float] = Field(default=None)  # whole-run cap (3600)
 
-    # Latency SLA: optional "<= threshold" targets used to pick the max load that
-    # still meets the SLA. Each is independent; a point meets the SLA when every
-    # SET threshold holds (AND) and success >= 95%. `sla_avg_ttft_ms` / `sla_avg_tpot_ms`
+    # Latency SLO: optional "<= threshold" targets used to pick the max load that
+    # still meets the SLO. Each is independent; a point meets the SLO when every
+    # SET threshold holds (AND) and success >= 95%. `slo_avg_ttft_ms` / `slo_avg_tpot_ms`
     # are the average TTFT / TPOT (kept from the original 2-field model); the p95 /
     # p99 and end-to-end latency targets extend it (EvalScope-style latency metrics),
     # giving 3 metrics x 3 aggregations = 9 optional thresholds.
     #
     # The columns are declared individually (they are queryable/sortable scalars),
-    # but everything that WALKS the grid — the runner's CLI forwarding, the SLA
-    # evaluation, the budget-utilization check — reads SLA_THRESHOLDS instead of
+    # but everything that WALKS the grid — the runner's CLI forwarding, the SLO
+    # evaluation, the budget-utilization check — reads SLO_THRESHOLDS instead of
     # repeating these nine names. Adding an aggregation means one row there plus
     # the column here and in a migration.
     #
     # "TPOT" here means the DECODE-ONLY per-token time (guidellm's
     # inter_token_latency), matching the industry definition and what the report
-    # shows. SLA_THRESHOLDS carries the mapping; the threshold names stay
+    # shows. SLO_THRESHOLDS carries the mapping; the threshold names stay
     # `*_tpot_ms` because that is what the CLI, the API and the form call them.
-    sla_avg_ttft_ms: Optional[float] = Field(default=None)  # avg TTFT (ms)
-    sla_avg_tpot_ms: Optional[float] = Field(default=None)  # avg TPOT (ms)
-    sla_p95_ttft_ms: Optional[float] = Field(default=None)  # p95 TTFT (ms)
-    sla_p95_tpot_ms: Optional[float] = Field(default=None)  # p95 TPOT (ms)
-    sla_p99_ttft_ms: Optional[float] = Field(default=None)  # p99 TTFT (ms)
-    sla_p99_tpot_ms: Optional[float] = Field(default=None)  # p99 TPOT (ms)
-    sla_avg_latency_ms: Optional[float] = Field(default=None)  # avg e2e latency (ms)
-    sla_p95_latency_ms: Optional[float] = Field(default=None)  # p95 e2e latency (ms)
-    sla_p99_latency_ms: Optional[float] = Field(default=None)  # p99 e2e latency (ms)
+    slo_avg_ttft_ms: Optional[float] = Field(default=None)  # avg TTFT (ms)
+    slo_avg_tpot_ms: Optional[float] = Field(default=None)  # avg TPOT (ms)
+    slo_p95_ttft_ms: Optional[float] = Field(default=None)  # p95 TTFT (ms)
+    slo_p95_tpot_ms: Optional[float] = Field(default=None)  # p95 TPOT (ms)
+    slo_p99_ttft_ms: Optional[float] = Field(default=None)  # p99 TTFT (ms)
+    slo_p99_tpot_ms: Optional[float] = Field(default=None)  # p99 TPOT (ms)
+    slo_avg_latency_ms: Optional[float] = Field(default=None)  # avg e2e latency (ms)
+    slo_p95_latency_ms: Optional[float] = Field(default=None)  # p95 e2e latency (ms)
+    slo_p99_latency_ms: Optional[float] = Field(default=None)  # p99 e2e latency (ms)
 
     # Shared prefix: guidellm prefix_buckets — a list of buckets, each
     # {prefix_tokens, prefix_count, bucket_weight}. A common prompt prefix shared
@@ -468,7 +468,7 @@ class BenchmarkMetricsLite(SQLModel):
     #
     #   inter_token_latency_ms   = (last_token - first_token) / (tokens - 1)
     #     Decode only. This IS the industry's TPOT (vLLM, genai-perf). It is what
-    #     the report displays as "TPOT" and what the tpot SLA thresholds bound.
+    #     the report displays as "TPOT" and what the tpot SLO thresholds bound.
     #   time_per_output_token_ms = (last_token - request_start) / tokens
     #     Includes TTFT, so it bills prefill + queue wait to the decode loop. No
     #     standard name. Recorded for completeness; not displayed, not judged on.
@@ -490,8 +490,8 @@ class BenchmarkMetricsLite(SQLModel):
     time_to_first_token_mean: Optional[float] = Field(
         default=None, description="Mean time to first token (unit: ms)"
     )
-    # P95 / P99 percentiles for the SLA-relevant latency metrics (populated from
-    # guidellm's per-point percentiles). Used to evaluate tail SLA thresholds.
+    # P95 / P99 percentiles for the SLO-relevant latency metrics (populated from
+    # guidellm's per-point percentiles). Used to evaluate tail SLO thresholds.
     time_to_first_token_p95: Optional[float] = Field(
         default=None, description="P95 time to first token (unit: ms)"
     )
@@ -499,7 +499,7 @@ class BenchmarkMetricsLite(SQLModel):
         default=None, description="P95 decode-only time per output token (unit: ms)"
     )
     # Kept because it is cheap and already collected, but nothing reads it: the
-    # tpot SLA thresholds moved to the decode-only metric above.
+    # tpot SLO thresholds moved to the decode-only metric above.
     time_per_output_token_p95: Optional[float] = Field(
         default=None,
         description="P95 per-output-token time including the first token (unit: ms)",
@@ -661,8 +661,8 @@ class BenchmarkRuntime(SQLModel):
     progress: Optional[float] = Field(default=None)
     pid: Optional[int] = Field(default=None)
 
-    # Max rate that still meets the SLA targets (computed by the worker).
-    sla_met_rate: Optional[float] = Field(default=None)
+    # Max rate that still meets the SLO targets (computed by the worker).
+    slo_met_rate: Optional[float] = Field(default=None)
     # Recommended concurrency from over-saturation detection.
     recommended_rate: Optional[float] = Field(default=None)
     # Best operating points (computed by the worker from the stage grid).
@@ -747,7 +747,7 @@ class BenchmarkStateUpdate(SQLModel):
     # Best operating points (computed by the worker from the stage grid; only
     # the explicitly-set ones are persisted via model_fields_set).
     peak_rate: Optional[float] = None
-    sla_met_rate: Optional[float] = None
+    slo_met_rate: Optional[float] = None
     recommended_rate: Optional[float] = None
     validity: Optional[Dict[str, Any]] = None
 

@@ -6,8 +6,8 @@
 # `name` is stored on the benchmark's `profile` column as a soft label for list
 # display / filtering. `load_type` (fixed_rate / concurrency) is the load axis;
 # `auto_tune` toggles the adaptive ramp engine (geometric bracket + binary
-# search) which auto-detects the answer. The latency-SLA scenario is just
-# load_type=concurrency + auto_tune + sla_avg_ttft_ms / sla_avg_tpot_ms.
+# search) which auto-detects the answer. The latency-SLO scenario is just
+# load_type=concurrency + auto_tune + slo_avg_ttft_ms / slo_avg_tpot_ms.
 profiles:
   - name: Max Throughput
     # Kept in sync with the UI blurb (benchmark.form.profile.maxThroughput.tips):
@@ -16,7 +16,7 @@ profiles:
     description: >
       Finds peak throughput. The usual baseline for comparing GPUs and models.
     load_type: fixed_rate # rate axis (open-loop constant)
-    auto_tune: true # adaptive ramp; target = throughput saturation (no SLA)
+    auto_tune: true # adaptive ramp; target = throughput saturation (no SLO)
     dataset_name: Random
     dataset_input_tokens: 1024 # vLLM Random default https://github.com/vllm-project/vllm/blob/17b17c068453e6dc6af79240bb94857ae175cc51/vllm/benchmarks/datasets.py#L457
     dataset_output_tokens: 128
@@ -35,19 +35,19 @@ profiles:
     max_points: 12 # max measured ramp points
     max_total_seconds: 3600 # whole-run cap (1h)
 
-  - name: Latency SLA
-    # Kept in sync with benchmark.form.profile.latencySla.tips (see above).
+  - name: Meet Latency SLO
+    # Kept in sync with benchmark.form.profile.latencySlo.tips (see above).
     description: >
       Finds the most load that still meets your TTFT/TPOT targets. For capacity
       planning.
     load_type: concurrency # concurrency axis (closed-loop)
-    auto_tune: true # adaptive ramp; target = SLA boundary (sla_* set)
+    auto_tune: true # adaptive ramp; target = SLO boundary (slo_* set)
     dataset_name: Random
     dataset_input_tokens: 128
     dataset_output_tokens: 128
     dataset_seed_increment: true # increment the seed per point (see note above)
-    sla_avg_ttft_ms: 500
-    sla_avg_tpot_ms: 50
+    slo_avg_ttft_ms: 500
+    slo_avg_tpot_ms: 50
     # Auto-tune budget (see Max Throughput note above).
     lower_bound: 4 # knob floor (ramp start; skip low-info 1,2 points)
     upper_bound: 1024 # knob ceiling (concurrency axis)
