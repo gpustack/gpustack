@@ -403,7 +403,9 @@ class CacheProvider(BaseModel):
             if not config.image:
                 raise ValueError(
                     f"Cache provider '{self.name}' version '{version}' "
-                    "declares no image and the provider has no default_image"
+                    "resolves to no image: it must declare one, or declare "
+                    "neither image nor runtime_images and inherit the "
+                    "provider's default_image"
                 )
         return self
 
