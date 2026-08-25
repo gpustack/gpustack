@@ -70,9 +70,9 @@ from sqlalchemy.orm import defer
 
 MAX_EXPORT_RECORDS = 20
 # Upper bound on the per-point grid a single benchmark may upload. The ramp's own
-# budget is max_points (12 by default) and a manual stage list is user-sized, so
-# this is far above any real curve — it exists so a malformed upload is rejected at
-# the boundary instead of turning into an unbounded write.
+# budget is max_points and a manual stage list is user-sized, so this sits far
+# above any real curve — it exists so a malformed upload is rejected at the
+# boundary instead of turning into an unbounded write.
 MAX_BENCHMARK_RESULT_POINTS = 500
 BENCHMARK_EXPORT_FIELD_ORDER = [
     "name",

@@ -27,13 +27,30 @@ profiles:
     # then uses seed + point_index.
     dataset_seed_increment: true # increment the seed per point
     # Auto-tune budget — written explicitly so the effective values are visible /
-    # editable in the form instead of being silently applied by the runner (kept
-    # in sync with benchmark-runner RampConfig, design §4.5). multiplier/min_requests
-    # stay internal (no form field).
+    # editable in the form instead of being silently applied by the runner.
+    # multiplier/min_requests stay internal (no form field).
+    #
+    # The two presets deliberately budget DIFFERENTLY, because their answers are
+    # different shapes. This one reports the argmax over measured points, which
+    # Phase 1 already finds: it needs the doubling to walk one point PAST the knee
+    # and nothing more. Phase 2 only narrows an interval that never enters the
+    # answer, so points beyond that buy nothing — simulated over 7 deployment
+    # sizes, the peak was already exact at 8 points and unchanged at 16 while the
+    # run took twice as long.
     lower_bound: 4 # knob floor (ramp start; skip low-info 1,2 points)
-    upper_bound: 1024 # knob ceiling (rate axis)
-    max_points: 12 # max measured ramp points
-    max_total_seconds: 3600 # whole-run cap (1h)
+    # Ceiling, not a target: Phase 1 stops on capacity_plateau long before it, so
+    # raising this costs nothing on small deployments (measured: identical point
+    # count and wall clock at 1024/2048/4096/8192 for everything up to a 1024-
+    # concurrency peak). Too LOW is what costs — a run that ends on `upper_bound`
+    # reports the range end as its peak, which is a number nobody measured. At
+    # 1024 every deployment peaking at or above it did exactly that.
+    upper_bound: 8192 # knob ceiling (rate axis)
+    # 15 covers the longest Phase 1 actually measured (11 points, on a peak near
+    # 2048 concurrency — the doubling stops on saturation, so it does not walk the
+    # full 12 steps up to the ceiling) plus the peak-seeking probes that let the
+    # smaller sizes finish on `converged` instead of `budget_points`.
+    max_points: 15 # max measured ramp points
+    max_total_seconds: 3600 # whole-run cap (1h; the slowest size measured 51m)
 
   - name: Meet Latency SLO
     # Kept in sync with benchmark.form.profile.latencySlo.tips (see above).
@@ -48,8 +65,24 @@ profiles:
     dataset_seed_increment: true # increment the seed per point (see note above)
     slo_avg_ttft_ms: 500
     slo_avg_tpot_ms: 50
-    # Auto-tune budget (see Max Throughput note above).
+    # Auto-tune budget (see Max Throughput note above for what the knobs are).
+    #
+    # This preset budgets HIGHER than Max Throughput because here the interval IS
+    # the answer: every bisection step halves it, so points buy precision directly.
+    # The cost also grows with the deployment — reaching the boundary takes
+    # Phase 1's doublings plus log2(bracket width), so a 2048-concurrency peak
+    # needs ~8 more points than a 32-concurrency one.
     lower_bound: 4 # knob floor (ramp start; skip low-info 1,2 points)
-    upper_bound: 1024 # knob ceiling (concurrency axis)
-    max_points: 12
-    max_total_seconds: 3600
+    upper_bound: 8192 # knob ceiling (concurrency axis)
+    # 18, not 12 and not 22. Simulated across 8 deployment sizes with ±8% per-point
+    # noise, the reported boundary lands within ~2% of the truth and stays there:
+    # that is a NOISE floor, not a budget one, so more points cannot beat it (22
+    # points measured the same 2.0% as 18). 12 leaves the largest sizes at 4-27%
+    # off — a real error, since the bisection had not closed. 18 is where every
+    # size reaches the floor; 20 and 22 buy ~0.5pp for 8-15 minutes more.
+    max_points: 18
+    # 5400, not 3600: the largest sizes need 64-73 min at 18 points. The cap is not
+    # merely a stop signal — it is also handed to each point as max_seconds, so a
+    # too-tight budget silently SHORTENS the last few measurements instead of
+    # dropping them, and stop_reason still says `budget_points`.
+    max_total_seconds: 5400
