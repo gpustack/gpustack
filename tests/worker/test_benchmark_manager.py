@@ -298,6 +298,11 @@ class TestBuildCommandArgs:
             _benchmark_dir="/var/lib/gpustack/benchmarks",
             _api_url="http://127.0.0.1:80/v2/benchmarks/1/state",
             _api_key="token",
+            # Plain-HTTP progress endpoint, so the TLS gating stays out of the way
+            # of what these cover. The gating itself is exercised in
+            # test_benchmark_tls.py.
+            _progress_insecure_skip_tls_verify=False,
+            _progress_is_https=False,
         )
 
     def test_manual_stages_carry_the_load_axis(self):

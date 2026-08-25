@@ -3,14 +3,56 @@ import sys
 import sysconfig
 from os.path import dirname, abspath, join
 import shutil
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Any, List, Literal, Optional, Sequence, Tuple, Union
 import shlex
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
-
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on", "t", "y"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", "f", "n"})
+
+REDACTED = "***"
+
+# Flags whose value is a credential GPUStack injects itself, rather than
+# something an operator typed. Only these are redacted: blanket-matching on
+# substrings like "token" would also hit knobs whose value is a number an
+# operator needs to see in the log (``--token-timeout``, ``--max-tokens``).
+_SENSITIVE_PARAMETER_KEYS = frozenset({"--progress-auth"})
+
+
+def sanitize_args(args: Sequence[Any]) -> List[str]:
+    """Redact credential values in an argv list so it can be logged.
+
+    The counterpart of ``sanitize_env``: same reason -- a log line that anyone
+    who can read worker logs can read must not carry a secret -- for the other
+    carrier. ``--progress-auth`` is the worker token, so the container command
+    line printed at workload creation would otherwise hand it out verbatim.
+
+    Handles both ``--flag value`` and ``--flag=value``. Elements are stringified
+    on the way out, since ``_build_command_args`` does not stringify every value
+    it appends. This only covers the log;
+    the container still receives the real value, and it remains visible in the
+    workload spec (``docker inspect`` / ``kubectl describe``).
+    """
+    sanitized: List[str] = []
+    redact_next = False
+    for arg in args:
+        text = str(arg)
+        if redact_next:
+            sanitized.append(REDACTED)
+            redact_next = False
+            continue
+        key, sep, _ = text.partition("=")
+        if key in _SENSITIVE_PARAMETER_KEYS:
+            if sep:
+                sanitized.append(f"{key}={REDACTED}")
+            else:
+                # Value is the next element; redact it on the following pass.
+                sanitized.append(text)
+                redact_next = True
+            continue
+        sanitized.append(text)
+    return sanitized
 
 
 def is_command_available(command_name):
