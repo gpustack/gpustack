@@ -428,7 +428,8 @@ def test_only_public_routes_get_a_rule_at_all():
     assert len(rules) == 1
     assert rules[0].ingress == ["ns/route-42", "ns/route-42.fallback"]
     assert rules[0].config == {"access_policy": "public"}
-    assert public_route_match_rules([]) == []
+    # Absent, not empty -- see the next test for what an empty array costs.
+    assert public_route_match_rules([]) is None
 
 
 def test_the_route_gate_is_anchored():
@@ -483,7 +484,70 @@ def test_startup_survives_an_unrecognizable_live_config():
         "keys": {},
         "refs": {},
     }
-    assert merged.matchRules == []
+    assert merged.matchRules is None
+
+
+def _spec_dump(spec):
+    """``ensure_wasm_plugin``'s comparison, spelled the same way it spells it."""
+    return spec.model_dump(exclude_none=True) if spec else {}
+
+
+def test_a_deployment_with_no_public_routes_stops_rewriting_the_cr():
+    """The pass runs every interval whether or not anything changed, so a
+    difference that cannot converge is a CR write -- an xDS push, and a wasm VM
+    rebuilt on every gateway pod -- on every tick, forever.
+
+    An API server that stores this field through a typed decoder omits an empty
+    array, so a CR written with ``matchRules: []`` reads back without the field.
+    ``exclude_none=True`` keeps ``[]`` and drops ``None``, which is what turned
+    that into a permanent difference.
+    """
+    live = WasmPluginSpec(
+        defaultConfig={
+            "local_auth": {"enabled": True, "keys": {}, "refs": {}},
+            "route_match_regexes": [r"^default/ai\-route\-route\-"],
+        },
+        # As the store hands it back: no matchRules at all.
+        matchRules=None,
+    )
+
+    updated = ext_auth_reconcile_spec_diff(
+        live.model_copy(deep=True),
+        keys={},
+        refs={},
+        public_route_ingresses=[],
+        cfg=_cfg(),
+        registry=MagicMock(),
+    )
+
+    assert _spec_dump(updated) == _spec_dump(live)
+
+
+def test_the_last_public_route_leaving_still_reaches_the_cr():
+    """The other half of the rule above: collapsing empty and absent must not
+    also collapse "had a rule, should not any more". That rule is a standing
+    authorization to serve a route without asking the server."""
+    live = WasmPluginSpec(
+        defaultConfig={"local_auth": {"enabled": True, "keys": {}, "refs": {}}},
+        matchRules=[
+            WasmPluginMatchRule(ingress=["ns/r"], config={"access_policy": "public"})
+        ],
+    )
+
+    updated = ext_auth_reconcile_spec_diff(
+        live.model_copy(deep=True),
+        keys={},
+        refs={},
+        public_route_ingresses=[],
+        cfg=_cfg(),
+        registry=MagicMock(),
+    )
+
+    assert updated.matchRules is None
+    # A difference, so the write happens -- and it carries no matchRules, which
+    # is what takes the rule off the CR.
+    assert _spec_dump(updated) != _spec_dump(live)
+    assert "matchRules" not in _spec_dump(updated)
 
 
 def test_reconcile_replaces_the_tables_wholesale():
