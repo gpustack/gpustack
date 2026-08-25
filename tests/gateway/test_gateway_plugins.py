@@ -1,5 +1,8 @@
 import pytest
 import logging
+from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 from unittest.mock import MagicMock, patch
 from gpustack.gateway.plugins import (
     HigressPlugin,
@@ -7,8 +10,13 @@ from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
     supported_plugins,
     http_path_prefix,
+    plugin_spec_overrides,
+    get_local_plugin_url,
+    published_plugin_urls,
+    verify_published_plugin_modules,
 )
 from gpustack.config.config import GatewayPluginEntry
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.api.auth import (
     GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
     GATEWAY_ASSERTED_KEY_REF_HEADER,
@@ -30,9 +38,17 @@ def _manifest_suffix(name: str) -> str:
     return f"/{name}/{version}/plugin.wasm"
 
 
-def make_cfg(plugin_server_url: str, gateway_plugin=None):
+def make_cfg(
+    plugin_server_url: str,
+    gateway_plugin=None,
+    gateway_mode=GatewayModeEnum.external,
+):
     cfg = MagicMock()
     cfg.gateway_plugin_server_url = plugin_server_url
+    # Explicit, because the mode decides whether modules are fetched over HTTP
+    # or read off Envoy's own filesystem. A MagicMock here would compare
+    # unequal to every mode and silently pick HTTP.
+    cfg.gateway_mode = gateway_mode
     # Real entries, not raw dicts: a live Config validates this section into
     # GatewayPluginEntry, so a dict here would exercise a shape production
     # never sees -- and would skip the extra="forbid" on url / sha256.
@@ -59,6 +75,120 @@ class TestGetPluginUrlPrefix:
     def test_cfg_with_https_url(self):
         cfg = make_cfg("https://example.com")
         assert get_plugin_url_prefix(cfg) == f"https://example.com/{http_path_prefix}"
+
+
+class TestLocalPluginModules:
+    """Embedded reads modules off Envoy's own filesystem instead of fetching
+    them from this server -- the one mode where the two share one."""
+
+    def test_embedded_publishes_file_urls(self):
+        cfg = make_cfg("http://127.0.0.1:30080", gateway_mode=GatewayModeEnum.embedded)
+        url = plugin_spec_overrides("transformer", cfg=cfg)["url"]
+        assert url.startswith("file:///")
+        assert url.endswith(_manifest_suffix("transformer"))
+
+    def test_the_file_url_points_at_a_real_module(self):
+        cfg = make_cfg("http://127.0.0.1:30080", gateway_mode=GatewayModeEnum.embedded)
+        for plugin in supported_plugins:
+            url = plugin_spec_overrides(plugin.name, cfg=cfg)["url"]
+            assert Path(url2pathname(urlparse(url).path)).is_file()
+
+    @pytest.mark.parametrize(
+        "mode",
+        [GatewayModeEnum.external, GatewayModeEnum.incluster],
+    )
+    def test_other_modes_keep_fetching_over_http(self, mode):
+        # Envoy is a different pod there, so a local path would resolve to
+        # nothing on its side.
+        cfg = make_cfg("http://192.168.1.1:8080", gateway_mode=mode)
+        url = plugin_spec_overrides("transformer", cfg=cfg)["url"]
+        assert url.startswith("http://192.168.1.1:8080/")
+
+    def test_no_cfg_keeps_fetching_over_http(self):
+        assert plugin_spec_overrides("transformer")["url"].startswith("http://")
+
+    def test_an_operator_url_still_wins_over_the_local_module(self):
+        cfg = make_cfg(
+            "http://127.0.0.1:30080",
+            {"transformer": {"url": "oci://registry.example/transformer:2.0.0"}},
+            gateway_mode=GatewayModeEnum.embedded,
+        )
+        assert (
+            plugin_spec_overrides("transformer", cfg=cfg)["url"]
+            == "oci://registry.example/transformer:2.0.0"
+        )
+
+    def test_missing_module_falls_back_to_http_rather_than_publishing_a_dead_path(self):
+        cfg = make_cfg("http://127.0.0.1:30080", gateway_mode=GatewayModeEnum.embedded)
+        with patch(
+            "gpustack.gateway.plugins.get_local_plugin_url", return_value=None
+        ) as _:
+            url = plugin_spec_overrides("transformer", cfg=cfg)["url"]
+        assert url.startswith("http://127.0.0.1:30080/")
+
+    def test_unknown_plugin_still_raises(self):
+        with pytest.raises(ValueError, match="not supported"):
+            get_local_plugin_url("nonexistent-plugin")
+
+
+class TestPublishedPluginUrls:
+    def test_pairs_every_manifest_plugin_with_the_url_in_its_cr(self):
+        cfg = make_cfg("http://127.0.0.1:30080")
+        pairs = published_plugin_urls(cfg)
+        assert len(pairs) == len(supported_plugins)
+        for name, url in pairs:
+            assert url == plugin_spec_overrides(name, cfg=cfg)["url"]
+
+
+class TestVerifyPublishedPluginModules:
+    """A module Envoy cannot load takes the listener down silently, so the
+    check has to distinguish "broken" from "cannot be checked from here"."""
+
+    @pytest.mark.asyncio
+    async def test_local_modules_pass_without_any_fetch(self, caplog):
+        # The embedded default. aiohttp cannot open a file:// URL, so treating
+        # these as HTTP would report every module broken on every start.
+        cfg = make_cfg("http://127.0.0.1:30080", gateway_mode=GatewayModeEnum.embedded)
+        with caplog.at_level(logging.INFO, logger="gpustack.gateway.plugins"):
+            assert await verify_published_plugin_modules(cfg) is True
+        assert "transformer=local" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_missing_local_module_is_reported_broken(self, caplog):
+        cfg = make_cfg(
+            "http://127.0.0.1:30080",
+            {"transformer": {"url": "file:///nonexistent/plugin.wasm"}},
+            gateway_mode=GatewayModeEnum.embedded,
+        )
+        with caplog.at_level(logging.INFO, logger="gpustack.gateway.plugins"):
+            assert await verify_published_plugin_modules(cfg) is False
+        assert "transformer=UNREADABLE" in caplog.text
+        assert "will not be bound" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_registry_reference_is_unverified_not_broken(self, caplog):
+        # Nothing here can reach a registry, and a registry does not depend on
+        # this server -- reporting it broken would be a standing false alarm.
+        cfg = make_cfg(
+            "http://127.0.0.1:30080",
+            {"transformer": {"url": "oci://registry.example/transformer:2.0.0"}},
+            gateway_mode=GatewayModeEnum.embedded,
+        )
+        with caplog.at_level(logging.INFO, logger="gpustack.gateway.plugins"):
+            assert await verify_published_plugin_modules(cfg) is True
+        assert "transformer=unverified (oci scheme)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_http_module_is_reported_broken(self, caplog):
+        # Port 1 on loopback: refused fast, no network needed.
+        cfg = make_cfg(
+            "http://127.0.0.1:30080",
+            {"transformer": {"url": "http://127.0.0.1:1/plugin.wasm"}},
+            gateway_mode=GatewayModeEnum.embedded,
+        )
+        with caplog.at_level(logging.INFO, logger="gpustack.gateway.plugins"):
+            assert await verify_published_plugin_modules(cfg) is False
+        assert "transformer=FAILED" in caplog.text
 
 
 class TestHigressPluginGetPath:

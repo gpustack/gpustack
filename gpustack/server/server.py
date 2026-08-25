@@ -118,6 +118,7 @@ from gpustack.gateway.utils import (
     resolve_instance_address_from_model_header,
 )
 from gpustack.gateway import get_async_k8s_config
+from gpustack.gateway.plugins import verify_published_plugin_modules
 from gpustack.envs import (
     GATEWAY_PORT_CHECK_INTERVAL,
     GATEWAY_PORT_CHECK_RETRY_COUNT,
@@ -357,7 +358,7 @@ class Server:
         await asyncio.gather(*self._async_tasks)
 
     async def _check_gateway_startup(self, server: uvicorn.Server):
-        """Confirm the gateway actually came up.
+        """Confirm the gateway can load its modules and did come up.
 
         Reports, never raises: this runs alongside a server that is already
         serving and must not be the reason one fails to start. What it finds
@@ -367,14 +368,15 @@ class Server:
         if self._config.gateway_mode == GatewayModeEnum.disabled:
             return
         try:
-            # Wait until uvicorn is accepting, so a gateway still waiting on
-            # this server is not reported as broken. ``started`` never flips if
-            # the bind fails, so give the loop its own way out rather than
-            # leaving it to the cancellation that follows.
+            # ``server.started`` flips once uvicorn is accepting, which is
+            # when a module served by this process becomes fetchable. It never
+            # flips if the bind fails, so give the loop its own way out rather
+            # than leaving it to the cancellation that follows.
             while not server.started:
                 if server.should_exit:
                     return
                 await asyncio.sleep(0.05)
+            await verify_published_plugin_modules(self._config)
             await self._wait_for_gateway_ready()
         except asyncio.CancelledError:
             raise
