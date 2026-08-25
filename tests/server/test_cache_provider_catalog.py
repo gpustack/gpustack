@@ -10,6 +10,7 @@ from gpustack.schemas.cache_providers import (
     validate_injection_templates,
 )
 from gpustack.schemas.cache_services import CacheServiceModeEnum
+from gpustack.server import cache_provider_catalog
 from gpustack.server.cache_provider_catalog import (
     get_cache_provider,
     load_cache_providers,
@@ -20,6 +21,41 @@ from gpustack.server.cache_provider_catalog import (
 def test_catalog_asset_loads():
     providers = load_cache_providers(reload=True)
     assert providers, "bundled cache-providers.yaml should yield at least one provider"
+
+
+def test_malformed_entry_costs_only_its_own_provider(monkeypatch):
+    """A declaration the model rejects — including one that is not a
+    mapping at all — is skipped on its own; the rest of the catalog still
+    serves, so a bad edit degrades one provider instead of every cache
+    service in the deployment."""
+    asset = (
+        "- just a string\n"
+        "- name: Broken\n"
+        "  versions:\n"
+        "    \"v1.0\": {}\n"  # resolves to no image
+        "- name: Good\n"
+        "  default_image: \"repo/cache:{{version}}\"\n"
+        "  versions:\n"
+        "    \"v1.0\": {}\n"
+    )
+
+    class _Asset:
+        def is_file(self):
+            return True
+
+        def read_text(self, encoding=None):
+            return asset
+
+    try:
+        monkeypatch.setattr(cache_provider_catalog, "files", lambda _package: _Asset())
+        monkeypatch.setattr(_Asset, "joinpath", lambda self, _name: self, raising=False)
+        providers = load_cache_providers(reload=True)
+        assert [provider.name for provider in providers] == ["Good"]
+    finally:
+        # The loader caches for the process lifetime; leave the bundled
+        # catalog in place for the tests that read it.
+        monkeypatch.undo()
+        load_cache_providers(reload=True)
 
 
 def test_provider_defaults_fold_into_every_version():
@@ -108,24 +144,27 @@ def test_lmcache_provider_declaration():
 
     # The declared version pins a verified image tag; a service may also
     # pin its own image via the reserved "custom" version.
-    assert provider.default_version == "v0.5.3"
+    assert provider.default_version == "v0.5.4"
     assert set(provider.versions) == {"v0.5.2", "v0.5.3", "v0.5.4"}
     assert provider.custom_version is True
 
     version_config, version = provider.get_version_config()
     assert version_config is not None
     assert version == provider.default_version
-    assert version_config.image == "lmcache/vllm-openai:v0.5.3"
-    # The bare tag is the CUDA 13 build; cu129 serves CUDA 12 nodes. The
-    # worker resolves per node, so a heterogeneous per_node fleet mixes
-    # images; unknown runtimes and accelerator-less workers get the
-    # plain image.
-    assert version_config.resolve_image("cuda", "13.0") == "lmcache/vllm-openai:v0.5.3"
+    # Upstream's tag layout, asserted against the resolved version rather
+    # than a copy of it: the bare tag is the CUDA 13 build and cu129
+    # serves CUDA 12 nodes. The worker resolves per node, so a
+    # heterogeneous per_node fleet mixes images; unknown runtimes and
+    # accelerator-less workers get the plain image.
+    assert version_config.image == f"lmcache/vllm-openai:{version}"
+    assert (
+        version_config.resolve_image("cuda", "13.0") == f"lmcache/vllm-openai:{version}"
+    )
     assert (
         version_config.resolve_image("cuda", "12.8")
-        == "lmcache/vllm-openai:v0.5.3-cu129"
+        == f"lmcache/vllm-openai:{version}-cu129"
     )
-    assert version_config.resolve_image(None, None) == "lmcache/vllm-openai:v0.5.3"
+    assert version_config.resolve_image(None, None) == f"lmcache/vllm-openai:{version}"
     # The full CLI entry: the HTTP frontend on --http-port serves
     # /metrics (same registry as the standalone exposition) plus
     # /healthcheck and the admin APIs; --prometheus-port is ignored

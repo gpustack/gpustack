@@ -29,16 +29,16 @@ def load_cache_providers(reload: bool = False) -> List[CacheProvider]:
         yaml_file = files("gpustack.assets").joinpath("cache-providers.yaml")
         if yaml_file.is_file():
             raw = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
-            for entry in raw or []:
+            for index, entry in enumerate(raw or []):
+                # An entry that is not a mapping has no name to report;
+                # its position is what identifies it in the asset.
+                name = entry.get("name") if isinstance(entry, dict) else f"#{index}"
                 try:
                     provider = CacheProvider(**entry)
                 except Exception as e:
                     # One malformed declaration costs its own provider,
                     # not the catalog: the others still serve.
-                    logger.error(
-                        f"Skipping malformed cache provider "
-                        f"{(entry or {}).get('name')}: {e}"
-                    )
+                    logger.error(f"Skipping malformed cache provider {name}: {e}")
                     continue
                 # A provider violating the injection placeholder contract
                 # is excluded outright: its failure modes are silent at
