@@ -1672,9 +1672,10 @@ def test_stop_instance_tolerates_missing_workload():
 
 
 def test_start_instance_without_run_command_runs_image_entrypoint():
-    """A version without a run command runs the image's own entrypoint:
-    no parameters means no command override, and user parameters become
-    the entrypoint's argument vector instead of being dropped."""
+    """A version without a run command keeps the image's own entrypoint:
+    the container's command slot stays empty — filling it would replace
+    the entrypoint with the parameters — and everything GPUStack adds
+    rides as arguments appended to it."""
     manager, clientset = _build_manager(worker_id=1)
     provider = _new_provider(
         versions={
@@ -1686,14 +1687,47 @@ def test_start_instance_without_run_command_runs_image_entrypoint():
 
     cache_service = _new_cache_service(config=CacheServiceConfig(ram_size=8))
     create, _ = _run_start(manager, clientset, cache_service, provider)
-    assert create.call_args[0][0].containers[0].execution.command is None
+    execution = create.call_args[0][0].containers[0].execution
+    assert execution.command is None
+    assert not execution.args
 
     cache_service = _new_cache_service(
         config=CacheServiceConfig(ram_size=8, parameters=["--host", "0.0.0.0"])
     )
     create, _ = _run_start(manager, clientset, cache_service, provider)
-    command = create.call_args[0][0].containers[0].execution.command
-    assert command == ["--host", "0.0.0.0"]
+    execution = create.call_args[0][0].containers[0].execution
+    assert execution.command is None
+    assert execution.args == ["--host", "0.0.0.0"]
+
+
+def test_start_instance_without_run_command_carries_l2_adapter_as_arguments():
+    """The L2 adapter flag reaches an entrypoint-carrying image the same
+    way user parameters do — as appended arguments — so a provider whose
+    image starts itself still gets its storage tiers configured."""
+    manager, clientset = _build_manager(worker_id=1)
+    provider = _l2_provider(
+        versions={
+            "v1": CacheProviderVersionConfig(
+                image="registry.example.com/mooncake/server:v1"
+            )
+        }
+    )
+
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            ram_size=8,
+            l2_storages=[
+                CacheServiceL2Storage(backend="fs", params={"base_path": "/mnt/kv"})
+            ],
+        )
+    )
+    create, _ = _run_start(manager, clientset, cache_service, provider)
+    execution = create.call_args[0][0].containers[0].execution
+    assert execution.command is None
+    assert execution.args == [
+        "--l2-adapter",
+        '{"type":"fs","base_path":"/mnt/kv"}',
+    ]
 
 
 def test_start_instance_host_ipc_override(monkeypatch):

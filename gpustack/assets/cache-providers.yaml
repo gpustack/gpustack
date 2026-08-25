@@ -13,10 +13,11 @@
 # UI-configured values (falling back to declared defaults); a flag whose
 # placeholder renders empty is dropped together with the flag.
 # Env entries whose rendered value is empty are dropped.
-# run_command is the container argument vector (docker CMD): an image
-# that defines its own ENTRYPOINT declares just the arguments. A version
-# declaring none inherits the provider's default_run_command; an empty
-# string runs the entrypoint as-is with user parameters as its arguments.
+# run_command is the whole argument vector and takes the image's
+# ENTRYPOINT slot, so it names the executable too. A version declaring
+# none inherits the provider's default_run_command; an empty string keeps
+# the image's own entrypoint, and the L2 adapter flags and user
+# parameters become the arguments appended to it.
 #
 # A version entry inherits default_run_command / default_image /
 # default_runtime_images from its provider, so a release line with a

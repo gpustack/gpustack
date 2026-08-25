@@ -58,11 +58,11 @@ class CacheProviderVersionConfig(BaseModel):
     field owns both."""
 
     run_command: Optional[str] = None
-    """Container argument-vector template (docker CMD) with
-    {{placeholder}} substitution. An image defining its own ENTRYPOINT
-    declares just the arguments; None inherits the provider's
-    default_run_command, and an empty string runs the image entrypoint
-    as-is with user parameters (if any) as its arguments."""
+    """Argument-vector template with {{placeholder}} substitution, taking
+    the image's ENTRYPOINT slot — it names the executable, not just its
+    flags. None inherits the provider's default_run_command; an empty
+    string keeps the image's own entrypoint, and the L2 adapter flags and
+    user parameters ride as the arguments appended to it."""
 
     env: Optional[Dict[str, str]] = None
     """Env template for the managed container. Values support {{placeholder}}."""

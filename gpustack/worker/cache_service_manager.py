@@ -283,7 +283,13 @@ class CacheServiceManager:
                 cache_service, provider, port, metrics_port
             )
 
-            command = None
+            # A declared run command is the whole argument vector and takes
+            # the image's ENTRYPOINT slot; without one the image's own
+            # entrypoint stays and everything below rides as CMD arguments
+            # appended to it (container semantics: args alone append,
+            # a command replaces).
+            overrides_entrypoint = bool(version_config.run_command)
+            argv: Optional[List[str]] = None
             if version_config.run_command:
                 # Render per token so an optional placeholder resolving to
                 # None yields an empty token that is dropped together with
@@ -292,26 +298,20 @@ class CacheServiceManager:
                     render_template(token, params)
                     for token in shlex.split(version_config.run_command)
                 ]
-                command = drop_empty_flag_values(rendered_tokens)
+                argv = drop_empty_flag_values(rendered_tokens)
             user_parameters = (
                 cache_service.config.parameters if cache_service.config else None
             )
             if user_parameters:
-                # The command is the container argument vector (docker CMD):
-                # a version without a run command runs the image's own
-                # entrypoint, and the parameters become its arguments
-                # instead of being dropped.
-                command = (
-                    merge_flag_arguments(command, user_parameters)
-                    if command
+                argv = (
+                    merge_flag_arguments(argv, user_parameters)
+                    if argv
                     else list(user_parameters)
                 )
 
             # L2 storage config renders after the user-parameters merge so
             # the structured config always wins over a hand-written flag.
-            command, l2_env = self._apply_l2_storage(
-                cache_service, provider, resolved_version, command
-            )
+            argv, l2_env = self._apply_l2_storage(cache_service, provider, argv)
 
             # Provider env templates render first; entries rendering empty are
             # dropped so unset optional parameters don't produce invalid
@@ -344,7 +344,8 @@ class CacheServiceManager:
                 profile=ContainerProfileEnum.RUN,
                 execution=ContainerExecution(
                     privileged=False,
-                    command=command,
+                    command=argv if overrides_entrypoint else None,
+                    args=None if overrides_entrypoint else argv,
                 ),
                 envs=[
                     ContainerEnv(name=name, value=value) for name, value in env.items()
@@ -556,14 +557,15 @@ class CacheServiceManager:
         self,
         cache_service: CacheServicePublic,
         provider: CacheProvider,
-        resolved_version: Optional[str],
-        command: Optional[List[str]],
+        argv: Optional[List[str]],
     ) -> Tuple[Optional[List[str]], Dict[str, str]]:
         """
-        Attach the service's L2 storage config to the cache server command:
-        each entry renders as one occurrence of the provider-declared flag
-        carrying its adapter JSON, appended in declared order — the cache
+        Attach the service's L2 storage config to the cache server argument
+        vector: each entry renders as one occurrence of the provider-declared
+        flag carrying its adapter JSON, appended in declared order — the cache
         server prefers the earliest tier for reads and writes to all of them.
+        A version running the image's own entrypoint has no vector of its
+        own; the flags become its arguments.
         Secret-bearing fields go to the returned env; because env vars are
         process-global, two entries delivering a value through the same env
         var cannot coexist. Hand-written occurrences of the flag in the
@@ -574,14 +576,7 @@ class CacheServiceManager:
         """
         l2_storages = cache_service.config.l2_storages if cache_service.config else None
         if not l2_storages:
-            return command, {}
-
-        if command is None:
-            raise ValueError(
-                f"Cache provider {cache_service.provider_name} version "
-                f"{resolved_version} has no run command to carry the "
-                f"L2 adapter flag"
-            )
+            return argv, {}
 
         l2_args: List[str] = []
         l2_env: Dict[str, str] = {}
@@ -602,7 +597,7 @@ class CacheServiceManager:
             l2_args.extend(entry_args)
 
         remaining, hand_written = extract_flag_arguments(
-            command, provider.l2_adapter_flag
+            argv or [], provider.l2_adapter_flag
         )
         if hand_written:
             logger.info(
