@@ -367,8 +367,15 @@ class WorkerPoolCreate(WorkerPoolUpdate):
     instance_type: str
     os_image: str
     image_name: str
+    # ``default_factory``, not ``default={}``: a default is not validated, so
+    # an omitted ``cloud_options`` stayed a raw dict on the model and every
+    # ``model_dump`` of it -- the create routes dump the input to build the row
+    # -- warned ``PydanticSerializationUnexpectedValue``. Both routes already
+    # coerce a falsy value to ``CloudOptions()`` before it reaches the column,
+    # so what is stored does not change.
     cloud_options: Optional[CloudOptions] = Field(
-        default={}, sa_column=Column(pydantic_column_type(CloudOptions))
+        default_factory=CloudOptions,
+        sa_column=Column(pydantic_column_type(CloudOptions)),
     )
     zone: Optional[str] = None
     # instance_spec is for UI to store the instance_type's extended specifications for display.
