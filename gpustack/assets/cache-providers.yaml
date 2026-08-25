@@ -3,7 +3,8 @@
 # GET /v2/cache-providers. Providers are shipped with GPUStack releases
 # and are not user-editable resources.
 #
-# Template placeholders available in run_command / env / injection:
+# Template placeholders available in run_command / run_args / env /
+# injection:
 #   {{host}}         bind or connect address
 #   {{port}}         cache server port
 #   {{metrics_port}} Prometheus metrics port (managed mode)
@@ -13,20 +14,24 @@
 # UI-configured values (falling back to declared defaults); a flag whose
 # placeholder renders empty is dropped together with the flag.
 # Env entries whose rendered value is empty are dropped.
-# run_command is the whole argument vector and takes the image's
-# ENTRYPOINT slot, so it names the executable too. A version declaring
-# none inherits the provider's default_run_command; an empty string keeps
-# the image's own entrypoint, and the L2 adapter flags and user
-# parameters become the arguments appended to it.
+# A version launches its image one of two ways. run_command is the whole
+# argument vector and takes the image's ENTRYPOINT slot, so it names the
+# executable too — for images whose entrypoint is something else (e.g. an
+# engine server). run_args keeps the image's own entrypoint and is
+# appended to it as arguments — for images that start the cache server
+# themselves, including ones doing setup around it. The two are
+# alternatives; the L2 adapter flags and user parameters join whichever
+# vector is declared, or stand alone when neither is.
 #
-# A version entry inherits default_run_command / default_image /
-# default_runtime_images from its provider, so a release line with a
-# uniform tag layout declares each version as a bare key. {{version}} in
+# A version entry inherits default_run_command / default_run_args /
+# default_image / default_runtime_images from its provider, so a release
+# line with a uniform tag layout declares each version as a bare key.
+# The launch pair and the image layout are each inherited as a unit: a
+# version declaring one field of a pair owns that pair. {{version}} in
 # the image templates renders the version key — optional, for providers
-# whose tags embed it. image and runtime_images are inherited as one
-# layout: a version declaring either owns both. The defaults are folded
-# into every version at load, so consumers read one effective image and
-# command off the version config.
+# whose tags embed it. The defaults are folded into every version at
+# load, so consumers read one effective image and launch off the version
+# config.
 - name: LMCache
   display_name: LMCache
   source: built_in
@@ -377,7 +382,7 @@
   attach_locality: node_local
   default_version: "v0.5.2"
   custom_version: true
-  default_run_command: "lmcache server --host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --supported-transfer-mode auto --worker-reap-timeout-seconds 60 --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
+  default_run_args: "--host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --supported-transfer-mode auto --worker-reap-timeout-seconds 60 --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
   default_image: "lmcache/vllm-openai:{{version}}"
   default_runtime_images:
     cuda:
