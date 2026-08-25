@@ -87,6 +87,12 @@ def send_post_commit_events(session: AsyncSession):
             # Detach from the SQLAlchemy session so subscribers don't see
             # lazy loads or further mutations on the same row.
             bus_event.data = bus_event.data.model_copy(deep=True)
+            # ``CommitEvent`` builds the Event when the write is queued, which
+            # for a CREATED event is before the INSERT assigns the primary
+            # key -- so it snapshotted ``id=None`` while ``data.id`` is now
+            # correct. Derive after the copy, so ``id`` can never disagree
+            # with the payload subscribers are handed.
+            bus_event.refresh_id()
             asyncio.create_task(event_bus.publish(event.name, bus_event))
         except Exception as e:
             logger.exception(f"Failed to publish events: {e}")

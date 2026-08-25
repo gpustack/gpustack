@@ -1,8 +1,13 @@
 import asyncio
 import logging
+from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import patch
 
 import pytest
+from sqlmodel import SQLModel
+
+from gpustack.mixins.active_record import CommitEvent, send_post_commit_events
 
 from gpustack.server.bus import (
     Event,
@@ -296,6 +301,13 @@ async def test_unsubscribe_unwinds_putters_beyond_queue_capacity():
     assert putters is None or len(putters) == 0
 
 
+class _PersistedRow(SQLModel):
+    """A real model, for the paths that ``model_copy`` the payload."""
+
+    id: Optional[int] = None
+    name: Optional[str] = None
+
+
 class _Row:
     """Stand-in for a SQLModel row: attribute access, and an ``id``."""
 
@@ -337,6 +349,63 @@ def test_event_id_survives_the_serialization_round_trip():
 
     assert resolve_event_id(hydrated) == 42
     assert resolve_event_id(_crossed_instances(hydrated)) == 42
+
+
+def test_a_created_event_has_no_id_until_the_insert_assigns_one():
+    """Why :meth:`Event.refresh_id` exists.
+
+    ``ActiveRecordMixin.create`` queues the event and *then* calls ``save``,
+    so the Event is built while the row's primary key is still None. Deriving
+    at construction is all ``__post_init__`` can do, and for a create it
+    derives nothing.
+    """
+    pre_insert = Event(type=EventType.CREATED, data=_Row(None, "r"))
+    assert resolve_event_id(pre_insert) is None
+
+    pre_insert.data.id = 42  # the INSERT
+    pre_insert.refresh_id()
+
+    assert resolve_event_id(pre_insert) == 42
+
+
+def test_refresh_id_does_not_overwrite_an_id_that_arrived_explicitly():
+    """Over the wire the id is all that survives and ``data`` is stripped, so
+    an explicit id outranks whatever can be read back off the payload."""
+    crossed = Event(type=EventType.DELETED, data={"id": 42}, id=42)
+    crossed.data = {}
+    crossed.refresh_id()
+
+    assert resolve_event_id(crossed) == 42
+
+
+@pytest.mark.asyncio
+async def test_the_commit_hook_publishes_a_created_event_with_its_id():
+    """The gap this closes: every consumer reading ``Event.id`` rather than
+    ``data.id`` saw None on every create, so anything that returned early on a
+    missing id silently did nothing until a restart replayed the row."""
+    row = _PersistedRow(id=None, name="r")
+    commit_event = CommitEvent(name="modelroute", type=EventType.CREATED, data=row)
+    assert commit_event.event.id is None, "built before the flush"
+
+    row.id = 42  # the INSERT, during save()
+
+    published = []
+
+    class _RecordingBus:
+        async def publish(self, name, event):
+            published.append((name, event))
+
+    session = SimpleNamespace(info={"pending_events": [commit_event]})
+    with patch("gpustack.mixins.active_record.event_bus", _RecordingBus()):
+        send_post_commit_events(session)
+        await asyncio.sleep(0)
+
+    assert len(published) == 1
+    name, event = published[0]
+    assert name == "modelroute"
+    assert resolve_event_id(event) == 42
+    # Derived after the detaching copy, so the two can never disagree.
+    assert event.id == event.data.id
 
 
 def test_resolve_event_id_survives_a_dataless_event():
