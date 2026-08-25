@@ -231,7 +231,7 @@ def route_match_regexes(cfg: Config) -> List[str]:
 
 def public_route_match_rules(
     public_route_ingresses: Optional[List[List[str]]] = None,
-) -> List[WasmPluginMatchRule]:
+) -> Optional[List[WasmPluginMatchRule]]:
     """One CR match rule per PUBLIC route, keyed by ingress.
 
     This is the only thing that needs a rule at all: a route that is not PUBLIC
@@ -250,14 +250,30 @@ def public_route_match_rules(
 
     ``access_policy`` belongs here and nowhere else: in ``defaultConfig`` it
     would declare every route public.
+
+    No PUBLIC route yields ``None`` rather than ``[]``, and the difference is
+    not cosmetic. Some API servers store this field through a typed decoder
+    that omits an empty array, so a CR written with ``matchRules: []`` reads
+    back with no ``matchRules`` at all -- while ``ensure_wasm_plugin`` compares
+    with ``exclude_none=True``, which drops ``None`` but keeps ``[]``. The two
+    then never compare equal, and a deployment with no public routes rewrites
+    this CR on every reconcile tick: an xDS push, and a wasm VM rebuilt on
+    every gateway pod, every 30 seconds, forever. Rendering the empty case as
+    absent makes both sides agree whichever way the store normalizes it.
+
+    Removal still propagates: going from one rule to none leaves the live CR
+    holding a ``matchRules`` this returns nothing for, which is a difference,
+    and the replace that follows carries no such field -- so the rule is gone
+    from the CR. Only "empty here, empty there" is collapsed.
     """
-    return [
+    rules = [
         WasmPluginMatchRule(
             ingress=list(ingress_names),
             config={"access_policy": ACCESS_POLICY_PUBLIC},
         )
         for ingress_names in public_route_ingresses or []
     ]
+    return rules or None
 
 
 def ext_auth_default_config(
@@ -511,7 +527,10 @@ def ext_auth_init_spec_diff(
     local_auth["refs"] = refs
     default_config["local_auth"] = local_auth
     return expected_spec.model_copy(
-        update={"defaultConfig": default_config, "matchRules": public_rules}
+        # ``or None`` for the same reason :func:`public_route_match_rules` ends
+        # that way: an empty array here is what a store that omits one turns
+        # into a permanent difference.
+        update={"defaultConfig": default_config, "matchRules": public_rules or None}
     )
 
 
