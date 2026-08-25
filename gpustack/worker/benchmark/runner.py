@@ -14,7 +14,7 @@ from gpustack.ssl_context import resolve_ca_bundle
 from gpustack.schemas.benchmark import (
     DATASET_RANDOM,
     DATASET_SHAREGPT,
-    SLA_THRESHOLDS,
+    SLO_THRESHOLDS,
     Benchmark,
     BenchmarkDeploymentMetadata,
     BenchmarkLoadModeEnum,
@@ -360,7 +360,7 @@ class BenchmarkRunner:
         # collection and the ready-file count read the same function):
         #   1. auto_tune  -> benchmark-runner's adaptive ramp engine (geometric
         #      bracket + binary search) over the load axis. Replaces the old
-        #      guidellm `sweep` profile. Target derived: sla_* set -> SLA boundary,
+        #      guidellm `sweep` profile. Target derived: slo_* set -> SLO boundary,
         #      else throughput saturation.
         #   2. stages     -> one single-rate guidellm run per stage (Custom manual
         #      mode; each stage carries its own max_requests / max_seconds).
@@ -382,11 +382,11 @@ class BenchmarkRunner:
                 value = getattr(b, attr, None)
                 if value is not None:
                     profile_args += [flag, str(value)]
-            # SLA targets ("<=" ms). Any one set -> target is the SLA boundary; a
-            # point meets the SLA when every set threshold holds (AND). Walked from
-            # SLA_THRESHOLDS so a threshold added there is forwarded here without a
+            # SLO targets ("<=" ms). Any one set -> target is the SLO boundary; a
+            # point meets the SLO when every set threshold holds (AND). Walked from
+            # SLO_THRESHOLDS so a threshold added there is forwarded here without a
             # second list to remember (it used to be silently dropped).
-            for t in SLA_THRESHOLDS:
+            for t in SLO_THRESHOLDS:
                 value = getattr(b, t.attr, None)
                 if value is not None:
                     profile_args += [t.flag, str(value)]

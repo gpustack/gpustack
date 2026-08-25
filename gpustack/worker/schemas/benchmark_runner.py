@@ -108,7 +108,7 @@ class Percentiles(BaseModel):
     emits p001/p01/p05/p10/p25/p50/p75/p90/p95/p99/p999; p25 and p75 are the IQR
     band of the latency-distribution charts (a robust spread signal — "the band
     widens" only means divergence when it comes from real quantiles, never from
-    mean x a constant factor), and p90/p95/p99 carry the tail / SLA thresholds.
+    mean x a constant factor), and p90/p95/p99 carry the tail / SLO thresholds.
     """
 
     # All optional, and none of them defaulted to 0. Two reasons, and the second is
@@ -150,7 +150,7 @@ class DistributionSummary(BaseModel):
     min: float = Field(description="Minimum value")
     max: float = Field(description="Maximum value")
     # Sample size of this distribution. A point with few samples has p99 == max, so
-    # the report greys out its tail percentiles instead of reading them as an SLA
+    # the report greys out its tail percentiles instead of reading them as an SLO
     # conclusion. Optional for the same backward-compatibility reason as p25/p75.
     count: Optional[int] = Field(default=None, description="Number of observations")
     std_dev: Optional[float] = Field(default=None, description="Standard deviation")
@@ -223,7 +223,7 @@ class GenerativeMetrics(BaseModel):
     #     -> includes TTFT. No standard name. Recorded, not judged on, not shown.
     #   inter_token_latency_ms   = (last_token - first_token) / (tokens - 1)
     #     -> decode only. THIS is the industry TPOT, and what the report shows and
-    #        the `sla_*_tpot_ms` thresholds bound.
+    #        the `slo_*_tpot_ms` thresholds bound.
     # Both are per-REQUEST values whose distribution is token-weighted, so their
     # percentiles rank requests by their own average decode speed; neither can
     # show a single-token stall (guidellm keeps only the first/last token
@@ -273,7 +273,7 @@ class RequestTimings(BaseModel):
 
     Provides comprehensive timing data for distributed request processing, capturing
     key timestamps from initial targeting through final completion. Essential for
-    performance analysis, SLA monitoring, and debugging request processing bottlenecks
+    performance analysis, SLO monitoring, and debugging request processing bottlenecks
     across scheduler workers and backend systems.
     """
 
@@ -592,9 +592,9 @@ class GenerativeBenchmarksReport(BaseModel):
             time_per_output_token_mean=m.time_per_output_token_ms.successful.mean,
             inter_token_latency_mean=m.inter_token_latency_ms.successful.mean,
             time_to_first_token_mean=m.time_to_first_token_ms.successful.mean,
-            # p95 / p99 percentiles for the SLA-relevant latency metrics. The tpot
+            # p95 / p99 percentiles for the SLO-relevant latency metrics. The tpot
             # thresholds are evaluated on inter_token_latency_* (decode only);
-            # time_per_output_token_* is kept for reference — see SLA_THRESHOLDS.
+            # time_per_output_token_* is kept for reference — see SLO_THRESHOLDS.
             time_to_first_token_p95=(
                 m.time_to_first_token_ms.successful.percentiles.p95
             ),
