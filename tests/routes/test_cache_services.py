@@ -1950,7 +1950,7 @@ def _secretful_service(**overrides):
         **fields,
         # mirrors pydantic's recursive model_dump so the detached-copy
         # guarantee of the redaction path is actually exercised
-        model_dump=lambda: {
+        model_dump=lambda **kwargs: {
             k: (v.model_dump() if hasattr(v, "model_dump") else v)
             for k, v in fields.items()
             if k not in ("update", "delete")
