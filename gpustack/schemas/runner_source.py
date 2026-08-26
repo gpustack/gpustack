@@ -216,8 +216,13 @@ _REQUIRED_ENTRY_FIELDS: Tuple[str, ...] = (
 
 def _parse_runner_json(raw: Optional[str]) -> List[RunnerOverrideEntry]:
     """Parse and validate runner-override JSON against the packaged ``Runner``
-    schema, returning unsaved ``RunnerOverrideEntry`` rows. Unknown keys and
-    missing required fields are rejected by entry index; raises ``ValueError``.
+    schema, returning unsaved ``RunnerOverrideEntry`` rows. Missing required
+    fields are rejected by entry index; raises ``ValueError``.
+
+    A field this version does not know is dropped rather than rejected: every
+    cluster reads the same published document, so rejecting the whole thing over
+    one added key would freeze runner updates on every installation older than
+    the one that added it.
     """
     try:
         raw_entries = json.loads(raw or "")
@@ -227,15 +232,14 @@ def _parse_runner_json(raw: Optional[str]) -> List[RunnerOverrideEntry]:
         raise ValueError("content must be a JSON array of runner entries")
 
     known_fields = {field.name for field in dataclasses.fields(Runner)}
+    # Collected across the whole document: one added key lands on every entry,
+    # and a published catalog carries hundreds of them.
+    unknown_fields: Set[str] = set()
     entries: List[RunnerOverrideEntry] = []
     for index, item in enumerate(raw_entries):
         if not isinstance(item, dict):
             raise ValueError(f"entry #{index} must be a JSON object")
-        unknown = [key for key in item if key not in known_fields]
-        if unknown:
-            raise ValueError(
-                f"entry #{index} has unknown field(s): {', '.join(sorted(unknown))}"
-            )
+        unknown_fields.update(key for key in item if key not in known_fields)
         missing = [key for key in _REQUIRED_ENTRY_FIELDS if not item.get(key)]
         if missing:
             raise ValueError(
@@ -255,6 +259,12 @@ def _parse_runner_json(raw: Optional[str]) -> List[RunnerOverrideEntry]:
             deprecated=bool(item.get("deprecated", False)),
         )
         entries.append(_entry_from_runner(runner))
+    if unknown_fields:
+        logger.warning(
+            f"Ignoring runner field(s) this version does not know: "
+            f"{', '.join(sorted(unknown_fields))}. The document was published "
+            f"for a newer GPUStack."
+        )
     return entries
 
 
