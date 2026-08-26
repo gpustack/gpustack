@@ -1,9 +1,10 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Type
 
 import yaml
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import SQLModel, Field as SQLField
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -66,43 +67,77 @@ class CatalogModelEntry(CatalogModelEntryBase, BaseModelMixin, table=True):
     id: Optional[int] = SQLField(default=None, primary_key=True)
 
 
-def _load_model_set(raw: Any) -> Optional[ModelSet]:
+def _unknown_keys(raw: dict, model: Type[BaseModel]) -> Set[str]:
+    """Keys ``model`` has no field for, as strings (a YAML key can be an int).
+
+    ``.``-prefixed keys host YAML anchors the document references, not fields;
+    the packaged catalog puts them at every level, so the rule lives here.
+    """
+    return {
+        str(key)
+        for key in raw
+        if key not in model.model_fields and not str(key).startswith(".")
+    }
+
+
+def _string_keys_only(raw: Any) -> Any:
+    """Drop non-string keys, which ``**`` rejects; a non-mapping passes through."""
+    if not isinstance(raw, dict):
+        return raw
+    return {key: value for key, value in raw.items() if isinstance(key, str)}
+
+
+def _load_model_set(
+    raw: Any, strict: bool, unknown_fields: Set[str]
+) -> Optional[ModelSet]:
     """One model set, with the specs this version cannot read dropped. ``None``
     when the card itself is unreadable, or when every spec it carried was.
 
-    Dropped per spec rather than per card: a newly published quantization should
-    cost its own row, not take the deployable specs of the same model with it. A
-    card that never carried any spec is kept — that is a legitimate document.
+    Unknown field names land in ``unknown_fields``; ``strict`` raises instead.
     """
     name = raw.get("name") if isinstance(raw, dict) else None
     try:
         raw_specs = raw["specs"] if isinstance(raw, dict) and "specs" in raw else []
+        # Iterating a string would report one unreadable spec per character.
+        if not isinstance(raw_specs, list):
+            raise ValueError("specs must be a list")
+        card_unknown_fields: Set[str] = (
+            _unknown_keys(raw, ModelSet) if isinstance(raw, dict) else set()
+        )
         specs: List[ModelSpec] = []
         for raw_spec in raw_specs:
             try:
-                specs.append(ModelSpec(**raw_spec))
-            except Exception as e:
+                specs.append(ModelSpec(**_string_keys_only(raw_spec)))
+                card_unknown_fields.update(_unknown_keys(raw_spec, ModelSpec))
+            except (ValidationError, TypeError, ValueError) as e:
+                if strict:
+                    raise  # bare: the outer handler names the card once
                 logger.warning(f"Skipping an unreadable spec of model set {name}: {e}")
         if raw_specs and not specs:
             logger.warning(f"Skipping model set {name}: none of its specs is readable")
             return None
-        return ModelSet(**{**raw, "specs": specs})
-    except Exception as e:
+        model_set = ModelSet(**{**_string_keys_only(raw), "specs": specs})
+        # A dropped card already warned; naming its fields too would mislead.
+        unknown_fields.update(card_unknown_fields)
+        return model_set
+    # Narrow: a bare ``except`` would report a validator bug as a newer record.
+    except (ValidationError, TypeError, ValueError) as e:
+        if strict:
+            raise ValueError(f"model set {name} is unreadable: {e}")
         logger.warning(f"Skipping unreadable model set {name}: {e}")
         return None
 
 
-def _load_catalog(raw: Optional[str]) -> Catalog:
+def _load_catalog(raw: Optional[str], strict: bool = False) -> Catalog:
     """Parse a catalog document. Missing ``model_sets``/``draft_models`` default
     to empty; raises ``ValueError`` (→ HTTP 400) on malformed YAML or a document
     whose shape is wrong.
 
-    A record this version cannot read is dropped, not fatal to the document:
-    every cluster reads the same published catalog, so one model set using a
-    field or an enum value added after this release must not stop the rest of it
-    from serving. Structure still raises — ``model_sets: not-a-list`` is a broken
-    document rather than a newer one, and reading it as "no model sets" would
-    clear the materialized table.
+    A record this version cannot read is dropped so the rest still serves. A
+    document that kept none of the records it carried raises instead: downstream
+    that reads as "no model sets" and clears the materialized table.
+
+    ``strict`` raises on anything it would drop (see ``normalize_catalog_yaml``).
     """
     try:
         data = yaml.safe_load(raw or "")
@@ -114,46 +149,61 @@ def _load_catalog(raw: Optional[str]) -> Catalog:
         raise ValueError(
             "content must be a YAML mapping with model_sets / draft_models"
         )
-    raw_model_sets = data.get("model_sets") or []
-    raw_draft_models = data.get("draft_models") or []
+    raw_model_sets = data.get("model_sets")
+    raw_draft_models = data.get("draft_models")
+    # ``or []`` would read ``model_sets: {}`` as empty and clear the table.
+    raw_model_sets = [] if raw_model_sets is None else raw_model_sets
+    raw_draft_models = [] if raw_draft_models is None else raw_draft_models
     if not isinstance(raw_model_sets, list) or not isinstance(raw_draft_models, list):
         raise ValueError("model_sets and draft_models must be lists")
 
-    # A ``.``-prefixed key hosts a YAML anchor the document references below
-    # (the packaged catalog pins backend versions that way), not a field.
-    unknown_fields = {
-        key
-        for key in set(data) - {"model_sets", "draft_models"}
-        if not key.startswith(".")
-    }
-    if unknown_fields:
-        logger.warning(
-            f"Ignoring catalog field(s) this version does not know: "
-            f"{', '.join(sorted(unknown_fields))}. The document was published "
-            f"for a newer GPUStack."
-        )
+    unknown_fields = _unknown_keys(data, Catalog)
 
     draft_models: List[DraftModel] = []
     for raw_draft in raw_draft_models:
         try:
-            draft_models.append(DraftModel(**raw_draft))
-        except Exception as e:
+            draft_models.append(DraftModel(**_string_keys_only(raw_draft)))
+            unknown_fields.update(_unknown_keys(raw_draft, DraftModel))
+        except (ValidationError, TypeError, ValueError) as e:
             name = raw_draft.get("name") if isinstance(raw_draft, dict) else None
+            if strict:
+                raise ValueError(f"draft model {name} is unreadable: {e}")
             logger.warning(f"Skipping unreadable draft model {name}: {e}")
 
-    model_sets = [_load_model_set(item) for item in raw_model_sets]
-    return Catalog(
-        model_sets=[model_set for model_set in model_sets if model_set is not None],
-        draft_models=draft_models,
-    )
+    model_sets = [
+        _load_model_set(item, strict, unknown_fields) for item in raw_model_sets
+    ]
+    readable_model_sets = [
+        model_set for model_set in model_sets if model_set is not None
+    ]
+
+    # One added key lands on every record, so report the whole set once.
+    if unknown_fields:
+        listed = ", ".join(sorted(unknown_fields))
+        if strict:
+            raise ValueError(f"unknown catalog field(s): {listed}")
+        logger.warning(
+            f"Ignoring catalog field(s) this version does not know: {listed}. "
+            f"The document was published for a newer GPUStack."
+        )
+
+    # Nothing surviving is not an empty catalog; the caller would clear the table.
+    carried_records = len(raw_model_sets) + len(raw_draft_models)
+    readable_records = len(readable_model_sets) + len(draft_models)
+    if carried_records and not readable_records:
+        raise ValueError("none of the records this document carries is readable")
+    return Catalog(model_sets=readable_model_sets, draft_models=draft_models)
 
 
-def normalize_catalog_yaml(raw: Optional[str]) -> str:
+def normalize_catalog_yaml(raw: Optional[str], strict: bool = False) -> str:
     """Validate raw catalog YAML and return the canonical text stored in a
     source's ``content`` (the ``normalize`` for ``CATALOG_SOURCE_SPEC``). Raises
     ``ValueError`` on malformed input; otherwise re-serializes to a stable form.
+
+    ``strict`` names what would be dropped instead of dropping it — for the
+    configuration API only (see ``SourceConfigSpec.normalize``).
     """
-    catalog = _load_catalog(raw)
+    catalog = _load_catalog(raw, strict)
     for model_set in catalog.model_sets:
         model_set.icon = validate_icon(model_set.icon)
     # ``exclude_none``: a field left out of the document round-trips to None

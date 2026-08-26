@@ -18,10 +18,8 @@ backend / runner) and adds two columns to ``inference_backends``:
   origin for those merged rows, and the only ALTER here.
 
 A source's ``content`` is LONGTEXT on MySQL, where ``TEXT`` caps at 64 KiB and
-every published document is past it — the community-backend catalog by four
-times — so a refresh would die on "Data too long for column 'content'" and no
-kind would ever update. PostgreSQL and SQLite put no length limit on their text
-types and keep TEXT.
+every published document is past it. PostgreSQL and SQLite keep TEXT, which has
+no length limit there.
 
 Revision ID: a3f5c1d9e0b2
 Revises: 367a3982fcde

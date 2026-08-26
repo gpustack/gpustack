@@ -9,6 +9,7 @@ from importlib.resources import files
 import pytest
 import yaml
 from gpustack_runner.runner import Runner
+from pydantic import ValidationError
 from sqlalchemy.dialects import mysql, postgresql
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import SQLModel
@@ -91,8 +92,7 @@ def test_validate_icon_rejects_active_content_and_relative_paths(icon):
 
 def test_a_source_stores_a_document_larger_than_mysql_text():
     """``TEXT`` caps at 64 KiB on MySQL and every published document is past it,
-    so the column has to be LONGTEXT there — otherwise the refresh dies on "Data
-    too long for column 'content'" and the kind never updates. PostgreSQL and
+    so the refresh dies on "Data too long for column 'content'". PostgreSQL and
     SQLite have no limit and keep the type they had.
     """
     for source_cls in (CatalogSource, InferenceBackendSource, InferenceRunnerSource):
@@ -149,6 +149,10 @@ def test_normalize_validates_and_defaults_missing_sections():
         normalize_catalog_yaml("model_sets: [::::")
     with pytest.raises(ValueError):
         normalize_catalog_yaml("model_sets: not-a-list")
+    # Only an explicit null means "no model sets"; a mapping read as empty would
+    # clear the table just as quietly.
+    with pytest.raises(ValueError):
+        normalize_catalog_yaml("model_sets: {}")
 
     # An unreadable record costs itself, not the document. Here the card's only
     # spec fails validation (huggingface source without a repo_id), so the card
@@ -158,6 +162,8 @@ def test_normalize_validates_and_defaults_missing_sections():
             {
                 "model_sets": [
                     _model_set("Bad", [{"source": "huggingface"}]),
+                    # Broken shape: one dropped card, not a spec per character.
+                    {"name": "Shape", "specs": "not-a-list"},
                     _model_set("Good", [_spec("Qwen/Qwen3-8B")]),
                 ]
             }
@@ -214,11 +220,17 @@ def test_normalize_catalog_yaml_wires_in_icon_validation():
         normalize_catalog_yaml(yaml.safe_dump(catalog))
 
 
-def test_packaged_catalog_normalizes():
+def test_packaged_catalog_normalizes(caplog):
     """The baseline the leader seeds must satisfy the validation it ships with —
     its icons are all ``/static/catalog_icons/...`` paths."""
     raw = files("gpustack.assets").joinpath("model-catalog.yaml").read_text()
+    caplog.set_level(logging.WARNING)
     text = normalize_catalog_yaml(raw)
+    # Our own document is not from the future: the leader re-seeds it on every
+    # start, and an admin may PUT a hand-edited copy of it back as a FILE source.
+    # Its ``.``-prefixed anchor hosts sit inside cards, not only at the top level.
+    assert not caplog.text
+    normalize_catalog_yaml(raw, strict=True)
     assert normalize_catalog_yaml(text) == text  # idempotent on the real catalog
     parsed = yaml.safe_load(text)
     assert len(parsed["model_sets"]) > 100
@@ -232,6 +244,11 @@ def test_packaged_catalog_normalizes():
     # default stops being None would start losing an explicit null silently.
     assert ": null" not in text
     assert _load_catalog(text) == _load_catalog(raw)
+
+    modelscope = files("gpustack.assets").joinpath("model-catalog-modelscope.yaml")
+    caplog.clear()
+    normalize_catalog_yaml(modelscope.read_text(), strict=True)
+    assert not caplog.text
 
 
 def test_build_entries_merges_specs_and_stamps_last_writer_source():
@@ -471,11 +488,18 @@ def test_normalize_backend_yaml_wires_in_icon_validation():
         )
 
 
-def test_packaged_community_backends_normalize():
+def test_packaged_community_backends_normalize(caplog):
     """The baseline the leader seeds must satisfy the validation it ships with —
     its icons are all inline ``data:image/png`` URIs."""
     raw = files("gpustack.assets").joinpath("community-inference-backends.yaml")
+    caplog.set_level(logging.WARNING)
     configs = yaml.safe_load(normalize_backend_yaml(raw.read_text()))
+    # Our own document is not from the future: it is dumped from the read API, so
+    # it carries fields (``is_built_in``, ``framework_index_map``) the write side
+    # drops on purpose. Recognized ≠ materialized.
+    assert not caplog.text
+    normalize_backend_yaml(raw.read_text(), strict=True)
+    assert any("is_built_in" in config for config in configs)
     icons = [config["icon"] for config in configs if config.get("icon")]
     # `make install` rebuilds this file from the community-inference-backends
     # repo, so how many entries it carries is not ours to pin.
@@ -546,7 +570,10 @@ async def test_reconcile_backend_smart_merge_and_cleanup():
             [
                 _backend_source(
                     "a",
-                    _backend("foo", {"v1": "img:v1"}),
+                    # ``is_built_in`` is a field we recognize but never write: a
+                    # community card claiming it would shortcut version resolution
+                    # and read as an engine GPUStack ships.
+                    _backend("foo", {"v1": "img:v1"}, is_built_in=True),
                     _backend("bar", {"v1": "bar:v1"}),
                     _backend("baz", {"v1": "baz:v1"}),
                     _backend("qux", {"v1": "qux:v1"}),
@@ -562,6 +589,7 @@ async def test_reconcile_backend_smart_merge_and_cleanup():
         foo = await _platform("foo")
         assert foo.backend_source == BackendSourceEnum.COMMUNITY
         assert foo.enabled is False
+        assert foo.is_built_in is False
         assert foo.source_name == "a" and foo.source_type == SourceTypeEnum.FILE
 
         # The user enables foo, adds a custom version, sets default_env; enables bar.
@@ -655,6 +683,100 @@ async def test_reconcile_backend_smart_merge_and_cleanup():
             session, {"backend_name": "foo", "owner_principal_id": 1}
         )
         assert org_foo is not None and org_foo.owner_principal_id == 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_backend_card_this_version_cannot_model_costs_only_itself(caplog):
+    """A card the table model takes but cannot read back costs the whole round.
+    Refused before the session is touched, its neighbours land.
+
+    Both failure modes: pydantic's ``ValidationError``, and the ``TypeError``
+    ``**`` raises on a non-string key — catching only the first let it escape.
+    """
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            SQLModel.metadata.create_all, tables=[InferenceBackend.__table__]
+        )
+
+    async with AsyncSession(engine) as session:
+
+        async def _platform(name):
+            return await InferenceBackend.one_by_fields(
+                session, {"backend_name": name, "owner_principal_id": None}
+            )
+
+        await reconcile_backend(
+            session,
+            [
+                _backend_source(
+                    "a",
+                    _backend("aaa", {"v1": "img:v1"}),
+                    _backend("zzz", {"v1": "old:v1"}),
+                    _backend("mmm", {"v1": "old:v1"}),
+                )
+            ],
+        )
+
+        # zzz gains an unknown parameter_format, mmm a non-string version key.
+        non_string_key = _backend("mmm", {"v1": "new:v1"})
+        non_string_key["version_configs"]["v1"][7] = "x"
+        with caplog.at_level(logging.ERROR):
+            await reconcile_backend(
+                session,
+                [
+                    _backend_source(
+                        "a",
+                        _backend("aaa", {"v2": "img:v2"}),
+                        _backend(
+                            "zzz", {"v1": "new:v1"}, parameter_format="future-format"
+                        ),
+                        non_string_key,
+                    )
+                ],
+            )
+
+        # The healthy card's update landed: the round used to be lost entirely.
+        aaa = await _platform("aaa")
+        assert set(aaa.version_configs.root.keys()) == {"v2"}
+        # Kept, not deleted: both stay in the merged union.
+        zzz = await _platform("zzz")
+        assert zzz.version_configs.root["v1"].image_name == "old:v1"
+        assert zzz.parameter_format is None
+        assert zzz.backend_source == BackendSourceEnum.COMMUNITY
+        mmm = await _platform("mmm")
+        assert mmm.version_configs.root["v1"].image_name == "old:v1"
+        assert "zzz" in caplog.text and "mmm" in caplog.text
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_write_failure_is_not_mistaken_for_a_skippable_card(monkeypatch):
+    """The per-card ``except`` must not swallow a failure from the write itself:
+    that one has already rolled the round back, so continuing past it commits a
+    part-way materialization. Easy to get wrong because pydantic's
+    ``ValidationError`` is a ``ValueError``, which the write path can raise too.
+    """
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            SQLModel.metadata.create_all, tables=[InferenceBackend.__table__]
+        )
+
+    async def failing_create(*args, **kwargs):
+        VersionConfig(built_in_frameworks="not-a-list")
+
+    monkeypatch.setattr(
+        InferenceBackend, "create", classmethod(lambda cls, *a, **k: failing_create())
+    )
+    async with AsyncSession(engine) as session:
+        with pytest.raises(ValidationError):
+            await reconcile_backend(
+                session, [_backend_source("a", _backend("foo", {"v1": "img:v1"}))]
+            )
 
     await engine.dispose()
 
@@ -984,35 +1106,67 @@ def test_an_unreadable_source_is_skipped_without_taking_out_the_kind():
         compute_disappearing_backend_versions([unreadable], set())
 
 
+def test_a_non_string_yaml_key_is_an_unknown_field_not_a_crash():
+    """A YAML key need not be a string. Read as the unknown field it looks like,
+    at every level: the ``AttributeError``/``TypeError`` it used to raise escapes
+    the per-source ``except ValueError`` and takes out the whole round.
+    """
+    for document in (
+        {1: "x", "model_sets": [_model_set("Q", [_spec("x/y")])]},
+        {"model_sets": [{**_model_set("Q", [_spec("x/y")]), 1: "x"}]},
+        {"model_sets": [_model_set("Q", [{**_spec("x/y"), 1: "x"}])]},
+    ):
+        catalog = yaml.safe_dump(document)
+        assert {
+            entry.name
+            for entry in build_catalog_entries(
+                [SourceContent("newer", SourceTypeEnum.URL, catalog)]
+            )
+        } == {"Q"}
+        with pytest.raises(ValueError, match=r"unknown catalog field\(s\): 1"):
+            normalize_catalog_yaml(catalog, strict=True)
+
+    backend = yaml.safe_dump([{**_backend("foo", {"v1": "img:v1"}), 7: "x"}])
+    assert normalize_backend_yaml(backend)
+    with pytest.raises(ValueError, match=r"unknown community backend field\(s\): 7"):
+        normalize_backend_yaml(backend, strict=True)
+
+
 def test_a_document_from_a_newer_gpustack_still_loads(caplog):
-    """Every cluster reads the same published document, so a field or an enum
-    value added after this release must cost its own record — never the whole
-    document, which would freeze updates on every older installation. All three
-    kinds drop what they cannot read, name it once, and serve the rest.
+    """A field or enum value added after this release must cost its own record,
+    never the whole document — that would freeze updates on every older
+    installation. All three kinds drop it, name it once, and serve the rest.
     """
     caplog.set_level(logging.WARNING)
 
-    # catalog: an added top-level key, a spec on a source this version does not
-    # have, a whole card on an unknown size_unit, and an unreadable draft.
+    # catalog: an added top-level key, an unreadable spec, a card on an unknown
+    # size_unit, and an unreadable draft.
     document = yaml.safe_dump(
         {
             "model_categories": ["something-new"],
-            # The packaged catalog pins backend versions in ``.``-prefixed keys
-            # that host YAML anchors; those are not fields to warn about.
+            # ``.``-prefixed keys host YAML anchors, not fields to warn about.
             ".pinned_version": "0.1.0",
             "model_sets": [
                 _model_set(
                     "Qwen3",
                     [
                         dict(_spec("Qwen/Qwen3-8B"), source="future-hub"),
-                        _spec("Qwen/Qwen3-32B"),
+                        dict(
+                            _spec("Qwen/Qwen3-32B"),
+                            future_knob="x",
+                            **{".spec_anchor": "s"},
+                        ),
                     ],
+                    future_card_field="y",
+                    **{".card_anchor": "c"},
                 ),
-                _model_set("Odd", [_spec("x/y")], size_unit="Q"),
+                _model_set(
+                    "Odd", [_spec("x/y")], size_unit="Q", dropped_card_field="z"
+                ),
             ],
             "draft_models": [
                 dict(_draft("future-draft", "x/d"), source="future-hub"),
-                _draft("good-draft", "x/good"),
+                dict(_draft("good-draft", "x/good"), **{".draft_anchor": "d"}),
             ],
         }
     )
@@ -1023,16 +1177,22 @@ def test_a_document_from_a_newer_gpustack_still_loads(caplog):
         )
     }
     assert set(entries) == {("model_set", "Qwen3"), ("draft", "good-draft")}
-    # The readable spec of a partly readable card survives on its own: losing the
-    # card would take a deployable model down with an unreadable quantization.
+    # A partly readable card keeps its readable specs, not losing a deployable
+    # model to an unreadable quantization.
     assert [
         spec["huggingface_repo_id"]
         for spec in entries[("model_set", "Qwen3")].payload["specs"]
     ] == ["Qwen/Qwen3-32B"]
-    # Dropping records leaves normalize idempotent — content_hash decides whether
-    # a refresh writes at all, so a second pass must not look like a change.
+    # Still idempotent: content_hash decides whether a refresh writes at all.
     text = normalize_catalog_yaml(document)
     assert normalize_catalog_yaml(text) == text
+    # Where the leniency stops: keeping none is not an empty catalog.
+    with pytest.raises(ValueError, match="none of the records"):
+        normalize_catalog_yaml(
+            yaml.safe_dump(
+                {"model_sets": [_model_set("Odd", [{"source": "future-hub"}])]}
+            )
+        )
 
     # runner: the kind that used to reject the whole document over one added key.
     runner = _runner_source(
@@ -1046,9 +1206,108 @@ def test_a_document_from_a_newer_gpustack_still_loads(caplog):
         "newer", _backend("foo", {"v1": "img:v1"}, telemetry_endpoint="x")
     )
     assert compute_disappearing_backend_versions([backend], {("foo", "v1")}) == set()
+    # Only this kind keeps it in the stored content, so an upgrade picks it up.
+    assert "telemetry_endpoint" in backend.content
 
-    # Each kind names what it ignored, once per document rather than per record.
+    # Each kind names what it ignored once per document, the catalog at every level.
     assert "model_categories" in caplog.text
+    assert "future_card_field" in caplog.text
+    assert "future_knob" in caplog.text
     assert "runtime_flavor" in caplog.text
     assert "telemetry_endpoint" in caplog.text
-    assert "pinned_version" not in caplog.text
+    # A ``.``-prefixed key hosts a YAML anchor at whichever mapping carries it —
+    # the packaged catalog puts them at the top and inside cards.
+    assert not any(
+        anchor in caplog.text
+        for anchor in ("pinned_version", "card_anchor", "spec_anchor", "draft_anchor")
+    )
+    # A dropped card stays out of the field report; it already warned.
+    assert "dropped_card_field" not in caplog.text
+
+
+def test_the_same_document_is_refused_on_the_way_in_through_the_api():
+    """Two contracts on one document: dropped when read unattended, named when
+    PUT through the configuration API, where an admin is waiting on the answer.
+    """
+    catalog = yaml.safe_dump(
+        {
+            "model_categories": ["something-new"],
+            ".top_anchor": "t",
+            "model_sets": [
+                _model_set("Qwen3", [_spec("Qwen/Qwen3-8B")], **{".card_anchor": "c"})
+            ],
+        }
+    )
+    assert normalize_catalog_yaml(catalog)  # unattended: the field goes, the card stays
+    with pytest.raises(ValueError, match=r"field\(s\): model_categories$"):
+        normalize_catalog_yaml(catalog, strict=True)
+
+    # Every level: a field inside a card or spec is dropped from stored content too.
+    nested = yaml.safe_dump(
+        {
+            "model_sets": [
+                _model_set(
+                    "Qwen3",
+                    [dict(_spec("Qwen/Qwen3-8B"), future_knob="x")],
+                    future_card_field="y",
+                )
+            ]
+        }
+    )
+    assert normalize_catalog_yaml(nested)
+    with pytest.raises(ValueError, match="future_card_field, future_knob"):
+        normalize_catalog_yaml(nested, strict=True)
+
+    # A record, not a field: the case an admin hits with a typo.
+    typo = yaml.safe_dump(
+        {
+            "model_sets": [
+                _model_set("Typo", [dict(_spec("x/y"), source="huggingfacce")])
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="Typo"):
+        normalize_catalog_yaml(typo, strict=True)
+
+    runner = json.dumps([dict(_entry("1.0.0"), runtime_flavor="new")])
+    assert normalize_runner_json(runner)
+    with pytest.raises(ValueError, match="runtime_flavor"):
+        normalize_runner_json(runner, strict=True)
+
+    backend = yaml.safe_dump(
+        [_backend("foo", {"v1": "img:v1"}, telemetry_endpoint="x")]
+    )
+    assert normalize_backend_yaml(backend)
+    with pytest.raises(ValueError, match="telemetry_endpoint"):
+        normalize_backend_yaml(backend, strict=True)
+
+    # Inside a version config too, where ``VersionConfig``'s ignored extras hid it.
+    in_version = _backend("foo", {"v1": "img:v1"})
+    in_version["version_configs"]["v1"]["future_knob"] = "x"
+    assert normalize_backend_yaml(yaml.safe_dump([in_version]))
+    with pytest.raises(ValueError, match="future_knob"):
+        normalize_backend_yaml(yaml.safe_dump([in_version]), strict=True)
+
+    # Nothing is dropped here, but the materialization skips the card.
+    unmodelable = yaml.safe_dump(
+        [_backend("foo", {"v1": "img:v1"}, parameter_format="future-format")]
+    )
+    assert normalize_backend_yaml(unmodelable)
+    with pytest.raises(ValueError, match="foo"):
+        normalize_backend_yaml(unmodelable, strict=True)
+
+    # The check runs on the shape the materialization models: a bare-string
+    # built_in_frameworks it normalizes into a list must not come back as a 400.
+    bare_framework = yaml.safe_dump(
+        [
+            {
+                "backend_name": "foo",
+                "version_configs": {
+                    "v1": {"image_name": "img:v1", "built_in_frameworks": "cuda"}
+                },
+            }
+        ]
+    )
+    assert normalize_backend_yaml(
+        bare_framework, strict=True
+    ) == normalize_backend_yaml(bare_framework)

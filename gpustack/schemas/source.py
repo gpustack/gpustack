@@ -43,9 +43,8 @@ class SourceMixin(SQLModel):
     name: str = SQLField(index=True, unique=True)
     source_type: SourceTypeEnum = SQLField(default=SourceTypeEnum.FILE)
     # ``sa_type`` (not ``sa_column``): each inheriting table needs its own Column.
-    # LONGTEXT on MySQL, where ``TEXT`` caps at 64 KiB — every published document
-    # is past it (the community-backend one by four times), and the refresh dies
-    # on "Data too long for column 'content'". PostgreSQL and SQLite are unbounded.
+    # LONGTEXT on MySQL: ``TEXT`` caps at 64 KiB and every published document is
+    # past it. PostgreSQL and SQLite put no limit on their text types.
     content: Optional[str] = SQLField(
         default=None, sa_type=Text().with_variant(LONGTEXT(), "mysql")
     )
