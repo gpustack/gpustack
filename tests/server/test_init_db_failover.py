@@ -1,11 +1,13 @@
 import pytest
 from sqlalchemy import event
+from sqlmodel import SQLModel
 
 from gpustack import envs
 from gpustack.server import init_db as init_db_module
 from gpustack.server.init_db import (
     READ_ONLY_SQL_TRANSACTION_SQLSTATE,
     init_db_engine,
+    listen_events,
     is_read_only_transaction_error,
     flag_readonly_error_as_disconnect,
 )
@@ -30,6 +32,22 @@ class _AsyncpgError(Exception):
 
 async def _not_opengauss(_db_url):
     return False
+
+
+@pytest.fixture
+def contained_listen_events():
+    """Undo the DDL listeners ``listen_events`` leaves on the shared metadata.
+
+    ``listen_events`` registers ``after_create`` listeners on
+    ``SQLModel.metadata``, which is process-global rather than per-engine, and
+    it bakes the calling engine's dialect into the view DDL. Left in place they
+    would accumulate across tests and fire against an unrelated engine.
+    """
+    before = list(SQLModel.metadata.dispatch.after_create)
+    yield
+    for listener in list(SQLModel.metadata.dispatch.after_create):
+        if listener not in before:
+            event.remove(SQLModel.metadata, "after_create", listener)
 
 
 def test_read_only_sqlstate_is_recognised():
@@ -113,10 +131,13 @@ async def test_pool_recycle_can_be_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_postgres_engine_registers_the_handler(monkeypatch):
+async def test_listen_events_registers_the_handler_on_postgres(
+    monkeypatch, contained_listen_events
+):
     monkeypatch.setattr(init_db_module, "is_opengauss", _not_opengauss)
     engine = await init_db_engine(POSTGRES_URL)
     try:
+        listen_events(engine)
         assert event.contains(
             engine.sync_engine, "handle_error", flag_readonly_error_as_disconnect
         )
@@ -125,12 +146,13 @@ async def test_postgres_engine_registers_the_handler(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mysql_engine_does_not_register_the_handler():
+async def test_listen_events_skips_the_handler_on_mysql(contained_listen_events):
     """The handler keys on a PostgreSQL SQLSTATE, so it has no business on a
     MySQL engine.
     """
     engine = await init_db_engine(MYSQL_URL)
     try:
+        listen_events(engine)
         assert not event.contains(
             engine.sync_engine, "handle_error", flag_readonly_error_as_disconnect
         )
