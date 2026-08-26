@@ -17,6 +17,12 @@ backend / runner) and adds two columns to ``inference_backends``:
 - ``inference_backends.source_name`` / ``source_type``: the card-level source
   origin for those merged rows, and the only ALTER here.
 
+A source's ``content`` is LONGTEXT on MySQL, where ``TEXT`` caps at 64 KiB and
+every published document is past it — the community-backend catalog by four
+times — so a refresh would die on "Data too long for column 'content'" and no
+kind would ever update. PostgreSQL and SQLite put no length limit on their text
+types and keep TEXT.
+
 Revision ID: a3f5c1d9e0b2
 Revises: 367a3982fcde
 Create Date: 2026-07-24 10:00:00.000000
@@ -26,6 +32,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import mysql
 import sqlmodel
 import gpustack
 
@@ -80,7 +87,9 @@ def upgrade() -> None:
         sa.Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
         sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column('source_type', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column('content', sa.Text(), nullable=True),
+        sa.Column(
+            'content', sa.Text().with_variant(mysql.LONGTEXT(), 'mysql'), nullable=True
+        ),
         sa.Column('url', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column('content_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column('remote_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
@@ -104,7 +113,9 @@ def upgrade() -> None:
         sa.Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
         sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column('source_type', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column('content', sa.Text(), nullable=True),
+        sa.Column(
+            'content', sa.Text().with_variant(mysql.LONGTEXT(), 'mysql'), nullable=True
+        ),
         sa.Column('url', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column('content_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column('remote_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
@@ -157,7 +168,9 @@ def upgrade() -> None:
         sa.Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
         sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column('source_type', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column('content', sa.Text(), nullable=True),
+        sa.Column(
+            'content', sa.Text().with_variant(mysql.LONGTEXT(), 'mysql'), nullable=True
+        ),
         sa.Column('url', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column('content_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column('remote_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
