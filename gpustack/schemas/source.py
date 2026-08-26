@@ -11,6 +11,7 @@ import enum
 from typing import NamedTuple, Optional
 
 from sqlalchemy import Text
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlmodel import SQLModel, Field as SQLField
 
 
@@ -42,7 +43,12 @@ class SourceMixin(SQLModel):
     name: str = SQLField(index=True, unique=True)
     source_type: SourceTypeEnum = SQLField(default=SourceTypeEnum.FILE)
     # ``sa_type`` (not ``sa_column``): each inheriting table needs its own Column.
-    content: Optional[str] = SQLField(default=None, sa_type=Text)
+    # LONGTEXT on MySQL, where ``TEXT`` caps at 64 KiB — every published document
+    # is past it (the community-backend one by four times), and the refresh dies
+    # on "Data too long for column 'content'". PostgreSQL and SQLite are unbounded.
+    content: Optional[str] = SQLField(
+        default=None, sa_type=Text().with_variant(LONGTEXT(), "mysql")
+    )
     url: Optional[str] = SQLField(default=None)
     # sha256 of ``content``: decides whether to write.
     content_hash: Optional[str] = SQLField(default=None)

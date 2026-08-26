@@ -9,6 +9,7 @@ from importlib.resources import files
 import pytest
 import yaml
 from gpustack_runner.runner import Runner
+from sqlalchemy.dialects import mysql, postgresql
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -16,6 +17,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.schemas import runner_source
 from gpustack.schemas.catalog_source import (
     CatalogModelEntry,
+    CatalogSource,
     _load_catalog,
     build_catalog_entries,
     normalize_catalog_yaml,
@@ -27,6 +29,7 @@ from gpustack.schemas.inference_backend import (
     VersionConfigDict,
 )
 from gpustack.schemas.inference_backend_source import (
+    InferenceBackendSource,
     compute_disappearing_backend_versions,
     normalize_backend_yaml,
     reconcile_backend,
@@ -39,6 +42,7 @@ from gpustack.schemas.models import (
     SpeculativeConfig,
 )
 from gpustack.schemas.runner_source import (
+    InferenceRunnerSource,
     RunnerOverrideEntry,
     merged_runners,
     merged_service_runners,
@@ -83,6 +87,18 @@ def test_validate_icon_accepts_urls_paths_and_raster_data(icon):
 def test_validate_icon_rejects_active_content_and_relative_paths(icon):
     with pytest.raises(ValueError):
         validate_icon(icon)
+
+
+def test_a_source_stores_a_document_larger_than_mysql_text():
+    """``TEXT`` caps at 64 KiB on MySQL and every published document is past it,
+    so the column has to be LONGTEXT there — otherwise the refresh dies on "Data
+    too long for column 'content'" and the kind never updates. PostgreSQL and
+    SQLite have no limit and keep the type they had.
+    """
+    for source_cls in (CatalogSource, InferenceBackendSource, InferenceRunnerSource):
+        content = source_cls.__table__.c.content.type
+        assert content.compile(dialect=mysql.dialect()) == "LONGTEXT"
+        assert content.compile(dialect=postgresql.dialect()) == "TEXT"
 
 
 # --- catalog (catalog_source.py) -------------------------------------------
