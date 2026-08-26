@@ -214,15 +214,16 @@ _REQUIRED_ENTRY_FIELDS: Tuple[str, ...] = (
 )
 
 
-def _parse_runner_json(raw: Optional[str]) -> List[RunnerOverrideEntry]:
+def _parse_runner_json(
+    raw: Optional[str], strict: bool = False
+) -> List[RunnerOverrideEntry]:
     """Parse and validate runner-override JSON against the packaged ``Runner``
     schema, returning unsaved ``RunnerOverrideEntry`` rows. Missing required
     fields are rejected by entry index; raises ``ValueError``.
 
-    A field this version does not know is dropped rather than rejected: every
-    cluster reads the same published document, so rejecting the whole thing over
-    one added key would freeze runner updates on every installation older than
-    the one that added it.
+    A field this version does not know is dropped rather than rejected: one added
+    key would otherwise freeze runner updates on every older installation.
+    ``strict`` raises on it instead (see ``normalize_runner_json``).
     """
     try:
         raw_entries = json.loads(raw or "")
@@ -232,14 +233,13 @@ def _parse_runner_json(raw: Optional[str]) -> List[RunnerOverrideEntry]:
         raise ValueError("content must be a JSON array of runner entries")
 
     known_fields = {field.name for field in dataclasses.fields(Runner)}
-    # Collected across the whole document: one added key lands on every entry,
-    # and a published catalog carries hundreds of them.
+    # One added key lands on every entry, so report the whole set once.
     unknown_fields: Set[str] = set()
     entries: List[RunnerOverrideEntry] = []
     for index, item in enumerate(raw_entries):
         if not isinstance(item, dict):
             raise ValueError(f"entry #{index} must be a JSON object")
-        unknown_fields.update(key for key in item if key not in known_fields)
+        unknown_fields.update(str(key) for key in item if key not in known_fields)
         missing = [key for key in _REQUIRED_ENTRY_FIELDS if not item.get(key)]
         if missing:
             raise ValueError(
@@ -260,20 +260,25 @@ def _parse_runner_json(raw: Optional[str]) -> List[RunnerOverrideEntry]:
         )
         entries.append(_entry_from_runner(runner))
     if unknown_fields:
+        listed = ", ".join(sorted(unknown_fields))
+        if strict:
+            raise ValueError(f"unknown runner field(s): {listed}")
         logger.warning(
-            f"Ignoring runner field(s) this version does not know: "
-            f"{', '.join(sorted(unknown_fields))}. The document was published "
-            f"for a newer GPUStack."
+            f"Ignoring runner field(s) this version does not know: {listed}. "
+            f"The document was published for a newer GPUStack."
         )
     return entries
 
 
-def normalize_runner_json(raw: Optional[str]) -> str:
+def normalize_runner_json(raw: Optional[str], strict: bool = False) -> str:
     """Validate raw runner JSON and return the canonical text stored in a
     source's ``content`` (the ``normalize`` the probe applies). Raises
     ``ValueError`` on malformed input; otherwise re-serializes to a stable form.
+
+    ``strict`` names what would be dropped instead of dropping it — for the
+    configuration API only (see ``SourceConfigSpec.normalize``).
     """
-    entries = _parse_runner_json(raw)
+    entries = _parse_runner_json(raw, strict)
     return json.dumps(
         [_entry_to_dict(entry) for entry in entries], ensure_ascii=False, sort_keys=True
     )

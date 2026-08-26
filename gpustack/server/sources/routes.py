@@ -1,6 +1,15 @@
 import asyncio
 from datetime import datetime
-from typing import Awaitable, Callable, List, NamedTuple, Optional, Tuple, Type
+from typing import (
+    Awaitable,
+    Callable,
+    List,
+    NamedTuple,
+    Optional,
+    Protocol,
+    Tuple,
+    Type,
+)
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select
@@ -29,6 +38,16 @@ from .probe import (
 PreWriteCheck = Callable[[AsyncSession, List[SourceContent]], Awaitable[None]]
 
 
+class NormalizeFn(Protocol):
+    """A kind's content validator. ``strict`` follows who owns the document: FILE
+    is the admin's own text, so what this version cannot read is a 400 naming it.
+    A URL document he cannot edit stays lenient, as do unattended readers — a 400
+    there is one he has no way to fix.
+    """
+
+    def __call__(self, raw: str, strict: bool = False) -> str: ...
+
+
 class SourceConfigSpec(NamedTuple):
     """One source table's binding for the shared operations.
 
@@ -43,7 +62,7 @@ class SourceConfigSpec(NamedTuple):
     """
 
     source_cls: Type[SourceMixin]
-    normalize: Callable[[str], str]
+    normalize: NormalizeFn
     custom_name: str
     builtin_name: Optional[str] = None
     official_name: str = OFFICIAL_SOURCE_NAME
@@ -414,7 +433,9 @@ async def _park_custom_source(
     """
     if custom_in.source_type == SourceTypeEnum.FILE:
         try:
-            content = await asyncio.to_thread(spec.normalize, custom_in.content or "")
+            content = await asyncio.to_thread(
+                spec.normalize, custom_in.content or "", strict=True
+            )
         except ValueError as e:
             raise BadRequestException(message=f"Invalid source content: {e}")
         document = {
@@ -574,7 +595,11 @@ async def update_source_config(  # noqa: C901
         else:
             raw = custom_in.content or ""
         # CPU-bound, and alias expansion makes the byte cap no work cap.
-        content = await asyncio.to_thread(spec.normalize, raw)
+        content = await asyncio.to_thread(
+            spec.normalize,
+            raw,
+            strict=custom_in.source_type == SourceTypeEnum.FILE,
+        )
     except ValueError as e:
         raise BadRequestException(message=f"Invalid source content: {e}")
 
@@ -706,6 +731,8 @@ async def reload_source_config(
         remote_hash = sha256_of(raw)
         if remote_hash == custom.remote_hash:
             return await _write_result(session, spec, changed=False)
+        # Lenient: only a URL source reaches here, and its background refresh
+        # takes the same document.
         content = await asyncio.to_thread(spec.normalize, raw)
     except ValueError as e:
         raise BadRequestException(message=f"Invalid source content: {e}")

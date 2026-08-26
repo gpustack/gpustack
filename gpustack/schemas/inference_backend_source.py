@@ -2,6 +2,7 @@ import logging
 from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
+from pydantic import ValidationError
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Field as SQLField
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -9,6 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
+    InferenceBackendBase,
     VersionConfig,
     VersionConfigDict,
     is_built_in_backend,
@@ -45,11 +47,8 @@ class InferenceBackendSource(SourceMixin, BaseModelMixin, table=True):
     id: Optional[int] = SQLField(default=None, primary_key=True)
 
 
-# Every field a community-backend document carries: what ``_parse_backend_yaml``
-# recognizes and what ``_upsert_community_backend`` materializes. One list, because
-# two copies of it drift and the parse side would start warning about a field the
-# materialization happily reads.
-_BACKEND_CONFIG_KEYS = (
+# What ``_upsert_community_backend`` writes into an ``inference_backends`` row.
+_MATERIALIZED_KEYS = (
     "backend_name",
     "version_configs",
     "default_version",
@@ -64,8 +63,66 @@ _BACKEND_CONFIG_KEYS = (
     "common_parameters",
 )
 
+# What a document may carry. Wider than what is materialized: the packaged
+# document is dumped from the read API, so it brings two fields the write side
+# drops on purpose — ``is_built_in`` (a community card must not be able to claim
+# built-in status) and ``framework_index_map`` (the read route derives it per
+# request). Recognized here, or the scan below reports GPUStack's own document
+# as published for a newer GPUStack.
+_RECOGNIZED_KEYS = _MATERIALIZED_KEYS + ("is_built_in", "framework_index_map")
 
-def _parse_backend_yaml(raw: Optional[str]) -> List[dict]:
+
+def _normalized_version_configs(raw_version_configs: dict) -> VersionConfigDict:
+    """The ``version_configs`` the materialization writes: every version a source
+    carries is predefined, so its framework info moves into
+    ``built_in_frameworks`` and ``custom_framework`` is cleared.
+
+    Shared with ``_reject_unmodelable_card`` so the strict pre-check refuses
+    exactly the cards the reconcile skips. Copies rather than mutating — that
+    check runs on the dict about to be re-serialized as stored content.
+    """
+    normalized: Dict[str, VersionConfig] = {}
+    for version, ver_config in raw_version_configs.items():
+        frameworks = None
+        if "built_in_frameworks" in ver_config:
+            frameworks = ver_config["built_in_frameworks"]
+        elif ver_config.get("custom_framework"):
+            frameworks = [ver_config["custom_framework"]]
+        normalized[version] = VersionConfig(
+            **{
+                **ver_config,
+                "built_in_frameworks": (
+                    (frameworks if isinstance(frameworks, list) else [frameworks])
+                    if frameworks
+                    else []
+                ),
+                "custom_framework": None,
+            }
+        )
+    return VersionConfigDict(root=normalized)
+
+
+class UnmodelableCard(ValueError):
+    """A card this version cannot model. Its own type because pydantic's
+    ``ValidationError`` is a ``ValueError`` too, and the write path may raise one —
+    ``reconcile_backend`` must not mistake that for a card it can skip.
+    """
+
+
+def _reject_unmodelable_card(config: dict, name: str) -> None:
+    """Whether the materialization can model this card, as one error type."""
+    backend_data = {key: config[key] for key in _MATERIALIZED_KEYS if key in config}
+    try:
+        if backend_data.get("version_configs"):
+            backend_data["version_configs"] = _normalized_version_configs(
+                backend_data["version_configs"]
+            )
+        InferenceBackendBase.model_validate(backend_data)
+    except (ValidationError, TypeError) as e:
+        raise UnmodelableCard(f"backend '{name}' is unreadable: {e}")
+
+
+def _parse_backend_yaml(raw: Optional[str], strict: bool = False) -> List[dict]:
     """Parse and validate community-backend YAML, returning the backend config
     dicts. Raises ``ValueError`` on any problem (→ HTTP 400, source not stored).
 
@@ -74,8 +131,8 @@ def _parse_backend_yaml(raw: Optional[str]) -> List[dict]:
     row and re-stamp it COMMUNITY. Refused here, whole document at a time.
 
     A field this version does not know is kept in the stored content (so an
-    upgrade picks it up) and only dropped at materialization; it is warned about
-    once per document rather than rejected.
+    upgrade picks it up) and warned about once per document rather than rejected.
+    ``strict`` raises on it, and on a card the materialization would skip.
     """
     try:
         data = yaml.safe_load(raw or "")
@@ -89,7 +146,8 @@ def _parse_backend_yaml(raw: Optional[str]) -> List[dict]:
     for index, config in enumerate(data):
         if not isinstance(config, dict):
             raise ValueError(f"entry #{index} must be a mapping")
-        unknown_fields.update(key for key in config if key not in _BACKEND_CONFIG_KEYS)
+        # ``str``: a YAML key can be an int, and the report below sorts them.
+        unknown_fields.update(str(key) for key in config if key not in _RECOGNIZED_KEYS)
         name = config.get("backend_name")
         if not name:
             raise ValueError(f"entry #{index} is missing backend_name")
@@ -106,21 +164,31 @@ def _parse_backend_yaml(raw: Optional[str]) -> List[dict]:
                 raise ValueError(
                     f"backend '{name}' version '{version}' is missing image_name"
                 )
+            unknown_fields.update(
+                str(key) for key in ver_config if key not in VersionConfig.model_fields
+            )
+        if strict:
+            _reject_unmodelable_card(config, name)
     if unknown_fields:
+        listed = ", ".join(sorted(unknown_fields))
+        if strict:
+            raise ValueError(f"unknown community backend field(s): {listed}")
         logger.warning(
             f"Ignoring community backend field(s) this version does not know: "
-            f"{', '.join(sorted(unknown_fields))}. The document was published "
-            f"for a newer GPUStack."
+            f"{listed}. The document was published for a newer GPUStack."
         )
     return data
 
 
-def normalize_backend_yaml(raw: Optional[str]) -> str:
+def normalize_backend_yaml(raw: Optional[str], strict: bool = False) -> str:
     """Validate raw community-backend YAML and return the canonical text stored
     in a source's ``content`` (the ``normalize`` for ``COMMUNITY_BACKEND_SPEC``).
     Raises ``ValueError`` on malformed input; otherwise re-serializes to a stable form.
+
+    ``strict`` names what would be dropped instead of dropping it — for the
+    configuration API only (see ``SourceConfigSpec.normalize``).
     """
-    configs = _parse_backend_yaml(raw)
+    configs = _parse_backend_yaml(raw, strict)
     for config in configs:
         if config.get("icon"):
             config["icon"] = validate_icon(config["icon"])
@@ -138,36 +206,29 @@ async def _upsert_community_backend(
     (``built_in_frameworks is None``) and ``default_env`` (source unions the
     user's). The source stamp is always refreshed to the writer.
 
+    Raises ``UnmodelableCard`` before touching the session for a config this
+    version cannot model — how ``reconcile_backend`` isolates one card.
+
     Uncommitted: ``reconcile_backend`` commits the whole materialization at once.
     """
     backend_name = config.get("backend_name")
     if not backend_name:
         return
 
-    backend_data = {k: config[k] for k in _BACKEND_CONFIG_KEYS if k in config}
+    # Before any session work: a table model skips validation, so an unmodelable
+    # value would be written and only raise on the next read.
+    _reject_unmodelable_card(config, backend_name)
+
+    backend_data = {k: config[k] for k in _MATERIALIZED_KEYS if k in config}
     backend_data["backend_source"] = BackendSourceEnum.COMMUNITY
     backend_data["enabled"] = False
     backend_data["source_name"] = source_name
     backend_data["source_type"] = source_type
 
-    # All versions loaded from a source are predefined versions: normalize
-    # their framework info into built_in_frameworks and clear custom_framework.
     if backend_data.get("version_configs"):
-        version_config_dict = {}
-        for version, ver_config in backend_data["version_configs"].items():
-            frameworks = None
-            if "built_in_frameworks" in ver_config:
-                frameworks = ver_config["built_in_frameworks"]
-            elif ver_config.get("custom_framework"):
-                frameworks = [ver_config["custom_framework"]]
-            ver_config["built_in_frameworks"] = (
-                (frameworks if isinstance(frameworks, list) else [frameworks])
-                if frameworks
-                else []
-            )
-            ver_config["custom_framework"] = None
-            version_config_dict[version] = VersionConfig(**ver_config)
-        backend_data["version_configs"] = VersionConfigDict(root=version_config_dict)
+        backend_data["version_configs"] = _normalized_version_configs(
+            backend_data["version_configs"]
+        )
 
     existing = await InferenceBackend.one_by_fields(
         session, {"backend_name": backend_name, "owner_principal_id": None}
@@ -312,14 +373,10 @@ async def reconcile_backend(
             await _upsert_community_backend(
                 session, config, origin[name].name, origin[name].source_type
             )
-        except Exception as e:
-            # The parse above only reads a handful of keys, so a value this
-            # version cannot model (a newer ``parameter_format``, a reshaped
-            # version config) first shows up here — as a ``ValidationError``,
-            # which the per-source skip never sees. Uncaught it would take out
-            # every community backend in the round, so it costs its own card.
-            # The name stays in ``union_names`` below, so the cleanup leaves the
-            # stored row alone rather than deleting it.
+        except UnmodelableCard as e:
+            # Raised before the session is touched. A write failure has already
+            # rolled the round back and must not be continued past, so it keeps its
+            # own type. The card stays in ``union_names``, so its stored row survives.
             logger.error(f"Skipping unusable community backend {name}: {e}")
 
     union_names = set(merged.keys())

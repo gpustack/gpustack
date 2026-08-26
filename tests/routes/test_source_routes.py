@@ -252,6 +252,46 @@ class TestCatalogSourceConfig:
             yield session
 
     @pytest.mark.asyncio
+    async def test_a_record_this_version_cannot_read_is_named_on_the_way_in(
+        self, session, monkeypatch
+    ):
+        """Strictness follows who owns the document. FILE is the admin's own text,
+        so a model set that will not exist is named in the response. The same
+        content behind a URL he cannot edit is taken, minus that record —
+        refusing it would hand him a 400 the background refresh does not.
+        """
+        document = yaml.safe_load(_catalog("Good"))
+        document["model_sets"].append(
+            {
+                "name": "Typo",
+                "specs": [{"source": "huggingfacce", "huggingface_repo_id": "org/x"}],
+            }
+        )
+        document = yaml.safe_dump(document)
+
+        with pytest.raises(BadRequestException) as rejected:
+            await update_source_config(
+                session,
+                _CATALOG_SPEC,
+                _upsert(source_type=SourceTypeEnum.FILE, content=document),
+            )
+        assert "Typo" in rejected.value.message
+        # Refused outright: nothing stored, so the admin edits and PUTs again.
+        assert (await get_source_config(session, _CATALOG_SPEC)).custom is None
+
+        # Same document behind a URL: accepted, minus the unreadable record.
+        _REMOTE["doc"] = document
+        _install_fake_url_fetch(monkeypatch)
+        await update_source_config(
+            session,
+            _CATALOG_SPEC,
+            _upsert(source_type=SourceTypeEnum.URL, url="https://example.com/c.yaml"),
+        )
+        assert await _catalog_materialized(session) == {
+            "Good": CUSTOM_CATALOG_SOURCE_NAME
+        }
+
+    @pytest.mark.asyncio
     async def test_singleton_lifecycle(self, session):
         """One configuration point: PUT replaces the baseline outright, DELETE
         restores the factory state. There is no partial mode to choose."""
@@ -604,8 +644,13 @@ class TestCatalogSourceConfig:
         )
         assert stored.updated_at == first_updated_at
 
-        # The remote document moves: the reload applies it.
-        _REMOTE["doc"] = _catalog("Moved")
+        # The remote document moves: the reload applies it, lenient like the
+        # background refresh of this same URL.
+        moved = yaml.safe_load(_catalog("Moved"))
+        moved["model_sets"].append(
+            {"name": "Newer", "specs": [{"source": "future-hub"}]}
+        )
+        _REMOTE["doc"] = yaml.safe_dump(moved)
         result = await reload_source_config(session, _CATALOG_SPEC, None)
         assert result.changed is True
         assert set(await _catalog_materialized(session)) == {"Moved"}
