@@ -99,7 +99,7 @@ def is_read_only_transaction_error(exc: BaseException) -> bool:
     return False
 
 
-def readonly_error_is_disconnect(context):
+def flag_readonly_error_as_disconnect(context):
     """Report a read-only failure as a lost connection.
 
     SQLAlchemy does not count SQLSTATE 25006 as a disconnect, and
@@ -123,7 +123,7 @@ def readonly_error_is_disconnect(context):
 
 def register_readonly_disconnect_handler(engine: AsyncEngine):
     """Retire pooled connections whose server stopped accepting writes."""
-    event.listen(engine.sync_engine, "handle_error", readonly_error_is_disconnect)
+    event.listen(engine.sync_engine, "handle_error", flag_readonly_error_as_disconnect)
 
 
 async def init_db_engine(db_url: str):
