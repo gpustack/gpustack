@@ -738,6 +738,7 @@ def get_auto_parallelism_arguments(
             "pp-size",
             "data-parallel-size",
             "dp-size",
+            "dp",
         ],
     )
 

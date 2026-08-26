@@ -1317,9 +1317,32 @@ def test_sglang_tp_alias_drives_world_size_and_memory_calculation():
     assert calculator._tp_size == 2
 
 
+def test_sglang_dp_alias_drives_world_size_and_memory_calculation():
+    model = new_model(
+        1,
+        "test_name",
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        backend_parameters=["--dp", "2"],
+    )
+
+    assert SGLangResourceFitSelector.get_world_size_from_backend_parameters(model) == (
+        2,
+        ["dp"],
+    )
+
+    calculator = MemFractionStaticCalculator(
+        model=model,
+        model_instances=[],
+        model_params=SimpleNamespace(),
+        gpu_type="cuda",
+        selected_gpu_indexes_by_gpu_type_and_worker={},
+    )
+    assert calculator._dp_size == 2
+
+
 @pytest.mark.asyncio
 async def test_sglang_data_parallel_size(config):
-    """Test SGLang data parallel size handling"""
+    """The SGLang --dp abbreviation must drive GPUStack scheduling too."""
     workers = [
         linux_nvidia_22_H100_80gx8(),
         linux_nvidia_23_H100_80gx8(),
@@ -1333,7 +1356,7 @@ async def test_sglang_data_parallel_size(config):
         huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
         cpu_offloading=False,
         backend_parameters=[
-            "--dp-size=2",
+            "--dp=2",
             "--tp-size=4",
         ],
     )
@@ -1365,8 +1388,8 @@ async def test_sglang_data_parallel_size(config):
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
 
-        # Should handle data parallel size correctly
-        assert len(candidates) >= 0
+        assert resource_fit_selector._dp_size == 2
+        assert resource_fit_selector._gpu_count == 8
 
 
 @pytest.mark.asyncio

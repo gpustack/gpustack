@@ -107,7 +107,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
         )
         dp = find_int_parameter(
-            model.backend_parameters, ["dp-size", "data-parallel-size"]
+            model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
         )
         dp_attention = find_bool_parameter(
             model.backend_parameters, ["enable-dp-attention"]
@@ -170,7 +170,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         )
         self._dp_size = (
             find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size"]
+                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
             )
             or 1
         )
@@ -966,7 +966,7 @@ class MemFractionStaticCalculator:
         )
         self._dp_size = (
             find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size"]
+                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
             )
             or 1
         )
