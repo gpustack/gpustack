@@ -45,6 +45,26 @@ class InferenceBackendSource(SourceMixin, BaseModelMixin, table=True):
     id: Optional[int] = SQLField(default=None, primary_key=True)
 
 
+# Every field a community-backend document carries: what ``_parse_backend_yaml``
+# recognizes and what ``_upsert_community_backend`` materializes. One list, because
+# two copies of it drift and the parse side would start warning about a field the
+# materialization happily reads.
+_BACKEND_CONFIG_KEYS = (
+    "backend_name",
+    "version_configs",
+    "default_version",
+    "default_backend_param",
+    "default_run_command",
+    "default_entrypoint",
+    "health_check_path",
+    "description",
+    "icon",
+    "default_env",
+    "parameter_format",
+    "common_parameters",
+)
+
+
 def _parse_backend_yaml(raw: Optional[str]) -> List[dict]:
     """Parse and validate community-backend YAML, returning the backend config
     dicts. Raises ``ValueError`` on any problem (→ HTTP 400, source not stored).
@@ -52,6 +72,10 @@ def _parse_backend_yaml(raw: Optional[str]) -> List[dict]:
     Built-in engine names are reserved: ``_upsert_community_backend`` resolves by
     ``backend_name`` alone, so a document naming one would take over that engine's
     row and re-stamp it COMMUNITY. Refused here, whole document at a time.
+
+    A field this version does not know is kept in the stored content (so an
+    upgrade picks it up) and only dropped at materialization; it is warned about
+    once per document rather than rejected.
     """
     try:
         data = yaml.safe_load(raw or "")
@@ -61,9 +85,11 @@ def _parse_backend_yaml(raw: Optional[str]) -> List[dict]:
         return []
     if not isinstance(data, list):
         raise ValueError("content must be a YAML list of backend configs")
+    unknown_fields: Set[str] = set()
     for index, config in enumerate(data):
         if not isinstance(config, dict):
             raise ValueError(f"entry #{index} must be a mapping")
+        unknown_fields.update(key for key in config if key not in _BACKEND_CONFIG_KEYS)
         name = config.get("backend_name")
         if not name:
             raise ValueError(f"entry #{index} is missing backend_name")
@@ -80,6 +106,12 @@ def _parse_backend_yaml(raw: Optional[str]) -> List[dict]:
                 raise ValueError(
                     f"backend '{name}' version '{version}' is missing image_name"
                 )
+    if unknown_fields:
+        logger.warning(
+            f"Ignoring community backend field(s) this version does not know: "
+            f"{', '.join(sorted(unknown_fields))}. The document was published "
+            f"for a newer GPUStack."
+        )
     return data
 
 
@@ -112,21 +144,7 @@ async def _upsert_community_backend(
     if not backend_name:
         return
 
-    allowed_keys = [
-        "backend_name",
-        "version_configs",
-        "default_version",
-        "default_backend_param",
-        "default_run_command",
-        "default_entrypoint",
-        "health_check_path",
-        "description",
-        "icon",
-        "default_env",
-        "parameter_format",
-        "common_parameters",
-    ]
-    backend_data = {k: config[k] for k in allowed_keys if k in config}
+    backend_data = {k: config[k] for k in _BACKEND_CONFIG_KEYS if k in config}
     backend_data["backend_source"] = BackendSourceEnum.COMMUNITY
     backend_data["enabled"] = False
     backend_data["source_name"] = source_name
@@ -284,14 +302,25 @@ async def reconcile_backend(
 
     Upserts and cleanup land in one transaction, as in the other two reconciles: a
     part-way failure must not leave community backends half-materialized. Nothing
-    readable raises before any write instead of deleting all of them.
+    readable raises before any write instead of deleting all of them, and a single
+    card this version cannot model costs itself rather than the round.
     """
     merged, origin = _merge_backend_sources(sources)
 
     for name, config in merged.items():
-        await _upsert_community_backend(
-            session, config, origin[name].name, origin[name].source_type
-        )
+        try:
+            await _upsert_community_backend(
+                session, config, origin[name].name, origin[name].source_type
+            )
+        except Exception as e:
+            # The parse above only reads a handful of keys, so a value this
+            # version cannot model (a newer ``parameter_format``, a reshaped
+            # version config) first shows up here — as a ``ValidationError``,
+            # which the per-source skip never sees. Uncaught it would take out
+            # every community backend in the round, so it costs its own card.
+            # The name stays in ``union_names`` below, so the cleanup leaves the
+            # stored row alone rather than deleting it.
+            logger.error(f"Skipping unusable community backend {name}: {e}")
 
     union_names = set(merged.keys())
     for backend in await InferenceBackend.all(session):

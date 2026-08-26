@@ -4,7 +4,6 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-from pydantic import ValidationError
 from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import SQLModel, Field as SQLField
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -67,10 +66,43 @@ class CatalogModelEntry(CatalogModelEntryBase, BaseModelMixin, table=True):
     id: Optional[int] = SQLField(default=None, primary_key=True)
 
 
+def _load_model_set(raw: Any) -> Optional[ModelSet]:
+    """One model set, with the specs this version cannot read dropped. ``None``
+    when the card itself is unreadable, or when every spec it carried was.
+
+    Dropped per spec rather than per card: a newly published quantization should
+    cost its own row, not take the deployable specs of the same model with it. A
+    card that never carried any spec is kept — that is a legitimate document.
+    """
+    name = raw.get("name") if isinstance(raw, dict) else None
+    try:
+        raw_specs = raw["specs"] if isinstance(raw, dict) and "specs" in raw else []
+        specs: List[ModelSpec] = []
+        for raw_spec in raw_specs:
+            try:
+                specs.append(ModelSpec(**raw_spec))
+            except Exception as e:
+                logger.warning(f"Skipping an unreadable spec of model set {name}: {e}")
+        if raw_specs and not specs:
+            logger.warning(f"Skipping model set {name}: none of its specs is readable")
+            return None
+        return ModelSet(**{**raw, "specs": specs})
+    except Exception as e:
+        logger.warning(f"Skipping unreadable model set {name}: {e}")
+        return None
+
+
 def _load_catalog(raw: Optional[str]) -> Catalog:
-    """Parse and validate a catalog document via the ``Catalog`` schema. Missing
-    ``model_sets``/``draft_models`` default to empty; raises ``ValueError``
-    (→ HTTP 400) on malformed YAML or an invalid catalog.
+    """Parse a catalog document. Missing ``model_sets``/``draft_models`` default
+    to empty; raises ``ValueError`` (→ HTTP 400) on malformed YAML or a document
+    whose shape is wrong.
+
+    A record this version cannot read is dropped, not fatal to the document:
+    every cluster reads the same published catalog, so one model set using a
+    field or an enum value added after this release must not stop the rest of it
+    from serving. Structure still raises — ``model_sets: not-a-list`` is a broken
+    document rather than a newer one, and reading it as "no model sets" would
+    clear the materialized table.
     """
     try:
         data = yaml.safe_load(raw or "")
@@ -82,12 +114,38 @@ def _load_catalog(raw: Optional[str]) -> Catalog:
         raise ValueError(
             "content must be a YAML mapping with model_sets / draft_models"
         )
-    data.setdefault("model_sets", [])
-    data.setdefault("draft_models", [])
-    try:
-        return Catalog(**data)
-    except ValidationError as e:
-        raise ValueError(f"invalid catalog: {e}")
+    raw_model_sets = data.get("model_sets") or []
+    raw_draft_models = data.get("draft_models") or []
+    if not isinstance(raw_model_sets, list) or not isinstance(raw_draft_models, list):
+        raise ValueError("model_sets and draft_models must be lists")
+
+    # A ``.``-prefixed key hosts a YAML anchor the document references below
+    # (the packaged catalog pins backend versions that way), not a field.
+    unknown_fields = {
+        key
+        for key in set(data) - {"model_sets", "draft_models"}
+        if not key.startswith(".")
+    }
+    if unknown_fields:
+        logger.warning(
+            f"Ignoring catalog field(s) this version does not know: "
+            f"{', '.join(sorted(unknown_fields))}. The document was published "
+            f"for a newer GPUStack."
+        )
+
+    draft_models: List[DraftModel] = []
+    for raw_draft in raw_draft_models:
+        try:
+            draft_models.append(DraftModel(**raw_draft))
+        except Exception as e:
+            name = raw_draft.get("name") if isinstance(raw_draft, dict) else None
+            logger.warning(f"Skipping unreadable draft model {name}: {e}")
+
+    model_sets = [_load_model_set(item) for item in raw_model_sets]
+    return Catalog(
+        model_sets=[model_set for model_set in model_sets if model_set is not None],
+        draft_models=draft_models,
+    )
 
 
 def normalize_catalog_yaml(raw: Optional[str]) -> str:

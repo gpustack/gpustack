@@ -126,16 +126,28 @@ def test_normalize_validates_and_defaults_missing_sections():
     assert parsed["draft_models"] == []
     assert parsed["model_sets"][0]["name"] == "Qwen3"
 
-    # Malformed YAML and invalid specs are rejected before persistence.
+    # Malformed YAML is rejected before persistence, and so is a broken shape:
+    # reading ``model_sets: not-a-list`` as "no model sets" would clear the
+    # materialized table over a document nobody meant to empty.
     with pytest.raises(ValueError):
         normalize_catalog_yaml("model_sets: [::::")
     with pytest.raises(ValueError):
-        # huggingface source without a repo_id fails ModelSource validation.
-        normalize_catalog_yaml(
-            yaml.safe_dump(
-                {"model_sets": [_model_set("Bad", [{"source": "huggingface"}])]}
-            )
+        normalize_catalog_yaml("model_sets: not-a-list")
+
+    # An unreadable record costs itself, not the document. Here the card's only
+    # spec fails validation (huggingface source without a repo_id), so the card
+    # goes and its neighbour still normalizes.
+    text = normalize_catalog_yaml(
+        yaml.safe_dump(
+            {
+                "model_sets": [
+                    _model_set("Bad", [{"source": "huggingface"}]),
+                    _model_set("Good", [_spec("Qwen/Qwen3-8B")]),
+                ]
+            }
         )
+    )
+    assert [entry["name"] for entry in yaml.safe_load(text)["model_sets"]] == ["Good"]
 
 
 def test_normalize_catalog_yaml_is_idempotent():
@@ -954,3 +966,73 @@ def test_an_unreadable_source_is_skipped_without_taking_out_the_kind():
         proposed_runner_versions([unreadable])
     with pytest.raises(ValueError, match="no backend source could be read"):
         compute_disappearing_backend_versions([unreadable], set())
+
+
+def test_a_document_from_a_newer_gpustack_still_loads(caplog):
+    """Every cluster reads the same published document, so a field or an enum
+    value added after this release must cost its own record — never the whole
+    document, which would freeze updates on every older installation. All three
+    kinds drop what they cannot read, name it once, and serve the rest.
+    """
+    caplog.set_level(logging.WARNING)
+
+    # catalog: an added top-level key, a spec on a source this version does not
+    # have, a whole card on an unknown size_unit, and an unreadable draft.
+    document = yaml.safe_dump(
+        {
+            "model_categories": ["something-new"],
+            # The packaged catalog pins backend versions in ``.``-prefixed keys
+            # that host YAML anchors; those are not fields to warn about.
+            ".pinned_version": "0.1.0",
+            "model_sets": [
+                _model_set(
+                    "Qwen3",
+                    [
+                        dict(_spec("Qwen/Qwen3-8B"), source="future-hub"),
+                        _spec("Qwen/Qwen3-32B"),
+                    ],
+                ),
+                _model_set("Odd", [_spec("x/y")], size_unit="Q"),
+            ],
+            "draft_models": [
+                dict(_draft("future-draft", "x/d"), source="future-hub"),
+                _draft("good-draft", "x/good"),
+            ],
+        }
+    )
+    entries = {
+        (entry.kind, entry.name): entry
+        for entry in build_catalog_entries(
+            [SourceContent("newer", SourceTypeEnum.OFFICIAL, document)]
+        )
+    }
+    assert set(entries) == {("model_set", "Qwen3"), ("draft", "good-draft")}
+    # The readable spec of a partly readable card survives on its own: losing the
+    # card would take a deployable model down with an unreadable quantization.
+    assert [
+        spec["huggingface_repo_id"]
+        for spec in entries[("model_set", "Qwen3")].payload["specs"]
+    ] == ["Qwen/Qwen3-32B"]
+    # Dropping records leaves normalize idempotent — content_hash decides whether
+    # a refresh writes at all, so a second pass must not look like a change.
+    text = normalize_catalog_yaml(document)
+    assert normalize_catalog_yaml(text) == text
+
+    # runner: the kind that used to reject the whole document over one added key.
+    runner = _runner_source(
+        "newer", SourceTypeEnum.OFFICIAL, dict(_entry("1.0.0"), runtime_flavor="new")
+    )
+    assert (_SYNTHETIC_SERVICE, "1.0.0") in proposed_runner_versions([runner])
+    assert "runtime_flavor" not in normalize_runner_json(runner.content)
+
+    # community backend: an added card-level key.
+    backend = _backend_source(
+        "newer", _backend("foo", {"v1": "img:v1"}, telemetry_endpoint="x")
+    )
+    assert compute_disappearing_backend_versions([backend], {("foo", "v1")}) == set()
+
+    # Each kind names what it ignored, once per document rather than per record.
+    assert "model_categories" in caplog.text
+    assert "runtime_flavor" in caplog.text
+    assert "telemetry_endpoint" in caplog.text
+    assert "pinned_version" not in caplog.text
