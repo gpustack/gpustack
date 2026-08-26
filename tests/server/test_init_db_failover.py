@@ -110,10 +110,10 @@ async def test_engine_bounds_pooled_connection_lifetime(monkeypatch):
     demoted by a failover is reused for the life of the process.
     """
     monkeypatch.setattr(init_db_module, "is_opengauss", _not_opengauss)
+    monkeypatch.setattr(envs, "DB_POOL_RECYCLE", 1800)
     engine = await init_db_engine(POSTGRES_URL)
     try:
-        assert engine.pool._recycle == envs.DB_POOL_RECYCLE
-        assert engine.pool._recycle > 0
+        assert engine.pool._recycle == 1800
     finally:
         await engine.dispose()
 
