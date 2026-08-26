@@ -7,7 +7,7 @@ from gpustack.server.init_db import (
     READ_ONLY_SQL_TRANSACTION_SQLSTATE,
     init_db_engine,
     is_read_only_transaction_error,
-    readonly_error_is_disconnect,
+    flag_readonly_error_as_disconnect,
 )
 
 POSTGRES_URL = "postgresql://user:pw@db.example.com:5432/gpustack"
@@ -76,13 +76,13 @@ def test_handler_flags_a_read_only_failure_as_a_disconnect():
     connection straight back and every following write fails too.
     """
     context = _FakeContext(_AsyncpgError(READ_ONLY_SQL_TRANSACTION_SQLSTATE))
-    readonly_error_is_disconnect(context)
+    flag_readonly_error_as_disconnect(context)
     assert context.is_disconnect is True
 
 
 def test_handler_leaves_unrelated_failures_alone():
     context = _FakeContext(_AsyncpgError("23505"))
-    readonly_error_is_disconnect(context)
+    flag_readonly_error_as_disconnect(context)
     assert context.is_disconnect is False
 
 
@@ -118,7 +118,7 @@ async def test_postgres_engine_registers_the_handler(monkeypatch):
     engine = await init_db_engine(POSTGRES_URL)
     try:
         assert event.contains(
-            engine.sync_engine, "handle_error", readonly_error_is_disconnect
+            engine.sync_engine, "handle_error", flag_readonly_error_as_disconnect
         )
     finally:
         await engine.dispose()
@@ -132,7 +132,7 @@ async def test_mysql_engine_does_not_register_the_handler():
     engine = await init_db_engine(MYSQL_URL)
     try:
         assert not event.contains(
-            engine.sync_engine, "handle_error", readonly_error_is_disconnect
+            engine.sync_engine, "handle_error", flag_readonly_error_as_disconnect
         )
     finally:
         await engine.dispose()
