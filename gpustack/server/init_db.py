@@ -121,15 +121,9 @@ def flag_readonly_error_as_disconnect(context):
     context.is_disconnect = True
 
 
-def register_readonly_disconnect_handler(engine: AsyncEngine):
-    """Retire pooled connections whose server stopped accepting writes."""
-    event.listen(engine.sync_engine, "handle_error", flag_readonly_error_as_disconnect)
-
-
 async def init_db_engine(db_url: str):
     connect_args = {}
-    postgres = db_url.startswith("postgresql://")
-    if postgres:
+    if db_url.startswith("postgresql://"):
         # Probe once to see whether we're talking to openGauss — it presents
         # as PostgreSQL but rejects PG's millisecond-scale value for
         # ``idle_in_transaction_session_timeout``. Skip the setting on openGauss.
@@ -172,8 +166,6 @@ async def init_db_engine(db_url: str):
         pool_pre_ping=True,
         connect_args=connect_args,
     )
-    if postgres:
-        register_readonly_disconnect_handler(engine)
     return engine
 
 
@@ -238,6 +230,12 @@ def listen_events(engine: AsyncEngine):
         "after_create",
         DDL(model_user_after_create_view_stmt(dialect_name)),
     )
+
+    if dialect_name == "postgresql":
+        # Retire pooled connections whose server stopped accepting writes.
+        event.listen(
+            engine.sync_engine, "handle_error", flag_readonly_error_as_disconnect
+        )
 
     if engine.dialect.name == "sqlite":
         event.listen(engine.sync_engine, "connect", setup_sqlite_pragmas)
