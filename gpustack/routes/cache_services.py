@@ -23,6 +23,8 @@ from gpustack.api.tenant import (
 from gpustack.routes.models import assert_cluster_belongs_to_org
 from gpustack.schemas.cache_providers import CUSTOM_VERSION
 from gpustack.schemas.cache_services import (
+    CacheServiceAttachedMetrics,
+    CacheServiceMetricsPublic,
     CacheService,
     CacheServiceBase,
     CacheServiceConfig,
@@ -44,12 +46,17 @@ from gpustack.schemas.cache_services import (
 from gpustack.schemas.common import Pagination
 from gpustack.config.config import get_global_config
 from gpustack.schemas.clusters import Cluster
-from gpustack.schemas.models import Model, get_backend
+from gpustack.schemas.models import Model, ModelInstance, get_backend
 from gpustack.schemas.principals import PrincipalType, platform_principal_id
 from gpustack.schemas.workers import Worker
 from gpustack.server.cache_provider_catalog import get_cache_provider
 from gpustack.server.cache_services import probe_cache_service
 from gpustack.server.db import async_session
+from gpustack.schemas.principals import OrgRole
+from gpustack.server.cache_service_metrics import (
+    collect_cache_service_metrics,
+    parse_window as parse_metrics_window,
+)
 from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
 from gpustack.server.worker_request import request_to_worker, stream_to_worker
 from gpustack.utils.grafana import resolve_grafana_base_url
@@ -96,7 +103,13 @@ def _redacted_for_user(cache_service) -> CacheServicePublic:
     write through to the row (or to the event payload other stream
     subscribers see)."""
     data = (
-        cache_service.model_dump()
+        # The dump-then-validate pair is the deep copy (validating from
+        # attributes would pass nested objects through by reference and
+        # let the redaction write through to the row). The dump itself
+        # would warn on every call: the enum-typed columns deliberately
+        # store plain strings (no DB enum casts), so ORM rows carry str
+        # values that the validation below coerces — expected, not a bug.
+        cache_service.model_dump(warnings=False)
         if hasattr(cache_service, "model_dump")
         else cache_service
     )
@@ -520,6 +533,91 @@ async def get_cache_service_dashboard(
         dashboard_url = f"{dashboard_url}?{urlencode(query_params)}"
 
     return RedirectResponse(url=dashboard_url, status_code=302)
+
+
+@router.get("/{id}/metrics", response_model=CacheServiceMetricsPublic)
+async def get_cache_service_metrics(
+    request: Request,
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    window: str = "1h",
+    workers: Optional[str] = None,
+):
+    """Chartable semantic metric series for the service, translated from
+    the provider's catalog declaration and queried from the built-in
+    Prometheus with a server-injected service-label selector. The whole
+    router mounts Org-owner-only; the explicit assertion below keeps
+    this telemetry gated on its own, independent of the mount policy."""
+    cache_service = await CacheService.one_by_id(session, id)
+    assert_resource_visible(
+        ctx, cache_service, not_found_message="Cache service not found"
+    )
+    ctx.assert_org_role(OrgRole.OWNER)
+    try:
+        window_seconds = parse_metrics_window(window)
+    except ValueError as e:
+        raise BadRequestException(message=str(e))
+    provider = get_cache_provider(cache_service.provider_name)
+    # The database enumerates the attached deployments' instances (the
+    # rows the UI shows); metrics only fill their numbers. The model-id
+    # scope also bounds the Prometheus queries, so a caller only ever
+    # reads the engines wired to this service. The cluster's models load
+    # whole and filter in Python: extended_kv_cache is a JSON column and
+    # the platform convention keeps JSON predicates out of SQL (the set
+    # is bounded by one cluster's deployments).
+    models = await Model.all_by_fields(
+        session,
+        fields={"cluster_id": cache_service.cluster_id},
+        extra_conditions=[Model.deleted_at.is_(None)],
+    )
+    attached_models = {
+        model.id: model
+        for model in models
+        if model.extended_kv_cache
+        and model.extended_kv_cache.is_shared()
+        and model.extended_kv_cache.cache_service_id == cache_service.id
+    }
+    attached = []
+    if attached_models:
+        instances = await ModelInstance.all_by_fields(
+            session,
+            extra_conditions=[ModelInstance.model_id.in_(attached_models.keys())],
+        )
+        attached = [
+            CacheServiceAttachedMetrics(
+                model_id=instance.model_id,
+                model_name=attached_models[instance.model_id].name,
+                model_instance_name=instance.name,
+                worker_name=instance.worker_name,
+            )
+            for instance in instances
+        ]
+        # a stable row order regardless of how the batched query returns
+        attached.sort(
+            key=lambda row: (row.model_name or "", row.model_instance_name or "")
+        )
+    worker_names = (
+        [name.strip() for name in workers.split(",") if name.strip()]
+        if workers
+        else None
+    )
+    if worker_names and len(worker_names) > 100:
+        raise BadRequestException(message="workers filter accepts at most 100 names")
+    if worker_names:
+        # the worker scope applies to the whole response: charts filter
+        # inside PromQL, the row set filters here
+        selected = set(worker_names)
+        attached = [row for row in attached if row.worker_name in selected]
+    return await collect_cache_service_metrics(
+        provider.metrics if provider else None,
+        cache_service.id,
+        window_seconds,
+        cluster_id=cache_service.cluster_id,
+        attached=attached,
+        worker_names=worker_names,
+        client=getattr(request.app.state, "http_client_no_proxy", None),
+    )
 
 
 @router.get("/{id}", response_model=CacheServicePublic)
