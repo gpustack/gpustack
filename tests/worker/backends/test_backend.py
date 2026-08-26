@@ -757,12 +757,13 @@ def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
     ]
 
 
-def test_sglang_tp_alias_prevents_conflicting_auto_parallelism_arguments():
+@pytest.mark.parametrize("alias", ["tp", "dp"])
+def test_sglang_short_alias_prevents_conflicting_auto_parallelism_arguments(alias):
     model_instance = types.SimpleNamespace(gpu_indexes=[0, 1])
 
     assert (
         get_sglang_auto_parallelism_arguments(
-            ["--tp", "2"], model_instance, is_distributed=False
+            [f"--{alias}", "2"], model_instance, is_distributed=False
         )
         == []
     )
