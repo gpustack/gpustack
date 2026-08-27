@@ -1790,6 +1790,7 @@ async def accumulate_model_ai_proxy_group(
         group = mcp_handler.ModelAIProxyGroup(
             model_id=model.id,
             api_tokens=cluster_api_tokens[model.cluster_id],
+            native_anthropic_api=model.native_anthropic_api,
         )
         model_groups[model.id] = group
     service_names = {registry.get_service_name() for _, _, registry in destinations}
@@ -3417,7 +3418,11 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
         return
     should_notify = False
     if event.changed_fields is not None:
-        related_fields = ["ready_replicas", "replicas"]
+        # ``native_anthropic_api`` is read where the route's ai-proxy provider
+        # entry is built, and that only runs off a route event -- so without it
+        # here, flipping the selector would change nothing until the deployment
+        # happened to scale.
+        related_fields = ["ready_replicas", "replicas", "native_anthropic_api"]
         for field in related_fields:
             if field in event.changed_fields:
                 should_notify = True
