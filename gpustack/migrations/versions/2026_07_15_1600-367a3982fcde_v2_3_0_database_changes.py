@@ -78,6 +78,17 @@ Bundles the pre-release schema changes for v2.3.0:
    the metering read path derives the value on the fly for soft-deleted rows,
    which are never re-LISTed.
 
+7. ``models.native_anthropic_api``: whether a deployment's inference server
+   implements the Anthropic Messages API itself, so the gateway can forward an
+   inbound ``/v1/messages`` untouched instead of translating it to
+   ``/v1/chat/completions``. Declared per deployment rather than derived from
+   the backend because the answer belongs to the running image, and the image
+   is only settled per instance — one deployment can spread over workers of
+   different accelerators whose images need not agree, while a single ai-proxy
+   provider entry has to cover the whole deployment. NOT NULL with a ``false``
+   server default, which backfills existing rows to the pre-existing behavior
+   and leaves no NULL/false ambiguity for callers.
+
 Revision ID: 367a3982fcde
 Revises: c4d7e8f9a0b1
 Create Date: 2026-07-15 16:00:00.000000
@@ -335,14 +346,26 @@ def upgrade() -> None:
                 )
             )
 
-    # One batch for both columns. On SQLite, batch mode recreates and copies the
-    # whole table per block, so two blocks would rewrite `models` twice; on
-    # PostgreSQL / MySQL each block is a plain ALTER and the grouping is only
-    # tidiness. Written for the worst case, since the revision has to run on all
-    # three.
+    # One batch for all the columns. On SQLite, batch mode recreates and copies
+    # the whole table per block, so separate blocks would rewrite `models` once
+    # each; on PostgreSQL / MySQL each block is a plain ALTER and the grouping is
+    # only tidiness. Written for the worst case, since the revision has to run on
+    # all three.
+    #
+    # ``native_anthropic_api`` carries its own default rather than being
+    # nullable: false is a real answer ("translate, as before"), and a NULL that
+    # means the same thing as false only leaves callers guessing which to send.
+    # Adding a NOT NULL column with a constant default is metadata-only on
+    # PostgreSQL 11+ and MySQL 8, so the backfill costs nothing.
     models_columns = [
         sa.Column('scaling_schedule', sa.JSON(), nullable=True),
         sa.Column('gpu_type_selector', sa.JSON(), nullable=True),
+        sa.Column(
+            'native_anthropic_api',
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.false(),
+        ),
     ]
     models_columns = [c for c in models_columns if not column_exists('models', c.name)]
     if models_columns:
@@ -376,6 +399,7 @@ def downgrade() -> None:
         batch_op.drop_column('secret_key_digest')
 
     with op.batch_alter_table('models', schema=None) as batch_op:
+        batch_op.drop_column('native_anthropic_api')
         batch_op.drop_column('gpu_type_selector')
         batch_op.drop_column('scaling_schedule')
 

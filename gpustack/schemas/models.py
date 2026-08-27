@@ -13,6 +13,7 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy import JSON, Column, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import false as sa_false
 from sqlalchemy.orm import selectinload
 from sqlmodel import Field, Relationship, SQLModel, Text, select
 
@@ -463,6 +464,29 @@ class ModelSpecBase(SQLModel, ModelSource):
     backend_parameters: Optional[List[str]] = Field(sa_type=JSON, default=None)
     image_name: Optional[str] = None
     run_command: Optional[str] = Field(sa_type=Text, default=None)
+    # Whether this deployment's inference server implements the Anthropic
+    # Messages API itself, letting the gateway forward an inbound /v1/messages
+    # untouched instead of translating it to /v1/chat/completions. False, the
+    # pre-existing behavior, still serves /v1/messages -- by translating.
+    #
+    # A statement about the server, not about the gateway: what the operator
+    # knows is whether their image is a recent enough vLLM, not what ai-proxy
+    # does with that fact.
+    #
+    # Declared on the deployment rather than derived from its inference backend
+    # because the answer belongs to the running image, and the image is settled
+    # per instance (``ModelInstance.gpu_type`` picks it): one deployment can
+    # spread over workers of different accelerators whose images need not agree
+    # -- vllm-ascend against vllm-openai. A single ai-proxy provider entry
+    # covers the whole deployment, so no per-image source can answer for it.
+    #
+    # Not nullable: with NULL and False meaning the same thing there would be
+    # two spellings of "no" and nothing to tell a caller which to send.
+    native_anthropic_api: bool = Field(
+        default=False,
+        nullable=False,
+        sa_column_kwargs={"server_default": sa_false()},
+    )
 
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
     restart_on_error: Optional[bool] = True

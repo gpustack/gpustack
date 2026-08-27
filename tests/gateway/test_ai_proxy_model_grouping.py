@@ -9,8 +9,9 @@ from gpustack.gateway.client.extensions_higress_io_v1_api import (
 )
 from gpustack.gateway.utils import (
     ModelAIProxyGroup,
+    _ai_proxy_anthropic_capabilities,
     ai_proxy_diff_spec,
-    ai_proxy_openai_provider_config,
+    ai_proxy_model_provider_config,
     cleanup_ai_proxy_config,
     model_ai_proxy_plugin_spec,
     model_ai_proxy_provider_id,
@@ -66,11 +67,74 @@ def test_provider_id_is_per_deployment():
 
 
 def test_api_tokens_only_present_when_supplied():
-    with_token = ai_proxy_openai_provider_config("gpustack-model-7", ["gpustack_ak_sk"])
+    with_token = ai_proxy_model_provider_config("gpustack-model-7", ["gpustack_ak_sk"])
     assert with_token["apiTokens"] == ["gpustack_ak_sk"]
     # Absent rather than empty: an empty list would be a CR change with no
     # meaning, and ai-proxy's fallback to the inbound header is what we want.
-    assert "apiTokens" not in ai_proxy_openai_provider_config("gpustack-model-7")
+    assert "apiTokens" not in ai_proxy_model_provider_config("gpustack-model-7")
+
+
+def test_capabilities_only_present_when_anthropic_is_native():
+    plain = ai_proxy_model_provider_config("gpustack-model-7")
+    # The openai provider's own defaults already cover the OpenAI surface, so
+    # the common case must not write a capabilities map at all -- an empty one
+    # would be a CR change with no meaning.
+    assert "capabilities" not in plain
+    assert plain["type"] == "openai"
+
+    native = ai_proxy_model_provider_config(
+        "gpustack-model-7", native_anthropic_api=True
+    )
+    # Still an openai provider: capabilities merge over its defaults, so this is
+    # the OpenAI surface *plus* Anthropic rather than a swap.
+    assert native["type"] == "openai"
+    assert native["capabilities"] == {
+        "anthropic/v1/messages": "/v1/messages",
+        "anthropic/v1/messages/count_tokens": "/v1/messages/count_tokens",
+    }
+
+
+def test_capabilities_do_not_alias_the_module_level_map():
+    """Every provider entry owns its capabilities dict.
+
+    Nothing in the builder copies ``_ai_proxy_anthropic_capabilities``
+    explicitly -- pydantic validation and ``model_dump`` each construct a fresh
+    dict on the way through. That makes the isolation an implementation detail
+    of pydantic rather than something the code states, so assert it: a provider
+    entry mutated by a later reconcile step must not reach the shared map or
+    another deployment's entry.
+    """
+    before = dict(_ai_proxy_anthropic_capabilities)
+    first = ai_proxy_model_provider_config(
+        "gpustack-model-1", native_anthropic_api=True
+    )
+    second = ai_proxy_model_provider_config(
+        "gpustack-model-2", native_anthropic_api=True
+    )
+
+    assert first["capabilities"] is not _ai_proxy_anthropic_capabilities
+    assert first["capabilities"] is not second["capabilities"]
+
+    first["capabilities"]["anthropic/v1/messages"] = "/mutated"
+    assert _ai_proxy_anthropic_capabilities == before
+    assert second["capabilities"] == before
+
+
+def test_native_anthropic_api_reaches_the_provider_entry():
+    providers, _ = model_ai_proxy_plugin_spec(
+        [
+            ModelAIProxyGroup(
+                model_id=5,
+                api_tokens=["t"],
+                service_names={"model-5-1.static"},
+                native_anthropic_api=True,
+            )
+        ],
+        ROUTE_A,
+        ROUTE_A_FALLBACK,
+    )
+    (provider,) = providers
+    assert "anthropic/v1/messages" in provider["capabilities"]
 
 
 def test_plugin_spec_groups_by_deployment():
@@ -120,7 +184,7 @@ def test_two_routes_share_one_deployment_provider():
     deployment — the whole point of moving ownership from provider id to ingress.
     """
     live = _spec(
-        providers=[ai_proxy_openai_provider_config("gpustack-model-5", ["token"])],
+        providers=[ai_proxy_model_provider_config("gpustack-model-5", ["token"])],
         match_rules=[_rule("gpustack-model-5", ROUTE_B, ["model-5-1.static"])],
     )
     providers, rules = model_ai_proxy_plugin_spec(
@@ -149,7 +213,7 @@ def test_two_routes_share_one_deployment_provider():
 
 def test_route_removal_keeps_provider_while_another_route_references_it():
     live = _spec(
-        providers=[ai_proxy_openai_provider_config("gpustack-model-5", ["token"])],
+        providers=[ai_proxy_model_provider_config("gpustack-model-5", ["token"])],
         match_rules=[
             _rule("gpustack-model-5", ROUTE_A, ["model-5-1.static"]),
             _rule("gpustack-model-5", ROUTE_B, ["model-5-1.static"]),
@@ -171,7 +235,7 @@ def test_route_removal_keeps_provider_while_another_route_references_it():
 
 def test_last_route_removal_garbage_collects_the_provider():
     live = _spec(
-        providers=[ai_proxy_openai_provider_config("gpustack-model-5", ["token"])],
+        providers=[ai_proxy_model_provider_config("gpustack-model-5", ["token"])],
         match_rules=[_rule("gpustack-model-5", ROUTE_A, ["model-5-1.static"])],
     )
 
@@ -188,7 +252,7 @@ def test_last_route_removal_garbage_collects_the_provider():
 
 def test_fallback_ingress_rule_is_dropped_when_fallback_goes_away():
     live = _spec(
-        providers=[ai_proxy_openai_provider_config("gpustack-model-5", ["token"])],
+        providers=[ai_proxy_model_provider_config("gpustack-model-5", ["token"])],
         match_rules=[
             _rule("gpustack-model-5", ROUTE_A, ["model-5-1.static"]),
             _rule("gpustack-model-5", ROUTE_A_FALLBACK, ["model-5-1.static"]),
@@ -218,7 +282,7 @@ def test_fallback_ingress_rule_is_dropped_when_fallback_goes_away():
 
 def test_token_change_updates_the_existing_provider_entry():
     live = _spec(
-        providers=[ai_proxy_openai_provider_config("gpustack-model-5", ["old-token"])],
+        providers=[ai_proxy_model_provider_config("gpustack-model-5", ["old-token"])],
         match_rules=[_rule("gpustack-model-5", ROUTE_A, ["model-5-1.static"])],
     )
     providers, rules = model_ai_proxy_plugin_spec(
@@ -248,7 +312,7 @@ def test_external_provider_reconcile_leaves_deployment_entries_alone():
     """
     live = _spec(
         providers=[
-            ai_proxy_openai_provider_config("gpustack-model-5", ["token"]),
+            ai_proxy_model_provider_config("gpustack-model-5", ["token"]),
             {"id": "provider-3", "type": "openai", "apiTokens": ["stale"]},
         ],
         match_rules=[
@@ -517,7 +581,7 @@ def test_none_config_and_default_config_are_tolerated():
 
     result = ai_proxy_diff_spec(
         live,
-        expected_providers=[ai_proxy_openai_provider_config("gpustack-model-5", ["t"])],
+        expected_providers=[ai_proxy_model_provider_config("gpustack-model-5", ["t"])],
         expected_match_rules=[_rule("gpustack-model-5", ROUTE_A, ["model-5-1.static"])],
         owned_ingresses={ROUTE_A, ROUTE_A_FALLBACK},
     )
