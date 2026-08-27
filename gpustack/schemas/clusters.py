@@ -7,6 +7,7 @@ from pydantic import (
     BaseModel,
     computed_field,
     field_validator,
+    model_validator,
     ConfigDict,
     PrivateAttr,
     Field as PydanticField,
@@ -570,6 +571,25 @@ class ClusterUpdate(SQLModel):
             )
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def hoist_legacy_k8s_volume_mounts(cls, data: Any) -> Any:
+        """Accept the pre-``k8s_options`` field name used by older clients."""
+        if not isinstance(data, dict):
+            return data
+        legacy = data.pop("k8s_volume_mounts", None)
+        if not legacy:
+            return data
+        opts = data.get("k8s_options")
+        if opts is None:
+            data["k8s_options"] = {"volumeMounts": legacy}
+            return data
+        if isinstance(opts, dict) and not (
+            opts.get("volumeMounts") or opts.get("volume_mounts")
+        ):
+            data["k8s_options"] = {**opts, "volumeMounts": legacy}
+        return data
 
     @field_validator("server_url")
     def validate_server_url(cls, v: Optional[str]) -> Optional[str]:

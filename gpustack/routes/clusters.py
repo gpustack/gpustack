@@ -57,6 +57,9 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudOptions,
     K8sOptions,
+    K8sVolumeMount,
+    VolumeSource,
+    HostPathVolumeSource,
     is_gpu_service_cluster,
     is_gpu_service_k8s_options,
 )
@@ -477,6 +480,69 @@ def check_shuihua_requirements(
         )
 
 
+def _default_data_dir_mount() -> K8sVolumeMount:
+    return K8sVolumeMount(
+        name="gpustack-data-dir",
+        mount_path="/var/lib/gpustack",
+        read_only=False,
+        volume_source=VolumeSource(
+            host_path=HostPathVolumeSource(
+                path="/var/lib/gpustack", type="DirectoryOrCreate"
+            )
+        ),
+    )
+
+
+def _copy_k8s_options(opts: Any) -> K8sOptions:
+    if opts is None:
+        return K8sOptions()
+    if isinstance(opts, K8sOptions):
+        return opts.model_copy(deep=True)
+    return K8sOptions.model_validate(opts)
+
+
+def _first_mount_is_host_path(opts: Any) -> bool:
+    if opts is None:
+        return False
+    parsed = opts if isinstance(opts, K8sOptions) else _copy_k8s_options(opts)
+    mounts = parsed.volume_mounts
+    if not mounts:
+        return False
+    src = mounts[0].volume_source
+    return src is not None and src.host_path is not None
+
+
+def ensure_k8s_data_dir_mount(
+    input: Union[ClusterCreate, ClusterUpdate],
+    existing: Optional[Cluster] = None,
+):
+    """Ensure the reserved gpustack data-dir volume mount is present.
+
+    The first ``k8s_options.volume_mounts`` entry is the worker data dir.
+    Pre-v2.2 clusters and some clients omit it; inject the default instead
+    of rejecting the request. On update, if the caller omitted
+    ``k8s_options``, copy the stored object first so assigning a default
+    does not wipe namespace / gpuInstanceOptions.
+    """
+    opts = input.k8s_options
+    if opts is None:
+        stored = existing.k8s_options if existing is not None else None
+        if _first_mount_is_host_path(stored):
+            return
+        opts = _copy_k8s_options(stored)
+        input.k8s_options = opts
+    if not opts.volume_mounts:
+        opts.volume_mounts = [_default_data_dir_mount()]
+        return
+    if not _first_mount_is_host_path(opts):
+        raise InvalidException(
+            message=(
+                "The first k8s_options.volume_mount must be for gpustack "
+                "data dir with hostPath volume source."
+            )
+        )
+
+
 def create_update_check(
     provider: ClusterProvider,
     input: Union[ClusterCreate, ClusterUpdate],
@@ -511,22 +577,7 @@ def create_update_check(
         apply_shuihua_defaults(input, existing)
         check_shuihua_requirements(input, existing)
     if provider == ClusterProvider.Kubernetes:
-        # check for volume mounts (now nested under k8s_options)
-        volume_mounts = (
-            input.k8s_options.volume_mounts if input.k8s_options is not None else None
-        )
-        if volume_mounts is None or len(volume_mounts) < 1:
-            # at least one volume mount is required, and the default one is for gpustack data dir.
-            raise InvalidException(
-                message="At least one k8s_options.volume_mount is required, and the default one is for gpustack data dir."
-            )
-        if (
-            volume_mounts[0].volume_source is None
-            or volume_mounts[0].volume_source.host_path is None
-        ):
-            raise InvalidException(
-                message="The first k8s_options.volume_mount must be for gpustack data dir with hostPath volume source."
-            )
+        ensure_k8s_data_dir_mount(input, existing)
 
 
 def hoist_system_default_container_registry(
@@ -604,7 +655,8 @@ def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
     Assuming the first item of k8s_options.volume_mounts is for gpustack data dir,
     enforce that it is always present and has the correct settings.
     """
-    # the first volume must exist as it's validated in create_update_check, and it must be for gpustack data dir, so we enforce it here.
+    if input.k8s_options is None or not input.k8s_options.volume_mounts:
+        return
     data_dir_mount = input.k8s_options.volume_mounts[0]
     data_dir_mount.name = "gpustack-data-dir"
     data_dir_mount.mount_path = "/var/lib/gpustack"
