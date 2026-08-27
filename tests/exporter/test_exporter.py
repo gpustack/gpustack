@@ -330,6 +330,7 @@ def _cache_service(**overrides):
         id=3,
         name="shared-lmcache",
         provider_name="LMCache",
+        provider_version=None,
         mode=CacheServiceModeEnum.MANAGED,
         state=CacheServiceStateEnum.RUNNING,
         cluster_id=1,

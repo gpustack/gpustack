@@ -253,16 +253,76 @@ def test_lmcache_provider_declaration():
     assert compat is not None
 
 
+def test_metrics_for_resolves_version_override():
+    """A version carrying its own metrics block owns it whole; versions
+    without one and the custom version read the provider default — and
+    a service stored without an explicit version (None) resolves through
+    the default version like every other version lookup, so an override
+    on the default version reaches the services actually running it."""
+    from gpustack.schemas.cache_providers import (
+        CacheProvider,
+        CacheProviderMetrics,
+        CacheProviderMetricValue,
+        CacheProviderVersionConfig,
+    )
+
+    default = CacheProviderMetrics(
+        mappings={"hit_rate": CacheProviderMetricValue(gauge="old_name")}
+    )
+    renamed = CacheProviderMetrics(
+        mappings={"hit_rate": CacheProviderMetricValue(gauge="new_name")}
+    )
+    provider = CacheProvider(
+        name="X",
+        default_version="v2",
+        versions={
+            "v1": CacheProviderVersionConfig(image="img:v1"),
+            "v2": CacheProviderVersionConfig(image="img:v2", metrics=renamed),
+        },
+        default_metrics=default,
+    )
+
+    assert provider.metrics_for("v1").mappings["hit_rate"].gauge == "old_name"
+    assert provider.metrics_for("v2").mappings["hit_rate"].gauge == "new_name"
+    assert provider.metrics_for("custom").mappings["hit_rate"].gauge == "old_name"
+    assert provider.metrics_for("v9-unknown").mappings["hit_rate"].gauge == "old_name"
+    assert provider.metrics_for(None).mappings["hit_rate"].gauge == "new_name"
+
+
 def test_lmcache_metrics_declaration():
     provider = get_cache_provider("LMCache")
     assert provider is not None
 
-    # The declaration only locates the exposition (scrape targets ride
-    # on it); semantic metric mappings return with the native-UI
-    # metrics integration.
-    metrics = provider.metrics
+    metrics = provider.default_metrics
     assert metrics is not None
     assert metrics.path == "/metrics"
+
+    hit_rate = metrics.mappings["hit_rate"]
+    assert hit_rate.ratio == {
+        "numerator": "lmcache_mp_lookup_hit_tokens_total",
+        "denominator": "lmcache_mp_lookup_requested_tokens_total",
+    }
+    assert (
+        metrics.mappings["l1_usage_bytes"].gauge == "lmcache_mp_l1_memory_usage_bytes"
+    )
+    assert metrics.mappings["l1_usage_ratio"].gauge == "lmcache_mp_l1_usage_ratio"
+    assert metrics.mappings["l2_usage_bytes"].gauge == "lmcache_mp_l2_usage_bytes"
+
+    assert set(metrics.throughput) == {
+        "l0_l1_store",
+        "l0_l1_load",
+        "l2_store",
+        "l2_load",
+    }
+    for rule in metrics.throughput.values():
+        assert rule.histogram_avg
+        assert rule.gauge is None and rule.ratio is None
+    # The OTel Prometheus exporter appends the histograms' "GB/s" unit to
+    # the exported name; the declaration must carry the exported form.
+    assert (
+        metrics.throughput["l0_l1_store"].histogram_avg
+        == "lmcache_mp_l0_l1_store_throughput_GB_per_second"
+    )
 
 
 def test_lmcache_l2_declaration():
@@ -280,6 +340,10 @@ def test_lmcache_l2_declaration():
         "use_odirect",
     }
     assert fs_fields["base_path"].required is True
+    # seeded into the form so a plain "add Local Filesystem" works
+    # without inventing a path; lands in the platform data dir, which
+    # the mirrored deployment mounts from the host
+    assert fs_fields["base_path"].default == "/var/lib/gpustack/cache/lmcache/l2"
     assert fs_fields["max_capacity_gb"].type == "number"
     assert fs_fields["num_workers"].type == "number"
     assert fs_fields["use_odirect"].type == "boolean"
@@ -342,12 +406,19 @@ def test_mooncake_provider_declaration():
     assert provider.versions == {}
     assert provider.health_check.scheme == "tcp"
 
-    # Master-side exposition on the master's conventional metrics port;
-    # default_port seeds the registration form's metrics-port field.
-    metrics = provider.metrics
+    # Master-side metrics: the pool's allocated/capacity view on the
+    # master's Prometheus endpoint (conventionally port 9003). Lookup-hit
+    # accounting lives in the engine-side connector, so no hit_rate.
+    metrics = provider.default_metrics
     assert metrics is not None
     assert metrics.path == "/metrics"
     assert metrics.default_port == 9003
+    assert "hit_rate" not in metrics.mappings
+    assert metrics.mappings["l1_usage_bytes"].gauge == "master_allocated_bytes"
+    assert metrics.mappings["l1_usage_ratio"].gauge_ratio == {
+        "numerator": "master_allocated_bytes",
+        "denominator": "master_total_capacity_bytes",
+    }
     assert provider.dashboard_uid == "gpustack-mooncake"
 
     fields = {field.name: field for field in provider.external_fields}

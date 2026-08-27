@@ -74,6 +74,13 @@ class CacheProviderVersionConfig(BaseModel):
     env: Optional[Dict[str, str]] = None
     """Env template for the managed container. Values support {{placeholder}}."""
 
+    metrics: Optional["CacheProviderMetrics"] = None
+    """Overrides the provider-level metrics declaration for this version,
+    whole — declared when the version's exposition renames metrics (an
+    exporter change typically renames a family at once, so per-key
+    inheritance would hide half the picture). Undeclared versions read
+    the provider default."""
+
     def supports_runtime(self, backend: Optional[str]) -> bool:
         """Whether the version can run on the node's accelerator.
         runtime_images doubles as the support matrix: a node with a
@@ -181,8 +188,62 @@ class CacheProviderResourceProfile(BaseModel):
     cpu: Optional[float] = None
 
 
+class CacheProviderMetricValue(BaseModel):
+    """How to extract one semantic metric value from the provider's
+    Prometheus exposition. At most one of the forms is set (validated —
+    the query builder would otherwise silently pick one of several).
+    Consumed by the cache-service metrics endpoint, which translates the
+    form into a PromQL query over the service's scrape series."""
+
+    gauge: Optional[str] = None
+    """Gauge metric name; charted as-is."""
+
+    rate: Optional[str] = None
+    """Counter metric name; charted as its per-second rate over the
+    chart's rate window (e.g. lookup traffic in tokens per second)."""
+
+    ratio: Optional[Dict[str, str]] = None
+    """{"numerator": counter, "denominator": counter}: the ratio of the
+    two counters' increases over the chart's rate window."""
+
+    gauge_ratio: Optional[Dict[str, str]] = None
+    """{"numerator": gauge, "denominator": gauge}: the instantaneous ratio
+    of two gauges (e.g. allocated / capacity)."""
+
+    histogram_avg: Optional[str] = None
+    """Histogram base name: increase(_sum) / increase(_count) over the
+    rate window, i.e. the average observed value."""
+
+    aggregate: Optional[str] = None
+    """How gauge values combine into the service-level series: "sum"
+    (default — capacities, byte counts) or "avg" (ratios). Only valid
+    with the gauge form: the other forms aggregate naturally (operands
+    sum before dividing, weighting instances by their actual traffic)."""
+
+    @model_validator(mode="after")
+    def _validate_forms(self):
+        forms = [
+            name
+            for name in ("gauge", "rate", "ratio", "gauge_ratio", "histogram_avg")
+            if getattr(self, name)
+        ]
+        if len(forms) > 1:
+            raise ValueError(
+                f"metric rule sets multiple extraction forms: {', '.join(forms)}"
+            )
+        if self.aggregate is not None:
+            if self.aggregate not in ("sum", "avg"):
+                raise ValueError(
+                    f"aggregate must be 'sum' or 'avg', got '{self.aggregate}'"
+                )
+            if not self.gauge:
+                raise ValueError("aggregate applies only to the gauge form")
+        return self
+
+
 class CacheProviderMetrics(BaseModel):
-    """Where a cache service's Prometheus exposition is scraped."""
+    """Where a cache service's Prometheus exposition is scraped, and how
+    its semantic metrics are extracted from it."""
 
     path: str = "/metrics"
     """HTTP path of the Prometheus exposition on the metrics port."""
@@ -190,6 +251,21 @@ class CacheProviderMetrics(BaseModel):
     default_port: Optional[int] = None
     """The engine's conventional metrics port (external mode: seeds the
     registration form's metrics-port field)."""
+
+    mappings: Dict[str, CacheProviderMetricValue] = {}
+    """Semantic key -> extraction rule. Keys use the platform's tier
+    vocabulary — L1 is the memory (near) tier, L2 the capacity tier
+    (disk/remote) — regardless of the provider's own naming: hit_rate,
+    l1_usage_bytes, l1_usage_ratio, l2_usage_bytes. A provider with
+    several L2 backends keeps them apart by series label, not by key."""
+
+    throughput: Dict[str, CacheProviderMetricValue] = {}
+    """Named throughput series (unit: GB/s) -> extraction rule."""
+
+
+# CacheProviderVersionConfig.metrics forward-references this module's
+# tail; resolve it now that the metrics classes exist.
+CacheProviderVersionConfig.model_rebuild()
 
 
 class CacheProviderL2Field(BaseModel):
@@ -364,7 +440,12 @@ class CacheProvider(BaseModel):
 
     resource_profile: Optional[CacheProviderResourceProfile] = None
     health_check: CacheProviderHealthCheck = CacheProviderHealthCheck()
-    metrics: Optional[CacheProviderMetrics] = None
+    default_metrics: Optional[CacheProviderMetrics] = None
+    """The all-version default declaration, named like the other
+    provider-level defaults (default_image, default_run_command). Do not
+    read it directly for a service — a version may carry its own metrics
+    block; metrics_for() resolves the effective one."""
+
     inference_backend_integrations: List[CacheProviderIntegration] = []
 
     common_parameters: List[str] = []
@@ -379,6 +460,21 @@ class CacheProvider(BaseModel):
     l2_backends: Dict[str, CacheProviderL2Backend] = {}
     """Adapter type identifier (the "type" value in the adapter JSON)
     -> backend declaration."""
+
+    def metrics_for(self, version: Optional[str]) -> Optional[CacheProviderMetrics]:
+        """The effective metrics declaration for a service pinned to
+        ``version``. Resolution rides get_version_config, so None falls
+        back to the default version like everywhere else (a managed
+        service created without an explicit version stores None). A
+        resolved version owns its block whole; versions without one —
+        and the custom version, whose image ships unknown metrics — fall
+        back to the provider default (best effort, and a mismatch
+        surfaces as a reasoned all-queries-failed degradation rather
+        than silently empty charts)."""
+        config, _ = self.get_version_config(version)
+        if config is not None and config.metrics is not None:
+            return config.metrics
+        return self.default_metrics
 
     @model_validator(mode="after")
     def resolve_version_defaults(self) -> "CacheProvider":

@@ -491,7 +491,7 @@ async def _cache_service_targets(
             groups.extend(
                 _extra_metrics_target_groups(service, provider, cluster_names)
             )
-        metrics = provider.metrics if provider else None
+        metrics = provider.metrics_for(service.provider_version) if provider else None
         if metrics is None:
             continue
         provider_path = _normalize_metrics_path(metrics.path)
