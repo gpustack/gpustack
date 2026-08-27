@@ -610,7 +610,7 @@ async def get_cache_service_metrics(
         selected = set(worker_names)
         attached = [row for row in attached if row.worker_name in selected]
     return await collect_cache_service_metrics(
-        provider.metrics if provider else None,
+        provider.metrics_for(cache_service.provider_version) if provider else None,
         cache_service.id,
         window_seconds,
         cluster_id=cache_service.cluster_id,

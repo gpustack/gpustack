@@ -253,11 +253,47 @@ def test_lmcache_provider_declaration():
     assert compat is not None
 
 
+def test_metrics_for_resolves_version_override():
+    """A version carrying its own metrics block owns it whole; versions
+    without one and the custom version read the provider default — and
+    a service stored without an explicit version (None) resolves through
+    the default version like every other version lookup, so an override
+    on the default version reaches the services actually running it."""
+    from gpustack.schemas.cache_providers import (
+        CacheProvider,
+        CacheProviderMetrics,
+        CacheProviderMetricValue,
+        CacheProviderVersionConfig,
+    )
+
+    default = CacheProviderMetrics(
+        mappings={"hit_rate": CacheProviderMetricValue(gauge="old_name")}
+    )
+    renamed = CacheProviderMetrics(
+        mappings={"hit_rate": CacheProviderMetricValue(gauge="new_name")}
+    )
+    provider = CacheProvider(
+        name="X",
+        default_version="v2",
+        versions={
+            "v1": CacheProviderVersionConfig(image="img:v1"),
+            "v2": CacheProviderVersionConfig(image="img:v2", metrics=renamed),
+        },
+        default_metrics=default,
+    )
+
+    assert provider.metrics_for("v1").mappings["hit_rate"].gauge == "old_name"
+    assert provider.metrics_for("v2").mappings["hit_rate"].gauge == "new_name"
+    assert provider.metrics_for("custom").mappings["hit_rate"].gauge == "old_name"
+    assert provider.metrics_for("v9-unknown").mappings["hit_rate"].gauge == "old_name"
+    assert provider.metrics_for(None).mappings["hit_rate"].gauge == "new_name"
+
+
 def test_lmcache_metrics_declaration():
     provider = get_cache_provider("LMCache")
     assert provider is not None
 
-    metrics = provider.metrics
+    metrics = provider.default_metrics
     assert metrics is not None
     assert metrics.path == "/metrics"
 
@@ -373,7 +409,7 @@ def test_mooncake_provider_declaration():
     # Master-side metrics: the pool's allocated/capacity view on the
     # master's Prometheus endpoint (conventionally port 9003). Lookup-hit
     # accounting lives in the engine-side connector, so no hit_rate.
-    metrics = provider.metrics
+    metrics = provider.default_metrics
     assert metrics is not None
     assert metrics.path == "/metrics"
     assert metrics.default_port == 9003

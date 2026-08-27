@@ -210,12 +210,11 @@
   # Metric names follow the LMCache MP observability docs
   # (https://docs.lmcache.ai/mp/observability.html). The mappings feed
   # the cache-service metrics endpoint backing the UI charts.
-  # Known limitation: metrics declare at provider level, shared by all
-  # versions — if upstream renames a metric across versions (the
-  # _GB_per_second suffix is an OTel exporter artifact and a likely
-  # candidate), the declaration needs a version-scoped override
-  # mechanism first.
-  metrics:
+  # This block is the all-version default; a version that renames
+  # metrics (the _GB_per_second suffix is an OTel exporter artifact and
+  # a likely candidate) declares its own metrics block, which overrides
+  # this one whole for services pinned to it.
+  default_metrics:
     path: /metrics
     mappings:
       hit_rate:
@@ -362,7 +361,7 @@
   # mooncake-store's master_metric_manager. Lookup-hit accounting lives
   # in the engine-side connector, not the master, so there is no
   # hit_rate mapping; usage is the pool's allocated-vs-capacity view.
-  metrics:
+  default_metrics:
     path: /metrics
     default_port: 9003
     mappings:
@@ -570,7 +569,7 @@
     scheme: http
     path: /healthcheck
     target: metrics
-  metrics:
+  default_metrics:
     path: /metrics
     mappings:
       hit_rate:
