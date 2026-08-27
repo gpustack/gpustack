@@ -57,6 +57,7 @@ def _service(**overrides):
         id=5,
         name="lmcache-svc",
         provider_name="LMCache",
+        provider_version="v0.5.4",
         cluster_id=1,
         owner_principal_id=ORG_PRINCIPAL,
         deleted_at=None,

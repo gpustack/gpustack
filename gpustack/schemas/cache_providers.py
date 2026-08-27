@@ -74,6 +74,13 @@ class CacheProviderVersionConfig(BaseModel):
     env: Optional[Dict[str, str]] = None
     """Env template for the managed container. Values support {{placeholder}}."""
 
+    metrics: Optional["CacheProviderMetrics"] = None
+    """Overrides the provider-level metrics declaration for this version,
+    whole — declared when the version's exposition renames metrics (an
+    exporter change typically renames a family at once, so per-key
+    inheritance would hide half the picture). Undeclared versions read
+    the provider default."""
+
     def supports_runtime(self, backend: Optional[str]) -> bool:
         """Whether the version can run on the node's accelerator.
         runtime_images doubles as the support matrix: a node with a
@@ -256,6 +263,11 @@ class CacheProviderMetrics(BaseModel):
     """Named throughput series (unit: GB/s) -> extraction rule."""
 
 
+# CacheProviderVersionConfig.metrics forward-references this module's
+# tail; resolve it now that the metrics classes exist.
+CacheProviderVersionConfig.model_rebuild()
+
+
 class CacheProviderL2Field(BaseModel):
     """One configurable parameter of an L2 storage backend."""
 
@@ -428,7 +440,12 @@ class CacheProvider(BaseModel):
 
     resource_profile: Optional[CacheProviderResourceProfile] = None
     health_check: CacheProviderHealthCheck = CacheProviderHealthCheck()
-    metrics: Optional[CacheProviderMetrics] = None
+    default_metrics: Optional[CacheProviderMetrics] = None
+    """The all-version default declaration, named like the other
+    provider-level defaults (default_image, default_run_command). Do not
+    read it directly for a service — a version may carry its own metrics
+    block; metrics_for() resolves the effective one."""
+
     inference_backend_integrations: List[CacheProviderIntegration] = []
 
     common_parameters: List[str] = []
@@ -443,6 +460,21 @@ class CacheProvider(BaseModel):
     l2_backends: Dict[str, CacheProviderL2Backend] = {}
     """Adapter type identifier (the "type" value in the adapter JSON)
     -> backend declaration."""
+
+    def metrics_for(self, version: Optional[str]) -> Optional[CacheProviderMetrics]:
+        """The effective metrics declaration for a service pinned to
+        ``version``. Resolution rides get_version_config, so None falls
+        back to the default version like everywhere else (a managed
+        service created without an explicit version stores None). A
+        resolved version owns its block whole; versions without one —
+        and the custom version, whose image ships unknown metrics — fall
+        back to the provider default (best effort, and a mismatch
+        surfaces as a reasoned all-queries-failed degradation rather
+        than silently empty charts)."""
+        config, _ = self.get_version_config(version)
+        if config is not None and config.metrics is not None:
+            return config.metrics
+        return self.default_metrics
 
     @model_validator(mode="after")
     def resolve_version_defaults(self) -> "CacheProvider":
