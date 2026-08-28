@@ -475,28 +475,46 @@ def test_sglang_cache_report_arguments(backend_parameters, backend_version, expe
     )
 
 
-def test_vllm_set_cache_env_defaults_to_config_cache_dir(tmp_path):
-    backend = VLLMServer.__new__(VLLMServer)
+CACHE_ENV_BACKENDS = [
+    (VLLMServer, "VLLM_CACHE_ROOT", "vllm"),
+    (SGLangServer, "SGLANG_CACHE_DIR", "sglang"),
+]
+
+
+@pytest.mark.parametrize("backend_class, variable, subdirectory", CACHE_ENV_BACKENDS)
+def test_set_cache_env_defaults_to_config_cache_dir(
+    tmp_path, backend_class, variable, subdirectory
+):
+    backend = backend_class.__new__(backend_class)
     backend._config = types.SimpleNamespace(cache_dir=str(tmp_path))
 
     env = {}
-    backend._set_cache_env(env)
+    backend._set_cache_env(env, variable, subdirectory)
 
-    expected = tmp_path / "vllm"
-    assert env["VLLM_CACHE_ROOT"] == str(expected)
+    expected = tmp_path / subdirectory
+    assert env[variable] == str(expected)
     assert expected.is_dir()
 
+    # Without a config there is nothing to point at.
+    backend._config = None
+    env = {}
+    backend._set_cache_env(env, variable, subdirectory)
+    assert env == {}
 
-def test_vllm_set_cache_env_respects_user_override(tmp_path):
-    backend = VLLMServer.__new__(VLLMServer)
+
+@pytest.mark.parametrize("backend_class, variable, subdirectory", CACHE_ENV_BACKENDS)
+def test_set_cache_env_respects_user_override(
+    tmp_path, backend_class, variable, subdirectory
+):
+    backend = backend_class.__new__(backend_class)
     backend._config = types.SimpleNamespace(cache_dir=str(tmp_path))
 
-    env = {"VLLM_CACHE_ROOT": "/custom/cache"}
-    backend._set_cache_env(env)
+    env = {variable: "/custom/cache"}
+    backend._set_cache_env(env, variable, subdirectory)
 
-    assert env["VLLM_CACHE_ROOT"] == "/custom/cache"
+    assert env[variable] == "/custom/cache"
     # Default cache dir should not be created when the user overrode it.
-    assert not (tmp_path / "vllm").exists()
+    assert not (tmp_path / subdirectory).exists()
 
 
 def _vllm_backend_with_kv_cache(extended_kv_cache, cache_config=None):

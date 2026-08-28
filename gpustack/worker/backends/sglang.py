@@ -266,6 +266,10 @@ class SGLangServer(InferenceServer):
         )
         env["RUNAI_STREAMER_LOG_LEVEL"] = env.pop("RUNAI_STREAMER_LOG_LEVEL", "INFO")
 
+        # Persist the compiled kernel caches so repeated starts don't recompile.
+        # From v0.5.18 SGLang also redirects the Triton/Inductor/FlashInfer caches here.
+        self._set_cache_env(env, "SGLANG_CACHE_DIR", "sglang")
+
         # Apply distributed environment variables
         if is_distributed:
             self._set_distributed_env(env)
