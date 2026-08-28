@@ -124,6 +124,11 @@ class CacheServiceConfig(BaseModel):
     """Managed mode only: ordered L2 storage backends forming a cascade.
     The first entry is the preferred read tier; all entries receive writes."""
 
+    management_url: Optional[str] = None
+    """Link to the cache engine's own management console (e.g. the
+    MeshFusion UI), rendered as a button on the service detail page.
+    Display-only: the platform never calls it."""
+
 
 @dataclass
 class CacheServiceDeploymentMetadata:

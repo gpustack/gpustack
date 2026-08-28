@@ -888,6 +888,11 @@ async def _validate_cache_service_mode(
             raise BadRequestException(
                 message="config.ram_size is required for managed cache services"
             )
+        management_url = cache_service_in.config.management_url
+        if management_url and not management_url.startswith(("http://", "https://")):
+            raise BadRequestException(
+                message="config.management_url must be an http(s) URL"
+            )
 
         provider = get_cache_provider(cache_service_in.provider_name)
         topology = provider.topology if provider else "singleton"
