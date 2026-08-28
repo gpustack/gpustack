@@ -2,9 +2,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gpustack.api.exceptions import BadRequestException
+from gpustack.api.exceptions import BadRequestException, InternalServerErrorException
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import inference_backend as ib_route
+from gpustack.schemas import Worker
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
     InferenceBackendUpdate,
@@ -13,6 +14,7 @@ from gpustack.schemas.inference_backend import (
 )
 from gpustack.schemas.models import BackendSourceEnum
 from gpustack.schemas.principals import Principal, PrincipalType
+from gpustack.schemas.runner_source import RunnerOverrideEntry
 
 
 def _org_ctx(current_principal_id: int) -> TenantContext:
@@ -232,3 +234,23 @@ async def test_a_downgraded_row_stays_writable_under_its_source_given_name(
             )
         assert "must end with '-custom'" in str(e.value.message)
         update_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", [Worker, RunnerOverrideEntry, InferenceBackend])
+async def test_list_backend_configs_reports_database_failures(monkeypatch, failing):
+    """Any failing read must surface as a 500, not a 200 with an empty list the
+    UI renders as "no backends available". The cause stays in the log: a
+    database error carries SQL and schema details."""
+    db_error = 'relation "inference_backends" does not exist'
+
+    for model in (Worker, RunnerOverrideEntry, InferenceBackend):
+        monkeypatch.setattr(model, "all", AsyncMock(return_value=[]))
+    monkeypatch.setattr(failing, "all", AsyncMock(side_effect=RuntimeError(db_error)))
+
+    with pytest.raises(InternalServerErrorException) as e:
+        await ib_route.list_backend_configs(session=None, ctx=None)
+
+    assert e.value.status_code == 500
+    assert "inference_backends" not in e.value.message
+    assert str(e.value.__cause__) == db_error
