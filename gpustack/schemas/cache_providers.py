@@ -396,6 +396,11 @@ class CacheProvider(BaseModel):
     LMCache-style providers — a distributed pool may run per-node data
     components while engines attach its cluster-wide endpoint."""
 
+    management_url: bool = False
+    """Whether the engine ships its own management UI worth linking to:
+    the service form then offers a management_url config field, rendered
+    as a link beside the service name."""
+
     default_version: Optional[str] = None
     versions: Dict[str, CacheProviderVersionConfig] = {}
 

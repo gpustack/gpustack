@@ -504,6 +504,9 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
         "description",
         "links",
         "dashboard_uid",
+        # whether a vendor ships its own management UI is branding, not
+        # an engine trait the clone would inherit
+        "management_url",
     }
     diverging_fields = {
         "l2_backends",

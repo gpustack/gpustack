@@ -125,9 +125,9 @@ class CacheServiceConfig(BaseModel):
     The first entry is the preferred read tier; all entries receive writes."""
 
     management_url: Optional[str] = None
-    """Link to the cache engine's own management console (e.g. the
-    MeshFusion UI), rendered as a button on the service detail page.
-    Display-only: the platform never calls it."""
+    """Link to the cache engine's own management UI, rendered beside the
+    service name in the list and detail views. Display-only: the
+    platform never calls it."""
 
 
 @dataclass

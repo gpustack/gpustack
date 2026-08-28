@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import aiohttp
 from fastapi import APIRouter, Request, status
@@ -867,6 +867,49 @@ def _validate_cache_service_worker_selector(
         )
 
 
+def _validate_management_url(cache_service_in: CacheServiceCreate) -> None:
+    """Validate the engine-management link and canonicalize blanks to None.
+
+    The field rides ``config``, which managed and external services both
+    accept, so this runs with the top-level validators for either mode —
+    after ``_validate_cache_service_provider``, which already rejected
+    unknown providers.
+    """
+    if cache_service_in.config is None:
+        return
+    management_url = (cache_service_in.config.management_url or "").strip()
+    cache_service_in.config.management_url = management_url or None
+    if not management_url:
+        return
+    provider = get_cache_provider(cache_service_in.provider_name)
+    if provider is None or not provider.management_url:
+        raise BadRequestException(
+            message=(
+                f"config.management_url is not supported by cache "
+                f"provider '{cache_service_in.provider_name}'"
+            )
+        )
+    if len(management_url) > 2048:
+        raise BadRequestException(
+            message="config.management_url must be at most 2048 characters"
+        )
+    # urlparse accepts whitespace inside the netloc, so guard separately
+    parsed = urlparse(management_url)
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or any(ch.isspace() for ch in management_url)
+    ):
+        raise BadRequestException(
+            message="config.management_url must be a valid http(s) URL"
+        )
+    # a display-only link must not smuggle credentials into stored config
+    if parsed.username or parsed.password:
+        raise BadRequestException(
+            message="config.management_url must not embed credentials"
+        )
+
+
 async def _validate_cache_service_mode(
     session, cache_service_in: CacheServiceCreate
 ) -> None:
@@ -888,12 +931,6 @@ async def _validate_cache_service_mode(
             raise BadRequestException(
                 message="config.ram_size is required for managed cache services"
             )
-        management_url = cache_service_in.config.management_url
-        if management_url and not management_url.startswith(("http://", "https://")):
-            raise BadRequestException(
-                message="config.management_url must be an http(s) URL"
-            )
-
         provider = get_cache_provider(cache_service_in.provider_name)
         topology = provider.topology if provider else "singleton"
         if topology == "per_node":
@@ -1093,6 +1130,7 @@ async def create_cache_service(
     _validate_cache_service_provider(cache_service_in)
     _validate_cache_service_custom_version(cache_service_in)
     _validate_cache_service_config(cache_service_in.config)
+    _validate_management_url(cache_service_in)
     _validate_managed_fields(cache_service_in)
     _validate_cache_service_l2_storage(cache_service_in)
     _validate_cache_service_worker_selector(cache_service_in)
@@ -1173,6 +1211,7 @@ async def update_cache_service(
     _validate_cache_service_provider(cache_service_in)
     _validate_cache_service_custom_version(cache_service_in)
     _validate_cache_service_config(cache_service_in.config)
+    _validate_management_url(cache_service_in)
     _validate_managed_fields(cache_service_in)
     _validate_cache_service_l2_storage(cache_service_in)
     _validate_cache_service_worker_selector(cache_service_in)

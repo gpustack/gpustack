@@ -261,6 +261,11 @@ class ModelInstanceSnapshot(ModelInstanceRuntimeInfo):
         sa_type=pydantic_column_type(ExtendedKVCacheConfig), default=None
     )
 
+    cache_service_name: Optional[str] = None
+    """Name of the attached shared cache service at benchmark time — the
+    config above stores only the id, and the snapshot must keep naming
+    the service after it is deleted."""
+
     speculative_config: Optional[SpeculativeConfig] = Field(
         sa_type=pydantic_column_type(SpeculativeConfig), default=None
     )
