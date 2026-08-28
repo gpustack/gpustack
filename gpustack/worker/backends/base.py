@@ -11,7 +11,6 @@ from typing import Dict, Optional, List, Tuple, Union
 from abc import ABC, abstractmethod
 from transformers import PretrainedConfig
 
-from gpustack_runner import list_backend_runners
 from gpustack_runner.runner import BackendVersionedRunner
 from gpustack_runtime.deployer import ContainerResources, ContainerMount, ContainerPort
 from gpustack_runtime.deployer.__utils__ import compare_versions
@@ -37,6 +36,11 @@ from gpustack.schemas.inference_backend import (
     ContainerEnvConfig,
     ParameterFormatEnum,
 )
+from gpustack.schemas.runner_source import (
+    RunnerOverrideEntriesPublic,
+    RunnerOverrideEntryPublic,
+    merged_backend_runners,
+)
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -54,6 +58,7 @@ from gpustack.utils.hub import get_hf_text_config, get_max_model_len
 from gpustack.utils.hub import get_pretrained_config, safe_pretrained_config_from_dict
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
+from gpustack.utils.version import pick_runtime_version
 from gpustack.utils.runtime import transform_workload_plan
 
 logger = logging.getLogger(__name__)
@@ -162,6 +167,9 @@ class InferenceServer(ABC):
 
     _fallback_registry: Optional[str] = None
     """The fallback container registry to use if needed."""
+
+    _runner_overrides: Optional[List[RunnerOverrideEntryPublic]] = None
+    """The runner overrides this deploy resolved images against, fetched once."""
 
     @time_decorator
     def __init__(
@@ -533,6 +541,23 @@ class InferenceServer(ABC):
             )
         return None, None, None
 
+    def _host_ipc_enabled(self) -> bool:
+        """Whether the workload joins the host IPC namespace. Only a
+        deployment attached to a shared cache service needs it — the
+        CUDA-IPC zero-copy transfer path imports KV buffers across the
+        engine and cache containers — so it follows the attachment; a
+        ``GPUSTACK_HOST_IPC`` env (per-model, or global on the worker)
+        overrides the derivation either way. Everything else keeps its
+        private /dev/shm: Docker ignores shm_size under host IPC, and
+        Kubernetes PodSecurity baseline rejects hostIPC pods."""
+        model_env = self._model.env or {}
+        if envs.HOST_IPC_ENV in model_env:
+            return to_bool(model_env[envs.HOST_IPC_ENV])
+        if envs.HOST_IPC is not None:
+            return to_bool(envs.HOST_IPC)
+        cache_config = getattr(self._model_instance, "cache_config", None)
+        return bool(cache_config and cache_config.injected)
+
     def _cuda_minor_version_compatibility_enabled(self) -> bool:
         """Resolve the switch: a per-model
         ``GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`` in the model's env
@@ -778,6 +803,16 @@ class InferenceServer(ABC):
             else self._model_instance.port
         )
 
+    def _cache_injection_files(self) -> dict[str, str]:
+        """Connector config files (container path -> contents) the shared
+        cache service's injection declares; the serving script writes them
+        before the engine starts (e.g. Mooncake's MOONCAKE_CONFIG_PATH
+        JSON)."""
+        cache_config = getattr(self._model_instance, "cache_config", None)
+        if cache_config and cache_config.injected:
+            return cache_config.files or {}
+        return {}
+
     def _get_serving_command_script(self, env: dict[str, str]) -> Optional[str]:
         """
         Get the serving command script for the model instance.
@@ -801,10 +836,27 @@ class InferenceServer(ABC):
             return None
 
         disable_cuda_compat = self._should_disable_cuda_compat()
+        cache_files = self._cache_injection_files()
 
         # Skip if no prep step is needed.
-        if not disable_cuda_compat and not (env and "PYPI_PACKAGES_INSTALL" in env):
+        if (
+            not disable_cuda_compat
+            and not cache_files
+            and not (env and "PYPI_PACKAGES_INSTALL" in env)
+        ):
             return None
+
+        cache_files_step = ""
+        for path, content in sorted(cache_files.items()):
+            # A quoted heredoc keeps the rendered content verbatim (no
+            # shell expansion of $ or backticks inside e.g. JSON).
+            cache_files_step += (
+                f'echo "Writing shared cache connector config {path}"\n'
+                f"mkdir -p \"$(dirname '{path}')\"\n"
+                f"cat > '{path}' <<'GPUSTACK_CACHE_FILE_EOF'\n"
+                f"{content}\n"
+                "GPUSTACK_CACHE_FILE_EOF\n\n"
+            )
 
         cuda_compat_step = ""
         if disable_cuda_compat:
@@ -827,6 +879,7 @@ fi
 #
 
 """
+            + cache_files_step
             + cuda_compat_step
             + """if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
     if command -v uv >/dev/null 2>&1; then
@@ -1024,6 +1077,41 @@ exec "$@"
             self._config, image_name, self._fallback_registry
         )
 
+    def _fetch_runner_overrides(self) -> List[RunnerOverrideEntryPublic]:
+        """Fetch runner overrides fresh from the server at deploy time.
+
+        Read directly (unpaginated) so the worker resolves images against the
+        same DB-fresh override set the scheduler saw — no stale cache, so a
+        version the scheduler allowed can't fail to resolve here.
+
+        Held for the rest of this deploy: ``_resolve_image`` is reached three times
+        (image, environment, serving command) and the whole set is one unpaginated
+        response.
+
+        A failure raises rather than degrading to an empty list: empty means "no
+        custom source is configured, layer over the packaged catalog", and a
+        custom source *replaces* that catalog — so degrading would deploy the
+        very images an admin replaced, silently and with the wrong registry.
+        Failing the deploy is recoverable; a running model on the wrong image is
+        not.
+        """
+        if self._runner_overrides is not None:
+            return self._runner_overrides
+        try:
+            resp = self._clientset.http_client.get_httpx_client().get(
+                "/runner-override-entries", params={"page": -1}
+            )
+            resp.raise_for_status()
+            self._runner_overrides = RunnerOverrideEntriesPublic.model_validate(
+                resp.json()
+            ).items
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to fetch runner overrides from the server: {e}. "
+                f"The image cannot be resolved without them"
+            ) from e
+        return self._runner_overrides
+
     def _resolve_image(  # noqa: C901
         self,
         backend: Optional[str] = None,
@@ -1109,7 +1197,9 @@ exec "$@"
             f"_resolve_image query: backend={backend}, backend_variant={backend_variant}, service={service}, service_version={service_version}, platform={platform.system_arch()}, runtime_version={runtime_version}"
         )
 
-        runners = list_backend_runners(
+        overrides = self._fetch_runner_overrides()
+        runners = merged_backend_runners(
+            overrides,
             backend=backend,
             backend_variant=backend_variant,
             service=service,
@@ -1159,39 +1249,19 @@ exec "$@"
         if len(backend_versioned_runners) == 1:
             return get_docker_image(backend_versioned_runners[0]), service_version
 
-        backend_version = runtime_version
-
-        # Iterate all backend versions, and get the one that less or equal to backend version.
-        # Here, we assume the runners' sequence is ordered and arranged in descending order.
-        if backend_version:
-            for backend_versioned_runner in backend_versioned_runners:
-                if (
-                    compare_versions(backend_versioned_runner.version, backend_version)
-                    <= 0
-                ):
-                    service_version = _get_service_version_from_versioned_runner(
-                        backend_versioned_runner
-                    )
-                    return get_docker_image(backend_versioned_runner), service_version
-            # Every runner is newer than the host runtime. Same-major minor
-            # version compatibility holds even on consumer GPUs, but cross-major
-            # (e.g. 12.x host -> 13.x) does not; prefer the newest runner sharing
-            # the host major, and fall back to the oldest only if none matches.
-            host_major = _major_version(backend_version)
-            fallback_runner = next(
-                (
-                    candidate
-                    for candidate in backend_versioned_runners
-                    if _major_version(candidate.version) == host_major
-                ),
-                backend_versioned_runners[-1],
-            )
-        else:
-            # Failed to detect host runtime version: fall back to the latest.
-            fallback_runner = backend_versioned_runners[0]
-
-        service_version = _get_service_version_from_versioned_runner(fallback_runner)
-        return get_docker_image(fallback_runner), service_version
+        # The runtime-match rule (newest <= host, same-major then oldest
+        # fallbacks) is shared with cache-provider runtime_images.
+        picked_version = pick_runtime_version(
+            [candidate.version for candidate in backend_versioned_runners],
+            runtime_version,
+        )
+        picked_runner = next(
+            candidate
+            for candidate in backend_versioned_runners
+            if candidate.version == picked_version
+        )
+        service_version = _get_service_version_from_versioned_runner(picked_runner)
+        return get_docker_image(picked_runner), service_version
 
     def _update_model_backend_service_version(
         self, service_version: Optional[str]

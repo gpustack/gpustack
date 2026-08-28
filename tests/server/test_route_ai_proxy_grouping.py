@@ -6,9 +6,11 @@ from gpustack.gateway.utils import lora_registry_name_suffix
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget, TargetStateEnum
 from gpustack.schemas.models import ModelInstanceStateEnum
+from gpustack.server.bus import Event, EventType
 from gpustack.server.controllers import (
     accumulate_model_ai_proxy_group,
     calculate_destinations,
+    notify_model_route_target,
 )
 from tests.utils.model import new_model, new_model_instance
 
@@ -176,3 +178,70 @@ async def test_cluster_token_is_resolved_once_per_cluster():
 
     assert one_by_id.await_count == 1
     assert {group.api_tokens[0] for group in model_groups.values()} == {"cluster-token"}
+
+
+@pytest.mark.asyncio
+async def test_native_anthropic_api_comes_from_the_deployment():
+    """The selector is read straight off the Model -- no lookup, and each
+    deployment answers for itself."""
+    model_groups = {}
+    cluster_api_tokens = {}
+
+    with patch(
+        "gpustack.server.controllers.Cluster.one_by_id",
+        AsyncMock(return_value=_cluster()),
+    ):
+        for model_id, native in ((MODEL_ID, True), (MODEL_ID + 1, False)):
+            model = new_model(model_id, f"m-{model_id}", huggingface_repo_id="repo/m")
+            model.cluster_id = CLUSTER_ID
+            model.native_anthropic_api = native
+            await accumulate_model_ai_proxy_group(
+                session=None,
+                model_groups=model_groups,
+                cluster_api_tokens=cluster_api_tokens,
+                model=model,
+                destinations=[],
+                is_fallback_target=False,
+            )
+
+    assert model_groups[MODEL_ID].native_anthropic_api is True
+    # One deployment's answer must not leak into another's provider entry.
+    assert model_groups[MODEL_ID + 1].native_anthropic_api is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed_field, should_notify",
+    [("native_anthropic_api", True), ("replicas", True), ("description", False)],
+)
+async def test_native_anthropic_api_edit_reaches_the_route(
+    changed_field, should_notify
+):
+    """``native_anthropic_api`` is consumed where the route's provider entry is
+    built, and that only runs off a route event -- so the Model controller has
+    to treat it as route-affecting or flipping the selector would change nothing
+    until the deployment happened to scale."""
+    model = new_model(MODEL_ID, "base", huggingface_repo_id="repo/base")
+    model.cluster_id = CLUSTER_ID
+    hydrated = new_model(MODEL_ID, "base", huggingface_repo_id="repo/base")
+    hydrated.model_route_targets = [_target(1)]
+
+    publish = AsyncMock()
+    with (
+        patch(
+            "gpustack.server.controllers.Model.one_by_id",
+            AsyncMock(return_value=hydrated),
+        ),
+        patch("gpustack.server.controllers.event_bus.publish", publish),
+    ):
+        await notify_model_route_target(
+            session=None,
+            model=model,
+            event=Event(
+                type=EventType.UPDATED,
+                data=model,
+                changed_fields={changed_field: (None, "x")},
+            ),
+        )
+
+    assert publish.await_count == (1 if should_notify else 0)

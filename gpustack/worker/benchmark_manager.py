@@ -1019,7 +1019,7 @@ class BenchmarkManager:
         `attempts=1` for partial syncs — a transient blip just retries on the next
         poll instead of blocking it with backoff.
         """
-        # Best operating points: peak throughput / max rate meeting the SLA.
+        # Best operating points: peak throughput / max rate meeting the SLO.
         # Computed from the per-point grid and persisted on the parent row for
         # the detail page's "Best Operating Points" cards.
         best_points = analysis.compute_best_points(benchmark, results)
@@ -1046,7 +1046,7 @@ class BenchmarkManager:
             # values are overwritten, not left stale.
             best_points = {
                 "peak_rate": None,
-                "sla_met_rate": None,
+                "slo_met_rate": None,
                 "recommended_rate": None,
             }
         if in_progress:
@@ -1071,11 +1071,11 @@ class BenchmarkManager:
         # as a stale number next to a validity that contradicts it.
         patch = {
             "peak_rate": best_points.get("peak_rate"),
-            "sla_met_rate": best_points.get("sla_met_rate"),
+            "slo_met_rate": best_points.get("slo_met_rate"),
             "recommended_rate": best_points.get("recommended_rate"),
             "validity": validity,
         }
-        # This write carries the whole conclusion of the run (peak / SLA
+        # This write carries the whole conclusion of the run (peak / SLO
         # capacity / coverage). Losing it leaves a benchmark that reads as
         # "completed" with every conclusion field null and no hint why, so retry a
         # few times and, if it still fails, say so on state_message rather than

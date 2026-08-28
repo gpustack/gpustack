@@ -24,7 +24,11 @@ from gpustack.api.exceptions import (
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.schemas import Principal
 from gpustack.schemas.common import PaginatedList, Pagination
-from gpustack.schemas.config import parse_base_model_to_env_vars
+from gpustack.schemas.config import (
+    ModelInstanceProxyModeEnum,
+    PredefinedConfigNoDefaults,
+    parse_base_model_to_env_vars,
+)
 from gpustack.api.tenant import (
     TenantContext,
     bypass_tenant_filter,
@@ -53,6 +57,11 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudOptions,
     K8sOptions,
+    DATA_DIR_MOUNT_NAME,
+    DATA_DIR_MOUNT_PATH,
+    claims_data_dir,
+    mount_host_path,
+    normalize_data_dir_mount,
     is_gpu_service_cluster,
     is_gpu_service_k8s_options,
 )
@@ -78,6 +87,7 @@ from gpustack.gpu_instances.cluster_apis_util import (
     get_namespace_name,
 )
 from gpustack.k8s.manifest_template import TemplateConfig
+from gpustack.cloud_providers.common import get_provider_api_endpoint
 from gpustack.config.config import (
     get_global_config,
     get_cluster_image_name,
@@ -328,8 +338,154 @@ async def get_cluster(session: SessionDep, ctx: TenantContextDep, id: int):
     return cluster
 
 
+DOCKER_HUB_REGISTRY_HOSTS = {
+    "docker.io",
+    "index.docker.io",
+    "registry-1.docker.io",
+    "registry.hub.docker.com",
+}
+
+
+def image_ref_registry(image_ref: str) -> Optional[str]:
+    """
+    The registry host of an image reference, or None when it is implicit.
+
+    An implicit registry means Docker Hub: ``gpustack/gpustack:v1`` carries no
+    host, while ``my-registry.cn/gpustack:v1`` does. A first segment holding a
+    dot, a port, or the literal ``localhost`` is a host.
+    """
+    if "/" not in image_ref:
+        # A bare name like "gpustack:v1" has no host at all. Splitting anyway
+        # would hand back "gpustack:v1", whose tag colon reads as a port and
+        # would pass for a registry.
+        return None
+    first = image_ref.split("/")[0]
+    if "." in first or ":" in first or first == "localhost":
+        return first
+    return None
+
+
+def is_docker_hub_registry(registry: str) -> bool:
+    return registry.split("/")[0].lower() in DOCKER_HUB_REGISTRY_HOSTS
+
+
+def apply_shuihua_defaults(
+    input: Union[ClusterCreate, ClusterUpdate], existing: Optional[Cluster] = None
+):
+    """
+    Default the Shuihua settings the caller left empty.
+
+    ``proxy_mode`` defaults to tunnel because a Shuihua instance normally sits
+    behind NAT with server-assigned port mappings, and nothing in the create
+    API lets us request a mapping for the worker's own port — so the gateway
+    cannot reach it directly. It is a default rather than a requirement: an
+    operator running the server inside a network with direct routing to the
+    instances can legitimately choose WORKER or DIRECT, and only they know
+    that. Whatever the caller sets explicitly is left alone.
+
+    On update a missing ``worker_config`` is left alone: ``Cluster.update``
+    applies ``model_fields_set``, and assigning here would add
+    ``worker_config`` to that set, overwriting the cluster's stored config with
+    this bare default. When the caller does send one, the value already stored
+    wins over the tunnel default -- sending worker_config replaces it wholesale,
+    so defaulting blindly would silently flip a cluster the operator had put on
+    WORKER or DIRECT.
+    """
+    stored = existing.worker_config if existing is not None else None
+    fallback = (
+        stored.proxy_mode
+        if stored is not None and stored.proxy_mode is not None
+        else ModelInstanceProxyModeEnum.TUNNEL
+    )
+    if input.worker_config is None:
+        if not isinstance(input, ClusterCreate):
+            return
+        input.worker_config = PredefinedConfigNoDefaults(proxy_mode=fallback)
+        return
+    if input.worker_config.proxy_mode is None:
+        input.worker_config.proxy_mode = fallback
+
+
+def check_shuihua_requirements(
+    input: Union[ClusterCreate, ClusterUpdate], existing: Optional[Cluster] = None
+):
+    """
+    Require a registry the Shuihua instances can actually pull from.
+
+    ``determine_default_registry`` probes Docker Hub *from the server*, so a
+    reachable server yields no registry prefix and the instance is told to pull
+    ``gpustack/gpustack`` straight from Docker Hub. The cluster may inherit the
+    registry from the server-level setting instead of carrying its own.
+
+    On update only the parts the caller actually sends are checked: Cluster
+    updates apply ``model_fields_set`` alone, so demanding these fields on
+    every PUT would block unrelated edits such as a rename.
+    """
+    is_create = isinstance(input, ClusterCreate)
+    worker_config = input.worker_config
+    sends_worker_config = "worker_config" in input.model_fields_set
+    sends_registry = "system_default_container_registry" in input.model_fields_set
+
+    if not (is_create or sends_worker_config or sends_registry):
+        return
+
+    # A full image override wins over the registry column in
+    # get_cluster_image_name, so validate whichever one actually decides where
+    # the instance pulls from.
+    override = worker_config.image_name_override if worker_config else None
+    if override:
+        registry = image_ref_registry(override)
+        source = f"worker_config.image_name_override '{override}'"
+        missing_message = (
+            f"{source} carries no registry host, so it resolves to Docker Hub, "
+            f"which {ClusterProvider.Shuihua.value} instances cannot reach."
+        )
+    else:
+        # Mirror get_cluster_image_name's resolution order, which falls back to
+        # the server-level setting — rejecting a cluster that would in fact
+        # pull from a reachable registry would be a false alarm.
+        # Mirrors get_cluster_image_name, plus the value already on the
+        # cluster: a partial PUT need not resend it, and Cluster.update keeps
+        # what it doesn't touch, so ignoring the stored one would reject an
+        # update to a cluster that is in fact configured.
+        registry = (
+            input.system_default_container_registry
+            or (
+                worker_config.system_default_container_registry
+                if worker_config
+                else None
+            )
+            or (
+                existing.system_default_container_registry
+                if existing is not None
+                else None
+            )
+            or get_global_config().system_default_container_registry
+        )
+        source = "system_default_container_registry"
+        missing_message = (
+            f"{source} is required for provider {ClusterProvider.Shuihua.value}: "
+            "its instances cannot reach Docker Hub, so the registry to pull the "
+            "worker image from has to be set on the cluster or as the server's "
+            "default."
+        )
+
+    if not registry:
+        raise InvalidException(message=missing_message)
+    if is_docker_hub_registry(registry):
+        raise InvalidException(
+            message=(
+                f"{source} points at Docker Hub ('{registry}'), which "
+                f"{ClusterProvider.Shuihua.value} instances cannot reach. Use a "
+                "mirror or a private registry."
+            )
+        )
+
+
 def create_update_check(
-    provider: ClusterProvider, input: Union[ClusterCreate, ClusterUpdate]
+    provider: ClusterProvider,
+    input: Union[ClusterCreate, ClusterUpdate],
+    existing: Optional[Cluster] = None,
 ):
     cfg = get_global_config()
     is_cloud_provider = provider not in [
@@ -349,23 +505,19 @@ def create_update_check(
         raise InvalidException(
             message=f"server_url is required for provider {provider}"
         )
-    if provider == ClusterProvider.Kubernetes:
-        # check for volume mounts (now nested under k8s_options)
-        volume_mounts = (
-            input.k8s_options.volume_mounts if input.k8s_options is not None else None
+    if is_cloud_provider and not get_provider_api_endpoint(provider):
+        raise InvalidException(
+            message=(
+                f"No API base URL is configured for provider {provider.value}. "
+                "Start the server with the provider's API base URL configured."
+            )
         )
-        if volume_mounts is None or len(volume_mounts) < 1:
-            # at least one volume mount is required, and the default one is for gpustack data dir.
-            raise InvalidException(
-                message="At least one k8s_options.volume_mount is required, and the default one is for gpustack data dir."
-            )
-        if (
-            volume_mounts[0].volume_source is None
-            or volume_mounts[0].volume_source.host_path is None
-        ):
-            raise InvalidException(
-                message="The first k8s_options.volume_mount must be for gpustack data dir with hostPath volume source."
-            )
+    if provider == ClusterProvider.Shuihua:
+        apply_shuihua_defaults(input, existing)
+        check_shuihua_requirements(input, existing)
+    # The Kubernetes data-dir volume mount is checked by
+    # ``enforce_data_dir_mounts``, after it has normalized the value — see the
+    # note there on why it can't be validated off the request body.
 
 
 def hoist_system_default_container_registry(
@@ -440,17 +592,98 @@ async def check_cluster_purpose_switch(
 
 def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
     """
-    Assuming the first item of k8s_options.volume_mounts is for gpustack data dir,
-    enforce that it is always present and has the correct settings.
+    Require the reserved gpustack data-dir volume mount at index 0 of the value
+    about to be persisted, and own every field of it except the host path.
+
+    Index 0 is the whole locating rule, the same one the UI enforces on its
+    side. The entry there is *verified*, not adopted: an unrelated mount in the
+    reserved slot is refused rather than quietly rewritten into the data dir,
+    which is what the workaround for #6145 ("add some mount to get past the
+    validation") would otherwise have run into.
+
+    A submitted ``k8s_options`` whose slot is empty is refused rather than
+    completed. Every write path goes through here and the backfill migration
+    fixed the historical rows, so the mount is present on every Kubernetes
+    cluster by construction — a submission missing it means the caller built the
+    payload wrong, and since the column is replaced wholesale it is probably
+    dropping ``gpuInstanceOptions`` / ``namespace`` in the same breath. Refusing
+    surfaces that; synthesizing the entry would answer the request correctly and
+    swallow the anomaly.
+
+    What is *not* refused is leaving ``k8s_options`` out of an update
+    altogether: that is how the API says "unchanged" for every other field, and
+    it used to be the second half of this check's deadlock.
     """
-    # the first volume must exist as it's validated in create_update_check, and it must be for gpustack data dir, so we enforce it here.
-    data_dir_mount = input.k8s_options.volume_mounts[0]
-    data_dir_mount.name = "gpustack-data-dir"
-    data_dir_mount.mount_path = "/var/lib/gpustack"
-    data_dir_mount.read_only = False
-    data_dir_mount.volume_source.host_path.type = "DirectoryOrCreate"
-    data_dir_mount.volume_source.config_map = None
-    data_dir_mount.volume_source.persistent_volume_claim = None
+    is_update = not isinstance(input, ClusterCreate)
+    if is_update and "k8s_options" not in input.model_fields_set:
+        # The caller didn't touch the field. ``ActiveRecord.update`` only assigns
+        # keys in ``model_fields_set``, so the stored value — namespace,
+        # gpuInstanceOptions and all — stands. Nothing to check, and touching
+        # ``input.k8s_options`` here would turn "leave alone" into "overwrite".
+        return
+
+    if input.k8s_options is None:
+        raise InvalidException(
+            message=(
+                "k8s_options is required for a Kubernetes cluster, including a "
+                f"volumeMounts entry for the gpustack data dir ({DATA_DIR_MOUNT_PATH}). "
+                "Omit the field entirely to leave the stored options unchanged."
+            )
+        )
+
+    mounts = input.k8s_options.volume_mounts or []
+    if not mounts:
+        raise InvalidException(
+            message=(
+                "The first k8s_options.volumeMounts entry is reserved for the "
+                f"gpustack data dir ({DATA_DIR_MOUNT_PATH}) and is required. "
+                "Send back the entry the cluster already carries, or omit "
+                "k8s_options entirely to leave the stored options unchanged."
+            )
+        )
+    if not claims_data_dir(mounts[0]):
+        raise InvalidException(
+            message=(
+                "The first k8s_options.volumeMounts entry is reserved for the "
+                f"gpustack data dir, so it must be named {DATA_DIR_MOUNT_NAME} "
+                f"or mounted at {DATA_DIR_MOUNT_PATH}; got "
+                f"'{mounts[0].name}' at '{mounts[0].mount_path}'. Move that "
+                "mount after the data dir entry."
+            )
+        )
+    if mount_host_path(mounts[0]) is None:
+        raise InvalidException(
+            message=(
+                f"The {DATA_DIR_MOUNT_PATH} volume mount is reserved for the "
+                "gpustack data dir and must use a hostPath volume source."
+            )
+        )
+    if any(claims_data_dir(m) for m in mounts[1:]):
+        raise InvalidException(
+            message=(
+                f"Only the first k8s_options.volumeMounts entry may use the "
+                f"name {DATA_DIR_MOUNT_NAME} or the mount path "
+                f"{DATA_DIR_MOUNT_PATH}; both are reserved for the gpustack "
+                "data dir. A second entry claiming either would render a "
+                "DaemonSet Kubernetes rejects."
+            )
+        )
+
+    normalize_data_dir_mount(input.k8s_options)
+
+    # Post-condition on the shape about to be persisted, so a normalization bug
+    # surfaces here rather than as a worker DaemonSet rendered without a
+    # persistent data dir.
+    persisted = input.k8s_options.volume_mounts[0]
+    if (
+        persisted.name != DATA_DIR_MOUNT_NAME
+        or persisted.mount_path != DATA_DIR_MOUNT_PATH
+        or persisted.read_only
+        or mount_host_path(persisted) is None
+    ):
+        raise InternalServerErrorException(
+            message="Failed to resolve the gpustack data dir volume mount."
+        )
 
 
 @router.post("", response_model=ClusterPublic, response_model_exclude_none=True)
@@ -579,7 +812,7 @@ async def update_cluster(
         raise NotFoundException(message=f"cluster {id} not found")
     assert_cluster_writable(ctx, cluster)
 
-    create_update_check(cluster.provider, input)
+    create_update_check(cluster.provider, input, existing=cluster)
     if cluster.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
         await check_cluster_purpose_switch(session, cluster, input)

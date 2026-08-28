@@ -11,6 +11,9 @@ from gpustack.k8s.manifest_template import (
 from gpustack.schemas.clusters import ClusterRegistrationTokenPublic
 from gpustack.schemas.clusters import (
     Cluster,
+    DATA_DIR_MOUNT_NAME,
+    DATA_DIR_MOUNT_PATH,
+    DEFAULT_DATA_DIR_HOST_PATH,
     GpuInstanceOptions,
     HostPathVolumeSource,
     ImageCredential,
@@ -88,13 +91,16 @@ def test_unknown_runtime_renders_cpu_daemonset_only():
 
 
 def test_cpu_daemonset_no_vendor_volumes():
-    """CPU DaemonSet has no vendor-specific volumeMounts or volumes."""
+    """CPU DaemonSet has no vendor-specific volumeMounts or volumes.
+
+    The reserved data-dir mount is always there — it is not vendor-specific.
+    """
     docs = _render_docs()
     ds = _daemonsets(docs)[WORKER_DS_BASENAME]
     mounts = _pod_spec(ds)["containers"][0].get("volumeMounts") or []
-    assert mounts == []
+    assert [m["name"] for m in mounts] == [DATA_DIR_MOUNT_NAME]
     volumes = _pod_spec(ds).get("volumes") or []
-    assert volumes == []
+    assert [v["name"] for v in volumes] == [DATA_DIR_MOUNT_NAME]
 
 
 def test_cpu_daemonset_no_runtime_class():
@@ -150,6 +156,7 @@ def test_single_gpu_runtime_ascend_keeps_vendor_volume_mounts():
     assert {m["name"] for m in mounts} == {
         "gpustack-ascend-driver",
         "gpustack-ascend-toolkit",
+        DATA_DIR_MOUNT_NAME,
     }
 
 
@@ -489,6 +496,67 @@ def test_user_volume_mounts_flow_through_via_k8s_options():
         assert "data-dir" in volume_names
 
 
+def _data_dir_volumes(ds):
+    return [
+        v
+        for v in (_pod_spec(ds).get("volumes") or [])
+        if v["name"] == DATA_DIR_MOUNT_NAME
+    ]
+
+
+def test_data_dir_mount_rendered_without_any_k8s_options():
+    """A cluster with no volumeMounts still gets a persistent data dir.
+
+    Clusters created before the mount became configurable (v2.2.0) hold no
+    volumeMounts at all; rendering them without the data-dir volume would lose
+    worker data on every pod restart.
+    """
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    dses = _daemonsets(docs)
+    assert dses
+    for ds in dses.values():
+        mounts = _pod_spec(ds)["containers"][0]["volumeMounts"]
+        data_dir = next(m for m in mounts if m["name"] == DATA_DIR_MOUNT_NAME)
+        assert data_dir["mountPath"] == DATA_DIR_MOUNT_PATH
+        assert data_dir["readOnly"] is False
+        # The host path, not the container mount path — they carry the same
+        # value today but are different things.
+        assert _data_dir_volumes(ds) == [
+            {
+                "name": DATA_DIR_MOUNT_NAME,
+                "hostPath": {
+                    "path": DEFAULT_DATA_DIR_HOST_PATH,
+                    "type": "DirectoryOrCreate",
+                },
+            }
+        ]
+
+
+def test_data_dir_mount_keeps_a_configured_host_path():
+    """A stored data-dir mount is rendered as is, not replaced by the default."""
+    values = K8sOptions(
+        volume_mounts=[
+            K8sVolumeMount(
+                name=DATA_DIR_MOUNT_NAME,
+                mount_path=DATA_DIR_MOUNT_PATH,
+                volume_source=VolumeSource(
+                    host_path=HostPathVolumeSource(
+                        path="/mnt/data/gpustack", type="DirectoryOrCreate"
+                    )
+                ),
+            )
+        ]
+    )
+    docs = _render_docs(k8s_options=values)
+    ds = _daemonsets(docs)[WORKER_DS_BASENAME]
+    assert _data_dir_volumes(ds) == [
+        {
+            "name": DATA_DIR_MOUNT_NAME,
+            "hostPath": {"path": "/mnt/data/gpustack", "type": "DirectoryOrCreate"},
+        }
+    ]
+
+
 def test_multi_vendor_volume_mounts_applied_only_to_owning_vendor():
     docs = _render_docs(
         runtimes=[ManufacturerEnum.ASCEND, ManufacturerEnum.AMD],
@@ -501,13 +569,17 @@ def test_multi_vendor_volume_mounts_applied_only_to_owning_vendor():
             for m in (_pod_spec(ds)["containers"][0].get("volumeMounts") or [])
         }
 
-    # CPU DS has no vendor-specific mounts.
-    assert mount_names(dses[WORKER_DS_BASENAME]) == set()
+    # CPU DS has no vendor-specific mounts (the data dir is not vendor-specific).
+    assert mount_names(dses[WORKER_DS_BASENAME]) == {DATA_DIR_MOUNT_NAME}
     # Each GPU DS has its own vendor mounts.
-    assert mount_names(dses[f"{WORKER_DS_BASENAME}-amd"]) == {"gpustack-amd-driver"}
+    assert mount_names(dses[f"{WORKER_DS_BASENAME}-amd"]) == {
+        "gpustack-amd-driver",
+        DATA_DIR_MOUNT_NAME,
+    }
     assert mount_names(dses[f"{WORKER_DS_BASENAME}-ascend"]) == {
         "gpustack-ascend-driver",
         "gpustack-ascend-toolkit",
+        DATA_DIR_MOUNT_NAME,
     }
 
 
@@ -582,9 +654,9 @@ def test_container_namespace_strips_embedded_registry_with_port():
 # ---------------------------------------------------------------------------
 
 
-def _operator_deployment_env(docs):
-    """Extract the operator Deployment container env list from the embedded
-    ConfigMap's template.yaml data (ytt-processed)."""
+def _operator_deployment(docs):
+    """Extract the operator worker Deployment from the embedded ConfigMap's
+    template.yaml data (ytt-processed)."""
     cm = next(
         d
         for d in docs
@@ -596,7 +668,13 @@ def _operator_deployment_env(docs):
     # YAML after the last ytt directive. Parse all YAML docs and find the
     # Deployment.
     inner_docs = [d for d in yaml.safe_load_all(template_yaml) if d]
-    deploy = next(d for d in inner_docs if d.get("kind") == "Deployment")
+    return next(d for d in inner_docs if d.get("kind") == "Deployment")
+
+
+def _operator_deployment_env(docs):
+    """Extract the operator worker Deployment container env list from the
+    embedded ConfigMap's template.yaml data (ytt-processed)."""
+    deploy = _operator_deployment(docs)
     return deploy["spec"]["template"]["spec"]["containers"][0].get("env") or []
 
 
@@ -620,6 +698,55 @@ def test_operator_env_vars_absent_when_not_set():
     env_names = {e["name"] for e in env}
     assert "MY_VAR" not in env_names
     assert "OTHER_VAR" not in env_names
+
+
+# ---------------------------------------------------------------------------
+# Worker Deployment upgrade shape — the worker fronts the aggregated API and
+# finishes its whole install (Prepare) before it serves, so a RollingUpdate
+# would keep the OLD replica answering the old API until the new one turns
+# Ready, and Prepare's sequential CRD polls need a startup budget that covers
+# them. The chart pins both; the image-mode template must match.
+# ---------------------------------------------------------------------------
+
+
+def test_operator_worker_deployment_uses_recreate_strategy():
+    """The old worker goes down before the new one comes up — the API pauses
+    during an upgrade instead of serving a stale surface."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    deploy = _operator_deployment(docs)
+    assert deploy["spec"]["strategy"] == {"type": "Recreate"}
+
+
+def test_operator_worker_startup_probe_covers_prepare():
+    """180 x 5s = 900s: the two sequential CRD polls Prepare() can sit in
+    (5 minutes each) plus 300s for the install itself."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    container = _operator_deployment(docs)["spec"]["template"]["spec"]["containers"][0]
+    probe = container["startupProbe"]
+    assert probe["failureThreshold"] * probe["periodSeconds"] >= 900
+
+
+def test_operator_template_has_no_plain_yaml_comments():
+    """The ConfigMap's values.yaml/template.yaml are post-processed by ytt,
+    and ytt rejects plain '#' comments in any file that carries '#@'
+    annotations ("Expected ytt-formatted string"). Rationale comments belong
+    in '{#- -#}' Jinja comments, which never reach ytt. This guard fails on a
+    plain comment that YAML parsing alone (as in _operator_deployment)
+    silently tolerates."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.NVIDIA])
+    cm = next(
+        d
+        for d in docs
+        if d.get("kind") == "ConfigMap"
+        and d["metadata"]["name"] == "gpustack-operator-worker-deployment"
+    )
+    offenders = [
+        f"{key}: {line}"
+        for key in ("values.yaml", "template.yaml")
+        for line in cm["data"][key].splitlines()
+        if line.lstrip().startswith("#") and not line.lstrip().startswith(("#@", "#!"))
+    ]
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------

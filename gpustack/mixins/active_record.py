@@ -87,9 +87,46 @@ def send_post_commit_events(session: AsyncSession):
             # Detach from the SQLAlchemy session so subscribers don't see
             # lazy loads or further mutations on the same row.
             bus_event.data = bus_event.data.model_copy(deep=True)
+            # ``CommitEvent`` builds the Event when the write is queued, which
+            # for a CREATED event is before the INSERT assigns the primary
+            # key -- so it snapshotted ``id=None`` while ``data.id`` is now
+            # correct. Derive after the copy, so ``id`` can never disagree
+            # with the payload subscribers are handed.
+            bus_event.refresh_id()
             asyncio.create_task(event_bus.publish(event.name, bus_event))
         except Exception as e:
             logger.exception(f"Failed to publish events: {e}")
+
+
+# ``LIKE`` reads ``%`` and ``_`` in the pattern as wildcards, so an unescaped
+# needle silently changed what a search meant: ``team_a`` matched ``teamXa`` and a
+# lone ``%`` matched every row. The watch stream's ``_match_fuzzy_fields`` does a
+# plain Python substring test and never had wildcards, so the two disagreed — a
+# searched page listed a superset of the rows it then received updates for.
+# Escaping converges the SQL onto the literal reading the stream already had.
+_LIKE_ESCAPE = "\\"
+
+
+def _fuzzy_pattern(value: Any) -> str:
+    """``value`` as a case-folded ``LIKE`` pattern matching it literally."""
+    needle = str(value).lower()
+    # The escape character first, or escaping the wildcards would re-escape it.
+    for special in (_LIKE_ESCAPE, "%", "_"):
+        needle = needle.replace(special, _LIKE_ESCAPE + special)
+    return f"%{needle}%"
+
+
+def _fuzzy_conditions(cls, fuzzy_fields: Optional[dict]) -> List:
+    """The OR-ed ``LIKE`` predicates for ``fuzzy_fields``, lowered on both sides.
+
+    One definition, because both the item query and its COUNT need the identical
+    predicate: they used to be written out separately and drifted, the count
+    losing the ``lower()`` on each side.
+    """
+    return [
+        func.lower(getattr(cls, key)).like(_fuzzy_pattern(value), escape=_LIKE_ESCAPE)
+        for key, value in (fuzzy_fields or {}).items()
+    ]
 
 
 class ActiveRecordMixin:
@@ -238,11 +275,8 @@ class ActiveRecordMixin:
         for key, value in fields.items():
             statement = statement.where(getattr(cls, key) == value)
 
-        if fuzzy_fields:
-            fuzzy_conditions = [
-                func.lower(getattr(cls, key)).like(f"%{str(value).lower()}%")
-                for key, value in fuzzy_fields.items()
-            ]
+        fuzzy_conditions = _fuzzy_conditions(cls, fuzzy_fields)
+        if fuzzy_conditions:
             statement = statement.where(or_(*fuzzy_conditions))
 
         if extra_conditions:
@@ -291,11 +325,14 @@ class ActiveRecordMixin:
             ]
             statement = statement.where(and_(*conditions))
 
-        if fuzzy_fields:
-            fuzzy_conditions = [
-                func.lower(getattr(cls, key)).like(f"%{str(value).lower()}%")
-                for key, value in fuzzy_fields.items()
-            ]
+        # Built once and applied to the COUNT below as well, the way
+        # ``extra_conditions`` already is. Rebuilding the predicate a second time
+        # is what let the two drift: the count omitted the ``lower()`` on each
+        # side, so on a database whose LIKE is case-sensitive a search differing
+        # in case from the stored value returned rows ``total`` did not count —
+        # a page rendering items its pagination said were not there.
+        fuzzy_conditions = _fuzzy_conditions(cls, fuzzy_fields)
+        if fuzzy_conditions:
             statement = statement.where(or_(*fuzzy_conditions))
 
         if extra_conditions:
@@ -340,11 +377,7 @@ class ActiveRecordMixin:
             ]
             count_statement = count_statement.where(and_(*conditions))
 
-        if fuzzy_fields:
-            fuzzy_conditions = [
-                col(getattr(cls, key)).like(f"%{value}%")
-                for key, value in fuzzy_fields.items()
-            ]
+        if fuzzy_conditions:
             count_statement = count_statement.where(or_(*fuzzy_conditions))
 
         if extra_conditions:
@@ -927,10 +960,21 @@ class ActiveRecordMixin:
 
     @classmethod
     def _match_fuzzy_fields(cls, event: Any, fuzzy_fields: Optional[dict]) -> bool:
-        """Match fuzzy fields using OR condition."""
+        """Match fuzzy fields using OR condition.
+
+        A key whose attribute is None is skipped rather than stringified: SQL is
+        the reference here, and ``NULL LIKE '%x%'`` is NULL, never true. Reading
+        it as ``str(None)`` made every row with a NULL column match the term
+        "none", so a search for it returned nothing from the read while the
+        stream kept delivering those rows — they appeared in an empty list one by
+        one as they changed. An id-only payload resolves every key to None the
+        same way.
+        """
         for key, value in (fuzzy_fields or {}).items():
-            attr_value = str(getattr(event.data, key, "")).lower()
-            if str(value).lower() in attr_value:
+            attr_value = getattr(event.data, key, None)
+            if attr_value is None:
+                continue
+            if str(value).lower() in str(attr_value).lower():
                 return True
         return not fuzzy_fields
 

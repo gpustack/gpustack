@@ -39,9 +39,9 @@ from gpustack.server.cache import (
     delete_cache_by_key,
     locked_cached,
 )
+from gpustack.server.cache_services import resolve_instance_cache_config_safe
 from gpustack.server.worker_allocated_cache import invalidate_workers_allocated
 from gpustack.utils.usage_snapshots import propagate_user_rename
-
 
 logger = logging.getLogger(__name__)
 
@@ -915,6 +915,16 @@ class ModelInstanceService:
         return results
 
     async def create(self, model_instance):
+        # Denormalize the shared-cache connection info onto the instance so
+        # the worker can inject engine config without a server round-trip.
+        model = await Model.one_by_id(self.session, model_instance.model_id)
+        if model is not None:
+            # The degrading variant: replica creation must not fail on a
+            # resolution error — the instance starts without the shared
+            # cache instead (same contract as the scheduler's re-resolve).
+            model_instance.cache_config = await resolve_instance_cache_config_safe(
+                self.session, model
+            )
         result = await ModelInstance.create(self.session, model_instance)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
         await invalidate_workers_allocated([model_instance])

@@ -26,11 +26,31 @@ from gpustack.schemas.clusters import (
     CloudCredential,
     ClusterProvider,
 )
-from gpustack.cloud_providers.common import factory
+from gpustack.cloud_providers.common import factory, get_provider_api_endpoint
 from gpustack.routes.proxy import proxy_to
 from gpustack.schemas.principals import platform_principal_id
 
 router = APIRouter()
+
+
+def check_provider_api_endpoint(provider: ClusterProvider):
+    """
+    Reject a credential for a provider the server cannot reach.
+
+    A provider whose API has no well-known host takes its base URL from
+    a server start-up option; without it the credential could neither be
+    proxied nor used to provision, so saying so at create time beats storing a
+    secret that cannot be used. Docker and Kubernetes have no cloud API at all.
+    """
+    if provider in [ClusterProvider.Docker, ClusterProvider.Kubernetes]:
+        return
+    if not get_provider_api_endpoint(provider):
+        raise BadRequestException(
+            message=(
+                f"No API base URL is configured for provider {provider.value}. "
+                "Start the server with the provider's API base URL configured."
+            )
+        )
 
 
 @router.get("", response_model=CloudCredentialsPublic)
@@ -104,6 +124,7 @@ async def create(
         raise AlreadyExistsException(
             message=f"Cloud credential with name '{input.name}' already exists."
         )
+    check_provider_api_endpoint(input.provider)
 
     try:
         return await CloudCredential.create(session, input)
@@ -124,6 +145,8 @@ async def update(
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(message=f"cloud credential {id} not found")
     assert_org_owned_writable(ctx, existing, resource_label="cloud credential")
+    if "provider" in input.model_fields_set:
+        check_provider_api_endpoint(input.provider)
 
     try:
         await CloudCredential.update(existing, session=session, source=input)
@@ -175,6 +198,16 @@ async def proxy_cluster_provider_api(
     if provider is None:
         raise NotFoundException(message=f"Provider {credential.provider} not found")
     endpoint = provider[0].get_api_endpoint()
+    if not endpoint:
+        # Without a base URL there is no host to join the path onto; failing
+        # here beats sending the credential's secret to a malformed URL.
+        raise BadRequestException(
+            message=(
+                f"No API base URL is configured for provider "
+                f"{credential.provider.value}. Start the server with "
+                "the provider's API base URL configured."
+            )
+        )
     # The request carries the credential's auth header, so it must stay on
     # the provider host. Require a strictly relative path first: an
     # absolute, scheme-relative, or backslash-bearing path can be parsed

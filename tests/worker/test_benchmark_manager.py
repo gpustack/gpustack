@@ -25,8 +25,8 @@ def _point(rate, tps, tpot, *, total=100, ok=None, **extra):
     """One row of the per-point result grid, as uploaded to benchmark_results.
 
     `tpot` lands on `inter_token_latency_mean`, which is where the decode-only
-    per-token time lives (guidellm's naming) and what `sla_avg_tpot_ms` is
-    evaluated against — see SLA_THRESHOLDS.
+    per-token time lives (guidellm's naming) and what `slo_avg_tpot_ms` is
+    evaluated against — see SLO_THRESHOLDS.
     """
     return {
         "rate": rate,
@@ -55,13 +55,13 @@ _SWEEP = [
 
 
 class TestComputeBestPoints:
-    def test_peak_and_recommendation_without_sla(self):
+    def test_peak_and_recommendation_without_slo(self):
         benchmark = SimpleNamespace()
         out = analysis.compute_best_points(benchmark, _SWEEP)
         assert out["peak_rate"] == 31
-        # No SLA => recommend the throughput peak, and report no SLA capacity.
+        # No SLO => recommend the throughput peak, and report no SLO capacity.
         assert out["recommended_rate"] == 31
-        assert "sla_met_rate" not in out
+        assert "slo_met_rate" not in out
 
     def test_p95_threshold_is_evaluated(self):
         points = [
@@ -69,19 +69,19 @@ class TestComputeBestPoints:
             _point(8, 9100, 0.35, time_to_first_token_p95=480.0),
             _point(16, 17800, 0.62, time_to_first_token_p95=900.0),
         ]
-        benchmark = SimpleNamespace(sla_p95_ttft_ms=500.0)
+        benchmark = SimpleNamespace(slo_p95_ttft_ms=500.0)
         out = analysis.compute_best_points(benchmark, points)
         # rate 16 breaches the p95 budget, so capacity tops out at 8.
-        assert out["sla_met_rate"] == 8
+        assert out["slo_met_rate"] == 8
         assert out["recommended_rate"] == 8
 
     def test_point_missing_the_p95_metric_never_meets_a_p95_threshold(self):
-        benchmark = SimpleNamespace(sla_p95_tpot_ms=50.0)
+        benchmark = SimpleNamespace(slo_p95_tpot_ms=50.0)
         # Rows written before p95 was collected have no value to compare.
-        assert not analysis.meets_sla(benchmark, _point(4, 4600, 0.16))
+        assert not analysis.meets_slo(benchmark, _point(4, 4600, 0.16))
 
 
-# Benchmark 74 (qwen3-0.6b, concurrency axis, SLA avg TTFT <= 10s / TPOT <= 1s):
+# Benchmark 74 (qwen3-0.6b, concurrency axis, SLO avg TTFT <= 10s / TPOT <= 1s):
 # throughput peaks at 256 streams and then declines, while a threshold that loose
 # is never violated anywhere in [4, 1024].
 _BM74 = [
@@ -101,15 +101,15 @@ _BM74_BENCHMARK = dict(
     lower_bound=4,
     upper_bound=1024,
     max_points=12,
-    sla_avg_ttft_ms=10000.0,
-    sla_avg_tpot_ms=1000.0,
+    slo_avg_ttft_ms=10000.0,
+    slo_avg_tpot_ms=1000.0,
 )
 
 
-class TestLooseSlaFallsBackToThePeak:
+class TestLooseSloFallsBackToThePeak:
     """A threshold too loose to ever break must not hand back the top of the range.
 
-    Benchmark 74 reported concurrency 1024 as the SLA capacity: 6% LESS throughput
+    Benchmark 74 reported concurrency 1024 as the SLO capacity: 6% LESS throughput
     than 256 at 5809ms TTFT instead of 142ms — a load nobody would choose to run at.
     Past saturation more load buys only queueing, so the operating point is capped
     at the throughput peak and the reason is stated instead of being implied.
@@ -119,17 +119,17 @@ class TestLooseSlaFallsBackToThePeak:
         benchmark = SimpleNamespace(**_BM74_BENCHMARK)
         out = analysis.compute_best_points(benchmark, _BM74)
         assert out["peak_rate"] == 256
-        # The literal SLA answer is kept as measured...
-        assert out["sla_met_rate"] == 1024
+        # The literal SLO answer is kept as measured...
+        assert out["slo_met_rate"] == 1024
         # ...but the point to actually run at is the peak.
         assert out["recommended_rate"] == 256
 
-    def test_a_binding_sla_below_the_peak_is_left_alone(self):
+    def test_a_binding_slo_below_the_peak_is_left_alone(self):
         # Tight TTFT budget: the boundary is at 128, well under the 256 peak, so the
         # cap must not move it.
-        benchmark = SimpleNamespace(**{**_BM74_BENCHMARK, "sla_avg_ttft_ms": 100.0})
+        benchmark = SimpleNamespace(**{**_BM74_BENCHMARK, "slo_avg_ttft_ms": 100.0})
         out = analysis.compute_best_points(benchmark, _BM74)
-        assert out["sla_met_rate"] == 128
+        assert out["slo_met_rate"] == 128
         assert out["recommended_rate"] == 128
 
     def test_verdict_says_tighten_the_thresholds_not_raise_the_bound(self):
@@ -137,15 +137,15 @@ class TestLooseSlaFallsBackToThePeak:
         best = analysis.compute_best_points(benchmark, _BM74)
         v = analysis.compute_validity(benchmark, _BM74, best)
         codes = [w["code"] for w in v["warnings"]]
-        assert codes == ["sla_not_binding"]
+        assert codes == ["slo_not_binding"]
         # "Raise the upper bound" would only buy more points past the peak.
         assert "not_saturated" not in codes
         # The advice carries the peak, so the message can name a load.
         w = v["warnings"][0]
         assert w["params"]["rate"] == 256
 
-    def test_sla_holding_at_the_top_of_a_still_climbing_curve_is_not_flagged(self):
-        # Same loose SLA, but throughput never turned over: here "raise the upper
+    def test_slo_holding_at_the_top_of_a_still_climbing_curve_is_not_flagged(self):
+        # Same loose SLO, but throughput never turned over: here "raise the upper
         # bound" IS the right advice, so the top-edge code must still win.
         points = [
             _point(r, r * 1000.0, 0.5, time_to_first_token_mean=50.0)
@@ -298,6 +298,11 @@ class TestBuildCommandArgs:
             _benchmark_dir="/var/lib/gpustack/benchmarks",
             _api_url="http://127.0.0.1:80/v2/benchmarks/1/state",
             _api_key="token",
+            # Plain-HTTP progress endpoint, so the TLS gating stays out of the way
+            # of what these cover. The gating itself is exercised in
+            # test_benchmark_tls.py.
+            _progress_insecure_skip_tls_verify=False,
+            _progress_is_https=False,
         )
 
     def test_manual_stages_carry_the_load_axis(self):
@@ -335,7 +340,7 @@ class TestBuildCommandArgs:
         )
         assert "--max-requests" not in args
 
-    def test_auto_tune_passes_p95_sla_thresholds(self):
+    def test_auto_tune_passes_p95_slo_thresholds(self):
         args = BenchmarkRunner._build_command_args(
             self._runner(
                 auto_tune=True,
@@ -344,18 +349,18 @@ class TestBuildCommandArgs:
                 upper_bound=64,
                 max_points=6,
                 max_total_seconds=300,
-                sla_p95_ttft_ms=500.0,
-                sla_p95_tpot_ms=None,
-                sla_avg_ttft_ms=None,
-                sla_avg_tpot_ms=None,
-                sla_p99_ttft_ms=None,
-                sla_p99_tpot_ms=None,
-                sla_avg_latency_ms=None,
-                sla_p95_latency_ms=None,
-                sla_p99_latency_ms=None,
+                slo_p95_ttft_ms=500.0,
+                slo_p95_tpot_ms=None,
+                slo_avg_ttft_ms=None,
+                slo_avg_tpot_ms=None,
+                slo_p99_ttft_ms=None,
+                slo_p99_tpot_ms=None,
+                slo_avg_latency_ms=None,
+                slo_p95_latency_ms=None,
+                slo_p99_latency_ms=None,
             )
         )
-        assert args[args.index("--sla-p95-ttft-ms") + 1] == "500.0"
+        assert args[args.index("--slo-p95-ttft-ms") + 1] == "500.0"
 
     def test_max_error_rate_is_forwarded_only_when_guidellm_accepts_it(self):
         # guidellm's MaxErrorRateConstraint takes a fraction in (0, 1) and rejects
@@ -617,14 +622,14 @@ class TestWriteBestPointsAndValidity:
         assert "in_progress" not in captured["validity"]
 
     def test_every_conclusion_field_is_sent_so_none_goes_stale(self, monkeypatch):
-        # A partial sync may have written an sla_met_rate that the final read no
+        # A partial sync may have written an slo_met_rate that the final read no
         # longer supports. Omitting the key would leave that number on the row next
         # to a validity that contradicts it, so all three are always patched.
         captured = {}
         mgr = self._mgr(captured, monkeypatch)
         mgr._write_best_points_and_validity(SimpleNamespace(id=1, name="x"), [])
         assert captured["peak_rate"] == 5
-        assert captured["sla_met_rate"] is None
+        assert captured["slo_met_rate"] is None
         assert captured["recommended_rate"] is None
 
     def _mgr_with_warnings(self, captured, monkeypatch, warnings):
@@ -1053,9 +1058,9 @@ class TestSaturatedAtLowerBoundClearsBestPoints:
         assert "saturated_at_lower_bound" in codes
 
 
-# Benchmark 86 (round 7): loose SLA (10s TTFT / 1s TPOT), concurrency axis. The
+# Benchmark 86 (round 7): loose SLO (10s TTFT / 1s TPOT), concurrency axis. The
 # ramp stops at 512 on the <5% plateau; 512 is the throughput argmax and meets the
-# loose SLA, so it is both the peak and the recommendation. The <5% top step keeps
+# loose SLO, so it is both the peak and the recommendation. The <5% top step keeps
 # the run from being mislabeled range-limited.
 _BM86 = [
     _point(4, 1738.7, 0.15, time_to_first_token_mean=19.1),
@@ -1068,9 +1073,9 @@ _BM86 = [
     _point(512, 17427.6, 14.98, time_to_first_token_mean=1917.2),  # +1.4% plateau
 ]
 
-# Benchmark 93 (round 7 follow-up): a REAL latency SLA (500ms TTFT / 50ms TPOT),
+# Benchmark 93 (round 7 follow-up): a REAL latency SLO (500ms TTFT / 50ms TPOT),
 # concurrency axis. Every point meets it and throughput is still climbing at the
-# top (256 = argmax, TTFT 155ms << 500ms). The answer to "max load within my SLA"
+# top (256 = argmax, TTFT 155ms << 500ms). The answer to "max load within my SLO"
 # is 256 — the knee cap wrongly returned 128.
 _BM93 = [
     _point(4, 3536.0, 0.17, time_to_first_token_mean=22.1),
@@ -1087,8 +1092,8 @@ _BM93_BENCHMARK = dict(
     load_type="concurrency",
     upper_bound=1024,
     max_points=12,
-    sla_avg_ttft_ms=500.0,
-    sla_avg_tpot_ms=50.0,
+    slo_avg_ttft_ms=500.0,
+    slo_avg_tpot_ms=50.0,
 )
 
 
@@ -1101,8 +1106,8 @@ class TestRampFactsBeatInference:
     * `budget_seconds` vs a self-directed stop — both leave "fewer points than the
       range allows". The grid path reported `not_saturated` ("raise the upper
       bound") for a run the clock ended.
-    * `capacity_plateau` vs an SLA binding at the peak — both leave "the highest
-      knob measured met the SLA".
+    * `capacity_plateau` vs an SLO binding at the peak — both leave "the highest
+      knob measured met the SLO".
     """
 
     def _facts(self, bracket, **kw):
@@ -1153,9 +1158,9 @@ class TestRampFactsBeatInference:
         v = analysis.compute_validity(
             benchmark, _BM93, best, self._facts("capacity_plateau", stopped_at=256.0)
         )
-        assert [w["code"] for w in v["warnings"]] == ["sla_not_binding"]
+        assert [w["code"] for w in v["warnings"]] == ["slo_not_binding"]
 
-    def test_an_sla_boundary_reported_by_the_ramp_is_not_flagged(self):
+    def test_an_slo_boundary_reported_by_the_ramp_is_not_flagged(self):
         # Same grid, same loose-looking rates — but the ramp says a THRESHOLD ended
         # the bracket, so this is a real latency boundary and there is nothing to
         # report. The grid alone would still call it capacity-bound (31% headroom
@@ -1163,7 +1168,7 @@ class TestRampFactsBeatInference:
         benchmark = SimpleNamespace(**_BM93_BENCHMARK)
         best = analysis.compute_best_points(benchmark, _BM93)
         v = analysis.compute_validity(
-            benchmark, _BM93, best, self._facts("sla_failed", stopped_at=256.0)
+            benchmark, _BM93, best, self._facts("slo_failed", stopped_at=256.0)
         )
         assert v["warnings"] == []
         assert v["sufficient"] is True
@@ -1197,7 +1202,7 @@ class TestRampFactsBeatInference:
         assert v["bracket_reason"] == "capacity_plateau"
         # The verdict still keys off the BRACKET reason — capacity is what bounded
         # the answer, whatever Phase 2 went on to do.
-        assert [w["code"] for w in v["warnings"]] == ["sla_not_binding"]
+        assert [w["code"] for w in v["warnings"]] == ["slo_not_binding"]
 
     def test_a_legacy_sidecar_without_a_stop_reason_falls_back_to_the_bracket(self):
         benchmark = SimpleNamespace(upper_bound=1024, max_points=12)
@@ -1324,21 +1329,21 @@ class TestProbeCapFactsAreCarriedThrough:
         assert "probe_relaxed" not in v
 
 
-class TestSlaBoundaryLocated:
-    """`sla_met_rate` is an EDGE only when something above it was measured failing.
+class TestSloBoundaryLocated:
+    """`slo_met_rate` is an EDGE only when something above it was measured failing.
 
-    Same number, two meanings: "257 breaks the SLA" vs ">= 256, we stopped looking".
+    Same number, two meanings: "257 breaks the SLO" vs ">= 256, we stopped looking".
     Reporting the second as the first invents a ceiling nobody measured — which is
     what capacity planning would then be done against.
     """
 
     def test_a_measured_breach_above_the_answer_is_an_edge(self):
         # 512 breaches the loose budget, so 256 is where it actually breaks.
-        benchmark = SimpleNamespace(**{**_BM74_BENCHMARK, "sla_avg_ttft_ms": 200.0})
+        benchmark = SimpleNamespace(**{**_BM74_BENCHMARK, "slo_avg_ttft_ms": 200.0})
         best = analysis.compute_best_points(benchmark, _BM74)
-        assert best["sla_met_rate"] == 256
+        assert best["slo_met_rate"] == 256
         v = analysis.compute_validity(benchmark, _BM74, best)
-        assert v["sla_boundary_located"] is True
+        assert v["slo_boundary_located"] is True
 
     def test_stopping_before_anything_failed_is_a_floor(self):
         # bm102: the ramp stopped on the plateau at 256 with the budget 31% used.
@@ -1346,7 +1351,7 @@ class TestSlaBoundaryLocated:
         benchmark = SimpleNamespace(**_BM93_BENCHMARK)
         best = analysis.compute_best_points(benchmark, _BM93)
         v = analysis.compute_validity(benchmark, _BM93, best)
-        assert v["sla_boundary_located"] is False
+        assert v["slo_boundary_located"] is False
 
     def test_reaching_the_range_ceiling_is_not_a_located_boundary(self):
         # Everything passed all the way to upper_bound: the RANGE ran out, so the
@@ -1358,7 +1363,7 @@ class TestSlaBoundaryLocated:
         benchmark = SimpleNamespace(**{**_BM74_BENCHMARK, "upper_bound": 32})
         best = analysis.compute_best_points(benchmark, points)
         v = analysis.compute_validity(benchmark, points, best)
-        assert v["sla_boundary_located"] is False
+        assert v["slo_boundary_located"] is False
 
     def test_the_ramp_bracket_answers_it_directly(self):
         # With facts it is a lookup, not a scan: first_fail is the knob that
@@ -1367,14 +1372,14 @@ class TestSlaBoundaryLocated:
         best = analysis.compute_best_points(benchmark, _BM93)
 
         floor = analysis.compute_validity(
-            benchmark, _BM93, best, {"sla_bracket": [256.0, None]}
+            benchmark, _BM93, best, {"slo_bracket": [256.0, None]}
         )
-        assert floor["sla_boundary_located"] is False
+        assert floor["slo_boundary_located"] is False
 
         edge = analysis.compute_validity(
-            benchmark, _BM93, best, {"sla_bracket": [256.0, 257.0]}
+            benchmark, _BM93, best, {"slo_bracket": [256.0, 257.0]}
         )
-        assert edge["sla_boundary_located"] is True
+        assert edge["slo_boundary_located"] is True
 
     def test_the_grid_fallback_uses_the_same_pass_rule_as_the_answer(self):
         # A point above the answer that fails only the SUCCESS floor (its latency is
@@ -1388,16 +1393,16 @@ class TestSlaBoundaryLocated:
         ]
         benchmark = SimpleNamespace(**{**_BM74_BENCHMARK, "upper_bound": 1024})
         best = analysis.compute_best_points(benchmark, points)
-        assert best["sla_met_rate"] == 8  # 16 excluded by the success floor
+        assert best["slo_met_rate"] == 8  # 16 excluded by the success floor
         v = analysis.compute_validity(benchmark, points, best)
-        assert v["sla_boundary_located"] is True
+        assert v["slo_boundary_located"] is True
 
-    def test_a_run_without_an_sla_has_no_such_key(self):
+    def test_a_run_without_an_slo_has_no_such_key(self):
         # Meaningless without thresholds — absent, not False.
         benchmark = SimpleNamespace(upper_bound=1024, max_points=12)
         best = analysis.compute_best_points(benchmark, _SWEEP)
         v = analysis.compute_validity(benchmark, _SWEEP, best)
-        assert "sla_boundary_located" not in v
+        assert "slo_boundary_located" not in v
 
 
 class TestReadRampFacts:
@@ -1442,12 +1447,12 @@ class TestReadRampFacts:
 
 class TestPeakAndRecommendation:
     """peak_rate is the true throughput argmax; recommended_rate is the peak, or
-    (with an SLA) the SLA boundary capped at the peak — never a lower "knee". The
+    (with an SLO) the SLO boundary capped at the peak — never a lower "knee". The
     plateau guard keeps a saturated top from being mislabeled range-limited."""
 
     def test_bm92_peak_is_the_argmax(self):
         # rate 31 has the highest throughput (0 errors) but was returned as
-        # peak_rate=30. peak_rate and the no-SLA recommendation are both the argmax.
+        # peak_rate=30. peak_rate and the no-SLO recommendation are both the argmax.
         bm92 = [
             _point(4, 4679.8, 0.14),
             _point(8, 9322.6, 0.18),
@@ -1469,12 +1474,12 @@ class TestPeakAndRecommendation:
         v = analysis.compute_validity(benchmark, bm92, out)
         assert v["warnings"] == []  # curve turned over cleanly; nothing to warn
 
-    def test_bm93_real_sla_recommends_the_max_within_the_sla(self):
+    def test_bm93_real_slo_recommends_the_max_within_the_slo(self):
         benchmark = SimpleNamespace(**_BM93_BENCHMARK)
         out = analysis.compute_best_points(benchmark, _BM93)
-        # 256 is the argmax AND meets the SLA => it is peak, sla_met, and the answer.
+        # 256 is the argmax AND meets the SLO => it is peak, slo_met, and the answer.
         assert out["peak_rate"] == 256
-        assert out["sla_met_rate"] == 256
+        assert out["slo_met_rate"] == 256
         assert out["recommended_rate"] == 256  # NOT a lower knee (was 128)
         v = analysis.compute_validity(benchmark, _BM93, out)
         codes = [w["code"] for w in v["warnings"]]
@@ -1483,45 +1488,45 @@ class TestPeakAndRecommendation:
         # 500ms budget was only 31% used there (155ms) — so 256 is a capacity
         # ceiling, not the latency boundary the profile set out to find. Re-observed
         # live as bm102, which reported "sufficient, no warnings" for a 7-point run.
-        assert codes == ["sla_not_binding"]
+        assert codes == ["slo_not_binding"]
         assert v["warnings"][0]["params"] == {"rate": 256, "used": 31}
         # Still not the reversed advice: raising the bound only buys plateau points.
         assert "not_saturated" not in codes
 
-    def test_bm86_loose_sla_recommends_the_peak_without_a_reversed_warning(self):
+    def test_bm86_loose_slo_recommends_the_peak_without_a_reversed_warning(self):
         benchmark = SimpleNamespace(
             load_type="concurrency",
             upper_bound=1024,
             max_points=12,
-            sla_avg_ttft_ms=10000.0,
-            sla_avg_tpot_ms=1000.0,
+            slo_avg_ttft_ms=10000.0,
+            slo_avg_tpot_ms=1000.0,
         )
         out = analysis.compute_best_points(benchmark, _BM86)
         assert out["peak_rate"] == 512
-        assert out["sla_met_rate"] == 512
-        assert out["recommended_rate"] == 512  # meets the loose SLA, max throughput
+        assert out["slo_met_rate"] == 512
+        assert out["recommended_rate"] == 512  # meets the loose SLO, max throughput
         v = analysis.compute_validity(benchmark, _BM86, out)
         codes = [w["code"] for w in v["warnings"]]
         # Plateaued at the top => never "raise the bound". But a 10s TTFT budget
         # that the top point used 19% of (1917ms) did not shape this answer, and
         # saying so is the whole point of the code.
-        assert codes == ["sla_not_binding"]
+        assert codes == ["slo_not_binding"]
         assert v["warnings"][0]["params"]["used"] == 19
         assert "not_saturated" not in codes
 
-    def test_an_sla_pressed_against_at_the_peak_stays_silent(self):
+    def test_an_slo_pressed_against_at_the_peak_stays_silent(self):
         # Same curve and range as bm93, but a budget the top point nearly spends
-        # (155ms of 160ms = 97%): here the SLA genuinely bound the answer, so there
-        # is nothing to report. This is the case _SLA_HEADROOM_RATIO protects — the
+        # (155ms of 160ms = 97%): here the SLO genuinely bound the answer, so there
+        # is nothing to report. This is the case _SLO_HEADROOM_RATIO protects — the
         # headroom test, not the rates, is what separates it from bm93.
         benchmark = SimpleNamespace(
             load_type="concurrency",
             upper_bound=1024,
             max_points=12,
-            sla_avg_ttft_ms=160.0,
+            slo_avg_ttft_ms=160.0,
         )
         out = analysis.compute_best_points(benchmark, _BM93)
-        assert out["sla_met_rate"] == 256
+        assert out["slo_met_rate"] == 256
         assert out["recommended_rate"] == 256
         v = analysis.compute_validity(benchmark, _BM93, out)
         assert v["warnings"] == []
@@ -1530,19 +1535,19 @@ class TestPeakAndRecommendation:
     def test_the_tightest_threshold_decides_the_headroom(self):
         # TTFT is loose (31%) but TPOT is nearly spent (1.21 of 1.3ms = 93%): the
         # run WAS shaped by a latency budget, just not by the one with slack. Taking
-        # the loosest (or an average) would flag a binding SLA as irrelevant.
+        # the loosest (or an average) would flag a binding SLO as irrelevant.
         benchmark = SimpleNamespace(
             load_type="concurrency",
             upper_bound=1024,
             max_points=12,
-            sla_avg_ttft_ms=500.0,
-            sla_avg_tpot_ms=1.3,
+            slo_avg_ttft_ms=500.0,
+            slo_avg_tpot_ms=1.3,
         )
         out = analysis.compute_best_points(benchmark, _BM93)
         v = analysis.compute_validity(benchmark, _BM93, out)
         assert v["warnings"] == []
 
-    def test_no_sla_plateau_does_not_say_raise_the_bound(self):
+    def test_no_slo_plateau_does_not_say_raise_the_bound(self):
         benchmark = SimpleNamespace(upper_bound=1024, max_points=12)
         out = analysis.compute_best_points(benchmark, _BM86)
         assert out["peak_rate"] == 512
@@ -1815,8 +1820,8 @@ class TestTerminalSyncReportsLostPoints:
         )
 
 
-class TestAllSlaThresholdsReachTheRunner:
-    """SLA_THRESHOLDS is the single source of truth. The runner used to keep its own
+class TestAllSloThresholdsReachTheRunner:
+    """SLO_THRESHOLDS is the single source of truth. The runner used to keep its own
     hand-written copy of the nine flags, so a threshold added to the model but not to
     that list was accepted by the API and silently never forwarded."""
 
@@ -1824,21 +1829,21 @@ class TestAllSlaThresholdsReachTheRunner:
         runner = TestBuildCommandArgs()._runner(
             auto_tune=True,
             load_type="concurrency",
-            **{t.attr: float(i + 1) for i, t in enumerate(bm_schemas.SLA_THRESHOLDS)},
+            **{t.attr: float(i + 1) for i, t in enumerate(bm_schemas.SLO_THRESHOLDS)},
         )
         args = BenchmarkRunner._build_command_args(runner)
-        for i, t in enumerate(bm_schemas.SLA_THRESHOLDS):
+        for i, t in enumerate(bm_schemas.SLO_THRESHOLDS):
             assert t.flag in args, f"{t.attr} was not forwarded"
             assert args[args.index(t.flag) + 1] == str(float(i + 1))
 
     def test_the_flags_are_distinct(self):
-        flags = [t.flag for t in bm_schemas.SLA_THRESHOLDS]
+        flags = [t.flag for t in bm_schemas.SLO_THRESHOLDS]
         assert len(set(flags)) == len(flags)
 
     def test_each_row_points_at_a_real_column_and_a_real_metric(self):
         from gpustack.schemas.benchmark import BenchmarkBase, BenchmarkMetricsLite
 
-        for t in bm_schemas.SLA_THRESHOLDS:
+        for t in bm_schemas.SLO_THRESHOLDS:
             assert t.attr in BenchmarkBase.model_fields
             assert t.metric in BenchmarkMetricsLite.model_fields
 
@@ -1953,8 +1958,8 @@ class TestUnreadableResultsAreReported:
         ]
 
 
-class TestTpotSlaIsDecodeOnly:
-    """A `sla_*_tpot_ms` threshold bounds the DECODE-ONLY per-token time.
+class TestTpotSloIsDecodeOnly:
+    """A `slo_*_tpot_ms` threshold bounds the DECODE-ONLY per-token time.
 
     guidellm reports two per-output-token latencies under names that are the
     reverse of the industry's: `inter_token_latency_ms` is
@@ -1963,36 +1968,36 @@ class TestTpotSlaIsDecodeOnly:
     the average. The thresholds used to be judged on the second one, which billed
     prefill and queue wait to the decode loop: the error is TTFT / (n * TPOT), so
     ~5% at 128 output tokens and ~40% at 16, and it grew with load exactly where
-    the SLA decides capacity.
+    the SLO decides capacity.
     """
 
     def test_the_thresholds_read_the_decode_only_columns(self):
-        by_attr = {t.attr: t.metric for t in bm_schemas.SLA_THRESHOLDS}
-        assert by_attr["sla_avg_tpot_ms"] == "inter_token_latency_mean"
-        assert by_attr["sla_p95_tpot_ms"] == "inter_token_latency_p95"
-        assert by_attr["sla_p99_tpot_ms"] == "inter_token_latency_p99"
+        by_attr = {t.attr: t.metric for t in bm_schemas.SLO_THRESHOLDS}
+        assert by_attr["slo_avg_tpot_ms"] == "inter_token_latency_mean"
+        assert by_attr["slo_p95_tpot_ms"] == "inter_token_latency_p95"
+        assert by_attr["slo_p99_tpot_ms"] == "inter_token_latency_p99"
 
     def test_the_includes_ttft_metric_is_only_the_fallback(self):
-        metrics = {t.metric for t in bm_schemas.SLA_THRESHOLDS}
+        metrics = {t.metric for t in bm_schemas.SLO_THRESHOLDS}
         assert "time_per_output_token_mean" not in metrics
         assert "time_per_output_token_p95" not in metrics
         assert "time_per_output_token_p99" not in metrics
-        by_attr = {t.attr: t.fallback for t in bm_schemas.SLA_THRESHOLDS}
-        assert by_attr["sla_avg_tpot_ms"] == "time_per_output_token_mean"
-        assert by_attr["sla_p95_tpot_ms"] == "time_per_output_token_p95"
-        assert by_attr["sla_p99_tpot_ms"] == "time_per_output_token_p99"
+        by_attr = {t.attr: t.fallback for t in bm_schemas.SLO_THRESHOLDS}
+        assert by_attr["slo_avg_tpot_ms"] == "time_per_output_token_mean"
+        assert by_attr["slo_p95_tpot_ms"] == "time_per_output_token_p95"
+        assert by_attr["slo_p99_tpot_ms"] == "time_per_output_token_p99"
 
     def test_only_the_tpot_rows_have_a_fallback(self):
         # TTFT and end-to-end latency are always measurable; giving them a second
         # column to try would only hide a missing percentile.
-        for t in bm_schemas.SLA_THRESHOLDS:
+        for t in bm_schemas.SLO_THRESHOLDS:
             if "tpot" not in t.attr:
                 assert t.fallback is None, t.attr
 
     def test_every_fallback_points_at_a_real_column(self):
         from gpustack.schemas.benchmark import BenchmarkMetricsLite
 
-        for t in bm_schemas.SLA_THRESHOLDS:
+        for t in bm_schemas.SLO_THRESHOLDS:
             if t.fallback:
                 assert t.fallback in BenchmarkMetricsLite.model_fields
 
@@ -2004,25 +2009,25 @@ class TestTpotSlaIsDecodeOnly:
         # number left, so the threshold is judged on it. The alternatives are both
         # wrong: 0 ms clears every budget, and failing outright would bracket the
         # ramp on its first point for any server that batches its stream.
-        benchmark = SimpleNamespace(sla_avg_tpot_ms=5.0)
+        benchmark = SimpleNamespace(slo_avg_tpot_ms=5.0)
         one_chunk = _point(4, 4600, 0.0, time_per_output_token_mean=4.7)
-        assert analysis.meets_sla(benchmark, one_chunk)
-        assert analysis.sla_utilization(benchmark, one_chunk) == pytest.approx(0.94)
-        assert not analysis.meets_sla(SimpleNamespace(sla_avg_tpot_ms=4.0), one_chunk)
+        assert analysis.meets_slo(benchmark, one_chunk)
+        assert analysis.slo_utilization(benchmark, one_chunk) == pytest.approx(0.94)
+        assert not analysis.meets_slo(SimpleNamespace(slo_avg_tpot_ms=4.0), one_chunk)
 
     def test_neither_basis_measured_fails_instead_of_waiving_the_threshold(self):
         # Also the shape of an old row written before either column existed:
         # "we did not measure it" is not evidence that the threshold held.
-        benchmark = SimpleNamespace(sla_avg_tpot_ms=5.0)
-        assert not analysis.meets_sla(benchmark, _point(4, 4600, 0.0))
+        benchmark = SimpleNamespace(slo_avg_tpot_ms=5.0)
+        assert not analysis.meets_slo(benchmark, _point(4, 4600, 0.0))
         # ... and it must not report 0% of the budget used either, which is what
-        # decides whether the SLA is described as binding.
-        assert analysis.sla_utilization(benchmark, _point(4, 4600, 0.0)) is None
+        # decides whether the SLO is described as binding.
+        assert analysis.slo_utilization(benchmark, _point(4, 4600, 0.0)) is None
 
     def test_a_measured_tpot_still_passes_and_reports_its_utilization(self):
-        benchmark = SimpleNamespace(sla_avg_tpot_ms=5.0)
-        assert analysis.meets_sla(benchmark, _point(4, 4600, 2.5))
-        assert analysis.sla_utilization(benchmark, _point(4, 4600, 2.5)) == 0.5
+        benchmark = SimpleNamespace(slo_avg_tpot_ms=5.0)
+        assert analysis.meets_slo(benchmark, _point(4, 4600, 2.5))
+        assert analysis.slo_utilization(benchmark, _point(4, 4600, 2.5)) == 0.5
 
 
 class TestOneMissingPercentileDoesNotCostThePoint:
@@ -2042,7 +2047,7 @@ class TestOneMissingPercentileDoesNotCostThePoint:
 
     def test_absence_is_not_zero(self):
         # 0 would be indistinguishable from a real measurement of 0 ms, and it is
-        # what a SLA verdict or an IQR band would then be computed from.
+        # what a SLO verdict or an IQR band would then be computed from.
         from gpustack.worker.schemas.benchmark_runner import Percentiles
 
         dumped = Percentiles.model_validate({"p50": 12.0}).model_dump()

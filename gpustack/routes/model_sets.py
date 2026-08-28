@@ -1,6 +1,6 @@
 import math
 from typing import Dict, List, Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from packaging.version import Version
 from packaging.specifiers import SpecifierSet
 from gpustack_runtime.detector import ManufacturerEnum
@@ -8,26 +8,43 @@ from gpustack.api.exceptions import NotFoundException
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.gpu_devices import GPUDevice
 from gpustack.server.catalog import (
-    ModelSet,
     ModelSetPublic,
     ModelSpec,
-    get_model_sets,
-    get_model_set_specs,
+    get_model_sets as list_catalog_model_sets,
+    get_model_set_specs as get_catalog_model_set_specs,
+)
+from gpustack.schemas.catalog_source import (
+    BUILTIN_CATALOG_SOURCE_NAME,
+    CUSTOM_CATALOG_SOURCE_NAME,
+    CatalogSource,
+    normalize_catalog_yaml,
 )
 from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.server.sources.routes import SourceConfigSpec
 from gpustack.utils.search import rank_matches
 from gpustack.worker.backends.base import get_ascend_cann_variant
 
 router = APIRouter()
 
+# The catalog's source binding for the shared engine. Configured through
+# ``routes/ota_sources.py``, which mounts one endpoint family for all three kinds.
+CATALOG_SOURCE_SPEC = SourceConfigSpec(
+    source_cls=CatalogSource,
+    normalize=normalize_catalog_yaml,
+    builtin_name=BUILTIN_CATALOG_SOURCE_NAME,
+    custom_name=CUSTOM_CATALOG_SOURCE_NAME,
+)
+
 
 @router.get("", response_model=PaginatedList[ModelSetPublic])
 async def get_model_sets(
+    session: SessionDep,
     params: ListParamsDep,
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
-    model_sets: List[ModelSet] = Depends(get_model_sets),
 ):
+    model_sets = await list_catalog_model_sets(session)
+
     if search:
         # Matching ignores separators, which admits loose matches; ranking by
         # relevance is what keeps the model the user typed above them, since
@@ -81,10 +98,8 @@ async def get_model_specs(
     cluster_id: Optional[int] = Query(
         None, description="Filter specs compatible with the given cluster ID."
     ),
-    model_set_specs: Dict[int, List[ModelSpec]] = Depends(get_model_set_specs),
 ):
-
-    specs = model_set_specs.get(id, [])
+    specs = await get_catalog_model_set_specs(session, id)
     if not specs:
         raise NotFoundException(message="Model set not found")
 

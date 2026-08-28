@@ -2,7 +2,6 @@ import logging
 import random
 import string
 import asyncio
-import yaml
 from importlib.resources import files
 from functools import partial
 from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
@@ -22,12 +21,11 @@ from gpustack.policies.scorers.score_chain import (
     ModelInstanceScoreChain,
 )
 from gpustack.policies.base import ModelInstanceScore
+from gpustack.policies.worker_filters.label_matching_filter import label_matching
 from gpustack.policies.scorers.status_scorer import StatusScorer
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
     get_built_in_backend,
-    VersionConfig,
-    VersionConfigDict,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
@@ -70,6 +68,16 @@ from gpustack.schemas.config import (
     GatewayModeEnum,
     SensitivePredefinedConfig,
 )
+from gpustack.schemas.cache_services import (
+    cache_service_spec_digest,
+    CacheService,
+    CacheServiceInstance,
+    CacheServiceInstanceCreate,
+    CacheServiceModeEnum,
+    CacheServiceStateEnum,
+)
+from gpustack.server.cache_provider_catalog import get_cache_provider
+from gpustack.server.cache_services import resolve_instance_cache_config_safe
 from gpustack.schemas.workers import (
     Worker,
     WorkerStateEnum,
@@ -90,7 +98,32 @@ from gpustack.schemas.users import (
     User,
     is_default_cluster_principal,
 )
-from gpustack.server.bus import Event, EventType, event_bus
+from gpustack.schemas.runner_source import (
+    InferenceRunnerSource,
+    reconcile_runner_overrides,
+)
+from gpustack.schemas.catalog_source import (
+    BUILTIN_CATALOG_SOURCE_NAME,
+    CatalogSource,
+    normalize_catalog_yaml,
+    reconcile_catalog,
+)
+from gpustack.schemas.inference_backend_source import (
+    BUILTIN_BACKEND_SOURCE_NAME,
+    InferenceBackendSource,
+    normalize_backend_yaml,
+    reconcile_backend,
+)
+from gpustack.server.catalog import read_builtin_catalog_text
+from gpustack.schemas.source import SourceTypeEnum
+from gpustack.server.sources.core import gather_and_merge, sha256_of
+from gpustack.server.bus import (
+    Event,
+    EventType,
+    event_bus,
+    event_field,
+    resolve_event_id,
+)
 from gpustack.server.cache import delete_cache_by_key
 from gpustack.utils.model_source import get_draft_model_source
 from gpustack import envs
@@ -114,6 +147,7 @@ from gpustack.cloud_providers.common import (
 from gpustack.cloud_providers.abstract import (
     ProviderClientBase,
     CloudInstance,
+    InstanceProvisioningFailed,
     InstanceState,
 )
 from kubernetes_asyncio import client as k8s_client
@@ -202,6 +236,15 @@ class ModelController:
         Reconcile the model.
         """
         model: Model = event.data
+        # Unhydrated means a delete whose row is gone (see Event), and every
+        # callee below reads model fields. Leader-only controller, so nothing
+        # else picks it up -- warn rather than drop it quietly.
+        if not isinstance(model, Model):
+            logger.warning(
+                f"Model {resolve_event_id(event)} {event.type} not reconciled: "
+                f"the event carries only an id and the row is gone"
+            )
+            return
         try:
             async with async_session() as session:
                 await sync_replicas(session, model)
@@ -237,22 +280,46 @@ class ModelInstanceController:
         """
 
         model_instance: ModelInstance = event.data
+        # A cross-instance DELETE may carry only the id (see Event), so take
+        # what the payload can give: the id always resolves, model_id only
+        # when the event is hydrated.
+        instance_id = resolve_event_id(event)
+        model_id = event_field(model_instance, "model_id")
         try:
             async with async_session() as session:
                 if event.type == EventType.DELETED and model_instance is not None:
                     # Cover cascade deletes that bypass ModelInstanceService.
+                    #
+                    # Known gap: with an id-only payload model_id is unknown,
+                    # so the get_running_instances entry -- the one that feeds
+                    # routing, and so the more important of the two -- is not
+                    # dropped. Deletes through ModelInstanceService are fine
+                    # (it invalidates itself, and delete_cache_by_key
+                    # broadcasts), but the cascade path this block exists for
+                    # is not, and the controller is leader-only so no other
+                    # process retries it. Closing it needs the deleted row's
+                    # model_id, which no event can carry.
                     instance_service = ModelInstanceService(session)
-                    if model_instance.model_id is not None:
+                    if model_id is not None:
                         await delete_cache_by_key(
                             instance_service.get_running_instances,
-                            model_instance.model_id,
+                            model_id,
                         )
-                    if model_instance.id is not None:
+                    if instance_id is not None:
                         await delete_cache_by_key(
-                            instance_service.get_by_id, model_instance.id
+                            instance_service.get_by_id, instance_id
                         )
 
-                model = await Model.one_by_id(session, model_instance.model_id)
+                # Everything past this point needs the row's fields, and
+                # model_id is the way in. Return explicitly rather than
+                # letting one_by_id take a None primary key: it warns today
+                # ("fully NULL primary key identity cannot load any object")
+                # and SQLAlchemy reserves the right to raise on it later.
+                # Nothing is lost -- the replica sync is level-triggered, and
+                # the deleting instance ran it against the hydrated row.
+                if model_id is None:
+                    return
+                model = await Model.one_by_id(session, model_id)
                 if not model:
                     return
                 model_deleting = model.deleted_at is not None
@@ -293,8 +360,511 @@ class ModelInstanceController:
                     await revoke_model_access_cache(session=session)
         except Exception as e:
             logger.error(
-                f"Failed to reconcile model instance {model_instance.name}: {e}"
+                "Failed to reconcile model instance "
+                f"{event_field(model_instance, 'name', instance_id)}: {e}"
             )
+
+
+class CacheServiceController:
+    """
+    Reconciles managed cache services onto their desired CacheServiceInstance
+    set and aggregates instance states back onto the service row.
+
+    The provider declaration's topology dictates the desired set: singleton
+    services run exactly one instance on the user-picked worker; per_node
+    services run one instance per non-deleted worker of the service's cluster
+    (narrowed to workers matching the service's worker_selector labels when
+    one is set), following workers as they join and leave. Instances whose
+    worker left the desired set are hard-deleted; their workloads are
+    cleaned up by the worker-side orphan cleaner. External services are
+    untouched.
+    """
+
+    RESYNC_INTERVAL_SECONDS = 60
+
+    def __init__(self, cfg: Config):
+        self._config = cfg
+
+    async def start(self):
+        """
+        Start the controller.
+        """
+        await asyncio.gather(
+            self._watch_cache_services(),
+            self._watch_workers(),
+            self._watch_instances(),
+            self._resync_loop(),
+        )
+
+    async def _watch_cache_services(self):
+        async for event in CacheService.subscribe(source="cache_service_controller"):
+            if event.type not in (EventType.CREATED, EventType.UPDATED):
+                # Service deletion is a hard delete; the instances table's
+                # ON DELETE CASCADE drops the rows with it.
+                continue
+            cache_service: CacheService = event.data
+            if (
+                cache_service is None
+                or cache_service.mode != CacheServiceModeEnum.MANAGED
+            ):
+                continue
+            await self._reconcile_service_by_id(cache_service.id)
+
+    async def _watch_workers(self):
+        # The resync loop covers startup, so the initial CREATED replay
+        # would only duplicate it.
+        async for event in Worker.subscribe(
+            source="cache_service_controller_workers", replay_existing=False
+        ):
+            if event.type not in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                continue
+            # An id-only DELETE payload (see Event) cannot tell us which
+            # cluster to reconcile, which reads the same as a worker with no
+            # cluster: nothing to do here, and the resync loop heals it.
+            cluster_id = event_field(event.data, "cluster_id")
+            if cluster_id is None:
+                continue
+            # Of the update stream, only (un)soft-deletion and label
+            # changes (which move a worker in or out of per_node services'
+            # selector scopes) change the desired instance set.
+            changed_fields = event.changed_fields or {}
+            if event.type == EventType.UPDATED and not (
+                "deleted_at" in changed_fields or "labels" in changed_fields
+            ):
+                continue
+            await self._reconcile_cluster_services(cluster_id)
+
+    async def _watch_instances(self):
+        async for event in CacheServiceInstance.subscribe(
+            source="cache_service_controller_instances", replay_existing=False
+        ):
+            if event.type not in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                continue
+            instance: CacheServiceInstance = event.data
+            if instance is None or instance.cache_service_id is None:
+                continue
+            try:
+                async with async_session() as session:
+                    service = await CacheService.one_by_id(
+                        session, instance.cache_service_id
+                    )
+                    if (
+                        service is None
+                        or service.deleted_at is not None
+                        or service.mode != CacheServiceModeEnum.MANAGED
+                    ):
+                        continue
+                    if event.type == EventType.DELETED:
+                        # A deleted instance whose worker is still in the
+                        # desired set gets a fresh PENDING replacement row
+                        # right away instead of on the next resync pass, so
+                        # instance deletion doubles as a relaunch from
+                        # scratch.
+                        await self._reconcile_service(session, service)
+                        # Deletion also invalidates engines attached to the
+                        # instance (e.g. a narrowed worker_selector).
+                        await self._refresh_attached_snapshots(session, service)
+                    else:
+                        await self._sync_service_aggregate(session, service)
+                        changed = set(event.changed_fields or {})
+                        # Both directions matter: turning RUNNING attaches
+                        # waiting engines, leaving RUNNING (or moving
+                        # ports) invalidates attached ones.
+                        if event.type == EventType.CREATED or (
+                            {"state", "port"} & changed
+                        ):
+                            await self._refresh_attached_snapshots(session, service)
+            except Exception as e:
+                logger.error(
+                    f"Failed to reconcile cache service "
+                    f"{instance.cache_service_id} on instance event: {e}"
+                )
+
+    _PRE_START_STATES = frozenset(
+        {
+            ModelInstanceStateEnum.SCHEDULED,
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.DOWNLOADING,
+        }
+    )
+    """Model-instance states whose engine has not consumed the snapshot
+    yet: the serve process re-reads the row at the STARTING transition,
+    so a rewrite made in any of these states still reaches the engine.
+    STARTING itself is excluded — the container launch races the write."""
+
+    _CACHE_READY_HINT = "cache service is now ready; restart the instance to attach"
+
+    async def _refresh_attached_snapshots(
+        self, session: AsyncSession, service: CacheService
+    ):
+        """A cache instance changing (turning RUNNING, moving ports,
+        stopping, being deleted) makes the cache_config snapshots
+        resolved before it stale. The snapshot has no other owner, so
+        this is the convergence point, in both directions:
+
+        - degraded instances whose engine has not started yet get a
+          fresh resolve written to the row, closing the
+          create-service-then-model window (cache image pull and model
+          download overlap);
+        - RUNNING engines keep their snapshot — it records what the
+          engine actually started with — but its endpoint_live view
+          tracks the present: it flips off when the recorded endpoint is
+          no longer what a fresh resolve yields (cache gone, or moved to
+          another port), and back on upon recovery, so the "attached"
+          indicators never report a cache that is not there. A degraded
+          RUNNING engine gains a restart hint when a fresh resolve would
+          now attach (never for takeover/incompatibility, which a
+          restart would not fix)."""
+        models = await Model.all_by_fields(
+            session,
+            fields={"cluster_id": service.cluster_id},
+            extra_conditions=[Model.deleted_at.is_(None)],
+        )
+        attached = [
+            model
+            for model in models
+            if model.extended_kv_cache
+            and model.extended_kv_cache.is_shared()
+            and model.extended_kv_cache.cache_service_id == service.id
+        ]
+        if not attached:
+            return
+        workers_by_id = {
+            worker.id: worker
+            for worker in await Worker.all_by_fields(
+                session,
+                fields={"cluster_id": service.cluster_id},
+                extra_conditions=[Worker.deleted_at.is_(None)],
+            )
+        }
+        for model in attached:
+            instances = await ModelInstance.all_by_fields(
+                session, {"model_id": model.id}
+            )
+            for mi in instances:
+                if mi.worker_id is None:
+                    # Pre-scheduling instances resolve at placement.
+                    continue
+                refreshable = mi.state in self._PRE_START_STATES
+                running = mi.state == ModelInstanceStateEnum.RUNNING
+                if not (refreshable or running):
+                    continue
+                snapshot = await resolve_instance_cache_config_safe(
+                    session,
+                    model,
+                    workers_by_id.get(mi.worker_id),
+                    spans_workers=mi.spans_workers,
+                )
+                if snapshot is None:
+                    continue
+                if refreshable:
+                    if snapshot == mi.cache_config:
+                        continue
+                    mi.cache_config = snapshot
+                    await ModelInstanceService(session).update(mi)
+                    continue
+                current = mi.cache_config
+                if current is None:
+                    continue
+                if current.injected:
+                    live = bool(
+                        snapshot.injected
+                        and snapshot.endpoint is not None
+                        and current.endpoint is not None
+                        and snapshot.endpoint.host == current.endpoint.host
+                        and snapshot.endpoint.port == current.endpoint.port
+                    )
+                    unchanged = (
+                        current.endpoint_live is False
+                        if not live
+                        else current.endpoint_live in (None, True)
+                    )
+                    if unchanged:
+                        continue
+                    mi.cache_config = current.model_copy(update={"endpoint_live": live})
+                    await ModelInstanceService(session).update(mi)
+                elif snapshot.injected and self._CACHE_READY_HINT not in (
+                    current.reason or ""
+                ):
+                    reason = current.reason
+                    mi.cache_config = current.model_copy(
+                        update={
+                            "reason": (
+                                f"{reason}; {self._CACHE_READY_HINT}"
+                                if reason
+                                else self._CACHE_READY_HINT
+                            )
+                        }
+                    )
+                    await ModelInstanceService(session).update(mi)
+
+    async def _resync_loop(self):
+        """Periodic full pass over managed services, catching drift the
+        event paths missed (e.g. events dropped on a full queue)."""
+        while True:
+            await asyncio.sleep(self.RESYNC_INTERVAL_SECONDS)
+            try:
+                async with async_session() as session:
+                    services = await CacheService.all_by_fields(
+                        session,
+                        fields={"mode": CacheServiceModeEnum.MANAGED},
+                        extra_conditions=[CacheService.deleted_at.is_(None)],
+                    )
+                for service in services:
+                    await self._reconcile_service_by_id(service.id)
+                    # The snapshot convergence path is event-driven; the
+                    # resync exists to catch dropped events, so it must
+                    # cover this path too (idempotent).
+                    async with async_session() as session:
+                        refreshed = await CacheService.one_by_id(session, service.id)
+                        if refreshed is not None and refreshed.deleted_at is None:
+                            await self._refresh_attached_snapshots(session, refreshed)
+            except Exception as e:
+                logger.error(f"Failed to resync cache services: {e}")
+
+    async def _reconcile_cluster_services(self, cluster_id: int):
+        try:
+            async with async_session() as session:
+                services = await CacheService.all_by_fields(
+                    session,
+                    fields={
+                        "mode": CacheServiceModeEnum.MANAGED,
+                        "cluster_id": cluster_id,
+                    },
+                    extra_conditions=[CacheService.deleted_at.is_(None)],
+                )
+            for service in services:
+                await self._reconcile_service_by_id(service.id)
+        except Exception as e:
+            logger.error(
+                f"Failed to reconcile cache services of cluster {cluster_id}: {e}"
+            )
+
+    async def _reconcile_service_by_id(self, cache_service_id: int):
+        try:
+            async with async_session() as session:
+                service = await CacheService.one_by_id(session, cache_service_id)
+                if (
+                    service is None
+                    or service.deleted_at is not None
+                    or service.mode != CacheServiceModeEnum.MANAGED
+                ):
+                    return
+                await self._reconcile_service(session, service)
+        except Exception as e:
+            logger.error(f"Failed to reconcile cache service {cache_service_id}: {e}")
+
+    async def _reconcile_service(self, session: AsyncSession, service: CacheService):
+        """Drive the service's instance rows to the desired worker set,
+        then refresh the service-level aggregate state."""
+        desired_worker_ids, error_message, reconcile = await self._desired_worker_ids(
+            session, service
+        )
+        if error_message is not None and not reconcile:
+            await self._set_service_state(
+                session,
+                service,
+                state=CacheServiceStateEnum.ERROR,
+                state_message=error_message,
+                healthy=False,
+            )
+            return
+
+        instances = await CacheServiceInstance.all_by_fields(
+            session, {"cache_service_id": service.id}
+        )
+        existing_worker_ids = set()
+        for instance in instances:
+            if instance.worker_id not in desired_worker_ids:
+                await instance.delete(session)
+                logger.info(
+                    f"Deleted instance {instance.id} of cache service "
+                    f"{service.name}: worker {instance.worker_id} left "
+                    "the desired set"
+                )
+            else:
+                existing_worker_ids.add(instance.worker_id)
+
+        for worker_id in sorted(desired_worker_ids - existing_worker_ids):
+            # Same display-name convention as model instances: the parent's
+            # name (as of instance creation; a later service rename does not
+            # rename instances) plus a short random suffix.
+            name_suffix = ''.join(
+                random.choices(string.ascii_lowercase + string.digits, k=5)
+            )
+            await CacheServiceInstance.create(
+                session,
+                CacheServiceInstanceCreate(
+                    name=f"{service.name}-{name_suffix}",
+                    cache_service_id=service.id,
+                    worker_id=worker_id,
+                    cluster_id=service.cluster_id,
+                    state=CacheServiceStateEnum.PENDING,
+                    spec_digest=cache_service_spec_digest(service),
+                ),
+            )
+            logger.info(
+                f"Created instance of cache service {service.name} "
+                f"on worker {worker_id}"
+            )
+
+        if error_message is not None:
+            await self._set_service_state(
+                session,
+                service,
+                state=CacheServiceStateEnum.ERROR,
+                state_message=error_message,
+                healthy=False,
+            )
+            return
+        await self._sync_service_aggregate(session, service)
+
+    async def _desired_worker_ids(
+        self, session: AsyncSession, service: CacheService
+    ) -> Tuple[Set[int], Optional[str], bool]:
+        """The workers the service should have instances on, an error
+        message when the desired set is unsatisfiable, and whether the
+        instance rows should still be reconciled onto that set. A per_node
+        selector matching nothing is an authoritative empty set — labels
+        change only by explicit edits, so the instances follow (the
+        selector can scale the service to zero) and the service parks in
+        ERROR to say why. A singleton service whose picked worker is gone
+        parks without touching its rows: the identity worker vanishing is
+        a fault, not a narrowing."""
+        provider = get_cache_provider(service.provider_name)
+        topology = provider.topology if provider else "singleton"
+        if topology == "per_node":
+            workers = await Worker.all_by_fields(
+                session,
+                fields={"cluster_id": service.cluster_id},
+                extra_conditions=[Worker.deleted_at.is_(None)],
+            )
+            if not workers:
+                return (
+                    set(),
+                    "Cluster has no active workers to run cache instances.",
+                    True,
+                )
+            selector = service.worker_selector
+            if selector:
+                workers = [
+                    worker
+                    for worker in workers
+                    if label_matching(selector, worker.labels or {})
+                ]
+                if not workers:
+                    return (
+                        set(),
+                        f"No workers match the worker selector: {selector}.",
+                        True,
+                    )
+            return {worker.id for worker in workers}, None, True
+
+        if not service.worker_id:
+            return set(), "No worker assigned.", False
+        worker = await Worker.one_by_id(session, service.worker_id)
+        if (
+            worker is None
+            or worker.deleted_at is not None
+            or worker.cluster_id != service.cluster_id
+        ):
+            return set(), "Assigned worker no longer exists.", False
+        return {service.worker_id}, None, True
+
+    async def _sync_service_aggregate(
+        self, session: AsyncSession, service: CacheService
+    ):
+        """Fold the instances' states into the service row: all RUNNING →
+        RUNNING/healthy; some RUNNING → RUNNING/unhealthy with an N/M
+        breakdown; none RUNNING but a cache server already launching →
+        STARTING; none launched yet → PENDING; otherwise ERROR."""
+        instances = await CacheServiceInstance.all_by_fields(
+            session, {"cache_service_id": service.id}
+        )
+        total = len(instances)
+        running = sum(
+            1
+            for instance in instances
+            if instance.state == CacheServiceStateEnum.RUNNING
+        )
+        starting = any(
+            instance.state == CacheServiceStateEnum.STARTING for instance in instances
+        )
+        pending = any(
+            instance.state == CacheServiceStateEnum.PENDING for instance in instances
+        )
+
+        if total and running == total:
+            state, healthy, message = CacheServiceStateEnum.RUNNING, True, None
+        elif running:
+            state, healthy, message = (
+                CacheServiceStateEnum.RUNNING,
+                False,
+                f"{running}/{total} instances running",
+            )
+        elif starting:
+            state, healthy, message = CacheServiceStateEnum.STARTING, None, None
+        elif pending:
+            state, healthy, message = CacheServiceStateEnum.PENDING, None, None
+        else:
+            state, healthy, message = (
+                CacheServiceStateEnum.ERROR,
+                False,
+                f"0/{total} instances running" if total else "no instances running",
+            )
+
+        # A spec edit does not touch running containers (the controller
+        # reconciles the instance set, not the spec; recovery is
+        # delete-to-recreate) — say so instead of silently returning the
+        # new spec from the API while containers run the old one.
+        # Instances predating the digest (None) are never flagged.
+        current_digest = cache_service_spec_digest(service)
+        if any(
+            instance.spec_digest and instance.spec_digest != current_digest
+            for instance in instances
+        ):
+            drift_message = (
+                "configuration changed after instances started; delete "
+                "instances to recreate them with the current configuration"
+            )
+            message = f"{message}; {drift_message}" if message else drift_message
+
+        await self._set_service_state(
+            session, service, state=state, state_message=message, healthy=healthy
+        )
+
+    async def _set_service_state(
+        self,
+        session: AsyncSession,
+        service: CacheService,
+        state: CacheServiceStateEnum,
+        state_message: Optional[str],
+        healthy: Optional[bool],
+    ):
+        """Write the aggregate only on change, so steady state produces no
+        UPDATE events for watchers to churn on."""
+        if (
+            service.state == state
+            and service.state_message == state_message
+            and service.healthy == healthy
+        ):
+            return
+        await service.update(
+            session,
+            {
+                "state": state,
+                "state_message": state_message,
+                "healthy": healthy,
+            },
+        )
 
 
 async def sync_replicas(session: AsyncSession, model: Model):
@@ -331,7 +901,7 @@ async def sync_replicas(session: AsyncSession, model: Model):
                 # default of platform_principal_id() would otherwise
                 # land instances of a non-Default-Org Model in Default.
                 owner_principal_id=model.owner_principal_id,
-                draft_model_source=get_draft_model_source(model),
+                draft_model_source=await get_draft_model_source(session, model),
                 backend=get_backend(model),
                 backend_version=model.backend_version,
             )
@@ -1220,6 +1790,7 @@ async def accumulate_model_ai_proxy_group(
         group = mcp_handler.ModelAIProxyGroup(
             model_id=model.id,
             api_tokens=cluster_api_tokens[model.cluster_id],
+            native_anthropic_api=model.native_anthropic_api,
         )
         model_groups[model.id] = group
     service_names = {registry.get_service_name() for _, _, registry in destinations}
@@ -1326,6 +1897,17 @@ class WorkerController:
 
         async for event in Worker.subscribe(source="worker_controller"):
             if event.type == EventType.HEARTBEAT:
+                continue
+            # All three handlers below branch on worker fields (state,
+            # cluster_id, name), none of which survive an unhydrated payload
+            # (see Event). Guarding once keeps one the first handler cannot
+            # read from costing the other two as well.
+            if not isinstance(event.data, Worker):
+                logger.warning(
+                    f"Worker {resolve_event_id(event)} {event.type} not "
+                    f"reconciled: the event carries only an id and the row is "
+                    f"gone"
+                )
                 continue
             try:
                 await self._reconcile(event)
@@ -1532,16 +2114,29 @@ class WorkerController:
 
 class InferenceBackendController:
     """
-    Inference backend controller initializes built-in and community backends in the database.
+    Leader-only controller that seeds the built-in inference engines and the
+    BUILTIN community-backend source, then materializes the Platform-NULL
+    community backends from all enabled InferenceBackendSource rows.
+
+    On start it seeds the packaged community-inference-backends.yaml as the
+    BUILTIN source, then (like RunnerSourceController) subscribes and
+    smart-merges on any source change; the initial replay of existing sources
+    drives the first reconcile.
     """
 
     async def start(self):
         async with async_session() as session:
-            # Initialize built-in backends
             await self._init_built_in_backends(session)
-
-            # Initialize community backends
-            await self._init_community_backends(session)
+        await self._seed_builtin_source()
+        async for event in InferenceBackendSource.subscribe(
+            source="inference_backend_source_controller"
+        ):
+            if event.type in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                await self._reconcile()
 
     async def _init_built_in_backends(self, session: AsyncSession):
         """Initialize built-in backends in the database."""
@@ -1586,220 +2181,72 @@ class InferenceBackendController:
                         f"Updated backend_source for existing built-in backend {backend.backend_name}"
                     )
 
-    async def _init_community_backends(self, session: AsyncSession):  # noqa: C901
-        """Load community backends from community-inference-backends.yaml into database."""
+    async def _reconcile(self):
         try:
-            # Get the path to community-inference-backends.yaml
+            async with async_session() as session:
+                await gather_and_merge(
+                    session, InferenceBackendSource, reconcile_backend
+                )
+        except Exception as e:
+            logger.error(f"Failed to reconcile community backends: {e}")
+
+    async def _seed_builtin_source(self):
+        """Upsert the BUILTIN InferenceBackendSource from the packaged
+        community-inference-backends.yaml.
+
+        The content is refreshed to the newest packaged catalog on every start
+        (so a GPUStack upgrade ships it), while the user's ``enabled`` toggle on
+        the built-in source is left untouched.
+        """
+        try:
             yaml_file = files("gpustack.assets").joinpath(
                 "community-inference-backends.yaml"
             )
-
             if not yaml_file.is_file():
                 logger.debug(
-                    "community-inference-backends.yaml not found, skipping community backend initialization"
+                    "community-inference-backends.yaml not found, skipping seed"
                 )
                 return
-
-            yaml_data = yaml.safe_load(yaml_file.read_text())
-
-            if not yaml_data:
-                logger.debug(
-                    "No community backends found in community-inference-backends.yaml"
-                )
-                return
-
-            if not isinstance(yaml_data, list):
-                logger.error(
-                    f"Invalid community-inference-backends.yaml format: expected list, got {type(yaml_data).__name__}"
-                )
-                return
-
-            # Collect backend names from YAML
-            yaml_backend_names = set()
-            for backend_config in yaml_data:
-                backend_name = backend_config.get("backend_name")
-                if backend_name:
-                    yaml_backend_names.add(backend_name)
-                await self._upsert_community_backend(session, backend_config)
-
-            # Query all community backends from database. Only Platform
-            # rows are owned by the catalog yaml; Org-private community
-            # additions stay untouched.
-            all_backends = await InferenceBackend.all(session)
-            db_community_backends = [
-                backend
-                for backend in all_backends
-                if backend.backend_source == BackendSourceEnum.COMMUNITY
-                and backend.owner_principal_id is None
-            ]
-
-            # Delete community backends that are no longer in YAML
-            for backend in db_community_backends:
-                if backend.backend_name in yaml_backend_names:
-                    continue
-
-                if backend.enabled:
-                    # Convert to custom backend to preserve user's custom versions
-                    # Convert all built_in_frameworks versions to custom_framework versions
-                    converted_versions = {}
-                    if backend.version_configs and backend.version_configs.root:
-                        for version, config in backend.version_configs.root.items():
-                            config_data = config.model_dump()
-                            if config_data.get("built_in_frameworks"):
-                                config_data["custom_framework"] = config_data[
-                                    "built_in_frameworks"
-                                ][0]
-                                config_data["built_in_frameworks"] = None
-                            converted_versions[version] = VersionConfig(**config_data)
-
-                    # Prepare update data
-                    update_data = {
-                        "backend_source": BackendSourceEnum.CUSTOM,
-                        "enabled": False,
-                        "version_configs": VersionConfigDict(root=converted_versions),
-                    }
-                    flag_modified(backend, "version_configs")
-                    await backend.update(session, update_data)
-                    logger.info(
-                        f"Converted community backend '{backend.backend_name}' to custom backend"
-                    )
-                else:
-                    # Delete if no custom versions
-                    await backend.delete(session)
-                    logger.info(
-                        f"Deleted community backend '{backend.backend_name}' "
-                        f"(no longer in community-inference-backends.yaml)"
-                    )
-
-            logger.debug(
-                "Community backends initialized from community-inference-backends.yaml"
-            )
-
-        except (ModuleNotFoundError, FileNotFoundError):
-            # community_backends directory or yaml file does not exist
-            logger.debug(
-                "Community backends directory or file not found, skipping initialization"
-            )
+            raw = await asyncio.to_thread(yaml_file.read_text)
+            content = normalize_backend_yaml(raw)
         except Exception as e:
-            logger.error(f"Failed to initialize community backends: {e}")
-
-    async def _upsert_community_backend(self, session: AsyncSession, config: dict):
-        """Create or update a community backend from YAML configuration."""
-        backend_name = config.get("backend_name")
-        if not backend_name:
+            logger.error(f"Failed to seed built-in inference backend source: {e}")
             return
 
-        # Prepare backend data
-        allowed_keys = [
-            "backend_name",
-            "version_configs",
-            "default_version",
-            "default_backend_param",
-            "default_run_command",
-            "default_entrypoint",
-            "health_check_path",
-            "description",
-            "icon",
-            "default_env",
-            "parameter_format",
-            "common_parameters",
-        ]
-        backend_data = {k: config[k] for k in allowed_keys if k in config}
-
-        # Set backend source
-        backend_data["backend_source"] = BackendSourceEnum.COMMUNITY
-        backend_data["enabled"] = False
-
-        # Convert version_configs to VersionConfigDict
-        if 'version_configs' in backend_data and backend_data['version_configs']:
-            version_config_dict = {}
-            for version, ver_config in backend_data['version_configs'].items():
-                # All versions loaded from YAML are predefined versions
-                # Convert framework information to built_in_frameworks
-
-                frameworks = None
-                if 'built_in_frameworks' in ver_config:
-                    frameworks = ver_config['built_in_frameworks']
-                elif (
-                    'custom_framework' in ver_config and ver_config['custom_framework']
-                ):
-                    # Even if YAML uses custom_framework, convert it to built_in_frameworks
-                    frameworks = [ver_config['custom_framework']]
-
-                # Set built_in_frameworks and clear custom_framework
-                if frameworks:
-                    ver_config['built_in_frameworks'] = (
-                        frameworks if isinstance(frameworks, list) else [frameworks]
-                    )
-                else:
-                    # If no framework specified, use empty list to mark as predefined version
-                    ver_config['built_in_frameworks'] = []
-
-                # Ensure custom_framework is None (predefined versions should not have custom_framework)
-                ver_config['custom_framework'] = None
-
-                version_config_dict[version] = VersionConfig(**ver_config)
-
-            backend_data['version_configs'] = VersionConfigDict(
-                root=version_config_dict
+        content_hash = sha256_of(content)
+        async with async_session() as session:
+            existing = await InferenceBackendSource.one_by_field(
+                session, "name", BUILTIN_BACKEND_SOURCE_NAME
             )
-
-        # Upsert: update if exists, create if not. Community backends seed
-        # at the Platform scope (owner_principal_id IS NULL) — Org-private
-        # extensions live in additional rows owned by Orgs.
-        existing = await InferenceBackend.one_by_fields(
-            session, {"backend_name": backend_name, "owner_principal_id": None}
-        )
-        if existing:
-            # Smart merge logic to preserve user customizations
-
-            # 1. Merge version_configs: preserve user custom versions, update YAML versions
-            if 'version_configs' in backend_data and backend_data['version_configs']:
-                yaml_versions = backend_data['version_configs'].root
-                existing_versions = (
-                    existing.version_configs.root if existing.version_configs else {}
+            if existing:
+                # Skip the write (and its UPDATED event → redundant reconcile)
+                # when a restart re-seeds the same packaged content. Judged by
+                # the same hash every other writer in the source layer uses, so
+                # "did this change" has one answer everywhere.
+                if (
+                    existing.content_hash == content_hash
+                    and existing.source_type == SourceTypeEnum.BUILTIN
+                ):
+                    return
+                await existing.update(
+                    session,
+                    {
+                        "content": content,
+                        "content_hash": content_hash,
+                        "source_type": SourceTypeEnum.BUILTIN,
+                    },
                 )
-
-                # Create merged version dictionary
-                merged_versions = {}
-
-                # First add all YAML versions (overwrite old versions with same name)
-                for version, config in yaml_versions.items():
-                    merged_versions[version] = config
-
-                # Then add user custom versions (built_in_frameworks is None)
-                for version, config in existing_versions.items():
-                    if (
-                        config.built_in_frameworks is None
-                        and version not in yaml_versions
-                    ):
-                        # This is a user custom version not in YAML, preserve it
-                        merged_versions[version] = config
-
-                backend_data['version_configs'] = VersionConfigDict(
-                    root=merged_versions
+            else:
+                await InferenceBackendSource.create(
+                    session,
+                    InferenceBackendSource(
+                        name=BUILTIN_BACKEND_SOURCE_NAME,
+                        source_type=SourceTypeEnum.BUILTIN,
+                        content=content,
+                        content_hash=content_hash,
+                        enabled=True,
+                    ),
                 )
-
-            # 2. Preserve user-modified enabled status (if user enabled it, don't reset to False)
-            if existing.enabled:
-                backend_data['enabled'] = True
-
-            # 3. Merge default_env (preserve user-added environment variables)
-            if existing.default_env:
-                if 'default_env' in backend_data and backend_data['default_env']:
-                    # Merge: YAML environment variables + user-added environment variables
-                    merged_env = dict(existing.default_env)
-                    merged_env.update(backend_data['default_env'])
-                    backend_data['default_env'] = merged_env
-                else:
-                    # YAML doesn't define it, preserve user's
-                    backend_data['default_env'] = existing.default_env
-
-            # 4. Update database
-            await existing.update(session, backend_data)
-        else:
-            backend = InferenceBackend(**backend_data)
-            await InferenceBackend.create(session, backend)
 
 
 class ModelFileController:
@@ -1842,6 +2289,116 @@ class ModelFileController:
                     await sync_instance_files_state(session, instance, [file])
         except Exception as e:
             logger.error(f"Failed to reconcile model file {file.id}: {e}")
+
+
+class RunnerSourceController:
+    """
+    Leader-only controller that materializes RunnerOverrideEntry from
+    InferenceRunnerSource. On any source change (and the initial replay), it
+    gathers all enabled sources, merges them in a stable order, and
+    full-rewrites the override table (pure derived materialization).
+    """
+
+    async def start(self):
+        async for event in InferenceRunnerSource.subscribe(
+            source="runner_source_controller"
+        ):
+            if event.type in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                await self._reconcile()
+
+    async def _reconcile(self):
+        try:
+            async with async_session() as session:
+                await gather_and_merge(
+                    session, InferenceRunnerSource, reconcile_runner_overrides
+                )
+        except Exception as e:
+            logger.error(f"Failed to reconcile runner override entries: {e}")
+
+
+class CatalogSourceController:
+    """
+    Leader-only controller that materializes CatalogModelEntry from
+    CatalogSource. On start it seeds the BUILTIN source from the packaged
+    model-catalog.yaml, then (like RunnerSourceController) subscribes and
+    full-rewrites the materialized table on any source change; the initial
+    replay of existing sources drives the first reconcile.
+    """
+
+    def __init__(self, config: Config):
+        self._config = config
+
+    async def start(self):
+        await self._seed_builtin_source()
+        async for event in CatalogSource.subscribe(source="catalog_source_controller"):
+            if event.type in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                await self._reconcile()
+
+    async def _reconcile(self):
+        try:
+            async with async_session() as session:
+                await gather_and_merge(session, CatalogSource, reconcile_catalog)
+        except Exception as e:
+            logger.error(f"Failed to reconcile catalog model entries: {e}")
+
+    async def _seed_builtin_source(self):
+        """Upsert the BUILTIN CatalogSource from the packaged catalog.
+
+        The content is refreshed to the newest packaged catalog on every start
+        (so a GPUStack upgrade ships it), while the user's ``enabled`` toggle on
+        the built-in source is left untouched.
+        """
+        try:
+            raw = await asyncio.to_thread(
+                read_builtin_catalog_text, self._config.model_catalog_file
+            )
+            content = normalize_catalog_yaml(raw)
+        except Exception as e:
+            logger.error(f"Failed to seed built-in catalog source: {e}")
+            return
+
+        content_hash = sha256_of(content)
+        async with async_session() as session:
+            existing = await CatalogSource.one_by_field(
+                session, "name", BUILTIN_CATALOG_SOURCE_NAME
+            )
+            if existing:
+                # Skip the write (and its UPDATED event → redundant reconcile)
+                # when a restart re-seeds the same packaged content. Judged by
+                # the same hash every other writer in the source layer uses, so
+                # "did this change" has one answer everywhere.
+                if (
+                    existing.content_hash == content_hash
+                    and existing.source_type == SourceTypeEnum.BUILTIN
+                ):
+                    return
+                await existing.update(
+                    session,
+                    {
+                        "content": content,
+                        "content_hash": content_hash,
+                        "source_type": SourceTypeEnum.BUILTIN,
+                    },
+                )
+            else:
+                await CatalogSource.create(
+                    session,
+                    CatalogSource(
+                        name=BUILTIN_CATALOG_SOURCE_NAME,
+                        source_type=SourceTypeEnum.BUILTIN,
+                        content=content,
+                        content_hash=content_hash,
+                        enabled=True,
+                    ),
+                )
 
 
 async def sync_instance_files_state(
@@ -2318,7 +2875,14 @@ async def new_workers_from_pool(
         if worker.state in [WorkerStateEnum.PROVISIONING]
     ]
     # if has enough provisioning workers, no need to create more
-    if pool.batch_size <= len(provisioning_workers):
+    #
+    # ``batch_size`` is optional and means "provision at most this many at a
+    # time", so an unset one caps nothing -- exactly as the delta above already
+    # reads it. Comparing it anyway raises TypeError on ``None <= 0``, which
+    # the caller catches as a failed reconcile: the pool logs one line and then
+    # never creates a worker, for any provider, because the retry hits the same
+    # comparison.
+    if pool.batch_size is not None and pool.batch_size <= len(provisioning_workers):
         return []
     new_workers = []
     for _ in range(delta):
@@ -2358,17 +2922,32 @@ class WorkerPoolController:
                 continue
             try:
                 await self._reconcile(event)
-            except Exception as e:
-                logger.error(f"Failed to reconcile worker pool: {e}")
+            except Exception:
+                # With the traceback: a pool that cannot reconcile creates no
+                # workers at all, and the message alone ("'<=' not supported
+                # between instances of 'NoneType' and 'int'") says nothing
+                # about which pool or which line refused. ``logger.exception``
+                # appends the exception itself, so interpolating it here would
+                # only print it twice.
+                logger.exception("Failed to reconcile worker pool")
 
     async def _reconcile(self, event: Event):
         """
         Reconcile the worker pool state with the current event.
         """
-        logger.info(f"Reconcile worker pool {event.data.id} with event {event.type}")
+        # Only the id is needed -- the pool is re-read below either way -- so
+        # an id-only payload (see Event) is as good as a hydrated one here.
+        # On a DELETE the row is gone and one_by_id returns None.
+        pool_event_id = resolve_event_id(event)
+        if pool_event_id is None:
+            # No row to reconcile. Return rather than passing None to
+            # one_by_id, which warns ("fully NULL primary key identity cannot
+            # load any object") and may raise in a future SQLAlchemy.
+            return
+        logger.info(f"Reconcile worker pool {pool_event_id} with event {event.type}")
         async with async_session() as session:
             pool = await WorkerPool.one_by_id(
-                session, event.data.id, options=[selectinload(WorkerPool.cluster)]
+                session, pool_event_id, options=[selectinload(WorkerPool.cluster)]
             )
             if pool is None or pool.deleted_at is not None:
                 return
@@ -2393,6 +2972,32 @@ class WorkerPoolController:
             logger.info(
                 f"Created {len(ids)} new workers {ids} for cluster {cluster_name} worker pool {pool_id}"
             )
+
+
+def _record_ssh_endpoint(
+    provider_config: Dict[str, Any], instance: Optional[CloudInstance]
+) -> bool:
+    """Note where SSH answers, when the provider doesn't serve it on the
+    instance's own address. Returns whether anything was written.
+
+    Only providers that publish instances behind a mapped address report one;
+    for the rest ``advertise_address:22`` is the answer and nothing is stored.
+    Already-recorded endpoints are left alone so a later poll that happens to
+    come back without the mapping can't erase it.
+    """
+    if instance is None or not instance.ssh_endpoint:
+        return False
+    if "ssh_endpoint" in provider_config:
+        return False
+    host, port = instance.ssh_endpoint
+    ssh_endpoint: Dict[str, Any] = {"host": host, "port": port}
+    # Omit an unknown user rather than storing "": the provider only fills it
+    # in once the instance is up, and a consumer shouldn't have to tell an
+    # empty string apart from an absent key.
+    if instance.ssh_user:
+        ssh_endpoint["user"] = instance.ssh_user
+    provider_config["ssh_endpoint"] = ssh_endpoint
+    return True
 
 
 class WorkerProvisioningController:
@@ -2423,7 +3028,10 @@ class WorkerProvisioningController:
             ),
         )
         ssh_key_id = await client.create_ssh_key(worker.name, public_key)
-        ssh_key.external_id = str(ssh_key_id)
+        # None means the provider registered nothing (no SSH key API); leave
+        # external_id NULL rather than storing the string "None", so teardown
+        # knows there is no upstream key to delete.
+        ssh_key.external_id = str(ssh_key_id) if ssh_key_id is not None else None
         ssh_key_rtn = await Credential.create(session, ssh_key, auto_commit=False)
         return ssh_key_rtn.id
 
@@ -2441,6 +3049,9 @@ class WorkerProvisioningController:
             if worker.cluster.worker_config
             else {}
         )
+        ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
+        if ssh_key is None:
+            raise ValueError(f"SSH key {worker.ssh_key_id} not found")
         user_data = await client.construct_user_data(
             server_url=worker.cluster.server_url or cfg.server_external_url,
             token=worker.cluster.registration_token,
@@ -2451,10 +3062,10 @@ class WorkerProvisioningController:
             os_image=worker.worker_pool.os_image,
             secret_configs=secret_configs,
             worker_name=worker.name,
+            # Providers with no SSH key API embed this in the cloud-config;
+            # the ones that have one attach it by id instead and ignore it.
+            ssh_public_key=ssh_key.public_key,
         )
-        ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
-        if ssh_key is None:
-            raise ValueError(f"SSH key {worker.ssh_key_id} not found")
         to_create = construct_cloud_instance(worker, ssh_key, user_data.format())
         logger.info(f"Creating cloud instance for worker {worker.name}")
         logger.debug(f"Cloud instance configuration: {to_create}")
@@ -2469,11 +3080,23 @@ class WorkerProvisioningController:
         instance: CloudInstance,
     ) -> bool:
         changed = True
-        provider_config = worker.provider_config or {}
+        # Copy rather than alias: provider_config is a plain JSON column, so
+        # SQLAlchemy only notices a write when the attribute is set to a
+        # different object. Mutating the loaded dict in place and assigning it
+        # back would leave the change unsaved.
+        provider_config = dict(worker.provider_config or {})
         volumes = list(
             (getattr(worker.worker_pool.cloud_options, "volumes", None) or [])
         )
         volume_ids = provider_config.get("volume_ids", [])
+        # Backfill a mapping that wasn't published yet the first time round.
+        # wait_for_public_ip returns as soon as an address appears, which for a
+        # provider that maps SSH elsewhere can be before the mapping exists —
+        # and the branch below only runs while advertise_address is still
+        # empty, so without this the hint would stay missing for good.
+        backfilled = _record_ssh_endpoint(provider_config, instance)
+        if backfilled:
+            worker.provider_config = provider_config
         if worker.advertise_address is None or worker.advertise_address == "":
             try:
                 instance = await client.wait_for_public_ip(worker.external_id)
@@ -2481,6 +3104,13 @@ class WorkerProvisioningController:
                     instance.ip_address if instance.ip_address else ""
                 )
                 worker.state_message = "Waiting for volumes to attach"
+                # Last in the branch on purpose: this is a display aid, and
+                # failing to read it must not hold back the state machine.
+                if _record_ssh_endpoint(provider_config, instance):
+                    worker.provider_config = provider_config
+            except InstanceProvisioningFailed:
+                # Terminal on the provider side; see _provisioning_before_started.
+                raise
             except Exception as e:
                 logger.warning(
                     f"Failed to wait for instance {worker.external_id} to get public ip: {e}"
@@ -2495,7 +3125,11 @@ class WorkerProvisioningController:
             len(volumes) == len(volume_ids)
             and worker.state == WorkerStateEnum.PROVISIONING
         ):
-            if not hasattr(provider_config, "volume_ids"):
+            # Membership, not hasattr: provider_config is a dict, so hasattr
+            # was always False and this overwrote the ids of volumes that had
+            # just been created -- losing the only record of them, so teardown
+            # could never find the volumes to delete.
+            if "volume_ids" not in provider_config:
                 provider_config["volume_ids"] = []
             worker.provider_config = provider_config
             worker.state = WorkerStateEnum.INITIALIZING
@@ -2504,7 +3138,7 @@ class WorkerProvisioningController:
                 await worker.cluster.update(session=session, auto_commit=False)
             worker.state_message = "Initializing: installing required drivers and software. The worker will start automatically after setup."
         else:
-            changed = False
+            changed = backfilled
         return changed
 
     @classmethod
@@ -2542,6 +3176,11 @@ class WorkerProvisioningController:
                 # depress the timeout exception
                 instance = await client.wait_for_started(worker.external_id)
                 worker.state_message = "Waiting for instance's public ip"
+            except InstanceProvisioningFailed:
+                # The provider gave up on the instance, so polling it again on
+                # the next reconcile would spin forever. Let it through to the
+                # caller, which parks the worker in ERROR.
+                raise
             except Exception as e:
                 logger.warning(
                     f"Failed to wait for instance {worker.external_id} to start: {e}"
@@ -2749,10 +3388,15 @@ class ClusterController:
         """
         if self._cfg.gateway_mode == GatewayModeEnum.disabled:
             return
-        cluster: Cluster = event.data
+        # This runs on DELETED too -- cleaning up after a deleted cluster is
+        # the point -- and the id is all it needs, so an id-only payload
+        # (see Event) serves it just as well as a hydrated row.
+        cluster_id = resolve_event_id(event)
+        if cluster_id is None:
+            return
         mcp_resource_name = mcp_handler.default_mcp_bridge_name
         desired_registries = []
-        to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster.id)
+        to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster_id)
         try:
             await mcp_handler.ensure_mcp_bridge(
                 client=self._higress_network_api,
@@ -2762,7 +3406,10 @@ class ClusterController:
                 to_delete_prefix=to_delete_prefix,
             )
         except Exception as e:
-            logger.error(f"Failed to ensure MCPBridge for cluster {cluster.name}: {e}")
+            logger.error(
+                "Failed to ensure MCPBridge for cluster "
+                f"{event_field(event.data, 'name', cluster_id)}: {e}"
+            )
             raise
 
 
@@ -2771,7 +3418,11 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
         return
     should_notify = False
     if event.changed_fields is not None:
-        related_fields = ["ready_replicas", "replicas"]
+        # ``native_anthropic_api`` is read where the route's ai-proxy provider
+        # entry is built, and that only runs off a route event -- so without it
+        # here, flipping the selector would change nothing until the deployment
+        # happened to scale.
+        related_fields = ["ready_replicas", "replicas", "native_anthropic_api"]
         for field in related_fields:
             if field in event.changed_fields:
                 should_notify = True
@@ -2858,26 +3509,32 @@ class ModelProviderController:
         model_provider: ModelProvider,
         event: Event,
     ):
-        provider_registry = mcp_handler.provider_registry(model_provider)
-        registry_to_remove = (
-            provider_registry is None or event.type == EventType.DELETED
+        # On DELETED both desired sets are empty and only the id is read, so
+        # this path works off an id-only payload (see Event) -- which is what
+        # a cross-instance delete carries, and skipping it would strand the
+        # registry and proxy of a provider that no longer exists. Deriving
+        # the two specs first would defeat that: they need a hydrated row and
+        # their values are discarded here anyway.
+        deleted = event.type == EventType.DELETED
+        provider_id = resolve_event_id(event)
+        provider_registry = (
+            None if deleted else mcp_handler.provider_registry(model_provider)
         )
+        registry_to_remove = provider_registry is None or deleted
         # Match by exact name (not prefix) so that deleting provider id "1" does
         # not also drop other providers whose id shares that numeric prefix
         # (e.g. "provider-10", "provider-11").
         to_delete_names = (
-            [mcp_handler.provider_registry_name(model_provider.id)]
+            [mcp_handler.provider_registry_name(provider_id)]
             if registry_to_remove
             else None
         )
         desired_registries = [] if registry_to_remove else [provider_registry]
 
-        provider_proxy = mcp_handler.provider_proxy(model_provider)
-        proxy_to_remove = provider_proxy is None or event.type == EventType.DELETED
+        provider_proxy = None if deleted else mcp_handler.provider_proxy(model_provider)
+        proxy_to_remove = provider_proxy is None or deleted
         to_delete_proxy_names = (
-            [mcp_handler.provider_proxy_name(model_provider.id)]
-            if proxy_to_remove
-            else None
+            [mcp_handler.provider_proxy_name(provider_id)] if proxy_to_remove else None
         )
         desired_proxies = [] if proxy_to_remove else [provider_proxy]
 
@@ -2893,7 +3550,8 @@ class ModelProviderController:
             )
         except Exception as e:
             logger.error(
-                f"Failed to ensure MCPRegistry for model provider {model_provider.name}: {e}"
+                "Failed to ensure MCPRegistry for model provider "
+                f"{event_field(model_provider, 'name', provider_id)}: {e}"
             )
             raise
 
@@ -3123,6 +3781,20 @@ class ModelRouteTargetController:
         target: ModelRouteTarget = event.data
         if not target:
             return
+        # Every branch below keys off target fields (route_name, route_id,
+        # model_id, state), none of which an unhydrated payload has (see
+        # Event). Known gap: this controller exists to cover cascades that
+        # bypass ModelRouteService, and it is leader-only, so nothing else
+        # invalidates the route caches or transfers an orphaned route.
+        # Closing it needs the deleted row's route_name, which no event can
+        # carry, so it belongs in a periodic pass.
+        if not isinstance(target, ModelRouteTarget):
+            logger.warning(
+                f"Model route target {resolve_event_id(event)} {event.type} "
+                f"not reconciled: the event carries only an id and the row is "
+                f"gone; route caches may be stale until the next write"
+            )
+            return
         async with async_session() as session:
             # Cover cascade create/delete that bypass ModelRouteService.
             # UPDATED is skipped — it cannot change the resolved target set.
@@ -3175,12 +3847,10 @@ class ModelRouteController:
         model_route: ModelRoute = event.data
         if not model_route:
             return False
-        # Handle ID-only events from distributed mode
-        model_route_id = (
-            model_route.id
-            if hasattr(model_route, 'id')
-            else model_route.get('id') if isinstance(model_route, dict) else None
-        )
+        # Reached only with a hydrated route -- the caller guards, and a
+        # DELETE returned above -- so this is just the canonical way to read
+        # the id, not id-only handling.
+        model_route_id = resolve_event_id(event)
         if not model_route_id:
             return False
         model_route: ModelRoute = await ModelRoute.one_by_id(
@@ -3220,6 +3890,22 @@ class ModelRouteController:
         """
         model_route: ModelRoute = event.data
         if not model_route:
+            return
+        # sync_gateway and distribute_models_to_user both need the row's
+        # fields (name for the ingress names, model_dump for the per-user
+        # copies), which an unhydrated payload does not have (see Event).
+        # Known gap, not a safe skip: re-reading is not an option either
+        # (ModelRouteService.delete takes the default hard-delete path), and
+        # this controller is leader-only. Deletes through the API are still
+        # covered -- the service drops the route caches itself, and that
+        # invalidation is broadcast -- so what is uncovered is the cascade
+        # path this controller exists for.
+        if not isinstance(model_route, ModelRoute):
+            logger.warning(
+                f"Model route {resolve_event_id(event)} {event.type} not "
+                f"reconciled: the event carries only an id and the row is "
+                f"gone; gateway config for it may be stale"
+            )
             return
         async with async_session() as session:
             # sync targets will update model route record so make sure to do it before other operations

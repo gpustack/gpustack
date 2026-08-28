@@ -2,7 +2,10 @@ import shutil
 import pytest
 
 from gpustack.utils.command import (
+    REDACTED,
     is_command_available,
+    drop_empty_flag_values,
+    extract_flag_arguments,
     find_parameter,
     find_bool_parameter,
     get_versioned_command,
@@ -10,7 +13,9 @@ from gpustack.utils.command import (
     flatten_to_argv,
     format_backend_parameters,
     is_parameter_key,
+    merge_flag_arguments,
     safe_split,
+    sanitize_args,
 )
 
 
@@ -415,3 +420,141 @@ def test_find_bool_parameter_argv_stream():
         ['--tp 8 --max-model-len 1024'],
         ['enable-expert-parallel'],
     )
+
+
+@pytest.mark.parametrize(
+    "arguments, expected",
+    [
+        # Flag with empty value pair is dropped entirely.
+        (["--chunk-size", "", "--port", "8080"], ["--port", "8080"]),
+        # Inline empty value is dropped.
+        (["--chunk-size=", "--port=8080"], ["--port=8080"]),
+        # Standalone empty positional token is dropped.
+        (["serve", "", "--port", "8080"], ["serve", "--port", "8080"]),
+        # Bare flags followed by another flag or end of list are kept.
+        (["--verbose", "--port", "8080"], ["--verbose", "--port", "8080"]),
+        (["--port", "8080", "--verbose"], ["--port", "8080", "--verbose"]),
+        # Non-empty values are untouched.
+        (["--chunk-size", "256"], ["--chunk-size", "256"]),
+        ([], []),
+    ],
+)
+def test_drop_empty_flag_values(arguments, expected):
+    assert drop_empty_flag_values(arguments) == expected
+
+
+@pytest.mark.parametrize(
+    "base, overrides, expected",
+    [
+        # Override replaces a "--key value" pair regardless of its own form.
+        (
+            ["server", "--ram", "8", "--port", "9000"],
+            ["--ram=16"],
+            ["server", "--port", "9000", "--ram=16"],
+        ),
+        # Override replaces a "--key=value" token.
+        (
+            ["server", "--ram=8"],
+            ["--ram", "16"],
+            ["server", "--ram", "16"],
+        ),
+        # Non-conflicting overrides are appended verbatim.
+        (
+            ["server", "--port", "9000"],
+            ["--eviction-policy=LRU"],
+            ["server", "--port", "9000", "--eviction-policy=LRU"],
+        ),
+        # Multi-value conflicting flag loses all of its value tokens.
+        (
+            ["server", "--modules", "a", "b", "--port", "9000"],
+            ["--modules", "c"],
+            ["server", "--port", "9000", "--modules", "c"],
+        ),
+        # Override value tokens are never mistaken for flag names.
+        (
+            ["server", "--offset", "1"],
+            ["--offset", "-2"],
+            ["server", "--offset", "-2"],
+        ),
+        ([], ["--flag"], ["--flag"]),
+        (["server"], [], ["server"]),
+    ],
+)
+def test_merge_flag_arguments(base, overrides, expected):
+    assert merge_flag_arguments(base, overrides) == expected
+
+
+@pytest.mark.parametrize(
+    "args, flag, expected_remaining, expected_extracted",
+    [
+        # pair form, repeated occurrences, order preserved on both sides
+        (
+            ["serve", "--l2-adapter", "{json1}", "--x", "--l2-adapter", "{json2}"],
+            "--l2-adapter",
+            ["serve", "--x"],
+            ["--l2-adapter", "{json1}", "--l2-adapter", "{json2}"],
+        ),
+        # equals form
+        (
+            ["--l2-adapter={json}", "--y=1"],
+            "--l2-adapter",
+            ["--y=1"],
+            ["--l2-adapter={json}"],
+        ),
+        # absent flag leaves everything in place
+        (["run", "--y", "2"], "--l2-adapter", ["run", "--y", "2"], []),
+        # multi-value flags carry all their value tokens along
+        (
+            ["--l2-adapter", "a", "b", "--y"],
+            "--l2-adapter",
+            ["--y"],
+            ["--l2-adapter", "a", "b"],
+        ),
+    ],
+)
+def test_extract_flag_arguments(args, flag, expected_remaining, expected_extracted):
+    remaining, extracted = extract_flag_arguments(args, flag)
+    assert remaining == expected_remaining
+    assert extracted == expected_extracted
+
+
+class TestSanitizeArgs:
+    """Credential redaction for logged command lines.
+
+    ``--progress-auth`` carries the worker token, so the container command line
+    printed at workload creation would otherwise hand it to anyone who can read
+    the worker log.
+    """
+
+    def test_the_value_after_the_flag_is_redacted(self):
+        args = ['benchmark', 'run', '--progress-auth', 'sk-worker-token', '--rate', '4']
+        assert sanitize_args(args) == [
+            'benchmark',
+            'run',
+            '--progress-auth',
+            REDACTED,
+            '--rate',
+            '4',
+        ]
+
+    def test_the_inline_form_is_redacted(self):
+        assert sanitize_args(['--progress-auth=sk-worker-token']) == [
+            f'--progress-auth={REDACTED}'
+        ]
+
+    def test_everything_else_is_left_alone(self):
+        # Only GPUStack-injected credentials are redacted. A blanket match on
+        # "token" would also swallow values an operator needs to read.
+        args = ['--token-timeout', '60', '--max-tokens', '128', '--target', 'http://x']
+        assert sanitize_args(args) == args
+
+    def test_a_trailing_flag_without_a_value_does_not_crash(self):
+        assert sanitize_args(['--rate', '4', '--progress-auth']) == [
+            '--rate',
+            '4',
+            '--progress-auth',
+        ]
+
+    def test_non_string_elements_survive(self):
+        # _build_command_args stringifies most values, but not all of them.
+        assert sanitize_args(['--rate', 4]) == ['--rate', '4']

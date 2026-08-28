@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gpustack.api.exceptions import BadRequestException
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import inference_backend as ib_route
 from gpustack.schemas.inference_backend import (
@@ -168,3 +169,66 @@ async def test_redirect_noop_in_all_mode(monkeypatch):
     )
 
     assert result is None
+
+
+def _all_mode_admin_ctx() -> TenantContext:
+    """Platform admin in "All" mode — the only caller that may write a Global row."""
+    user = Principal(id=1, name="admin", kind=PrincipalType.USER, is_admin=True)
+    return TenantContext(
+        user=user,
+        is_platform_admin=True,
+        current_principal_id=None,
+        org_role=None,
+        current_is_personal_scope=False,
+    )
+
+
+def _downgraded_backend(source_name) -> InferenceBackend:
+    """A community row no source publishes any more: reconcile_backend converted
+    it to CUSTOM, so it keeps the source-given name — which carries no
+    ``-custom`` suffix — and its versions look hand-added."""
+    return InferenceBackend(
+        id=12,
+        backend_name="llama.cpp",
+        owner_principal_id=None,
+        backend_source=BackendSourceEnum.CUSTOM,
+        enabled=False,
+        source_name=source_name,
+        version_configs=VersionConfigDict(
+            root={"v1": VersionConfig(image_name="img:v1", built_in_frameworks=None)}
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_name, accepted", [("builtin", True), (None, False)])
+async def test_a_downgraded_row_stays_writable_under_its_source_given_name(
+    monkeypatch, source_name, accepted
+):
+    """A row downgraded from a source must stay editable: holding its
+    source-given name to the ``-custom`` suffix would reject every write to it.
+    A row carrying no source stamp is still held to the suffix."""
+    backend = _downgraded_backend(source_name)
+    backend_in = InferenceBackendUpdate(
+        backend_name="llama.cpp",
+        backend_source=BackendSourceEnum.CUSTOM,
+        description="edited",
+        version_configs=backend.version_configs,
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    if accepted:
+        await ib_route.update_inference_backend(
+            MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+        )
+        assert update_mock.await_args.args[1]["description"] == "edited"
+    else:
+        with pytest.raises(BadRequestException) as e:
+            await ib_route.update_inference_backend(
+                MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+            )
+        assert "must end with '-custom'" in str(e.value.message)
+        update_mock.assert_not_called()

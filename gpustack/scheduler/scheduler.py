@@ -66,6 +66,7 @@ from gpustack.scheduler.calculator import (
     calculate_gguf_model_resource_claim,
     check_diffusers_model_index_from_workers,
 )
+from gpustack.server.cache_services import resolve_instance_cache_config_safe
 from gpustack.server.services import (
     ModelInstanceService,
     ModelService,
@@ -347,7 +348,7 @@ class Scheduler:
             if workers and model:
                 try:
                     candidate, messages = await find_candidate(
-                        self._config, model, workers, model_instances
+                        session, self._config, model, workers, model_instances
                     )
                 except Exception as e:
                     state_message = f"Failed to find candidate: {e}"
@@ -398,6 +399,20 @@ class Scheduler:
                         DistributedServerCoordinateModeEnum.INITIALIZE_LATER
                     )
 
+                if model.extended_kv_cache and model.extended_kv_cache.is_shared():
+                    # The assigned worker is known now; re-resolve the
+                    # shared-cache snapshot so worker-dependent injection
+                    # (e.g. the client's own local_hostname) binds to this
+                    # instance's node.
+                    model_instance.cache_config = (
+                        await resolve_instance_cache_config_safe(
+                            session,
+                            model,
+                            worker=candidate.worker,
+                            spans_workers=model_instance.spans_workers,
+                        )
+                    )
+
                 await ModelInstanceService(session).update(model_instance)
 
                 logger.debug(
@@ -407,6 +422,7 @@ class Scheduler:
 
 
 async def find_candidate(
+    session: AsyncSession,
     config: Config,
     model: Model,
     workers: List[Worker],
@@ -482,7 +498,7 @@ async def find_candidate(
         candidate_scorers.append(
             ModelFileLocalityScorer(
                 model,
-                draft_model_source=get_draft_model_source(model),
+                draft_model_source=await get_draft_model_source(session, model),
                 max_score=locality_max_score,
             )
         )

@@ -18,7 +18,7 @@ higress_version = "2.1.9"
 
 ssh_server_version = "v1.3.0"
 kueue_version = "v0.18.4"
-node_feature_discovery_version = "v0.19.0"
+node_feature_discovery_version = "v0.19.0-gpustack1"
 csi_nfs_driver_version = "v4.13.4"
 csi_s3_driver_version = "v0.43.7"
 csi_provisioner_version = "v6.3.0"

@@ -5,6 +5,7 @@ from typing import ClassVar, Optional, List
 
 from pydantic import ConfigDict, BaseModel
 from sqlalchemy import UniqueConstraint, Column, Index, Integer, ForeignKey
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlmodel import SQLModel, Field
 
 from gpustack.mixins import BaseModelMixin
@@ -578,6 +579,11 @@ class GPUInstanceType(SQLModel, BaseModelMixin, table=True):
     and the snapshot stamped onto a ``GPUInstance`` at create/update time.
     """
 
+    # ``display_name`` below is a SQLAlchemy hybrid, not a field. Pydantic
+    # rejects an unannotated class attribute outright, and annotating it would
+    # make it a field with a column; this is the documented escape hatch.
+    model_config = ConfigDict(ignored_types=(hybrid_property,))
+
     __tablename__ = "gpu_instance_types"
     __table_args__ = (
         # ``snapshot`` encodes (cluster_id, name, spec), so it is the row's
@@ -670,6 +676,36 @@ class GPUInstanceType(SQLModel, BaseModelMixin, table=True):
     and ``snapshot`` doubles as ``metered_usage.sku``, so a provenance marker
     must not be able to move it.
     """
+
+    @hybrid_property
+    def display_name(self) -> Optional[str]:
+        """The mutable label, reachable the way every other GPU Service model
+        exposes it — as ``display_name`` on the model.
+
+        It is stored inside the ``spec`` JSON column rather than as a column of
+        its own, deliberately: it is the one mutable spec field and the one
+        excluded from the identity ``snapshot``. That storage decision should
+        not leak into every caller, though. The list route narrows and orders on
+        the display name exactly as its siblings do — ``fuzzy_fields`` resolves
+        the key with ``getattr(cls, key)`` for SQL and ``getattr(event.data,
+        key)`` for the watch stream, and both land here.
+
+        Not a column and not a field: it adds no migration, and ``model_dump``
+        does not carry it (the wire form stays ``spec.displayName``).
+        """
+        return self.spec.display_name if self.spec else None
+
+    @display_name.expression
+    def display_name(cls):  # noqa: N805 - SQLAlchemy hybrid expression form
+        """The SQL twin, via SQLAlchemy's generic JSON indexing.
+
+        Each dialect compiles its own extraction — ``spec ->> 'displayName'`` on
+        PostgreSQL, ``JSON_UNQUOTE(JSON_EXTRACT(...))`` on MySQL — so there is no
+        raw SQL and no dialect branching here. A row without a display name is
+        SQL NULL, which is what lets a search fall through to the ``name`` arm
+        and a sort coalesce back to ``name``.
+        """
+        return cls.spec["displayName"].as_string()
 
     def is_deleted(self) -> bool:
         """Whether the type row is soft-deleted (``deleted_at`` set)."""

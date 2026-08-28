@@ -5,6 +5,9 @@ from fastapi import APIRouter, Depends
 from gpustack.routes import (
     api_keys,
     auth,
+    cache_providers,
+    cache_service_instances,
+    cache_services,
     cluster_access,
     config,
     dashboard,
@@ -22,8 +25,10 @@ from gpustack.routes import (
     model_sets,
     organization_members,
     organizations,
+    ota_sources,
     probes,
     proxy,
+    source_probe,
     update,
     user_groups,
     users,
@@ -182,6 +187,18 @@ model_routers = [
         "dependencies": _org_owner_only,
     },
     {
+        "router": cache_services.router,
+        "prefix": "/cache-services",
+        "tags": ["Cache Services"],
+        "dependencies": _org_owner_only,
+    },
+    {
+        "router": cache_service_instances.router,
+        "prefix": "/cache-service-instances",
+        "tags": ["Cache Service Instances"],
+        "dependencies": _org_owner_only,
+    },
+    {
         "router": benchmarks.router,
         "prefix": "/benchmarks",
         "tags": ["Benchmarks"],
@@ -264,6 +281,13 @@ worker_client_router.add_api_route(
     methods=["POST"],
     include_in_schema=False,
 )
+worker_client_router.add_api_route(
+    path="/runner-override-entries",
+    endpoint=inference_backend.get_runner_override_entries,
+    methods=["GET"],
+    response_model=inference_backend.RunnerOverrideEntriesPublic,
+    tags=["Inference Backend"],
+)
 worker_client_router.include_router(
     inference_backend.router, prefix="/inference-backends", tags=["Inference Backend"]
 )
@@ -297,6 +321,11 @@ tenant_routers = model_routers + [
         "router": draft_models.router,
         "prefix": "/draft-models",
         "tags": ["Draft Models"],
+    },
+    {
+        "router": cache_providers.router,
+        "prefix": "/cache-providers",
+        "tags": ["Cache Providers"],
     },
     # Inference backends are platform-wide (admin curates) but every Org
     # owner/manager needs to read them to pick a backend at deploy time.
@@ -343,6 +372,21 @@ admin_routers = [
         "prefix": "/organizations",
         "tags": ["Organizations"],
         "include_in_schema": _EXTENDED_API_IN_SCHEMA,
+    },
+    # The OTA content family: per-kind source configuration, and the probe that
+    # reports on it. Top-level rather than hanging off each consumer — see
+    # ``routes/ota_sources.py``. Versioned, because both responses mirror the
+    # source rows rather than the server itself, unlike the unversioned /debug
+    # and /update.
+    {
+        "router": ota_sources.router,
+        "prefix": "/ota-sources",
+        "tags": ["OTA Sources"],
+    },
+    {
+        "router": source_probe.router,
+        "prefix": "/source-probe",
+        "tags": ["Source Probe"],
     },
 ]
 

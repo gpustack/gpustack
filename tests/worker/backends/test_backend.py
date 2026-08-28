@@ -9,7 +9,12 @@ from gpustack.schemas.inference_backend import (
     VersionConfig,
     VersionConfigDict,
 )
-from gpustack.schemas.models import BackendEnum
+from gpustack.schemas.cache_services import CacheConfigSnapshot
+from gpustack.schemas.models import (
+    BackendEnum,
+    ExtendedKVCacheConfig,
+    KVCacheModeEnum,
+)
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.envs import ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV as _KNOB
 from gpustack.worker.backends.base import (
@@ -24,6 +29,7 @@ from gpustack.worker.backends.sglang import (
     SGLangServer,
     extend_sglang_mounted_lora_arguments,
     get_access_log_arguments as get_sglang_access_log_arguments,
+    get_auto_parallelism_arguments as get_sglang_auto_parallelism_arguments,
     get_cache_report_arguments as get_sglang_cache_report_arguments,
 )
 from gpustack.worker.backends.vllm import (
@@ -493,6 +499,140 @@ def test_vllm_set_cache_env_respects_user_override(tmp_path):
     assert not (tmp_path / "vllm").exists()
 
 
+def _vllm_backend_with_kv_cache(extended_kv_cache, cache_config=None):
+    backend = VLLMServer.__new__(VLLMServer)
+    backend._model = types.SimpleNamespace(extended_kv_cache=extended_kv_cache)
+    backend._model_instance = types.SimpleNamespace(cache_config=cache_config)
+    backend._get_device_info = lambda: ("cuda", None, None)
+    return backend
+
+
+def _shared_kv_cache_config():
+    return ExtendedKVCacheConfig(
+        enabled=True,
+        mode=KVCacheModeEnum.SHARED,
+        cache_service_id=3,
+        ram_size=8,
+        chunk_size=256,
+    )
+
+
+def test_vllm_shared_kv_cache_injected_applies_snapshot_env_and_args():
+    snapshot = CacheConfigSnapshot(
+        cache_service_id=3,
+        env={"MOONCAKE_CONFIG_PATH": "/etc/mooncake.json"},
+        args=["--kv-transfer-config", '{"kv_connector":"MooncakeConnector"}'],
+        injected=True,
+    )
+    backend = _vllm_backend_with_kv_cache(
+        _shared_kv_cache_config(), cache_config=snapshot
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    # Snapshot env is applied verbatim; local CPU cache sizing does not fire.
+    assert env == {"MOONCAKE_CONFIG_PATH": "/etc/mooncake.json"}
+    assert "LMCACHE_MAX_LOCAL_CPU_SIZE" not in env
+    assert "LMCACHE_CHUNK_SIZE" not in env
+
+    # The snapshot is applied verbatim — provider-specific knowledge
+    # (e.g. LMCache's --shutdown-timeout) lives in the catalog args.
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"MooncakeConnector"}',
+    ]
+
+
+@pytest.mark.parametrize(
+    "cache_config",
+    [
+        None,
+        CacheConfigSnapshot(
+            cache_service_id=3, injected=False, reason="Cache service is not running."
+        ),
+    ],
+)
+def test_vllm_shared_kv_cache_not_injected_starts_without_cache(cache_config):
+    backend = _vllm_backend_with_kv_cache(
+        _shared_kv_cache_config(), cache_config=cache_config
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {}
+
+    assert backend._build_extended_kv_cache_arguments(None) == []
+
+
+def test_vllm_shared_kv_cache_has_no_worker_vendor_gate():
+    """Shared mode applies the snapshot on any accelerator: the catalog's
+    framework-scoped integrations are the single accelerator gate (an
+    unsupported framework never gets an injected snapshot), so the worker
+    must not second-guess it and drop half the injection."""
+    snapshot = CacheConfigSnapshot(
+        cache_service_id=3,
+        env={"PYTHONHASHSEED": "0"},
+        args=["--kv-transfer-config", '{"kv_connector":"LMCacheMPConnector"}'],
+        injected=True,
+    )
+    backend = _vllm_backend_with_kv_cache(
+        _shared_kv_cache_config(), cache_config=snapshot
+    )
+    backend._get_device_info = lambda: ("cann", None, None)
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {"PYTHONHASHSEED": "0"}
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"LMCacheMPConnector"}',
+    ]
+
+
+def test_vllm_legacy_local_kv_cache_behavior_unchanged():
+    # A config without an explicit mode is local: LMCache env sizing and the
+    # LMCache connector args apply as before.
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_size=4, chunk_size=256)
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {
+        "LMCACHE_CHUNK_SIZE": "256",
+        "LMCACHE_MAX_LOCAL_CPU_SIZE": "4",
+    }
+
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}',
+    ]
+
+
+def test_sglang_shared_kv_cache_disables_hicache_arguments():
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model = types.SimpleNamespace(extended_kv_cache=_shared_kv_cache_config())
+
+    assert backend._get_hicache_arguments() == []
+
+
+def test_sglang_local_kv_cache_hicache_arguments_unchanged():
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model = types.SimpleNamespace(
+        extended_kv_cache=ExtendedKVCacheConfig(
+            enabled=True, ram_size=8, chunk_size=64, ram_ratio=None
+        )
+    )
+
+    assert backend._get_hicache_arguments() == [
+        "--enable-hierarchical-cache",
+        "--page-size",
+        "64",
+        "--hicache-size",
+        "8",
+    ]
+
+
 def test_vllm_command_args_include_late_system_flags_as_injected():
     backend = VLLMServer.__new__(VLLMServer)
     backend.inference_backend = None
@@ -615,6 +755,18 @@ def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
         "--port",
         "4000",
     ]
+
+
+@pytest.mark.parametrize("alias", ["tp", "dp"])
+def test_sglang_short_alias_prevents_conflicting_auto_parallelism_arguments(alias):
+    model_instance = types.SimpleNamespace(gpu_indexes=[0, 1])
+
+    assert (
+        get_sglang_auto_parallelism_arguments(
+            [f"--{alias}", "2"], model_instance, is_distributed=False
+        )
+        == []
+    )
 
 
 def test_vox_box_command_args_return_injected_parameters():
@@ -1097,7 +1249,10 @@ def test_resolve_image_fallback_matches_host_major(
             _make_versioned_runner("12.8", "gpustack/runner:cuda12.8-vllm0.10.2"),
         ]
     )
-    monkeypatch.setattr(base_module, "list_backend_runners", lambda **_: [runner])
+    # merged_backend_runners takes the override rows positionally, then the filters.
+    monkeypatch.setattr(
+        base_module, "merged_backend_runners", lambda *_, **__: [runner]
+    )
 
     server = VLLMServer.__new__(VLLMServer)
     server._model = types.SimpleNamespace(
@@ -1105,6 +1260,8 @@ def test_resolve_image_fallback_matches_host_major(
     )
     server.inference_backend = None
     server._get_device_info = lambda: ("cuda", runtime_version, None)
+    # The real fetch needs a clientset, and its failure is fatal by design.
+    server._fetch_runner_overrides = lambda: []
 
     image_name, _ = server._resolve_image()
     assert image_name == expected_image
@@ -1130,7 +1287,8 @@ def test_resolve_image_treats_blank_backend_version_as_auto(
 
     captured = {}
 
-    def fake_list_backend_runners(**kwargs):
+    # merged_backend_runners takes the override rows positionally, then the filters.
+    def fake_merged_backend_runners(_overrides, **kwargs):
         captured.update(kwargs)
         return [
             types.SimpleNamespace(
@@ -1142,7 +1300,9 @@ def test_resolve_image_treats_blank_backend_version_as_auto(
             )
         ]
 
-    monkeypatch.setattr(base_module, "list_backend_runners", fake_list_backend_runners)
+    monkeypatch.setattr(
+        base_module, "merged_backend_runners", fake_merged_backend_runners
+    )
 
     server = VLLMServer.__new__(VLLMServer)
     server._model = types.SimpleNamespace(
@@ -1150,6 +1310,8 @@ def test_resolve_image_treats_blank_backend_version_as_auto(
     )
     server.inference_backend = None
     server._get_device_info = lambda: ("cuda", "13.0", None)
+    # The real fetch needs a clientset, and its failure is fatal by design.
+    server._fetch_runner_overrides = lambda: []
 
     image_name, _ = server._resolve_image()
 
@@ -1249,9 +1411,54 @@ def test_cuda_compat_switch_is_multi_level(
     assert server._should_disable_cuda_compat() is expected
 
 
-def _script_server(should_disable_compat):
+def _make_host_ipc_server(cache_config=None, model_env=None):
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(env=model_env)
+    server._model_instance = types.SimpleNamespace(cache_config=cache_config)
+    return server
+
+
+@pytest.mark.parametrize(
+    "cache_config,model_env,global_env,expected",
+    [
+        # No shared cache attached -> private /dev/shm (shm_size applies).
+        (None, None, None, False),
+        # Attached and injected -> host IPC for the CUDA-IPC transfer path.
+        (types.SimpleNamespace(injected=True), None, None, True),
+        # Attached but degraded (not injected) -> nothing to transfer.
+        (types.SimpleNamespace(injected=False), None, None, False),
+        # Model env overrides the derivation either way.
+        (
+            types.SimpleNamespace(injected=True),
+            {"GPUSTACK_HOST_IPC": "false"},
+            None,
+            False,
+        ),
+        (None, {"GPUSTACK_HOST_IPC": "true"}, None, True),
+        # Global env overrides the derivation (e.g. PodSecurity clusters)
+        # but yields to the model env.
+        (types.SimpleNamespace(injected=True), None, "false", False),
+        (None, {"GPUSTACK_HOST_IPC": "true"}, "false", True),
+    ],
+)
+def test_host_ipc_follows_cache_attachment(
+    monkeypatch, cache_config, model_env, global_env, expected
+):
+    monkeypatch.setattr("gpustack.envs.HOST_IPC", global_env)
+    server = _make_host_ipc_server(cache_config=cache_config, model_env=model_env)
+    assert server._host_ipc_enabled() is expected
+
+
+def _script_server(should_disable_compat, cache_files=None):
     server = _StubServer.__new__(_StubServer)
     server._should_disable_cuda_compat = lambda: should_disable_compat
+    server._model_instance = types.SimpleNamespace(
+        cache_config=(
+            CacheConfigSnapshot(cache_service_id=5, injected=True, files=cache_files)
+            if cache_files
+            else None
+        )
+    )
     return server
 
 
@@ -1262,6 +1469,18 @@ def test_serving_command_script_bakes_in_compat_removal():
     assert "ldconfig" in script
     # Non-root containers can't remove compat; the script warns instead of failing silently.
     assert "Warning: failed to remove /usr/local/cuda/compat" in script
+    assert script.rstrip().endswith('exec "$@"')
+
+
+def test_serving_command_script_writes_cache_injection_files():
+    """A shared cache connector that reads a config file (e.g. Mooncake's
+    MOONCAKE_CONFIG_PATH JSON) gets it written by the serving script
+    before the engine starts, verbatim via a quoted heredoc."""
+    files = {"/tmp/gpustack-mooncake.json": '{"mode": "standalone-store"}'}
+    script = _script_server(False, cache_files=files)._get_serving_command_script({})
+    assert script is not None
+    assert "cat > '/tmp/gpustack-mooncake.json' <<'GPUSTACK_CACHE_FILE_EOF'" in script
+    assert '{"mode": "standalone-store"}' in script
     assert script.rstrip().endswith('exec "$@"')
 
 

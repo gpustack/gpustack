@@ -122,6 +122,12 @@ class ModelAIProxyGroup:
     api_tokens: List[str] = dataclass_field(default_factory=list)
     service_names: Set[str] = dataclass_field(default_factory=set)
     fallback_service_names: Set[str] = dataclass_field(default_factory=set)
+    # Declared on the deployment (``Model.native_anthropic_api``). One answer
+    # per Model is not a simplification but a constraint: the provider entry is
+    # per Model, while the image -- and so the API surfaces actually served --
+    # is settled per instance, so a deployment spread over mismatched images
+    # has to answer once for all of them.
+    native_anthropic_api: bool = False
 
     def provider_id(self) -> str:
         return model_ai_proxy_provider_id(self.model_id)
@@ -928,7 +934,7 @@ async def ensure_model_ingress(
         included_generic_route (bool): Whether to include a generic '/' route for fallback traffic. Used in worker gateway.
         included_proxy_route (bool): Whether to include a proxy route for model traffic (e.g., /model/proxy/{model_name}). Used in server gateway.
     """
-    if event_type == EventType.DELETED:
+    if event_type == EventType.DELETED or not destinations:
         try:
             await networking_api.delete_namespaced_ingress(
                 name=ingress_name, namespace=namespace
@@ -1358,8 +1364,22 @@ async def ensure_fallback_filter(
             )
 
 
-def ai_proxy_openai_provider_config(
-    id: str, api_tokens: Optional[List[str]] = None
+# Anthropic capabilities added on top of the openai provider's own defaults.
+# Keys are the plugin's ``ApiName`` strings and their spelling is load-bearing:
+# ai-proxy matches them verbatim and drops keys it does not recognize without
+# complaining. Declaring them is what stops it converting an inbound
+# /v1/messages; the openai provider keeps its full default set either way,
+# which is why this is a top-up rather than a provider-type swap.
+_ai_proxy_anthropic_capabilities: Dict[str, str] = {
+    "anthropic/v1/messages": "/v1/messages",
+    "anthropic/v1/messages/count_tokens": "/v1/messages/count_tokens",
+}
+
+
+def ai_proxy_model_provider_config(
+    id: str,
+    api_tokens: Optional[List[str]] = None,
+    native_anthropic_api: bool = False,
 ) -> Dict[str, Any]:
     """Build an openai-type provider entry for a self-hosted upstream.
 
@@ -1368,11 +1388,19 @@ def ai_proxy_openai_provider_config(
     credential no longer has to be injected per request by ``/token-auth``.
     Left empty, ai-proxy falls back to reading the inbound ``Authorization``
     header, which is the pre-existing behavior.
+
+    ``native_anthropic_api`` adds the Anthropic surfaces to ``capabilities``.
+    The provider type stays ``openai`` either way: it carries the widest default
+    capability set of any provider and never rejects an API it has no capability
+    for, where the ``vllm`` provider would trade ~20 of those defaults for two
+    and turn every unlisted API into a gateway error. A top-up on ``openai`` is
+    strictly additive; a type swap is not.
     """
     return ai_proxy_types.AIProxyDefaultConfig(
         type=ModelProviderTypeEnum.OPENAI,
         id=id,
         apiTokens=api_tokens or None,
+        capabilities=_ai_proxy_anthropic_capabilities if native_anthropic_api else None,
         failover=ai_proxy_types.FailoverConfig(enabled=False),
         retryOnFailure=ai_proxy_types.EnableState(enabled=False),
         # ``exclude_unset`` keeps the nested configs down to the flags set here,
@@ -1403,7 +1431,11 @@ def model_ai_proxy_plugin_spec(
             continue
         provider_id = group.provider_id()
         providers.append(
-            ai_proxy_openai_provider_config(provider_id, api_tokens=group.api_tokens)
+            ai_proxy_model_provider_config(
+                provider_id,
+                api_tokens=group.api_tokens,
+                native_anthropic_api=group.native_anthropic_api,
+            )
         )
         for ingress, service_names in (
             (main_ingress, group.service_names),

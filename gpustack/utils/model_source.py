@@ -1,10 +1,14 @@
 from typing import Optional
 
+from sqlmodel.ext.asyncio.session import AsyncSession
+
 from gpustack.schemas.models import Model, ModelSource, SourceEnum
 from gpustack.server.catalog import get_catalog_draft_models
 
 
-def get_draft_model_source(model: Model) -> Optional[ModelSource]:
+async def get_draft_model_source(
+    session: AsyncSession, model: Model
+) -> Optional[ModelSource]:
     """
     Get the model source for the draft model.
     First check the catalog for the draft model.
@@ -14,7 +18,7 @@ def get_draft_model_source(model: Model) -> Optional[ModelSource]:
         return None
 
     draft_model = model.speculative_config.draft_model
-    catalog_draft_models = get_catalog_draft_models()
+    catalog_draft_models = await get_catalog_draft_models(session)
     for catalog_draft_model in catalog_draft_models:
         if catalog_draft_model.name == draft_model:
             return catalog_draft_model

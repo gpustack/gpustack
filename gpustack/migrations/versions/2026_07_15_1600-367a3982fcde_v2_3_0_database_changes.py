@@ -37,7 +37,7 @@ Bundles the pre-release schema changes for v2.3.0:
    
 5. Benchmark load curves: a ``benchmark_results`` child table holding one row
    per measured point, and the ``benchmarks`` config/result columns behind it
-   (load axis, adaptive auto-tune budget, the nine latency-SLA thresholds, the
+   (load axis, adaptive auto-tune budget, the nine latency-SLO thresholds, the
    token-length distribution, seed policy, stop conditions, and the computed
    best operating points). The parent's flat ``*_mean`` columns stay as the
    representative (throughput-peak) point, so this is an additive change.
@@ -77,6 +77,17 @@ Bundles the pre-release schema changes for v2.3.0:
    watch re-LIST after the upgrade (which happens on every server start), and
    the metering read path derives the value on the fly for soft-deleted rows,
    which are never re-LISTed.
+
+7. ``models.native_anthropic_api``: whether a deployment's inference server
+   implements the Anthropic Messages API itself, so the gateway can forward an
+   inbound ``/v1/messages`` untouched instead of translating it to
+   ``/v1/chat/completions``. Declared per deployment rather than derived from
+   the backend because the answer belongs to the running image, and the image
+   is only settled per instance — one deployment can spread over workers of
+   different accelerators whose images need not agree, while a single ai-proxy
+   provider entry has to cover the whole deployment. NOT NULL with a ``false``
+   server default, which backfills existing rows to the pre-existing behavior
+   and leaves no NULL/false ambiguity for callers.
 
 Revision ID: 367a3982fcde
 Revises: c4d7e8f9a0b1
@@ -144,7 +155,7 @@ _METRIC_INT_COLS = [
     'request_errored',
     'request_incomplete',
 ]
-# Measured percentiles of the SLA-relevant latency metrics. Both aggregations
+# Measured percentiles of the SLO-relevant latency metrics. Both aggregations
 # are stored because a threshold can only be evaluated against its own
 # percentile. NOT backfilled: rows written before this revision have neither,
 # and simply never match a p95/p99 threshold.
@@ -152,7 +163,7 @@ _METRIC_PCT_COLS = [
     'time_to_first_token_p95',
     'time_to_first_token_p99',
     # Decode-only per-token time (guidellm's inter_token_latency): the industry
-    # TPOT, and what the `sla_*_tpot_ms` thresholds are evaluated against.
+    # TPOT, and what the `slo_*_tpot_ms` thresholds are evaluated against.
     'inter_token_latency_p95',
     'inter_token_latency_p99',
     # The includes-TTFT variant. Still recorded, no longer judged on.
@@ -166,22 +177,22 @@ _METRIC_PCT_COLS = [
 _BENCHMARK_COLUMNS = [
     # Load axis: fixed_rate (open-loop req/s) or concurrency (closed-loop).
     ('load_type', sqlmodel.sql.sqltypes.AutoString(), None),
-    # Latency-SLA targets: 3 metrics x 3 aggregations, every one an optional
-    # "<= ms" threshold. A point meets the SLA when every threshold that was
+    # Latency-SLO targets: 3 metrics x 3 aggregations, every one an optional
+    # "<= ms" threshold. A point meets the SLO when every threshold that was
     # set holds AND its success rate clears the floor.
-    ('sla_avg_ttft_ms', sa.Float(), None),
-    ('sla_p95_ttft_ms', sa.Float(), None),
-    ('sla_p99_ttft_ms', sa.Float(), None),
-    ('sla_avg_tpot_ms', sa.Float(), None),
-    ('sla_p95_tpot_ms', sa.Float(), None),
-    ('sla_p99_tpot_ms', sa.Float(), None),
-    ('sla_avg_latency_ms', sa.Float(), None),
-    ('sla_p95_latency_ms', sa.Float(), None),
-    ('sla_p99_latency_ms', sa.Float(), None),
+    ('slo_avg_ttft_ms', sa.Float(), None),
+    ('slo_p95_ttft_ms', sa.Float(), None),
+    ('slo_p99_ttft_ms', sa.Float(), None),
+    ('slo_avg_tpot_ms', sa.Float(), None),
+    ('slo_p95_tpot_ms', sa.Float(), None),
+    ('slo_p99_tpot_ms', sa.Float(), None),
+    ('slo_avg_latency_ms', sa.Float(), None),
+    ('slo_p95_latency_ms', sa.Float(), None),
+    ('slo_p99_latency_ms', sa.Float(), None),
     # Measured percentiles of the representative point (mirrors the sub-table).
     *[(c, sa.Float(), None) for c in _METRIC_PCT_COLS],
     # Computed conclusions + run constraints + multi-turn.
-    ('sla_met_rate', sa.Float(), None),
+    ('slo_met_rate', sa.Float(), None),
     ('recommended_rate', sa.Float(), None),
     ('peak_rate', sa.Float(), None),
     ('validity', JSON(), None),
@@ -335,14 +346,26 @@ def upgrade() -> None:
                 )
             )
 
-    # One batch for both columns. On SQLite, batch mode recreates and copies the
-    # whole table per block, so two blocks would rewrite `models` twice; on
-    # PostgreSQL / MySQL each block is a plain ALTER and the grouping is only
-    # tidiness. Written for the worst case, since the revision has to run on all
-    # three.
+    # One batch for all the columns. On SQLite, batch mode recreates and copies
+    # the whole table per block, so separate blocks would rewrite `models` once
+    # each; on PostgreSQL / MySQL each block is a plain ALTER and the grouping is
+    # only tidiness. Written for the worst case, since the revision has to run on
+    # all three.
+    #
+    # ``native_anthropic_api`` carries its own default rather than being
+    # nullable: false is a real answer ("translate, as before"), and a NULL that
+    # means the same thing as false only leaves callers guessing which to send.
+    # Adding a NOT NULL column with a constant default is metadata-only on
+    # PostgreSQL 11+ and MySQL 8, so the backfill costs nothing.
     models_columns = [
         sa.Column('scaling_schedule', sa.JSON(), nullable=True),
         sa.Column('gpu_type_selector', sa.JSON(), nullable=True),
+        sa.Column(
+            'native_anthropic_api',
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.false(),
+        ),
     ]
     models_columns = [c for c in models_columns if not column_exists('models', c.name)]
     if models_columns:
@@ -376,6 +399,7 @@ def downgrade() -> None:
         batch_op.drop_column('secret_key_digest')
 
     with op.batch_alter_table('models', schema=None) as batch_op:
+        batch_op.drop_column('native_anthropic_api')
         batch_op.drop_column('gpu_type_selector')
         batch_op.drop_column('scaling_schedule')
 

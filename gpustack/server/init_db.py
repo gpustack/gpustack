@@ -49,6 +49,12 @@ logger = logging.getLogger(__name__)
 
 SLOW_QUERY_THRESHOLD_SECOND = 0.5
 
+# PostgreSQL SQLSTATE 25006, surfaced as "cannot execute <statement> in a
+# read-only transaction". A connection to a primary that a failover demoted to
+# a hot standby keeps serving reads, and keeps answering pool_pre_ping's
+# "SELECT 1", so nothing else marks it as unusable.
+READ_ONLY_SQL_TRANSACTION_SQLSTATE = "25006"
+
 # libpq calls the TLS mode "sslmode"; asyncpg accepts the same values under the
 # name "ssl".
 LIBPQ_TO_ASYNCPG_PARAMS = {"sslmode": "ssl"}
@@ -87,6 +93,49 @@ async def init_db(db_url: str):
         db.engine = await init_db_engine(db_url)
         listen_events(db.engine)
     await create_db_and_tables(db.engine)
+
+
+def is_read_only_transaction_error(exc: BaseException) -> bool:
+    """Report whether the error says the server refuses to accept writes.
+
+    Three places are checked because the SQLSTATE turns up in a different one
+    depending on where the error was caught. The ``handle_error`` event hands
+    over the driver exception itself, the asyncpg dialect keeps the underlying
+    exception as ``__cause__``, and anything catching SQLAlchemy's wrapped
+    ``DBAPIError`` finds it as ``orig``. Keying on the SQLSTATE rather than on
+    the exception class also covers PostgreSQL-compatible backends that raise
+    an error type of their own.
+    """
+    for candidate in (
+        exc,
+        getattr(exc, "__cause__", None),
+        getattr(exc, "orig", None),
+    ):
+        if getattr(candidate, "sqlstate", None) == READ_ONLY_SQL_TRANSACTION_SQLSTATE:
+            return True
+    return False
+
+
+def flag_readonly_error_as_disconnect(context):
+    """Report a read-only failure as a lost connection.
+
+    SQLAlchemy does not count SQLSTATE 25006 as a disconnect, and
+    ``pool_pre_ping`` cannot tell the difference either, because a demoted node
+    still answers "SELECT 1". Without this the pool keeps handing back
+    connections to the old primary after a failover and every write fails until
+    the process is restarted. Flagging the error as a disconnect invalidates the
+    whole pool generation, so the next checkout reaches the current primary.
+    """
+    if not is_read_only_transaction_error(context.original_exception):
+        return
+    logger.warning(
+        "Database refused a write with SQLSTATE %s (read-only transaction). "
+        "The server this connection is pinned to no longer accepts writes, "
+        "most likely after a failover; discarding the pooled connections so "
+        "the next query reconnects.",
+        READ_ONLY_SQL_TRANSACTION_SQLSTATE,
+    )
+    context.is_disconnect = True
 
 
 def supported_asyncpg_params() -> set:
@@ -171,6 +220,7 @@ async def init_db_engine(db_url: str):
         pool_size=envs.DB_POOL_SIZE,
         max_overflow=envs.DB_MAX_OVERFLOW,
         pool_timeout=envs.DB_POOL_TIMEOUT,
+        pool_recycle=envs.DB_POOL_RECYCLE if envs.DB_POOL_RECYCLE > 0 else -1,
         pool_pre_ping=True,
         connect_args=connect_args,
     )
@@ -238,6 +288,12 @@ def listen_events(engine: AsyncEngine):
         "after_create",
         DDL(model_user_after_create_view_stmt(dialect_name)),
     )
+
+    if dialect_name == "postgresql":
+        # Retire pooled connections whose server stopped accepting writes.
+        event.listen(
+            engine.sync_engine, "handle_error", flag_readonly_error_as_disconnect
+        )
 
     if engine.dialect.name == "sqlite":
         event.listen(engine.sync_engine, "connect", setup_sqlite_pragmas)

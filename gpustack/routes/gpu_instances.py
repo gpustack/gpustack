@@ -52,7 +52,11 @@ from gpustack.api.tenant import (
 from gpustack.gpu_instances import validate_k8s_object_name
 from gpustack.gpu_instances.placeholders import substitute_generated_placeholders
 from gpustack.routes.gpu_instance_persistent_volumes import resolve_pv_type_for_ctx
-from gpustack.routes.gpu_instances_helper import assert_cluster_gpu_service
+from gpustack.routes.gpu_instances_helper import (
+    assert_cluster_gpu_service,
+    display_name_label,
+    order_by_display_label,
+)
 from gpustack.schemas.clusters import Cluster
 
 from gpustack.schemas import (
@@ -98,7 +102,10 @@ async def get_gpu_instances(
 
     fuzzy_fields: dict = {}
     if search:
+        # The Name column renders ``display_name || name``, so searching only
+        # ``name`` hid rows behind the label the list actually shows (#6104).
         fuzzy_fields["name"] = search
+        fuzzy_fields["display_name"] = search
 
     if params.watch:
         return StreamingResponse(
@@ -114,7 +121,9 @@ async def get_gpu_instances(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
-            order_by=params.order_by,
+            order_by=order_by_display_label(
+                params.order_by, display_name_label(GPUInstance)
+            ),
             page=params.page,
             per_page=params.perPage,
         )

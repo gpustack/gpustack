@@ -10,7 +10,17 @@ GPUStack manages multiple Kubernetes clusters and provides a unified interface f
 
 !!! note "Upgrading from GPUStack 2.2?"
 
-    GPUStack 2.3 ships a new GPUStack Operator (post-v0.5) with a different instance type model. If you upgraded from GPUStack 2.2, follow the operator's [migration guide](https://github.com/gpustack/gpustack-operator/blob/main/docs/migration/from-v0.5.md) first, and run its [cleanup script](https://github.com/gpustack/gpustack-operator/blob/main/docs/migration/cleanup-v0.5-orphans.sh) to remove orphaned v0.5 resources.
+    GPUStack 2.3 ships GPUStack Operator v0.8.5, which converges the in-place upgrade itself: the worker Deployment is replaced rather than overlapped (`Recreate`), the worker gets a 900s startup budget, and the worker adopts the legacy per-application Helm releases left behind by v0.5.x.
+
+    After the upgraded worker is healthy, remove the orphaned v0.5.x scheduling objects with the operator's cleanup script:
+
+    ```bash
+    curl -sSLO https://raw.githubusercontent.com/gpustack/gpustack-operator/v0.8.5/docs/migration/cleanup-v0.5-orphans.sh
+    bash cleanup-v0.5-orphans.sh --dry-run   # preview, changes nothing
+    bash cleanup-v0.5-orphans.sh             # delete the orphans
+    ```
+
+    If an earlier upgrade attempt already wedged (Kueue CRDs stuck `Terminating`, the worker never becoming Ready), see the operator's [migration troubleshooting](https://github.com/gpustack/gpustack-operator/blob/main/docs/migration/troubleshooting.md). For the full procedure, follow the operator's [migration guide](https://github.com/gpustack/gpustack-operator/blob/main/docs/migration/from-v0.5.md).
 
 ## Prerequisites
 
@@ -151,7 +161,7 @@ After creation, you return to the `GPU Service` > `GPU Instances` page, where al
 
 ![Screenshot: GPU Instances list](../assets/gpuservice/instances/list.png)
 
-You can filter instances by name.
+You can filter instances by display name or name — either value the `Name` column may show. Sorting the `Name` column orders by the label it displays.
 
 ### Accessing an Instance
 

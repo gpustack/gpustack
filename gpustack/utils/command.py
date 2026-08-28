@@ -3,14 +3,56 @@ import sys
 import sysconfig
 from os.path import dirname, abspath, join
 import shutil
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Any, List, Literal, Optional, Sequence, Tuple, Union
 import shlex
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
-
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on", "t", "y"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", "f", "n"})
+
+REDACTED = "***"
+
+# Flags whose value is a credential GPUStack injects itself, rather than
+# something an operator typed. Only these are redacted: blanket-matching on
+# substrings like "token" would also hit knobs whose value is a number an
+# operator needs to see in the log (``--token-timeout``, ``--max-tokens``).
+_SENSITIVE_PARAMETER_KEYS = frozenset({"--progress-auth"})
+
+
+def sanitize_args(args: Sequence[Any]) -> List[str]:
+    """Redact credential values in an argv list so it can be logged.
+
+    The counterpart of ``sanitize_env``: same reason -- a log line that anyone
+    who can read worker logs can read must not carry a secret -- for the other
+    carrier. ``--progress-auth`` is the worker token, so the container command
+    line printed at workload creation would otherwise hand it out verbatim.
+
+    Handles both ``--flag value`` and ``--flag=value``. Elements are stringified
+    on the way out, since ``_build_command_args`` does not stringify every value
+    it appends. This only covers the log;
+    the container still receives the real value, and it remains visible in the
+    workload spec (``docker inspect`` / ``kubectl describe``).
+    """
+    sanitized: List[str] = []
+    redact_next = False
+    for arg in args:
+        text = str(arg)
+        if redact_next:
+            sanitized.append(REDACTED)
+            redact_next = False
+            continue
+        key, sep, _ = text.partition("=")
+        if key in _SENSITIVE_PARAMETER_KEYS:
+            if sep:
+                sanitized.append(f"{key}={REDACTED}")
+            else:
+                # Value is the next element; redact it on the following pass.
+                sanitized.append(text)
+                redact_next = True
+            continue
+        sanitized.append(text)
+    return sanitized
 
 
 def is_command_available(command_name):
@@ -165,6 +207,111 @@ def extend_args_no_exist(
             # Single flag without value
             if arg not in arguments:
                 arguments.append(arg)
+
+
+def drop_empty_flag_values(arguments: List[str]) -> List[str]:
+    """
+    Remove flags whose value is an empty string from an argv token list.
+
+    Handles the token shapes produced by rendering optional template
+    placeholders that resolve to nothing:
+
+    - a ``("--flag", "")`` pair is dropped entirely
+    - a ``"--flag="`` token (empty inline value) is dropped
+    - a standalone ``""`` token (empty positional) is dropped
+
+    Bare flags followed by another flag (e.g. ``--verbose``) are kept.
+    """
+    result: List[str] = []
+    i = 0
+    n = len(arguments)
+    while i < n:
+        token = arguments[i]
+        if is_parameter_key(token):
+            key, sep, value = token.partition("=")
+            if sep and not value:
+                i += 1
+                continue
+            if not sep and i + 1 < n and arguments[i + 1] == "":
+                i += 2
+                continue
+        elif token == "":
+            i += 1
+            continue
+        result.append(token)
+        i += 1
+    return result
+
+
+def merge_flag_arguments(base: List[str], overrides: List[str]) -> List[str]:
+    """
+    Merge user-supplied flag overrides into a base argv token list.
+
+    Every flag named in ``overrides`` (recognized in both ``--key value`` and
+    ``--key=value`` forms) is first removed from ``base`` together with its
+    value tokens, then the override tokens are appended verbatim, so the
+    user-specified form is what reaches the command line.
+
+    Flag arity is unknowable from an argv alone, so every consecutive
+    non-flag token after a removed flag is treated as its value. This
+    requires positional arguments to precede the first flag in ``base``
+    (the docker-CMD convention catalog run commands follow); a positional
+    trailing a bare flag would be consumed with the flag's removal.
+    """
+    override_keys = {
+        token.partition("=")[0].lstrip("-")
+        for token in overrides
+        if is_parameter_key(token)
+    }
+
+    result: List[str] = []
+    i = 0
+    n = len(base)
+    while i < n:
+        token = base[i]
+        if is_parameter_key(token):
+            key, sep, _ = token.partition("=")
+            if key.lstrip("-") in override_keys:
+                i += 1
+                if not sep:
+                    # Skip the flag's value tokens (multi-value flags carry
+                    # several consecutive non-key tokens).
+                    while i < n and not is_parameter_key(base[i]):
+                        i += 1
+                continue
+        result.append(token)
+        i += 1
+
+    result.extend(overrides)
+    return result
+
+
+def extract_flag_arguments(args: List[str], flag: str) -> Tuple[List[str], List[str]]:
+    """
+    Split an argv token list into (remaining, extracted) around every
+    occurrence of ``flag`` (recognized in both ``--key value`` and
+    ``--key=value`` forms), preserving each list's original order.
+    """
+    flag_key = flag.lstrip("-").partition("=")[0]
+    remaining: List[str] = []
+    extracted: List[str] = []
+    i = 0
+    n = len(args)
+    while i < n:
+        token = args[i]
+        if is_parameter_key(token):
+            key, sep, _ = token.partition("=")
+            if key.lstrip("-") == flag_key:
+                extracted.append(token)
+                i += 1
+                if not sep:
+                    while i < n and not is_parameter_key(args[i]):
+                        extracted.append(args[i])
+                        i += 1
+                continue
+        remaining.append(token)
+        i += 1
+    return remaining, extracted
 
 
 def format_backend_parameters(parameters: Optional[List[str]]) -> List[str]:

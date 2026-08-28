@@ -283,8 +283,10 @@ class K8sOptions(BaseModel):
         alias="volumeMounts",
         description=(
             "Pod spec volumes and volumeMounts applied to every worker "
-            "DaemonSet. The first entry is reserved for the gpustack data "
-            "dir; the route layer enforces that invariant."
+            "DaemonSet. The first entry is reserved for the gpustack data dir "
+            "and is required whenever k8s_options is submitted; the server owns "
+            "every field of it but the hostPath it points at, overwriting the "
+            "name, mountPath and readOnly it is sent with."
         ),
     )
     operator_image: Optional[str] = PydanticField(
@@ -359,6 +361,103 @@ def is_gpu_service_cluster(cluster: "Cluster") -> bool:
     return is_gpu_service_k8s_options(cluster.k8s_options)
 
 
+# The gpustack data dir volume mount is reserved and server-owned: it lives at
+# index 0 of ``volume_mounts``, the worker container always reads/writes its
+# data dir at DATA_DIR_MOUNT_PATH, and the entry always carries the reserved
+# name. Only the *host* path is the caller's to choose.
+#
+# Index 0 is the single locating rule, shared with the UI, which renders that
+# row with its name / mountPath / readOnly / source type locked and only the
+# host path editable. Nothing here searches the list for the data dir: one
+# definition of "which entry is it", asserted in both halves of the product.
+DATA_DIR_MOUNT_NAME = "gpustack-data-dir"
+DATA_DIR_MOUNT_PATH = "/var/lib/gpustack"
+# Host path the worker DaemonSet hardcoded before the mount became
+# configurable (v2.2.0). Clusters created back then hold their data here, so
+# it has to stay the default or an upgraded cluster would silently start over
+# on a fresh directory.
+DEFAULT_DATA_DIR_HOST_PATH = "/var/lib/gpustack"
+
+
+def claims_data_dir(volume_mount: K8sVolumeMount) -> bool:
+    """Whether a mount claims the reserved data dir, by name or mount path.
+
+    A *check*, not a locator: the data dir is always index 0. This answers two
+    questions about a submission — does the entry in the reserved slot actually
+    look like the data dir (rather than an unrelated mount the caller happened
+    to send first, which must not be silently rewritten into the data dir), and
+    is some other entry trying to claim the reserved name or path.
+    """
+    return (
+        volume_mount.name == DATA_DIR_MOUNT_NAME
+        or volume_mount.mount_path == DATA_DIR_MOUNT_PATH
+    )
+
+
+def mount_host_path(volume_mount: Optional[K8sVolumeMount]) -> Optional[str]:
+    """The host path a mount points at, or None if it isn't a hostPath mount."""
+    if volume_mount is None or volume_mount.volume_source is None:
+        return None
+    if volume_mount.volume_source.host_path is None:
+        return None
+    return volume_mount.volume_source.host_path.path or None
+
+
+def build_data_dir_mount(host_path: Optional[str] = None) -> K8sVolumeMount:
+    """The canonical data-dir mount for a host path."""
+    return K8sVolumeMount(
+        name=DATA_DIR_MOUNT_NAME,
+        mount_path=DATA_DIR_MOUNT_PATH,
+        read_only=False,
+        volume_source=VolumeSource(
+            host_path=HostPathVolumeSource(
+                path=host_path or DEFAULT_DATA_DIR_HOST_PATH,
+                type="DirectoryOrCreate",
+            )
+        ),
+    )
+
+
+def ensure_data_dir_mount(
+    volume_mounts: Optional[List[K8sVolumeMount]],
+) -> List[K8sVolumeMount]:
+    """Return the list with the reserved slot filled, defaulting the host path.
+
+    An empty list means the row predates the mount being configurable
+    (``volume_mounts`` did not exist before v2.2.0, and every write since then
+    goes through :func:`normalize_data_dir_mount`, so a non-empty list always
+    holds the data dir at index 0). This is the *render*-side backstop for such
+    a row: the DaemonSet template has no fallback of its own, so without this
+    it would render with no persistent data dir — worker data lost on every pod
+    restart, with nobody to report it to. A list that is already populated is
+    passed through untouched; rewriting stored values is the persist path's job.
+    """
+    mounts = list(volume_mounts or [])
+    if mounts:
+        return mounts
+    return [build_data_dir_mount()]
+
+
+def normalize_data_dir_mount(k8s_options: "K8sOptions") -> None:
+    """Rewrite the reserved slot of ``k8s_options.volume_mounts`` in place.
+
+    Index 0 is replaced with the canonical mount carrying its own host path:
+    name, mountPath, readOnly and the hostPath type are the server's, so
+    whatever the caller sent for them is dropped. The rest of the list is left
+    exactly as submitted — the caller's own mounts, in the caller's order.
+
+    Callers validate the slot first (the route layer refuses a submission whose
+    index 0 is missing, is not the data dir, or is not a hostPath mount), so an
+    absent host path falls back to :data:`DEFAULT_DATA_DIR_HOST_PATH` rather
+    than being an error here.
+    """
+    mounts = k8s_options.volume_mounts or []
+    k8s_options.volume_mounts = [
+        build_data_dir_mount(mount_host_path(mounts[0]) if mounts else None),
+        *mounts[1:],
+    ]
+
+
 class CloudOptions(BaseModel):
     volumes: Optional[List[Volume]] = None
 
@@ -367,8 +466,15 @@ class WorkerPoolCreate(WorkerPoolUpdate):
     instance_type: str
     os_image: str
     image_name: str
+    # ``default_factory``, not ``default={}``: a default is not validated, so
+    # an omitted ``cloud_options`` stayed a raw dict on the model and every
+    # ``model_dump`` of it -- the create routes dump the input to build the row
+    # -- warned ``PydanticSerializationUnexpectedValue``. Both routes already
+    # coerce a falsy value to ``CloudOptions()`` before it reaches the column,
+    # so what is stored does not change.
     cloud_options: Optional[CloudOptions] = Field(
-        default={}, sa_column=Column(pydantic_column_type(CloudOptions))
+        default_factory=CloudOptions,
+        sa_column=Column(pydantic_column_type(CloudOptions)),
     )
     zone: Optional[str] = None
     # instance_spec is for UI to store the instance_type's extended specifications for display.
@@ -458,6 +564,7 @@ class ClusterProvider(Enum):
     Docker = "Docker"
     Kubernetes = "Kubernetes"
     DigitalOcean = "DigitalOcean"
+    Shuihua = "Shuihua"
 
 
 class CloudCredentialBase(SQLModel):

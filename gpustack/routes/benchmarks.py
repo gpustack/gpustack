@@ -37,7 +37,7 @@ from gpustack.schemas.benchmark import (
     DATASET_SEED_MAX,
     DATASET_SEED_MIN,
     DATASET_SHAREGPT,
-    SLA_THRESHOLDS,
+    SLO_THRESHOLDS,
     Benchmark,
     BenchmarkCreate,
     BenchmarkFullPublic,
@@ -70,9 +70,9 @@ from sqlalchemy.orm import defer
 
 MAX_EXPORT_RECORDS = 20
 # Upper bound on the per-point grid a single benchmark may upload. The ramp's own
-# budget is max_points (12 by default) and a manual stage list is user-sized, so
-# this is far above any real curve — it exists so a malformed upload is rejected at
-# the boundary instead of turning into an unbounded write.
+# budget is max_points and a manual stage list is user-sized, so this sits far
+# above any real curve — it exists so a malformed upload is rejected at the
+# boundary instead of turning into an unbounded write.
 MAX_BENCHMARK_RESULT_POINTS = 500
 BENCHMARK_EXPORT_FIELD_ORDER = [
     "name",
@@ -370,10 +370,10 @@ def _validate_search_range(benchmark_in: BenchmarkCreate) -> None:
 
 
 def _validate_positive_knobs(benchmark_in: BenchmarkCreate) -> None:
-    """Budgets and SLA thresholds are all "<= N"-style quantities: 0 or less is not
+    """Budgets and SLO thresholds are all "<= N"-style quantities: 0 or less is not
     a stricter setting, it is a value the runner cannot act on."""
     fields = ["max_points", "max_total_seconds", "max_seconds", "turns"]
-    fields += [t.attr for t in SLA_THRESHOLDS]
+    fields += [t.attr for t in SLO_THRESHOLDS]
     for field in fields:
         value = getattr(benchmark_in, field, None)
         if value is not None and value <= 0:

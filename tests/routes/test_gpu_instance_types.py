@@ -19,6 +19,8 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from kubernetes_asyncio import client
+from sqlalchemy import func
+from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.responses import StreamingResponse
@@ -34,6 +36,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.routes import gpu_instance_types as it_routes
 from gpustack.routes import gpu_instances_helper as helper
+from gpustack.routes.gpu_instances_helper import display_name_label
 from gpustack.schemas.clusters import ClusterProvider, GpuInstanceOptions, K8sOptions
 from gpustack.schemas.gpu_instance_types import (
     GPUInstanceType,
@@ -47,6 +50,7 @@ from gpustack.schemas.gpu_instance_types import (
     GPUInstanceTypesPublic,
 )
 from gpustack.schemas.principals import OrgRole, PrincipalType
+from gpustack.server.bus import Event, EventType
 
 # SYSTEM principal → bypasses tenant filters (visible + writable everywhere).
 CTX = SimpleNamespace(
@@ -274,6 +278,11 @@ def _row(
     )
     row.snapshot = row.compute_snapshot()
     return row
+
+
+def _event(row):
+    """A bus event carrying ``row``, as the watch stream's predicates see it."""
+    return Event(type=EventType.UPDATED, data=row)
 
 
 async def _seed(engine, *rows):
@@ -518,31 +527,74 @@ async def test_search_matches_the_name_case_insensitively(monkeypatch, engine):
     out = await _list(search="a10")
 
     assert [i.name for i in out.items] == ["A10G"]
-    # CAUTION: this passes here only because the fixture engine is SQLite, whose
-    # LIKE is ASCII-case-insensitive. ``paginated_by_query`` lowers both sides for
-    # the item query but neither side for the COUNT, so on PostgreSQL this same
-    # request returns the item while reporting ``total == 0``. The assertion below
-    # therefore does NOT protect production — it would keep passing straight
-    # through that failure. It is kept as the tripwire that fires the first time
-    # this suite is run against PostgreSQL; do not read it as coverage of the
-    # count path. Recorded in the spec's Open Questions; the fix is one
-    # ``func.lower`` on each side of the count predicate in a shared mixin, which
-    # is outside this change's scope.
+    # ``total`` is asserted alongside because the item query and the COUNT build
+    # the fuzzy predicate from one shared definition, lowered on both sides — they
+    # used to be written out separately and drifted, the count losing the
+    # ``lower()`` and reporting fewer rows than the page rendered.
     assert out.pagination.total == 1
 
 
 @pytest.mark.asyncio
-async def test_search_does_not_match_the_spec_display_name(monkeypatch, engine):
-    # Only real columns are fuzzy-filterable: ``paginated_by_query`` builds its
-    # LIKE predicates with ``getattr(cls, key)``, and display_name lives inside
-    # the ``spec`` JSON column.
-    await _seed(engine, _row(1, "h100", display_name="A10G Pool"))
+async def test_search_matches_the_spec_display_name(monkeypatch, engine):
+    # #6104. The Name column renders ``spec.displayName || name``, so the string a
+    # user copies out of the table is the display name — and for an
+    # operator-derived type the two never coincide: the operator stamps the
+    # ``CPU-only`` sentinel on a collapsed generic pool whose CR name is derived
+    # from the node's features instead.
+    await _seed(
+        engine,
+        _row(1, "gpustack--generic-linux-amd64", display_name="CPU-only"),
+        _row(1, "h100"),
+    )
     _patch_db(monkeypatch, engine)
     _patch_visible_clusters(monkeypatch, _cluster(1))
 
-    out = await _list(search="a10")
+    out = await _list(search="CPU-only")
+
+    assert [i.name for i in out.items] == ["gpustack--generic-linux-amd64"]
+    assert out.pagination.total == 1
+
+
+@pytest.mark.asyncio
+async def test_search_matches_the_display_name_case_insensitively(monkeypatch, engine):
+    await _seed(
+        engine, _row(1, "gpustack--generic-linux-amd64", display_name="CPU-only")
+    )
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    out = await _list(search="cpu-ONLY")
+
+    assert [i.name for i in out.items] == ["gpustack--generic-linux-amd64"]
+
+
+@pytest.mark.asyncio
+async def test_search_matching_neither_name_returns_an_empty_page(monkeypatch, engine):
+    # The display-name arm has to widen the match, not defeat it: a row whose
+    # display name is SQL NULL must still be excluded by a non-matching term
+    # rather than dragged in by the OR.
+    await _seed(engine, _row(1, "h100"), _row(1, "a10g", display_name="A10G Pool"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    out = await _list(search="l40s")
 
     assert out.items == []
+    assert out.pagination.total == 0
+
+
+@pytest.mark.asyncio
+async def test_name_stays_an_exact_display_name_blind_match(monkeypatch, engine):
+    # ``name`` is the object's identity — DELETE / activate / deactivate / PUT all
+    # key on it, and a display name is neither unique within a cluster nor
+    # immutable. Only ``search`` widened.
+    await _seed(engine, _row(1, "h100", display_name="CPU-only"))
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    assert [i.name for i in (await _list(name="h100")).items] == ["h100"]
+    assert (await _list(name="CPU-only")).items == []
+    assert (await _list(name="h10")).items == []
 
 
 @pytest.mark.asyncio
@@ -619,6 +671,8 @@ async def test_visible_clusters_come_from_the_cluster_visibility_filter(
 
 @pytest.mark.asyncio
 async def test_sort_by_orders_the_list(monkeypatch, engine):
+    # No display names anywhere, so the Name order falls back to ``name`` — the
+    # control for the label ordering asserted below.
     await _seed(engine, _row(1, "b"), _row(1, "a"), _row(1, "c"))
     _patch_db(monkeypatch, engine)
     _patch_visible_clusters(monkeypatch, _cluster(1))
@@ -628,6 +682,105 @@ async def test_sort_by_orders_the_list(monkeypatch, engine):
 
     assert [i.name for i in ascending.items] == ["a", "b", "c"]
     assert [i.name for i in descending.items] == ["c", "b", "a"]
+
+
+def _labels(page):
+    """What the Name column renders for each row, in the order returned."""
+    return [(i.spec.display_name or i.name) for i in page.items]
+
+
+@pytest.mark.asyncio
+async def test_sort_by_name_orders_by_the_displayed_label(monkeypatch, engine):
+    # ``sorter: true`` on the Name column sends ``sort_by=name``, so ordering by
+    # the row's ``name`` sorted the column by a value it does not display.
+    await _seed(
+        engine,
+        _row(1, "gpustack--generic-linux-amd64", display_name="CPU-only"),
+        _row(1, "zzz-handmade"),  # no display name -> falls back to name
+        _row(1, "aaa-handmade", display_name=""),  # empty -> the UI's falsy ``||``
+    )
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    ascending = await _list(sort_by="name")
+    descending = await _list(sort_by="-name")
+
+    # Uppercase-before-lowercase is the fixture engine's binary collation, not a
+    # claim about production's: what is under test is WHICH value is ordered.
+    assert _labels(ascending) == ["CPU-only", "aaa-handmade", "zzz-handmade"]
+    assert _labels(descending) == ["zzz-handmade", "aaa-handmade", "CPU-only"]
+
+
+# ``GPUInstanceType.display_name`` is a hybrid, not a column: it reaches into the
+# ``spec`` JSON with SQLAlchemy's generic indexing, which each dialect compiles
+# its own way. Production runs PostgreSQL and MySQL; every test above runs on the
+# SQLite fixture engine, so nothing there would notice an expression that only
+# SQLite accepts.
+PRODUCTION_JSON_EXTRACTION = [
+    pytest.param(
+        postgresql.dialect(),
+        "gpu_instance_types.spec ->> 'displayName'",
+        id="postgresql",
+    ),
+    pytest.param(
+        mysql.dialect(),
+        "JSON_EXTRACT(gpu_instance_types.spec, '$.\"displayName\"')",
+        id="mysql",
+    ),
+    pytest.param(
+        sqlite.dialect(),
+        "JSON_EXTRACT(gpu_instance_types.spec, '$.\"displayName\"')",
+        id="sqlite",
+    ),
+]
+
+
+def _sql(expression, dialect):
+    return str(
+        expression.compile(dialect=dialect, compile_kwargs={"literal_binds": True})
+    )
+
+
+@pytest.mark.parametrize("dialect,extraction", PRODUCTION_JSON_EXTRACTION)
+def test_the_display_name_hybrid_compiles_on_every_dialect(dialect, extraction):
+    assert extraction in _sql(GPUInstanceType.display_name, dialect)
+
+
+@pytest.mark.parametrize("dialect,extraction", PRODUCTION_JSON_EXTRACTION)
+def test_the_search_predicate_compiles_on_every_dialect(dialect, extraction):
+    # The predicate ``paginated_by_query`` builds from ``fuzzy_fields`` — the
+    # hybrid has to survive ``lower()`` on every dialect, or a differently-cased
+    # term silently stops matching on PostgreSQL, whose LIKE is case-sensitive.
+    sql = _sql(func.lower(GPUInstanceType.display_name).like("%cpu-only%"), dialect)
+
+    assert extraction in sql
+    assert sql.startswith("lower(")
+
+
+@pytest.mark.parametrize("dialect,extraction", PRODUCTION_JSON_EXTRACTION)
+def test_the_name_order_expression_compiles_on_every_dialect(dialect, extraction):
+    sql = _sql(display_name_label(GPUInstanceType), dialect)
+
+    assert extraction in sql
+    assert sql.startswith("coalesce(nullif(")
+    # The fallback arm, without which a row with no display name sorts as NULL
+    # instead of by its name.
+    assert sql.endswith(", gpu_instance_types.name)")
+
+
+def test_the_display_name_hybrid_reads_the_spec_on_an_instance():
+    # The hybrid has two implementations — SQL above, Python here — and the watch
+    # stream's ``_match_fuzzy_fields`` uses the Python one. They are asserted
+    # against each other end-to-end in the parity test further down; this pins the
+    # instance side on its own, including the absent case that lets a search fall
+    # through to ``name``.
+    assert _row(1, "h100", display_name="CPU-only").display_name == "CPU-only"
+    assert _row(1, "h100").display_name is None
+    assert _row(1, "h100", display_name="").display_name == ""
+    # Not a field and not a column: no migration, and the wire form is unchanged.
+    assert "display_name" not in GPUInstanceType.model_fields
+    assert "display_name" not in {c.name for c in GPUInstanceType.__table__.columns}
+    assert "display_name" not in _row(1, "h100", display_name="CPU-only").model_dump()
 
 
 #
@@ -1541,14 +1694,27 @@ async def test_watch_streams_from_the_bus_under_the_same_narrowing(monkeypatch, 
     _patch_visible_clusters(monkeypatch, _cluster(1), _cluster(2))
     capture = _patch_streaming(monkeypatch)
 
-    resp = await _list(watch=True, search="a10")
+    resp = await _list(watch=True, search="CPU-only")
 
     assert isinstance(resp, StreamingResponse)
     assert resp.media_type == "text/event-stream"
     assert capture["fields"] == {"deleted_at": None}
-    assert capture["fuzzy_fields"] == {"name": "a10"}
-    # Bus events never see the SQL extra_conditions, so visibility has to ride on
-    # the filter_func or the stream leaks rows the REST read hides.
+    # The search rides ``fuzzy_fields``, exactly as it does on every other GPU
+    # Service list: ``display_name`` is a hybrid, so the shared
+    # ``_match_fuzzy_fields`` resolves it on a row like any other attribute and
+    # no route-specific predicate is needed.
+    assert capture["fuzzy_fields"] == {"name": "CPU-only", "display_name": "CPU-only"}
+    matched = capture["fuzzy_fields"]
+    shown_only = _event(
+        _row(1, "gpustack--generic-linux-amd64", display_name="CPU-only")
+    )
+    assert GPUInstanceType._match_fuzzy_fields(shown_only, matched) is True
+    assert (
+        GPUInstanceType._match_fuzzy_fields(_event(_row(1, "h100")), matched) is False
+    )
+
+    # Bus events never see the SQL extra_conditions, so visibility still has to
+    # ride on the filter_func or the stream leaks rows the REST read hides.
     visible = capture["filter_func"]
     assert visible(_row(1, "a10g")) is True
     assert visible(_row(3, "a10g")) is False
@@ -1556,6 +1722,40 @@ async def test_watch_streams_from_the_bus_under_the_same_narrowing(monkeypatch, 
     # with). A bare attribute read would raise, and ``streaming`` swallows that
     # and silently ends the whole stream, so it must be handled, not trusted.
     assert visible({"id": 7}) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search", ["cpu", "CPU-only", "handmade", "l40s", "-"])
+async def test_the_watch_filter_and_the_query_agree_on_who_matches(
+    monkeypatch, engine, search
+):
+    """``display_name`` has two implementations — the hybrid's SQL expression for
+    the read, its Python body for the stream — so the two are asserted against
+    each other rather than each against its own expectation. A drift between them
+    shows up as a searched page whose rows stop updating, or one that receives
+    rows it does not list."""
+    rows = [
+        _row(1, "gpustack--generic-linux-amd64", display_name="CPU-only"),
+        _row(1, "cpu-only-handmade"),
+        _row(1, "zzz-handmade"),  # no display name at all
+        _row(1, "aaa-handmade", display_name=""),  # empty display name
+        _row(1, "h100", display_name="NVIDIA H100"),
+    ]
+    await _seed(engine, *rows)
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1))
+
+    listed = {i.name for i in (await _list(search=search)).items}
+
+    capture = _patch_streaming(monkeypatch)
+    await _list(watch=True, search=search)
+    accepted = {
+        r.name
+        for r in rows
+        if GPUInstanceType._match_fuzzy_fields(_event(r), capture["fuzzy_fields"])
+    }
+
+    assert accepted == listed
 
 
 @pytest.mark.asyncio

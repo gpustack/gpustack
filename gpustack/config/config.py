@@ -131,6 +131,8 @@ class Config(WorkerConfig, BaseSettings):
                               Retained for backwards compatibility.
         disable_update_check: Disable update check.
         update_check_url: URL to check for updates.
+        ota_server_url: URL of the OTA server the official content sources are read
+                        from. Defaults to the public OTA server.
         model_catalog_file: Path or URL to the model catalog file.
 
         token: Shared secret used to register worker.
@@ -170,7 +172,10 @@ class Config(WorkerConfig, BaseSettings):
         grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
         grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
         grafana_model_dashboard_uid: Grafana dashboard UID for model dashboard.
+        grafana_cache_service_dashboard_uid: Grafana dashboard UID for cache service dashboard.
         gateway_plugin_server_url: URL to fetch gateway plugin manifest for embedded gateway.
+        shuihua_api_base_url: Base URL of the Shuihua API. Has no default; Shuihua clusters
+                            and credentials cannot be created until it is set.
     """
 
     # Server options
@@ -200,6 +205,7 @@ class Config(WorkerConfig, BaseSettings):
     disable_update_check: bool = False
     disable_openapi_docs: bool = False
     update_check_url: Optional[str] = None
+    ota_server_url: Optional[str] = None
     model_catalog_file: Optional[str] = None
     enable_cors: bool = False
     allow_origins: Optional[List[str]] = ['*']
@@ -291,12 +297,21 @@ class Config(WorkerConfig, BaseSettings):
     # ``ai-statistics`` vs ``gpustack-ai-statistics``, ...). See
     # ``gpustack.gateway.plugins.plugin_spec_overrides``.
     gateway_plugin: Dict[str, GatewayPluginEntry] = {}
+
+    # Base URL of the Shuihua API. Deliberately no default: that provider serves
+    # its integration and production environments from different hosts, so a
+    # built-in guess would point provisioning at the wrong account while looking
+    # like it worked. Creating a Shuihua cluster or credential is rejected until
+    # this is set.
+    shuihua_api_base_url: Optional[str] = None
+
     disable_builtin_observability: bool = False
     builtin_prometheus_port: int = 19090
     builtin_grafana_port: int = 13000
     grafana_url: Optional[str] = None
     grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"
     grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
+    grafana_cache_service_dashboard_uid: Optional[str] = "gpustack-cache-service"
 
     # Server-wide default for the GPUStack Operator image. Cluster-level
     # ``k8s_options.operator_image`` overrides this when set.

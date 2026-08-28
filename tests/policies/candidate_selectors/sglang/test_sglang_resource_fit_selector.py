@@ -6,6 +6,9 @@ from tests.utils.mock import mock_async_session
 
 from tests.utils.model import make_model, new_model, new_model_instance
 from gpustack.policies.candidate_selectors import SGLangResourceFitSelector
+from gpustack.policies.candidate_selectors.sglang_resource_fit_selector import (
+    MemFractionStaticCalculator,
+)
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.scheduler import scheduler
 from gpustack.schemas.models import (
@@ -386,7 +389,11 @@ async def test_select_candidates(
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await placement_scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        # find_candidate takes a session only to resolve a draft model's source, and
+        # returns before touching it when the model declares no speculative decoding.
+        actual_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         try:
             assert len(actual_candidates) == len(expected_candidates)
@@ -446,7 +453,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -528,7 +535,7 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -614,7 +621,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers(), mis)
+        candidate, _ = await scheduler.find_candidate(None, config, m, workers(), mis)
 
         expected_candidates = [
             {
@@ -774,7 +781,7 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -862,7 +869,7 @@ async def test_auto_schedule_embedding_models(config):
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -1238,12 +1245,11 @@ async def test_sglang_backend_parameters(config):
 
 @pytest.mark.asyncio
 async def test_sglang_tensor_parallel_size(config):
-    """Test SGLang tensor parallel size handling"""
+    """The SGLang --tp abbreviation must drive GPUStack scheduling too."""
     workers = [
         linux_nvidia_4_4080_16gx4(),
     ]
 
-    # Test with tensor parallel size
     m = new_model(
         1,
         "test_name",
@@ -1251,7 +1257,7 @@ async def test_sglang_tensor_parallel_size(config):
         huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
         cpu_offloading=False,
         backend_parameters=[
-            "--tp-size=2",
+            "--tp=2",
         ],
     )
 
@@ -1282,15 +1288,61 @@ async def test_sglang_tensor_parallel_size(config):
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
 
-        # Should handle tensor parallel size correctly
-        if candidates:
-            # If candidates are found, they should respect the tp-size parameter
-            assert len(candidates) >= 0
+        assert resource_fit_selector._tp_size == 2
+        assert resource_fit_selector._gpu_count == 2
+        assert candidates
+        assert all(len(candidate.gpu_indexes) == 2 for candidate in candidates)
+
+
+def test_sglang_tp_alias_drives_world_size_and_memory_calculation():
+    model = new_model(
+        1,
+        "test_name",
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        backend_parameters=["--tp", "2"],
+    )
+
+    assert SGLangResourceFitSelector.get_world_size_from_backend_parameters(model) == (
+        2,
+        ["tp"],
+    )
+
+    calculator = MemFractionStaticCalculator(
+        model=model,
+        model_instances=[],
+        model_params=SimpleNamespace(),
+        gpu_type="cuda",
+        selected_gpu_indexes_by_gpu_type_and_worker={},
+    )
+    assert calculator._tp_size == 2
+
+
+def test_sglang_dp_alias_drives_world_size_and_memory_calculation():
+    model = new_model(
+        1,
+        "test_name",
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        backend_parameters=["--dp", "2"],
+    )
+
+    assert SGLangResourceFitSelector.get_world_size_from_backend_parameters(model) == (
+        2,
+        ["dp"],
+    )
+
+    calculator = MemFractionStaticCalculator(
+        model=model,
+        model_instances=[],
+        model_params=SimpleNamespace(),
+        gpu_type="cuda",
+        selected_gpu_indexes_by_gpu_type_and_worker={},
+    )
+    assert calculator._dp_size == 2
 
 
 @pytest.mark.asyncio
 async def test_sglang_data_parallel_size(config):
-    """Test SGLang data parallel size handling"""
+    """The SGLang --dp abbreviation must drive GPUStack scheduling too."""
     workers = [
         linux_nvidia_22_H100_80gx8(),
         linux_nvidia_23_H100_80gx8(),
@@ -1304,7 +1356,7 @@ async def test_sglang_data_parallel_size(config):
         huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
         cpu_offloading=False,
         backend_parameters=[
-            "--dp-size=2",
+            "--dp=2",
             "--tp-size=4",
         ],
     )
@@ -1336,8 +1388,8 @@ async def test_sglang_data_parallel_size(config):
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
 
-        # Should handle data parallel size correctly
-        assert len(candidates) >= 0
+        assert resource_fit_selector._dp_size == 2
+        assert resource_fit_selector._gpu_count == 8
 
 
 @pytest.mark.asyncio
@@ -1915,7 +1967,9 @@ async def test_select_candidates_from_different_gpu_types(
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        actual_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis
+        )
 
         try:
             assert len(actual_candidates) == len(expected_candidates)

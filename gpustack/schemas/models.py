@@ -13,6 +13,7 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy import JSON, Column, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import false as sa_false
 from sqlalchemy.orm import selectinload
 from sqlmodel import Field, Relationship, SQLModel, Text, select
 
@@ -34,6 +35,7 @@ from gpustack.schemas.model_routes import (
     AccessPolicyEnum,
 )
 from gpustack.schemas.principals import _platform_principal_id
+from gpustack.schemas.cache_services import CacheConfigSnapshot
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
@@ -201,9 +203,23 @@ class LoraListEntry(BaseModel):
     """ID of the ModelFile record backing this adapter."""
 
 
+class KVCacheModeEnum(str, Enum):
+    LOCAL = "local"
+    SHARED = "shared"
+
+    def __str__(self):
+        return self.value
+
+
 class ExtendedKVCacheConfig(BaseModel):
     enabled: bool = False
     """ Enable extended KV cache for the model."""
+
+    mode: Optional[KVCacheModeEnum] = KVCacheModeEnum.LOCAL
+    """ "local": per-instance cache offloaded to CPU memory. "shared": attach to a shared cache service. Absent means local. """
+
+    cache_service_id: Optional[int] = None
+    """ ID of the CacheService to attach to. Required when mode is "shared". """
 
     ram_ratio: Optional[float] = 1.2
     """ RAM-to-VRAM ratio for KV cache. For example, 2.0 means the RAM is twice the size of the VRAM. """
@@ -213,6 +229,12 @@ class ExtendedKVCacheConfig(BaseModel):
 
     chunk_size: Optional[int] = None
     """ Size for each KV cache chunk (unit: number of tokens). """
+
+    def is_shared(self) -> bool:
+        return bool(self.enabled and self.mode == KVCacheModeEnum.SHARED)
+
+    def is_local(self) -> bool:
+        return bool(self.enabled and not self.is_shared())
 
 
 # A window may span at most a year. Longer values are meaningless for a
@@ -442,6 +464,29 @@ class ModelSpecBase(SQLModel, ModelSource):
     backend_parameters: Optional[List[str]] = Field(sa_type=JSON, default=None)
     image_name: Optional[str] = None
     run_command: Optional[str] = Field(sa_type=Text, default=None)
+    # Whether this deployment's inference server implements the Anthropic
+    # Messages API itself, letting the gateway forward an inbound /v1/messages
+    # untouched instead of translating it to /v1/chat/completions. False, the
+    # pre-existing behavior, still serves /v1/messages -- by translating.
+    #
+    # A statement about the server, not about the gateway: what the operator
+    # knows is whether their image is a recent enough vLLM, not what ai-proxy
+    # does with that fact.
+    #
+    # Declared on the deployment rather than derived from its inference backend
+    # because the answer belongs to the running image, and the image is settled
+    # per instance (``ModelInstance.gpu_type`` picks it): one deployment can
+    # spread over workers of different accelerators whose images need not agree
+    # -- vllm-ascend against vllm-openai. A single ai-proxy provider entry
+    # covers the whole deployment, so no per-image source can answer for it.
+    #
+    # Not nullable: with NULL and False meaning the same thing there would be
+    # two spellings of "no" and nothing to tell a caller which to send.
+    native_anthropic_api: bool = Field(
+        default=False,
+        nullable=False,
+        sa_column_kwargs={"server_default": sa_false()},
+    )
 
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
     restart_on_error: Optional[bool] = True
@@ -737,6 +782,10 @@ class ModelInstanceBase(SQLModel, ModelSource):
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
         sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
     )
+    cache_config: Optional[CacheConfigSnapshot] = Field(
+        sa_column=Column(pydantic_column_type(CacheConfigSnapshot)), default=None
+    )
+    """Resolved shared-cache connection info; None for local/disabled KV cache."""
     gpu_type: Optional[str] = None
     gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
     gpu_addresses: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
@@ -772,6 +821,15 @@ class ModelInstanceBase(SQLModel, ModelSource):
         default=None,
         sa_column=Column(pydantic_column_type(List[LoraListEntry]), nullable=True),
     )
+
+    @property
+    def spans_workers(self) -> bool:
+        """Whether this instance is actually placed across several
+        workers (subordinate workers assigned at scheduling) — the
+        placement fact, as opposed to the model's
+        distributed_inference_across_workers permission flag."""
+        dservers = self.distributed_servers
+        return bool(dservers and dservers.subordinate_workers)
 
     def get_deployment_metadata(
         self,

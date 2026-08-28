@@ -50,8 +50,8 @@ from gpustack.server.services import provision_bootstrap_admin_orgs
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.config import registration
-from gpustack.server.catalog import init_model_catalog
 from gpustack.server.controllers import (
+    CacheServiceController,
     ModelController,
     ModelFileController,
     ModelInstanceController,
@@ -59,6 +59,8 @@ from gpustack.server.controllers import (
     ClusterController,
     WorkerPoolController,
     InferenceBackendController,
+    RunnerSourceController,
+    CatalogSourceController,
     ModelRouteController,
     ModelRouteTargetController,
     ModelProviderController,
@@ -69,6 +71,8 @@ from gpustack.gpu_instances.controllers import (
     GPUInstancePersistentVolumeTypeController,
     GPUInstanceTypeController,
 )
+from gpustack.schemas.catalog_source import normalize_catalog_yaml
+from gpustack.server.catalog import read_builtin_catalog_text
 from gpustack.server.db import async_session
 from gpustack.server.gateway_auth_reconciler import GatewayAuthReconciler
 from gpustack.server.lora_model_routes import (
@@ -79,6 +83,7 @@ from gpustack.utils.lora_model_source import normalized_lora_list
 from gpustack.server.init_db import init_db, get_query_count
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
+from gpustack.server.sources.probe import SourceRefresher
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.worker_status_buffer import flush_worker_status_to_db
 from gpustack.server.metrics_collector import flush_gateway_metrics_to_db
@@ -91,6 +96,7 @@ from gpustack.server.usage_archiver import TableArchiver
 from gpustack.schemas.metered_usage import MeteredUsage, MeteredUsageArchive
 from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
+from gpustack.server.cache_services import CacheServiceHealthChecker
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.server.scaling_scheduler import ScalingScheduler
 from gpustack.utils.platform import is_inside_kubernetes
@@ -112,6 +118,7 @@ from gpustack.gateway.utils import (
     resolve_instance_address_from_model_header,
 )
 from gpustack.gateway import get_async_k8s_config
+from gpustack.gateway.plugins import verify_published_plugin_modules
 from gpustack.envs import (
     GATEWAY_PORT_CHECK_INTERVAL,
     GATEWAY_PORT_CHECK_RETRY_COUNT,
@@ -275,7 +282,8 @@ class Server:
         self._run_migrations()
         await self._prepare_data()
 
-        init_model_catalog(self._config.model_catalog_file)
+        self._validate_configured_model_catalog()
+
         # it's safe to determine server_role after migration
         if self._config.server_role() == Config.ServerRole.BOTH:
             self._after_healthy_sub_processes.append(self._worker_process)
@@ -345,8 +353,35 @@ class Server:
 
         server = uvicorn.Server(config)
         self._create_async_task(server.serve())
+        self._create_async_task(self._check_gateway_startup(server))
 
         await asyncio.gather(*self._async_tasks)
+
+    async def _check_gateway_startup(self, server: uvicorn.Server):
+        """Confirm the gateway can load its modules and did come up.
+
+        Reports, never raises: this runs alongside a server that is already
+        serving and must not be the reason one fails to start. What it finds
+        is a gateway problem, and the log is the only place it surfaces --
+        Envoy failing this way is silent.
+        """
+        if self._config.gateway_mode == GatewayModeEnum.disabled:
+            return
+        try:
+            # ``server.started`` flips once uvicorn is accepting, which is
+            # when a module served by this process becomes fetchable. It never
+            # flips if the bind fails, so give the loop its own way out rather
+            # than leaving it to the cancellation that follows.
+            while not server.started:
+                if server.should_exit:
+                    return
+                await asyncio.sleep(0.05)
+            await verify_published_plugin_modules(self._config)
+            await self._wait_for_gateway_ready()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Gateway startup check failed to complete: {e}")
 
     def _start_default_registry_checker(self):
         registration.determine_default_registry(
@@ -387,6 +422,26 @@ class Server:
             await self._init_data(session)
 
         logger.debug("Data initialization completed.")
+
+    def _validate_configured_model_catalog(self):
+        """Reject a ``--model-catalog-file`` this server cannot read or parse.
+
+        The leader seeds the catalog source from it, but a controller task that
+        raises dies without taking the server down — a typo'd path would surface as
+        an empty Model Catalog and one ERROR line. Read here, where a start-up
+        failure still stops the process. Only an explicit file is fatal.
+        """
+        if not self._config.model_catalog_file:
+            return
+        try:
+            normalize_catalog_yaml(
+                read_builtin_catalog_text(self._config.model_catalog_file)
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load the configured model catalog "
+                f"{self._config.model_catalog_file}: {e}"
+            ) from e
 
     def _start_scheduler(self):
         """Start the scheduler and return the task."""
@@ -429,6 +484,12 @@ class Server:
         inference_backend_controller = InferenceBackendController()
         tasks.append(asyncio.create_task(inference_backend_controller.start()))
 
+        runner_source_controller = RunnerSourceController()
+        tasks.append(asyncio.create_task(runner_source_controller.start()))
+
+        catalog_source_controller = CatalogSourceController(self._config)
+        tasks.append(asyncio.create_task(catalog_source_controller.start()))
+
         gpu_instance_controller = GPUInstanceController(self._config)
         tasks.append(asyncio.create_task(gpu_instance_controller.start()))
 
@@ -448,6 +509,9 @@ class Server:
         gateway_auth_reconciler = GatewayAuthReconciler(self._config)
         tasks.append(asyncio.create_task(gateway_auth_reconciler.start()))
 
+        cache_service_controller = CacheServiceController(self._config)
+        tasks.append(asyncio.create_task(cache_service_controller.start()))
+
         logger.debug("Controllers started.")
         return tasks
 
@@ -465,6 +529,12 @@ class Server:
         self._create_async_task(worker_syncer.start())
 
         logger.debug("Worker syncer started.")
+
+    def _start_cache_service_health_checker(self):
+        health_checker = CacheServiceHealthChecker()
+        self._create_async_task(health_checker.start())
+
+        logger.debug("Cache service health checker started.")
 
     def _start_worker_status_flusher(self):
         self._create_async_task(flush_worker_status_to_db())
@@ -602,6 +672,21 @@ class Server:
         self._create_async_task(update_checker.start())
         logger.debug("Update checker started.")
 
+    def _start_source_probe(self):
+        """Start the source refresher (leader-only): each OFFICIAL slot tracks
+        what the OTA server publishes, and opted-in user URL sources auto-refresh.
+        Turning a kind off is per kind, on its OFFICIAL row's
+        ``auto_update_hours``.
+        """
+        source_refresher = SourceRefresher(
+            ota_server_url=self._config.ota_server_url,
+        )
+        # The status API and the manual trigger reach the refresher through app
+        # state; its absence tells them this server isn't the one refreshing.
+        self._app.state.source_probe = source_refresher
+        self._create_async_task(source_refresher.start())
+        logger.debug("Source refresher started.")
+
     async def _monitor_sub_processes(self):
         while self.all_processes:
             for process in self.all_processes[:]:
@@ -695,6 +780,17 @@ class Server:
         self._create_async_task(wait_and_start_after_healthy())
 
     async def _wait_for_gateway_ready(self):
+        """Wait for the gateway to actually be listening, and say so if it is not.
+
+        Only ``embedded`` can be observed from here -- that is the one mode
+        where Envoy shares this network namespace.
+
+        Failure is reported, never raised: a gateway that never binds its port
+        is a total outage, but killing the server on top of it removes the
+        only process still able to explain why. Envoy gives no other signal --
+        a listener stuck warming just never appears -- so without this the
+        whole product is unreachable and nothing says so.
+        """
         if self._config.gateway_mode != GatewayModeEnum.embedded:
             return
         # http port is always started
@@ -702,8 +798,20 @@ class Server:
         if self._config.get_tls_secret_name() is not None:
             ports.append(self._config.tls_port)
         logger.info(f"Waiting for ports {ports} of GPUStack to be ready...")
-        # wait for gateway ready for about 60s
-        await self._check_ports_ready(*ports)
+        try:
+            # wait for gateway ready for about 60s
+            await self._check_ports_ready(*ports)
+        except Exception as e:
+            logger.error(
+                "Gateway port(s) %s never became ready after %ss: %s. Inspect "
+                "Envoy on the gateway: a listener reported in `warming_state` "
+                "by `curl localhost:15000/config_dump?resource=dynamic_"
+                "listeners` is waiting on a Wasm module it could not load.",
+                ports,
+                GATEWAY_PORT_CHECK_RETRY_COUNT * GATEWAY_PORT_CHECK_INTERVAL,
+                e,
+            )
+            return
         logger.info("GPUStack Server is ready.")
 
     @tenacity.retry(
@@ -1393,8 +1501,13 @@ class Server:
         # System Load Collector
         self._start_system_load_collector()
 
+        # Cache Service Metrics Collector
+
         # Update Checker
         self._start_update_checker()
+
+        # Official Source Probe
+        self._start_source_probe()
 
         # Worker Instance Cleaner
         self._start_worker_instance_cleaner()
@@ -1414,3 +1527,6 @@ class Server:
         # Operator Settings (converges the operator settings GPU Service
         # clusters are configured with)
         self._start_gpustack_operator_settings()
+
+        # Cache Service Health Checker (probes external cache services)
+        self._start_cache_service_health_checker()

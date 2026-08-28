@@ -197,7 +197,11 @@ class DigitalOceanClient(ProviderClientBase):
         os_image,
         worker_name,
         secret_configs: Dict[str, Any] = {},
+        ssh_public_key: Optional[str] = None,
     ) -> UserDataTemplate:
+        # ssh_public_key is unused on purpose: the key is registered through
+        # the ssh_keys API and attached by id in create_instance, so it must
+        # not also be written into the user data.
         image_info = await self.client.images.get(os_image)
         distribution = image_info.get('image', {}).get('distribution', '').lower()
         image_slug = image_info.get('image', {}).get('slug', '').lower()
@@ -214,7 +218,13 @@ class DigitalOceanClient(ProviderClientBase):
             install_driver = ManufacturerEnum.NVIDIA
             setup_driver = ManufacturerEnum.NVIDIA
         user_data = await super().construct_user_data(
-            server_url, token, image_name, os_image, worker_name, secret_configs
+            server_url,
+            token,
+            image_name,
+            os_image,
+            worker_name,
+            secret_configs,
+            ssh_public_key,
         )
         user_data.distribution = distribution
         user_data.setup_driver = setup_driver

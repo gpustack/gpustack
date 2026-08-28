@@ -20,6 +20,19 @@ from gpustack.schemas.inference_backend import (
     InferenceBackendCreate,
     InferenceBackendUpdate,
 )
+from gpustack.schemas.runner_source import (
+    InferenceRunnerSource,
+    RunnerOverrideEntry,
+    RunnerOverrideEntryPublic,
+    RunnerOverrideEntriesPublic,
+)
+from gpustack.schemas.catalog_source import (  # noqa: F401  table registration
+    CatalogSource,
+    CatalogModelEntry,
+)
+from gpustack.schemas.inference_backend_source import (  # noqa: F401  table registration
+    InferenceBackendSource,
+)
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -98,6 +111,24 @@ from gpustack.schemas.benchmark import (
     BenchmarkUpdate,
     BenchmarkPublic,
     BenchmarksPublic,
+)
+from gpustack.schemas.cache_services import (
+    CacheService,
+    CacheServiceCreate,
+    CacheServiceUpdate,
+    CacheServicePublic,
+    CacheServicesPublic,
+    CacheServiceInstance,
+    CacheServiceInstanceCreate,
+    CacheServiceInstanceUpdate,
+    CacheServiceInstancePublic,
+    CacheServiceInstancesPublic,
+    CacheServiceModeEnum,
+    CacheServiceStateEnum,
+    CacheConfigSnapshot,
+)
+from gpustack.schemas.cache_providers import (
+    CacheProvider,
 )
 from gpustack.schemas.filesystem import (
     FileExistsResponse,
@@ -278,6 +309,13 @@ __all__ = [
     "InferenceBackendsPublic",
     "InferenceBackendCreate",
     "InferenceBackendUpdate",
+    "InferenceRunnerSource",
+    "RunnerOverrideEntry",
+    "RunnerOverrideEntryPublic",
+    "RunnerOverrideEntriesPublic",
+    "CatalogSource",
+    "CatalogModelEntry",
+    "InferenceBackendSource",
     "Benchmark",
     "BenchmarkCreate",
     "BenchmarkUpdate",
@@ -292,6 +330,20 @@ __all__ = [
     "GPUSnapshots",
     "BenchmarkSnapshot",
     "BenchmarkMetrics",
+    "CacheService",
+    "CacheServiceCreate",
+    "CacheServiceUpdate",
+    "CacheServicePublic",
+    "CacheServicesPublic",
+    "CacheServiceInstance",
+    "CacheServiceInstanceCreate",
+    "CacheServiceInstanceUpdate",
+    "CacheServiceInstancePublic",
+    "CacheServiceInstancesPublic",
+    "CacheServiceModeEnum",
+    "CacheServiceStateEnum",
+    "CacheConfigSnapshot",
+    "CacheProvider",
     "FileExistsResponse",
     "ModelProvider",
     "ModelProviderCreate",
