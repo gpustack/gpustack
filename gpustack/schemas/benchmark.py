@@ -256,7 +256,7 @@ class ModelInstanceSnapshot(ModelInstanceRuntimeInfo):
     run_command: Optional[str] = Field(sa_type=Text, default=None)
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
 
-    # Extended KV Cache configuration. Currently maps to LMCache config in vLLM and SGLang.
+    # Extended KV Cache configuration. Maps to LMCache in vLLM, and to SGLang's native HiCache (LMCache in shared mode).
     extended_kv_cache: Optional[ExtendedKVCacheConfig] = Field(
         sa_type=pydantic_column_type(ExtendedKVCacheConfig), default=None
     )

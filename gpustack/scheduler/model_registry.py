@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.25.0/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 # NOTE: entries are only added/renamed here, never removed, so that older vLLM
 # versions and other backends (SGLang, Ascend MindIE) keep recognizing them.
@@ -42,7 +42,8 @@ _TEXT_GENERATION_MODELS = [
     "Ernie4_5_MoeForCausalLM",
     "ExaoneForCausalLM",
     "Exaone4ForCausalLM",
-    "ExaoneMoEForCausalLM",
+    "ExaoneMoEForCausalLM",  # Note: Renamed to "ExaoneMoeForCausalLM" in vLLM v0.27.1
+    "ExaoneMoeForCausalLM",
     "Fairseq2LlamaForCausalLM",
     "FalconForCausalLM",
     "FalconMambaForCausalLM",
@@ -88,6 +89,7 @@ _TEXT_GENERATION_MODELS = [
     "LLaMAForCausalLM",
     "Llama4ForCausalLM",
     "LongcatFlashForCausalLM",
+    "LongcatFlashNgramForCausalLM",
     "MambaForCausalLM",
     "Mamba2ForCausalLM",
     "MellumForCausalLM",
@@ -131,6 +133,8 @@ _TEXT_GENERATION_MODELS = [
     "Qwen2MoeForCausalLM",
     "Qwen3ForCausalLM",
     "Qwen3MoeForCausalLM",
+    "Qwen3_5ForCausalLM",
+    "Qwen3_5MoeForCausalLM",
     "RWForCausalLM",
     "SeedOssForCausalLM",
     "Step1ForCausalLM",
@@ -152,6 +156,8 @@ _TEXT_GENERATION_MODELS = [
     "HrmTextForCausalLM",
     "HYV3ForCausalLM",
     "HyperCLOVAXForCausalLM",
+    "InklingForCausalLM",
+    "InklingForConditionalGeneration",
     "Jais2ForCausalLM",
     "LagunaForCausalLM",
     "MiMoV2ForCausalLM",
@@ -173,6 +179,7 @@ _TEXT_GENERATION_MODELS = [
 
 _EMBEDDING_MODELS = [
     # [Text-only]
+    "BertForMaskedLM",
     "BertModel",
     "BertSpladeSparseEmbeddingModel",
     "HF_ColBERT",
@@ -237,7 +244,9 @@ _CROSS_ENCODER_MODELS = [
     "BertForTokenClassification",
     "GteNewForSequenceClassification",
     "RobertaForSequenceClassification",
+    "RobertaForTokenClassification",
     "XLMRobertaForSequenceClassification",
+    "XLMRobertaForTokenClassification",
     "ModernBertForSequenceClassification",
     "ModernBertForTokenClassification",
     "JinaVLForRanking",
@@ -261,6 +270,7 @@ _MULTIMODAL_MODELS = [
     "ChameleonForConditionalGeneration",
     "Cohere2VisionForConditionalGeneration",
     "Cosmos3ForConditionalGeneration",
+    "Cosmos3EdgeForConditionalGeneration",
     "DeepseekVLV2ForCausalLM",
     "DeepseekOCRForCausalLM",
     "DeepseekOCR2ForCausalLM",
@@ -293,6 +303,7 @@ _MULTIMODAL_MODELS = [
     "RForConditionalGeneration",
     "KimiVLForConditionalGeneration",
     "KimiK25ForConditionalGeneration",
+    "KimiK3ForConditionalGeneration",
     "LightOnOCRForConditionalGeneration",
     "Lfm2VlForConditionalGeneration",
     "Llama_Nemotron_Nano_VL",
@@ -385,6 +396,7 @@ _SPEECH_TO_TEXT_MODELS = [
     "WhisperForConditionalGeneration",
     "CohereAsrForConditionalGeneration",
     "FireRedLIDForConditionalGeneration",
+    "VibeVoiceAsrForConditionalGeneration",
 ]
 
 _TEXT_TO_SPEECH_MODELS = [
@@ -394,6 +406,7 @@ _TEXT_TO_SPEECH_MODELS = [
 _TRANSFORMERS_SUPPORTED_MODELS = [
     # Text generation models
     "SmolLM3ForCausalLM",
+    "VaultGemmaForCausalLM",
     # Multimodal models
     "Emu3ForConditionalGeneration",
 ]

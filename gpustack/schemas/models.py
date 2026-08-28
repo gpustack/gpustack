@@ -492,7 +492,7 @@ class ModelSpecBase(SQLModel, ModelSource):
     restart_on_error: Optional[bool] = True
     distributable: Optional[bool] = False
 
-    # Extended KV Cache configuration. Currently maps to LMCache config in vLLM and SGLang.
+    # Extended KV Cache configuration. Maps to LMCache in vLLM, and to SGLang's native HiCache (LMCache in shared mode).
     extended_kv_cache: Optional[ExtendedKVCacheConfig] = Field(
         sa_type=pydantic_column_type(ExtendedKVCacheConfig), default=None
     )
