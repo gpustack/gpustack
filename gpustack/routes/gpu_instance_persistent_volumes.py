@@ -37,6 +37,10 @@ from gpustack.schemas.gpu_instance_persistent_volumes import (
 )
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.bus import EventType
+from gpustack.routes.gpu_instances_helper import (
+    display_name_label,
+    order_by_display_label,
+)
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 
@@ -59,7 +63,10 @@ async def get_gpu_instance_persistent_volumes(
 
     fuzzy_fields: dict = {}
     if search:
+        # The Name column renders ``display_name || name``, so searching only
+        # ``name`` hid rows behind the label the list actually shows (#6104).
         fuzzy_fields["name"] = search
+        fuzzy_fields["display_name"] = search
 
     if params.watch:
         return StreamingResponse(
@@ -76,7 +83,9 @@ async def get_gpu_instance_persistent_volumes(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
-            order_by=params.order_by,
+            order_by=order_by_display_label(
+                params.order_by, display_name_label(GPUInstancePersistentVolume)
+            ),
             page=params.page,
             per_page=params.perPage,
         )

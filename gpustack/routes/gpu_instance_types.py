@@ -23,8 +23,10 @@ from gpustack.gpu_instances.gateway import count_ready_workers
 from gpustack.routes.gpu_instances_helper import (
     assert_cluster_gpu_service,
     build_cluster_ops,
+    display_name_label,
     ensure_writable,
     handle_error,
+    order_by_display_label,
     watch_event_stream,
 )
 
@@ -217,7 +219,15 @@ async def get_gpu_instance_types(
     fields = {"deleted_at": None}
     if name:
         fields["name"] = name
-    fuzzy_fields = {"name": search} if search else {}
+
+    fuzzy_fields: dict = {}
+    if search:
+        # The Name column renders ``display_name || name``, so searching only
+        # ``name`` hid rows behind the label the list actually shows (#6104).
+        # ``display_name`` is a hybrid here rather than a column, which is why
+        # this reads the same as every other GPU Service list.
+        fuzzy_fields["name"] = search
+        fuzzy_fields["display_name"] = search
 
     if params.watch:
         # Deliberately ahead of the empty-set guard below: that guard is about the
@@ -248,7 +258,9 @@ async def get_gpu_instance_types(
             extra_conditions=[GPUInstanceType.cluster_id.in_(allowed_ids)],
             page=params.page,
             per_page=params.perPage,
-            order_by=params.order_by,
+            order_by=order_by_display_label(
+                params.order_by, display_name_label(GPUInstanceType)
+            ),
         )
 
 
