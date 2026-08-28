@@ -14,7 +14,7 @@ Navigate to the `GPU Service` > `Storage` page to browse all storage and its det
 
 ![Screenshot: Storage list](../assets/gpuservice/storage/list.png)
 
-You can filter storage by name.
+You can filter storage by display name or name — either value the `Name` column may show. Sorting the `Name` column orders by the label it displays.
 
 ## Adding Storage
 

@@ -12,7 +12,7 @@ Navigate to the `GPU Service` > `Storage Types` page to browse all storage types
 
 ![Screenshot: Storage Types list](../assets/gpuservice/storage-types/list.png)
 
-You can filter storage types by name.
+You can filter storage types by display name or name — either value the `Name` column may show. Sorting the `Name` column orders by the label it displays.
 
 ## Adding a Storage Type
 

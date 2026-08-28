@@ -10,7 +10,7 @@ Navigate to the `GPU Service` > `Instance Templates` page to browse all availabl
 
 ![Screenshot: Instance Templates list](../assets/gpuservice/instance-templates/list.png)
 
-You can filter templates by name or vendor.
+You can filter templates by display name or name — either value a card may show — or by vendor.
 
 ## Adding a Template
 
