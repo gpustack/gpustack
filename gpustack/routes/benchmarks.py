@@ -20,6 +20,7 @@ from gpustack.api.tenant import (
     cluster_scoped_system,
     scoped_cluster_row_visible,
 )
+from gpustack.schemas.cache_services import CacheService
 from gpustack.schemas.models import (
     Model,
     ModelInstance,
@@ -653,7 +654,20 @@ async def get_benchmark_snapshot(
     gpu_snapshots = {}
     instance_snapshots = {}
 
-    instance_snapshots[mi.name] = create_model_instance_snapshot(mi, model)
+    cache_service_name = None
+    if (
+        model.extended_kv_cache
+        and model.extended_kv_cache.is_shared()
+        and model.extended_kv_cache.cache_service_id
+    ):
+        cache_service = await CacheService.one_by_id(
+            session, model.extended_kv_cache.cache_service_id
+        )
+        if cache_service is not None:
+            cache_service_name = cache_service.name
+    instance_snapshots[mi.name] = create_model_instance_snapshot(
+        mi, model, cache_service_name=cache_service_name
+    )
 
     w: Worker = await WorkerService(session).get_by_id(mi.worker_id)
     w_snapshot, gpus_snapshots = create_worker_snapshot(w, mi.gpu_type, mi.gpu_indexes)

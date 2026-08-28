@@ -418,6 +418,9 @@
     backend (e.g. XSKY's store) extends the reuse across nodes.
   links:
     - { label: Product Page, url: "https://www.xsky.com" }
+  # XSKY ships the MeshFusion management console; declaring this makes
+  # the service form offer the management_url link field.
+  management_url: true
   supported_modes: [managed]
   topology: per_node
   # The MP connector's zero-copy path is CUDA IPC: engines can only

@@ -75,7 +75,10 @@ def _system_ctx() -> TenantContext:
 
 
 def _provider(
-    supported_modes=None, topology="singleton", custom_version=False
+    supported_modes=None,
+    topology="singleton",
+    custom_version=False,
+    management_url=False,
 ) -> CacheProvider:
     return CacheProvider(
         name="LMCache",
@@ -84,6 +87,7 @@ def _provider(
         default_version="v1",
         versions={"v1": CacheProviderVersionConfig(image="lmcache:v1")},
         custom_version=custom_version,
+        management_url=management_url,
         inference_backend_integrations=[CacheProviderIntegration(backend="vLLM")],
     )
 
@@ -338,6 +342,157 @@ async def test_create_rejects_custom_version_for_external_mode(monkeypatch):
         )
 
     assert "managed" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_management_url_without_provider_support(monkeypatch):
+    _patch_create_prereqs(monkeypatch)
+    _patch_provider(monkeypatch, _provider())
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await cache_services_route.create_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            cache_service_in=_managed_create(
+                config=CacheServiceConfig(
+                    ram_size=20, management_url="https://console.example.com"
+                ),
+            ),
+        )
+
+    assert "not supported by cache provider" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_management_url_for_external_mode_too(monkeypatch):
+    """The field rides config, which external services also accept."""
+    _patch_create_prereqs(monkeypatch)
+    _patch_provider(monkeypatch, _provider())
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await cache_services_route.create_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            cache_service_in=_external_create(
+                config=CacheServiceConfig(management_url="https://console.example.com"),
+            ),
+        )
+
+    assert "not supported by cache provider" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "https://",  # no host
+        "ftp://console.example.com",  # wrong scheme
+        "console.example.com",  # no scheme
+        "https://console example.com",  # space breaks the netloc
+    ],
+)
+async def test_create_rejects_malformed_management_url(monkeypatch, bad_url):
+    _patch_create_prereqs(monkeypatch)
+    _patch_provider(monkeypatch, _provider(management_url=True))
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await cache_services_route.create_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            cache_service_in=_managed_create(
+                config=CacheServiceConfig(ram_size=20, management_url=bad_url),
+            ),
+        )
+
+    assert "valid http(s) URL" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_management_url_with_credentials(monkeypatch):
+    """A display-only link must not smuggle credentials into stored config."""
+    _patch_create_prereqs(monkeypatch)
+    _patch_provider(monkeypatch, _provider(management_url=True))
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await cache_services_route.create_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            cache_service_in=_managed_create(
+                config=CacheServiceConfig(
+                    ram_size=20,
+                    management_url="https://user:pass@console.example.com",
+                ),
+            ),
+        )
+
+    assert "must not embed credentials" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_overlong_management_url(monkeypatch):
+    _patch_create_prereqs(monkeypatch)
+    _patch_provider(monkeypatch, _provider(management_url=True))
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await cache_services_route.create_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            cache_service_in=_managed_create(
+                config=CacheServiceConfig(
+                    ram_size=20,
+                    management_url="https://console.example.com/" + "a" * 2048,
+                ),
+            ),
+        )
+
+    assert "at most 2048 characters" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_management_url_with_provider_support(monkeypatch):
+    worker = SimpleNamespace(id=5, deleted_at=None, cluster_id=1)
+    _patch_create_prereqs(monkeypatch, worker=worker)
+    _patch_provider(monkeypatch, _provider(management_url=True))
+    monkeypatch.setattr(
+        cache_services_route.CacheService,
+        "create",
+        AsyncMock(side_effect=lambda session, source: SimpleNamespace(**source)),
+    )
+
+    created = await cache_services_route.create_cache_service(
+        session=MagicMock(),
+        ctx=_user_ctx(),
+        cache_service_in=_managed_create(
+            config=CacheServiceConfig(
+                ram_size=20, management_url="https://console.example.com"
+            ),
+        ),
+    )
+
+    assert created.config["management_url"] == "https://console.example.com"
+
+
+@pytest.mark.asyncio
+async def test_create_canonicalizes_blank_management_url(monkeypatch):
+    """Whitespace-only values store as None instead of tripping validation."""
+    worker = SimpleNamespace(id=5, deleted_at=None, cluster_id=1)
+    _patch_create_prereqs(monkeypatch, worker=worker)
+    _patch_provider(monkeypatch, _provider())
+    monkeypatch.setattr(
+        cache_services_route.CacheService,
+        "create",
+        AsyncMock(side_effect=lambda session, source: SimpleNamespace(**source)),
+    )
+
+    created = await cache_services_route.create_cache_service(
+        session=MagicMock(),
+        ctx=_user_ctx(),
+        cache_service_in=_managed_create(
+            config=CacheServiceConfig(ram_size=20, management_url="   "),
+        ),
+    )
+
+    assert created.config["management_url"] is None
 
 
 @pytest.mark.asyncio
