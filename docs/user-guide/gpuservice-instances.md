@@ -161,7 +161,7 @@ After creation, you return to the `GPU Service` > `GPU Instances` page, where al
 
 ![Screenshot: GPU Instances list](../assets/gpuservice/instances/list.png)
 
-You can filter instances by name.
+You can filter instances by display name or name — either value the `Name` column may show. Sorting the `Name` column orders by the label it displays.
 
 ### Accessing an Instance
 

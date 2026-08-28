@@ -16,7 +16,7 @@ Open `GPU Service` > `Instance Types`. The page lists the instance types of ever
 - **Cluster**: The cluster the type belongs to.
 - **Status**: `Active` types can be selected in the *Add GPU Instance* form; `Inactive` ones cannot.
 
-Use the `Filter by cluster` selector in the toolbar to narrow the list to a single cluster, and the search box to match types by name; filtering, sorting, and pagination are all applied server-side. Row actions — deactivate, activate, delete — always act on the cluster named in the row's Cluster column.
+Use the `Filter by cluster` selector in the toolbar to narrow the list to a single cluster, and the search box to match types by display name or name — either value the `Name` column may show. Filtering, sorting, and pagination are all applied server-side, and sorting the `Name` column orders by the label it displays. Row actions — deactivate, activate, delete — always act on the cluster named in the row's Cluster column.
 
 The list is a control-plane record rather than a live read from each cluster: while a cluster is unreachable, its rows read as last observed. The live capacity view below remains the authority for current remaining capacity.
 

@@ -10,7 +10,7 @@ Navigate to the `GPU Service` > `SSH Public Keys` page to browse all registered 
 
 ![Screenshot: SSH Public Keys list](../assets/gpuservice/ssh-public-keys/list.png)
 
-You can filter SSH public keys by name.
+You can filter SSH public keys by display name or name — either value the `Name` column may show. Sorting the `Name` column orders by the label it displays.
 
 ## Adding an SSH Public Key
 
