@@ -92,6 +92,7 @@ class ModelProviderTypeEnum(str, Enum):
     OLLAMA = "ollama"
     OPENAI = "openai"
     OPENROUTER = "openrouter"
+    ORCAROUTER = "orcarouter"
     QWEN = "qwen"
     SPARK = "spark"
     STEPFUN = "stepfun"
@@ -158,6 +159,16 @@ class BaseProviderConfig(BaseModel):
         the plugin's own field names into the config still wins.
         """
         return {}
+
+    def ai_proxy_provider_type(self) -> str:
+        """The provider type sent to the ai-proxy plugin.
+
+        Named providers map to the plugin's own provider registry by default.
+        A config whose upstream speaks the OpenAI protocol but is not itself a
+        registered plugin type overrides this to ``openai`` and supplies the
+        endpoint through ``providerDomain`` in ``ai_proxy_derived_fields``.
+        """
+        return self.type.value
 
     def model_dump_with_default_override(self) -> Dict[str, Any]:
         """Dumps the model, excluding unset fields, and then merges with `_default_override` values.
@@ -552,6 +563,26 @@ class OpenrouterConfig(BaseProviderConfig):
     _public_endpoint: str = "openrouter.ai"
 
 
+class OrcaRouterConfig(BaseProviderConfig):
+    """OpenAI-compatible AI gateway (models and agents).
+
+    OrcaRouter is not a registered ai-proxy plugin type, so its gateway traffic
+    rides the plugin's ``openai`` provider with the endpoint supplied through
+    the generic ``providerDomain`` override -- the OpenAI surfaces carry over
+    unchanged and the Host header is rewritten to our public endpoint.
+    """
+
+    type: Literal[ModelProviderTypeEnum.ORCAROUTER]
+    _public_endpoint: str = "api.orcarouter.ai"
+    _model_uri = V1_MODELS_URI
+
+    def ai_proxy_provider_type(self) -> str:
+        return ModelProviderTypeEnum.OPENAI.value
+
+    def ai_proxy_derived_fields(self) -> Dict[str, Any]:
+        return {"providerDomain": self._public_endpoint}
+
+
 class QwenConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.QWEN]
     qwenEnableSearch: Optional[bool] = None
@@ -627,6 +658,7 @@ ProviderConfigType = Union[
     OllamaConfig,
     OpenAIConfig,
     OpenrouterConfig,
+    OrcaRouterConfig,
     QwenConfig,
     SparkConfig,
     StepfunConfig,
