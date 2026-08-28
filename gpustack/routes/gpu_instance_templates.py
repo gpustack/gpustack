@@ -59,7 +59,10 @@ async def get_gpu_instance_templates(
 
     fuzzy_fields: dict = {}
     if search:
+        # The card renders ``display_name || name``, so searching only ``name``
+        # hid rows behind the label the list actually shows (#6104).
         fuzzy_fields["name"] = search
+        fuzzy_fields["display_name"] = search
 
     extra_conditions = manageable_conditions(ctx) if mine else visible_conditions(ctx)
 

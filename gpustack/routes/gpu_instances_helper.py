@@ -5,6 +5,11 @@ CRD client) and translate cluster access + Kubernetes failures into the
 project's HTTP semantics, so the route modules stay thin. :func:`watch_event_stream`
 is a transport-level helper shared by both the per-cluster and the aggregated
 watch routes, framing a normalized watch source as GPUStack SSE.
+:func:`display_name_label` / :func:`order_by_display_label` are shared by the
+five GPU Service lists whose Name column carries a sorter, so the one rule about
+what that column shows and orders by has one definition. Templates are a card
+view with no column sorter, so they search the display name without ordering by
+it and do not use these.
 """
 
 import asyncio
@@ -12,11 +17,12 @@ import http
 import json
 import logging
 from contextlib import aclosing, asynccontextmanager, suppress
-from typing import Any, AsyncIterator, Callable, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, List, Optional, Tuple
 
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from kubernetes_asyncio import client
+from sqlalchemy import func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
@@ -60,6 +66,61 @@ _WATCH_QUEUE_MAXSIZE = 100
 # Producer-done sentinel: dequeuing it means the source ended (vs. a wait_for
 # timeout, which means "no event yet — send a heartbeat").
 _DONE = object()
+
+
+def display_name_label(model: Any) -> Any:
+    """SQL for what a GPU Service list renders in its Name column.
+
+    ``display_name || name`` as the UI writes it, where ``nullif(..., '')`` is
+    what makes an empty display name fall back the way a falsy ``||`` does.
+
+    ``model.display_name`` is a real column on every GPU Service table but
+    ``gpu_instance_types``, where it lives inside the ``spec`` JSON and the model
+    exposes it as a hybrid instead — so one call covers all of them.
+    """
+    return func.coalesce(func.nullif(model.display_name, ""), model.name)
+
+
+def order_by_display_label(
+    order_by: Optional[List[Tuple[str, str]]],
+    label: Any,
+) -> Optional[List[Tuple[Any, str]]]:
+    """Point a ``sort_by=name`` request at the label the Name column renders.
+
+    These Name columns are ``sorter: true`` and send ``sort_by=name``, so
+    ordering on the ``name`` column sorted each column by a value it does not
+    display. Shared rather than repeated per route because it is one product
+    rule over five lists, and a rule written five times is one that drifts.
+
+    ``sortable_fields`` stays as it is: the wire name is still ``name``, because
+    it is the Name column being sorted. The consequence, accepted, is that
+    ``sort_by=name`` orders by the displayed label. Every other sortable field
+    passes through untouched, for ``paginated_by_query`` to resolve by attribute
+    lookup.
+
+    The label is expanded rather than substituted, and the result always ends on
+    a unique key, because ``LIMIT``/``OFFSET`` paging over a non-unique sort key
+    is not deterministic: rows sharing a key have engine-defined relative order,
+    which can differ between the page-1 and the page-2 query, so one row comes
+    back twice and another never. Labels collide by construction — the operator
+    stamps ``CPU-only`` on every cluster's collapsed generic pool — and ``name``
+    does not settle it either: ``gpu_instance_types`` is unique on ``snapshot``,
+    the rest only per owner, while these lists span owners and clusters. So the
+    label orders, ``name`` breaks ties meaningfully, and ``id`` guarantees a
+    total order.
+    """
+    if not order_by:
+        return order_by
+
+    translated: List[Tuple[Any, str]] = []
+    for field, direction in order_by:
+        if field == "name":
+            translated.append((label, direction))
+        translated.append((field, direction))
+
+    if not any(field == "id" for field, _ in translated):
+        translated.append(("id", translated[-1][1]))
+    return translated
 
 
 def ensure_visible(obj: Cluster, ctx: TenantContext) -> Cluster:
