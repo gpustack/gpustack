@@ -57,6 +57,11 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudOptions,
     K8sOptions,
+    DATA_DIR_MOUNT_NAME,
+    DATA_DIR_MOUNT_PATH,
+    claims_data_dir,
+    mount_host_path,
+    normalize_data_dir_mount,
     is_gpu_service_cluster,
     is_gpu_service_k8s_options,
 )
@@ -510,23 +515,9 @@ def create_update_check(
     if provider == ClusterProvider.Shuihua:
         apply_shuihua_defaults(input, existing)
         check_shuihua_requirements(input, existing)
-    if provider == ClusterProvider.Kubernetes:
-        # check for volume mounts (now nested under k8s_options)
-        volume_mounts = (
-            input.k8s_options.volume_mounts if input.k8s_options is not None else None
-        )
-        if volume_mounts is None or len(volume_mounts) < 1:
-            # at least one volume mount is required, and the default one is for gpustack data dir.
-            raise InvalidException(
-                message="At least one k8s_options.volume_mount is required, and the default one is for gpustack data dir."
-            )
-        if (
-            volume_mounts[0].volume_source is None
-            or volume_mounts[0].volume_source.host_path is None
-        ):
-            raise InvalidException(
-                message="The first k8s_options.volume_mount must be for gpustack data dir with hostPath volume source."
-            )
+    # The Kubernetes data-dir volume mount is checked by
+    # ``enforce_data_dir_mounts``, after it has normalized the value — see the
+    # note there on why it can't be validated off the request body.
 
 
 def hoist_system_default_container_registry(
@@ -601,17 +592,98 @@ async def check_cluster_purpose_switch(
 
 def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
     """
-    Assuming the first item of k8s_options.volume_mounts is for gpustack data dir,
-    enforce that it is always present and has the correct settings.
+    Require the reserved gpustack data-dir volume mount at index 0 of the value
+    about to be persisted, and own every field of it except the host path.
+
+    Index 0 is the whole locating rule, the same one the UI enforces on its
+    side. The entry there is *verified*, not adopted: an unrelated mount in the
+    reserved slot is refused rather than quietly rewritten into the data dir,
+    which is what the workaround for #6145 ("add some mount to get past the
+    validation") would otherwise have run into.
+
+    A submitted ``k8s_options`` whose slot is empty is refused rather than
+    completed. Every write path goes through here and the backfill migration
+    fixed the historical rows, so the mount is present on every Kubernetes
+    cluster by construction — a submission missing it means the caller built the
+    payload wrong, and since the column is replaced wholesale it is probably
+    dropping ``gpuInstanceOptions`` / ``namespace`` in the same breath. Refusing
+    surfaces that; synthesizing the entry would answer the request correctly and
+    swallow the anomaly.
+
+    What is *not* refused is leaving ``k8s_options`` out of an update
+    altogether: that is how the API says "unchanged" for every other field, and
+    it used to be the second half of this check's deadlock.
     """
-    # the first volume must exist as it's validated in create_update_check, and it must be for gpustack data dir, so we enforce it here.
-    data_dir_mount = input.k8s_options.volume_mounts[0]
-    data_dir_mount.name = "gpustack-data-dir"
-    data_dir_mount.mount_path = "/var/lib/gpustack"
-    data_dir_mount.read_only = False
-    data_dir_mount.volume_source.host_path.type = "DirectoryOrCreate"
-    data_dir_mount.volume_source.config_map = None
-    data_dir_mount.volume_source.persistent_volume_claim = None
+    is_update = not isinstance(input, ClusterCreate)
+    if is_update and "k8s_options" not in input.model_fields_set:
+        # The caller didn't touch the field. ``ActiveRecord.update`` only assigns
+        # keys in ``model_fields_set``, so the stored value — namespace,
+        # gpuInstanceOptions and all — stands. Nothing to check, and touching
+        # ``input.k8s_options`` here would turn "leave alone" into "overwrite".
+        return
+
+    if input.k8s_options is None:
+        raise InvalidException(
+            message=(
+                "k8s_options is required for a Kubernetes cluster, including a "
+                f"volumeMounts entry for the gpustack data dir ({DATA_DIR_MOUNT_PATH}). "
+                "Omit the field entirely to leave the stored options unchanged."
+            )
+        )
+
+    mounts = input.k8s_options.volume_mounts or []
+    if not mounts:
+        raise InvalidException(
+            message=(
+                "The first k8s_options.volumeMounts entry is reserved for the "
+                f"gpustack data dir ({DATA_DIR_MOUNT_PATH}) and is required. "
+                "Send back the entry the cluster already carries, or omit "
+                "k8s_options entirely to leave the stored options unchanged."
+            )
+        )
+    if not claims_data_dir(mounts[0]):
+        raise InvalidException(
+            message=(
+                "The first k8s_options.volumeMounts entry is reserved for the "
+                f"gpustack data dir, so it must be named {DATA_DIR_MOUNT_NAME} "
+                f"or mounted at {DATA_DIR_MOUNT_PATH}; got "
+                f"'{mounts[0].name}' at '{mounts[0].mount_path}'. Move that "
+                "mount after the data dir entry."
+            )
+        )
+    if mount_host_path(mounts[0]) is None:
+        raise InvalidException(
+            message=(
+                f"The {DATA_DIR_MOUNT_PATH} volume mount is reserved for the "
+                "gpustack data dir and must use a hostPath volume source."
+            )
+        )
+    if any(claims_data_dir(m) for m in mounts[1:]):
+        raise InvalidException(
+            message=(
+                f"Only the first k8s_options.volumeMounts entry may use the "
+                f"name {DATA_DIR_MOUNT_NAME} or the mount path "
+                f"{DATA_DIR_MOUNT_PATH}; both are reserved for the gpustack "
+                "data dir. A second entry claiming either would render a "
+                "DaemonSet Kubernetes rejects."
+            )
+        )
+
+    normalize_data_dir_mount(input.k8s_options)
+
+    # Post-condition on the shape about to be persisted, so a normalization bug
+    # surfaces here rather than as a worker DaemonSet rendered without a
+    # persistent data dir.
+    persisted = input.k8s_options.volume_mounts[0]
+    if (
+        persisted.name != DATA_DIR_MOUNT_NAME
+        or persisted.mount_path != DATA_DIR_MOUNT_PATH
+        or persisted.read_only
+        or mount_host_path(persisted) is None
+    ):
+        raise InternalServerErrorException(
+            message="Failed to resolve the gpustack data dir volume mount."
+        )
 
 
 @router.post("", response_model=ClusterPublic, response_model_exclude_none=True)

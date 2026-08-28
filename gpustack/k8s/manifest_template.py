@@ -8,7 +8,12 @@ from pydantic import BaseModel, ConfigDict, computed_field
 from gpustack import __operator_version__
 from gpustack.gpu_instances.cluster_apis_util import get_namespace_name
 from gpustack.utils.compat_importlib import pkg_resources
-from gpustack.schemas.clusters import ClusterRegistrationTokenPublic, K8sOptions
+from gpustack.schemas.clusters import (
+    ClusterRegistrationTokenPublic,
+    K8sOptions,
+    K8sVolumeMount,
+    ensure_data_dir_mount,
+)
 from gpustack_runtime.detector import ManufacturerEnum
 
 
@@ -153,6 +158,23 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
         if self.k8s_options and self.k8s_options.namespace:
             return self.k8s_options.namespace
         return _DEFAULT_CLUSTER_NAMESPACE
+
+    @computed_field
+    @property
+    def volume_mounts(self) -> List[K8sVolumeMount]:
+        """
+        Pod volumes / container volumeMounts applied to every worker DaemonSet,
+        with the reserved gpustack data-dir mount guaranteed present and first.
+
+        The templates read this instead of ``k8s_options.volume_mounts`` so the
+        data dir can never be rendered away: a cluster created before the mount
+        became configurable (v2.2.0) holds no ``volumeMounts`` at all, and the
+        DaemonSet would otherwise come out with no persistent
+        ``/var/lib/gpustack`` — worker data lost on every pod restart, silently.
+        Only injects; the persisted shape is normalized by the routes layer.
+        """
+        k8s_options = self.k8s_options or K8sOptions()
+        return ensure_data_dir_mount(k8s_options.volume_mounts)
 
     @computed_field
     @property

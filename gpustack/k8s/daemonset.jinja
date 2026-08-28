@@ -160,13 +160,11 @@ spec:
               mountPath: /usr/local/PPU_SDK
               readOnly: true
             {%- endif %}
-            {%- if config.k8s_options and config.k8s_options.volume_mounts %}
-            {%- for vm in config.k8s_options.volume_mounts %}
+            {%- for vm in config.volume_mounts %}
             - name: {{ vm.name | to_yaml }}
               mountPath: {{ vm.mount_path | to_yaml }}
               readOnly: {{ vm.read_only | lower }}
             {%- endfor %}
-            {%- endif %}
           ports:
             - name: api
               containerPort: {{ config.worker_port }}
@@ -251,12 +249,10 @@ spec:
             path: /usr/local/PPU_SDK
             type: DirectoryOrCreate
         {%- endif %}
-        {%- if config.k8s_options and config.k8s_options.volume_mounts %}
-        {%- for vm in config.k8s_options.volume_mounts %}
+        {%- for vm in config.volume_mounts %}
         - name: {{ vm.name | to_yaml }}
           {{ vm.volume_source | to_yaml | indent(10) }}
         {%- endfor %}
-        {%- endif %}
       {%- if config.multi_vendor_mode %}
       affinity:
         podAntiAffinity:
