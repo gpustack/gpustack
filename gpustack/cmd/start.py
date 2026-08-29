@@ -622,6 +622,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("BENCHMARK_MAX_DURATION_SECONDS"),
     )
     worker_group.add_argument(
+        "--serve-log-retention-count",
+        type=int,
+        help="Number of restart generations of model instance logs kept on the worker, counting back from the current restart. The log from restart 0 is always kept in addition, so a crash loop cannot destroy the first-failure log. The default is 2.",
+        default=get_gpustack_env("SERVE_LOG_RETENTION_COUNT"),
+    )
+    worker_group.add_argument(
         "--disable-worker-metrics",
         action=OptionalBoolAction,
         help="Disable worker metrics.",
@@ -911,6 +917,7 @@ def set_worker_options(args, config_data: dict):
         "service_port_range",
         "ray_port_range",
         "benchmark_max_duration_seconds",
+        "serve_log_retention_count",
         "log_dir",
         "benchmark_dir",
         "system_reserved",

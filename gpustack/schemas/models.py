@@ -962,6 +962,15 @@ class ModelInstanceLogRestartEntry(BaseModel):
     """One main serve log session on disk, with optional UX label time."""
 
     previous: bool = False
+    restart_count: Optional[int] = Field(
+        default=None,
+        description=(
+            "Restart count of this log set on disk. Pass it back as the "
+            "'restart_count' query parameter to read this specific session. "
+            "More than two sessions can be retained, and 'previous' only "
+            "reaches the second newest, so prefer this field when present."
+        ),
+    )
     started_at: Optional[datetime] = Field(
         default=None,
         description=(
@@ -1018,7 +1027,7 @@ class ServeLogOptionsResponse(BaseModel):
         # the second highest to previous=True.
         entries = []
         for i, c in enumerate(counts):
-            entries.append({"previous": i > 0, "started_at": None})
+            entries.append({"previous": i > 0, "restart_count": c, "started_at": None})
         return {**data, "restarts": entries}
 
 

@@ -140,9 +140,17 @@ async def get_all_log_files(
 
 
 async def resolve_restart_count(
-    log_dir: Path, model_instance_id: int, previous: bool
+    log_dir: Path,
+    model_instance_id: int,
+    previous: bool,
+    restart_count: Optional[int] = None,
 ) -> Optional[int]:
-    """Resolve ``previous`` flag to an actual restart_count from disk files.
+    """Resolve the requested log set to an actual restart_count from disk files.
+
+    An explicit ``restart_count`` wins when that log set is on disk: the worker
+    retains more than two restarts, and ``previous`` can only name the second
+    newest. An unknown ``restart_count`` falls back to the boolean rather than
+    streaming nothing, so a stale UI list cannot produce an empty log view.
 
     Returns:
         The restart_count integer for the target log set, or ``None`` when
@@ -152,6 +160,8 @@ async def resolve_restart_count(
     if not files:
         return None
     counts = sorted(set(extract_restart_count(f.name) for f in files))
+    if restart_count is not None and restart_count in counts:
+        return restart_count
     if previous and len(counts) >= 2:
         return counts[-2]
     return counts[-1]
@@ -171,9 +181,11 @@ def restart_entries_from_main_log_files(
 ) -> List[ModelInstanceLogRestartEntry]:
     """Build restart entries from main log paths; one entry per restart_count.
 
-    Entries are ordered by restart_count descending (newest first).
-    The highest restart_count maps to ``previous=False`` (current);
-    the second highest maps to ``previous=True``.
+    Entries are ordered by restart_count descending (newest first). The highest
+    restart_count maps to ``previous=False`` (current) and every older one to
+    ``previous=True``, so with more than two retained sessions the flag no
+    longer identifies a single entry. Read ``restart_count`` to tell them apart;
+    the caller decides how many entries to expose.
 
     If multiple files share a restart_count, use the lexicographically smallest
     name as the representative path for stat.
@@ -201,7 +213,10 @@ def restart_entries_from_main_log_files(
         )
         entries.append(
             ModelInstanceLogRestartEntry(
-                previous=i > 0, started_at=started_at, containers=containers
+                previous=i > 0,
+                restart_count=rc,
+                started_at=started_at,
+                containers=containers,
             )
         )
     return entries
@@ -229,7 +244,9 @@ def restart_entries_from_sidecar_log_files(
         except OSError:
             started_at = None
         entries.append(
-            ModelInstanceLogRestartEntry(previous=i > 0, started_at=started_at)
+            ModelInstanceLogRestartEntry(
+                previous=i > 0, restart_count=rc, started_at=started_at
+            )
         )
     return entries
 
@@ -424,7 +441,7 @@ async def combined_log_generator(
     log_dir = Path(log_dir)
 
     restart_count = await resolve_restart_count(
-        log_dir, model_instance_id, options.previous
+        log_dir, model_instance_id, options.previous, options.restart_count
     )
 
     # When a specific sidecar container is requested, stream only its logs.
@@ -529,8 +546,25 @@ async def combined_log_generator(
 
 
 @router.get("/serveLogOptions/{id}", response_model=ServeLogOptionsResponse)
-async def get_serve_log_options(request: Request, id: int):
-    """List restart_count values for which main serve log files exist locally."""
+async def get_serve_log_options(
+    request: Request,
+    id: int,
+    all_restarts: bool = Query(
+        default=False,
+        description=(
+            "List every retained log session instead of only the two a "
+            "'previous' request can address. Callers that set this must read "
+            "logs with 'restart_count'; 'previous' cannot reach the extras."
+        ),
+    ),
+):
+    """List restart_count values for which main serve log files exist locally.
+
+    Capped to the two newest by default. The worker retains more than that (the
+    first-failure log is pinned and the window is configurable), but ``previous``
+    only addresses the two newest, so listing the rest unconditionally would
+    offer a client sessions it cannot fetch, and it would serve the wrong log.
+    """
     log_dir = request.app.state.config.log_dir
     serve_log_dir = Path(log_dir) / "serve"
     files = await get_all_log_files(serve_log_dir, id, container=False)
@@ -576,6 +610,11 @@ async def get_serve_log_options(request: Request, id: int):
     restarts = await asyncio.to_thread(
         restart_entries_from_main_log_files, files, container_names_by_restart
     )
+    if not all_restarts:
+        # Entries are newest-first, so this leaves exactly the current and
+        # previous sessions, which is what this endpoint returned before extra
+        # sessions were retained.
+        restarts = restarts[:2]
 
     return ServeLogOptionsResponse(restarts=restarts)
 
