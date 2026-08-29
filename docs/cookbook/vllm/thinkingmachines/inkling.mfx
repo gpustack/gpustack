@@ -1,0 +1,82 @@
+---
+title: inkling (vLLM)
+description: "Deploy inkling with vLLM — thinkingmachines Mixture-of-Experts model with MTP speculative decoding and 1M context, on 2*H20."
+tag: NEW
+---
+
+# Deploying inkling with GPUStack and vLLM
+
+This tutorial guides you through setting up **inkling**—the official unquantized/FP16 Mixture-of-Experts model with massive long-context capabilities—using **vLLM (nightly)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `vllm/vllm-openai:nightly`
+* **Hardware Requirements**: H20*2
+
+### 2. Model Weights Source
+* **Model Name**: `inkling`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/thinkingmachines/Inkling`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to Models -> deployment, and select the model deploy / modelscope mode.
+
+### 1. Basic Information
+* **Model Name**: `inkling`
+* **Container Image**: `vllm/vllm-openai:nightly`
+
+### 2. Backend Arguments 
+You can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+TDEP
+* $node0-ip should be replace with your node 0 ip address
+
+node 0
+```text
+--trust-remote-code
+--tokenizer-mode=inkling
+--kernel-config.enable_flashinfer_autotune=False
+--tensor-parallel-size=8
+--data-parallel-size=2
+--data-parallel-size-local=1
+--enable-expert-parallel
+--data-parallel-rpc-port=13389
+--data-parallel-address=$node0-ip
+--data-parallel-hybrid-lb
+--max-model-len=131072
+--max-num-seqs=10
+--enable-auto-tool-choice
+--tool-call-parser=inkling
+--speculative-config '{"method":"mtp","num_speculative_tokens":1}'
+--reasoning-parser=inkling
+```
+
+node 1
+```text
+--trust-remote-code
+--tokenizer-mode=inkling
+--kernel-config.enable_flashinfer_autotune=False
+--tensor-parallel-size=8
+--data-parallel-size=2
+--data-parallel-size-local=1
+--data-parallel-start-rank 1
+--enable-expert-parallel
+--data-parallel-rpc-port=13389
+--data-parallel-address=$node0-ip
+--data-parallel-hybrid-lb
+--max-model-len=131072
+--max-num-seqs=10
+--enable-auto-tool-choice
+--tool-call-parser=inkling
+--speculative-config '{"method":"mtp","num_speculative_tokens":1}'
+--reasoning-parser=inkling
+```
+
+### 3. more config
+
+https://recipes.vllm.ai/thinkingmachines/Inkling?variant=bf16&hardware=h200&strategy=multi_node_dep&features=tool_calling%2Creasoning%2Cspec_decoding
