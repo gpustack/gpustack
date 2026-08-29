@@ -380,6 +380,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         action='append',
         help='Allowlist for the X-Forwarded-Host header behind a reverse proxy. Specify the flag multiple times for multiple hosts. When unset, derived from --server-external-url. If both are unset, it defaults to "*" to trust any host (not recommended unless the server is only reachable via a trusted proxy).',
     )
+    server_group.add_argument(
+        "--forwarded-allow-ips",
+        type=str,
+        help='Comma-separated peers whose X-Forwarded-For and X-Forwarded-Proto headers are trusted, or "*" to trust any. Default: "127.0.0.1". A reverse proxy reaching this port over the network must be listed here, otherwise the server cannot tell that TLS was terminated in front of it and will not mark session cookies Secure.',
+        default=get_gpustack_env("FORWARDED_ALLOW_IPS"),
+    )
 
     # OIDC settings
     server_group.add_argument(
@@ -852,6 +858,7 @@ def set_server_options(args, config_data: dict):
         "allow_methods",
         "allow_headers",
         "trusted_hosts",
+        "forwarded_allow_ips",
         "external_auth_name",
         "external_auth_full_name",
         "external_auth_avatar_url",

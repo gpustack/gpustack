@@ -111,3 +111,40 @@ def test_config_normalizes_server_external_url(monkeypatch, tmp_path):
     )
 
     assert config.server_external_url == "http://example.com:30080"
+
+
+def test_get_forwarded_allow_ips_resolution(tmp_path):
+    """Unlike get_trusted_hosts, this must never widen itself.
+
+    A wrong ``Host`` mostly yields wrong links; believing a wrong
+    ``X-Forwarded-Proto`` from an untrusted peer lets a caller dictate the scheme
+    the server thinks it is speaking. So there is no derivation from
+    ``server_external_url`` and no ``"*"`` fallback — opening it up stays an
+    explicit operator decision.
+    """
+    data_dir = str(tmp_path / "data")
+
+    assert Config(data_dir=data_dir).get_forwarded_allow_ips() == "127.0.0.1"
+
+    # Naming a proxy is the whole point of the setting.
+    explicit = Config(data_dir=data_dir, forwarded_allow_ips="10.0.0.5,10.0.0.6")
+    assert explicit.get_forwarded_allow_ips() == "10.0.0.5,10.0.0.6"
+
+    assert (
+        Config(data_dir=data_dir, forwarded_allow_ips="*").get_forwarded_allow_ips()
+        == "*"
+    )
+
+    # Blank/whitespace behaves like unset rather than as "trust nobody", which
+    # an empty string would mean to uvicorn.
+    assert (
+        Config(data_dir=data_dir, forwarded_allow_ips="   ").get_forwarded_allow_ips()
+        == "127.0.0.1"
+    )
+
+    # An external URL says where the server is reached, not who may forward to
+    # it, so it must not widen this the way it widens trusted_hosts.
+    unrelated = Config(
+        data_dir=data_dir, server_external_url="https://gpustack.example:30080"
+    )
+    assert unrelated.get_forwarded_allow_ips() == "127.0.0.1"
