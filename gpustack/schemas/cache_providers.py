@@ -556,7 +556,41 @@ class CacheProvider(BaseModel):
                     "neither image nor runtime_images and inherit the "
                     "provider's default_image"
                 )
+        if not self.versions and "managed" in self.supported_modes:
+            # A provider with no release line to declare (an image that is
+            # not published, so every service names its own) still needs a
+            # way to reach an image: the custom version is it.
+            if not self.custom_version:
+                raise ValueError(
+                    f"Cache provider '{self.name}' declares no versions: a "
+                    "managed provider then resolves no image at all unless "
+                    "it allows the custom version"
+                )
+            if self.default_run_command and self.default_run_args:
+                raise ValueError(
+                    f"Cache provider '{self.name}' declares both "
+                    "default_run_command and default_run_args: a command and "
+                    "its arguments form one vector, so state it as whichever "
+                    "one the image's entrypoint calls for"
+                )
         return self
+
+    def custom_version_config(self) -> Optional[CacheProviderVersionConfig]:
+        """The launch template a service pinning the reserved "custom"
+        version runs with: the default version's config, or — for a provider
+        declaring no versions at all — one built from the provider-level
+        launch defaults, the only launch declaration such a catalog entry
+        has. None when the provider declares versions but no usable default,
+        which leaves the custom version nothing to template."""
+        config, _ = self.get_version_config(None)
+        if config is not None:
+            return config
+        if self.versions:
+            return None
+        return CacheProviderVersionConfig(
+            run_command=self.default_run_command,
+            run_args=self.default_run_args,
+        )
 
     def get_version_config(
         self, version: Optional[str] = None

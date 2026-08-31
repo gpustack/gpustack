@@ -26,6 +26,8 @@ def _provider(topology="singleton") -> CacheProvider:
         name="LMCache",
         supported_modes=["managed"],
         topology=topology,
+        default_version="v1",
+        versions={"v1": {"image": "lmcache:v1"}},
     )
 
 

@@ -725,19 +725,53 @@ def test_start_instance_custom_version_without_provider_support_sets_error():
 
 def test_start_instance_custom_version_without_default_version_sets_error():
     """The custom version borrows the default version's templates, so a
-    provider without a resolvable default version cannot serve it."""
+    provider whose declared versions hold no resolvable default cannot
+    serve it."""
     manager, clientset = _build_manager(worker_id=1)
     cache_service = _new_cache_service(
         provider_version="custom",
         config=CacheServiceConfig(ram_size=8, image="myteam/cache-server:dev"),
     )
-    provider = _new_provider(custom_version=True, default_version=None, versions={})
+    provider = _new_provider(custom_version=True, default_version=None)
 
     create, update = _run_start(manager, clientset, cache_service, provider)
 
     create.assert_not_called()
     assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
     assert "default version" in update.call_args[1]["state_message"]
+
+
+def test_start_instance_custom_version_without_declared_versions():
+    """A provider publishing no image declares no version at all: the
+    service's own image runs on the provider-level launch arguments."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        provider_version="custom",
+        config=CacheServiceConfig(ram_size=8, image="myteam/cache-server:dev"),
+    )
+    provider = _new_provider(
+        custom_version=True,
+        default_version=None,
+        versions={},
+        default_run_args="--host {{host}} --port {{port}} --ram {{ram_size}}",
+    )
+
+    create, update = _run_start(manager, clientset, cache_service, provider)
+
+    container = create.call_args[0][0].containers[0]
+    assert container.image == "myteam/cache-server:dev"
+    # run_args keeps the image's own entrypoint, so the rendered template
+    # lands in the args slot with the platform placeholders filled.
+    assert container.execution.command is None
+    assert container.execution.args == [
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "40001",
+        "--ram",
+        "8",
+    ]
+    assert update.call_args[1]["state"] != CacheServiceStateEnum.ERROR
 
 
 def test_start_instance_renders_fs_l2_adapter():

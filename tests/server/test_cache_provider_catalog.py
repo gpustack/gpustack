@@ -124,6 +124,29 @@ def test_version_without_any_image_is_rejected():
         CacheProvider(name="Imageless", versions={"v1.0": {}})
 
 
+def test_managed_provider_without_versions_must_allow_the_custom_version():
+    """A provider declaring no release line resolves no image of its own;
+    without the custom version its managed services could never start."""
+    with pytest.raises(ValidationError):
+        CacheProvider(name="Versionless", supported_modes=["managed"])
+
+    provider = CacheProvider(
+        name="Versionless",
+        supported_modes=["managed"],
+        custom_version=True,
+        default_run_args="--port {{port}}",
+    )
+    # The provider-level launch declaration is what the service's own
+    # image runs on, reached through the same version-config contract.
+    template = provider.custom_version_config()
+    assert template.run_args == "--port {{port}}"
+    assert template.run_command is None
+
+    # An external-only provider runs no container at all, so declaring no
+    # version says nothing about images.
+    CacheProvider(name="Registered", supported_modes=["external"])
+
+
 def test_own_launch_takes_over_the_pair_whole():
     """run_command and run_args are two slots of one launch: a version
     supplying arguments for the image's own entrypoint must not also
@@ -514,8 +537,9 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
         "l2_backends",
         "versions",
         "default_version",
-        # The staged Ascend build lives in the image templates; the CUDA
-        # layout and the run command are asserted equal below.
+        # MeshFusion images are not published, so it declares no image
+        # layout at all; the custom version carries the service's own.
+        "default_image",
         "default_runtime_images",
         # The two launch through different slots: MeshFusion's image is
         # expected to start the cache server itself.
@@ -533,16 +557,17 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     }
     assert differing == set()
 
-    # The version inherits MeshFusion's provider-level launch arguments;
-    # only the staged Ascend build and provider default version diverge.
-    mf_version = meshfusion.versions[meshfusion.default_version]
-    lm_version = lmcache.versions[meshfusion.default_version]
-    assert mf_version.run_command is None
-    assert mf_version.run_args == meshfusion.default_run_args
-    assert "--supported-transfer-mode auto" not in mf_version.run_args
-    assert mf_version.runtime_images["cuda"] == lm_version.runtime_images["cuda"]
-    assert "cann" in mf_version.runtime_images
-    assert "cann" not in lm_version.runtime_images
+    # No release line to declare: services name the image themselves under
+    # the reserved custom version, which runs on the provider-level launch
+    # arguments — the entry's only launch declaration.
+    assert meshfusion.versions == {}
+    assert meshfusion.default_version is None
+    assert meshfusion.custom_version is True
+    custom_config = meshfusion.custom_version_config()
+    assert custom_config.run_command is None
+    assert custom_config.run_args == meshfusion.default_run_args
+    assert "--supported-transfer-mode auto" not in custom_config.run_args
+    assert lmcache.versions
 
     # Every integration is framework-scoped — the catalog is the single
     # accelerator gate. MeshFusion diverges from LMCache only by the
@@ -595,14 +620,11 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     assert meshfusion.integration_for("SGLang", "cann") is None
     assert all(c.frameworks == ["cuda"] for c in lmcache.inference_backend_integrations)
 
-    # MeshFusion adds XSKY's store L2 backend (catalog key "xdfs", rendered
-    # as the NIXL dynamic adapter and branded with the XSKY icon) on top of
-    # the LMCache-inherited
-    # backends; LMCache has none of it.
+    # XSKY's store (catalog key "xdfs", rendered as the NIXL dynamic
+    # adapter and branded with the XSKY icon) is the only L2 tier
+    # MeshFusion is deployed with, and LMCache has none of it.
     assert "xdfs" not in lmcache.l2_backends
-    # The inherited backends must stay byte-identical, not just share keys.
-    for key, backend in lmcache.l2_backends.items():
-        assert meshfusion.l2_backends[key] == backend
+    assert set(meshfusion.l2_backends) == {"xdfs"}
     xdfs = meshfusion.l2_backends["xdfs"]
     assert xdfs.icon == "/static/catalog_icons/xsky.png"
     assert xdfs.adapter_flag_optional is True

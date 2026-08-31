@@ -426,20 +426,13 @@
   # The MP connector's zero-copy path is CUDA IPC: engines can only
   # attach the cache server on their own node.
   attach_locality: node_local
-  default_version: "v0.5.2"
+  # MeshFusion images are not published: every service names the image it
+  # runs, so the catalog declares no release line and the form asks for an
+  # image instead of a version. The launch arguments stay here — they are
+  # the whole launch declaration such an entry has, and every image the
+  # user names must be compatible with them.
   custom_version: true
   default_run_args: "--host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
-  default_image: "lmcache/vllm-openai:{{version}}"
-  default_runtime_images:
-    cuda:
-      "13": "lmcache/vllm-openai:{{version}}"
-      "12": "lmcache/vllm-openai:{{version}}-cu129"
-    # PLACEHOLDER. Change as needed.
-    cann:
-      "8": "registry.example.com/lmcache/vllm-openai:{{version}}-cann"
-  versions:
-    # Inherit the provider-level launch arguments for this version.
-    "v0.5.2": {}
   resource_profile:
     ram_gib: "{{ram_size}}"
     cpu: 2
@@ -469,24 +462,9 @@
       step: 0.05
       description: Fraction of memory (0-1) evicted per trigger.
   l2_adapter_flag: "--l2-adapter"
+  # The store is the only L2 tier MeshFusion is deployed with; a lone
+  # declared backend is what the service form preselects.
   l2_backends:
-    fs_native:
-      display_name: Local Filesystem
-      description: >-
-        Spills KV cache to a local directory (e.g. NVMe) on the worker.
-        max_capacity_gb caps disk usage; 0 or unset means uncapped.
-      fields:
-        # Defaults into the platform data dir: on containerized workers
-        # the mirrored deployment carries the worker's /var/lib/gpustack
-        # host mount into the cache container, so spilled cache lands on
-        # host disk and survives container recreation.
-        - name: base_path
-          label: Base Path
-          required: true
-          default: /var/lib/gpustack/cache/lmcache/l2
-        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
-        - { name: num_workers, label: I/O Workers, type: number }
-        - { name: use_odirect, label: Direct I/O (O_DIRECT), type: boolean }
     xdfs:
       display_name: XSKY MeshFusion Store
       icon: /static/catalog_icons/xsky.png
@@ -512,38 +490,6 @@
         # The image supplies the plugin files and capacity defaults; tenant is
         # the only service-level override exposed by the form.
         - { name: tenant_id, label: Tenant ID, default: nixl }
-    resp:
-      display_name: Redis / Valkey
-      icon: /static/catalog_icons/redis.svg
-      description: Shared L2 in a Redis or Valkey server; cache survives cache-server restarts.
-      fields:
-        - { name: host, label: Host, required: true }
-        - { name: port, label: Port, type: number, required: true }
-        - { name: username, label: Username, env_name: LMCACHE_RESP_USERNAME }
-        - name: password
-          label: Password
-          type: password
-          env_name: LMCACHE_RESP_PASSWORD
-        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
-    s3:
-      display_name: S3
-      icon: /static/catalog_icons/s3.svg
-      description: >-
-        Shared L2 in an S3-compatible object store (AWS S3, MinIO, Ceph
-        RGW). The endpoint uses virtual-hosted style — the bucket name is
-        part of the host, e.g. "kvcache.s3.example.com"; path-style
-        addressing is not supported. max_capacity_gb caps aggregate
-        usage; 0 or unset means uncapped.
-      fields:
-        - { name: s3_endpoint, label: Bucket Endpoint, required: true }
-        - { name: s3_region, label: Region, required: true }
-        - { name: aws_access_key_id, label: Access Key ID, env_name: AWS_ACCESS_KEY_ID }
-        - name: aws_secret_access_key
-          label: Secret Access Key
-          type: password
-          env_name: AWS_SECRET_ACCESS_KEY
-        - { name: disable_tls, label: Disable TLS (HTTP Endpoint), type: boolean }
-        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
   common_parameters:
     - --l2-adapter
     # CLI-entry-only groups (coordinator / P2P), valid again now that the

@@ -655,6 +655,19 @@ def _validate_cache_service_provider(cache_service_in: CacheServiceCreate) -> No
             )
         )
 
+    # A provider declaring no versions publishes no image of its own, so
+    # every managed service supplies one — which is what the reserved
+    # "custom" identifier stands for. Naming it is then redundant: an
+    # omitted version reads as it, instead of failing a version lookup
+    # that could never resolve.
+    if (
+        cache_service_in.mode == CacheServiceModeEnum.MANAGED
+        and not provider.versions
+        and provider.custom_version
+        and not cache_service_in.provider_version
+    ):
+        cache_service_in.provider_version = CUSTOM_VERSION
+
     # The reserved "custom" identifier is not a catalog version; it is
     # checked by _validate_cache_service_custom_version.
     if cache_service_in.provider_version == CUSTOM_VERSION:
