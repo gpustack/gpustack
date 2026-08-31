@@ -10,12 +10,12 @@ GPUStack manages multiple Kubernetes clusters and provides a unified interface f
 
 !!! note "Upgrading from GPUStack 2.2?"
 
-    GPUStack 2.3 ships GPUStack Operator v0.8.5, which converges the in-place upgrade itself: the worker Deployment is replaced rather than overlapped (`Recreate`), the worker gets a 900s startup budget, and the worker adopts the legacy per-application Helm releases left behind by v0.5.x.
+    GPUStack 2.3 ships the latest GPUStack Operator, which converges the in-place upgrade itself: the worker Deployment is replaced rather than overlapped (`Recreate`), the worker gets a 900s startup budget, and the worker adopts the legacy per-application Helm releases left behind by v0.5.x.
 
     After the upgraded worker is healthy, remove the orphaned v0.5.x scheduling objects with the operator's cleanup script:
 
     ```bash
-    curl -sSLO https://raw.githubusercontent.com/gpustack/gpustack-operator/v0.8.5/docs/migration/cleanup-v0.5-orphans.sh
+    curl -sSLO https://raw.githubusercontent.com/gpustack/gpustack-operator/main/docs/migration/cleanup-v0.5-orphans.sh
     bash cleanup-v0.5-orphans.sh --dry-run   # preview, changes nothing
     bash cleanup-v0.5-orphans.sh             # delete the orphans
     ```

@@ -13,4 +13,4 @@ __git_commit__ = 'HEAD'
 # image rejects every flag this server sends for an SLO run, and would report a
 # stop reason the detail page has no text for.
 __benchmark_runner_version__ = 'v0.0.7'
-__operator_version__ = 'v0.8.5'
+__operator_version__ = 'v0.8.6'
