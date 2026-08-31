@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from gpustack.schemas.cache_providers import (
     CacheProvider,
+    CacheProviderL2Backend,
+    CacheProviderL2Field,
     CacheProviderVersionConfig,
     render_l2_adapter,
     validate_injection_templates,
@@ -647,6 +649,26 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     assert env == {}
 
 
+def test_render_l2_adapter_stringifies_nested_backend_params():
+    provider = CacheProvider(
+        name="nested-adapter",
+        l2_adapter_flag="--l2-adapter",
+        l2_backends={
+            "store": CacheProviderL2Backend(
+                adapter_type="dynamic",
+                adapter_backend="STORE",
+                adapter_params={"capacity": "max_capacity_gb"},
+                fields=[CacheProviderL2Field(name="max_capacity_gb", type="number")],
+            )
+        },
+    )
+
+    args, env = render_l2_adapter(provider, "store", {"max_capacity_gb": 1048576})
+
+    assert json.loads(args[1])["backend_params"] == {"capacity": "1048576"}
+    assert env == {}
+
+
 def test_provider_brand_links():
     lmcache = get_cache_provider("LMCache")
     assert {link.label for link in lmcache.links} == {"Documentation", "GitHub"}
@@ -743,10 +765,7 @@ def test_meshfusion_vllm_injection_includes_connector_module_path():
         == "lmcache.integration.vllm.lmcache_mp_connector"
     )
     assert payload["kv_role"] == "kv_both"
-    assert (
-        payload["kv_connector_extra_config"]["lmcache.mp.host"]
-        == "tcp://127.0.0.1"
-    )
+    assert payload["kv_connector_extra_config"]["lmcache.mp.host"] == "tcp://127.0.0.1"
     assert payload["kv_connector_extra_config"]["lmcache.mp.port"] == 5556
     assert args[2:] == ["--shutdown-timeout", "20"]
 

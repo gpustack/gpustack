@@ -21,7 +21,10 @@ from gpustack.api.tenant import (
     tenant_list_conditions,
 )
 from gpustack.routes.models import assert_cluster_belongs_to_org
-from gpustack.schemas.cache_providers import CUSTOM_VERSION
+from gpustack.schemas.cache_providers import (
+    CUSTOM_VERSION,
+    CacheProviderL2Backend,
+)
 from gpustack.schemas.cache_services import (
     CacheServiceAttachedMetrics,
     CacheServiceMetricsPublic,
@@ -33,6 +36,7 @@ from gpustack.schemas.cache_services import (
     CacheServiceInstance,
     CacheServiceInstancePublic,
     CacheServiceInstancesPublic,
+    CacheServiceL2Storage,
     CacheServiceModeEnum,
     CacheServiceModelSummary,
     CacheServiceModelsPublic,
@@ -733,6 +737,109 @@ def _validate_cache_service_config(config: Optional[CacheServiceConfig]) -> None
             )
 
 
+def _l2_adapter_enabled(
+    storage: CacheServiceL2Storage,
+    backend_key: str,
+    backend_spec: CacheProviderL2Backend,
+) -> bool:
+    if not backend_spec.adapter_flag_optional:
+        if storage.adapter_flag_enabled is not None:
+            raise BadRequestException(
+                message=(
+                    f"adapter_flag_enabled is not applicable to L2 "
+                    f"backend '{backend_key}'"
+                )
+            )
+        return True
+
+    enabled = (
+        backend_spec.adapter_flag_default
+        if storage.adapter_flag_enabled is None
+        else storage.adapter_flag_enabled
+    )
+    if not enabled:
+        # Hidden fields have no runtime meaning while the adapter is disabled.
+        storage.params = {}
+    return enabled
+
+
+def _l2_required_fields(backend_spec: CacheProviderL2Backend):
+    mapped_names = set(backend_spec.adapter_params.values())
+    if backend_spec.adapter_backend and not mapped_names:
+        mapped_names = {field.name for field in backend_spec.fields}
+    if backend_spec.adapter_params or backend_spec.adapter_backend:
+        return [
+            field
+            for field in backend_spec.fields
+            if field.name in mapped_names or field.env_name
+        ]
+    return backend_spec.fields
+
+
+def _validate_l2_storage_params(
+    backend_key: str,
+    backend_spec: CacheProviderL2Backend,
+    params: Dict[str, Any],
+) -> None:
+    declared = {field.name: field for field in backend_spec.fields}
+    unknown = sorted(set(params) - set(declared))
+    if unknown:
+        raise BadRequestException(
+            message=(
+                f"Unknown L2 storage parameter(s) for backend "
+                f"'{backend_key}': " + ", ".join(unknown)
+            )
+        )
+
+    missing = [
+        field.name
+        for field in _l2_required_fields(backend_spec)
+        if field.required
+        and (params.get(field.name) is None or params.get(field.name) == "")
+    ]
+    if missing:
+        raise BadRequestException(
+            message=(
+                f"Missing required L2 storage parameter(s) for backend "
+                f"'{backend_key}': " + ", ".join(missing)
+            )
+        )
+
+    for name, value in params.items():
+        field = declared[name]
+        if (
+            field.type == "number"
+            and value is not None
+            and (isinstance(value, bool) or not isinstance(value, (int, float)))
+        ):
+            raise BadRequestException(
+                message=f"L2 storage parameter '{name}' must be a number"
+            )
+
+
+def _record_l2_env_sources(
+    backend_key: str,
+    backend_spec: CacheProviderL2Backend,
+    params: Dict[str, Any],
+    env_sources: Dict[str, str],
+) -> None:
+    for field in backend_spec.fields:
+        if not field.env_name:
+            continue
+        value = params.get(field.name, field.default)
+        if value is None or value == "":
+            continue
+        if field.env_name in env_sources:
+            raise BadRequestException(
+                message=(
+                    f"L2 storage entries '{env_sources[field.env_name]}' "
+                    f"and '{backend_key}' both deliver the env var "
+                    f"'{field.env_name}'; only one entry may set it"
+                )
+            )
+        env_sources[field.env_name] = backend_key
+
+
 def _validate_cache_service_l2_storage(cache_service_in: CacheServiceBase) -> None:
     """L2 storage config only applies to managed services and must match the
     provider's declared adapter backends. Each entry is checked for a known
@@ -776,104 +883,12 @@ def _validate_cache_service_l2_storage(cache_service_in: CacheServiceBase) -> No
                 )
             )
 
-        if not backend_spec.adapter_flag_optional:
-            if l2_storage.adapter_flag_enabled is not None:
-                raise BadRequestException(
-                    message=(
-                        f"adapter_flag_enabled is not applicable to L2 "
-                        f"backend '{backend_key}'"
-                    )
-                )
-            adapter_enabled = True
-        else:
-            adapter_enabled = (
-                backend_spec.adapter_flag_default
-                if l2_storage.adapter_flag_enabled is None
-                else l2_storage.adapter_flag_enabled
-            )
-            if not adapter_enabled:
-                # Hidden fields have no runtime meaning while the adapter is
-                # disabled. Drop stale form values so a later read mirrors
-                # what the UI shows and no secret remains stored invisibly.
-                l2_storage.params = {}
-                continue
+        if not _l2_adapter_enabled(l2_storage, backend_key, backend_spec):
+            continue
 
         params = l2_storage.params or {}
-        declared = {field.name: field for field in backend_spec.fields}
-
-        unknown = sorted(set(params) - set(declared))
-        if unknown:
-            raise BadRequestException(
-                message=(
-                    f"Unknown L2 storage parameter(s) for backend "
-                    f"'{backend_key}': " + ", ".join(unknown)
-                )
-            )
-
-        # Some adapters retain legacy fields while their current envelope
-        # uses a nested backend_params mapping. For the current shape,
-        # legacy required fields are irrelevant and must not prevent it from
-        # being accepted; only an explicitly legacy payload uses them.
-        required_fields = backend_spec.fields
-        mapped_names = set(backend_spec.adapter_params.values())
-        if backend_spec.adapter_backend and not mapped_names:
-            mapped_names = {field.name for field in backend_spec.fields}
-        legacy_shape = bool(
-            backend_spec.adapter_params
-            and "metadata_endpoint" in params
-            and not (set(params) & mapped_names)
-        )
-        if (
-            backend_spec.adapter_params or backend_spec.adapter_backend
-        ) and not legacy_shape:
-            required_fields = [
-                field
-                for field in backend_spec.fields
-                if field.name in mapped_names or field.env_name
-            ]
-
-        missing = [
-            field.name
-            for field in required_fields
-            if field.required
-            and (params.get(field.name) is None or params.get(field.name) == "")
-        ]
-        if missing:
-            raise BadRequestException(
-                message=(
-                    f"Missing required L2 storage parameter(s) for backend "
-                    f"'{backend_key}': " + ", ".join(missing)
-                )
-            )
-
-        for name, value in params.items():
-            field = declared[name]
-            if (
-                field.type == "number"
-                and value is not None
-                and (isinstance(value, bool) or not isinstance(value, (int, float)))
-            ):
-                raise BadRequestException(
-                    message=f"L2 storage parameter '{name}' must be a number"
-                )
-
-        # Mirror the rendering rule: only fields that resolve to a value
-        # (explicitly or via default) reach the container env.
-        for field in backend_spec.fields:
-            if not field.env_name:
-                continue
-            value = params.get(field.name, field.default)
-            if value is None or value == "":
-                continue
-            if field.env_name in env_sources:
-                raise BadRequestException(
-                    message=(
-                        f"L2 storage entries '{env_sources[field.env_name]}' "
-                        f"and '{backend_key}' both deliver the env var "
-                        f"'{field.env_name}'; only one entry may set it"
-                    )
-                )
-            env_sources[field.env_name] = backend_key
+        _validate_l2_storage_params(backend_key, backend_spec, params)
+        _record_l2_env_sources(backend_key, backend_spec, params, env_sources)
 
 
 def _validate_cache_service_worker_selector(

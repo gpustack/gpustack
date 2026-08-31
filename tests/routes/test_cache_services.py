@@ -123,7 +123,7 @@ def _provider_with_optional_l2_adapter() -> CacheProvider:
         adapter_flag_optional=True,
         adapter_flag_default=False,
         adapter_flag_label="Enable L2 Adapter Flag",
-        fields=[CacheProviderL2Field(name="metadata_endpoint", required=True)],
+        fields=[CacheProviderL2Field(name="tenant_id", required=True)],
     )
     return provider
 
@@ -1367,7 +1367,7 @@ async def test_create_optional_l2_adapter_requires_fields_when_enabled(monkeypat
             ),
         )
 
-    assert "metadata_endpoint" in exc_info.value.message
+    assert "tenant_id" in exc_info.value.message
 
 
 @pytest.mark.asyncio
