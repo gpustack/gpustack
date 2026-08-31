@@ -124,6 +124,10 @@ class CacheProviderKVTransferConfig(BaseModel):
     """Engine argument that carries the serialized payload."""
 
     kv_connector: str
+    kv_connector_module_path: Optional[str] = None
+    """Optional Python module path for engines that load the connector
+    implementation outside their default registry."""
+
     kv_role: str = "kv_both"
     kv_connector_extra_config: Dict[str, Any] = {}
     """Connector-specific settings. String values support {{placeholder}};
@@ -298,6 +302,29 @@ class CacheProviderL2Backend(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     """Logo URL for brand display; the UI falls back to a generic icon."""
+
+    adapter_flag_optional: bool = False
+    """Whether the UI should offer a separate switch for enabling the
+    provider's ``l2_adapter_flag`` for this backend."""
+
+    adapter_flag_default: bool = True
+    """Default state of the optional adapter-flag switch."""
+
+    adapter_flag_label: Optional[str] = None
+    """Label for the optional adapter-flag switch."""
+
+    adapter_type: Optional[str] = None
+    """JSON ``type`` emitted for this backend; defaults to its catalog key."""
+
+    adapter_backend: Optional[str] = None
+    """Optional JSON ``backend`` value for adapters with a second type."""
+
+    adapter_params: Dict[str, str] = {}
+    """Mapping of nested ``backend_params`` keys to declared field names.
+
+    When set, field values are emitted under ``backend_params`` instead of
+    being placed directly on the adapter object.
+    """
 
     fields: List[CacheProviderL2Field] = []
 
@@ -604,7 +631,10 @@ def _coerce_l2_field_value(field: CacheProviderL2Field, value: Any) -> Any:
 
 
 def render_l2_adapter(
-    provider: CacheProvider, backend: str, params: Dict[str, Any]
+    provider: CacheProvider,
+    backend: str,
+    params: Dict[str, Any],
+    adapter_flag_enabled: Optional[bool] = None,
 ) -> Tuple[List[str], Dict[str, str]]:
     """
     Build the (command args, container env) that configure a managed cache
@@ -614,23 +644,53 @@ def render_l2_adapter(
     omitted from both. Raises ValueError when the provider has no L2 support
     or does not declare the backend.
     """
-    if not provider.l2_adapter_flag:
-        raise ValueError(
-            f"Cache provider '{provider.name}' does not support L2 storage"
-        )
     backend_spec = provider.l2_backends.get(backend)
     if backend_spec is None:
         raise ValueError(
             f"Cache provider '{provider.name}' has no L2 storage "
             f"backend '{backend}'"
         )
+    if not provider.l2_adapter_flag:
+        raise ValueError(
+            f"Cache provider '{provider.name}' does not support L2 storage"
+        )
 
-    adapter: Dict[str, Any] = {"type": backend}
+    flag_enabled = (
+        backend_spec.adapter_flag_default
+        if adapter_flag_enabled is None
+        else bool(adapter_flag_enabled)
+    )
+    if backend_spec.adapter_flag_optional and not flag_enabled:
+        return [], {}
+
+    # Most LMCache adapters use the catalog backend key as their adapter
+    # type and put fields directly on the object.  Some plugins (notably
+    # XSKY's NIXL XDFS plugin) use a two-level envelope instead.
+    legacy_shape = bool(
+        backend_spec.adapter_params
+        and "metadata_endpoint" in params
+        and not (set(params) & set(backend_spec.adapter_params.values()))
+    )
+    adapter: Dict[str, Any] = {
+        "type": backend if legacy_shape else (backend_spec.adapter_type or backend),
+    }
+    if backend_spec.adapter_backend is not None and not legacy_shape:
+        adapter["backend"] = backend_spec.adapter_backend
+    nested_values: Optional[Dict[str, Any]] = (
+        {}
+        if (backend_spec.adapter_backend is not None or backend_spec.adapter_params)
+        and not legacy_shape
+        else None
+    )
     env: Dict[str, str] = {}
     for field in backend_spec.fields:
         if field.metrics_target:
             # Scrape-address fields configure GPUStack's metrics
             # collection, not the cache server.
+            continue
+        if legacy_shape and field.name not in params:
+            # Preserve the old xdfs payload for already-stored services;
+            # newly introduced plugin defaults must not leak into it.
             continue
         value = params.get(field.name, field.default)
         if value is None or value == "":
@@ -638,8 +698,43 @@ def render_l2_adapter(
         value = _coerce_l2_field_value(field, value)
         if field.env_name:
             env[field.env_name] = str(value)
+        elif nested_values is not None:
+            output_name = next(
+                (
+                    name
+                    for name, field_name in backend_spec.adapter_params.items()
+                    if field_name == field.name
+                ),
+                None,
+            )
+            if output_name is None and field.name in backend_spec.adapter_params:
+                output_name = backend_spec.adapter_params[field.name]
+            if (
+                output_name is None
+                and backend_spec.adapter_backend is not None
+                and not backend_spec.adapter_params
+            ):
+                output_name = field.name
+            if output_name is not None:
+                # NIXL plugin backend_params are string-valued, even for
+                # values that look numeric (for example capacity in GiB).
+                nested_values[output_name] = (
+                    str(value) if field.type == "string" else value
+                )
+            elif legacy_shape:
+                adapter[field.name] = value
         else:
             adapter[field.name] = value
+
+    if nested_values is not None:
+        if backend_spec.adapter_params:
+            adapter["backend_params"] = {
+                name: nested_values[name]
+                for name in backend_spec.adapter_params
+                if name in nested_values
+            }
+        else:
+            adapter["backend_params"] = nested_values
 
     args = [provider.l2_adapter_flag, json.dumps(adapter, separators=(",", ":"))]
     return args, env
@@ -743,8 +838,12 @@ def render_kv_transfer_config(
     [flag, compact JSON payload]."""
     payload: Dict[str, Any] = {
         "kv_connector": config.kv_connector,
-        "kv_role": config.kv_role,
     }
+    if config.kv_connector_module_path:
+        payload["kv_connector_module_path"] = render_typed_template(
+            config.kv_connector_module_path, params
+        )
+    payload["kv_role"] = config.kv_role
     if config.kv_connector_extra_config:
         payload["kv_connector_extra_config"] = {
             key: render_typed_template(value, params)

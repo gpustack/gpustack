@@ -585,7 +585,10 @@ class CacheServiceManager:
         env_sources: Dict[str, str] = {}
         for l2_storage in l2_storages:
             entry_args, entry_env = render_l2_adapter(
-                provider, l2_storage.backend, l2_storage.params or {}
+                provider,
+                l2_storage.backend,
+                l2_storage.params or {},
+                l2_storage.adapter_flag_enabled,
             )
             for env_name, value in entry_env.items():
                 if env_name in env_sources:

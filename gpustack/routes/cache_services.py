@@ -737,7 +737,8 @@ def _validate_cache_service_l2_storage(cache_service_in: CacheServiceBase) -> No
     """L2 storage config only applies to managed services and must match the
     provider's declared adapter backends. Each entry is checked for a known
     backend key, all required fields set, no undeclared parameter names
-    (typo guard), and numeric values for number-typed fields; across entries,
+    (typo guard), and numeric values for number-typed fields; optional adapter
+    backends skip and clear their hidden fields while disabled. Across entries,
     no two may deliver a value through the same env var — env vars are
     process-global, so the values would clobber each other."""
     config = cache_service_in.config
@@ -775,6 +776,28 @@ def _validate_cache_service_l2_storage(cache_service_in: CacheServiceBase) -> No
                 )
             )
 
+        if not backend_spec.adapter_flag_optional:
+            if l2_storage.adapter_flag_enabled is not None:
+                raise BadRequestException(
+                    message=(
+                        f"adapter_flag_enabled is not applicable to L2 "
+                        f"backend '{backend_key}'"
+                    )
+                )
+            adapter_enabled = True
+        else:
+            adapter_enabled = (
+                backend_spec.adapter_flag_default
+                if l2_storage.adapter_flag_enabled is None
+                else l2_storage.adapter_flag_enabled
+            )
+            if not adapter_enabled:
+                # Hidden fields have no runtime meaning while the adapter is
+                # disabled. Drop stale form values so a later read mirrors
+                # what the UI shows and no secret remains stored invisibly.
+                l2_storage.params = {}
+                continue
+
         params = l2_storage.params or {}
         declared = {field.name: field for field in backend_spec.fields}
 
@@ -787,9 +810,31 @@ def _validate_cache_service_l2_storage(cache_service_in: CacheServiceBase) -> No
                 )
             )
 
+        # Some adapters retain legacy fields while their current envelope
+        # uses a nested backend_params mapping. For the current shape,
+        # legacy required fields are irrelevant and must not prevent it from
+        # being accepted; only an explicitly legacy payload uses them.
+        required_fields = backend_spec.fields
+        mapped_names = set(backend_spec.adapter_params.values())
+        if backend_spec.adapter_backend and not mapped_names:
+            mapped_names = {field.name for field in backend_spec.fields}
+        legacy_shape = bool(
+            backend_spec.adapter_params
+            and "metadata_endpoint" in params
+            and not (set(params) & mapped_names)
+        )
+        if (
+            backend_spec.adapter_params or backend_spec.adapter_backend
+        ) and not legacy_shape:
+            required_fields = [
+                field
+                for field in backend_spec.fields
+                if field.name in mapped_names or field.env_name
+            ]
+
         missing = [
             field.name
-            for field in backend_spec.fields
+            for field in required_fields
             if field.required
             and (params.get(field.name) is None or params.get(field.name) == "")
         ]

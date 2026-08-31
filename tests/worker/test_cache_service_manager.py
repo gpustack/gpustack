@@ -817,6 +817,54 @@ def test_start_instance_without_l2_storage_omits_flag():
     assert "--l2-adapter" not in command
 
 
+def test_start_instance_xdfs_l2_backend_omits_adapter_flag():
+    """MeshFusion Store owns its L2 setup and must not receive LMCache's
+    generic --l2-adapter JSON argument."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            ram_size=8,
+            l2_storages=[
+                CacheServiceL2Storage(
+                    backend="xdfs",
+                    adapter_flag_enabled=False,
+                )
+            ],
+        )
+    )
+    provider = _l2_provider(
+        l2_backends={
+            **_l2_provider().l2_backends,
+            "xdfs": CacheProviderL2Backend(
+                fields=[
+                    CacheProviderL2Field(
+                        name="metadata_endpoint", required=True
+                    )
+                ],
+                adapter_flag_optional=True,
+                adapter_flag_default=False,
+            ),
+        }
+    )
+
+    create, update = _run_start(manager, clientset, cache_service, provider)
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert "--l2-adapter" not in command
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.STARTING
+
+    cache_service.config.l2_storages[0].adapter_flag_enabled = True
+    cache_service.config.l2_storages[0].params = {
+        "metadata_endpoint": "10.0.0.20:8000"
+    }
+    create, _ = _run_start(manager, clientset, cache_service, provider)
+    command = create.call_args[0][0].containers[0].execution.command
+    assert command[-2:] == [
+        "--l2-adapter",
+        '{"type":"xdfs","metadata_endpoint":"10.0.0.20:8000"}',
+    ]
+
+
 def test_start_instance_renders_l2_cascade_in_declared_order():
     """Each L2 entry renders as its own flag occurrence, kept in list order:
     the cache server reads from the earliest tier that hits and writes to
@@ -966,7 +1014,16 @@ def test_start_instance_l2_without_provider_support_sets_error():
         )
     )
 
-    create, update = _run_start(manager, clientset, cache_service, _new_provider())
+    # Keep the backend declaration so this exercises the provider-level
+    # "no adapter flag" branch rather than the unknown-backend validation.
+    provider = _new_provider(
+        l2_backends={
+            "fs": CacheProviderL2Backend(
+                fields=[CacheProviderL2Field(name="base_path", required=True)]
+            )
+        }
+    )
+    create, update = _run_start(manager, clientset, cache_service, provider)
 
     create.assert_not_called()
     assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR

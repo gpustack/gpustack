@@ -428,7 +428,7 @@
   attach_locality: node_local
   default_version: "v0.5.2"
   custom_version: true
-  default_run_args: "--host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --supported-transfer-mode auto --worker-reap-timeout-seconds 60 --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
+  default_run_args: "--host {{host}} --port {{port}} --l1-size-gb {{ram_size}} --chunk-size {{chunk_size}} --http-host {{host}} --http-port {{metrics_port}} --eviction-policy {{eviction_policy}} --eviction-trigger-watermark {{eviction_trigger_watermark}} --eviction-ratio {{eviction_ratio}}"
   default_image: "lmcache/vllm-openai:{{version}}"
   default_runtime_images:
     cuda:
@@ -438,6 +438,7 @@
     cann:
       "8": "registry.example.com/lmcache/vllm-openai:{{version}}-cann"
   versions:
+    # Inherit the provider-level launch arguments for this version.
     "v0.5.2": {}
   resource_profile:
     ram_gib: "{{ram_size}}"
@@ -489,19 +490,28 @@
     xdfs:
       display_name: XSKY MeshFusion Store
       icon: /static/catalog_icons/xsky.png
+      # The UI exposes this as a separate switch above the fields. It defaults
+      # to off because MeshFusion Store normally configures itself in the image.
+      adapter_flag_optional: true
+      adapter_flag_default: false
+      adapter_flag_label: Enable L2 Adapter Flag
       description: >-
         XSKY MeshFusion Store distributed storage as the L2 tier; capacity
         and durability scale with the external storage cluster.
+      # The XDFS plugin is exposed through NIXL's dynamic store adapter. Its
+      # plugin-specific values belong under backend_params and are strings,
+      # including max_capacity_gb.
+      adapter_type: nixl_store_dynamic
+      adapter_backend: XDFS_KV
+      adapter_params:
+        conf: conf
+        params_file: params_file
+        tenant_id: tenant_id
+        max_capacity_gb: max_capacity_gb
       fields:
-        - { name: metadata_endpoint, label: Metadata Endpoint, required: true }
-        - { name: sdk_config_file, label: SDK Config File, default: /opt/meshfusion/sdk.flags }
-        - { name: num_workers, label: Workers, type: number, default: 32 }
-        - { name: io_depth, label: IO Depth, type: number, default: 256 }
-        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number, default: 30720 }
-        - { name: policy_id, label: Policy ID, type: number, default: 1 }
-        - { name: timeout_ms, label: Timeout (ms), type: number, default: 60000 }
+        # The image supplies the plugin files and capacity defaults; tenant is
+        # the only service-level override exposed by the form.
         - { name: tenant_id, label: Tenant ID, default: nixl }
-        - { name: max_write_inflight_bytes, label: Max Write Inflight (Bytes), type: number, default: 536870912 }
     resp:
       display_name: Redis / Valkey
       icon: /static/catalog_icons/redis.svg
@@ -612,13 +622,13 @@
           node_local: { mp_transfer_mode: auto }
         kv_transfer_config:
           kv_connector: LMCacheMPConnector
+          kv_connector_module_path: lmcache.integration.vllm.lmcache_mp_connector
           kv_role: kv_both
           kv_connector_extra_config:
             lmcache.mp.host: "tcp://{{host}}"
             lmcache.mp.port: "{{port}}"
             lmcache.mp.mp_transfer_mode: "{{mp_transfer_mode}}"
         args:
-          - "--disable-hybrid-kv-cache-manager"
           # vLLM defaults --shutdown-timeout to 0: on SIGTERM the engine
           # dies without closing its CUDA IPC handles and the driver
           # keeps its KV VRAM charged to the cache server until the
@@ -637,16 +647,16 @@
         env:
           PYTHONHASHSEED: "0"
         locality_params:
-          node_local: { mp_transfer_mode: auto }
+          node_local: { mp_transfer_mode: engine_driven }
         kv_transfer_config:
           kv_connector: LMCacheMPConnector
+          kv_connector_module_path: lmcache.integration.vllm.lmcache_mp_connector
           kv_role: kv_both
           kv_connector_extra_config:
             lmcache.mp.host: "tcp://{{host}}"
             lmcache.mp.port: "{{port}}"
             lmcache.mp.mp_transfer_mode: "{{mp_transfer_mode}}"
         args:
-          - "--disable-hybrid-kv-cache-manager"
           # vLLM defaults --shutdown-timeout to 0: on SIGTERM the engine
           # dies without closing its CUDA IPC handles and the driver
           # keeps its KV VRAM charged to the cache server until the
