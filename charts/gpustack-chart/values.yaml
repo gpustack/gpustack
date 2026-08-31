@@ -224,7 +224,7 @@ worker:
   # Supported values (per entry):
   #   nvidia    - NVIDIA GPU; sets runtimeClassName to "nvidia"
   #   mthreads  - Moore Threads GPU; sets runtimeClassName to "mthreads"
-  #   amd       - AMD GPU (ROCm); mounts /opt/rocm
+  #   amd       - AMD GPU (ROCm); mounts /opt/rocm and /opt/rocm/lib
   #   ascend    - Huawei Ascend NPU; mounts /usr/local/Ascend/driver and /usr/local/Ascend/ascend-toolkit
   #   hygon     - Hygon DCU; mounts /opt/hyhal, /opt/dtk and /etc/dmi_mig_config
   #   metax     - MetaX GPU; mounts /opt/mxdriver and /opt/maca
