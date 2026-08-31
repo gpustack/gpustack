@@ -201,6 +201,7 @@ nav:
           - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
           - Using Custom Inference Backend: tutorials/using-custom-backends.md
           - Adding a GPU Cluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
+          - Adding a GPU Cluster Using Shuihua: tutorials/adding-gpucluster-using-shuihua.md
           - Adding a GPU Cluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
           - Managing Model Routes: tutorials/managing-model-routes.md
           - Serving Models with LoRA Adapters: tutorials/serving-with-lora-adapters.md

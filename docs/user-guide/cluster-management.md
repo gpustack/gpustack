@@ -6,7 +6,7 @@ GPUStack supports cluster-based worker management and provides multiple cluster 
 
 1. Go to the `Clusters` page.
 2. Click the `Add Cluster` button.
-3. Select a cluster provider. There are `Docker` and `Kubernetes` for the `Self-Host` provider and `DigitalOcean` for the `Cloud Provider`.
+3. Select a cluster provider. There are `Docker` and `Kubernetes` for the `Self-Host` provider, and `DigitalOcean` and `SHUIHUA FUTURE` for the `Cloud Provider`.
 4. Depending on the provider, different options need to be set in the `Base Configuration` and `Add Worker` steps.
 5. The `Advanced` cluster settings in the Base Configuration allow you to pre-configure the worker options using the `Worker Configuration YAML`.
 
@@ -81,12 +81,24 @@ Additional worker pools can be added after the cluster is created.
 3. Click the ellipsis button in the operations column, then select `Add Worker Pool`
 4. Adding new worker pool with options from Step 3 above.
 
+### Creating SHUIHUA FUTURE Cluster
+
+1. In the `Basic Configuration` step, the `Name` field is required and `Description` is optional. Create or select a Cloud Credential for communicating with the Shuihua API. Shuihua has no regions, so there is none to select. You must also configure the `GPUStack Server URL`, which will be accessible from the newly created instances.
+2. `Default Container Registry` is required for this provider: Shuihua instances cannot reach Docker Hub, so a registry that resolves to one is rejected. The field suggests `quay.io` and `swr.cn-south-1.myhuaweicloud.com`, and accepts any other registry you can reach, such as your own Harbor or mirror.
+3. Click `Next`.
+4. Adding one or more `Worker Pools`. For each pool, `Name`, `Instance Type`, `OS Image`, `Replicas`, `Batch Size` and `Labels` can be specified. An `Instance Type` is a Shuihua spec template, listed with its GPU model, hourly price and remaining stock; a sold-out template cannot be selected. Volumes are not offered — Shuihua has no block storage API.
+5. Click `Save` after the worker pools are configured.
+
+Additional worker pools can be added after the cluster is created, the same way as for a DigitalOcean cluster.
+
+Shuihua instances sit behind NAT with only ports 22 and 80 mapped, so the cluster uses the `tunnel` proxy mode by default and its workers serve inference through the server's WebSocket tunnel. Their listed IP is the instance's private address; use `View SSH Access` on the worker to get the endpoint that is actually reachable. See [Adding a GPU Cluster Using Shuihua](../tutorials/adding-gpucluster-using-shuihua.md) for the full walkthrough.
+
 ### Operating Worker Pools
 
-You can manage worker pools for DigitalOcean clusters on the `Clusters` page:
+You can manage worker pools for cloud provider clusters on the `Clusters` page:
 
 1. Go to the `Clusters` page.
-2. Find the DigitalOcean cluster you want to manage and expand it to view its worker pools.
+2. Find the cloud provider cluster you want to manage and expand it to view its worker pools.
 3. To edit the replica count for a worker, modify it directly in the worker column.
 4. To edit a worker pool, click the `Edit` button and update the `Name`, `Replica`, `Batch Size`, and `Labels` as needed.
 5. To delete a worker pool, click the ellipsis button in the operations column for the worker pool, then select `Delete`.
