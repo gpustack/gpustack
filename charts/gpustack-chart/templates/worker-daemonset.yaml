@@ -154,6 +154,9 @@ spec:
             - name: gpustack-hygon-toolkit
               mountPath: /opt/dtk
               readOnly: true
+            - name: gpustack-hygon-mig-config
+              mountPath: /etc/dmi_mig_config
+              readOnly: true
             {{- end }}
             {{- if eq $w.runtime "metax" }}
             - name: gpustack-metax-driver
@@ -245,6 +248,10 @@ spec:
         - name: gpustack-hygon-toolkit
           hostPath:
             path: /opt/dtk
+            type: DirectoryOrCreate
+        - name: gpustack-hygon-mig-config
+          hostPath:
+            path: /etc/dmi_mig_config
             type: DirectoryOrCreate
         {{- end }}
         {{- if eq $w.runtime "metax" }}

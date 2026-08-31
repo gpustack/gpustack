@@ -127,7 +127,7 @@ For an accelerator type, the `Configuration` panel offers up to three allocation
 
 ![Screenshot: selecting a logical slice by VRAM and compute ratio](../assets/gpuservice/instances/type-select-sliced.png)
 
-- **By Profile** — a physical partition of a MIG-enabled device: pick a `Partition Profile` (for example `1g.10gb` on an H100). The operator materializes the MIG instance for you. This tab appears only when a node in the cluster has MIG enabled; enabling MIG is a per-node administrator operation, see [GPU Service Instance Types](gpuservice-instance-types.md#physical-partitioning-with-nvidia-mig).
+- **By Profile** — a physical partition of a MIG-enabled device: pick a `Partition Profile` (for example `1g.10gb` on an H100). The operator materializes the MIG instance for you. This tab appears only when a node in the cluster has MIG enabled; enabling MIG is a per-node administrator operation, see [GPU Service Instance Types](gpuservice-instance-types.md#physical-partitioning-mig).
 
 ![Screenshot: selecting a physical partition by MIG profile](../assets/gpuservice/instances/type-select-partitioned.png)
 
