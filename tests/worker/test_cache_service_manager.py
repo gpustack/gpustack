@@ -836,11 +836,7 @@ def test_start_instance_xdfs_l2_backend_omits_adapter_flag():
         l2_backends={
             **_l2_provider().l2_backends,
             "xdfs": CacheProviderL2Backend(
-                fields=[
-                    CacheProviderL2Field(
-                        name="metadata_endpoint", required=True
-                    )
-                ],
+                fields=[CacheProviderL2Field(name="tenant_id", required=True)],
                 adapter_flag_optional=True,
                 adapter_flag_default=False,
             ),
@@ -854,14 +850,12 @@ def test_start_instance_xdfs_l2_backend_omits_adapter_flag():
     assert update.call_args[1]["state"] == CacheServiceStateEnum.STARTING
 
     cache_service.config.l2_storages[0].adapter_flag_enabled = True
-    cache_service.config.l2_storages[0].params = {
-        "metadata_endpoint": "10.0.0.20:8000"
-    }
+    cache_service.config.l2_storages[0].params = {"tenant_id": "nixl"}
     create, _ = _run_start(manager, clientset, cache_service, provider)
     command = create.call_args[0][0].containers[0].execution.command
     assert command[-2:] == [
         "--l2-adapter",
-        '{"type":"xdfs","metadata_endpoint":"10.0.0.20:8000"}',
+        '{"type":"xdfs","tenant_id":"nixl"}',
     ]
 
 

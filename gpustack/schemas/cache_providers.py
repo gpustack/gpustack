@@ -630,6 +630,72 @@ def _coerce_l2_field_value(field: CacheProviderL2Field, value: Any) -> Any:
     return value
 
 
+def _l2_adapter_output_name(
+    backend_spec: CacheProviderL2Backend, field_name: str
+) -> Optional[str]:
+    output_name = next(
+        (
+            name
+            for name, mapped_field in backend_spec.adapter_params.items()
+            if mapped_field == field_name
+        ),
+        None,
+    )
+    if output_name is not None:
+        return output_name
+    if field_name in backend_spec.adapter_params:
+        return backend_spec.adapter_params[field_name]
+    if backend_spec.adapter_backend is not None and not backend_spec.adapter_params:
+        return field_name
+    return None
+
+
+def _render_l2_adapter_fields(
+    backend_spec: CacheProviderL2Backend,
+    params: Dict[str, Any],
+    adapter: Dict[str, Any],
+    nested_values: Optional[Dict[str, Any]],
+) -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    for field in backend_spec.fields:
+        if field.metrics_target:
+            continue
+        value = params.get(field.name, field.default)
+        if value is None or value == "":
+            continue
+        value = _coerce_l2_field_value(field, value)
+        if field.env_name:
+            env[field.env_name] = str(value)
+            continue
+        if nested_values is None:
+            adapter[field.name] = value
+            continue
+
+        output_name = _l2_adapter_output_name(backend_spec, field.name)
+        if output_name is not None:
+            # NIXL plugin backend_params are string-valued, even for values
+            # that look numeric (for example capacity in GiB).
+            nested_values[output_name] = str(value)
+    return env
+
+
+def _attach_l2_backend_params(
+    backend_spec: CacheProviderL2Backend,
+    adapter: Dict[str, Any],
+    nested_values: Optional[Dict[str, Any]],
+) -> None:
+    if nested_values is None:
+        return
+    if backend_spec.adapter_params:
+        adapter["backend_params"] = {
+            name: nested_values[name]
+            for name in backend_spec.adapter_params
+            if name in nested_values
+        }
+    else:
+        adapter["backend_params"] = nested_values
+
+
 def render_l2_adapter(
     provider: CacheProvider,
     backend: str,
@@ -663,78 +729,18 @@ def render_l2_adapter(
     if backend_spec.adapter_flag_optional and not flag_enabled:
         return [], {}
 
-    # Most LMCache adapters use the catalog backend key as their adapter
-    # type and put fields directly on the object.  Some plugins (notably
-    # XSKY's NIXL XDFS plugin) use a two-level envelope instead.
-    legacy_shape = bool(
-        backend_spec.adapter_params
-        and "metadata_endpoint" in params
-        and not (set(params) & set(backend_spec.adapter_params.values()))
-    )
     adapter: Dict[str, Any] = {
-        "type": backend if legacy_shape else (backend_spec.adapter_type or backend),
+        "type": backend_spec.adapter_type or backend,
     }
-    if backend_spec.adapter_backend is not None and not legacy_shape:
+    if backend_spec.adapter_backend is not None:
         adapter["backend"] = backend_spec.adapter_backend
     nested_values: Optional[Dict[str, Any]] = (
         {}
         if (backend_spec.adapter_backend is not None or backend_spec.adapter_params)
-        and not legacy_shape
         else None
     )
-    env: Dict[str, str] = {}
-    for field in backend_spec.fields:
-        if field.metrics_target:
-            # Scrape-address fields configure GPUStack's metrics
-            # collection, not the cache server.
-            continue
-        if legacy_shape and field.name not in params:
-            # Preserve the old xdfs payload for already-stored services;
-            # newly introduced plugin defaults must not leak into it.
-            continue
-        value = params.get(field.name, field.default)
-        if value is None or value == "":
-            continue
-        value = _coerce_l2_field_value(field, value)
-        if field.env_name:
-            env[field.env_name] = str(value)
-        elif nested_values is not None:
-            output_name = next(
-                (
-                    name
-                    for name, field_name in backend_spec.adapter_params.items()
-                    if field_name == field.name
-                ),
-                None,
-            )
-            if output_name is None and field.name in backend_spec.adapter_params:
-                output_name = backend_spec.adapter_params[field.name]
-            if (
-                output_name is None
-                and backend_spec.adapter_backend is not None
-                and not backend_spec.adapter_params
-            ):
-                output_name = field.name
-            if output_name is not None:
-                # NIXL plugin backend_params are string-valued, even for
-                # values that look numeric (for example capacity in GiB).
-                nested_values[output_name] = (
-                    str(value) if field.type == "string" else value
-                )
-            elif legacy_shape:
-                adapter[field.name] = value
-        else:
-            adapter[field.name] = value
-
-    if nested_values is not None:
-        if backend_spec.adapter_params:
-            adapter["backend_params"] = {
-                name: nested_values[name]
-                for name in backend_spec.adapter_params
-                if name in nested_values
-            }
-        else:
-            adapter["backend_params"] = nested_values
+    env = _render_l2_adapter_fields(backend_spec, params, adapter, nested_values)
+    _attach_l2_backend_params(backend_spec, adapter, nested_values)
 
     args = [provider.l2_adapter_flag, json.dumps(adapter, separators=(",", ":"))]
     return args, env
