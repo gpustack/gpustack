@@ -1,7 +1,7 @@
 import base64
 import hashlib
 from datetime import timezone
-from typing import Dict, Optional, Tuple, Type, Callable
+from typing import Dict, Tuple, Type, Callable
 from .abstract import ProviderClientBase, CloudInstanceCreate
 from .digital_ocean import DigitalOceanClient
 from .shuihua import ShuihuaProviderClient
@@ -24,22 +24,6 @@ factory: Dict[
         lambda credential: ShuihuaProviderClient(api_key=credential.secret),
     ),
 }
-
-
-def get_provider_api_endpoint(provider: ClusterProvider) -> Optional[str]:
-    """
-    The API base URL a cloud provider will talk to, or None when it has none.
-
-    A provider whose API has no single well-known host takes its URL from a
-    server start-up option, so until that is set there is nowhere to send
-    requests. Returning None lets the cluster and credential routes say so up
-    front instead of letting provisioning fail later against a URL that was
-    never configured.
-    """
-    type_factory = factory.get(provider, None)
-    if type_factory is None:
-        return None
-    return type_factory[0].get_api_endpoint() or None
 
 
 def get_client_from_provider(

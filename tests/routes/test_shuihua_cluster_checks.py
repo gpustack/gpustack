@@ -39,9 +39,6 @@ def server_config(monkeypatch):
     cfg.system_default_container_registry = None
     cfg.shuihua_api_base_url = "https://api.test"
     monkeypatch.setattr(clusters, "get_global_config", lambda: cfg)
-    monkeypatch.setattr(
-        clusters, "get_provider_api_endpoint", lambda provider: "https://api.test"
-    )
     return cfg
 
 
@@ -266,22 +263,6 @@ def test_update_rejects_switching_to_docker_hub(server_config):
 # --------------------------------------------------------------------------
 # the whole check, as the routes call it
 # --------------------------------------------------------------------------
-
-
-def test_create_update_check_rejects_an_unconfigured_provider(
-    server_config, monkeypatch
-):
-    """Without a base URL there is nowhere to send requests."""
-    monkeypatch.setattr(clusters, "get_provider_api_endpoint", lambda provider: None)
-    request = ClusterCreate(
-        name="c",
-        provider=ClusterProvider.Shuihua,
-        credential_id=1,
-        system_default_container_registry=PRIVATE_REGISTRY,
-    )
-
-    with pytest.raises(InvalidException):
-        create_update_check(ClusterProvider.Shuihua, request)
 
 
 def test_create_update_check_requires_a_credential(server_config):

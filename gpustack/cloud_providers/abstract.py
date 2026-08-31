@@ -155,8 +155,20 @@ class ProviderClientBase(ABC):
         return user_data
 
     @classmethod
+    @abstractmethod
     def get_api_endpoint(cls) -> str:
-        return ""
+        """
+        Base URL of the provider's API.
+
+        Abstract rather than defaulting to ``""``: a provider with no endpoint
+        cannot be talked to, and an empty one is not inert. It reaches
+        ``urljoin("", path)`` in the credential proxy, which yields a relative
+        URL that the route's same-host check waves through — the request then
+        dies inside the HTTP client as a generic 500. Requiring an
+        implementation moves that from a puzzling failure at request time to an
+        obvious one when the provider is written.
+        """
+        ...
 
     @classmethod
     def process_header(cls, ak: str, sk: str, options: dict, headers: dict) -> dict:

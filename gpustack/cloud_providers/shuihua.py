@@ -444,15 +444,9 @@ class ShuihuaClient:
 def get_endpoint() -> str:
     """Base URL of the Shuihua API, from the server's ``shuihua_api_base_url``.
 
-    There is deliberately no default: the integration and production
-    environments live on different hosts, so a built-in guess would point
-    provisioning at the wrong account while looking like it worked. Returns
-    ``""`` when unconfigured, which the cluster and credential routes reject up
-    front.
+    That setting carries a default, so this always resolves to a host.
     """
-    cfg = get_global_config()
-    base_url = cfg.shuihua_api_base_url if cfg is not None else None
-    return (base_url or "").rstrip("/")
+    return get_global_config().shuihua_api_base_url.rstrip("/")
 
 
 class ShuihuaProviderClient(ProviderClientBase):
@@ -476,11 +470,6 @@ class ShuihuaProviderClient(ProviderClientBase):
     def __init__(self, api_key: str, base_url: Optional[str] = None):
         self._api_key = api_key
         self._base_url = base_url or get_endpoint()
-        if not self._base_url:
-            raise ValueError(
-                "No API base URL configured for the Shuihua provider; start the "
-                "server with --shuihua-api-base-url"
-            )
 
     @asynccontextmanager
     async def _api(self) -> AsyncGenerator[ShuihuaClient, None]:
