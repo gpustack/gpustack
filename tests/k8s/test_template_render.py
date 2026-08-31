@@ -160,6 +160,32 @@ def test_single_gpu_runtime_ascend_keeps_vendor_volume_mounts():
     }
 
 
+def test_single_gpu_runtime_hygon_mounts_the_mig_config_registry():
+    """The Hygon driver keeps its MIG registry at /etc/dmi_mig_config, and the
+    worker reads it to tie a partition back to its card — mount it read-only
+    alongside the driver and toolkit."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.HYGON])
+    dses = _daemonsets(docs)
+    gpu_ds = dses[f"{WORKER_DS_BASENAME}-hygon"]
+    mounts = _pod_spec(gpu_ds)["containers"][0].get("volumeMounts") or []
+    mount_by_name = {m["name"]: m for m in mounts}
+    assert set(mount_by_name) == {
+        "gpustack-hygon-driver",
+        "gpustack-hygon-toolkit",
+        "gpustack-hygon-mig-config",
+        DATA_DIR_MOUNT_NAME,
+    }
+    mig_config = mount_by_name["gpustack-hygon-mig-config"]
+    assert mig_config["mountPath"] == "/etc/dmi_mig_config"
+    assert mig_config["readOnly"] is True
+    volumes = _pod_spec(gpu_ds).get("volumes") or []
+    volume_by_name = {v["name"]: v for v in volumes}
+    assert volume_by_name["gpustack-hygon-mig-config"]["hostPath"] == {
+        "path": "/etc/dmi_mig_config",
+        "type": "DirectoryOrCreate",
+    }
+
+
 def test_single_gpu_runtime_service_uses_common_selector():
     """With CPU + 1 GPU, multi_vendor_mode is true so the Service uses the
     common component label selector."""

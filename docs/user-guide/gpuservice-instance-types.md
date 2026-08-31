@@ -2,7 +2,7 @@
 
 GPU Service Instance Types describe the compute shapes — CPU-only or accelerator-backed — that [GPU Service Instances](gpuservice-instances.md) are created from.
 
-The [GPUStack Operator](https://github.com/gpustack/gpustack-operator) supports accelerators from multiple manufacturers — AMD, Ascend, Cambricon, Hygon, Iluvatar, MetaX, Moore Threads, NVIDIA, and T-Head. For each manufacturer, an accelerator can be allocated **exclusively** (a whole device), **shared**, or **logically sliced** (software splitting with independent VRAM and compute budgets). NVIDIA and T-Head additionally support **physical partitioning** (MIG), where the device is split by hardware. See the operator's [accelerator support matrix](https://github.com/gpustack/gpustack-operator#accelerator-support) for the per-manufacturer details.
+The [GPUStack Operator](https://github.com/gpustack/gpustack-operator) supports accelerators from multiple manufacturers — AMD, Ascend, Cambricon, Hygon, Iluvatar, MetaX, Moore Threads, NVIDIA, and T-Head. For each manufacturer, an accelerator can be allocated **exclusively** (a whole device), **shared**, or **logically sliced** (software splitting with independent VRAM and compute budgets). NVIDIA, T-Head, and Hygon additionally support **physical partitioning** (MIG), where the device is split by hardware. See the operator's [accelerator support matrix](https://github.com/gpustack/gpustack-operator#accelerator-support) for the per-manufacturer details.
 
 ## Browsing Instance Types
 
@@ -98,11 +98,11 @@ Confirm the deletion:
 
 A custom type is removed permanently. Derived types cannot be deleted while derivation is enabled — see [Derived Instance Types](#derived-instance-types).
 
-## Physical Partitioning with NVIDIA MIG
+## Physical Partitioning (MIG)
 
 A physically partitioned (MIG) device does not get its own instance type: its partitions appear as partition capacity (the `PT` view) on the device's instance type, and you pick a partition profile when [adding an instance](gpuservice-instances.md#instance-type-selection).
 
-MIG mode itself is a **per-node, administrator-managed** property — the operator observes it but never enables, disables, or reconfigures it. To offer partitions on an NVIDIA node, enable MIG on the node and restart the operator's device manager there:
+The operator supports MIG on NVIDIA, T-Head, and Hygon accelerators. MIG mode itself is a **per-node, administrator-managed** property — the operator observes it but never enables, disables, or reconfigures it. To offer partitions on a node, enable MIG on the node with the vendor's tooling and restart the operator's device manager there, for example on an NVIDIA node:
 
 ```bash
 # On the node, per GPU or for all GPUs:
@@ -111,4 +111,8 @@ sudo nvidia-smi -i <id> -mig 1
 kubectl -n gpustack-system rollout restart ds/gpustack-operator-device-manager-nvidia
 ```
 
-See the operator's [NVIDIA MIG operations runbook](https://github.com/gpustack/gpustack-operator/blob/main/docs/operation/nvidia-mig.md#what-gpustack-operator-does-not-do) for the full procedure, prerequisites, and limitations — including that MIG instances never survive a node reboot, and that on Hopper and newer the mode itself does not persist across reboots either.
+See the operator's MIG operations runbooks for each vendor's full procedure, prerequisites, and limitations — including that MIG instances never survive a node reboot:
+
+- [NVIDIA MIG operations](https://github.com/gpustack/gpustack-operator/blob/main/docs/operation/nvidia-mig.md)
+- [T-Head MIG operations](https://github.com/gpustack/gpustack-operator/blob/main/docs/operation/thead-mig.md)
+- [Hygon MIG operations](https://github.com/gpustack/gpustack-operator/blob/main/docs/operation/hygon-mig.md) — on Hygon the mode is node-wide, and a partitioned node serves only partitions.

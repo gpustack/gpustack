@@ -226,7 +226,7 @@ worker:
   #   mthreads  - Moore Threads GPU; sets runtimeClassName to "mthreads"
   #   amd       - AMD GPU (ROCm); mounts /opt/rocm
   #   ascend    - Huawei Ascend NPU; mounts /usr/local/Ascend/driver and /usr/local/Ascend/ascend-toolkit
-  #   hygon     - Hygon DCU; mounts /opt/hyhal and /opt/dtk
+  #   hygon     - Hygon DCU; mounts /opt/hyhal, /opt/dtk and /etc/dmi_mig_config
   #   metax     - MetaX GPU; mounts /opt/mxdriver and /opt/maca
   #   iluvatar  - Iluvatar GPU; mounts /usr/local/corex
   #   cambricon - Cambricon MLU; mounts /usr/bin/cnmon and /usr/local/neuware
