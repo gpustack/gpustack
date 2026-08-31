@@ -568,6 +568,8 @@ def _l2_metrics_provider() -> CacheProvider:
     return CacheProvider(
         name="StubCache",
         supported_modes=["managed"],
+        default_version="v1",
+        versions={"v1": {"image": "stub/cache:v1"}},
         l2_backends={
             "stub_store": CacheProviderL2Backend(
                 fields=[

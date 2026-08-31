@@ -299,6 +299,55 @@ async def test_create_rejects_custom_version_without_image(monkeypatch, config):
 
 
 @pytest.mark.asyncio
+async def test_create_defaults_to_custom_version_without_declared_versions(monkeypatch):
+    """A provider publishing no image declares no version to name, so an
+    omitted provider_version reads as the custom one."""
+    worker = SimpleNamespace(id=5, deleted_at=None, cluster_id=1)
+    _patch_create_prereqs(monkeypatch, worker=worker)
+    provider = _provider(custom_version=True)
+    provider.versions = {}
+    provider.default_version = None
+    _patch_provider(monkeypatch, provider)
+    monkeypatch.setattr(
+        cache_services_route.CacheService,
+        "create",
+        AsyncMock(side_effect=lambda session, source: SimpleNamespace(**source)),
+    )
+
+    created = await cache_services_route.create_cache_service(
+        session=MagicMock(),
+        ctx=_user_ctx(),
+        cache_service_in=_managed_create(
+            config=CacheServiceConfig(ram_size=20, image="myteam/meshfusion:dev"),
+        ),
+    )
+
+    assert created.provider_version == "custom"
+    assert created.config["image"] == "myteam/meshfusion:dev"
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_missing_image_without_declared_versions(monkeypatch):
+    """The image is the only way such a provider reaches one, so leaving
+    it out fails as a missing custom-version image."""
+    worker = SimpleNamespace(id=5, deleted_at=None, cluster_id=1)
+    _patch_create_prereqs(monkeypatch, worker=worker)
+    provider = _provider(custom_version=True)
+    provider.versions = {}
+    provider.default_version = None
+    _patch_provider(monkeypatch, provider)
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await cache_services_route.create_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            cache_service_in=_managed_create(config=CacheServiceConfig(ram_size=20)),
+        )
+
+    assert "config.image is required" in exc_info.value.message
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_custom_version_without_provider_opt_in(monkeypatch):
     _patch_create_prereqs(monkeypatch)
     _patch_provider(monkeypatch, _provider())
