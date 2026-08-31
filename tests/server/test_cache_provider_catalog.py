@@ -531,12 +531,13 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     }
     assert differing == set()
 
-    # The versions diverge from LMCache's only by the staged Ascend
-    # build (an assumed image for XSKY to correct) and by which version
-    # each provider defaults to; at a given version the CUDA builds stay
-    # LMCache's.
+    # The version inherits MeshFusion's provider-level launch arguments;
+    # only the staged Ascend build and provider default version diverge.
     mf_version = meshfusion.versions[meshfusion.default_version]
     lm_version = lmcache.versions[meshfusion.default_version]
+    assert mf_version.run_command is None
+    assert mf_version.run_args == meshfusion.default_run_args
+    assert "--supported-transfer-mode auto" not in mf_version.run_args
     assert mf_version.runtime_images["cuda"] == lm_version.runtime_images["cuda"]
     assert "cann" in mf_version.runtime_images
     assert "cann" not in lm_version.runtime_images
@@ -545,7 +546,8 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     # accelerator gate. MeshFusion diverges from LMCache only by the
     # extra cann-scoped vLLM entry (an assumed placeholder for XSKY;
     # vllm-ascend trails vLLM, so its attachable range is declared
-    # separately). The cuda entries mirror LMCache's.
+    # separately). The connector settings mirror LMCache's, while MeshFusion
+    # omits the non-hybrid manager flag because its image owns that setup.
     vllm_entries = [
         c for c in meshfusion.inference_backend_integrations if c.backend == "vLLM"
     ]
@@ -555,8 +557,27 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     ]
     lm_vllm = lmcache.integration_for("vLLM", "cuda")
     assert lm_vllm.frameworks == ["cuda"]
+    assert [
+        entry.injection.locality_params["node_local"]["mp_transfer_mode"]
+        for entry in vllm_entries
+    ] == ["auto", "engine_driven"]
     for entry in vllm_entries:
-        assert entry.injection == lm_vllm.injection
+        mesh_injection = entry.injection.model_dump()
+        lm_injection = lm_vllm.injection.model_dump()
+        mesh_injection.pop("locality_params", None)
+        lm_injection.pop("locality_params", None)
+        mesh_kv_config = mesh_injection["kv_transfer_config"]
+        lm_kv_config = lm_injection["kv_transfer_config"]
+        mesh_kv_config.pop("kv_connector_module_path", None)
+        lm_kv_config.pop("kv_connector_module_path", None)
+        assert {
+            key: value for key, value in mesh_injection.items() if key != "args"
+        } == {key: value for key, value in lm_injection.items() if key != "args"}
+        assert entry.injection.args == ["--shutdown-timeout", "20"]
+        assert (
+            entry.injection.kv_transfer_config.kv_connector_module_path
+            == "lmcache.integration.vllm.lmcache_mp_connector"
+        )
     sglang_entries = [
         c for c in meshfusion.inference_backend_integrations if c.backend == "SGLang"
     ]
@@ -572,8 +593,9 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     assert meshfusion.integration_for("SGLang", "cann") is None
     assert all(c.frameworks == ["cuda"] for c in lmcache.inference_backend_integrations)
 
-    # MeshFusion adds XSKY's store L2 backend (adapter type "xdfs",
-    # branded with the XSKY icon) on top of the LMCache-inherited
+    # MeshFusion adds XSKY's store L2 backend (catalog key "xdfs", rendered
+    # as the NIXL dynamic adapter and branded with the XSKY icon) on top of
+    # the LMCache-inherited
     # backends; LMCache has none of it.
     assert "xdfs" not in lmcache.l2_backends
     # The inherited backends must stay byte-identical, not just share keys.
@@ -581,21 +603,47 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
         assert meshfusion.l2_backends[key] == backend
     xdfs = meshfusion.l2_backends["xdfs"]
     assert xdfs.icon == "/static/catalog_icons/xsky.png"
+    assert xdfs.adapter_flag_optional is True
+    assert xdfs.adapter_flag_default is False
+    assert xdfs.adapter_flag_label == "Enable L2 Adapter Flag"
+    assert xdfs.adapter_type == "nixl_store_dynamic"
+    assert xdfs.adapter_backend == "XDFS_KV"
+    assert xdfs.adapter_params == {
+        "conf": "conf",
+        "params_file": "params_file",
+        "tenant_id": "tenant_id",
+        "max_capacity_gb": "max_capacity_gb",
+    }
     xdfs_fields = {field.name for field in xdfs.fields}
-    assert {"metadata_endpoint", "sdk_config_file", "max_write_inflight_bytes"} <= (
-        xdfs_fields
-    )
-    assert next(f for f in xdfs.fields if f.name == "metadata_endpoint").required
-    # No store-side metrics scrape this version: L2 observability rides on
-    # the cache server's own lmcache_mp_* metrics.
-    assert all(field.metrics_target is False for field in xdfs.fields)
+    # MeshFusion supplies the plugin files from its image; the service form
+    # exposes only the tenant override.
+    assert xdfs_fields == {"tenant_id"}
+    assert next(f for f in xdfs.fields if f.name == "tenant_id").default == "nixl"
 
     args, env = render_l2_adapter(
         meshfusion,
         "xdfs",
-        {"metadata_endpoint": "10.0.0.20:8000"},
+        {},
+        adapter_flag_enabled=False,
     )
-    assert '"metadata_endpoint":"10.0.0.20:8000"' in args[1]
+    # MeshFusion Store is configured by the image itself; the backend must
+    # not emit the generic LMCache adapter flag or JSON payload.
+    assert args == []
+    assert env == {}
+
+    args, env = render_l2_adapter(
+        meshfusion,
+        "xdfs",
+        {
+            "tenant_id": "glmint4mix-1787763619",
+        },
+        adapter_flag_enabled=True,
+    )
+    assert args == [
+        "--l2-adapter",
+        '{"type":"nixl_store_dynamic","backend":"XDFS_KV",'
+        '"backend_params":{"tenant_id":"glmint4mix-1787763619"}}',
+    ]
     assert env == {}
 
 
@@ -677,6 +725,44 @@ def test_render_injection_substitutes_host_and_port():
     # engine-driven copies since IPC handles cannot cross hosts.
     assert '"lmcache.mp.mp_transfer_mode":"auto"' in args[1]
     assert args[2] == "--disable-hybrid-kv-cache-manager"
+
+
+def test_meshfusion_vllm_injection_includes_connector_module_path():
+    provider = get_cache_provider("XSKY MeshFusion")
+    rendered = render_injection(
+        provider,
+        "vLLM",
+        {"host": "127.0.0.1", "port": 5556, "locality": "node_local"},
+    )
+    assert rendered is not None
+    _, args, _ = rendered
+    payload = json.loads(args[1])
+    assert payload["kv_connector"] == "LMCacheMPConnector"
+    assert (
+        payload["kv_connector_module_path"]
+        == "lmcache.integration.vllm.lmcache_mp_connector"
+    )
+    assert payload["kv_role"] == "kv_both"
+    assert (
+        payload["kv_connector_extra_config"]["lmcache.mp.host"]
+        == "tcp://127.0.0.1"
+    )
+    assert payload["kv_connector_extra_config"]["lmcache.mp.port"] == 5556
+    assert args[2:] == ["--shutdown-timeout", "20"]
+
+    rendered_cann = render_injection(
+        provider,
+        "vLLM",
+        {"host": "127.0.0.1", "port": 5556, "locality": "node_local"},
+        framework="cann",
+    )
+    assert rendered_cann is not None
+    _, cann_args, _ = rendered_cann
+    cann_payload = json.loads(cann_args[1])
+    assert (
+        cann_payload["kv_connector_extra_config"]["lmcache.mp.mp_transfer_mode"]
+        == "engine_driven"
+    )
 
 
 def test_kv_transfer_config_renders_structured_slot_with_types():

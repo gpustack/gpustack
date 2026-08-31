@@ -117,6 +117,17 @@ def _provider_with_l2(supported_modes=None) -> CacheProvider:
     return provider
 
 
+def _provider_with_optional_l2_adapter() -> CacheProvider:
+    provider = _provider_with_l2()
+    provider.l2_backends["xdfs"] = CacheProviderL2Backend(
+        adapter_flag_optional=True,
+        adapter_flag_default=False,
+        adapter_flag_label="Enable L2 Adapter Flag",
+        fields=[CacheProviderL2Field(name="metadata_endpoint", required=True)],
+    )
+    return provider
+
+
 def _l2_config(backend: str, **params) -> CacheServiceConfig:
     return CacheServiceConfig(
         ram_size=20,
@@ -1304,6 +1315,59 @@ async def test_create_accepts_valid_l2_storage(monkeypatch, config):
     assert created.config["l2_storages"] == [
         entry.model_dump() for entry in config.l2_storages
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_optional_l2_adapter_can_be_disabled_without_fields(
+    monkeypatch,
+):
+    worker = SimpleNamespace(id=5, deleted_at=None, cluster_id=1)
+    _patch_create_prereqs(monkeypatch, worker=worker)
+    _patch_provider(monkeypatch, _provider_with_optional_l2_adapter())
+    monkeypatch.setattr(
+        cache_services_route.CacheService,
+        "create",
+        AsyncMock(side_effect=lambda session, source: SimpleNamespace(**source)),
+    )
+    storage = CacheServiceL2Storage(
+        backend="xdfs", adapter_flag_enabled=False, params={}
+    )
+
+    created = await cache_services_route.create_cache_service(
+        session=MagicMock(),
+        ctx=_user_ctx(),
+        cache_service_in=_managed_create(
+            config=CacheServiceConfig(ram_size=20, l2_storages=[storage])
+        ),
+    )
+
+    assert created.config["l2_storages"][0]["adapter_flag_enabled"] is False
+    assert created.config["l2_storages"][0]["params"] == {}
+
+
+@pytest.mark.asyncio
+async def test_create_optional_l2_adapter_requires_fields_when_enabled(monkeypatch):
+    worker = SimpleNamespace(id=5, deleted_at=None, cluster_id=1)
+    _patch_create_prereqs(monkeypatch, worker=worker)
+    _patch_provider(monkeypatch, _provider_with_optional_l2_adapter())
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await cache_services_route.create_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            cache_service_in=_managed_create(
+                config=CacheServiceConfig(
+                    ram_size=20,
+                    l2_storages=[
+                        CacheServiceL2Storage(
+                            backend="xdfs", adapter_flag_enabled=True, params={}
+                        )
+                    ],
+                )
+            ),
+        )
+
+    assert "metadata_endpoint" in exc_info.value.message
 
 
 @pytest.mark.asyncio

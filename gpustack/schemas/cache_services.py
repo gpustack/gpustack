@@ -96,6 +96,11 @@ class CacheServiceL2Storage(BaseModel):
     params: Dict[str, Any] = {}
     """Backend field name -> value, per the provider's field declarations."""
 
+    adapter_flag_enabled: Optional[bool] = None
+    """Optional per-backend switch. When the provider marks its adapter flag
+    optional, ``None`` uses the catalog default; false tells the UI to hide
+    the backend fields and does not emit the adapter flag."""
+
 
 class CacheServiceConfig(BaseModel):
     ram_size: Optional[int] = None
