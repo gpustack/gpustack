@@ -186,6 +186,30 @@ def test_single_gpu_runtime_hygon_mounts_the_mig_config_registry():
     }
 
 
+def test_single_gpu_runtime_amd_mounts_the_library_directory():
+    """/opt/rocm/lib can be a symlink into /etc/alternatives; mounting
+    /opt/rocm alone leaves it dangling in the container, so the library
+    directory is mounted read-only as a hostPath source of its own."""
+    docs = _render_docs(runtimes=[ManufacturerEnum.AMD])
+    gpu_ds = _daemonsets(docs)[f"{WORKER_DS_BASENAME}-amd"]
+    mounts = _pod_spec(gpu_ds)["containers"][0].get("volumeMounts") or []
+    mount_by_name = {m["name"]: m for m in mounts}
+    assert set(mount_by_name) == {
+        "gpustack-amd-driver",
+        "gpustack-amd-driver-lib",
+        DATA_DIR_MOUNT_NAME,
+    }
+    lib = mount_by_name["gpustack-amd-driver-lib"]
+    assert lib["mountPath"] == "/opt/rocm/lib"
+    assert lib["readOnly"] is True
+    volumes = _pod_spec(gpu_ds).get("volumes") or []
+    volume_by_name = {v["name"]: v for v in volumes}
+    assert volume_by_name["gpustack-amd-driver-lib"]["hostPath"] == {
+        "path": "/opt/rocm/lib",
+        "type": "DirectoryOrCreate",
+    }
+
+
 def test_single_gpu_runtime_service_uses_common_selector():
     """With CPU + 1 GPU, multi_vendor_mode is true so the Service uses the
     common component label selector."""
@@ -600,6 +624,7 @@ def test_multi_vendor_volume_mounts_applied_only_to_owning_vendor():
     # Each GPU DS has its own vendor mounts.
     assert mount_names(dses[f"{WORKER_DS_BASENAME}-amd"]) == {
         "gpustack-amd-driver",
+        "gpustack-amd-driver-lib",
         DATA_DIR_MOUNT_NAME,
     }
     assert mount_names(dses[f"{WORKER_DS_BASENAME}-ascend"]) == {

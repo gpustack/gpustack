@@ -118,6 +118,9 @@ spec:
             - name: gpustack-amd-driver
               mountPath: /opt/rocm
               readOnly: true
+            - name: gpustack-amd-driver-lib
+              mountPath: /opt/rocm/lib
+              readOnly: true
             {%- endif %}
             {%- if worker.runtime == 'ascend' %}
             - name: gpustack-ascend-driver
@@ -208,6 +211,12 @@ spec:
         - name: gpustack-amd-driver
           hostPath:
             path: /opt/rocm
+            type: DirectoryOrCreate
+        {#- Separate source: /opt/rocm/lib may be a symlink (e.g. to
+            /etc/alternatives) that would dangle inside the container. #}
+        - name: gpustack-amd-driver-lib
+          hostPath:
+            path: /opt/rocm/lib
             type: DirectoryOrCreate
         {%- endif %}
         {%- if worker.runtime == 'hygon' %}
