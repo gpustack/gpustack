@@ -87,7 +87,6 @@ from gpustack.gpu_instances.cluster_apis_util import (
     get_namespace_name,
 )
 from gpustack.k8s.manifest_template import TemplateConfig
-from gpustack.cloud_providers.common import get_provider_api_endpoint
 from gpustack.config.config import (
     get_global_config,
     get_cluster_image_name,
@@ -504,13 +503,6 @@ def create_update_check(
     if is_cloud_provider and server_url is None:
         raise InvalidException(
             message=f"server_url is required for provider {provider}"
-        )
-    if is_cloud_provider and not get_provider_api_endpoint(provider):
-        raise InvalidException(
-            message=(
-                f"No API base URL is configured for provider {provider.value}. "
-                "Start the server with the provider's API base URL configured."
-            )
         )
     if provider == ClusterProvider.Shuihua:
         apply_shuihua_defaults(input, existing)
