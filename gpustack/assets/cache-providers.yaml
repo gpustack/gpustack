@@ -474,8 +474,8 @@
       adapter_flag_default: false
       adapter_flag_label: Enable L2 Adapter Flag
       description: >-
-        XSKY MeshFusion Store distributed storage as the L2 tier; capacity
-        and durability scale with the external storage cluster.
+        企业级 KV Cache 扩展加速方案，激活 GPU 节点本地 DRAM 与 SSD 加速模型推理。
+        基于端到端的 NVMe 技术，提供跨节点共享、本地优先读写、自动淘汰策略、主动保护 SSD 寿命等多种能力。
       # The XDFS plugin is exposed through NIXL's dynamic store adapter. Its
       # plugin-specific values belong under backend_params and are strings,
       # including max_capacity_gb.
