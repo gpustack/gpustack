@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import APIRouter
 
 from gpustack.api.exceptions import NotFoundException
-from gpustack.schemas.cache_providers import CacheProvider
+from gpustack.schemas.cache_providers import CacheProvider, localized_values
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.cache_provider_catalog import (
     get_cache_provider,
@@ -23,11 +23,17 @@ async def list_cache_providers(
     providers: List[CacheProvider] = get_cache_providers()
     if search:
         search = search.strip().lower()
+        # Every translation of the display name is searchable, not just
+        # the fallback: the term a user types is in the locale they are
+        # reading the catalog in.
         providers = [
             provider
             for provider in providers
             if search in provider.name.lower()
-            or (provider.display_name and search in provider.display_name.lower())
+            or any(
+                search in name.lower()
+                for name in localized_values(provider.display_name)
+            )
         ]
 
     count = len(providers)

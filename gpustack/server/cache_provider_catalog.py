@@ -8,6 +8,7 @@ from gpustack.schemas.cache_providers import (
     CacheProvider,
     render_injection as _render_injection,
     validate_injection_templates,
+    validate_localized_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,13 @@ def load_cache_providers(reload: bool = False) -> List[CacheProvider]:
                     # not the catalog: the others still serve.
                     logger.error(f"Skipping malformed cache provider {name}: {e}")
                     continue
-                # A provider violating the injection placeholder contract
-                # is excluded outright: its failure modes are silent at
-                # runtime (literal placeholders corrupting connector
-                # config, secrets riding into instance snapshots).
+                # A provider violating the injection placeholder or the
+                # localized-text contract is excluded outright: both fail
+                # silently at runtime (literal placeholders corrupting
+                # connector config, secrets riding into instance
+                # snapshots, text that renders for no locale).
                 violations = validate_injection_templates(provider)
+                violations += validate_localized_text(provider)
                 if violations:
                     logger.error(
                         f"Skipping cache provider {provider.name}: "

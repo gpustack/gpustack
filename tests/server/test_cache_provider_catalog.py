@@ -8,8 +8,11 @@ from gpustack.schemas.cache_providers import (
     CacheProviderL2Backend,
     CacheProviderL2Field,
     CacheProviderVersionConfig,
+    localized_default,
+    localized_values,
     render_l2_adapter,
     validate_injection_templates,
+    validate_localized_text,
 )
 from gpustack.schemas.cache_services import CacheServiceModeEnum
 from gpustack.server import cache_provider_catalog
@@ -629,7 +632,7 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     assert xdfs.icon == "/static/catalog_icons/xsky.png"
     assert xdfs.adapter_flag_optional is True
     assert xdfs.adapter_flag_default is False
-    assert xdfs.adapter_flag_label == "Enable L2 Adapter Flag"
+    assert localized_default(xdfs.adapter_flag_label) == "Enable L2 Adapter Flag"
     assert xdfs.adapter_type == "nixl_store_dynamic"
     assert xdfs.adapter_backend == "XDFS_KV"
     assert xdfs.adapter_params == {
@@ -692,12 +695,15 @@ def test_render_l2_adapter_stringifies_nested_backend_params():
 
 
 def test_provider_brand_links():
+    def labels(provider):
+        return {localized_default(link.label) for link in provider.links}
+
     lmcache = get_cache_provider("LMCache")
-    assert {link.label for link in lmcache.links} == {"Documentation", "GitHub"}
+    assert labels(lmcache) == {"Documentation", "GitHub"}
     assert all(link.url.startswith("https://") for link in lmcache.links)
 
     mooncake = get_cache_provider("Mooncake")
-    assert {link.label for link in mooncake.links} == {"Documentation", "GitHub"}
+    assert labels(mooncake) == {"Documentation", "GitHub"}
 
     meshfusion = get_cache_provider("XSKY MeshFusion")
     assert meshfusion.links, "partner card needs at least one brand link"
@@ -1051,3 +1057,129 @@ def test_injection_contract_flags_violations():
     # "mode" is not present in every locality bucket, so it is
     # unresolvable on the remote path and must be flagged.
     assert "placeholder 'mode'" in joined
+
+
+def test_bare_string_and_locale_mapping_are_both_accepted():
+    """A declaration written before the catalog had locales stays valid:
+    a bare string is the text in every locale, so translating a slot is
+    additive rather than a rewrite."""
+    provider = CacheProvider(
+        name="localized",
+        display_name="Localized",
+        description={"default": "A cache", "zh-CN": "一个缓存"},
+        links=[{"label": {"default": "Docs", "zh-CN": "文档"}, "url": "https://x"}],
+        managed_fields=[
+            {"name": "size", "label": {"default": "Size", "ja-JP": "サイズ"}}
+        ],
+    )
+    assert validate_localized_text(provider) == []
+    assert localized_default(provider.display_name) == "Localized"
+    assert localized_default(provider.description) == "A cache"
+    assert localized_values(provider.display_name) == ["Localized"]
+    assert sorted(localized_values(provider.description)) == ["A cache", "一个缓存"]
+
+
+def test_localized_slot_without_a_default_is_a_violation():
+    """Every locale mapping needs the fallback entry: without it a locale
+    the declaration skips has no text to render, so the slot reads as
+    untranslated instead of as the author's canonical wording."""
+    provider = CacheProvider(
+        name="no-default",
+        display_name={"zh-CN": "只有中文"},
+        description={},
+        l2_backends={
+            "b": CacheProviderL2Backend(
+                description={"zh-CN": "只有中文"},
+                fields=[CacheProviderL2Field(name="x", label={"zh-CN": "只有中文"})],
+            )
+        },
+    )
+    joined = "\n".join(validate_localized_text(provider))
+    assert "display_name has no 'default' entry" in joined
+    assert "description is an empty locale mapping" in joined
+    assert "l2 backend 'b' description has no 'default' entry" in joined
+    assert "l2 backend 'b' field 'x' label has no 'default' entry" in joined
+
+
+def test_invalid_locale_key_is_a_violation():
+    """A key that no locale resolves to is text that renders for nobody;
+    it is caught at load time rather than silently never appearing.
+
+    Rejection costs the whole provider, so the check admits every real tag
+    shape: a script or region suffix, and the three-letter primary subtags
+    of ISO 639-2/3 alongside 639-1's two."""
+    provider = CacheProvider(
+        name="bad-locale",
+        external_fields=[
+            {
+                "name": "protocol",
+                "label": {
+                    "default": "Protocol",
+                    "ZH_cn": "协议",
+                    "zh-Hant": "協議",
+                    "yue": "協議",
+                    "fil-PH": "Protocol",
+                },
+            }
+        ],
+    )
+    joined = "\n".join(validate_localized_text(provider))
+    assert "invalid locale key 'ZH_cn'" in joined
+    for valid in ("zh-Hant", "yue", "fil-PH"):
+        assert valid not in joined
+
+
+def test_localized_violation_costs_only_its_own_provider(monkeypatch):
+    """The localized-text contract is enforced with the same blast radius
+    as the injection contract: the offending provider drops out, the rest
+    of the catalog still serves."""
+    asset = (
+        "- name: Broken\n"
+        '  default_image: "repo/cache:{{version}}"\n'
+        "  description:\n"
+        "    zh-CN: 没有默认文案\n"
+        "  versions:\n"
+        '    "v1.0": {}\n'
+        "- name: Good\n"
+        '  default_image: "repo/cache:{{version}}"\n'
+        "  description:\n"
+        "    default: A cache\n"
+        "    zh-CN: 一个缓存\n"
+        "  versions:\n"
+        '    "v1.0": {}\n'
+    )
+
+    class _Asset:
+        def is_file(self):
+            return True
+
+        def read_text(self, encoding=None):
+            return asset
+
+    try:
+        monkeypatch.setattr(cache_provider_catalog, "files", lambda _package: _Asset())
+        monkeypatch.setattr(_Asset, "joinpath", lambda self, _name: self, raising=False)
+        providers = load_cache_providers(reload=True)
+        assert [provider.name for provider in providers] == ["Good"]
+    finally:
+        monkeypatch.undo()
+        load_cache_providers(reload=True)
+
+
+def test_every_form_field_declares_a_label():
+    """The UI humanizes a missing label from the field name, which is an
+    English identifier: a field without a label is a slot that stays
+    English in every other locale."""
+    missing = []
+    for provider in load_cache_providers(reload=True):
+        for field in provider.external_fields:
+            if field.label is None:
+                missing.append(f"{provider.name} external field '{field.name}'")
+        for field in provider.managed_fields:
+            if field.label is None:
+                missing.append(f"{provider.name} managed field '{field.name}'")
+        for key, backend in provider.l2_backends.items():
+            for field in backend.fields:
+                if field.label is None:
+                    missing.append(f"{provider.name} l2 '{key}' field '{field.name}'")
+    assert not missing, "fields missing a label: " + ", ".join(missing)
