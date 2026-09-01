@@ -36,13 +36,20 @@
   display_name: LMCache
   source: built_in
   icon: /static/catalog_icons/lmcache.png
-  description: >-
-    LMCache is a KV cache layer for LLM serving. As a shared cache service it
-    runs a cache server on every worker; deployments and replicas on the same
-    node share KV cache through it, and a shared L2 storage backend extends
-    the reuse across nodes.
+  description:
+    default: >-
+      LMCache is a KV cache layer for LLM serving. As a shared cache service it
+      runs a cache server on every worker; deployments and replicas on the same
+      node share KV cache through it, and a shared L2 storage backend extends
+      the reuse across nodes.
+    zh-CN: >-
+      LMCache 是面向大模型推理的 KV Cache 层。作为共享缓存服务，它在每个 worker
+      上运行一个缓存服务端，同节点的部署与副本通过它共享 KV Cache，共享的 L2
+      存储后端把复用范围扩展到跨节点。
   links:
-    - { label: Documentation, url: "https://docs.lmcache.ai" }
+    - label: { default: Documentation, zh-CN: 文档 }
+      url: "https://docs.lmcache.ai"
+    # A brand name reads the same in every locale, so it stays bare.
     - { label: GitHub, url: "https://github.com/LMCache/LMCache" }
   # Managed only: LMCache is the out-of-box single-container engine
   # GPUStack runs itself. Its distributed form (operator + coordinator +
@@ -90,80 +97,126 @@
   # policy is required upstream, so its default always renders.
   managed_fields:
     - name: eviction_policy
-      label: Eviction Policy
+      label: { default: Eviction Policy, zh-CN: 淘汰策略 }
       default: LRU
+      # Engine enum values: they reach the command line verbatim and stay
+      # untranslated, so what each one means lives in the description.
       options: [LRU, IsolatedLRU, noop]
-      description: >-
-        LRU evicts least-recently-used chunks. IsolatedLRU keeps one LRU
-        list per cache salt and requires per-salt quotas via the HTTP
-        API. noop never evicts.
+      description:
+        default: >-
+          LRU evicts least-recently-used chunks. IsolatedLRU keeps one LRU
+          list per cache salt and requires per-salt quotas via the HTTP
+          API. noop never evicts.
+        zh-CN: >-
+          LRU 淘汰最近最少使用的分块。IsolatedLRU 为每个 cache salt 维护独立的 LRU
+          列表，并需通过 HTTP API 为每个 salt 设置配额。noop 从不淘汰。
     - name: eviction_trigger_watermark
-      label: Eviction Trigger Watermark
+      label: { default: Eviction Trigger Watermark, zh-CN: 淘汰触发水位 }
       type: number
       default: 0.85
       min: 0
       max: 1
       step: 0.05
-      description: Memory usage fraction (0-1) that triggers eviction.
+      description:
+        default: Memory usage fraction (0-1) that triggers eviction.
+        zh-CN: 触发淘汰的内存使用率（0-1）。
     - name: eviction_ratio
-      label: Eviction Ratio
+      label: { default: Eviction Ratio, zh-CN: 淘汰比例 }
       type: number
       default: 0.1
       min: 0
       max: 1
       step: 0.05
-      description: Fraction of memory (0-1) evicted per trigger.
+      description:
+        default: Fraction of memory (0-1) evicted per trigger.
+        zh-CN: 每次触发所淘汰的内存比例（0-1）。
   l2_adapter_flag: "--l2-adapter"
   l2_backends:
     fs_native:
-      display_name: Local Filesystem
-      description: >-
-        Spills KV cache to a local directory (e.g. NVMe) on the worker.
-        max_capacity_gb caps disk usage; 0 or unset means uncapped.
+      display_name: { default: Local Filesystem, zh-CN: 本地文件系统 }
+      description:
+        default: >-
+          Spills KV cache to a local directory (e.g. NVMe) on the worker.
+          max_capacity_gb caps disk usage; 0 or unset means uncapped.
+        zh-CN: >-
+          将 KV Cache 溢出到 worker 上的本地目录（如 NVMe）。max_capacity_gb
+          限制磁盘用量；填 0 或留空表示不限制。
       fields:
         # Defaults into the platform data dir: on containerized workers
         # the mirrored deployment carries the worker's /var/lib/gpustack
         # host mount into the cache container, so spilled cache lands on
         # host disk and survives container recreation.
         - name: base_path
-          label: Base Path
+          label: { default: Base Path, zh-CN: 基础路径 }
           required: true
           default: /var/lib/gpustack/cache/lmcache/l2
-        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
-        - { name: num_workers, label: I/O Workers, type: number }
-        - { name: use_odirect, label: Direct I/O (O_DIRECT), type: boolean }
+        - name: max_capacity_gb
+          label: { default: Max Capacity (GiB), zh-CN: 最大容量（GiB） }
+          type: number
+        - name: num_workers
+          label: { default: I/O Workers, zh-CN: I/O 工作线程 }
+          type: number
+        - name: use_odirect
+          label: { default: Direct I/O (O_DIRECT), zh-CN: 直接 I/O（O_DIRECT） }
+          type: boolean
     resp:
+      # A brand name reads the same in every locale, so it stays bare.
       display_name: Redis / Valkey
       icon: /static/catalog_icons/redis.svg
-      description: Shared L2 in a Redis or Valkey server; cache survives cache-server restarts.
+      description:
+        default: Shared L2 in a Redis or Valkey server; cache survives cache-server restarts.
+        zh-CN: 以 Redis 或 Valkey 服务端作为共享 L2；缓存服务端重启后缓存仍然保留。
       fields:
-        - { name: host, label: Host, required: true }
-        - { name: port, label: Port, type: number, required: true }
-        - { name: username, label: Username, env_name: LMCACHE_RESP_USERNAME }
+        - { name: host, label: { default: Host, zh-CN: 主机 }, required: true }
+        - name: port
+          label: { default: Port, zh-CN: 端口 }
+          type: number
+          required: true
+        - name: username
+          label: { default: Username, zh-CN: 用户名 }
+          env_name: LMCACHE_RESP_USERNAME
         - name: password
-          label: Password
+          label: { default: Password, zh-CN: 密码 }
           type: password
           env_name: LMCACHE_RESP_PASSWORD
-        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
+        - name: max_capacity_gb
+          label: { default: Max Capacity (GiB), zh-CN: 最大容量（GiB） }
+          type: number
     s3:
       display_name: S3
       icon: /static/catalog_icons/s3.svg
-      description: >-
-        Shared L2 in an S3-compatible object store (AWS S3, MinIO, Ceph
-        RGW). The endpoint uses virtual-hosted style — the bucket name is
-        part of the host, e.g. "kvcache.s3.example.com"; path-style
-        addressing is not supported. max_capacity_gb caps aggregate
-        usage; 0 or unset means uncapped.
+      description:
+        default: >-
+          Shared L2 in an S3-compatible object store (AWS S3, MinIO, Ceph
+          RGW). The endpoint uses virtual-hosted style — the bucket name is
+          part of the host, e.g. "kvcache.s3.example.com"; path-style
+          addressing is not supported. max_capacity_gb caps aggregate
+          usage; 0 or unset means uncapped.
+        zh-CN: >-
+          以兼容 S3 的对象存储作为共享 L2（AWS S3、MinIO、Ceph RGW）。地址采用
+          virtual-hosted 风格——bucket 名是主机名的一部分，例如
+          "kvcache.s3.example.com"；不支持 path-style 寻址。max_capacity_gb
+          限制总用量；填 0 或留空表示不限制。
       fields:
-        - { name: s3_endpoint, label: Bucket Endpoint, required: true }
-        - { name: s3_region, label: Region, required: true }
+        - name: s3_endpoint
+          label: { default: Bucket Endpoint, zh-CN: Bucket 地址 }
+          required: true
+        - name: s3_region
+          label: { default: Region, zh-CN: 区域 }
+          required: true
+        # Access Key ID and Secret Access Key are the object store's own
+        # credential names; they stay bare, as every S3 console shows them.
         - { name: aws_access_key_id, label: Access Key ID, env_name: AWS_ACCESS_KEY_ID }
         - name: aws_secret_access_key
           label: Secret Access Key
           type: password
           env_name: AWS_SECRET_ACCESS_KEY
-        - { name: disable_tls, label: Disable TLS (HTTP Endpoint), type: boolean }
-        - { name: max_capacity_gb, label: Max Capacity (GiB), type: number }
+        - name: disable_tls
+          label: { default: Disable TLS (HTTP Endpoint), zh-CN: 禁用 TLS（HTTP 端点） }
+          type: boolean
+        - name: max_capacity_gb
+          label: { default: Max Capacity (GiB), zh-CN: 最大容量（GiB） }
+          type: number
   # Completion hints for the extra-parameters editor. Deliberately
   # excludes the flags GPUStack always renders from structured config.
   common_parameters:
@@ -314,14 +367,20 @@
   display_name: Mooncake
   source: built_in
   icon: /static/catalog_icons/mooncake.png
-  description: >-
-    Mooncake Store is a distributed KV cache pool with a cluster-wide master
-    and per-node clients that transfer KV blocks peer-to-peer over RDMA/TCP.
-    It is deployed and operated outside GPUStack; register the master address
-    and GPUStack attaches inference engines to it, probes it, and (once
-    calibrated) scrapes its metrics.
+  description:
+    default: >-
+      Mooncake Store is a distributed KV cache pool with a cluster-wide master
+      and per-node clients that transfer KV blocks peer-to-peer over RDMA/TCP.
+      It is deployed and operated outside GPUStack; register the master address
+      and GPUStack attaches inference engines to it, probes it, and (once
+      calibrated) scrapes its metrics.
+    zh-CN: >-
+      Mooncake Store 是一个分布式 KV Cache 池，由集群级 master 和各节点客户端组成，节点间通过
+      RDMA/TCP 点对点传输 KV 块。它在 GPUStack 之外部署和运维；注册 master
+      地址后，GPUStack 负责把推理引擎接入、探活，并在完成校准后采集其指标。
   links:
-    - { label: Documentation, url: "https://kvcache-ai.github.io/Mooncake/" }
+    - label: { default: Documentation, zh-CN: 文档 }
+      url: "https://kvcache-ai.github.io/Mooncake/"
     - { label: GitHub, url: "https://github.com/kvcache-ai/Mooncake" }
   # Provider-specific Grafana dashboard provisioned from
   # docker-compose/grafana/grafana_dashboards/gpustack-mooncake.json,
@@ -335,24 +394,34 @@
   # metadata service registers its "etcd://" / "http://" address instead.
   external_fields:
     - name: metadata_server
-      label: Metadata Server
-      description: >-
-        Transfer Engine peer-discovery backend: P2PHANDSHAKE (decentralized),
-        or an etcd:// / redis:// / http:// address.
+      label: { default: Metadata Server, zh-CN: 元数据服务 }
+      description:
+        default: >-
+          Transfer Engine peer-discovery backend: P2PHANDSHAKE (decentralized),
+          or an etcd:// / redis:// / http:// address.
+        zh-CN: >-
+          Transfer Engine 的节点发现后端：P2PHANDSHAKE（去中心化），或一个
+          etcd:// / redis:// / http:// 地址。
       default: P2PHANDSHAKE
     - name: protocol
-      label: Transport Protocol
-      description: RDMA for production performance; TCP for functional setups.
+      label: { default: Transport Protocol, zh-CN: 传输协议 }
+      description:
+        default: RDMA for production performance; TCP for functional setups.
+        zh-CN: 生产环境用 RDMA 以获得性能；功能验证用 TCP。
       default: tcp
       options: [tcp, rdma]
     - name: device_name
-      label: RDMA Device
-      description: NIC device(s) for the RDMA protocol; leave empty for TCP.
+      label: { default: RDMA Device, zh-CN: RDMA 设备 }
+      description:
+        default: NIC device(s) for the RDMA protocol; leave empty for TCP.
+        zh-CN: RDMA 协议使用的网卡设备；使用 TCP 时留空。
     - name: local_buffer_size
-      label: Local Buffer Size
-      description: >-
-        Per-GPU staging buffer for the engine's own store operations
-        (e.g. 1GB).
+      label: { default: Local Buffer Size, zh-CN: 本地缓冲区大小 }
+      description:
+        default: >-
+          Per-GPU staging buffer for the engine's own store operations
+          (e.g. 1GB).
+        zh-CN: 引擎自身 store 操作所用的每 GPU 暂存缓冲区（如 1GB）。
       default: 1GB
   health_check:
     scheme: tcp
@@ -411,13 +480,19 @@
   display_name: XSKY MeshFusion
   source: partner
   icon: /static/catalog_icons/xsky.png
-  description: >-
-    XSKY MeshFusion is a KV cache layer for LLM serving. As a shared cache
-    service it runs a cache server on every worker; deployments and replicas
-    on the same node share KV cache through it, and a shared L2 storage
-    backend (e.g. XSKY's store) extends the reuse across nodes.
+  description:
+    default: >-
+      XSKY MeshFusion is a KV cache layer for LLM serving. As a shared cache
+      service it runs a cache server on every worker; deployments and replicas
+      on the same node share KV cache through it, and a shared L2 storage
+      backend (e.g. XSKY's store) extends the reuse across nodes.
+    zh-CN: >-
+      XSKY MeshFusion 是面向大模型推理的 KV Cache 层。作为共享缓存服务，它在每个 worker
+      上运行一个缓存服务端，同节点的部署与副本通过它共享 KV Cache，共享的 L2
+      存储后端（如 XSKY 的存储）把复用范围扩展到跨节点。
   links:
-    - { label: Product Page, url: "https://www.xsky.com" }
+    - label: { default: Product Page, zh-CN: 产品主页 }
+      url: "https://www.xsky.com"
   # XSKY ships the MeshFusion management console; declaring this makes
   # the service form offer the management_url link field.
   management_url: true
@@ -438,29 +513,37 @@
     cpu: 2
   managed_fields:
     - name: eviction_policy
-      label: Eviction Policy
+      label: { default: Eviction Policy, zh-CN: 淘汰策略 }
       default: LRU
       options: [LRU, IsolatedLRU, noop]
-      description: >-
-        LRU evicts least-recently-used chunks. IsolatedLRU keeps one LRU
-        list per cache salt and requires per-salt quotas via the HTTP
-        API. noop never evicts.
+      description:
+        default: >-
+          LRU evicts least-recently-used chunks. IsolatedLRU keeps one LRU
+          list per cache salt and requires per-salt quotas via the HTTP
+          API. noop never evicts.
+        zh-CN: >-
+          LRU 淘汰最近最少使用的分块。IsolatedLRU 为每个 cache salt 维护独立的 LRU
+          列表，并需通过 HTTP API 为每个 salt 设置配额。noop 从不淘汰。
     - name: eviction_trigger_watermark
-      label: Eviction Trigger Watermark
+      label: { default: Eviction Trigger Watermark, zh-CN: 淘汰触发水位 }
       type: number
       default: 0.85
       min: 0
       max: 1
       step: 0.05
-      description: Memory usage fraction (0-1) that triggers eviction.
+      description:
+        default: Memory usage fraction (0-1) that triggers eviction.
+        zh-CN: 触发淘汰的内存使用率（0-1）。
     - name: eviction_ratio
-      label: Eviction Ratio
+      label: { default: Eviction Ratio, zh-CN: 淘汰比例 }
       type: number
       default: 0.1
       min: 0
       max: 1
       step: 0.05
-      description: Fraction of memory (0-1) evicted per trigger.
+      description:
+        default: Fraction of memory (0-1) evicted per trigger.
+        zh-CN: 每次触发所淘汰的内存比例（0-1）。
   l2_adapter_flag: "--l2-adapter"
   # The store is the only L2 tier MeshFusion is deployed with; a lone
   # declared backend is what the service form preselects.
@@ -472,10 +555,16 @@
       # to off because MeshFusion Store normally configures itself in the image.
       adapter_flag_optional: true
       adapter_flag_default: false
-      adapter_flag_label: Enable L2 Adapter Flag
-      description: >-
-        XSKY MeshFusion Store distributed storage as the L2 tier; capacity
-        and durability scale with the external storage cluster.
+      adapter_flag_label:
+        default: Enable L2 Adapter Flag
+        zh-CN: 启用 L2 适配器参数
+      description:
+        default: >-
+          XSKY MeshFusion Store distributed storage as the L2 tier; capacity
+          and durability scale with the external storage cluster.
+        zh-CN: >-
+          企业级 KV Cache 扩展加速方案，激活 GPU 节点本地 DRAM 与 SSD 加速模型推理。基于端到端的
+          NVMe 技术，提供跨节点共享、本地优先读写、自动淘汰策略、主动保护 SSD 寿命等多种能力。
       # The XDFS plugin is exposed through NIXL's dynamic store adapter. Its
       # plugin-specific values belong under backend_params and are strings,
       # including max_capacity_gb.
@@ -489,7 +578,9 @@
       fields:
         # The image supplies the plugin files and capacity defaults; tenant is
         # the only service-level override exposed by the form.
-        - { name: tenant_id, label: Tenant ID, default: nixl }
+        - name: tenant_id
+          label: { default: Tenant ID, zh-CN: 租户 ID }
+          default: nixl
   common_parameters:
     - --l2-adapter
     # CLI-entry-only groups (coordinator / P2P), valid again now that the

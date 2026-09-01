@@ -1,7 +1,7 @@
 import json
 import re
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, model_validator
 
@@ -10,6 +10,53 @@ from gpustack.utils.version import pick_runtime_version
 CUSTOM_VERSION = "custom"
 """Reserved provider_version identifier: the service pins a user-supplied
 container image (config.image) instead of a declared version."""
+
+LocalizedText = Union[str, Dict[str, str]]
+"""A user-facing string, either bare or keyed by locale.
+
+A bare string is the text in every locale. A mapping carries one entry per
+locale plus the required "default" fallback:
+
+    description:
+      default: XSKY MeshFusion Store distributed storage as the L2 tier.
+      zh-CN: 以 XSKY MeshFusion Store 分布式存储作为 L2 层。
+
+Only display text is localizable. Identity a declaration renders or
+validates against — field ``name``, ``options`` values, catalog keys — stays
+verbatim, so a translated catalog produces byte-identical connector config.
+
+The API serves the mapping as declared and the UI resolves it against the
+locale the user picked, which the request carries no reliable signal of.
+"""
+
+DEFAULT_LOCALE = "default"
+"""Locale key every localized mapping must carry: what the UI falls back to
+for a locale the declaration does not translate, and the text non-UI
+consumers (catalog search, logs) read."""
+
+# BCP 47 shape, loose enough to admit any real tag: a two- or three-letter
+# primary subtag (ISO 639-1 "zh", 639-2/3 "yue") plus any number of script,
+# region or variant subtags. Its job is to catch a typo like "ZH_cn", which
+# would otherwise be text that renders for nobody — a tag it rejects costs
+# the whole provider, so it must not reject one a UI could legitimately ask
+# for.
+LOCALE_PATTERN = re.compile(r"^(default|[a-z]{2,3}(-[A-Za-z0-9]+)*)$")
+
+
+def localized_default(value: Optional[LocalizedText]) -> Optional[str]:
+    """The declaration's fallback text: the bare string, or the mapping's
+    "default" entry."""
+    if isinstance(value, dict):
+        return value.get(DEFAULT_LOCALE)
+    return value
+
+
+def localized_values(value: Optional[LocalizedText]) -> List[str]:
+    """Every translation of a localized string, for consumers matching
+    against text in a locale they do not know (catalog search)."""
+    if isinstance(value, dict):
+        return [text for text in value.values() if text]
+    return [value] if value else []
 
 
 class CacheProviderSourceEnum(str, Enum):
@@ -22,7 +69,7 @@ class CacheProviderLink(BaseModel):
     """A brand link (docs, product page, support) rendered on the
     provider's catalog card."""
 
-    label: str
+    label: LocalizedText
     url: str
 
 
@@ -276,7 +323,7 @@ class CacheProviderL2Field(BaseModel):
     """One configurable parameter of an L2 storage backend."""
 
     name: str
-    label: Optional[str] = None
+    label: Optional[LocalizedText] = None
     """UI label; defaults to name."""
 
     type: str = "string"
@@ -298,8 +345,8 @@ class CacheProviderL2Field(BaseModel):
 class CacheProviderL2Backend(BaseModel):
     """A storage backend the provider's L2 adapter can spill KV cache to."""
 
-    display_name: Optional[str] = None
-    description: Optional[str] = None
+    display_name: Optional[LocalizedText] = None
+    description: Optional[LocalizedText] = None
     icon: Optional[str] = None
     """Logo URL for brand display; the UI falls back to a generic icon."""
 
@@ -310,7 +357,7 @@ class CacheProviderL2Backend(BaseModel):
     adapter_flag_default: bool = True
     """Default state of the optional adapter-flag switch."""
 
-    adapter_flag_label: Optional[str] = None
+    adapter_flag_label: Optional[LocalizedText] = None
     """Label for the optional adapter-flag switch."""
 
     adapter_type: Optional[str] = None
@@ -342,8 +389,8 @@ class CacheProviderField(BaseModel):
     """Placeholder name; must not collide with the reserved platform
     placeholders (host/port/metrics_port/ram_size/chunk_size)."""
 
-    label: Optional[str] = None
-    description: Optional[str] = None
+    label: Optional[LocalizedText] = None
+    description: Optional[LocalizedText] = None
 
     type: str = "string"
     """Value type: "string" | "number" | "boolean" (booleans render as
@@ -368,10 +415,10 @@ class CacheProviderExternalField(BaseModel):
     (host/port) instead, not here."""
 
     name: str
-    label: Optional[str] = None
+    label: Optional[LocalizedText] = None
     """UI label; defaults to name."""
 
-    description: Optional[str] = None
+    description: Optional[LocalizedText] = None
 
     type: str = "string"
     """Value type: "string" | "number" | "boolean" | "password"."""
@@ -391,9 +438,9 @@ class CacheProviderExternalField(BaseModel):
 
 class CacheProvider(BaseModel):
     name: str
-    display_name: Optional[str] = None
+    display_name: Optional[LocalizedText] = None
     source: CacheProviderSourceEnum = CacheProviderSourceEnum.BUILT_IN
-    description: Optional[str] = None
+    description: Optional[LocalizedText] = None
     icon: Optional[str] = None
 
     links: List[CacheProviderLink] = []
@@ -852,6 +899,74 @@ def validate_injection_templates(provider: "CacheProvider") -> List[str]:
                 f"{prefix} references placeholder '{name}', which is not a "
                 "reserved placeholder, a declared field, or a key present "
                 "in every locality bucket"
+            )
+    return errors
+
+
+def _localized_violations(value: Any, where: str) -> List[str]:
+    """Check one localized slot against the mapping contract."""
+    if not isinstance(value, dict):
+        return []
+    if not value:
+        return [f"{where} is an empty locale mapping"]
+    errors: List[str] = []
+    if not value.get(DEFAULT_LOCALE):
+        # Without a fallback, a locale the declaration skips has nothing
+        # to render and the slot reads as untranslated rather than as
+        # the author's canonical text.
+        errors.append(f"{where} has no '{DEFAULT_LOCALE}' entry")
+    for locale in sorted(value):
+        if not LOCALE_PATTERN.match(locale):
+            errors.append(f"{where} has invalid locale key '{locale}'")
+    return errors
+
+
+def validate_localized_text(provider: "CacheProvider") -> List[str]:
+    """
+    Check every localizable slot of a provider against the LocalizedText
+    contract; returns human-readable violations (empty when clean).
+
+    Enforced at load time because the UI resolves these mappings itself:
+    a slot missing its "default" degrades to whatever key the fallback
+    chain lands on, differently per locale, and a typo'd locale key is
+    text that simply never appears for anyone.
+    """
+    errors: List[str] = []
+    prefix = f"'{provider.name}'"
+    errors.extend(
+        _localized_violations(provider.display_name, f"{prefix} display_name")
+    )
+    errors.extend(_localized_violations(provider.description, f"{prefix} description"))
+    for index, link in enumerate(provider.links):
+        errors.extend(
+            _localized_violations(link.label, f"{prefix} link #{index} label")
+        )
+    for field in provider.external_fields:
+        where = f"{prefix} external field '{field.name}'"
+        errors.extend(_localized_violations(field.label, f"{where} label"))
+        errors.extend(_localized_violations(field.description, f"{where} description"))
+    for field in provider.managed_fields:
+        where = f"{prefix} managed field '{field.name}'"
+        errors.extend(_localized_violations(field.label, f"{where} label"))
+        errors.extend(_localized_violations(field.description, f"{where} description"))
+    for key, backend in provider.l2_backends.items():
+        where = f"{prefix} l2 backend '{key}'"
+        errors.extend(
+            _localized_violations(backend.display_name, f"{where} display_name")
+        )
+        errors.extend(
+            _localized_violations(backend.description, f"{where} description")
+        )
+        errors.extend(
+            _localized_violations(
+                backend.adapter_flag_label, f"{where} adapter_flag_label"
+            )
+        )
+        for field in backend.fields:
+            errors.extend(
+                _localized_violations(
+                    field.label, f"{where} field '{field.name}' label"
+                )
             )
     return errors
 
