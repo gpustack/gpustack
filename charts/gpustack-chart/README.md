@@ -88,16 +88,18 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | Parameter                                | Default                           | Description                                                               |
 | ---------------------------------------- | --------------------------------- | ------------------------------------------------------------------------- |
 | debug                                    | false                             | Enable debug mode                                                         |
-| registrationToken                        | null                              | Registration token; auto-generated if null, reused across upgrades        |
+| registrationToken                        | null                              | Registration token; auto-generated if null, reused across upgrades. Required when `server.enabled` is false |
+| registrationTokenSecretName              | ""                                | Reference an existing Secret holding `GPUSTACK_TOKEN` instead of creating one |
 | defaultDataDir                           | /var/lib/gpustack                 | Host data directory path for worker nodes                                 |
 | enableWorkers                            | true                              | Enable worker nodes                                                       |
 | clusterDomain                            | cluster.local                     | Kubernetes cluster service domain suffix                                  |
-| global.hub                               | docker.io                         | Container registry host; override for private registry                    |
+| global.hub                               | docker.io                         | Container registry host for every image in the release; see private-registry note |
 | global.nodeSelector                      | {}                                | Default nodeSelector for every component; replaced by server/worker value |
 | image.repository                         | gpustack/gpustack                 | Image repo with namespace; see note below                                 |
-| image.tag                                | null                              | Image tag, defaults to chart's appVersion                                 |
+| image.tag                                | null                              | Image tag; **required** — published charts carry it, a checkout must state it |
 | image.pullPolicy                         | IfNotPresent                      | Image pull policy                                                         |
 | global.imagePullSecrets                  | [gpustack-image-pull-secret]      | List of `{name}` refs on every pod; replace to use existing Secrets       |
+| imagePullSecret.create                   | true                              | Create the canonical pull Secret; false references it without creating     |
 | imagePullSecret.credentials.registry     | docker.io                         | Registry host used when the chart creates a docker-registry Secret        |
 | imagePullSecret.credentials.username     | null                              | Registry username; creates Secret when set with password                  |
 | imagePullSecret.credentials.password     | null                              | Registry password; creates Secret when set with username                  |
@@ -171,14 +173,23 @@ worker:
 
 ### Pulling Images From a Private Registry
 
-To pull all images (gpustack server/worker, higress-plugins, and the bundled higress-core gateway/controller/pilot) from a mirrored private registry, override `global.hub`:
+To pull all images (gpustack server/worker, higress-plugins, the bundled higress-core gateway/controller/pilot, and the gpustack-operator with the Kueue / NFD / CSI charts under it) from a mirrored private registry, override `global.hub`:
 
 ```bash
 helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
   --set global.hub=myregistry.example.com
 ```
 
-This relies on Helm's global-values propagation: `global.hub` is shared with the `higress-core` sub-chart automatically, so a single setting covers every image. The `image.repository` values include the namespace (e.g. `gpustack/gpustack`), so `global.hub` only needs the registry host.
+One value covers every image. `higress-core` reads `global.hub` natively (the Istio convention it inherits), and the `gpustack-operator` chart — along with the Kueue / NFD / CSI charts vendored under it — accepts it as an alias for the `global.imageRegistry` its own tree uses.
+
+The `image.repository` values include the namespace (e.g. `gpustack/gpustack`), so `global.hub` only needs the registry host. Mirrors that flatten namespaces are not covered by it: those need the per-image `repository` values overridden individually.
+
+> `global.hub` reaches the `gpustack-operator` sub-chart tree through an alias that chart added in **0.8.7**. When this chart is pinned to an older operator — check the dependency version in `Chart.yaml` — a mirrored install with `worker.enabled=true` needs one more value, or the operator, Kueue, NFD and the CSI drivers keep pulling from Docker Hub:
+>
+> ```bash
+>   --set gpustack-operator.global.imageRegistry=myregistry.example.com
+> ```
+
 
 The chart passes `global.hub` as `GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY` to the server, ensuring that inference engine images (e.g. vLLM, llama.cpp backends) are also pulled from the same registry.
 

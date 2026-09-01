@@ -355,9 +355,15 @@ jobs:
             exit 1
           fi
           export PLUGINS_VERSION
-          # Resolve operator version from gpustack/__init__.py so the chart
-          # always ships an image tag that matches the built-in default.
-          OPERATOR_VERSION=$(python3 -c "from gpustack import __operator_version__; print(__operator_version__)")
+          # Resolve operator version from gpustack/__init__.py so the chart always
+          # depends on the operator matching the built-in default. The gpustack-operator
+          # chart keeps its version and appVersion equal, and its image tag defaults to
+          # `v<appVersion>`, so pinning the dependency version pins the image too —
+          # nothing sets an operator image tag. A Helm dependency version is SemVer,
+          # hence the stripped `v` prefix.
+          # tests/charts/test_operator_version_pin.py asserts the committed pin already
+          # agrees with this, so a stale checkout fails review rather than release.
+          OPERATOR_VERSION=$(python3 -c "from gpustack import __operator_version__; print(__operator_version__.lstrip('v'))")
           if [[ -z "${OPERATOR_VERSION}" ]]; then
             echo "Failed to resolve __operator_version__ from gpustack/__init__.py" >&2
             exit 1
@@ -367,15 +373,18 @@ jobs:
           yq -i '.appVersion = strenv(APP_VERSION)'                   charts/gpustack-chart/Chart.yaml
           yq -i '.image.tag  = strenv(IMAGE_TAG)'                     charts/gpustack-chart/values.yaml
           yq -i '.higressPlugins.image.tag = strenv(PLUGINS_VERSION)' charts/gpustack-chart/values.yaml
-          yq -i '.operator.image.tag = strenv(OPERATOR_VERSION)'      charts/gpustack-chart/values.yaml
+          yq -i '(.dependencies[] | select(.name == "gpustack-operator") | .version) = strenv(OPERATOR_VERSION)' \
+            charts/gpustack-chart/Chart.yaml
+          # yq's select() silently matches nothing if the dependency is renamed or
+          # removed, which would ship whatever version happened to be committed.
+          test "$(yq '.dependencies[] | select(.name == "gpustack-operator") | .version' charts/gpustack-chart/Chart.yaml)" \
+            = "${OPERATOR_VERSION}"
           echo "--- Chart.yaml ---"
           cat charts/gpustack-chart/Chart.yaml
           echo "--- values.yaml image stanza ---"
           yq '.image' charts/gpustack-chart/values.yaml
           echo "--- values.yaml higressPlugins.image stanza ---"
           yq '.higressPlugins.image' charts/gpustack-chart/values.yaml
-          echo "--- values.yaml operator.image stanza ---"
-          yq '.operator.image' charts/gpustack-chart/values.yaml
 
       - name: Helm lint
         run: helm lint charts/gpustack-chart

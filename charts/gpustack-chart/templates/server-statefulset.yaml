@@ -1,3 +1,4 @@
+{{- if .Values.server.enabled }}
 {{- /*
 Bootstrap admin password delivery. A pinned password is injected as an env var
 (the same channel as --bootstrap-password), so the server treats it as
@@ -85,7 +86,7 @@ spec:
           envFrom:
             {{- if .Values.worker.enabled }}
             - secretRef:
-                name: registration-token
+                name: {{ include "gpustack.registrationTokenSecretName" . }}
                 optional: false
             {{- end }}
             - secretRef:
@@ -190,3 +191,4 @@ spec:
           requests:
             storage: {{ .Values.server.dataVolume.size | default "10Gi" }}
   {{- end }}
+{{- end }}

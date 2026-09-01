@@ -165,8 +165,13 @@ __pycache__/
 # kubernetes config
 kubeconfig
 
-# Helm chart dependencies (downloaded artifacts; Chart.lock is tracked)
+# Helm chart dependencies. Both are outputs of `helm dependency update`, which
+# CI runs after patching the dependency versions, so neither is a source. Every
+# dependency is pinned to an exact version, so Chart.lock adds no resolution
+# information that Chart.yaml does not already carry — tracking it only creates
+# a second place to forget when a dependency is bumped.
 charts/gpustack-chart/charts/
+charts/gpustack-chart/Chart.lock
 
 # Others
 .claude

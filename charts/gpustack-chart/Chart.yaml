@@ -21,3 +21,14 @@ dependencies:
     version: "2.1.9"
     repository: "https://higress.io/helm-charts"
     condition: higress-core.enabled
+  # The operator's chart version and appVersion are kept equal upstream, and its
+  # image tag defaults to `v<appVersion>`, so this pin selects the operator image
+  # as well. It must track `__operator_version__` in gpustack/__init__.py —
+  # asserted by tests/charts/test_operator_version_pin.py and patched by CI.
+  #
+  # Gated on `worker.enabled`: the operator exists to run worker workloads, so a
+  # server-only install has no use for it.
+  - name: gpustack-operator
+    version: "0.8.6"
+    repository: "https://docs.gpustack.ai/gpustack-operator/charts"
+    condition: worker.enabled

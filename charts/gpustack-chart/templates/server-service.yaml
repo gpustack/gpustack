@@ -1,3 +1,4 @@
+{{- if .Values.server.enabled }}
 ---
 apiVersion: v1
 kind: Service
@@ -75,3 +76,4 @@ spec:
             path: /
             pathType: Prefix
 {{ include "ingress_tls" . | indent 2 }}
+{{- end }}

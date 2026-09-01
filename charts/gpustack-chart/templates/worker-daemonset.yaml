@@ -77,7 +77,7 @@ spec:
       containers:
         - env:
             - name: GPUSTACK_SERVER_URL
-              value: http://{{ $.Release.Name }}-server.{{ $.Release.Namespace }}.svc:{{ $.Values.server.apiPort }}
+              value: {{ include "gpustack.workerServerURL" $ | quote }}
             - name: GPUSTACK_WORKER_NAME
               valueFrom:
                 fieldRef:
@@ -110,7 +110,7 @@ spec:
             {{- end }}
           envFrom:
             - secretRef:
-                name: registration-token
+                name: {{ include "gpustack.registrationTokenSecretName" $ }}
                 optional: false
             - configMapRef:
                 name: worker-config
