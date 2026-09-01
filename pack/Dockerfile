@@ -586,7 +586,7 @@ RUN --mount=type=bind,from=rocm-base,source=/opt/rocm/share,target=/opt/rocm/sha
     fi
 EOF
 ENV AMD_VISIBLE_DEVICES="all" \
-    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/rocm"
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/rocm;/opt/rocm/lib"
 
 ## Active all Ascend devices detection,
 ## works with (default) Ascend container runtime and privileged mode.
@@ -639,7 +639,7 @@ ENV CAMBRICON_VISIBLE_DEVICES="all" \
 ##   + Disallowing privileged, try with:
 ##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro --group-add video -v /opt/hyhal:/opt/hyhal:ro -v /opt/dtk:/opt/dtk:ro -e ROCM_SMI_LIB_PATH=/opt/hyhal/lib -e ROCM_PATH=/opt/dtk ...
 ENV HYGON_VISIBLE_DEVICES="all" \
-    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/dtk;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/dtk;/etc/dmi_mig_config;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
 
 ## Active all Iluvatar devices detection,
 ## works with (default) Iluvatar container runtime and privileged mode.
