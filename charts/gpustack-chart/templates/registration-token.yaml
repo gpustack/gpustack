@@ -1,19 +1,34 @@
-{{ if .Values.worker.enabled -}}
-{{- $secret := lookup "v1" "Secret" .Release.Namespace "registration-token" -}}
+{{/*
+Skipped entirely when `registrationTokenSecretName` names an existing Secret:
+that Secret belongs to whoever created it, and the `required` below must not
+demand a token this release is not going to store.
+*/}}
+{{ if and .Values.worker.enabled (not .Values.registrationTokenSecretName) -}}
 {{- $token := "" -}}
-{{- if $secret -}}
-  {{- $token = index $secret.data "GPUSTACK_TOKEN" | b64dec -}}
-{{- else if .Values.registrationToken -}}
-  {{- $token = .Values.registrationToken -}}
+{{- if not .Values.server.enabled -}}
+  {{/*
+    Worker-only: the token belongs to the server that owns this cluster, so the
+    supplied value is authoritative and a locally generated one would be wrong.
+    It also wins over any Secret already in the namespace — a stale token from
+    an earlier registration must not silently outrank the current one.
+  */}}
+  {{- $token = required "registrationToken is required when server.enabled is false: the token is issued by the server the workers register with." .Values.registrationToken -}}
 {{- else -}}
-  {{- $token = randAlphaNum 32 -}}
+  {{- $secret := lookup "v1" "Secret" .Release.Namespace (include "gpustack.registrationTokenSecretName" .) -}}
+  {{- if $secret -}}
+    {{- $token = index $secret.data "GPUSTACK_TOKEN" | b64dec -}}
+  {{- else if .Values.registrationToken -}}
+    {{- $token = .Values.registrationToken -}}
+  {{- else -}}
+    {{- $token = randAlphaNum 32 -}}
+  {{- end -}}
 {{- end -}}
 apiVersion: v1
 data:
   GPUSTACK_TOKEN: {{ $token | b64enc }}
 kind: Secret
 metadata:
-  name: registration-token
+  name: {{ include "gpustack.registrationTokenSecretName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
 {{ include "chart_labels" . | indent 4 }}

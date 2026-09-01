@@ -1,3 +1,4 @@
+{{- if .Values.server.enabled }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -98,3 +99,4 @@ roleRef:
   kind: ClusterRole
   name: {{ .Release.Name }}-server-higress-operations
   apiGroup: rbac.authorization.k8s.io
+{{- end }}

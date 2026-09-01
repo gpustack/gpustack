@@ -1,0 +1,25 @@
+{{/*
+Value guards. Renders nothing; exists only so the checks below actually run —
+a guard placed at the top level of `_helper.tpl` is never executed, because Helm
+parses that file for its `define` blocks without rendering it.
+
+Guards that reject a configuration which installs today belong in a deliberate
+separate change, not here: two such guards currently sit dead at the top of
+`_helper.tpl` (TLS cert/key pairing, and `server.replicas > 1` requiring
+`server.externalDatabaseURL`).
+*/}}
+{{- if not (or .Values.server.enabled .Values.worker.enabled) }}
+{{- fail "Nothing to deploy: set server.enabled and/or worker.enabled to true." }}
+{{- end }}
+
+{{/*
+Credentials with nothing to write them into. `create: false` means a sibling
+release owns the Secret, so these would be silently dropped — and the pods would
+go on using whatever credentials that sibling put there, which is not what
+supplying a username and password asks for.
+*/}}
+{{- $pullSecret := .Values.imagePullSecret | default dict }}
+{{- $credentials := $pullSecret.credentials | default dict }}
+{{- if and (not $pullSecret.create) $credentials.username $credentials.password }}
+{{- fail "imagePullSecret.credentials are set but imagePullSecret.create is false: the credentials would be discarded. Drop them, or set create=true to have this release own the Secret." }}
+{{- end }}

@@ -5,6 +5,20 @@ debug: false
 # registrationToken is used to authenticate workers with the server.
 # If null, a random 32-character token is generated on first install and reused on upgrades.
 registrationToken: null
+# Name of an existing Secret carrying `GPUSTACK_TOKEN`. When set, the chart
+# references it and creates nothing — `registrationToken` above is then unused
+# and the Secret's lifecycle belongs to whoever created it.
+#
+# Two cases need this:
+#   - server and workers installed as two releases in the same namespace. The
+#     Secret name is not release-prefixed, so both releases would render the same
+#     object and the second install would be refused for not owning it. Point the
+#     second release at the first one's Secret.
+#   - a registration flow that creates the Secret out-of-band (e.g. `kubectl
+#     apply` of a manifest) and then hands the rest of the install to Helm.
+#
+# Left empty, the chart creates and references `registration-token` as before.
+registrationTokenSecretName: ""
 # Global values are propagated to all sub-charts (Helm convention).
 # `global.hub` is the container registry host (e.g. docker.io).
 # For air-gapped or private registry installs, override:
@@ -45,6 +59,14 @@ global:
 # Secrets AND provides no credentials here, the canonical Secret is not
 # created.
 imagePullSecret:
+  # Set false to reference the canonical Secret without creating it, for a
+  # second release in a namespace whose sibling release already owns it — two
+  # releases rendering the same Secret makes the second install fail on an
+  # object it does not own. The name is not release-scoped because sub-charts
+  # reach it only through `global.imagePullSecrets`, a literal in this file that
+  # cannot carry the release name. Installing the two releases into separate
+  # namespaces avoids the collision without this switch.
+  create: true
   credentials:
     registry: docker.io
     username: null
@@ -57,6 +79,18 @@ image:
   tag: null
   pullPolicy: IfNotPresent
 server:
+  # Deploy the GPUStack server (control plane) from this release.
+  #
+  # Set to false for a worker-only install: the workers register with an
+  # existing server elsewhere, addressed by `worker.serverURL`. In that mode
+  # `registrationToken` becomes required — the token belongs to the server that
+  # owns the cluster, so it can never be generated locally.
+  #
+  # A worker-only install also has no use for the gateway, which lives with the
+  # server. Helm cannot derive a sub-chart condition from another value, so turn
+  # the Higress sub-chart off explicitly alongside it:
+  #   --set server.enabled=false --set higress-core.enabled=false
+  enabled: true
   ingress:
     # example: gpustack.example.com
     hostname: null
@@ -218,6 +252,13 @@ higressPlugins:
     tag: "0.2.3.post5"
 worker:
   enabled: false
+  # Address of the GPUStack server the workers register with, e.g.
+  # `http://gpustack.example.com:30080`.
+  #
+  # Leave empty to address the server deployed by this release over its
+  # in-cluster Service. Required when `server.enabled` is false, where there is
+  # no such Service to point at.
+  serverURL: ""
   # GPU vendors for the worker nodes. Accepts a list to allow a single
   # cluster to schedule workers for multiple runtimes side-by-side.
   # Controls per-DaemonSet driver volume mounts and runtimeClassName.
@@ -274,32 +315,48 @@ worker:
   #   hostPath:
   #     path: /opt/custom/lib
   #     type: DirectoryOrCreate
-operator:
-  # Operator manages worker DaemonSet lifecycle. Automatically enabled with
-  # worker.enabled=true — setting this manually is not needed in most cases.
-  image:
-    # Operator image repository including namespace (no registry).
-    # Final reference: {global.hub}/{operator.image.repository}:{operator.image.tag}
-    # Default tag is v0.8.6 — automatically patched by CI from __operator_version__
-    # in gpustack/__init__.py at build time.
-    repository: gpustack/gpustack-operator
-    tag: null
-    pullPolicy: IfNotPresent
-  # Additional environment variables for the operator container.
-  environmentConfig: {}
-  # Node selector for the operator pod. When non-empty, REPLACES
-  # global.nodeSelector entirely (no merging). Leave empty/null to fall
-  # back to global.nodeSelector.
-  nodeSelector: {}
-  # Operator container resource limits/requests.
-  resources:
-    limits:
-      cpu: "4"
-      memory: 8Gi
-    requests:
-      cpu: 500m
-      memory: 512Mi
-  # Cert-manager TLS is auto-detected at runtime by the operator bootstrap Job
-  # (mirrors the Jinja template's apply.sh behavior). When cert-manager CRD
-  # `certificates.cert-manager.io` is found in the cluster, an Issuer and
-  # Certificate are created automatically. No user configuration needed.
+# gpustack-operator sub-chart. The operator manages worker workload lifecycle
+# and derives the Kueue scheduling chain from node hardware; it is deployed
+# whenever `worker.enabled` is true (the sub-chart's `condition` in Chart.yaml).
+#
+# The keys below are the sub-chart's own, passed through verbatim — see
+# https://github.com/gpustack/gpustack-operator/blob/main/deploy/gpustack-operator/chart/values.yaml
+# for the full list. Nothing is mirrored into a GPUStack-shaped schema on
+# purpose: a re-invented surface would have to be kept in lockstep with theirs
+# through every upgrade, and nothing would check that it was.
+#
+# Notable defaults that come from the sub-chart and are relied on here:
+#   - `image.tag` defaults to `v<appVersion>`, and its appVersion is kept equal
+#     to its chart version, so pinning the dependency version in Chart.yaml
+#     pins the operator image too. Nothing needs to state the tag.
+#   - `worker.disableApplications: ["*"]` — this chart deploys Kueue / NFD / the
+#     CSI drivers as the operator chart's own sub-charts, so the operator must
+#     not also install them at runtime. Do not narrow this: anything left off
+#     the list makes the operator install a SECOND release of the same chart,
+#     which fails on objects this release already owns.
+#   - `global.certmanager.enabled: auto` — cert-manager resources are created
+#     only when its CRDs are detected in the cluster.
+#
+# Turning an individual component off (e.g. a cluster that already runs Kueue):
+#   --set gpustack-operator.kueue.enabled=false
+gpustack-operator:
+  # Without this the sub-chart names itself `<release>-gpustack-operator`, which
+  # stutters for the usual `gpustack` release name. `operator` yields
+  # `gpustack-operator-*` — still release-prefixed, so two releases can coexist
+  # in one namespace, and identical to the names the pre-chart registration
+  # manifest used, which lets an existing install be adopted rather than
+  # replaced.
+  nameOverride: operator
+  worker:
+    # 'Recreate', not the chart-default rolling update: the operator fronts an
+    # aggregated API whose APIService is a cluster singleton, so two replicas
+    # answering during a rollout fight over it and serve mixed versions. Pausing
+    # the API through the upgrade is the lesser evil.
+    strategyType: Recreate
+    resources:
+      limits:
+        cpu: "4"
+        memory: 8Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi

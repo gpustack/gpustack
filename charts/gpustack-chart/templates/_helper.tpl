@@ -1,4 +1,11 @@
 {{/* vim: set filetype=mustache: */}}
+{{/*
+NB: these two guards never run. Helm parses `_*.tpl` for its `define` blocks but
+does not render the file, so top-level actions here are dead code — verified by
+`helm template --set server.ingress.tls.cert=x` rendering cleanly. Moving them
+to templates/validate.yaml (where guards do run) would start rejecting
+configurations that install today, so it is left as a deliberate separate change.
+*/}}
 {{- if or (and .Values.server.ingress.tls.cert (not .Values.server.ingress.tls.key)) (and .Values.server.ingress.tls.key (not .Values.server.ingress.tls.cert)) }}
 {{ fail "Both server.ingress.tls.cert and server.ingress.tls.key must be set together or both be empty." }}
 {{- end }}
@@ -102,14 +109,32 @@ output only.
 {{- end -}}
 
 
+{{/*
+Tag of this chart's own image.
+
+Required rather than defaulted to `v<appVersion>`: appVersion names the last
+release, and its image pins a gpustack-runtime that can be a whole generation
+away from the templates sitting next to it in a checkout. Pairing those two
+silently is how an install ends up with an operator that derives the Kueue
+scheduling chain one way and a worker that reads it another, surfacing as
+"Failed to find Kueue queue name on node ..." at deploy time rather than as a
+version error at install time. CI patches this value for every published chart,
+so only checkout installs have to state it — which is exactly the case that
+cannot be defaulted correctly.
+*/}}
 {{ define "gpustack.imageTag" -}}
-{{ default (printf "v%s" .Chart.AppVersion) .Values.image.tag -}}
+{{ required "image.tag is required: name the gpustack image to pair with these templates (e.g. --set image.tag=dev-<sha> from a checkout). Published charts carry it already." .Values.image.tag -}}
 {{ end -}}
 
 
 {{/*
 Resolve the registry + namespace prefix for images managed by this chart.
-Pulls from `.Values.global.hub`, trimming any trailing slash for safe printf.
+
+One key covers every image in the release, including the sub-charts': higress-core
+reads `global.hub` natively (the Istio convention it inherits), and the
+gpustack-operator chart accepts it as an alias for the `global.imageRegistry` its
+own tree uses. Anything else would leave a mirrored install pulling half its
+images from Docker Hub.
 */}}
 {{ define "gpustack.hub" -}}
 {{ trimSuffix "/" (required "global.hub is required" .Values.global.hub) -}}
@@ -144,6 +169,44 @@ GPUSTACK_WORKER_METRICS_PORT: "{{ .Values.worker.metricsPort }}"
 {{- range $key, $value := . }}
 {{ $key }}: "{{ $value }}"
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Name of the Secret carrying GPUSTACK_TOKEN.
+
+Setting `registrationTokenSecretName` points every consumer at a Secret this
+release does not own and does not create. Two cases need that:
+
+  - server and workers installed as two releases in one namespace. The Secret
+    name is not release-prefixed, so both releases would render the same object
+    and the second install would be refused for not owning it. The second
+    release references the first's Secret instead.
+  - a registration manifest that creates the Secret with kubectl and then hands
+    the install to Helm. Helm never owns it, so re-rendering cannot delete or
+    rotate the token.
+
+Left empty the chart creates and references `registration-token`, as before.
+*/}}
+{{ define "gpustack.registrationTokenSecretName" -}}
+{{ default "registration-token" .Values.registrationTokenSecretName -}}
+{{ end -}}
+
+{{/*
+Address the workers register with.
+
+`worker.serverURL` wins when set, so a worker-only install can point at a server
+outside this release. Otherwise the server deployed alongside it is addressed
+over its in-cluster Service — which only exists when `server.enabled` is true,
+hence the hard failure rather than a silently unreachable default.
+*/}}
+{{ define "gpustack.workerServerURL" -}}
+{{- if .Values.worker.serverURL -}}
+{{ .Values.worker.serverURL }}
+{{- else if .Values.server.enabled -}}
+{{ printf "http://%s-server.%s.svc:%v" .Release.Name .Release.Namespace .Values.server.apiPort }}
+{{- else -}}
+{{ fail "worker.serverURL is required when server.enabled is false: the workers have no in-release server to register with." }}
 {{- end -}}
 {{- end -}}
 
@@ -194,36 +257,4 @@ tls:
 imagePullSecrets:
 {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- end -}}
-
-
-{{/*
-Operator image tag. Requires operator.image.tag to be set (patched
-automatically by CI from gpustack/__init__.py __operator_version__).
-Fails explicitly when the tag is unset instead of falling back to a
-stale default.
-*/}}
-{{- define "gpustack.operatorImageTag" -}}
-{{- required "operator.image.tag is required (set it explicitly or rely on CI patching)" .Values.operator.image.tag -}}
-{{- end -}}
-
-
-{{/*
-Full operator image reference: {global.hub}/{operator.image.repository}:{tag}
-*/}}
-{{- define "gpustack.operatorImage" -}}
-{{ printf "%s/%s:%s" (include "gpustack.hub" .) .Values.operator.image.repository (include "gpustack.operatorImageTag" .) -}}
-{{- end -}}
-
-
-{{/*
-Effective nodeSelector for the operator pod.
-operator.nodeSelector REPLACES global.nodeSelector when non-empty.
-*/}}
-{{- define "gpustack.operatorNodeSelector" -}}
-{{- if .Values.operator.nodeSelector -}}
-{{ toYaml .Values.operator.nodeSelector }}
-{{- else if .Values.global.nodeSelector -}}
-{{ toYaml .Values.global.nodeSelector }}
-{{- end -}}
 {{- end -}}
