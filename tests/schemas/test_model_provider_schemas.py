@@ -80,6 +80,51 @@ class TestGaladriel:
         }
 
 
+class TestOrcaRouter:
+    """An OpenAI-compatible AI gateway exposed as a named provider.
+
+    OrcaRouter is not a registered ai-proxy plugin type, so the provider config
+    keeps its own ``orcarouter`` type while routing gateway traffic through the
+    plugin's ``openai`` provider, with the endpoint supplied via the generic
+    ``providerDomain`` override."""
+
+    def test_endpoints_point_at_orcarouter(self):
+        config = _config_of("orcarouter")
+
+        assert config.get_base_url() == "https://api.orcarouter.ai"
+        assert config.get_chat_url() == (
+            "https://api.orcarouter.ai",
+            "/v1/chat/completions",
+        )
+        assert config.get_model_url() == ("https://api.orcarouter.ai", "/v1/models")
+
+    def test_it_maps_to_the_openai_plugin_provider(self):
+        config = _config_of("orcarouter")
+
+        assert config.ai_proxy_provider_type() == ModelProviderTypeEnum.OPENAI.value
+
+    def test_the_endpoint_reaches_the_ai_proxy_config(self):
+        config = _config_of("orcarouter")
+
+        spec = AIProxyDefaultConfig.model_validate(
+            {
+                "id": "provider-1",
+                "type": config.ai_proxy_provider_type(),
+                **config.model_dump_with_default_override(),
+            }
+        ).model_dump(exclude_none=True)
+
+        assert spec["type"] == "openai"
+        assert spec["providerDomain"] == "api.orcarouter.ai"
+
+    def test_it_carries_no_provider_specific_fields(self):
+        config = _config_of("orcarouter")
+
+        assert config.model_dump(exclude_unset=True) == {
+            "type": ModelProviderTypeEnum.ORCAROUTER
+        }
+
+
 def _claude(**kwargs) -> ClaudeConfig:
     return ClaudeConfig(type=ModelProviderTypeEnum.CLAUDE, **kwargs)
 

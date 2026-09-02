@@ -506,7 +506,7 @@ def provider_proxy_plugin_spec(
             "id": provider_registry_name(provider.id),
             "apiTokens": provider.api_tokens,
             **provider.config.model_dump_with_default_override(),
-            "type": provider.config.type.value,
+            "type": provider.config.ai_proxy_provider_type(),
         }
         accessible_llm_model = next(
             (model.name for model in provider.models or [] if model.category == "llm"),
