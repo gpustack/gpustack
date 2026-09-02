@@ -28,6 +28,7 @@ class ClientSet:
         headers: Optional[dict] = None,
         timeout: Optional[float] = 60.0,
         enable_cache: bool = True,
+        insecure_tls: bool = False,
     ):
         if headers is None:
             headers = {}
@@ -44,11 +45,16 @@ class ClientSet:
         self.headers = headers
 
         # Default to the process-wide SSL context backed by the OS trust
-        # bundle. Loopback HTTPS keeps the existing "skip verification" behavior.
-        verify = make_ssl_context()
-        parsed_url = urlparse(base_url)
-        if parsed_url.hostname == "127.0.0.1" and parsed_url.scheme == "https":
+        # bundle. ``insecure_tls`` skips verification (verify=False) for
+        # private/self-signed server certificates. Loopback HTTPS keeps the
+        # existing "skip verification" behavior.
+        if insecure_tls:
             verify = False
+        else:
+            verify = make_ssl_context()
+            parsed_url = urlparse(base_url)
+            if parsed_url.hostname == "127.0.0.1" and parsed_url.scheme == "https":
+                verify = False
 
         use_proxy_env = use_proxy_env_for_url(base_url)
         http_client = (

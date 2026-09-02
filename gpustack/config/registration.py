@@ -54,6 +54,7 @@ def registration_client(
     server_url: str,
     registration_token: Optional[str] = None,
     wait_token_file: bool = False,
+    insecure_tls: bool = False,
 ) -> WorkerRegistrationClient:
     # if token exists, skip registration
     if registration_token is None and wait_token_file:
@@ -77,6 +78,7 @@ def registration_client(
         clientset = ClientSet(
             base_url=server_url,
             api_key=registration_token,
+            insecure_tls=insecure_tls,
         )
         return WorkerRegistrationClient(clientset.http_client)
     raise ValueError(
