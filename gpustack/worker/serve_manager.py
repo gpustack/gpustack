@@ -461,6 +461,24 @@ class ServeManager:
 
             is_main_worker = model_instance.worker_id == self._worker_id
 
+            # INITIALIZE_LATER deliberately keeps subordinate workers idle until
+            # the main worker has finished its model-file initialization.  The
+            # event handler applies the same gate before creating the subordinate
+            # workload.  Do not let the periodic reconciler mistake that expected
+            # absence for a crashed inference server in the meantime.
+            if (
+                not is_main_worker
+                and model_instance.distributed_servers.mode
+                == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                and model_instance.state
+                not in [
+                    ModelInstanceStateEnum.STARTING,
+                    ModelInstanceStateEnum.RUNNING,
+                    ModelInstanceStateEnum.ERROR,
+                ]
+            ):
+                continue
+
             # Skip if the workload is still launching.
             # Use deployment metadata name for subordinate workers (e.g., "model-f0")
             # since their workload name differs from the model instance name.
@@ -1063,20 +1081,35 @@ class ServeManager:
         if event.type == EventType.UPDATED:
             # Caching matched ERROR instances for restart handling.
             if mi.state == ModelInstanceStateEnum.ERROR:
-                model = self._get_model(mi)
-                if model.restart_on_error:
-                    self._error_model_instances[mi.id] = mi
-                    logger.trace(
-                        f"UPDATED event: cached error model instance {mi.name} for restart."
-                    )
+                # The main worker owns the model-instance state machine.  A
+                # subordinate observes the same global ERROR event, but must not
+                # independently advance it to SCHEDULED or multiple workers race
+                # to restart the same distributed deployment.
+                if is_main_worker:
+                    model = self._get_model(mi)
+                    if model.restart_on_error:
+                        self._error_model_instances[mi.id] = mi
+                        logger.trace(
+                            f"UPDATED event: cached error model instance {mi.name} for restart."
+                        )
                 return
 
             # Restart if scheduled and this is the assigned worker.
             if is_main_worker and mi.state == ModelInstanceStateEnum.SCHEDULED:
-                self._restart_model_instance(mi)
-                logger.trace(
-                    f"UPDATED event: restarted scheduled model instance {mi.name}."
-                )
+                # A burst of equivalent SCHEDULED events can arrive before the
+                # INITIALIZING update written by _start_model_instance is seen.
+                # Do not tear down the provisioning process started by the first
+                # event; its result (or ERROR state) remains authoritative.
+                if self._is_provisioning(mi):
+                    logger.trace(
+                        f"UPDATED event: model instance {mi.name} is already "
+                        "provisioning; skipped duplicate scheduled restart."
+                    )
+                else:
+                    self._restart_model_instance(mi)
+                    logger.trace(
+                        f"UPDATED event: restarted scheduled model instance {mi.name}."
+                    )
 
             # Start on subordinate worker if not started yet, or restart if failed.
             if not is_main_worker:
@@ -1858,6 +1891,10 @@ class ServeManager:
         current_time = datetime.now(timezone.utc)
         delay = min(10 * (2 ** (backoff_count - 1)), 300) if backoff_count > 0 else 0
         if backoff_count > 0 and last_restart_time:
+            if last_restart_time.tzinfo is None:
+                # API/database timestamps without an explicit offset are UTC.
+                # Normalize before subtracting from the aware current_time.
+                last_restart_time = last_restart_time.replace(tzinfo=timezone.utc)
             elapsed_time = (current_time - last_restart_time).total_seconds()
             if elapsed_time < delay:
                 logger.trace(
