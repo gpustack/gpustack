@@ -143,6 +143,30 @@ def test_restart_error_model_instance_uses_transient_backoff_count():
     )
 
 
+def test_restart_error_model_instance_accepts_naive_database_timestamp():
+    manager, _ = _build_serve_manager()
+    model_instance = new_model_instance(
+        1,
+        "restarted-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.ERROR,
+    )
+    model_instance.last_restart_time = datetime.now(timezone.utc).replace(
+        microsecond=0, tzinfo=None
+    )
+    manager._restart_backoff_counts[model_instance.id] = 1
+
+    with (
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+        patch("gpustack.worker.serve_manager.logger"),
+    ):
+        manager._restart_error_model_instance(model_instance)
+
+    update_model_instance.assert_not_called()
+
+
 def test_restart_model_instance_preserves_transient_backoff_count():
     manager, _ = _build_serve_manager()
     model_instance = new_model_instance(
@@ -445,6 +469,86 @@ def test_updated_event_error_does_not_crash_watch():
     ):
         # Must not raise.
         manager._handle_model_instance_event(Event(type=EventType.UPDATED, data=mi))
+
+
+def test_scheduled_update_does_not_restart_while_provisioning():
+    manager, _ = _build_serve_manager(worker_id=1)
+    mi = new_model_instance(
+        5,
+        "distributed-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.SCHEDULED,
+    )
+    mi.source = SourceEnum.HUGGING_FACE
+    mi.huggingface_repo_id = "Qwen/Qwen3-0.6B"
+
+    with (
+        patch.object(manager, "_is_provisioning", return_value=True),
+        patch.object(manager, "_restart_model_instance") as restart_model_instance,
+    ):
+        manager._dispatch_model_instance_event(Event(type=EventType.UPDATED, data=mi))
+
+    restart_model_instance.assert_not_called()
+
+
+def test_subordinate_does_not_schedule_global_error_restart():
+    manager, _ = _build_serve_manager(worker_id=2)
+    mi = new_model_instance(
+        5, "distributed-instance", 1, worker_id=1, state=ModelInstanceStateEnum.ERROR
+    )
+    mi.source = SourceEnum.HUGGING_FACE
+    mi.huggingface_repo_id = "Qwen/Qwen3-0.6B"
+    mi.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2,
+                worker_name="worker-2",
+                worker_ip="10.0.0.2",
+                state=ModelInstanceStateEnum.ERROR,
+            )
+        ],
+    )
+
+    with patch.object(manager, "_get_model") as get_model:
+        manager._dispatch_model_instance_event(Event(type=EventType.UPDATED, data=mi))
+
+    get_model.assert_not_called()
+    assert mi.id not in manager._error_model_instances
+
+
+def test_initialize_later_subordinate_wait_is_not_treated_as_failure():
+    manager, clientset = _build_serve_manager(worker_id=2)
+    mi = new_model_instance(
+        5,
+        "distributed-instance",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.INITIALIZING,
+    )
+    mi.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2,
+                worker_name="worker-2",
+                worker_ip="10.0.0.2",
+                state=ModelInstanceStateEnum.PENDING,
+            )
+        ],
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[mi])
+
+    with (
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch("gpustack.worker.serve_manager.get_workload") as get_workload,
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    get_workload.assert_not_called()
+    update_model_instance.assert_not_called()
 
 
 def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):
