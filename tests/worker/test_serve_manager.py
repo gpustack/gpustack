@@ -1047,3 +1047,257 @@ def test_sync_vgpu_allocation_steady_state_skips_worker_fetch():
         manager.sync_model_instances_state()
 
     clientset.workers.get.assert_not_called()
+
+
+def _restart_error_instance(manager, model_instance):
+    """Drive the error-restart path and return the patch it wrote."""
+    with (
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+        patch("gpustack.worker.serve_manager.logger"),
+    ):
+        manager._restart_error_model_instance(model_instance)
+    return update_model_instance.call_args.kwargs
+
+
+def test_restart_captures_the_first_failure_reason():
+    """The restart clears state_message, so the reason for the failure it is
+    recovering from has to be captured here or it is gone (issue #6019)."""
+    manager, _ = _build_serve_manager()
+    model_instance = new_model_instance(
+        1, "stalled-instance", 1, worker_id=1, state=ModelInstanceStateEnum.ERROR
+    )
+    model_instance.state_message = "Inference server exited or unhealthy."
+
+    patch_kwargs = _restart_error_instance(manager, model_instance)
+
+    assert patch_kwargs["state_message"] == ""
+    assert (
+        patch_kwargs["first_failure_message"] == "Inference server exited or unhealthy."
+    )
+    assert patch_kwargs["first_failure_at"] is not None
+
+
+def test_restart_does_not_overwrite_an_earlier_first_failure():
+    """Write-once per streak: later restarts in a crash loop carry secondary
+    errors, and overwriting would replace the root cause with one of them."""
+    manager, _ = _build_serve_manager()
+    model_instance = new_model_instance(
+        1, "crash-looping", 1, worker_id=1, state=ModelInstanceStateEnum.ERROR
+    )
+    model_instance.restart_count = 42
+    model_instance.last_restart_time = datetime.now(timezone.utc)
+    model_instance.first_failure_message = "zmq.error.ZMQError: Address already in use"
+    model_instance.first_failure_at = datetime.now(timezone.utc)
+    model_instance.state_message = "Connection closed by peer"
+
+    patch_kwargs = _restart_error_instance(manager, model_instance)
+
+    assert "first_failure_message" not in patch_kwargs
+    assert "first_failure_at" not in patch_kwargs
+
+
+def test_restart_without_a_message_captures_nothing():
+    """Nothing to preserve means nothing is written, so an empty reason cannot
+    mask a real one captured later in the same streak."""
+    manager, _ = _build_serve_manager()
+    model_instance = new_model_instance(
+        1, "quiet-failure", 1, worker_id=1, state=ModelInstanceStateEnum.ERROR
+    )
+    model_instance.state_message = ""
+
+    patch_kwargs = _restart_error_instance(manager, model_instance)
+
+    assert "first_failure_message" not in patch_kwargs
+    assert "first_failure_at" not in patch_kwargs
+
+
+def test_recovery_clears_the_captured_first_failure():
+    """Reaching RUNNING ends the streak, so the captured reason stops describing
+    anything in progress and must not survive into a later, unrelated failure."""
+    manager, clientset = _build_serve_manager()
+
+    model_instance = new_model_instance(
+        1, "recovered", 1, worker_id=1, state=ModelInstanceStateEnum.STARTING
+    )
+    model_instance.worker_ip = "127.0.0.1"
+    model_instance.port = 8000
+    model_instance.first_failure_message = "Inference server exited or unhealthy."
+    model_instance.first_failure_at = datetime.now(timezone.utc)
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    model = new_model(1, "test", 1, huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct")
+    model.backend = BackendEnum.VLLM
+    model.backend_version = "0.8.0"
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state="running"),
+        ),
+        patch("gpustack.worker.serve_manager.is_ready", return_value=True),
+        patch(
+            "gpustack.worker.serve_manager.get_meta_from_running_instance",
+            return_value=None,
+        ),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    patch_kwargs = update_model_instance.call_args.kwargs
+    assert patch_kwargs["state"] == ModelInstanceStateEnum.RUNNING
+    assert patch_kwargs["first_failure_message"] is None
+    assert patch_kwargs["first_failure_at"] is None
+
+
+def test_subordinate_captures_and_keeps_its_first_failure():
+    """A multi-node root cause lives on the subordinate: the main worker only
+    reports a summary built from sw.state_message, so once that is overwritten
+    by a later cascading error the true first failure is gone (issue #6019)."""
+    manager, clientset = _build_serve_manager(worker_id=2)
+
+    model_instance = new_model_instance(
+        1, "distributed", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    subordinate = ModelInstanceSubordinateWorker(
+        worker_id=2,
+        worker_name="worker-2",
+        worker_ip="10.0.0.58",
+        state=ModelInstanceStateEnum.RUNNING,
+    )
+    model_instance.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.RUN_FIRST,
+        subordinate_workers=[subordinate],
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    model = new_model(1, "test", 1, huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct")
+    model.backend = BackendEnum.VLLM
+    model.backend_version = "0.8.0"
+
+    def sync_with_workload_failure(message):
+        with (
+            patch(
+                "gpustack.worker.serve_manager.get_workload",
+                return_value=SimpleNamespace(
+                    state=WorkloadStatusStateEnum.FAILED, state_message=message
+                ),
+            ),
+            patch.object(manager, "_is_provisioning", return_value=False),
+            patch.object(manager, "_get_model", return_value=model),
+            patch.object(manager, "_update_model_instance"),
+        ):
+            manager.sync_model_instances_state()
+
+    root_cause = (
+        "zmq.error.ZMQError: Address already in use (addr='tcp://10.0.0.58:40043')"
+    )
+    sync_with_workload_failure(root_cause)
+
+    assert subordinate.first_failure_message == root_cause
+    first_seen_at = subordinate.first_failure_at
+    assert first_seen_at is not None
+
+    # A later cascading error overwrites the live message but must not touch the
+    # captured root cause: "Connection closed by peer" is the symptom, not why.
+    subordinate.state = ModelInstanceStateEnum.RUNNING
+    sync_with_workload_failure("RuntimeError: ... gloo ... Connection closed by peer")
+
+    assert subordinate.state_message == (
+        "RuntimeError: ... gloo ... Connection closed by peer"
+    )
+    assert subordinate.first_failure_message == root_cause
+    assert subordinate.first_failure_at == first_seen_at
+
+
+def test_subordinate_first_failure_is_cleared_in_initialize_later_mode():
+    """INITIALIZE_LATER marks the subordinate RUNNING at start and returns early
+    from the state sync, but the capture runs in every mode. Without an equally
+    ungated clear, a recovered subordinate carries a stale reason for the rest of
+    the instance's life."""
+    manager, clientset = _build_serve_manager(worker_id=2)
+
+    model_instance = new_model_instance(
+        1, "initialize-later", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    subordinate = ModelInstanceSubordinateWorker(
+        worker_id=2,
+        worker_name="worker-2",
+        worker_ip="10.0.0.58",
+        state=ModelInstanceStateEnum.RUNNING,
+        first_failure_message="zmq.error.ZMQError: Address already in use",
+        first_failure_at=datetime.now(timezone.utc),
+    )
+    model_instance.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[subordinate],
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    model = new_model(1, "test", 1, huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct")
+    model.backend = BackendEnum.VLLM
+    model.backend_version = "0.8.0"
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    assert subordinate.first_failure_message is None
+    assert subordinate.first_failure_at is None
+    # The clear has to be persisted, not just applied to the in-memory copy.
+    update_model_instance.assert_called_once()
+
+
+def test_healthy_subordinate_without_a_captured_failure_is_not_patched():
+    """The clear must not turn every healthy sync into a write."""
+    manager, clientset = _build_serve_manager(worker_id=2)
+
+    model_instance = new_model_instance(
+        1, "steady", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    model_instance.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2,
+                worker_name="worker-2",
+                worker_ip="10.0.0.58",
+                state=ModelInstanceStateEnum.RUNNING,
+            )
+        ],
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+
+    model = new_model(1, "test", 1, huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct")
+    model.backend = BackendEnum.VLLM
+    model.backend_version = "0.8.0"
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_update_model_instance") as update_model_instance,
+    ):
+        manager.sync_model_instances_state()
+
+    update_model_instance.assert_not_called()
