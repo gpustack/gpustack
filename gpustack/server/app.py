@@ -14,6 +14,7 @@ from gpustack.config.config import Config
 from gpustack import envs
 from gpustack.routes import ui
 from gpustack.routes.routes import api_router
+from gpustack.utils.base_path import BasePathMiddleware
 from gpustack.utils.forwarded import ForwardedHostPortMiddleware
 from gpustack.security import JWTManager
 from gpustack.gateway.utils import worker_websocket_connect_callback
@@ -47,6 +48,20 @@ def create_app(cfg: Config) -> FastAPI:
         docs_url=None if (cfg and cfg.disable_openapi_docs) else "/docs",
         redoc_url=None if (cfg and cfg.disable_openapi_docs) else "/redoc",
         openapi_url=None if (cfg and cfg.disable_openapi_docs) else "/openapi.json",
+        # Tells FastAPI where it is mounted, so the URLs it generates for the
+        # browser carry the prefix. Most visibly /docs, whose page asks for
+        # /openapi.json: without this it asks at the origin root, which under a
+        # subpath mount is the customer's own application rather than us. That is
+        # two of the five extra `location` blocks #5270's reporter had to add.
+        #
+        # It also makes routing tolerate a proxy that does *not* strip the prefix
+        # (AWS ALB cannot), because Starlette matches against the path with
+        # root_path removed. Empty string is FastAPI's own default, so the root
+        # deployment is unaffected.
+        #
+        # Paired with BasePathMiddleware below, which is what makes it safe for a
+        # proxy that *does* strip.
+        root_path=cfg.get_base_path() if cfg else "",
     )
     # Before patch_docs: it auto-mounts its own plain StaticFiles at /static
     # unless that path is already taken, and whichever mount lands first wins
@@ -73,6 +88,12 @@ def create_app(cfg: Config) -> FastAPI:
     app.include_router(api_router)
     _load_extension_plugins(app, cfg)
     exceptions.register_handlers(app)
+
+    # Added last, so it runs first: add_middleware prepends, and this one has to
+    # settle what `path` means before anything else reads it. Skipped entirely at
+    # the root, where there is no prefix to restore.
+    if base_path := app.root_path:
+        app.add_middleware(BasePathMiddleware, prefix=base_path)
 
     app.state.jwt_manager = JWTManager(cfg.jwt_secret_key)
     app.state.websocket_authenticator = BearerTokenAuthenticator()

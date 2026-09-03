@@ -940,6 +940,53 @@ class Config(WorkerConfig, BaseSettings):
         except Exception:
             return hostname
 
+    def get_base_path(self) -> str:
+        """The path prefix this server is reached at, or ``""`` at the root.
+
+        Third consumer of ``server_external_url``, and the first to look past its
+        hostname: mounting GPUStack under a customer's reverse proxy at, say,
+        ``https://example.com/gpustack/`` means every absolute URL the server
+        hands out or generates has to carry ``/gpustack``.
+
+        The prefix cannot be derived from a request. The proxy strips it before
+        forwarding, and no header carries it — ``X-Forwarded-Host`` names the
+        host, nothing names the path. The browser knows it (it is in
+        ``location.pathname``, which is why the UI needs no configuration for
+        this), but the server can only be told.
+
+        Normalised to either ``""`` or a leading-slash, no-trailing-slash path so
+        callers can concatenate without re-checking: ASGI ``root_path`` and the
+        ``Path`` attribute of a cookie both want exactly that shape.
+        """
+        if not self.server_external_url:
+            return ""
+        path = urlparse(self.server_external_url).path.strip()
+        # ``https://host`` parses to "" and ``https://host/`` to "/"; both mean
+        # the root, where a prefix would only add an empty path segment.
+        path = path.rstrip("/")
+        if not path:
+            return ""
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return path
+
+    def get_cookie_path(self) -> str:
+        """``Path`` for every cookie this server sets.
+
+        Scoped to the mount prefix so a session cookie is not offered to the rest
+        of a shared origin — under a subpath mount the customer's own application
+        is typically what sits at ``/``.
+
+        Evaluated by the browser against *its* URL, which still carries the
+        prefix the proxy stripped. So this is correct even though the server
+        never sees a prefixed path itself.
+
+        Falls back to ``"/"`` rather than ``""``: an empty ``Path`` is not a
+        valid cookie attribute, and ``/`` is what the root deployment wants
+        anyway.
+        """
+        return self.get_base_path() or "/"
+
     def get_trusted_hosts(self) -> List[str]:
         """Resolve the allowlist gating X-Forwarded-Host rewriting.
 
