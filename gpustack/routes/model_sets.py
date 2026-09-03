@@ -132,10 +132,12 @@ def filter_specs_by_gpu(
     gpu_vendors = {gpu.vendor.lower() for gpu in gpus}
 
     # Vendor variants. Now only Ascend CANN variants are supported.
+    # An unmapped SoC yields None and is left out.
     vendor_variants = {
-        get_ascend_cann_variant(gpu.arch_family).lower()
+        variant.lower()
         for gpu in gpus
         if gpu.arch_family is not None and gpu.vendor == ManufacturerEnum.ASCEND
+        if (variant := get_ascend_cann_variant(gpu.arch_family))
     }
 
     for spec in specs:
