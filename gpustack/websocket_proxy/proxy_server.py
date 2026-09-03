@@ -15,6 +15,8 @@ Test:
 """
 import logging
 import asyncio
+from dataclasses import dataclass
+from functools import partial
 from fastapi import HTTPException
 from typing import Optional, Dict, Callable, Coroutine, Any, Tuple, TypeAlias
 from urllib.parse import urlparse
@@ -23,6 +25,35 @@ from .connection_manager import BaseConnectionManager
 from .connection import AsyncIOConnection, tunnel, IOConnection
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StallPolicy:
+    """Segmented budget for bounding an upstream that stops responding.
+
+    Silence means different things before and after the first response body
+    byte, so a single idle value cannot express both: before it, silence is
+    indistinguishable from queueing or the prefill of a long prompt; after it, a
+    healthy streaming upstream emits data continuously and a gap of tens of
+    seconds means it is wedged.
+
+    The error payloads are supplied by the caller so this package stays free of
+    ``gpustack`` imports.
+    """
+
+    # Backstop on the wait for the first body byte of a streaming response.
+    ttft_timeout: float
+    # Inter-chunk budget, applied only once a streaming response has started.
+    idle_timeout: float
+    # Absolute ceiling on the whole response, and the only bound that applies
+    # while the response head has not arrived yet.
+    total_timeout: float
+    # Body of the synthesized 504 returned when the stall predates the head.
+    error_body: bytes = b'{"error":{"message":"upstream stalled"}}'
+    # Terminal frames appended when the stall happens mid-stream.
+    error_sse: bytes = (
+        b'data: {"error":{"message":"upstream stalled"}}\n\ndata: [DONE]\n\n'
+    )
 
 
 # ==================== Handler Functions ====================
@@ -173,10 +204,16 @@ async def _handle_http(
     headers: Dict[str, str],
     connection_manager: BaseConnectionManager,
     header_router: Optional[HeaderRouter] = None,
+    stall_policy: Optional[StallPolicy] = None,
 ) -> None:
     """Handle HTTP request with full URI"""
     parsed = urlparse(uri)
     host, port = await header_router(headers) if header_router else (None, 0)
+    # Only requests the header router claimed are inference requests. The same
+    # proxy port also carries internal worker APIs -- log following, for one --
+    # where a multi-minute silence is normal and a tight inter-chunk budget
+    # would cut the stream off.
+    routed_by_header = host is not None
     if host is None:
         host = parsed.hostname
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
@@ -213,7 +250,11 @@ async def _handle_http(
             client_connection,
             connection,
             request=_get_request(method, path, filtered_headers),
-            response_relay=wait_for_complete_response,
+            response_relay=partial(
+                wait_for_complete_response,
+                stall_policy=stall_policy if routed_by_header else None,
+                expect_body=method != "HEAD",
+            ),
         )
     except HTTPException as e:
         await client_connection.send_error(e.status_code, e.detail)
@@ -230,81 +271,182 @@ def _header_get(headers: list[tuple[str, str]], key: str) -> str:
     return ""
 
 
+_EVENT_STREAM_CONTENT_TYPE = 'text/event-stream'
+
+
+def _parse_response_head(head: bytes) -> Tuple[Optional[int], bool, int]:
+    """Extract ``(content_length, is_event_stream, status_code)`` from a response head."""
+    content_length: Optional[int] = None
+    is_event_stream = False
+    status_code = 0
+
+    lines = head.decode('utf-8', errors='ignore').split('\r\n')
+    status_line = lines[0].split()
+    if len(status_line) >= 2 and status_line[1].isdigit():
+        status_code = int(status_line[1])
+
+    for line in lines[1:]:
+        lowered = line.lower()
+        if lowered.startswith('content-length:'):
+            try:
+                content_length = int(line.split(':', 1)[1].strip())
+            except ValueError:
+                pass  # malformed value — fall through to chunked streaming
+        elif lowered.startswith('content-type:'):
+            is_event_stream = _EVENT_STREAM_CONTENT_TYPE in lowered
+    return content_length, is_event_stream, status_code
+
+
+async def _read_from_remote(
+    remote_reader: IOConnection, timeout: Optional[float]
+) -> bytes:
+    # Passing no timeout keeps the connection's own default bound, which is what
+    # unsegmented traffic has always used.
+    if timeout is None:
+        return await remote_reader.read()
+    return await remote_reader.read(timeout=timeout)
+
+
+async def _report_stall(
+    client_writer: IOConnection,
+    stall_policy: Optional[StallPolicy],
+    headers_sent: bool,
+    is_event_stream: bool,
+) -> None:
+    """Tell the client the upstream stopped responding.
+
+    While the head is still held back the stall can become a real status code,
+    which SDKs retry. Once it is committed the status code is fixed and the only
+    honest ending for a stream is a terminal error event -- just dropping the
+    connection is indistinguishable from a finished generation, which is the
+    symptom this exists to remove.
+    """
+    if stall_policy is None:
+        logger.debug("[Proxy] Timeout waiting for response")
+        return
+
+    try:
+        if not headers_sent:
+            logger.error(
+                "[Proxy] Upstream sent no response data in time, returning 504"
+            )
+            body = stall_policy.error_body
+            await client_writer.write(
+                b"HTTP/1.1 504 Gateway Timeout\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"Connection: close\r\n"
+                b"\r\n" + body
+            )
+        elif is_event_stream:
+            logger.error(
+                "[Proxy] Upstream stalled mid-stream, terminating the response "
+                "with an error event"
+            )
+            await client_writer.write(stall_policy.error_sse)
+        else:
+            # Nothing meaningful can be appended to a half-delivered body.
+            logger.error("[Proxy] Upstream stalled mid-response, closing")
+    except Exception as e:
+        logger.debug(f"[Proxy] Failed to report stall to client: {e}")
+
+
 async def wait_for_complete_response(  # noqa: C901
     remote_reader: IOConnection,
     client_writer: IOConnection,
+    stall_policy: Optional[StallPolicy] = None,
+    expect_body: bool = True,
 ) -> None:
     """Wait for complete HTTP response from WebSocket tunnel and forward to client.
 
     For WebSocket tunnel responses, we forward the raw response data directly without
     header filtering, as the response comes from a trusted internal source and may use
     chunked transfer encoding that would be broken by header parsing/reconstruction.
+
+    With a ``stall_policy`` the wait is segmented at the first body byte and the
+    response head is held until that byte arrives, so a stall before it becomes a
+    504 rather than a 200 that never produces data. Without one, the behavior is
+    unchanged.
     """
     if client_writer is None:
         logger.debug("[Proxy] Client writer is None")
         return
 
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + stall_policy.total_timeout if stall_policy else None
+
     pending_data = b''
+    # Response head, buffered rather than forwarded until the first body byte.
+    head: Optional[bytes] = None
     headers_sent = False
     content_length: Optional[int] = None
     body_remaining: Optional[int] = None
+    is_event_stream = False
+
+    def read_timeout() -> Optional[float]:
+        if stall_policy is None:
+            return None
+        if head is None or not is_event_stream:
+            # Either waiting for the response head, or relaying a non-streaming
+            # response: both only complete once generation does, so the absolute
+            # ceiling is the only bound that can apply without killing a
+            # legitimate long completion.
+            budget = None
+        elif not headers_sent:
+            budget = stall_policy.ttft_timeout
+        else:
+            budget = stall_policy.idle_timeout
+        remaining = max(deadline - loop.time(), 0.0)
+        return remaining if budget is None else min(budget, remaining)
 
     try:
         while True:
-            chunk = await remote_reader.read()
+            chunk = await _read_from_remote(remote_reader, read_timeout())
             if not chunk:
                 logger.debug(
                     "[Proxy] Remote connection closed while waiting for response"
                 )
+                # Flush a head that never got a body, so a response consisting of
+                # headers alone still reaches the client.
+                if head is not None and not headers_sent:
+                    await client_writer.write(head)
+                    headers_sent = True
                 break
             pending_data += chunk
 
-            # Parse headers on first chunk
-            if not headers_sent and b'\r\n\r\n' in pending_data:
-                header_end = pending_data.find(b'\r\n\r\n')
-                header_part = pending_data[:header_end].decode('utf-8', errors='ignore')
-                body_start = header_end + 4
-
-                # Look for Content-Length
-                for line in header_part.split('\r\n'):
-                    if line.lower().startswith('content-length:'):
-                        try:
-                            content_length = int(line.split(':', 1)[1].strip())
-                            body_remaining = content_length
-                        except ValueError:
-                            pass  # malformed value — fall through to chunked streaming
-                        break
-
-                # Forward headers + any body data already received
-                if body_start < len(pending_data):
-                    body_data = pending_data[body_start:]
-                    # Send headers first
-                    await client_writer.write(pending_data[:body_start])
-                    # Then send initial body
-                    if body_data:
-                        if body_remaining is not None:
-                            to_write = min(len(body_data), body_remaining)
-                            await client_writer.write(body_data[:to_write])
-                            body_remaining -= to_write
-                            pending_data = b''
-                        else:
-                            # Chunked - send and continue
-                            await client_writer.write(body_data)
-                            pending_data = b''
-                else:
-                    await client_writer.write(pending_data)
-                    pending_data = b''
-
-                headers_sent = True
-                logger.trace(
-                    f"[Proxy] Headers sent, content_length={content_length}, body_remaining={body_remaining}"
+            # Parse the head once it is complete, and hold it back.
+            if head is None and b'\r\n\r\n' in pending_data:
+                header_end = pending_data.find(b'\r\n\r\n') + 4
+                head = pending_data[:header_end]
+                pending_data = pending_data[header_end:]
+                content_length, is_event_stream, status_code = _parse_response_head(
+                    head
                 )
-
-                if body_remaining is not None and body_remaining <= 0:
+                body_remaining = content_length
+                logger.trace(
+                    f"[Proxy] Head parsed, content_length={content_length}, "
+                    f"event_stream={is_event_stream}, status={status_code}"
+                )
+                # A response that carries no body would otherwise wait out the
+                # first-byte budget and be misreported as a stall.
+                if not expect_body or content_length == 0 or status_code in (204, 304):
+                    await client_writer.write(head)
+                    headers_sent = True
                     return
+
+            if head is None or not pending_data:
+                # Head incomplete, or complete with no body byte yet: keep it
+                # buffered so a stall is still reportable as a status code.
                 continue
 
-            # Forward subsequent body data
+            if not headers_sent:
+                await client_writer.write(head)
+                headers_sent = True
+                logger.trace(
+                    f"[Proxy] Headers sent, content_length={content_length}, "
+                    f"body_remaining={body_remaining}"
+                )
+
             if body_remaining is not None:
                 to_write = min(len(pending_data), body_remaining)
                 if to_write > 0:
@@ -318,11 +460,10 @@ async def wait_for_complete_response(  # noqa: C901
                     return
             else:
                 # No Content-Length: stream until source closes (chunked encoding)
-                if pending_data:
-                    await client_writer.write(pending_data)
-                    pending_data = b''
-    except asyncio.TimeoutError:
-        logger.debug("[Proxy] Timeout waiting for response")
+                await client_writer.write(pending_data)
+                pending_data = b''
+    except (asyncio.TimeoutError, TimeoutError):
+        await _report_stall(client_writer, stall_policy, headers_sent, is_event_stream)
         return
     except Exception as e:
         logger.debug(f"[Proxy] Error waiting for complete response: {e}")
@@ -344,6 +485,7 @@ class HTTPSProxyServer:
         connection_manager_getter: ConnectionManagerGetter,
         authenticator: Optional[HeaderAuthenticator] = None,
         header_router: Optional[HeaderRouter] = None,
+        stall_policy: Optional[StallPolicy] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -351,6 +493,7 @@ class HTTPSProxyServer:
         self.connection_manager_getter = connection_manager_getter
         self.authenticator = authenticator
         self.header_router = header_router
+        self.stall_policy = stall_policy
 
     async def start(self) -> None:
         """Start the proxy server"""
@@ -452,6 +595,7 @@ class HTTPSProxyServer:
                     headers,
                     connection_manager,
                     self.header_router,
+                    self.stall_policy,
                 )
 
         except Exception as e:
