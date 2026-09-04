@@ -30,6 +30,16 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def legacy_main_log_path(log_dir: Path, model_instance_id: int) -> Path:
+    """Path of the main serve log written before v2.2.0.
+
+    Main logs were named {id}.log back then, without a restart_count segment.
+    They are treated as restart 0, which is what extract_restart_count already
+    returns for a name its pattern does not match.
+    """
+    return log_dir / f"{model_instance_id}.log"
+
+
 def extract_restart_count(filename: str) -> int:
     """Extract restart count from filename like '123.5.log'.
 
@@ -126,6 +136,11 @@ async def get_all_log_files(
     # Exclude container log files when getting main logs
     if not container:
         files = [f for f in files if '.container.' not in f.name]
+        # The glob above cannot match the pre-v2.2.0 {id}.log name, so add it
+        # explicitly. It predates every numbered file, hence goes first.
+        legacy_log = legacy_main_log_path(log_dir, model_instance_id)
+        if await asyncio.to_thread(legacy_log.exists):
+            files.insert(0, legacy_log)
 
     # When getting default container logs (no container_name),
     # exclude sidecar container logs (those with non-numeric segment after "container.").
