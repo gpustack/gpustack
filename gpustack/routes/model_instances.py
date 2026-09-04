@@ -43,6 +43,7 @@ from gpustack.schemas.models import (
     ModelInstancesPublic,
     ModelInstanceStateEnum,
     ServeLogOptionsResponse,
+    is_dp_node_per_instance,
 )
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.config.config import get_global_config
@@ -771,8 +772,22 @@ async def delete_model_instance(session: SessionDep, ctx: TenantContextDep, id: 
         not_found_message="Model instance not found",
     )
 
+    model = (
+        await Model.one_by_id(session, model_instance.model_id)
+        if model_instance.model_id is not None
+        else None
+    )
+
     try:
-        await ModelInstanceService(session).delete(model_instance)
+        # Deleting any node of a DP group tears down the whole group and lets
+        # sync_replicas rebuild it intact: a lone member (dp_rank > 0) can't
+        # self-schedule — only the rank-0 coordinator fans the group out — and a
+        # group that lost its coordinator has nothing to fan out from.
+        if model is not None and is_dp_node_per_instance(model):
+            siblings = await ModelInstance.all_by_field(session, "model_id", model.id)
+            await ModelInstanceService(session).batch_delete(siblings)
+        else:
+            await ModelInstanceService(session).delete(model_instance)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to delete model instance: {e}"
