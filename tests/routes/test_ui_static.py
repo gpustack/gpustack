@@ -3,12 +3,15 @@ import gzip
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
+from starlette.routing import Mount
 from starlette.testclient import TestClient
 
 import gpustack
+from gpustack.routes import ui as ui_routes
 from gpustack.routes.ui import (
     CACHE_FOREVER,
     CACHE_REVALIDATE,
@@ -20,6 +23,13 @@ from gpustack.routes.ui import (
 # Large enough that the real build would have emitted a .gz for it.
 BUNDLE_JS = b"console.log('bundle');\n" * 500
 SMALL_JS = b"console.log('small');\n"
+
+CONSOLE_INDEX = b"<html>console</html>"
+HELP_INDEX = b"<html>documentation home</html>"
+HELP_PAGE = b"<html>air-gapped installation</html>"
+# MkDocs emits this for the search plugin, with a .gz beside it in the offline
+# build: a plain file whose URL has no directory form.
+SEARCH_INDEX = b'{"docs": []}\n' * 500
 
 # `hack/install.sh` downloads this, and skips it when UI_DOWNLOAD=false, so a
 # checkout can legitimately lack it. Only the test that builds the real app
@@ -405,6 +415,151 @@ def test_static_mount_is_not_shadowed_by_the_docs_mount(config):
 
     assert len(static_mounts) == 1
     assert isinstance(static_mounts[0].app, PrecompressedStaticFiles)
+
+
+def _write_package_tree(root: Path, with_help: bool) -> None:
+    """A stand-in for the installed package directory ``register`` reads.
+
+    Built in a tmp_path so both cases are reachable: the documentation is an
+    optional build artifact, and a checkout that happens to have (or lack) it
+    must not decide which half of this behaviour gets tested.
+    """
+    ui_dir = root / "ui"
+    for name in ("css", "js", "static"):
+        (ui_dir / name).mkdir(parents=True)
+    (ui_dir / "index.html").write_bytes(CONSOLE_INDEX)
+
+    if not with_help:
+        return
+
+    help_dir = root / "help"
+    help_dir.mkdir()
+    (help_dir / "index.html").write_bytes(HELP_INDEX)
+    # use_directory_urls: the page is addressed as a directory.
+    page_dir = help_dir / "installation" / "air-gapped"
+    page_dir.mkdir(parents=True)
+    (page_dir / "index.html").write_bytes(HELP_PAGE)
+    (page_dir / "index.html.gz").write_bytes(gzip.compress(HELP_PAGE))
+    search_dir = help_dir / "search"
+    search_dir.mkdir()
+    (search_dir / "search_index.json").write_bytes(SEARCH_INDEX)
+    (search_dir / "search_index.json.gz").write_bytes(gzip.compress(SEARCH_INDEX))
+    assets_dir = help_dir / "assets" / "javascripts"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "bundle.bd41221c.min.js").write_bytes(BUNDLE_JS)
+
+
+@pytest.fixture
+def help_client(tmp_path, monkeypatch):
+    _write_package_tree(tmp_path, with_help=True)
+    monkeypatch.setattr(ui_routes, "PACKAGE_DIR", str(tmp_path))
+    app = FastAPI()
+    ui_routes.register(app)
+    return TestClient(app)
+
+
+@pytest.fixture
+def no_help_app(tmp_path, monkeypatch):
+    _write_package_tree(tmp_path, with_help=False)
+    monkeypatch.setattr(ui_routes, "PACKAGE_DIR", str(tmp_path))
+    app = FastAPI()
+    ui_routes.register(app)
+    return app
+
+
+@pytest.mark.parametrize("path", ["/help", "/help/"])
+def test_help_root_serves_the_documentation_index(help_client, path):
+    # Without the trailing slash the mount does not match and Starlette
+    # redirects, so both spellings have to end up at the same page.
+    response = help_client.get(path)
+
+    assert response.status_code == 200
+    assert response.content == HELP_INDEX
+
+
+def test_help_directory_url_serves_the_nested_index(help_client):
+    # What MkDocs' use_directory_urls produces: no file at this path, only a
+    # directory holding index.html.
+    response = help_client.get("/help/installation/air-gapped/")
+
+    assert response.status_code == 200
+    assert response.content == HELP_PAGE
+
+
+def test_help_directory_url_falls_through_to_the_plain_index(help_client):
+    """A directory URL is answered uncompressed even when a .gz exists inside.
+
+    The probe looks for a ``.gz`` sibling of the requested path, and a
+    directory has none — ``installation/air-gapped.gz`` is not a file — so the
+    html-mode lookup resolves index.html and serves it plain. Pinned because
+    the alternative is a silent regression in either direction: the page still
+    renders, only its size changes.
+    """
+    directory_url = help_client.get(
+        "/help/installation/air-gapped/", headers={"accept-encoding": "gzip"}
+    )
+    explicit_file = help_client.get(
+        "/help/installation/air-gapped/index.html",
+        headers={"accept-encoding": "gzip"},
+    )
+
+    assert "content-encoding" not in directory_url.headers
+    assert explicit_file.headers["content-encoding"] == "gzip"
+    assert explicit_file.content == HELP_PAGE
+
+
+def test_help_serves_the_precompressed_search_index(help_client):
+    response = help_client.get(
+        "/help/search/search_index.json", headers={"accept-encoding": "gzip"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-encoding"] == "gzip"
+    assert response.content == SEARCH_INDEX
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("/help/", CACHE_REVALIDATE),
+        ("/help/search/search_index.json", CACHE_REVALIDATE),
+        ("/help/assets/javascripts/bundle.bd41221c.min.js", CACHE_FOREVER),
+    ],
+)
+def test_help_assets_get_the_same_cache_policy_as_ui_assets(
+    help_client, path, expected
+):
+    response = help_client.get(path, headers={"accept-encoding": "gzip"})
+
+    assert response.headers["cache-control"] == expected
+
+
+def test_missing_documentation_is_not_mounted(no_help_app):
+    assert not [
+        route
+        for route in no_help_app.routes
+        if isinstance(route, Mount) and route.path == "/help"
+    ]
+
+
+@pytest.mark.parametrize("path", ["/help", "/help/", "/help/installation/"])
+def test_missing_documentation_is_a_404(no_help_app, path):
+    """An install without the docs bundle must still start and serve.
+
+    The UI is mandatory and its absence is a startup failure; the docs are an
+    optional artifact, so the only visible consequence of not having them is a
+    404 under /help.
+    """
+    response = TestClient(no_help_app).get(path)
+
+    assert response.status_code == 404
+
+
+def test_console_still_served_without_documentation(no_help_app):
+    response = TestClient(no_help_app).get("/")
+
+    assert response.status_code == 200
+    assert response.content == CONSOLE_INDEX
 
 
 @pytest.mark.parametrize(

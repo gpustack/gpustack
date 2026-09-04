@@ -409,7 +409,7 @@ class WorkerBase(WorkerCreate):
                 f"If the worker remains unresponsive for more than {reschedule_minutes:.1f} minutes, "
                 "the instances on this worker will be rescheduled automatically. "
                 "If this downtime is planned maintenance, please enable maintenance mode. "
-                "Otherwise, please <a href='https://docs.gpustack.ai/latest/troubleshooting/#view-gpustack-logs'>check the worker logs</a>."
+                "Otherwise, please <a href='/help/troubleshooting/#view-gpustack-logs'>check the worker logs</a>."
             )
             return
 
@@ -420,7 +420,7 @@ class WorkerBase(WorkerCreate):
                 "Server cannot access the "
                 f"worker's health check endpoint at {healthz_url}. "
                 "Please verify the port requirements in the "
-                "<a href='https://docs.gpustack.ai/latest/installation/requirements/#port-requirements'>documentation</a>"
+                "<a href='/help/installation/requirements/#port-requirements'>documentation</a>"
             )
             self.state = WorkerStateEnum.UNREACHABLE
             self.state_message = msg

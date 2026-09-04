@@ -1,0 +1,63 @@
+# Not a shipped artifact. This verifies the one step in pack/Dockerfile that a
+# host build cannot reach: that the documentation lands where
+# gpustack.routes.ui looks for it inside an *installed* package, and that the
+# mount then answers. Getting that path wrong is silent — the console works, and
+# only /help/ is missing.
+#
+# What it deliberately does not cover: the accelerator base images, and the docs
+# stage itself. The site here is the one hack/build-docs.sh already produced and
+# gated on the host.
+#
+# Example:
+#   bash hack/build-docs.sh --offline
+#   uv build --wheel --out-dir /tmp/gpustack-verify-wheel
+#   docker build --build-context wheel=/tmp/gpustack-verify-wheel \
+#       --file pack/Dockerfile.verify --tag gpustack-help-verify .
+#
+# A successful build is the pass: the assertions run during it.
+
+ARG PYTHON_VERSION=3.11
+
+FROM python:${PYTHON_VERSION}-slim
+
+# The wheel arrives through a named build context because .dockerignore keeps
+# dist/ out of the default one — correctly so, since the real image builds its own
+# wheel from the source it mounts.
+COPY --from=wheel *.whl /tmp/
+
+# --no-deps because this image serves static files rather than running GPUStack.
+# The mount under test needs fastapi and starlette; pulling the whole runtime
+# tree would turn a one-minute check into a long one.
+RUN <<EOF
+    set -eu
+
+    pip install --no-cache-dir --no-deps /tmp/*.whl
+    pip install --no-cache-dir fastapi httpx
+    rm -rf /tmp/*.whl
+EOF
+
+# The same placement idiom as pack/Dockerfile, which is the point of the check.
+COPY gpustack/help /tmp/help
+RUN <<EOF
+    set -eu
+
+    cp -a /tmp/help "$(pip show gpustack | grep Location: | head -n 1 | cut -d" " -f 2)/gpustack/help"
+    rm -rf /tmp/help
+EOF
+
+RUN <<EOF python3
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from gpustack.routes import ui
+
+app = FastAPI()
+ui.register(app)
+client = TestClient(app)
+
+for path in ("/help/", "/help/installation/air-gapped/", "/help/search/search_index.json"):
+    status = client.get(path).status_code
+    assert status == 200, f"{path} answered {status}"
+
+print("/help/ is served from the installed package")
+EOF
