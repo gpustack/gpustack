@@ -3,6 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
+import pytest
+
 from gpustack.schemas.models import (
     BackendEnum,
     DistributedServerCoordinateModeEnum,
@@ -13,6 +15,14 @@ from gpustack.schemas.models import (
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.serve_manager import ServeManager, _describe_workload_failure
+
+# Imported after serve_manager: it imports back from this module, so the worker
+# side has to finish loading first.
+from gpustack.routes.worker.logs import (
+    get_all_log_files,
+    get_serve_log_options,
+    resolve_restart_count,
+)
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
 from tests.utils.model import new_model, new_model_instance
 
@@ -164,6 +174,76 @@ def test_restart_model_instance_preserves_transient_backoff_count():
         manager._restart_model_instance(model_instance)
 
     assert manager._restart_backoff_counts[model_instance.id] == 1
+
+
+# --- serve log discovery across the pre-v2.2.0 {id}.log naming ---
+
+
+def _write_serve_logs(tmp_path: Path, *names: str) -> Path:
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir(parents=True)
+    for name in names:
+        (serve_dir / name).write_text("x", encoding="utf-8")
+    return serve_dir
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "on_disk, expected_main_logs, expected_restart_count",
+    [
+        # Only a pre-v2.2.0 main log: discovered, and restart 0 by convention.
+        (["1.log"], ["1.log"], 0),
+        # Legacy and numbered coexist: both kept as restart 0, legacy first.
+        (["1.log", "1.0.log"], ["1.log", "1.0.log"], 0),
+        # Numbered only: unchanged behavior.
+        (["1.5.log", "1.3.log"], ["1.3.log", "1.5.log"], 5),
+        # Container and sidecar logs never leak into the main log branch.
+        (["1.log", "1.container.0.log", "1.container.ray-head.0.log"], ["1.log"], 0),
+        # No main log at all: restart count stays unresolvable.
+        (["1.container.0.log"], [], None),
+    ],
+)
+async def test_main_log_discovery_includes_legacy_file(
+    tmp_path: Path, on_disk, expected_main_logs, expected_restart_count
+):
+    """Main logs were named {id}.log before v2.2.0, and the {id}.*.log glob
+    cannot match that name, so discovery has to add it back."""
+    serve_dir = _write_serve_logs(tmp_path, *on_disk)
+
+    files = await get_all_log_files(serve_dir, 1, container=False)
+
+    assert [f.name for f in files] == expected_main_logs
+    assert (
+        await resolve_restart_count(serve_dir, 1, previous=False)
+        == expected_restart_count
+    )
+
+
+@pytest.mark.asyncio
+async def test_serve_log_options_after_upgrade_from_legacy_naming(tmp_path: Path):
+    """The upgrade case from #5988: the only main log is the legacy one, next to
+    container logs the new worker wrote. That still yields one restart entry, and
+    the container and sidecar branches keep returning only their own files."""
+    serve_dir = _write_serve_logs(
+        tmp_path,
+        "1.log",
+        "1.container.0.log",
+        "1.container.ray-head.0.log",
+    )
+    config = SimpleNamespace(log_dir=str(tmp_path))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=config)))
+
+    response = await get_serve_log_options(request, 1)
+    container_logs = await get_all_log_files(serve_dir, 1, container=True)
+    sidecar_logs = await get_all_log_files(
+        serve_dir, 1, container=True, container_name="ray-head"
+    )
+
+    assert len(response.restarts) == 1
+    assert response.restarts[0].previous is False
+    assert response.restarts[0].containers == ["default", "ray-head"]
+    assert [f.name for f in container_logs] == ["1.container.0.log"]
+    assert [f.name for f in sidecar_logs] == ["1.container.ray-head.0.log"]
 
 
 def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path):
