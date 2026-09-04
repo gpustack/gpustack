@@ -49,6 +49,7 @@ from gpustack.worker.backends.custom import CustomServer
 from gpustack.routes.worker.logs import (
     extract_container_restart_count,
     extract_restart_count,
+    legacy_main_log_path,
 )
 from gpustack.worker.model_meta import get_meta_from_running_instance
 from gpustack.client import ClientSet
@@ -1442,6 +1443,12 @@ class ServeManager:
                 f for f in log_dir.glob(main_log_pattern) if '.container.' not in f.name
             ]
 
+            # The glob cannot match the pre-v2.2.0 {id}.log name; it takes part
+            # as restart 0.
+            legacy_log = legacy_main_log_path(log_dir, model_instance_id)
+            if legacy_log.exists():
+                all_main_logs.append(legacy_log)
+
             container_log_pattern = f"{model_instance_id}.container.*.log"
             all_container_files = list(log_dir.glob(container_log_pattern))
 
@@ -1506,7 +1513,15 @@ class ServeManager:
         """Delete all serve logs (main/container/sidecar) for a model instance id."""
         try:
             log_dir = Path(self._serve_log_dir)
-            for f in log_dir.glob(f"{model_instance_id}.*.log"):
+            files = list(log_dir.glob(f"{model_instance_id}.*.log"))
+
+            # The glob cannot match the pre-v2.2.0 {id}.log name, which a reused
+            # id would otherwise inherit.
+            legacy_log = legacy_main_log_path(log_dir, model_instance_id)
+            if legacy_log.exists():
+                files.append(legacy_log)
+
+            for f in files:
                 try:
                     f.unlink()
                     logger.info(f"Deleted serve log file: {f}")

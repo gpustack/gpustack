@@ -247,11 +247,13 @@ async def test_serve_log_options_after_upgrade_from_legacy_naming(tmp_path: Path
 
 
 def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path):
-    """Keep main/container logs for R and R-1; delete older restart_count files."""
+    """Keep main/container logs for R and R-1; delete older restart_count files.
+    A pre-v2.2.0 {id}.log counts as restart 0, so it goes with the rest."""
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir(parents=True)
     mid = 42
     for name in (
+        f"{mid}.log",
         f"{mid}.0.log",
         f"{mid}.1.log",
         f"{mid}.2.log",
@@ -276,15 +278,18 @@ def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path
 
 
 def test_cleanup_old_logs_restart_zero_purges_all(tmp_path: Path):
-    """Fresh start (restart_count 0) removes every log for the id, incl. sidecar,
-    but leaves other instances' logs and model-file download logs."""
+    """Fresh start (restart_count 0) removes every log for the id, incl. sidecar
+    and the pre-v2.2.0 {id}.log name, but leaves other instances' logs and
+    model-file download logs."""
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir(parents=True)
     mid, other = 7, 8
     for name in (
+        f"{mid}.log",
         f"{mid}.0.log",
         f"{mid}.container.1.log",
         f"{mid}.container.ray-head.0.log",
+        f"{other}.log",
         f"{other}.0.log",
         f"model_file_{mid}.download.log",
     ):
@@ -296,7 +301,25 @@ def test_cleanup_old_logs_restart_zero_purges_all(tmp_path: Path):
     manager._cleanup_old_logs(mid, 0)
 
     remaining = sorted(p.name for p in serve_dir.iterdir())
-    assert remaining == [f"{other}.0.log", f"model_file_{mid}.download.log"]
+    assert remaining == [
+        f"{other}.0.log",
+        f"{other}.log",
+        f"model_file_{mid}.download.log",
+    ]
+
+
+def test_cleanup_old_logs_keeps_legacy_main_log_as_previous_restart(tmp_path: Path):
+    """At R==1 the kept window is {1, 0}, so a legacy {id}.log survives as the
+    previous restart alongside the numbered logs."""
+    serve_dir = _write_serve_logs(tmp_path, "1.log", "1.1.log", "1.container.1.log")
+
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+
+    manager._cleanup_old_logs(1, 1)
+
+    remaining = sorted(p.name for p in serve_dir.iterdir())
+    assert remaining == ["1.1.log", "1.container.1.log", "1.log"]
 
 
 def test_permanent_teardown_purges_logs_but_restart_keeps_them(tmp_path: Path):
@@ -331,11 +354,9 @@ def test_permanent_teardown_purges_logs_but_restart_keeps_them(tmp_path: Path):
 
 def test_reap_stale_instance_purges_logs(tmp_path: Path):
     """Reaping an instance the server no longer reports (a dropped DELETED) must
-    also remove its serve logs, mirroring the DELETED handler."""
-    serve_dir = tmp_path / "serve"
-    serve_dir.mkdir(parents=True)
-    log = serve_dir / "1.container.ray-head.0.log"
-    log.write_text("x", encoding="utf-8")
+    also remove its serve logs, mirroring the DELETED handler. A reused id must
+    not inherit a legacy {id}.log either."""
+    serve_dir = _write_serve_logs(tmp_path, "1.container.ray-head.0.log", "1.log")
 
     manager, clientset = _build_serve_manager(worker_id=1)
     manager._serve_log_dir = str(serve_dir)
@@ -353,7 +374,7 @@ def test_reap_stale_instance_purges_logs(tmp_path: Path):
     ):
         manager.sync_model_instances_state()
 
-    assert not log.exists()
+    assert sorted(p.name for p in serve_dir.iterdir()) == []
 
 
 def test_reap_confirmation_skips_when_authoritative_fetch_still_has_instance():
