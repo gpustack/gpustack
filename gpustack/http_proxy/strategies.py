@@ -18,18 +18,20 @@ class LoadBalancingStrategy(ABC):
 class RoundRobinStrategy(LoadBalancingStrategy):
     def __init__(self):
         self._iterators: Dict[int, itertools.cycle] = {}
-        self._instance_lists: Dict[int, List[ModelInstance]] = {}
+        self._instance_ids: Dict[int, List[int]] = {}
 
     async def select_instance(self, instances: List[ModelInstance]) -> ModelInstance:
         if len(instances) == 0:
             raise Exception("No instances available")
         model_id = instances[0].model_id
+        instance_ids = sorted(instance.id for instance in instances)
         if (
             model_id not in self._iterators
-            or self._instance_lists[model_id] != instances
+            or self._instance_ids[model_id] != instance_ids
         ):
             logger.debug(f"Creating new iterator for model {model_id}")
-            self._iterators[model_id] = itertools.cycle(instances)
-            self._instance_lists[model_id] = instances
+            self._iterators[model_id] = itertools.cycle(instance_ids)
+            self._instance_ids[model_id] = instance_ids
 
-        return next(self._iterators[model_id])
+        next_id = next(self._iterators[model_id])
+        return next(instance for instance in instances if instance.id == next_id)
