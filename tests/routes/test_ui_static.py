@@ -19,6 +19,7 @@ from gpustack.routes.ui import (
 
 # Large enough that the real build would have emitted a .gz for it.
 BUNDLE_JS = b"console.log('bundle');\n" * 500
+BUNDLE_GZ = gzip.compress(BUNDLE_JS, mtime=0)
 SMALL_JS = b"console.log('small');\n"
 
 # `hack/install.sh` downloads this, and skips it when UI_DOWNLOAD=false, so a
@@ -35,15 +36,15 @@ def client(tmp_path):
     ``hashed.530e136d.js`` has both a .gz and a cache-busted name.
     """
     (tmp_path / "bundle.js").write_bytes(BUNDLE_JS)
-    (tmp_path / "bundle.js.gz").write_bytes(gzip.compress(BUNDLE_JS))
+    (tmp_path / "bundle.js.gz").write_bytes(BUNDLE_GZ)
     (tmp_path / "small.js").write_bytes(SMALL_JS)
     (tmp_path / "hashed.530e136d.js").write_bytes(BUNDLE_JS)
-    (tmp_path / "hashed.530e136d.js.gz").write_bytes(gzip.compress(BUNDLE_JS))
+    (tmp_path / "hashed.530e136d.js.gz").write_bytes(BUNDLE_GZ)
     # An extension mimetypes has no entry for, to exercise the type fallback.
     (tmp_path / "sourcemap.js.map").write_bytes(BUNDLE_JS)
-    (tmp_path / "sourcemap.js.map.gz").write_bytes(gzip.compress(BUNDLE_JS))
+    (tmp_path / "sourcemap.js.map.gz").write_bytes(BUNDLE_GZ)
     # A .gz with no plain sibling, which the build never produces.
-    (tmp_path / "orphan.js.gz").write_bytes(gzip.compress(BUNDLE_JS))
+    (tmp_path / "orphan.js.gz").write_bytes(BUNDLE_GZ)
 
     app = Starlette()
     app.mount("/js", PrecompressedStaticFiles(directory=tmp_path), name="js")
@@ -58,7 +59,7 @@ def test_serves_precompressed_sibling_when_gzip_accepted(client):
     # The transport decodes it, so this asserts the round trip: the browser
     # ends up with the original bundle, not the .gz wrapper.
     assert response.content == BUNDLE_JS
-    assert int(response.headers["content-length"]) == len(gzip.compress(BUNDLE_JS))
+    assert int(response.headers["content-length"]) == len(BUNDLE_GZ)
 
 
 @pytest.mark.parametrize("name", ["bundle.js", "sourcemap.js.map"])
@@ -153,7 +154,7 @@ def test_the_gz_itself_is_still_reachable_by_its_own_name(client):
     response = client.get("/js/orphan.js.gz", headers={"accept-encoding": "identity"})
 
     assert response.status_code == 200
-    assert response.content == gzip.compress(BUNDLE_JS)
+    assert response.content == BUNDLE_GZ
 
 
 @pytest.mark.parametrize("accept_encoding", ["gzip", "identity"])
@@ -228,7 +229,7 @@ def test_head_request_reports_the_compressed_length(client):
 
     assert response.status_code == 200
     assert response.headers["content-encoding"] == "gzip"
-    assert int(response.headers["content-length"]) == len(gzip.compress(BUNDLE_JS))
+    assert int(response.headers["content-length"]) == len(BUNDLE_GZ)
 
 
 def test_directory_traversal_still_blocked(client):
@@ -282,7 +283,7 @@ def test_range_request_is_consistent_with_the_encoding_it_returns(client):
     # the total is the compressed length rather than the original's. Silently
     # handing back compressed bytes described as plain JS is the failure mode
     # worth pinning.
-    compressed = gzip.compress(BUNDLE_JS)
+    compressed = BUNDLE_GZ
     assert response.status_code == 206
     assert response.headers["content-encoding"] == "gzip"
     assert response.headers["content-range"] == f"bytes 0-49/{len(compressed)}"
