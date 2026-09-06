@@ -34,4 +34,5 @@ class RoundRobinStrategy(LoadBalancingStrategy):
             self._instance_ids[model_id] = instance_ids
 
         next_id = next(self._iterators[model_id])
-        return next(instance for instance in instances if instance.id == next_id)
+        instances_by_id = {instance.id: instance for instance in instances}
+        return instances_by_id[next_id]

@@ -22,7 +22,9 @@ async def test_cycles_when_each_call_passes_fresh_objects():
     strategy = RoundRobinStrategy()
     selected = []
     for call in range(6):
-        inst = await strategy.select_instance(make_instances([1, 2, 3], restart_count=call))
+        inst = await strategy.select_instance(
+            make_instances([1, 2, 3], restart_count=call)
+        )
         selected.append(inst.id)
     assert selected == [1, 2, 3, 1, 2, 3]
 
