@@ -134,6 +134,38 @@ def _parse_allocated_accelerators(annotations: Optional[Dict[str, str]]) -> List
     return accelerators
 
 
+def _tail_lines(log_path: str, count: int, chunk_size: int = 8192) -> List[str]:
+    """The last `count` complete lines of a log file, or [] if unreadable.
+
+    Only the tail chunk is read, so adopting a log that has grown to gigabytes
+    stays cheap. Lines that cannot be trusted to be whole are dropped: the first
+    one whenever the chunk starts mid-file, and a trailing one with no newline.
+
+    Args:
+        log_path: Path to the log file.
+        count: Maximum number of lines to return.
+        chunk_size: Bytes to read from the end of the file.
+
+    Returns:
+        The trailing lines, newlines included, oldest first.
+    """
+    try:
+        with open(log_path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - chunk_size))
+            chunk = f.read()
+    except OSError:
+        return []
+
+    lines = chunk.decode('utf-8', errors='replace').splitlines(keepends=True)
+    if size > chunk_size and lines:
+        lines.pop(0)
+    if lines and not lines[-1].endswith('\n'):
+        lines.pop()
+    return lines[-count:]
+
+
 def _describe_workload_failure(workload) -> str:
     """
     Explain why a workload stopped serving, for the instance's state message.
@@ -529,6 +561,10 @@ class ServeManager:
                         # Update model instance.
                         self._update_model_instance(model_instance.id, **patch_dict)
                 continue
+
+            # The workload is alive and this worker did not necessarily start it,
+            # so reconcile the log persistence threads that belong to it.
+            self._ensure_container_log_persistence(model_instance)
 
             # Otherwise, update model instance state to RUNNING if everything is fine.
             model = self._get_model(model_instance)
@@ -1135,6 +1171,7 @@ class ServeManager:
         log_path: str,
         stop_event: threading.Event,
         token: Optional[str] = None,
+        resume: bool = False,
     ):
         """Persist container logs to local file (runs in a separate thread).
 
@@ -1151,12 +1188,21 @@ class ServeManager:
             stop_event: Event to signal thread to stop
             token: Operation token identifying a specific container in the workload.
                 If None, logs from the default (index=0) container are fetched.
+            resume: Adopt a log file a previous worker process left behind,
+                appending to it instead of rewriting it from the runtime's replay.
         """
         retry_count = 0
         first_connect = True
         # Anchor: a window of the last lines written. Matching a run of lines
         # (not one) avoids false-matching a repeated line during replay.
         anchor_window = deque(maxlen=5)
+
+        if resume:
+            # Seed the anchor from the file's own tail so this connection behaves
+            # like a reconnect. An unreadable or empty file leaves first_connect
+            # set, which is the pre-adoption behavior.
+            anchor_window.extend(_tail_lines(log_path, anchor_window.maxlen))
+            first_connect = not anchor_window
 
         while not stop_event.is_set():
             try:
@@ -1273,6 +1319,7 @@ class ServeManager:
         workload_name: str,
         restart_count: int,
         stop_event: threading.Event,
+        resume: bool = False,
     ):
         """Background thread that waits for sidecar containers to appear.
 
@@ -1285,6 +1332,8 @@ class ServeManager:
             workload_name: Workload name
             restart_count: Current restart count for log file naming
             stop_event: Event to signal thread to stop
+            resume: Append to sidecar log files left behind by a previous worker
+                process instead of rewriting them.
         """
         while not stop_event.is_set():
             try:
@@ -1297,6 +1346,7 @@ class ServeManager:
                             workload_name,
                             workload.loggable,
                             restart_count,
+                            resume=resume,
                         )
                         logger.debug(f"Sidecar discovery for {workload_name} complete")
                         return
@@ -1310,6 +1360,7 @@ class ServeManager:
         workload_name: str,
         loggable_ops: list,
         restart_count: int,
+        resume: bool = False,
     ):
         """Start additional log persistence threads for sidecar containers.
 
@@ -1321,6 +1372,8 @@ class ServeManager:
             workload_name: Workload name
             loggable_ops: List of WorkloadStatusOperation from workload.loggable
             restart_count: Current restart count for log file naming
+            resume: Append to sidecar log files left behind by a previous worker
+                process instead of rewriting them.
         """
         names = []
         for op in loggable_ops:
@@ -1336,6 +1389,7 @@ class ServeManager:
             thread = threading.Thread(
                 target=self._persist_container_logs,
                 args=(workload_name, log_path, stop_event, op.token),
+                kwargs={"resume": resume},
                 daemon=True,
                 name=f"log-persist-{workload_name}-{op.name}",
             )
@@ -1352,7 +1406,7 @@ class ServeManager:
                 f"{names}"
             )
 
-    def _start_container_log_persistence(self, mi: ModelInstance):
+    def _start_container_log_persistence(self, mi: ModelInstance, resume: bool = False):
         """Start a background thread to persist container logs.
 
         Starts a single "main" log persistence thread. The thread will
@@ -1361,6 +1415,8 @@ class ServeManager:
 
         Args:
             mi: The model instance.
+            resume: Append to log files left behind by a previous worker process
+                instead of rewriting them.
         """
 
         # Stop and clean up existing threads if any
@@ -1380,6 +1436,7 @@ class ServeManager:
         thread = threading.Thread(
             target=self._persist_container_logs,
             args=(workload_name, log_path, stop_event),
+            kwargs={"resume": resume},
             daemon=True,
             name=f"log-persist-{workload_name}",
         )
@@ -1390,6 +1447,7 @@ class ServeManager:
         discovery_thread = threading.Thread(
             target=self._discover_sidecar_logs,
             args=(mi.id, workload_name, restart_count, stop_event),
+            kwargs={"resume": resume},
             daemon=True,
             name=f"log-discover-{workload_name}",
         )
@@ -1398,6 +1456,52 @@ class ServeManager:
         self._log_persistence_threads[mi.id] = [thread, discovery_thread]
         self._log_persistence_stop_events[mi.id] = [stop_event]
         logger.debug(f"Started container log persistence thread for {mi.name}")
+
+    def _ensure_container_log_persistence(self, mi: ModelInstance):
+        """Re-attach container log persistence to an instance being adopted.
+
+        The persistence threads live in this process, so a worker restart ends
+        them while the workload it manages keeps running, and nothing else
+        brings them back: the replayed CREATED event returns early for an
+        instance that is already RUNNING. Called every sync, so it must not
+        disturb a thread that is still alive.
+
+        Args:
+            mi: The model instance.
+        """
+        threads = self._log_persistence_threads.get(mi.id) or []
+        # Only the main log thread counts. The sidecar discovery thread beside it
+        # polls forever on a single-container workload, so an any(is_alive())
+        # check would report health long after the log thread is gone.
+        if threads and threads[0].is_alive():
+            return
+
+        self._align_legacy_main_log(mi)
+        logger.info(
+            f"Re-attaching container log persistence for adopted model instance "
+            f"{mi.name}"
+        )
+        self._start_container_log_persistence(mi, resume=True)
+
+    def _align_legacy_main_log(self, mi: ModelInstance):
+        """Rename a pre-v2.2.0 main log to carry the current restart_count.
+
+        A {id}.log counts as restart 0, while the container log adoption is
+        about to create carries the instance's restart_count, so the log viewer
+        would file the two under different restarts.
+
+        Args:
+            mi: The model instance.
+        """
+        try:
+            legacy_log = legacy_main_log_path(Path(self._serve_log_dir), mi.id)
+            numbered_log = Path(self._get_numbered_log_path(mi))
+            if not legacy_log.exists() or numbered_log.exists():
+                return
+            legacy_log.rename(numbered_log)
+            logger.info(f"Renamed legacy serve log {legacy_log} to {numbered_log}")
+        except Exception as e:
+            logger.warning(f"Failed to align legacy serve log for {mi.name}: {e}")
 
     def _stop_container_log_persistence(
         self, model_instance_id: int, timeout: float = 2.0

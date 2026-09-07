@@ -49,6 +49,12 @@ def _fake_stop_event(max_waits: int = 100):
     return stop_event
 
 
+def _fake_thread(alive: bool):
+    thread = MagicMock()
+    thread.is_alive.return_value = alive
+    return thread
+
+
 def _get_workload_sequence(states):
     """side_effect for a patched get_workload. The recovery grace-poll queries
     get_workload several times per stream EOF, so once the sequence reaches its
@@ -705,6 +711,118 @@ def test_persist_container_logs_window_anchor_ignores_repeated_line(
     # Window [A,B,A,B] matches only at the end; single-line 'B' would match
     # index 1 and duplicate A,B.
     assert Path(log_path).read_text(encoding="utf-8") == "A\nB\nA\nB\nC\n"
+
+
+def test_persist_container_logs_resume_appends_to_adopted_file(tmp_path: Path):
+    """Re-attaching to a log a previous worker process wrote must append to it.
+    The runtime replays history from the start, so rewriting from that replay
+    would silently drop whatever the runtime has already rotated away."""
+    manager, _clients = _build_serve_manager()
+    adopted = tmp_path / "1.container.0.log"
+    adopted.write_text("".join(f"l{i}\n" for i in range(1, 8)), encoding="utf-8")
+    fresh = tmp_path / "2.container.0.log"
+
+    # The runtime has rotated l1 and l2 away, so its replay starts at l3 — the
+    # anchor is the file's last five lines, which the replay still carries.
+    replay = [f"l{i}\n" for i in range(3, 9)]
+    states = [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
+
+    for log_path in (adopted, fresh):
+        with (
+            patch(
+                "gpustack.worker.serve_manager.logs_workload",
+                return_value=iter(replay),
+            ),
+            patch(
+                "gpustack.worker.serve_manager.get_workload",
+                side_effect=_get_workload_sequence(states),
+            ),
+        ):
+            manager._persist_container_logs(
+                "wl", str(log_path), _fake_stop_event(), resume=True
+            )
+
+    # l1 and l2 survive even though the runtime no longer has them, and the
+    # replayed l3..l7 are not written a second time.
+    assert adopted.read_text(encoding="utf-8") == "".join(
+        f"l{i}\n" for i in range(1, 9)
+    )
+    # Nothing to resume from: behaves exactly like a first connect.
+    assert fresh.read_text(encoding="utf-8") == "".join(replay)
+
+
+def test_adoption_reattaches_container_log_persistence(tmp_path: Path):
+    """A worker restart kills the log persistence threads while the workload
+    keeps running, and the replayed CREATED event returns early for an
+    already-running instance. The periodic sync has to re-attach them, without
+    restarting the instance and without disturbing a thread still alive."""
+    manager, clientset = _build_serve_manager()
+    manager._serve_log_dir = str(_write_serve_logs(tmp_path))
+
+    model_instance = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[model_instance]
+    )
+    model = new_model(1, "test", 1, huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct")
+    model.backend = BackendEnum.VLLM
+    model.backend_version = "0.8.0"
+
+    def sync():
+        with (
+            patch(
+                "gpustack.worker.serve_manager.get_workload",
+                return_value=SimpleNamespace(state="running"),
+            ),
+            patch.object(manager, "_is_provisioning", return_value=False),
+            patch.object(manager, "_get_model", return_value=model),
+            patch.object(manager, "_start_container_log_persistence") as start_logs,
+            patch.object(manager, "_start_model_instance") as start_instance,
+        ):
+            manager.sync_model_instances_state()
+        return start_logs, start_instance
+
+    # A fresh worker process has no threads registered: re-attach, don't restart.
+    start_logs, start_instance = sync()
+    start_logs.assert_called_once_with(model_instance, resume=True)
+    start_instance.assert_not_called()
+
+    # A live main log thread is left alone, or the file it follows is truncated.
+    manager._log_persistence_threads[1] = [_fake_thread(True), _fake_thread(True)]
+    start_logs, _ = sync()
+    start_logs.assert_not_called()
+
+    # A dead main thread beside the forever-polling discovery thread re-attaches:
+    # an any(is_alive()) check would never fire here.
+    manager._log_persistence_threads[1] = [_fake_thread(False), _fake_thread(True)]
+    start_logs, _ = sync()
+    start_logs.assert_called_once_with(model_instance, resume=True)
+
+
+def test_adoption_aligns_legacy_main_log_with_restart_count(tmp_path: Path):
+    """A legacy main log counts as restart 0 while the container log adoption
+    creates is numbered with the current restart_count, so the log viewer would
+    file them under different restarts. Renaming lines them up."""
+    serve_dir = _write_serve_logs(tmp_path, "1.log")
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+
+    model_instance = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    model_instance.restart_count = 5
+
+    with patch.object(manager, "_start_container_log_persistence") as start_logs:
+        manager._ensure_container_log_persistence(model_instance)
+        # A later adoption with the target already in place must not overwrite it.
+        (serve_dir / "1.log").write_text("newer owner", encoding="utf-8")
+        manager._ensure_container_log_persistence(model_instance)
+
+    assert start_logs.call_count == 2
+    start_logs.assert_called_with(model_instance, resume=True)
+    assert sorted(p.name for p in serve_dir.iterdir()) == ["1.5.log", "1.log"]
+    assert (serve_dir / "1.5.log").read_text(encoding="utf-8") == "x"
 
 
 # --- vGPU allocation read-back (gpu_type_selector) ---
