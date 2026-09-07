@@ -3,7 +3,7 @@ Log source strategies for unified log streaming.
 
 This module provides a strategy pattern + chain of responsibility approach
 for handling different log sources (download logs, main logs, container logs),
-plus the serve log filename convention both the read and the write side parse.
+plus the serve log filename convention the read and write sides share.
 """
 
 import asyncio
@@ -19,20 +19,19 @@ logger = logging.getLogger(__name__)
 
 
 def legacy_main_log_path(log_dir: Path, model_instance_id: int) -> Path:
-    """Path of the main serve log written before v2.2.0.
+    """Path of the main serve log written before v2.2.0, named {id}.log.
 
-    Main logs were named {id}.log back then, without a restart_count segment.
-    They are treated as restart 0, which is what extract_restart_count already
-    returns for a name its pattern does not match.
+    It counts as restart 0, which is what extract_restart_count returns for a
+    name its pattern does not match.
     """
     return log_dir / f"{model_instance_id}.log"
 
 
 def existing_legacy_main_log(log_dir: Path, model_instance_id: int) -> Optional[Path]:
-    """The pre-v2.2.0 main serve log for an instance, or None if it is not there.
+    """The pre-v2.2.0 main serve log for an instance, or None if absent.
 
-    The {id}.*.log glob both sides use cannot match {id}.log, so every place
-    that walks main logs has to look this one up separately.
+    The {id}.*.log glob cannot match {id}.log, so every place that walks main
+    logs looks this one up separately.
     """
     path = legacy_main_log_path(log_dir, model_instance_id)
     return path if path.exists() else None
