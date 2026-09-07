@@ -2,11 +2,13 @@
 Log source strategies for unified log streaming.
 
 This module provides a strategy pattern + chain of responsibility approach
-for handling different log sources (download logs, main logs, container logs).
+for handling different log sources (download logs, main logs, container logs),
+plus the serve log filename convention both the read and the write side parse.
 """
 
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import AsyncGenerator, Callable, List, Optional
@@ -14,6 +16,84 @@ from typing import AsyncGenerator, Callable, List, Optional
 from gpustack.utils import file
 
 logger = logging.getLogger(__name__)
+
+
+def legacy_main_log_path(log_dir: Path, model_instance_id: int) -> Path:
+    """Path of the main serve log written before v2.2.0.
+
+    Main logs were named {id}.log back then, without a restart_count segment.
+    They are treated as restart 0, which is what extract_restart_count already
+    returns for a name its pattern does not match.
+    """
+    return log_dir / f"{model_instance_id}.log"
+
+
+def existing_legacy_main_log(log_dir: Path, model_instance_id: int) -> Optional[Path]:
+    """The pre-v2.2.0 main serve log for an instance, or None if it is not there.
+
+    The {id}.*.log glob both sides use cannot match {id}.log, so every place
+    that walks main logs has to look this one up separately.
+    """
+    path = legacy_main_log_path(log_dir, model_instance_id)
+    return path if path.exists() else None
+
+
+def extract_restart_count(filename: str) -> int:
+    """Extract restart count from filename like '123.5.log'.
+
+    Args:
+        filename: Log filename in format {id}.{restart_count}.log
+
+    Returns:
+        Restart count as integer, or 0 if pattern doesn't match
+    """
+    match = re.match(r'\d+\.(\d+)\.log', filename)
+    return int(match.group(1)) if match else 0
+
+
+def extract_container_restart_count(filename: str) -> int:
+    """Extract restart count from container log filename.
+
+    Args:
+        filename: Log filename in format {id}.container.{restart_count}.log
+
+    Returns:
+        Restart count as integer, or 0 if pattern doesn't match
+    """
+    match = re.match(r'\d+\.container\.(\d+)\.log', filename)
+    return int(match.group(1)) if match else 0
+
+
+def extract_sidecar_container_restart_count(filename: str) -> int:
+    """Extract restart count from sidecar container log filename.
+
+    Args:
+        filename: Log filename in format {id}.container.{name}.{restart_count}.log
+
+    Returns:
+        Restart count as integer, or 0 if pattern doesn't match
+    """
+    match = re.match(r'\d+\.container\.[^.]+\.(\d+)\.log', filename)
+    return int(match.group(1)) if match else 0
+
+
+def extract_sidecar_container_name(filename: str) -> str:
+    """Extract container name from sidecar container log filename.
+
+    Args:
+        filename: Log filename in format {id}.container.{name}.{restart_count}.log
+
+    Returns:
+        Container name as string, or empty string if pattern doesn't match
+    """
+    match = re.match(r'\d+\.container\.([^.]+)\.\d+\.log', filename)
+    if not match:
+        return ""
+    name = match.group(1)
+    # Exclude pure numeric names (those are default container restart counts)
+    if name.isdigit():
+        return ""
+    return name
 
 
 async def has_log_content(log_file: Path) -> bool:
