@@ -5,6 +5,11 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
+from gpustack.routes.worker.logs import (
+    get_all_log_files,
+    get_serve_log_options,
+    resolve_restart_count,
+)
 from gpustack.schemas.models import (
     BackendEnum,
     DistributedServerCoordinateModeEnum,
@@ -14,14 +19,13 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.server.bus import Event, EventType
-from gpustack.worker.serve_manager import ServeManager, _describe_workload_failure
-
-# Imported after serve_manager: it imports back from this module, so the worker
-# side has to finish loading first.
-from gpustack.routes.worker.logs import (
-    get_all_log_files,
-    get_serve_log_options,
-    resolve_restart_count,
+from gpustack.worker.serve_manager import (
+    _LOG_RESUME_SKIP_LIMIT,
+    _LOG_TAIL_CHUNK_SIZE,
+    ServeManager,
+    _describe_workload_failure,
+    _LogPersistence,
+    _tail_lines,
 )
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
 from tests.utils.model import new_model, new_model_instance
@@ -53,6 +57,14 @@ def _fake_thread(alive: bool):
     thread = MagicMock()
     thread.is_alive.return_value = alive
     return thread
+
+
+def _log_persistence(main_alive: bool):
+    """A log persistence generation whose main thread is alive or not, with the
+    forever-polling sidecar discovery thread alive beside it either way."""
+    persistence = _LogPersistence(MagicMock(), _fake_thread(main_alive))
+    persistence.add_aux_thread(_fake_thread(True))
+    return persistence
 
 
 def _get_workload_sequence(states):
@@ -751,6 +763,103 @@ def test_persist_container_logs_resume_appends_to_adopted_file(tmp_path: Path):
     assert fresh.read_text(encoding="utf-8") == "".join(replay)
 
 
+@pytest.mark.parametrize(
+    "adopted_tail, replayed_tail",
+    [
+        # A progress bar is one streamed line carrying bare '\r'. Rebuilding the
+        # anchor with str.splitlines() would break it into three pieces that can
+        # never equal one streamed item, and the skip would then swallow the
+        # whole live stream for as long as the container runs.
+        (
+            "shards:  0%\rshards: 50%\rshards: 100%\n",
+            "shards:  0%\rshards: 50%\rshards: 100%\n",
+        ),
+        # A worker killed mid-write leaves a fragment. The runtime replays that
+        # line whole, so the fragment has to go or the two would be joined.
+        ("INFO star", "INFO starting engine\n"),
+    ],
+)
+def test_persist_container_logs_resume_matches_the_runtime_line_framing(
+    tmp_path: Path, adopted_tail, replayed_tail
+):
+    """The anchor is compared against streamed items, so it has to be rebuilt on
+    the same '\\n' framing the runtime uses."""
+    manager, _clients = _build_serve_manager()
+    log_path = tmp_path / "1.container.0.log"
+    head = "".join(f"l{i}\n" for i in range(1, 8))
+    log_path.write_text(head + adopted_tail, encoding="utf-8")
+
+    # The runtime rotated l1 and l2 away but still carries the anchor window.
+    replay = [f"l{i}\n" for i in range(3, 8)] + [replayed_tail, "l8-NEW\n"]
+    states = [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            return_value=iter(replay),
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=_get_workload_sequence(states),
+        ),
+    ):
+        manager._persist_container_logs(
+            "wl", str(log_path), _fake_stop_event(), resume=True
+        )
+
+    # Read as bytes: universal newlines would rewrite the bare '\r' this case
+    # is about, hiding whether it survived the round trip.
+    written = log_path.read_bytes().decode("utf-8")
+    assert written == head + replayed_tail + "l8-NEW\n"
+
+
+def test_persist_container_logs_resume_gives_up_on_an_unmatchable_anchor(
+    tmp_path: Path,
+):
+    """A followed stream never reaches EOF while the container lives, so an
+    anchor the runtime cannot replay must not skip the live stream forever."""
+    manager, _clients = _build_serve_manager()
+    log_path = tmp_path / "1.container.0.log"
+    log_path.write_text("gone-1\ngone-2\n", encoding="utf-8")
+
+    # The runtime replays a different container generation entirely.
+    streams = [
+        iter(f"new-{i}\n" for i in range(_LOG_RESUME_SKIP_LIMIT + 10)),
+        iter(["new-0\n", "new-1\n"]),
+    ]
+    states = [
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+    ]
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=lambda **kwargs: streams.pop(0),
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=_get_workload_sequence(states),
+        ),
+    ):
+        manager._persist_container_logs(
+            "wl", str(log_path), _fake_stop_event(), resume=True
+        )
+
+    # Gave up mid-stream and rewrote on the next connection.
+    assert log_path.read_text(encoding="utf-8") == "new-0\nnew-1\n"
+
+
+def test_tail_lines_reads_only_the_end_of_a_large_file(tmp_path: Path):
+    """The chunked read must not hand back the line the chunk boundary cut."""
+    log_path = tmp_path / "big.log"
+    lines = [f"line-{i:06d}" + "x" * 80 + "\n" for i in range(1000)]
+    log_path.write_text("".join(lines), encoding="utf-8")
+
+    assert log_path.stat().st_size > _LOG_TAIL_CHUNK_SIZE
+    assert _tail_lines(str(log_path), 5) == lines[-5:]
+
+
 def test_adoption_reattaches_container_log_persistence(tmp_path: Path):
     """A worker restart kills the log persistence threads while the workload
     keeps running, and the replayed CREATED event returns early for an
@@ -788,16 +897,86 @@ def test_adoption_reattaches_container_log_persistence(tmp_path: Path):
     start_logs.assert_called_once_with(model_instance, resume=True)
     start_instance.assert_not_called()
 
-    # A live main log thread is left alone, or the file it follows is truncated.
-    manager._log_persistence_threads[1] = [_fake_thread(True), _fake_thread(True)]
+    # A live main log thread is left alone: a second one would interleave its
+    # appends into the same file.
+    manager._log_persistence[1] = _log_persistence(main_alive=True)
     start_logs, _ = sync()
     start_logs.assert_not_called()
 
     # A dead main thread beside the forever-polling discovery thread re-attaches:
-    # an any(is_alive()) check would never fire here.
-    manager._log_persistence_threads[1] = [_fake_thread(False), _fake_thread(True)]
+    # a check that folded the two together would never fire here.
+    manager._log_persistence[1] = _log_persistence(main_alive=False)
     start_logs, _ = sync()
     start_logs.assert_called_once_with(model_instance, resume=True)
+
+
+def test_stop_container_log_persistence_tears_down_the_whole_generation():
+    """The main thread is tracked apart from the sidecar ones so adoption can key
+    off it alone; stopping still has to signal and join every one of them."""
+    manager, _clients = _build_serve_manager()
+    main_stop_event, sidecar_stop_event = MagicMock(), MagicMock()
+    main_log_thread, sidecar_thread = _fake_thread(True), _fake_thread(True)
+    persistence = _LogPersistence(main_stop_event, main_log_thread)
+    persistence.add_aux_thread(sidecar_thread, sidecar_stop_event)
+    manager._log_persistence[1] = persistence
+
+    manager._stop_container_log_persistence(1)
+
+    main_stop_event.set.assert_called_once()
+    sidecar_stop_event.set.assert_called_once()
+    main_log_thread.join.assert_called_once_with(timeout=2.0)
+    sidecar_thread.join.assert_called_once_with(timeout=2.0)
+    assert manager._log_persistence == {}
+
+    # A sidecar discovered after teardown began is signalled, not orphaned.
+    late_stop_event = MagicMock()
+    persistence.add_aux_thread(_fake_thread(True), late_stop_event)
+    late_stop_event.set.assert_called_once()
+
+
+def test_starting_log_persistence_retires_the_previous_generation(tmp_path: Path):
+    """Starts arrive from both the watch thread and the periodic sync thread. If
+    the registry swap and the teardown of the generation it replaces were not one
+    critical section, the loser's threads would keep following the container with
+    nothing left able to signal them."""
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(_write_serve_logs(tmp_path))
+    model_instance = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+
+    retire = manager._retire_log_persistence
+    held_while_retiring = []
+
+    def probe_lock(model_instance_id, timeout=2.0):
+        # A non-reentrant lock refuses a second acquire from its own holder, so
+        # failing to take it here is what proves the caller is inside the
+        # critical section rather than about to enter one.
+        acquired = manager._log_persistence_lock.acquire(blocking=False)
+        if acquired:
+            manager._log_persistence_lock.release()
+        held_while_retiring.append(not acquired)
+        return retire(model_instance_id, timeout)
+
+    with (
+        patch("gpustack.worker.serve_manager.logs_workload", return_value=iter([])),
+        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch.object(manager, "_retire_log_persistence", side_effect=probe_lock),
+    ):
+        manager._start_container_log_persistence(model_instance)
+        first = manager._log_persistence[1]
+        manager._start_container_log_persistence(model_instance)
+        second = manager._log_persistence[1]
+
+        assert held_while_retiring == [True, True]
+        assert first is not second
+        assert first.stop_event.is_set()
+        assert not second.stop_event.is_set()
+
+        manager._stop_container_log_persistence(1)
+
+    assert second.stop_event.is_set()
+    assert manager._log_persistence == {}
 
 
 def test_adoption_aligns_legacy_main_log_with_restart_count(tmp_path: Path):

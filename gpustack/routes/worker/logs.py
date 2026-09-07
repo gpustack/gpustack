@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,79 +22,16 @@ from gpustack.worker.log_sources import (
     DownloadLogSource,
     LogSourceChain,
     MainLogSource,
+    existing_legacy_main_log,
+    extract_container_restart_count,
+    extract_restart_count,
+    extract_sidecar_container_name,
+    extract_sidecar_container_restart_count,
 )
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
-
-
-def legacy_main_log_path(log_dir: Path, model_instance_id: int) -> Path:
-    """Path of the main serve log written before v2.2.0.
-
-    Main logs were named {id}.log back then, without a restart_count segment.
-    They are treated as restart 0, which is what extract_restart_count already
-    returns for a name its pattern does not match.
-    """
-    return log_dir / f"{model_instance_id}.log"
-
-
-def extract_restart_count(filename: str) -> int:
-    """Extract restart count from filename like '123.5.log'.
-
-    Args:
-        filename: Log filename in format {id}.{restart_count}.log
-
-    Returns:
-        Restart count as integer, or 0 if pattern doesn't match
-    """
-    match = re.match(r'\d+\.(\d+)\.log', filename)
-    return int(match.group(1)) if match else 0
-
-
-def extract_container_restart_count(filename: str) -> int:
-    """Extract restart count from container log filename.
-
-    Args:
-        filename: Log filename in format {id}.container.{restart_count}.log
-
-    Returns:
-        Restart count as integer, or 0 if pattern doesn't match
-    """
-    match = re.match(r'\d+\.container\.(\d+)\.log', filename)
-    return int(match.group(1)) if match else 0
-
-
-def extract_sidecar_container_restart_count(filename: str) -> int:
-    """Extract restart count from sidecar container log filename.
-
-    Args:
-        filename: Log filename in format {id}.container.{name}.{restart_count}.log
-
-    Returns:
-        Restart count as integer, or 0 if pattern doesn't match
-    """
-    match = re.match(r'\d+\.container\.[^.]+\.(\d+)\.log', filename)
-    return int(match.group(1)) if match else 0
-
-
-def extract_sidecar_container_name(filename: str) -> str:
-    """Extract container name from sidecar container log filename.
-
-    Args:
-        filename: Log filename in format {id}.container.{name}.{restart_count}.log
-
-    Returns:
-        Container name as string, or empty string if pattern doesn't match
-    """
-    match = re.match(r'\d+\.container\.([^.]+)\.\d+\.log', filename)
-    if not match:
-        return ""
-    name = match.group(1)
-    # Exclude pure numeric names (those are default container restart counts)
-    if name.isdigit():
-        return ""
-    return name
 
 
 async def get_all_log_files(
@@ -131,16 +67,18 @@ async def get_all_log_files(
         pattern = f"{model_instance_id}.*.log"
         extract_fn = extract_restart_count
 
-    files = await asyncio.to_thread(lambda: list(log_dir.glob(pattern)))
-
-    # Exclude container log files when getting main logs
-    if not container:
+    def list_candidates() -> List[Path]:
+        files = list(log_dir.glob(pattern))
+        if container:
+            return files
+        # Exclude container log files when getting main logs.
         files = [f for f in files if '.container.' not in f.name]
-        # The glob above cannot match the pre-v2.2.0 {id}.log name, so add it
-        # explicitly. It predates every numbered file, hence goes first.
-        legacy_log = legacy_main_log_path(log_dir, model_instance_id)
-        if await asyncio.to_thread(legacy_log.exists):
-            files.insert(0, legacy_log)
+        # The glob cannot match the pre-v2.2.0 {id}.log name, so look it up
+        # separately. It predates every numbered file, hence goes first.
+        legacy_log = existing_legacy_main_log(log_dir, model_instance_id)
+        return [legacy_log] + files if legacy_log else files
+
+    files = await asyncio.to_thread(list_candidates)
 
     # When getting default container logs (no container_name),
     # exclude sidecar container logs (those with non-numeric segment after "container.").
@@ -190,8 +128,9 @@ def restart_entries_from_main_log_files(
     The highest restart_count maps to ``previous=False`` (current);
     the second highest maps to ``previous=True``.
 
-    If multiple files share a restart_count, use the lexicographically smallest
-    name as the representative path for stat.
+    When several files share a restart_count -- a pre-v2.2.0 {id}.log next to a
+    {id}.0.log -- the restart started when the oldest of them did, so take the
+    earliest timestamp rather than picking a representative by name.
 
     Args:
         files: Main log file paths.
@@ -205,12 +144,13 @@ def restart_entries_from_main_log_files(
     sorted_counts = sorted(by_count.keys(), reverse=True)
     entries: List[ModelInstanceLogRestartEntry] = []
     for i, rc in enumerate(sorted_counts):
-        paths = sorted(by_count[rc], key=lambda p: p.name)
-        path = paths[0]
-        try:
-            started_at = _path_started_at_utc(path)
-        except OSError:
-            started_at = None
+        timestamps = []
+        for path in by_count[rc]:
+            try:
+                timestamps.append(_path_started_at_utc(path))
+            except OSError:
+                continue
+        started_at = min(timestamps, default=None)
         containers = (
             sidecar_names_by_restart.get(rc, []) if sidecar_names_by_restart else []
         )
