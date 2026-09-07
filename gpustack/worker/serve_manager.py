@@ -81,11 +81,14 @@ _WORKLOAD_FAILED_MESSAGE = "Inference server exited or unhealthy."
 # EOF; beyond that gpustack marks it ERROR and takes over recovery.
 LOG_RECONNECT_GRACE_SECONDS = envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL + 2
 
-# Bytes read from the end of a log file when seeding a resumed anchor.
+# Tail read when seeding a resumed anchor; widened up to the max for a record
+# longer than one read.
 _LOG_TAIL_CHUNK_SIZE = 8192
+_LOG_TAIL_MAX_READ = 1 << 20
 
-# Replayed lines a resumed anchor may skip before giving up and rewriting.
-_LOG_RESUME_SKIP_LIMIT = 100_000
+# How long a seeded anchor may hold back a followed stream before rewriting.
+# A line count cannot bound this: live output reaches the same skip as replay.
+_LOG_RESUME_SKIP_TIMEOUT = 30.0
 
 # Global lock for port assignment to avoid pickle serialization issues
 _port_lock = threading.Lock()
@@ -144,11 +147,9 @@ def _parse_allocated_accelerators(annotations: Optional[Dict[str, str]]) -> List
 def _tail_lines(log_path: str, count: int) -> List[str]:
     """The last `count` complete lines of a log file, or [] if unreadable.
 
-    Only the tail chunk is read, so adopting a log that has grown to gigabytes
-    stays cheap. Splitting on '\\n' alone is what makes the result comparable to
-    the container runtime's log stream, which frames on '\\n' too:
-    str.splitlines() would also split on '\\r', so a single progress-bar line
-    would become several pieces that can never match one streamed item.
+    Splits on '\\n' alone to match the runtime's log framing: str.splitlines()
+    also splits on '\\r', so one progress-bar line would become several pieces
+    that can never equal one streamed line.
 
     Args:
         log_path: Path to the log file.
@@ -161,28 +162,31 @@ def _tail_lines(log_path: str, count: int) -> List[str]:
         with open(log_path, 'rb') as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
-            f.seek(max(0, size - _LOG_TAIL_CHUNK_SIZE))
-            chunk = f.read()
+            read_size = _LOG_TAIL_CHUNK_SIZE
+            while True:
+                f.seek(max(0, size - read_size))
+                text = f.read().decode('utf-8', errors='replace')
+
+                # Drop whatever follows the final '\n', and the first line when
+                # the read boundary cut it.
+                lines = [line + '\n' for line in text.split('\n')[:-1]]
+                if read_size < size and lines:
+                    lines.pop(0)
+
+                # Widen instead of reporting "no anchor": the caller would then
+                # reopen in 'w' and delete the history it is adopting.
+                if lines or read_size >= size or read_size >= _LOG_TAIL_MAX_READ:
+                    return lines[-count:]
+                read_size *= 2
     except OSError:
         return []
-
-    # Dropping the last piece drops whatever follows the final '\n', which is
-    # either nothing or a line the writer never finished.
-    text = chunk.decode('utf-8', errors='replace')
-    lines = [line + '\n' for line in text.split('\n')[:-1]]
-    # The first line is cut by the chunk boundary unless the chunk happens to
-    # start at the beginning of the file.
-    if size > _LOG_TAIL_CHUNK_SIZE and lines:
-        lines.pop(0)
-    return lines[-count:]
 
 
 def _drop_partial_last_line(log_path: str):
     """Truncate a log file's trailing line when it carries no newline.
 
-    A worker killed mid-write leaves a fragment. The runtime replays that line
-    whole, so appending after the fragment would join the two into one corrupt
-    line; the runtime's copy is what survives either way.
+    A worker killed mid-write leaves a fragment; the runtime replays that line
+    whole, so appending after the fragment would join the two.
 
     Args:
         log_path: Path to the log file.
@@ -201,8 +205,7 @@ def _drop_partial_last_line(log_path: str):
 
         last_newline = chunk.rfind(b'\n')
         if last_newline < 0:
-            # No line boundary within reach; resume degrades to a rewrite
-            # anyway, so leave the file alone.
+            # No boundary within reach; resume degrades to a rewrite anyway.
             return
         os.truncate(log_path, size - (len(chunk) - last_newline - 1))
     except OSError as e:
@@ -213,10 +216,9 @@ class _LogPersistence:
     """The threads and stop events of one generation of a model instance's log
     persistence.
 
-    Every start owns a fresh record, and a sidecar thread only ever mutates the
-    record of its own generation. That is what lets the registry of records be
-    swapped under a single lock while threads are joined: none of the threads
-    being joined can be waiting on that lock.
+    A sidecar thread only mutates its own generation's record, never the shared
+    registry -- which is what lets the registry be swapped under a lock while
+    threads are joined, with no joined thread waiting on that lock.
     """
 
     def __init__(self, stop_event: threading.Event, main_thread: threading.Thread):
@@ -234,8 +236,7 @@ class _LogPersistence:
 
         Args:
             thread: The thread to track.
-            stop_event: Its own stop event, when it does not share the
-                generation's one.
+            stop_event: Its own stop event, if it has one.
         """
         with self._lock:
             if not self._stopping:
@@ -361,10 +362,9 @@ class ServeManager:
     """
     _log_persistence_lock: threading.Lock
     """
-    Serializes starting and stopping log persistence. Both the watch thread
-    (model instance events) and the periodic sync thread (adopting a running
-    instance) do so, and a half-applied start would leave threads running that
-    nothing can ever signal.
+    Serializes starting and stopping log persistence, which both the watch
+    thread and the periodic sync thread do. A half-applied start would leave
+    threads running that nothing can ever signal.
     """
     _error_model_instances: Dict[int, ModelInstance]
     """
@@ -591,6 +591,17 @@ class ServeManager:
                     if sw.worker_id == self._worker_id:
                         model_instances.append(model_instance)
                         break
+
+        # Retire log persistence the server no longer assigns here: a DELETED
+        # event landing mid-pass leaves a generation nothing will ever stop, and
+        # the persistence loop retries a missing workload forever.
+        assigned_instance_ids = {mi.id for mi in model_instances}
+        for stale_id in set(self._log_persistence) - assigned_instance_ids:
+            logger.debug(
+                f"Stopping log persistence for model instance {stale_id}, "
+                f"no longer assigned to this worker"
+            )
+            self._stop_container_log_persistence(stale_id)
 
         for model_instance in model_instances:
             # Skip if the provision process has not exited yet.
@@ -1305,19 +1316,18 @@ class ServeManager:
         # (not one) avoids false-matching a repeated line during replay.
         anchor_window = deque(maxlen=5)
 
+        # Only an anchor seeded from the file may be absent from the replay, so
+        # only it needs a deadline. Cleared once it matches or is retired, and
+        # each connection derives its deadline from it.
+        anchor_is_seeded = False
+
         if resume:
-            # Seed the anchor from the file's own tail so this connection behaves
-            # like a reconnect. An unreadable or empty file leaves first_connect
-            # set, which is the pre-adoption behavior.
+            # Seed the anchor from the file's tail so this connection behaves
+            # like a reconnect; an empty or unreadable file keeps first_connect.
             _drop_partial_last_line(log_path)
             anchor_window.extend(_tail_lines(log_path, anchor_window.maxlen))
             first_connect = not anchor_window
-        # A seeded anchor may describe a container generation the runtime no
-        # longer replays, and a followed stream never reaches EOF while the
-        # container lives, so bound this one skip instead of dropping the live
-        # stream forever. Reconnect anchors come from the stream itself and keep
-        # their unbounded rule.
-        skip_budget = _LOG_RESUME_SKIP_LIMIT if not first_connect else None
+            anchor_is_seeded = not first_connect
 
         while not stop_event.is_set():
             try:
@@ -1335,6 +1345,13 @@ class ServeManager:
                     skip_until_anchor = not first_connect and bool(anchor)
                     replayed = deque(maxlen=len(anchor)) if anchor else None
                     received_lines = False
+                    # A followed stream never EOFs while the container lives, so
+                    # an unreplayable anchor would hold live output back forever.
+                    skip_deadline = (
+                        time.monotonic() + _LOG_RESUME_SKIP_TIMEOUT
+                        if anchor_is_seeded
+                        else None
+                    )
                     with open(
                         log_path,
                         'w' if first_connect else 'a',
@@ -1356,11 +1373,12 @@ class ServeManager:
                                 replayed.append(line)
                                 if list(replayed) == anchor:
                                     skip_until_anchor = False
-                                    skip_budget = None
-                                elif skip_budget is not None:
-                                    skip_budget -= 1
-                                    if skip_budget <= 0:
-                                        break
+                                    anchor_is_seeded = False
+                                elif (
+                                    skip_deadline is not None
+                                    and time.monotonic() > skip_deadline
+                                ):
+                                    break
                                 continue
 
                             f.write(line)
@@ -1374,6 +1392,8 @@ class ServeManager:
                     if skip_until_anchor and received_lines:
                         first_connect = True
                         anchor_window.clear()
+                        # The rewrite rebuilds the anchor from the stream.
+                        anchor_is_seeded = False
 
                 # A restart briefly looks terminated at EOF; wait for the
                 # container to return before giving up, so logs aren't dropped.
@@ -1572,9 +1592,8 @@ class ServeManager:
         )
         persistence.add_aux_thread(discovery_thread)
 
-        # Retiring the previous generation, registering this one and starting it
-        # is one critical section: a concurrent start would otherwise leave one
-        # of the two generations running with nothing left to signal it.
+        # Retire, register and start in one critical section: a concurrent start
+        # would otherwise leave one generation with nothing left to signal it.
         with self._log_persistence_lock:
             self._retire_log_persistence(mi.id)
             self._log_persistence[mi.id] = persistence
@@ -1585,18 +1604,16 @@ class ServeManager:
     def _ensure_container_log_persistence(self, mi: ModelInstance):
         """Re-attach container log persistence to an instance being adopted.
 
-        The persistence threads live in this process, so a worker restart ends
-        them while the workload it manages keeps running, and nothing else
-        brings them back: the replayed CREATED event returns early for an
-        instance that is already RUNNING. Called every sync, so it must not
-        disturb a thread that is still alive.
+        The threads live in this process, so a worker restart ends them while the
+        workload keeps running, and the replayed CREATED event returns early for
+        an already-RUNNING instance. Runs every sync, so it must leave a live
+        thread alone.
 
         Args:
             mi: The model instance.
         """
-        # Only the main log thread counts. The sidecar discovery thread beside it
-        # polls forever on a single-container workload, so a check that folded
-        # the two together would report health long after the log thread is gone.
+        # Only the main log thread counts: the sidecar discovery thread beside it
+        # polls forever on a single-container workload.
         with self._log_persistence_lock:
             persistence = self._log_persistence.get(mi.id)
         if persistence and persistence.main_thread.is_alive():
@@ -1612,9 +1629,8 @@ class ServeManager:
     def _align_legacy_main_log(self, mi: ModelInstance):
         """Rename a pre-v2.2.0 main log to carry the current restart_count.
 
-        A {id}.log counts as restart 0, while the container log that adoption is
-        about to create carries the instance's restart_count. Left alone, the log
-        viewer would file the two under different restarts.
+        A {id}.log counts as restart 0, so the log viewer would otherwise file it
+        under a different restart than the container log adoption creates.
 
         Args:
             mi: The model instance.
@@ -1644,9 +1660,8 @@ class ServeManager:
     def _retire_log_persistence(self, model_instance_id: int, timeout: float = 2.0):
         """Drop a model instance's log persistence generation and wait it out.
 
-        The caller must hold ``_log_persistence_lock``. Joining under that lock
-        is safe because no log persistence thread ever takes it: sidecars
-        register on their own generation's record instead.
+        The caller must hold ``_log_persistence_lock``; joining under it is safe
+        because no log persistence thread ever takes it.
 
         Args:
             model_instance_id: The model instance ID
@@ -1675,8 +1690,7 @@ class ServeManager:
                 f for f in log_dir.glob(main_log_pattern) if '.container.' not in f.name
             ]
 
-            # The glob cannot match the pre-v2.2.0 {id}.log name; it takes part
-            # as restart 0.
+            # The glob cannot match {id}.log; it takes part as restart 0.
             legacy_log = existing_legacy_main_log(log_dir, model_instance_id)
             if legacy_log:
                 all_main_logs.append(legacy_log)
@@ -1747,8 +1761,7 @@ class ServeManager:
             log_dir = Path(self._serve_log_dir)
             files = list(log_dir.glob(f"{model_instance_id}.*.log"))
 
-            # The glob cannot match the pre-v2.2.0 {id}.log name, which a reused
-            # id would otherwise inherit.
+            # The glob cannot match {id}.log, which a reused id would inherit.
             legacy_log = existing_legacy_main_log(log_dir, model_instance_id)
             if legacy_log:
                 files.append(legacy_log)

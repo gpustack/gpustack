@@ -73,8 +73,7 @@ async def get_all_log_files(
             return files
         # Exclude container log files when getting main logs.
         files = [f for f in files if '.container.' not in f.name]
-        # The glob cannot match the pre-v2.2.0 {id}.log name, so look it up
-        # separately. It predates every numbered file, hence goes first.
+        # {id}.log predates every numbered file, hence first.
         legacy_log = existing_legacy_main_log(log_dir, model_instance_id)
         return [legacy_log] + files if legacy_log else files
 
@@ -129,8 +128,7 @@ def restart_entries_from_main_log_files(
     the second highest maps to ``previous=True``.
 
     When several files share a restart_count -- a pre-v2.2.0 {id}.log next to a
-    {id}.0.log -- the restart started when the oldest of them did, so take the
-    earliest timestamp rather than picking a representative by name.
+    {id}.0.log -- take the earliest timestamp, not a representative by name.
 
     Args:
         files: Main log file paths.

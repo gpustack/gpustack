@@ -20,7 +20,6 @@ from gpustack.schemas.models import (
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.serve_manager import (
-    _LOG_RESUME_SKIP_LIMIT,
     _LOG_TAIL_CHUNK_SIZE,
     ServeManager,
     _describe_workload_failure,
@@ -60,8 +59,8 @@ def _fake_thread(alive: bool):
 
 
 def _log_persistence(main_alive: bool):
-    """A log persistence generation whose main thread is alive or not, with the
-    forever-polling sidecar discovery thread alive beside it either way."""
+    """A generation with the given main-thread liveness, always beside a live
+    (forever-polling) sidecar discovery thread."""
     persistence = _LogPersistence(MagicMock(), _fake_thread(main_alive))
     persistence.add_aux_thread(_fake_thread(True))
     return persistence
@@ -224,8 +223,8 @@ def _write_serve_logs(tmp_path: Path, *names: str) -> Path:
 async def test_main_log_discovery_includes_legacy_file(
     tmp_path: Path, on_disk, expected_main_logs, expected_restart_count
 ):
-    """Main logs were named {id}.log before v2.2.0, and the {id}.*.log glob
-    cannot match that name, so discovery has to add it back."""
+    """The {id}.*.log glob cannot match the pre-v2.2.0 {id}.log name, so
+    discovery has to add it back."""
     serve_dir = _write_serve_logs(tmp_path, *on_disk)
 
     files = await get_all_log_files(serve_dir, 1, container=False)
@@ -239,9 +238,9 @@ async def test_main_log_discovery_includes_legacy_file(
 
 @pytest.mark.asyncio
 async def test_serve_log_options_after_upgrade_from_legacy_naming(tmp_path: Path):
-    """The upgrade case from #5988: the only main log is the legacy one, next to
-    container logs the new worker wrote. That still yields one restart entry, and
-    the container and sidecar branches keep returning only their own files."""
+    """The upgrade case from #5988: a legacy-only main log next to container logs
+    the new worker wrote still yields one restart entry, and the container and
+    sidecar branches keep returning only their own files."""
     serve_dir = _write_serve_logs(
         tmp_path,
         "1.log",
@@ -297,8 +296,7 @@ def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path
 
 def test_cleanup_old_logs_restart_zero_purges_all(tmp_path: Path):
     """Fresh start (restart_count 0) removes every log for the id, incl. sidecar
-    and the pre-v2.2.0 {id}.log name, but leaves other instances' logs and
-    model-file download logs."""
+    and {id}.log, but leaves other instances' and model-file download logs."""
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir(parents=True)
     mid, other = 7, 8
@@ -372,8 +370,8 @@ def test_permanent_teardown_purges_logs_but_restart_keeps_them(tmp_path: Path):
 
 def test_reap_stale_instance_purges_logs(tmp_path: Path):
     """Reaping an instance the server no longer reports (a dropped DELETED) must
-    also remove its serve logs, mirroring the DELETED handler. A reused id must
-    not inherit a legacy {id}.log either."""
+    also remove its serve logs, {id}.log included, mirroring the DELETED
+    handler."""
     serve_dir = _write_serve_logs(tmp_path, "1.container.ray-head.0.log", "1.log")
 
     manager, clientset = _build_serve_manager(worker_id=1)
@@ -726,16 +724,15 @@ def test_persist_container_logs_window_anchor_ignores_repeated_line(
 
 
 def test_persist_container_logs_resume_appends_to_adopted_file(tmp_path: Path):
-    """Re-attaching to a log a previous worker process wrote must append to it.
-    The runtime replays history from the start, so rewriting from that replay
-    would silently drop whatever the runtime has already rotated away."""
+    """Re-attaching must append: the runtime replays from the start, so a
+    rewrite would drop whatever it has already rotated away."""
     manager, _clients = _build_serve_manager()
     adopted = tmp_path / "1.container.0.log"
     adopted.write_text("".join(f"l{i}\n" for i in range(1, 8)), encoding="utf-8")
     fresh = tmp_path / "2.container.0.log"
 
-    # The runtime has rotated l1 and l2 away, so its replay starts at l3 — the
-    # anchor is the file's last five lines, which the replay still carries.
+    # l1 and l2 rotated away, so the replay starts at l3 and still carries the
+    # anchor (the file's last five lines).
     replay = [f"l{i}\n" for i in range(3, 9)]
     states = [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
 
@@ -766,15 +763,13 @@ def test_persist_container_logs_resume_appends_to_adopted_file(tmp_path: Path):
 @pytest.mark.parametrize(
     "adopted_tail, replayed_tail",
     [
-        # A progress bar is one streamed line carrying bare '\r'. Rebuilding the
-        # anchor with str.splitlines() would break it into three pieces that can
-        # never equal one streamed item, and the skip would then swallow the
-        # whole live stream for as long as the container runs.
+        # A progress bar is one streamed line carrying bare '\r'; splitlines()
+        # would break it into pieces that can never equal one streamed line.
         (
             "shards:  0%\rshards: 50%\rshards: 100%\n",
             "shards:  0%\rshards: 50%\rshards: 100%\n",
         ),
-        # A worker killed mid-write leaves a fragment. The runtime replays that
+        # A worker killed mid-write leaves a fragment; the runtime replays that
         # line whole, so the fragment has to go or the two would be joined.
         ("INFO star", "INFO starting engine\n"),
     ],
@@ -789,7 +784,7 @@ def test_persist_container_logs_resume_matches_the_runtime_line_framing(
     head = "".join(f"l{i}\n" for i in range(1, 8))
     log_path.write_text(head + adopted_tail, encoding="utf-8")
 
-    # The runtime rotated l1 and l2 away but still carries the anchor window.
+    # l1 and l2 rotated away; the replay still carries the anchor window.
     replay = [f"l{i}\n" for i in range(3, 8)] + [replayed_tail, "l8-NEW\n"]
     states = [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
 
@@ -807,8 +802,7 @@ def test_persist_container_logs_resume_matches_the_runtime_line_framing(
             "wl", str(log_path), _fake_stop_event(), resume=True
         )
 
-    # Read as bytes: universal newlines would rewrite the bare '\r' this case
-    # is about, hiding whether it survived the round trip.
+    # Read as bytes: universal newlines would rewrite the bare '\r' under test.
     written = log_path.read_bytes().decode("utf-8")
     assert written == head + replayed_tail + "l8-NEW\n"
 
@@ -816,23 +810,31 @@ def test_persist_container_logs_resume_matches_the_runtime_line_framing(
 def test_persist_container_logs_resume_gives_up_on_an_unmatchable_anchor(
     tmp_path: Path,
 ):
-    """A followed stream never reaches EOF while the container lives, so an
-    anchor the runtime cannot replay must not skip the live stream forever."""
+    """An unreplayable anchor must not hold the live stream back, and giving up
+    on it must not disable the ordinary reconnect dedupe: otherwise every later
+    reconnect rewrites the file and loses what the runtime rotated away."""
     manager, _clients = _build_serve_manager()
     log_path = tmp_path / "1.container.0.log"
-    log_path.write_text("gone-1\ngone-2\n", encoding="utf-8")
+    log_path.write_text("".join(f"gone-{i}\n" for i in range(1, 8)), encoding="utf-8")
 
-    # The runtime replays a different container generation entirely.
+    rewritten = [f"kept-{i}\n" for i in range(7)]
     streams = [
-        iter(f"new-{i}\n" for i in range(_LOG_RESUME_SKIP_LIMIT + 10)),
-        iter(["new-0\n", "new-1\n"]),
+        # The runtime replays a different container generation entirely.
+        iter(["other-a\n", "other-b\n"]),
+        # Given up on, so this connection rewrites.
+        iter(rewritten),
+        # An ordinary reconnect, with kept-0 rotated away: the anchor built from
+        # the rewrite above still has to dedupe the replay.
+        iter(rewritten[1:] + ["kept-7\n"]),
     ]
     states = [
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
         SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
         SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
     ]
 
     with (
+        patch("gpustack.worker.serve_manager._LOG_RESUME_SKIP_TIMEOUT", -1),
         patch(
             "gpustack.worker.serve_manager.logs_workload",
             side_effect=lambda **kwargs: streams.pop(0),
@@ -846,8 +848,20 @@ def test_persist_container_logs_resume_gives_up_on_an_unmatchable_anchor(
             "wl", str(log_path), _fake_stop_event(), resume=True
         )
 
-    # Gave up mid-stream and rewrote on the next connection.
-    assert log_path.read_text(encoding="utf-8") == "new-0\nnew-1\n"
+    # kept-0 survives and kept-7 is appended: the anchor deduped the reconnect.
+    assert log_path.read_text(encoding="utf-8") == "".join(rewritten + ["kept-7\n"])
+
+
+def test_tail_lines_widens_past_a_record_longer_than_the_first_read(tmp_path: Path):
+    """A final record longer than the first read leaves no whole line behind.
+    Reporting "no anchor" there would reopen the adopted log in 'w'."""
+    log_path = tmp_path / "1.container.0.log"
+    head = [f"l{i}\n" for i in range(1, 5)]
+    oversized = "CONFIG " + "x" * (_LOG_TAIL_CHUNK_SIZE * 2) + "\n"
+    log_path.write_text("".join(head) + oversized)
+
+    assert log_path.stat().st_size > _LOG_TAIL_CHUNK_SIZE
+    assert _tail_lines(str(log_path), 5) == head + [oversized]
 
 
 def test_tail_lines_reads_only_the_end_of_a_large_file(tmp_path: Path):
@@ -897,22 +911,21 @@ def test_adoption_reattaches_container_log_persistence(tmp_path: Path):
     start_logs.assert_called_once_with(model_instance, resume=True)
     start_instance.assert_not_called()
 
-    # A live main log thread is left alone: a second one would interleave its
-    # appends into the same file.
+    # A live main log thread is left alone: two would interleave their appends.
     manager._log_persistence[1] = _log_persistence(main_alive=True)
     start_logs, _ = sync()
     start_logs.assert_not_called()
 
-    # A dead main thread beside the forever-polling discovery thread re-attaches:
-    # a check that folded the two together would never fire here.
+    # A dead main thread beside the forever-polling discovery thread re-attaches;
+    # folding the two together would never fire here.
     manager._log_persistence[1] = _log_persistence(main_alive=False)
     start_logs, _ = sync()
     start_logs.assert_called_once_with(model_instance, resume=True)
 
 
 def test_stop_container_log_persistence_tears_down_the_whole_generation():
-    """The main thread is tracked apart from the sidecar ones so adoption can key
-    off it alone; stopping still has to signal and join every one of them."""
+    """The main thread is tracked apart from the sidecar ones, but stopping still
+    has to signal and join every one of them."""
     manager, _clients = _build_serve_manager()
     main_stop_event, sidecar_stop_event = MagicMock(), MagicMock()
     main_log_thread, sidecar_thread = _fake_thread(True), _fake_thread(True)
@@ -935,10 +948,9 @@ def test_stop_container_log_persistence_tears_down_the_whole_generation():
 
 
 def test_starting_log_persistence_retires_the_previous_generation(tmp_path: Path):
-    """Starts arrive from both the watch thread and the periodic sync thread. If
-    the registry swap and the teardown of the generation it replaces were not one
-    critical section, the loser's threads would keep following the container with
-    nothing left able to signal them."""
+    """Starts arrive from both the watch thread and the periodic sync thread. Were
+    the registry swap and the teardown it replaces not one critical section, the
+    loser's threads would keep running with nothing able to signal them."""
     manager, _clients = _build_serve_manager()
     manager._serve_log_dir = str(_write_serve_logs(tmp_path))
     model_instance = new_model_instance(
@@ -949,9 +961,8 @@ def test_starting_log_persistence_retires_the_previous_generation(tmp_path: Path
     held_while_retiring = []
 
     def probe_lock(model_instance_id, timeout=2.0):
-        # A non-reentrant lock refuses a second acquire from its own holder, so
-        # failing to take it here is what proves the caller is inside the
-        # critical section rather than about to enter one.
+        # A non-reentrant lock refuses its own holder, so failing to take it here
+        # proves the caller is already inside the critical section.
         acquired = manager._log_persistence_lock.acquire(blocking=False)
         if acquired:
             manager._log_persistence_lock.release()
@@ -979,10 +990,43 @@ def test_starting_log_persistence_retires_the_previous_generation(tmp_path: Path
     assert manager._log_persistence == {}
 
 
+def test_sync_retires_log_persistence_the_server_no_longer_assigns(tmp_path: Path):
+    """A DELETED event landing mid-pass leaves a generation nothing will ever
+    stop, and the persistence loop retries a missing workload forever rather than
+    winding down, so the reconciler has to retire it."""
+    manager, clientset = _build_serve_manager()
+    manager._serve_log_dir = str(_write_serve_logs(tmp_path))
+
+    kept = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[kept])
+    manager._log_persistence[1] = _log_persistence(main_alive=True)
+    manager._log_persistence[99] = _log_persistence(main_alive=True)
+    orphan_stop_event = manager._log_persistence[99].stop_event
+
+    model = new_model(1, "test", 1, huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct")
+    model.backend = BackendEnum.VLLM
+    model.backend_version = "0.8.0"
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state="running"),
+        ),
+        # Provisioning: still assigned, so its generation must be left alone.
+        patch.object(manager, "_is_provisioning", return_value=True),
+        patch.object(manager, "_get_model", return_value=model),
+    ):
+        manager.sync_model_instances_state()
+
+    assert set(manager._log_persistence) == {1}
+    orphan_stop_event.set.assert_called_once()
+
+
 def test_adoption_aligns_legacy_main_log_with_restart_count(tmp_path: Path):
-    """A legacy main log counts as restart 0 while the container log adoption
-    creates is numbered with the current restart_count, so the log viewer would
-    file them under different restarts. Renaming lines them up."""
+    """A legacy main log counts as restart 0, so without the rename the viewer
+    would file it under a different restart than the container log."""
     serve_dir = _write_serve_logs(tmp_path, "1.log")
     manager, _clients = _build_serve_manager()
     manager._serve_log_dir = str(serve_dir)
