@@ -68,6 +68,12 @@ The figure below illustrates how a single GPUStack server can manage multiple GP
 
 ![gpustack-v2-architecture](assets/gpustack-v2-architecture.png)
 
+## Cluster Visibility at a Glance
+
+The GPU Cluster Topology view in [GPUStack Enterprise](https://gpustack.ai/enterprise/) provides a live, bird's-eye view of your entire fleet — every worker, GPU, and model deployment in one place, with real-time utilization, allocation, and health status.
+
+![gpustack-cluster-topology](assets/cluster-topology.png)
+
 ## Optimized Inference Performance
 
 GPUStack's automated engine selection and parameter optimization deliver strong inference performance out of the box. The following figure shows throughput improvements over default vLLM configurations:

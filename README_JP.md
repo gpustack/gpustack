@@ -43,6 +43,12 @@ GPUStackは、開発チーム、IT組織、およびサービスプロバイダ�
 
 ![gpustack-v2-architecture](docs/assets/gpustack-v2-architecture.png)
 
+## クラスタの全体像を一目で把握
+
+[GPUStack Enterprise](https://gpustack.ai/enterprise/)のGPUクラスタトポロジービューは、クラスタ全体のライブな鳥瞰図を提供します。すべてのワーカー、GPU、モデルデプロイメントを一箇所で確認でき、使用率、割り当て状況、健全性ステータスをリアルタイムに表示します。
+
+![gpustack-cluster-topology](docs/assets/cluster-topology.png)
+
 ## 最適化された推論パフォーマンス
 
 GPUStackの自動化されたエンジン選択とパラメータ最適化により、すぐに使える強力な推論パフォーマンスを提供します。以下の図は、デフォルトのvLLM設定と比較したスループットの向上を示しています：
