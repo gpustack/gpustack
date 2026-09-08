@@ -8,6 +8,8 @@ from gpustack.utils.command import (
     extract_flag_arguments,
     find_parameter,
     find_bool_parameter,
+    parse_bool_env,
+    resolve_executor_backend,
     get_versioned_command,
     extend_args_no_exist,
     flatten_to_argv,
@@ -558,3 +560,43 @@ class TestSanitizeArgs:
     def test_non_string_elements_survive(self):
         # _build_command_args stringifies most values, but not all of them.
         assert sanitize_args(['--rate', 4]) == ['--rate', '4']
+
+
+@pytest.mark.parametrize(
+    "parameters, backend_version, expected",
+    [
+        # User-supplied flag drives the branch.
+        (['--distributed-executor-backend=mp'], None, "mp"),
+        (['--distributed-executor-backend=ray'], None, "ray"),
+        # Any explicit non-"mp" value routes to the ray branch.
+        (['--distributed-executor-backend=external_launcher'], None, "ray"),
+        # No flag falls back to the version default (default-to-ray here).
+        ([], None, "ray"),
+        # Custom image on vLLM >= 0.18.0 drops Ray from defaults -> mp.
+        ([], "0.18.0-custom", "mp"),
+    ],
+)
+def test_resolve_executor_backend(parameters, backend_version, expected):
+    assert resolve_executor_backend(parameters, backend_version) == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("On", True),
+        # Shares find_bool_parameter's vocabulary, so single-letter forms count.
+        ("t", True),
+        ("y", True),
+        (" true ", True),
+        ("0", False),
+        ("false", False),
+        ("nope", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_parse_bool_env(value, expected):
+    assert parse_bool_env(value) is expected

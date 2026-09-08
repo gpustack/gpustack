@@ -22,6 +22,7 @@ from gpustack.schemas.workers import Worker, GPUDevicesStatus, GPUDeviceStatus
 from pydantic import BaseModel
 
 from gpustack.server.services import ModelFileService
+from gpustack.utils.command import parse_bool_env
 from gpustack.utils.hub import get_model_weight_size, get_diffusion_model_weight_size
 from gpustack.utils.lora_model_source import (
     lora_entry_to_model_source,
@@ -269,19 +270,31 @@ def get_vram_claim_from_model_env(model: Model) -> Optional[int]:
     return None
 
 
+def manual_distributed_from_env(env: Optional[Dict[str, str]]) -> bool:
+    """Whether ``env`` opts into manual distributed deployment
+    (GPUSTACK_MANUAL_DISTRIBUTED): skip the GPU-count check and per-model gateway
+    registration; the user wires the DP cluster and LB externally. Takes a raw
+    env dict so callers with only the merged/effective env (e.g. model update)
+    can reuse the same rule.
+    """
+    if not env:
+        return False
+    return parse_bool_env(env.get("GPUSTACK_MANUAL_DISTRIBUTED"))
+
+
 def should_skip_gpu_count_check(model: Model) -> bool:
     """
     Whether to bypass the world-size-vs-selected-gpu-count check (GPUSTACK_SKIP_GPU_COUNT_CHECK).
     Only honored when GPUs are manually selected; auto-scheduling is unaffected.
+    GPUSTACK_MANUAL_DISTRIBUTED implies this bypass too.
     """
     if not (model.gpu_selector and model.gpu_selector.gpu_ids):
         return False
+    if manual_distributed_from_env(model.env):
+        return True
     if not model.env:
         return False
-    value = model.env.get("GPUSTACK_SKIP_GPU_COUNT_CHECK")
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    return parse_bool_env(model.env.get("GPUSTACK_SKIP_GPU_COUNT_CHECK"))
 
 
 async def _get_cached_model_size(
