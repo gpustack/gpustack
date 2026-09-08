@@ -1,0 +1,202 @@
+{#-
+  The registration manifest for a Kubernetes-provider cluster.
+
+  It carries no workload objects. Everything that runs is rendered by the
+  GPUStack chart, which the Job below installs from this server — so this file
+  only has to deliver what the chart cannot supply itself: the namespaces, the
+  registration token, the pull credentials, the values, and the Job.
+
+  Three objects are deliberately owned by kubectl rather than Helm. The token
+  Secret, because a re-render must not be able to rotate or delete it; the pull
+  Secrets, because the chart can only create one and a cluster may have several;
+  and the values ConfigMap, because the Job that reads it is created from it.
+
+  Every interpolated scalar is quoted. YAML decides a scalar's type by its
+  shape, and these carry names and digests: a namespace called `123` or `no` is
+  legal in Kubernetes and reads back as a number and a boolean, and a 16-hex
+  digest is all digits about once in four thousand. kubectl rejects the whole
+  manifest over any one of them.
+-#}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ config.namespace | tojson }}
+---
+{#- Where the operator places this cluster owner's namespaced resources. #}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ config.cluster_owner_namespace | tojson }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ registration_token_secret_name | tojson }}
+  namespace: {{ config.namespace | tojson }}
+  annotations:
+    {#-
+      Helm prunes what a previous revision rendered and the new one does not, by
+      name — which is exactly this Secret on a cluster whose chart used to create
+      it. Losing it leaves running workers alive (their env is already injected)
+      and every new pod unable to start, since it is mounted with
+      `optional: false`. Helm honours this annotation on the live object, so the
+      prune skips it; on a cluster that never had it, the annotation is inert.
+    #}
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  {%- for k, v in config.env.items() %}
+  {{ k }}: {{ v | b64encode | tojson }}
+  {%- endfor %}
+{%- for ips in config.image_pull_secrets %}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ ips.name | tojson }}
+  namespace: {{ config.namespace | tojson }}
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: {{ ips.dockerconfigjson_b64 | tojson }}
+{%- endfor %}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ bootstrap_name | tojson }}
+  namespace: {{ config.namespace | tojson }}
+{#
+  `renderedAt` is the stamp of the newest manifest applied. `kubectl apply`
+  updates this ConfigMap in place, so a Job whose own stamp no longer matches it
+  was overtaken by a later apply — and installing what it was created for would
+  put the cluster back on the older configuration. It checks before upgrading.
+#}
+data:
+  renderedAt: {{ rendered_at | tojson }}
+  values.yaml: |
+{{ chart_values | indent(4, true) }}
+  install.sh: |
+{{ bootstrap_script | indent(4, true) }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ bootstrap_name | tojson }}
+  namespace: {{ config.namespace | tojson }}
+---
+{#
+  cluster-admin, because installing the chart means creating CRDs, ClusterRoles,
+  APIServices and webhook configurations — a bounded role for "may install this
+  chart" would have to enumerate everything the chart and its sub-charts render,
+  and would silently break the next time any of them grows an object kind.
+
+  Scoped to a Job that runs once per configuration change rather than to a
+  long-lived workload. Not revoked when the Job finishes, deliberately: the
+  binding is shared by every rendering, so a Job that revoked it could strip a
+  concurrent newer one of the permissions it is installing with, and nothing
+  would recreate it. Revoking it would not be worth that even if it were free —
+  the release namespace holds three permanent cluster-admin ServiceAccounts the
+  chart creates, alongside a worker that may create Pods there, so the privilege
+  reachable in that namespace is the chart's to narrow rather than this Job's.
+#}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ bootstrap_name | tojson }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ bootstrap_name | tojson }}
+    namespace: {{ config.namespace | tojson }}
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+{#
+  The Job is named after the moment this manifest was rendered, and it is the
+  only object here that carries anything per-rendering. `kubectl apply` neither
+  prunes nor re-runs a Completed Job, so a name that is new every fetch is the
+  only way an apply can make something happen — a fixed one would leave the Job
+  Completed and the change unapplied until its TTL expired. Whether the Job then
+  has work is decided in the cluster, by comparing the revision it carries
+  against the one the release recorded, so a redundant apply costs a short-lived
+  pod rather than a Helm revision.
+
+  Naming it after what it acts on instead would look tidier and is wrong: going
+  from A to B and back to A resolves to the Job that already installed A, so the
+  apply would be a no-op while the values claimed otherwise. A *saved* manifest
+  keeps its name, which is what a GitOps loop re-syncing one file relies on.
+
+  The ConfigMap it reads keeps a fixed name and is updated in place, so a stale
+  Job that starts late installs the current configuration rather than the one it
+  was created for — and no orphan accumulates, which a hashed ConfigMap would do
+  on every change since `kubectl apply` does not prune and only a Job has a TTL.
+
+  The image is the operator's: it already ships helm and kubectl, and this
+  cluster pulls it anyway for the control plane the chart deploys.
+#}apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ job_name | tojson }}
+  namespace: {{ config.namespace | tojson }}
+spec:
+  # Two retries, so three attempts in all. Enough to ride out the transient
+  # failure this Job is actually exposed to — it fetches the chart from the
+  # server, which may still be restarting into the version that rendered this
+  # manifest — without turning a deterministic failure, which no retry can fix,
+  # into six identical pods of logs to read through.
+  backoffLimit: 2
+  # Long enough to outlast an image pull and a chart install, short enough that
+  # a wedged run gives up instead of holding the Job open forever.
+  activeDeadlineSeconds: 1800
+  # Kept for a day after it finishes so its logs remain available: they are the
+  # only record of what the install did, since the server never sees it.
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ bootstrap_name | tojson }}
+      {%- if config.image_pull_secrets %}
+      imagePullSecrets:
+      {%- for ips in config.image_pull_secrets %}
+        - name: {{ ips.name | tojson }}
+      {%- endfor %}
+      {%- endif %}
+      {#
+        No nodeSelector, and the cluster's is deliberately not applied here. This
+        Job installs the release, so it runs before anything the release deploys
+        exists — and a selector naming a label the release itself produces would
+        never be satisfiable: an NFD label is the obvious way to write "only GPU
+        nodes", and the labeller is in the chart this Job installs. It would
+        deadlock a first registration outright. The chart's own hook Jobs are
+        exempt for the same reason, in the operator chart's `global.nodeSelector`.
+      #}
+      containers:
+        - name: install
+          image: {{ config.operator_image | tojson }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/bootstrap/install.sh"]
+          env:
+            - name: RELEASE
+              value: {{ release_name | tojson }}
+            - name: NAMESPACE
+              value: {{ config.namespace | tojson }}
+            - name: CHART_URL
+              value: {{ chart_url | tojson }}
+            - name: CHART_DIGEST
+              value: {{ chart_digest | tojson }}
+            - name: VALUES_FILE
+              value: /bootstrap/values.yaml
+            - name: DESIRED_REVISION
+              value: {{ applied_revision | tojson }}
+            - name: RENDERED_AT
+              value: {{ rendered_at | tojson }}
+            - name: BOOTSTRAP_CONFIGMAP
+              value: {{ bootstrap_name | tojson }}
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+      volumes:
+        - name: bootstrap
+          configMap:
+            name: {{ bootstrap_name | tojson }}

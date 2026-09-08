@@ -19,6 +19,14 @@ registrationToken: null
 #
 # Left empty, the chart creates and references `registration-token` as before.
 registrationTokenSecretName: ""
+# Opaque marker recorded into a ConfigMap as part of the release, for a caller
+# that installs this chart from an automated flow and wants to know which
+# configuration the cluster is actually running. The registration manifest sets
+# it to a digest of what it asked for, and its bootstrap Job skips a `helm
+# upgrade` when the two agree — which keeps `helm history` from filling with
+# no-op revisions. Nothing in this chart reads it; left empty, no object is
+# rendered for it.
+appliedRevision: ""
 # Global values are propagated to all sub-charts (Helm convention).
 # `global.hub` is the container registry host (e.g. docker.io).
 # For air-gapped or private registry installs, override:

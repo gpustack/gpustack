@@ -32,6 +32,14 @@ CHART_DIR = pathlib.Path(CHART)
 # the dependency is the only edit — nothing is left to remember afterwards.
 OPERATOR_HUB_ALIAS_SINCE = (0, 8, 7)
 
+# The same release carries the other half of the `global.*` contract: from this
+# version the operator chart falls back to `global.nodeSelector` for every
+# workload it can confine, rather than for its own Deployment alone. Both changes
+# merged before any tag was cut, so one threshold covers both — and if that ever
+# stops being true, the interlock below says so on the bump rather than in a
+# cluster.
+OPERATOR_NODE_SELECTOR_SINCE = (0, 8, 7)
+
 
 def pinned_operator_version() -> tuple[int, ...]:
     chart = yaml.safe_load((CHART_DIR / "Chart.yaml").read_text())
@@ -303,6 +311,57 @@ class TestImagePullSecret:
         assert "would be discarded" in error
 
 
+class TestWorkerEnvironment:
+    """The worker's environment is a contract with the runtime, not a detail.
+
+    Registration used to render its own DaemonSet, and its template carried
+    vendor-specific variables the chart did not. Deleting that renderer moved the
+    contract here without moving those variables with it, so a MIG-partitioned
+    NVIDIA cluster registered fine and then could not see its own MIG instances.
+    These pin the ones whose absence is silent.
+    """
+
+    def test_the_nvidia_worker_declares_it_manages_mig(self):
+        # The NVIDIA container runtime hides the driver's MIG capability subtree
+        # from a container that does not declare it manages MIG, and the
+        # management library authorizes partition-scoped calls by opening a file
+        # under it. Without these, a MIG instance carved by the operator's
+        # device manager is invisible to the worker and every partition-scoped
+        # call fails with NO_PERMISSION — on a MIG cluster only, which is why no
+        # install test would catch it.
+        docs = render(
+            "--set", "worker.enabled=true", "--set", "worker.gpuVendors={nvidia}"
+        )
+        vendor = next(
+            doc
+            for doc in docs
+            if doc["kind"] == "DaemonSet"
+            and doc["metadata"]["name"] == "gpustack-worker-nvidia"
+        )
+        env = {
+            entry["name"]: entry.get("value")
+            for entry in vendor["spec"]["template"]["spec"]["containers"][0]["env"]
+        }
+        assert env.get("NVIDIA_MIG_CONFIG_DEVICES") == "all"
+        assert env.get("NVIDIA_MIG_MONITOR_DEVICES") == "all"
+
+    def test_the_cpu_worker_declares_nothing_vendor_specific(self):
+        # The same variables on the CPU DaemonSet would ask the NVIDIA runtime
+        # hook for a capability on nodes that have no driver to grant it.
+        docs = render("--set", "worker.enabled=true")
+        cpu = next(
+            doc
+            for doc in docs
+            if doc["kind"] == "DaemonSet"
+            and doc["metadata"]["name"] == "gpustack-worker"
+        )
+        env = {
+            entry["name"]
+            for entry in cpu["spec"]["template"]["spec"]["containers"][0]["env"]
+        }
+        assert not {name for name in env if "MIG" in name}
+
+
 class TestGuards:
     def test_refuses_an_empty_release(self):
         error = render_error(
@@ -353,3 +412,53 @@ class TestGuards:
         )
         assert result.returncode != 0
         assert "image.tag is required" in result.stderr
+
+    @pytest.mark.xfail(
+        pinned_operator_version() < OPERATOR_NODE_SELECTOR_SINCE,
+        strict=True,
+        reason=(
+            "the pinned gpustack-operator falls back to global.nodeSelector for "
+            "its own Deployment only, so the components it deploys render "
+            "unconfined. strict=True both ways: below that version this must "
+            "fail, at or above it must pass."
+        ),
+    )
+    def test_the_node_selector_confines_what_the_operator_deploys(self):
+        # The server hands a cluster's node selector over as `global.nodeSelector`
+        # and nothing else, so what it reaches is decided entirely inside the
+        # operator's tree — by a fallback in each sub-chart that no value here can
+        # substitute for. Rendering the vendored sub-charts is the only thing that
+        # says whether a bump actually delivered it.
+        docs = render(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            "global.nodeSelector.gpustack\\.ai/pool=infra",
+        )
+        selectors = {
+            doc["metadata"]["name"]: (
+                doc["spec"]["template"]["spec"].get("nodeSelector") or {}
+            )
+            for doc in docs
+            if doc["kind"] in ("Deployment", "DaemonSet", "StatefulSet")
+        }
+
+        for name in (
+            "gpustack-operator-worker",
+            "kueue-controller-manager",
+            "node-feature-discovery-master",
+            "node-feature-discovery-gc",
+            "csi-nfs-controller",
+            "csi-s3-controller",
+        ):
+            assert (
+                selectors.get(name, {}).get("gpustack.ai/pool") == "infra"
+            ), f"{name} is confined by global.nodeSelector"
+
+        # And the ones that have to cover the nodes they serve are not: confining
+        # NFD's worker would leave every node outside the pool unlabelled, which
+        # is what the workers themselves select on.
+        for name in ("node-feature-discovery-worker", "csi-nfs-node", "csi-s3-node"):
+            assert "gpustack.ai/pool" not in selectors.get(
+                name, {}
+            ), f"{name} covers the nodes it serves and must not be confined"

@@ -86,6 +86,8 @@ from gpustack.gpu_instances.cluster_apis_util import (
     principal_namespace_identifier,
     get_namespace_name,
 )
+from gpustack.k8s.bootstrap import render_bootstrap
+from gpustack.k8s.chart import chart_available
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import (
     get_global_config,
@@ -1040,7 +1042,24 @@ async def get_cluster_manifests(
             config_kwargs["worker_metrics_port"] = worker_config.worker_metrics_port
 
     config = TemplateConfig(**config_kwargs)
-    yaml_content = config.render()
+    if not chart_available():
+        raise InternalServerErrorException(
+            message=(
+                "The Helm chart this manifest installs is not present in this "
+                "installation. It is packaged at build time (`make deps`); a "
+                "manifest rendered without it would hand the cluster a chart URL "
+                "that 404s."
+            )
+        )
+    try:
+        yaml_content = render_bootstrap(config)
+    except ValueError as e:
+        # The cluster is configured in a way the chart cannot express — an image
+        # pinned by digest, or carrying no tag. Its own message names which, and
+        # the fix is to edit the cluster, so this is the caller's error and not a
+        # server fault. Raised here rather than deeper because this is where a
+        # cluster record becomes a request.
+        raise InvalidException(message=str(e))
     return Response(
         content=yaml_content,
         media_type="application/x-yaml",

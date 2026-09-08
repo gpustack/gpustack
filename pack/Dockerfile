@@ -10,7 +10,8 @@
 # 2. gpustack target.
 #    - Install PostgreSQL.
 #    - Install Higress standalone components.
-#    - Install gpustack package from the mounted source code.
+#    - Install gpustack package from the mounted source code, packaging the
+#      served Helm chart with the operator image's Helm.
 #    - Setup entrypoint to gpustack command.
 
 # Argument usage:
@@ -496,7 +497,15 @@ EOF
 
 ARG UI_DOWNLOAD=true
 
+# Helm is a build dependency, not a runtime one: hack/install.sh packages the
+# GPUStack chart into the UI's static tree, which the server then serves to a
+# registered cluster's bootstrap Job. It is borrowed from the operator image for
+# the duration of this step rather than installed, so it never reaches the
+# final image — and so the Helm that packages the chart is the same one that
+# installs it in a cluster, since the bootstrap Job runs that image.
+
 RUN --mount=type=cache,target=/root/.cache \
+    --mount=type=bind,from=gpustack-operator,source=/usr/bin/helm,target=/usr/local/bin/helm \
     --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # Install GPUStack
 

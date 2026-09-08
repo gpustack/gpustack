@@ -1,0 +1,28 @@
+{{- /*
+Records which configuration this release was installed from.
+
+Written by the chart rather than by whoever installed it, so it advances with
+the release itself: a `helm upgrade` that applies these values applies this
+value in the same operation, and a release that was never upgraded still carries
+the old one. Nothing else in the chart reads it.
+
+The registration flow's bootstrap Job compares it against the revision it was
+created with and skips the `helm upgrade` when they agree. That is not for
+correctness — a re-install is idempotent — but to keep `helm history` from
+filling with no-op revisions and pushing a real rollback target out of the
+default ten it keeps.
+
+Rendered only when set, so an install that has no such flow (`helm install` by
+hand, the all-in-one chart) does not carry an object nobody reads.
+*/ -}}
+{{- if .Values.appliedRevision }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-applied-revision
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+data:
+  appliedRevision: {{ .Values.appliedRevision | quote }}
+{{- end }}

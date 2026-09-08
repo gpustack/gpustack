@@ -250,6 +250,76 @@ class OperatorOptions(BaseModel):
     )
 
 
+# Value paths the server derives from the cluster's registration, and which a
+# caller therefore cannot set: each one decides what the deployment *is* rather
+# than how it is configured. Overriding `worker.serverURL` points the workers at
+# a different server than the one that issued the token; `server.enabled` adds a
+# second control plane to a cluster that registered with one; `image.tag` breaks
+# the pairing between the worker image and the templates that render it, which is
+# how an install ends up with an operator and a worker of different generations.
+# Every path that names an image is here, and for one reason: the chart composes
+# an image as `{global.hub}/{image.repository}:{image.tag}`, so leaving any part
+# of that writable would redirect what the release deploys while the parts that
+# are protected still read as issued. The operator's tree is included because the
+# registration manifest's Job runs `operatorImage` directly — an overlay moving
+# only the chart's copy would put the installer and the operator it installs on
+# different images, which is what requiring a tag on that field exists to stop.
+# `gpustack-operator.worker.image` is here for the same reason and not as an
+# afterthought: the operator chart resolves it *over* its chart-level image, so
+# protecting only the latter is a fence with a gate in it.
+#
+# The three name overrides are the other invariant this list carries. Adoption is
+# by name — the chart calls its sub-chart `operator` precisely so its objects
+# land on the names the pre-chart manifest used — so renaming them leaves the old
+# operator running, unowned, beside a new one, and leaves this manifest's cleanup
+# deleting objects that no longer exist. That is the line: a path is here when it
+# breaks how a cluster is adopted or which image it runs, not merely because it
+# can be set to something unwise. `worker.disableApplications` is unwise and is
+# not here; the operator chart documents what narrowing it costs.
+SERVER_OWNED_VALUE_PATHS = frozenset(
+    {
+        "appliedRevision",
+        "global.hub",
+        "gpustack-operator.fullnameOverride",
+        "gpustack-operator.global.imageNamespace",
+        "gpustack-operator.global.imageRegistry",
+        "gpustack-operator.image.repository",
+        "gpustack-operator.image.tag",
+        "gpustack-operator.nameOverride",
+        "gpustack-operator.namespaceOverride",
+        "gpustack-operator.worker.image",
+        "higress-core.enabled",
+        "image.repository",
+        "image.tag",
+        "imagePullSecret.create",
+        "registrationTokenSecretName",
+        "server.enabled",
+        "worker.enabled",
+        "worker.serverURL",
+    }
+)
+
+
+def _value_path_set(values: Dict[str, Any], path: str) -> bool:
+    """Whether ``path`` ("a.b.c") is claimed by ``values``.
+
+    True for the path itself, and for anything standing where the path would
+    have to go: ``{"image": "repo:tag"}`` claims ``image.repository`` as surely
+    as ``{"image": {"repository": ...}}`` does — the server can no longer put
+    its own value there. Refusing only the exact path would accept that one and
+    fail later, while merging, on a value the cluster record has already stored.
+    """
+    cursor: Any = values
+    for segment in path.split("."):
+        if not isinstance(cursor, dict):
+            # A scalar (or list) sits on the way to the path: it occupies it.
+            return True
+        if segment not in cursor:
+            return False
+        cursor = cursor[segment]
+    return True
+
+
 class K8sOptions(BaseModel):
     """
     All Kubernetes-side deployment knobs for a cluster's worker DaemonSets:
@@ -294,7 +364,16 @@ class K8sOptions(BaseModel):
         alias="operatorImage",
         description=(
             "Override for the gpustack-operator container image. Falls back "
-            "to the server's GPUSTACK_OPERATOR_IMAGE / built-in default when unset."
+            "to the server's GPUSTACK_OPERATOR_IMAGE / built-in default when unset.\n\n"
+            "This image is also what the registration manifest's bootstrap Job "
+            "runs, so it has to carry the tools that Job needs — bash, helm, "
+            "kubectl, jq, curl and sha256sum — which the operator's own image "
+            "does. A stripped-down replacement fails in the cluster, naming the "
+            "missing one.\n\n"
+            "A tag is required when this is set: the same reference is read by "
+            "the Job, which needs a concrete image, and by the chart, whose "
+            "operator tag otherwise falls back to its own pin — one field "
+            "resolving to two different images."
         ),
     )
     gpu_instance_options: Optional[GpuInstanceOptions] = PydanticField(
@@ -317,6 +396,48 @@ class K8sOptions(BaseModel):
         alias="operator",
         description="Operator-specific deployment options for the cluster.",
     )
+    helm_values: Optional[Dict[str, Any]] = PydanticField(
+        default=None,
+        alias="helmValues",
+        description=(
+            "Values passed to the GPUStack chart the registration manifest "
+            "installs, merged over the ones the server derives from this "
+            "cluster. Keys are the chart's own, verbatim — see its values.yaml "
+            "and, for anything under `gpustack-operator`, the operator chart's.\n\n"
+            "Nothing is mirrored into a GPUStack-shaped schema here on purpose: "
+            "the chart and its sub-charts carry a large surface that moves with "
+            "their releases, and a field-by-field copy would have to be kept in "
+            "lockstep with it forever.\n\n"
+            "A cluster that already runs Kueue, for example, skips installing a "
+            "second one with "
+            '`{"gpustack-operator": {"kueue": {"enabled": false}}}`. Note what '
+            "that means: the operator still requires Kueue and Node Feature "
+            "Discovery to derive the scheduling chain and waits for their CRDs at "
+            "startup, so switching one off that is not actually present leaves "
+            "the operator unable to start. Switching off one this release "
+            "installed removes it — Kueue's CRDs come from its chart, and every "
+            "Workload and ClusterQueue goes with them.\n\n"
+            "Merging is per key and depth-first; a list replaces rather than "
+            "extends. The paths that decide what this deployment *is* are the "
+            f"server's and are refused here: {', '.join(sorted(SERVER_OWNED_VALUE_PATHS))}."
+        ),
+    )
+
+    @field_validator("helm_values")
+    def validate_helm_values(cls, v):
+        if not v:
+            return v
+        refused = sorted(
+            path for path in SERVER_OWNED_VALUE_PATHS if _value_path_set(v, path)
+        )
+        if refused:
+            raise ValueError(
+                f"{', '.join(refused)} cannot be set here: the server derives "
+                "them from this cluster's registration, and overriding them "
+                "would produce a release that does not match the cluster it was "
+                "issued for"
+            )
+        return v
 
 
 def is_gpu_service_k8s_options(k8s_options: Any) -> bool:
