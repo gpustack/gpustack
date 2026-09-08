@@ -45,6 +45,12 @@ GPUStack 使开发团队、IT 组织和服务提供商能够大规模地提供�
 
 ![gpustack-v2-architecture](docs/assets/gpustack-v2-architecture.png)
 
+## 集群全景视图
+
+[GPUStack 企业版](https://gpustack.ai/enterprise/)的 GPU 集群拓扑视图提供整个集群的实时全景：所有 Worker、GPU 和模型部署尽收眼底，并实时展示利用率、分配情况和健康状态。
+
+![gpustack-cluster-topology](docs/assets/cluster-topology.png)
+
 ## 优化的推理性能
 
 GPUStack 的自动化引擎选择和参数优化可开箱即用地提供强大的推理性能。下图展示了相较于默认 vLLM 配置的吞吐量提升：
