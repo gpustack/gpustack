@@ -108,6 +108,25 @@ spec:
             - name: ROCM_SMI_LIB_PATH
               value: /opt/hyhal/lib
             {{- end }}
+            {{- if eq $w.runtime "nvidia" }}
+            {{- /*
+              The NVIDIA container runtime hides the driver's MIG capability subtree from any
+              container that does not declare it manages MIG, and the management library
+              authorizes every partition-scoped call by opening a file under that subtree.
+              Without this declaration a MIG instance carved outside this Pod is not visible to
+              it at all, and a partition-scoped call fails with NO_PERMISSION. The worker only
+              reads MIG devices — the operator's device manager creates and destroys them — so
+              MONITOR is the half it needs; CONFIG is declared anyway to stay byte-aligned with
+              the operator's own chart, which keys both on the manufacturer for the same reason.
+              Both are read by the runtime hook, which needs the NVIDIA_VISIBLE_DEVICES the CDI
+              spec injects and the runtimeClassName set below.
+              https://github.com/NVIDIA/nvidia-container-toolkit/blob/main/cmd/nvidia-container-runtime/README.md#mig-devices
+            */}}
+            - name: NVIDIA_MIG_CONFIG_DEVICES
+              value: "all"
+            - name: NVIDIA_MIG_MONITOR_DEVICES
+              value: "all"
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "gpustack.registrationTokenSecretName" $ }}

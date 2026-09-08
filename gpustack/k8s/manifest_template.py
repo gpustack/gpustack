@@ -1,13 +1,10 @@
-import jinja2
 import base64
 import json
-import yaml
 from typing import Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, computed_field
 
 from gpustack import __operator_version__
 from gpustack.gpu_instances.cluster_apis_util import get_namespace_name
-from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.schemas.clusters import (
     ClusterRegistrationTokenPublic,
     K8sOptions,
@@ -22,34 +19,7 @@ _DEFAULT_CONTAINER_NAMESPACE = "gpustack"
 _DEFAULT_CLUSTER_NAMESPACE = "gpustack-system"
 
 
-WORKER_DS_BASENAME = "gpustack-worker"
 IMAGE_PULL_SECRET_NAME_PREFIX = "gpustack-image-pull-secret"
-
-# PCI vendor IDs per GPU manufacturer, mirroring the operator's
-# ``_ManufacturerPciIDMap``. Each worker DaemonSet derives a nodeSelector
-# label ``feature.node.kubernetes.io/pci-<id>.present: "true"`` from this map
-# (NFD advertises these labels), so a DS only lands on nodes carrying that
-# vendor's device.
-_MANUFACTURER_PCI_ID: Dict[ManufacturerEnum, str] = {
-    ManufacturerEnum.AMD: "1002",
-    ManufacturerEnum.ASCEND: "19e5",
-    ManufacturerEnum.CAMBRICON: "cabc",
-    ManufacturerEnum.HYGON: "1d94",
-    ManufacturerEnum.ILUVATAR: "1e3e",
-    ManufacturerEnum.METAX: "9999",
-    ManufacturerEnum.MTHREADS: "1ed5",
-    ManufacturerEnum.NVIDIA: "10de",
-    ManufacturerEnum.THEAD: "1ded",
-}
-_PCI_NODE_LABEL = "feature.node.kubernetes.io/pci-{pci_id}.present"
-# Node label that identifies non-acceleratable (CPU-only) nodes.
-_CPU_NODE_LABEL = "feature.gpustack.ai/acceleratable"
-# Canonical, request-order-independent runtime ordering. Used for deterministic
-# output ordering of GPU vendor DaemonSets regardless of the order they were
-# requested in.
-_RUNTIME_ORDER: Dict[ManufacturerEnum, int] = {
-    runtime: index for index, runtime in enumerate(_MANUFACTURER_PCI_ID)
-}
 
 
 def _env_bool(value: Optional[bool]) -> Optional[str]:
@@ -83,28 +53,6 @@ class ImagePullSecretRenderSpec(BaseModel):
     dockerconfigjson_b64: str
 
 
-class WorkerRenderSpec(BaseModel):
-    """
-    Per-DaemonSet render data. One entry is always produced for the CPU worker
-    (named ``gpustack-worker``), plus one entry per requested GPU runtime
-    (each named ``gpustack-worker-<runtime>``).
-
-    The grouping mirrors how Helm chart values are typically organized
-    (``.Values.worker.*``), so a future chart migration maps 1:1 onto these
-    entries.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    name: str
-    ds_name: str
-    # Runtime tag consumed by per-vendor jinja branches (volume mounts /
-    # volumes / runtimeClassName / vendor-specific env).
-    runtime: str = ""
-    # Base nodeSelector merged with the runtime's PCI-presence label.
-    node_selector: Optional[Dict[str, str]] = None
-
-
 class TemplateConfig(ClusterRegistrationTokenPublic):
     # cluster owner namespace, defaults to
     # "gpustack-{cluster_owner_principal_identifier}", used to place the
@@ -125,24 +73,11 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
     # Fall back to the built-in defaults when the cluster doesn't override them.
     worker_port: int = 10150
     worker_metrics_port: int = 10151
-    workers: List[WorkerRenderSpec] = []
     # Pre-computed Secret render data, one per K8sOptions.image_credentials
     # entry. Both image_pull_secrets.jinja (Secret resource) and the
     # daemonset.jinja imagePullSecrets reference iterate this list, so the
     # Secret name is the single source of truth.
     image_pull_secrets: List[ImagePullSecretRenderSpec] = []
-
-    @computed_field
-    @property
-    def multi_vendor_mode(self) -> bool:
-        """
-        True when 2+ worker DaemonSets are rendered (CPU + any GPU vendor, or
-        2+ GPU vendors). Adds the multi-DS safety net (per-pod
-        ``app.kubernetes.io/component``/``gpustack.io/runtime`` labels +
-        cross-DS podAntiAffinity so at most one worker pod lands per node).
-        Single-worker output stays label-minimal and affinity-free.
-        """
-        return len(self.workers) >= 2
 
     @computed_field
     @property
@@ -289,50 +224,6 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
             return self.k8s_options.operator.env
         return None
 
-    def render(self) -> str:
-        def b64encode(value):
-            return base64.b64encode(value.encode("utf-8")).decode("utf-8")
-
-        def to_yaml(value):
-            if hasattr(value, "model_dump"):
-                value = value.model_dump(by_alias=True, exclude_none=True)
-            elif isinstance(value, list):
-                value = [
-                    (
-                        v.model_dump(by_alias=True, exclude_none=True)
-                        if hasattr(v, "model_dump")
-                        else v
-                    )
-                    for v in value
-                ]
-
-            dumped = yaml.dump(value, default_flow_style=False)
-            if dumped.endswith("...\n"):
-                dumped = dumped[:-4]
-
-            return dumped.strip()
-
-        with pkg_resources.path("gpustack.k8s", "manifests.jinja") as manifest_path:
-            with manifest_path.open(encoding="utf-8") as f:
-                template_data = f.read()
-        with pkg_resources.path("gpustack.k8s", "image_pull_secrets.jinja") as ips_path:
-            with ips_path.open(encoding="utf-8") as f:
-                ips_data = f.read()
-        with pkg_resources.path("gpustack.k8s", "daemonset.jinja") as daemon_set_path:
-            with daemon_set_path.open(encoding="utf-8") as f:
-                daemon_set_data = f.read()
-        with pkg_resources.path("gpustack.k8s", "operator.jinja") as operator_path:
-            with operator_path.open(encoding="utf-8") as f:
-                operator_data = f.read()
-        env = jinja2.Environment()
-        env.filters["b64encode"] = b64encode
-        env.filters["to_yaml"] = to_yaml
-        rendered = env.from_string(template_data).render(config=self)
-        image_pull_secrets = env.from_string(ips_data).render(config=self)
-        daemon_set = env.from_string(daemon_set_data).render(config=self)
-        operator = env.from_string(operator_data).render(config=self)
-        return "\n".join([rendered, image_pull_secrets, daemon_set, operator])
-
     def __init__(
         self, registration: Optional[ClusterRegistrationTokenPublic] = None, **data
     ):
@@ -347,7 +238,6 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
                 self.cluster_owner_principal_identifier
             )
         self.image_pull_secrets = self._build_image_pull_secrets()
-        self.workers = self._build_workers()
 
     def _build_image_pull_secrets(self) -> List[ImagePullSecretRenderSpec]:
         if self.k8s_options is None or not self.k8s_options.image_credentials:
@@ -387,83 +277,3 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
                 )
             )
         return specs
-
-    def _build_workers(self) -> List[WorkerRenderSpec]:
-        seen: set = set()
-        gpu_runtimes: List[ManufacturerEnum] = []
-        for r in self.runtimes or []:
-            # UNKNOWN is the "no GPU detected" sentinel — never gets its own
-            # GPU worker DaemonSet.
-            if r == ManufacturerEnum.UNKNOWN:
-                continue
-            if r in seen:
-                continue
-            seen.add(r)
-            gpu_runtimes.append(r)
-
-        # Order the GPU DaemonSets by a fixed canonical runtime order rather
-        # than the request order. The canonical order makes the rendered output
-        # deterministic for a given set of runtimes regardless of the order they
-        # were requested in.
-        gpu_runtimes.sort(key=lambda r: _RUNTIME_ORDER.get(r, len(_RUNTIME_ORDER)))
-
-        base_node_selector = (
-            self.k8s_options.node_selector if self.k8s_options is not None else None
-        )
-
-        workers: List[WorkerRenderSpec] = []
-
-        # Always render the CPU DaemonSet first. It owns the legacy
-        # ``gpustack-worker`` name.
-        workers.append(
-            WorkerRenderSpec(
-                name="cpu",
-                ds_name=WORKER_DS_BASENAME,
-                runtime="",
-                node_selector=_cpu_node_selector_for(base_node_selector),
-            )
-        )
-
-        # All GPU vendor DaemonSets get a runtime-suffixed name.
-        for runtime in gpu_runtimes:
-            workers.append(
-                WorkerRenderSpec(
-                    name=runtime.value,
-                    ds_name=f"{WORKER_DS_BASENAME}-{runtime.value}",
-                    runtime=runtime.value,
-                    node_selector=_node_selector_for(runtime, base_node_selector),
-                )
-            )
-
-        return workers
-
-
-def _node_selector_for(
-    runtime: ManufacturerEnum, base: Optional[Dict[str, str]]
-) -> Optional[Dict[str, str]]:
-    """
-    Merge the cluster-level base ``nodeSelector`` with the runtime's PCI
-    presence label (``feature.node.kubernetes.io/pci-<id>.present: "true"``)
-    so the DaemonSet only schedules onto nodes carrying that vendor's device.
-    Base keys lose to the PCI label on collision (the PCI label is the
-    vendor-scoping invariant). Returns None when nothing applies.
-    """
-    selector: Dict[str, str] = dict(base or {})
-    pci_id = _MANUFACTURER_PCI_ID.get(runtime)
-    if pci_id:
-        selector[_PCI_NODE_LABEL.format(pci_id=pci_id)] = "true"
-    return selector or None
-
-
-def _cpu_node_selector_for(
-    base: Optional[Dict[str, str]],
-) -> Dict[str, str]:
-    """
-    Merge the cluster-level base ``nodeSelector`` with the CPU node label
-    (``feature.gpustack.ai/acceleratable: "false"``) so the DaemonSet only
-    schedules onto non-acceleratable (CPU-only) nodes. No NFD PCI labels are
-    added. Base keys lose to the CPU label on collision.
-    """
-    selector: Dict[str, str] = dict(base or {})
-    selector[_CPU_NODE_LABEL] = "false"
-    return selector
