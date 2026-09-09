@@ -1,0 +1,55 @@
+---
+title: GLM-5.2 (vLLM)
+description: "Deploy GLM-5.2 with vLLM — Z.ai's DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model with MTP speculative decoding and 800K context, on H20."
+tag: NEW
+---
+
+# Deploying GLM-5.2-FP8 with GPUStack and vLLM
+
+This tutorial guides you through setting up **GLM-5.2-FP8**—the official unquantized/FP8 Mixture-of-Experts model with massive long-context capabilities—using **vLLM (v0.24.0)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `vllm/vllm-openai:v0.25.0`
+* **Hardware Requirements**: H20
+
+### 2. Model Weights Source
+* **Model Name**: `GLM-5.2-FP8`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/ZhipuAI/GLM-5.2-FP8`
+* **draft Model Name**: `RedHatAI/GLM-5.2-speculator.dspark`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/RedHatAI/GLM-5.2-speculator.dspark`
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to Models -> deployment, and select the model deploy / modelscope mode.
+
+### 1. Basic Information
+* **Model Name**: `GLM-5.2-FP8-dspark`
+* **Container Image**: `vllm/vllm-openai:v0.25.0`
+
+### 2. Backend Arguments 
+You can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--max-model-len 131072
+--tensor-parallel-size 8
+--tool-call-parser glm47
+--enable-auto-tool-choice
+--reasoning-parser glm45
+--enable-expert-parallel
+--trust-remote-code
+--gpu-memory-utilization=0.9
+--max-num-batched-tokens 32768
+--max-num-seqs 16
+--speculative-config '{"model":"/var/lib/gpustack/cache/model_scope/RedHatAI/GLM-5.2-speculator.dspark","num_speculative_tokens":7,"method":"dspark"}'
+```
+
+### 3. more config
+
+https://mp.weixin.qq.com/s/PFwWtXkMm6ZPliM6AAbhOw
+
+https://recipes.vllm.ai/zai-org/GLM-5.2?fmode=spec_decoding%3Adspark

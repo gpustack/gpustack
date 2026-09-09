@@ -1,0 +1,54 @@
+---
+title: minimax-m3-mxfp8 (vLLM)
+description: "Deploy minimax-m3-mxfp8 with vLLM "
+tag: NEW
+---
+
+# Deploying minimax-m3-mxfp8 with GPUStack and vLLM
+
+This tutorial guides you through setting up **minimax-m3-mxfp8** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `vllm/vllm-openai:minimax-m3-cu129`
+* **Hardware Requirements**: 8x GPUs H20-3e (supporting hybrid TP / DP / EP execution)
+
+### 2. Model Weights Source
+* **Model Name**: `minimax-m3-mxfp8`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/MiniMax/MiniMax-M3-MXFP8`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `minimax-m3-mxfp8`
+* **Container Image**: `vllm/vllm-openai:minimax-m3-cu129`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+Based on the UI screenshot `image_e85a24.png`, you can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--max-model-len=500000
+--block-size 128
+--enable-expert-parallel
+--tensor-parallel-size 8
+--tool-call-parser minimax_m3
+--enable-auto-tool-choice
+--reasoning-parser minimax_m3
+--mm-encoder-attn-backend FLASHINFER
+--mm-processor-cache-type shm
+--mm-encoder-tp-mode data
+--performance-mode=throughput
+--default-chat-template-kwargs='{"enable_thinking":false}'
+--enable-prefix-caching
+```
+
+### 3. more config
+
+https://recipes.vllm.ai/MiniMaxAI/MiniMax-M3
