@@ -46,6 +46,7 @@ from gpustack.gateway.utils import (
     router_header_key,
     gpustack_original_path_header,
     gpustack_fallback_path_header,
+    gateway_tls_annotations,
 )
 from gpustack.gateway.ext_auth import (
     ext_auth_init_spec_diff,
@@ -252,6 +253,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             annotations={
                 "higress.io/destination": f"{registry.get_service_name_with_port()}",
                 "higress.io/ignore-path-case": "false",
+                **gateway_tls_annotations(),
             },
             labels=managed_labels,
         ),
@@ -819,6 +821,51 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
         GatewayModeEnum.incluster,
     ]:
         validate_ai_statistics_plugin_content_types(cfg=cfg)
+        if cfg.gateway_mode == GatewayModeEnum.incluster:
+            # In-cluster the anchor Ingress belongs to the helm chart, so this
+            # server never writes the annotations and the generated routes
+            # mirror whatever the chart set. Honoring the variables here would
+            # fight the chart for ownership; ignoring them quietly would leave a
+            # floor that was asked for and never applied. Not validated either,
+            # for the same reason they are not used -- refusing to start over a
+            # value this mode has no use for helps nobody. The chart validates
+            # its own keys as it renders them.
+            ignored = {
+                name: value
+                for name, value in (
+                    (
+                        "GPUSTACK_GATEWAY_TLS_MIN_PROTOCOL_VERSION",
+                        envs.GATEWAY_TLS_MIN_PROTOCOL_VERSION,
+                    ),
+                    (
+                        "GPUSTACK_GATEWAY_TLS_MAX_PROTOCOL_VERSION",
+                        envs.GATEWAY_TLS_MAX_PROTOCOL_VERSION,
+                    ),
+                )
+                if value
+            }
+            if ignored:
+                logger.warning(
+                    "Ignoring %s: in-cluster mode takes the gateway's TLS "
+                    "protocol bounds from the %s ingress, which the helm chart "
+                    "owns. Set server.ingress.tls.minProtocolVersion / "
+                    "maxProtocolVersion in the chart instead.",
+                    ", ".join(f"{k}={v}" for k, v in sorted(ignored.items())),
+                    envs.GATEWAY_MIRROR_INGRESS_NAME,
+                )
+        else:
+            # Raises here, before a single Ingress is written, on a TLS version
+            # Higress would reject -- which it would do by keeping its own TLS
+            # 1.0 floor and logging one line in a container nobody is watching.
+            # Logged when set for the same reason: an enforced floor should be
+            # visible in the server's own log, not only inferable from a
+            # handshake failure.
+            tls_annotations = gateway_tls_annotations()
+            if tls_annotations:
+                logger.info(
+                    "Gateway ingresses will be annotated with %s",
+                    ", ".join(f"{k}={v}" for k, v in sorted(tls_annotations.items())),
+                )
         plugin_list: List[Tuple[str, WasmPluginSpec]] = [
             ext_auth_plugin(cfg=cfg),
             ai_statistics_plugin(cfg=cfg),

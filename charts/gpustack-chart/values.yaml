@@ -114,6 +114,22 @@ server:
       #   -----BEGIN PRIVATE KEY-----
       #   MIIE...
       #   -----END PRIVATE KEY-----
+      # Lowest and highest TLS protocol version this Ingress' listener accepts.
+      # One of TLSv1.0, TLSv1.1, TLSv1.2, TLSv1.3.
+      #
+      # This Ingress is the anchor: GPUStack copies these bounds onto every
+      # Ingress it generates for an LLM route, so they land on the whole
+      # gateway, not just the entrypoint. Empty leaves Higress on its own
+      # default, which accepts TLS 1.0 and 1.1 -- what a security scan flags,
+      # and what existing releases already run, so raising the floor is opt-in.
+      #
+      # Changing these on an existing release takes effect on this Ingress
+      # immediately, and on already-generated LLM-route Ingresses at their next
+      # reconcile. Restart the server to propagate at once -- it replays every
+      # route on startup. Left to you rather than rolled automatically, since a
+      # control-plane restart costs more than this setting is usually worth.
+      minProtocolVersion: null
+      maxProtocolVersion: null
 
   # if you have an existing database, set externalDatabaseURL to its connection string
   # e.g. postgresql://user:password@hostname:port/dbname

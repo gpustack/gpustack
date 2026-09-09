@@ -81,6 +81,17 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_GATEWAY_AUTH_RECONCILE_INTERVAL_SECONDS` | How often the server recomputes, from the database, the API keys the gateway authenticates locally. Deletions that bypass the ORM emit no event, so on a public route this is the worst-case time such a key keeps working. | `30`      | Server     |
 | `GPUSTACK_GATEWAY_AUTH_ALLOW_CUSTOM_KEYS`          | Whether a custom API key (one whose secret the user supplied) may be authenticated at the gateway. Off, it keeps working but asks the server on every request. On, the key is published into the gateway's configuration indexed by an unsalted fast hash of the secret itself — identical across deployments, so a weak secret falls to a precomputed table. `custom` imposes no entropy requirement, so turn this off where users choose their own keys — it is re-read on every reconcile, so it withdraws custom keys published while it was on, not just new ones. | `true`    | Server     |
 | `GPUSTACK_GATEWAY_AUTH_MAX_CR_BYTES`               | Byte budget for the key tables and public-route rules the server writes into the gateway's auth plugin. Sized under etcd's ~1.5 MiB object limit; keys past it authenticate via the server on every request.                | `1100000` | Server     |
+| `GPUSTACK_GATEWAY_TLS_MIN_PROTOCOL_VERSION`        | Lowest TLS protocol version the gateway's HTTPS listeners accept. One of `TLSv1.0`, `TLSv1.1`, `TLSv1.2`, `TLSv1.3`; anything else is refused at startup. Empty leaves Higress on its default, which accepts TLS 1.0 and 1.1. Ignored in `incluster` mode — see below. | (empty)   | Server     |
+| `GPUSTACK_GATEWAY_TLS_MAX_PROTOCOL_VERSION`        | Highest version those listeners accept. Same values and same scope; rarely needed.                                                                                                                                         | (empty)   | Server     |
+
+The TLS protocol version configuration is written onto the ingress named by
+`GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME`, and every ingress GPUStack generates for
+an LLM route copies the bounds from it.
+In `incluster` mode that ingress belongs to the helm chart, so set
+`server.ingress.tls.minProtocolVersion` / `maxProtocolVersion` there instead —
+the variables are ignored, and setting one logs a warning. A change applies to
+that ingress immediately and to existing LLM routes at their next reconcile;
+restart the server to propagate at once.
 
 Settings that end up **inside** a gateway plugin's configuration are set in the
 config file under `gateway_plugin` rather than here, so that each mechanism has

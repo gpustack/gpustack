@@ -61,6 +61,7 @@ from gpustack.schemas.clusters import Cluster
 from gpustack.utils.network import is_ipaddress
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException, V1IngressTLS
+from gpustack import envs
 from gpustack.envs import GATEWAY_MIRROR_INGRESS_NAME
 from gpustack.api.exceptions import NotFoundException
 from gpustack.websocket_proxy.message import ServerInfo, RegisteredClientInfo
@@ -686,6 +687,83 @@ async def ensure_mcp_bridge(
             )
 
 
+# Higress' spelling of the TLS version enum on an Ingress: dots, not the
+# underscores Envoy uses in the config these end up in. A value Higress cannot
+# parse fails *open* -- the Ingress still applies, the listener keeps Higress'
+# default floor of TLS 1.0, and the only trace is one line in the
+# higress-controller log -- so the value is checked here rather than passed
+# through and trusted.
+tls_min_protocol_version_annotation = "higress.io/tls-min-protocol-version"
+tls_max_protocol_version_annotation = "higress.io/tls-max-protocol-version"
+tls_protocol_version_annotations = (
+    tls_min_protocol_version_annotation,
+    tls_max_protocol_version_annotation,
+)
+# Weakest first, so a position in this tuple is also the comparison that
+# rejects an inverted min/max pair.
+supported_tls_protocol_versions = ("TLSv1.0", "TLSv1.1", "TLSv1.2", "TLSv1.3")
+
+
+def _normalized_tls_protocol_version(env_name: str, value: str) -> Optional[str]:
+    """Map a configured TLS version onto Higress' spelling, or raise.
+
+    Underscores are accepted because ``TLSv1_2`` is Envoy's own spelling and so
+    the likeliest thing to reach for; it is normalized rather than rejected.
+    """
+    if not value:
+        return None
+    candidate = value.strip().replace("_", ".").lower()
+    for supported in supported_tls_protocol_versions:
+        if candidate == supported.lower():
+            return supported
+    raise ValueError(
+        f"Invalid {env_name}: {value!r}. Valid values are "
+        f"{', '.join(supported_tls_protocol_versions)}."
+    )
+
+
+def gateway_tls_annotations() -> Dict[str, str]:
+    """TLS version bounds for the anchor Ingress, from the environment.
+
+    Only the anchor is configured this way. Every generated LLM-route Ingress
+    copies its bounds off the anchor instead
+    (:func:`mirror_from_anchor_ingress`), the same way it already copies the
+    hostname and the TLS secret -- so there is one place the bounds are set and
+    no way for the routes to drift from the entrypoint they share a listener
+    with.
+
+    Empty unless configured, leaving each deployment on whatever Higress
+    defaults to -- the behaviour deployments already have. Raises ValueError on
+    an unusable configuration, which callers let propagate: a floor that was
+    meant to be enforced and silently is not is worse than a startup failure.
+    """
+    minimum = _normalized_tls_protocol_version(
+        "GPUSTACK_GATEWAY_TLS_MIN_PROTOCOL_VERSION",
+        envs.GATEWAY_TLS_MIN_PROTOCOL_VERSION,
+    )
+    maximum = _normalized_tls_protocol_version(
+        "GPUSTACK_GATEWAY_TLS_MAX_PROTOCOL_VERSION",
+        envs.GATEWAY_TLS_MAX_PROTOCOL_VERSION,
+    )
+    if (
+        minimum is not None
+        and maximum is not None
+        and supported_tls_protocol_versions.index(minimum)
+        > supported_tls_protocol_versions.index(maximum)
+    ):
+        raise ValueError(
+            f"GPUSTACK_GATEWAY_TLS_MIN_PROTOCOL_VERSION ({minimum}) is higher "
+            f"than GPUSTACK_GATEWAY_TLS_MAX_PROTOCOL_VERSION ({maximum}); no "
+            "TLS version would be accepted."
+        )
+    annotations: Dict[str, str] = {}
+    if minimum is not None:
+        annotations[tls_min_protocol_version_annotation] = minimum
+    if maximum is not None:
+        annotations[tls_max_protocol_version_annotation] = maximum
+    return annotations
+
+
 def generate_model_ingress(
     ingress_name: str,
     namespace: str,
@@ -697,6 +775,7 @@ def generate_model_ingress(
     included_proxy_route: Optional[bool] = False,
     extra_annotations: Optional[Dict[str, str]] = None,
     ingress_class_name: str = "higress",
+    tls_protocol_annotations: Optional[Dict[str, str]] = None,
 ) -> k8s_client.V1Ingress:
     retry_policies = "error,timeout,http_503,http_502,non_idempotent"
     matcher_op = "exact"
@@ -707,6 +786,10 @@ def generate_model_ingress(
         "higress.io/proxy-next-upstream-tries": '2',
         "higress.io/proxy-next-upstream": retry_policies,
         **higress_http_header_matcher(matcher_op, "x-higress-llm-model", route_name),
+        # Copied off the anchor Ingress, not read from the environment: these
+        # routes share a TLS listener with it, so a bound set on one and not the
+        # other is a bound Higress may or may not end up applying.
+        **(tls_protocol_annotations or {}),
     }
     if extra_annotations is not None:
         annotations.update(extra_annotations)
@@ -767,9 +850,21 @@ def higress_metadata_equal(
         existing_metadata.annotations = {}
     if expected_metadata.annotations is None:
         expected_metadata.annotations = {}
-    for key in set(
+    compared_keys = set(
         k for k in expected_metadata.annotations if k.startswith("higress.io")
-    ):
+    )
+    # Compared even where the expected set has dropped them, so clearing the
+    # bounds takes the annotations back off the live object. Without this the
+    # object is judged equal, no write happens, and a floor stays in force after
+    # it was turned off -- the one direction that matters for a security
+    # setting.
+    #
+    # This only decides *whether* to rewrite. What a rewrite then keeps is the
+    # caller's business, and callers differ: ensure_model_ingress drops every
+    # higress.io annotation it did not expect, so nothing hand-added survives a
+    # rewrite there whatever triggered it.
+    compared_keys.update(tls_protocol_version_annotations)
+    for key in compared_keys:
         if existing_metadata.annotations.get(key) != expected_metadata.annotations.get(
             key
         ):
@@ -964,11 +1059,12 @@ async def ensure_model_ingress(
             logger.error(f"Failed to get ingress {ingress_name}: {e}")
             return
         existing_ingress = None
-    hostname, tls = await mirror_hostname_tls_from_ingress(
+    anchor = await mirror_from_anchor_ingress(
         network_v1_client=networking_api,
         gateway_namespace=namespace,
         target_ingress_name=GATEWAY_MIRROR_INGRESS_NAME,
     )
+    hostname, tls = anchor.hostname, anchor.tls
     expected_ingress = generate_model_ingress(
         ingress_name=ingress_name,
         route_name=route_name,
@@ -980,6 +1076,7 @@ async def ensure_model_ingress(
         included_proxy_route=included_proxy_route,
         extra_annotations=extra_annotations,
         ingress_class_name=ingress_class_name,
+        tls_protocol_annotations=anchor.tls_protocol_annotations,
     )
 
     if existing_ingress is None:
@@ -1180,21 +1277,38 @@ async def ensure_model_mcp_bridge(
     return desired_registry
 
 
-async def mirror_hostname_tls_from_ingress(
+@dataclass
+class AnchorIngressSettings:
+    """What a generated LLM-route Ingress copies off the anchor Ingress.
+
+    The anchor is the entrypoint Ingress named by
+    ``GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME`` -- written by this server outside
+    in-cluster mode, by the helm chart within it. Everything here describes the
+    TLS listener the generated routes end up sharing with it, which is why it is
+    mirrored rather than configured twice.
+    """
+
+    hostname: Optional[str] = None
+    tls: Optional[List[V1IngressTLS]] = None
+    tls_protocol_annotations: Dict[str, str] = dataclass_field(default_factory=dict)
+
+
+async def mirror_from_anchor_ingress(
     network_v1_client: k8s_client.NetworkingV1Api,
     gateway_namespace: str,
     target_ingress_name: str,
-) -> Tuple[Optional[str], Optional[List[V1IngressTLS]]]:
+) -> AnchorIngressSettings:
     """
-    Mirror TLS settings from an existing ingress to be used in the gateway.
+    Read the listener settings a generated ingress has to match from the anchor.
 
     Parameters:
-        api_client (k8s_client.ApiClient): The Kubernetes API client.
+        network_v1_client (k8s_client.NetworkingV1Api): The Kubernetes networking API client.
         gateway_namespace (str): The namespace where the gateway ingress resides.
-        target_ingress_name (str): The name of the ingress to mirror TLS settings from.
+        target_ingress_name (str): The name of the anchor ingress to mirror from.
 
     Returns:
-        Tuple[Optional[str], Optional[List[V1IngressTLS]]]: A tuple containing the hostname and ingress TLS settings.
+        AnchorIngressSettings: hostname, TLS secret and TLS protocol bounds.
+        Empty when the anchor does not exist.
     """
     try:
         ingress: k8s_client.V1Ingress = await network_v1_client.read_namespaced_ingress(
@@ -1205,17 +1319,34 @@ async def mirror_hostname_tls_from_ingress(
             logger.warning(
                 f"Target ingress {target_ingress_name} not found in namespace {gateway_namespace} for TLS mirroring."
             )
-            return None, None
+            return AnchorIngressSettings()
         else:
             raise
 
-    tls = getattr(ingress.spec, 'tls', None)
+    # ``metadata`` and ``spec`` are both optional on V1Ingress. Anything the API
+    # server hands back has them, so this is not a case anyone should hit -- but
+    # reading through them unguarded means one malformed object raises inside
+    # every model-route reconcile instead of mirroring nothing, and the anchor is
+    # read on each one.
+    metadata = getattr(ingress, 'metadata', None)
+    spec = getattr(ingress, 'spec', None)
+    tls = getattr(spec, 'tls', None)
     hostname = None
-    for rule in ingress.spec.rules or []:
+    for rule in getattr(spec, 'rules', None) or []:
         if rule.host:
             hostname = rule.host
             break
-    return hostname, tls
+    anchor_annotations = getattr(metadata, 'annotations', None) or {}
+    tls_protocol_annotations = {
+        key: anchor_annotations[key]
+        for key in tls_protocol_version_annotations
+        if anchor_annotations.get(key)
+    }
+    return AnchorIngressSettings(
+        hostname=hostname,
+        tls=tls,
+        tls_protocol_annotations=tls_protocol_annotations,
+    )
 
 
 def get_expected_match_list(

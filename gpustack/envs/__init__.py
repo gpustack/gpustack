@@ -328,6 +328,23 @@ GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
     "GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME", "gpustack"
 )
 
+# TLS protocol version floor and ceiling for the gateway's HTTPS listeners,
+# stamped onto every Ingress gpustack manages (the mirror Ingress and every
+# generated LLM route). Both empty by default, which leaves Higress on its own
+# defaults -- a minimum of TLS 1.0, which is what a security scan flags, but
+# also what existing deployments already run, so raising it stays opt-in.
+#
+# Accepted spellings are Higress' own: TLSv1.0 / TLSv1.1 / TLSv1.2 / TLSv1.3.
+# Anything else is rejected at startup rather than passed through, because
+# Higress fails *open* on a value it cannot parse -- see
+# ``gateway_tls_annotations``.
+GATEWAY_TLS_MIN_PROTOCOL_VERSION = os.getenv(
+    "GPUSTACK_GATEWAY_TLS_MIN_PROTOCOL_VERSION", ""
+).strip()
+GATEWAY_TLS_MAX_PROTOCOL_VERSION = os.getenv(
+    "GPUSTACK_GATEWAY_TLS_MAX_PROTOCOL_VERSION", ""
+).strip()
+
 # Heuristics for partial-stream usage estimation.
 # Used by metrics_collector when a gateway report arrives with completed=false
 # (client disconnect, upstream cancel) and token fields are blank or partial.
