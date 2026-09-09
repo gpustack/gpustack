@@ -1,0 +1,70 @@
+{
+  "include": [
+    "gpustack/**/*.py",
+    "charts/gpustack-chart/**",
+    "README.md",
+    "mkdocs.yml"
+  ],
+  "exclude": [
+    "gpustack/client/generated_*.py",
+    "charts/gpustack-chart/charts/**",
+    "static/**",
+    "docker-compose/**",
+    "docs/**",
+    "tests/**",
+    "hack/**",
+    "**/__pycache__/**"
+  ],
+  "rules": [
+    {
+      "path": "gpustack/routes/**/*.py",
+      "merge_system_rule": true,
+      "rule": "FastAPI route handlers. Treat every changed route as security-sensitive. Flag an endpoint without its deliberate authorization tier as wired in gpustack/routes/routes.py: authenticated user, tenant-scoped user, platform administrator, or worker/cluster system principal. For any tenant-reachable list query, require tenant_list_conditions from gpustack/api/tenant.py; for a single row, require assert_resource_visible or an established equivalent before returning or mutating it. Deny by default when ownership is unclear. Flag credentials, API keys, tokens, SAML assertions, or cloud secrets that can reach logs, responses, exceptions, or telemetry. A behavior change or bug fix requires a focused test under tests/routes/."
+    },
+    {
+      "path": "gpustack/api/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Authentication, authorization, tenancy, and API primitives. Flag an authorization bypass, confused principal type, tenant-context loss across a call boundary, or error response that distinguishes absent resources from resources the caller is not allowed to see. Never log, serialize, or return secrets. Keep changes compatible with the route dependency tiers in gpustack/routes/routes.py. A behavior change or bug fix needs a focused test under tests/api/."
+    },
+    {
+      "path": "gpustack/schemas/**/*.py",
+      "merge_system_rule": true,
+      "rule": "SQLModel tables and API schemas. Flag incompatible changes to persisted fields, defaults, serialization aliases, or ownership fields unless accompanied by a safe migration. Flag a model made tenant-reachable without the ownership data and query guards needed for isolation. Separate request input from persisted and response models where exposing a field could leak a secret or permit privilege escalation."
+    },
+    {
+      "path": "gpustack/migrations/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Alembic migrations must support PostgreSQL, openGauss, MySQL, and OceanBase. Flag a change to a released revision; an unguarded migration that cannot safely rerun where table_exists or column_exists applies; PostgreSQL-only enum or JSON behavior without compatible handling; and a missing downgrade unless the irreversible reason is documented. dialect.name only distinguishes PostgreSQL and MySQL, so use the existing migration helpers for openGauss-specific behavior. Treat ownership and permission changes as data-isolation risks."
+    },
+    {
+      "path": "gpustack/server/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Server controllers, services, collectors, and event processing. Flag controller or background-loop work that is not idempotent, retries without bounded backoff or cancellation, leaks sessions/tasks/subprocesses, or leaves model, worker, cluster, cache, or GPU-instance state inconsistent after failure. Flag unbounded fan-out and per-object database or network calls in reconciliation hot paths. Preserve tenant isolation when controllers load resources outside request context. A behavior change or bug fix requires a focused test under tests/server/ or tests/controller/."
+    },
+    {
+      "path": "gpustack/scheduler/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Scheduling code. Flag candidate selection or scoring that violates requested resource constraints, worker availability, model compatibility, cluster/pool affinity, or multi-tenant visibility. Scheduling decisions must be deterministic for equivalent inputs and must not mutate shared state during evaluation. Flag resource arithmetic that can overcommit GPU, VRAM, RAM, or ports, and failure paths that strand reservations. Test changes with representative candidates and edge cases."
+    },
+    {
+      "path": "gpustack/worker/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Worker runtime, inference backends, benchmarks, and local resource management. Flag shell-command or container arguments built from untrusted values without safe argument handling; command, process, port, temporary-file, or GPU allocation leaks; and backend lifecycle operations that cannot safely retry or clean up after a partial failure. Do not log backend credentials or user prompts. Keep hardware and process interaction mocked at the client boundary in tests."
+    },
+    {
+      "path": "gpustack/gateway/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Higress gateway integration and external authorization. Flag any request path that bypasses authentication, tenant isolation, model-route access checks, or rate/metering attribution. Treat headers, URLs, upstream responses, and plugin configuration as untrusted. Prevent request smuggling, unsafe header forwarding, SSRF-style upstream selection, and logging of authorization material."
+    },
+    {
+      "path": "gpustack/codegen/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Client-code generator and templates. Generated clients under gpustack/client/generated_*.py must never be hand-edited. Review template and generator changes for correct API paths, serialization, authentication, error propagation, and backward compatibility. Require make generate as a reminder; generated output is excluded, so never claim it is present or absent."
+    },
+    {
+      "path": "charts/gpustack-chart/**",
+      "merge_system_rule": true,
+      "rule": "GPUStack Helm chart. Flag templates that make configuration, resource, security, or lifecycle behavior diverge from charts/gpustack-chart/values.yaml and the server or worker runtime they configure. Ensure Secret values are never emitted into ConfigMaps, logs, or unsafe command arguments; generated Secrets must remain stable across upgrades where required. Flag invalid resource names, selectors, service ports, probes, volume mounts, RBAC, or server/worker topology. Chart.yaml dependency pins must remain compatible with their consumers: the gpustack-operator dependency pin tracks gpustack/__init__.py as enforced by tests/charts/test_operator_version_pin.py. Do not review vendored dependencies in charts/gpustack-chart/charts/; they are excluded."
+    }
+  ]
+}
