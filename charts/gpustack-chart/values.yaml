@@ -297,17 +297,15 @@ worker:
   #   cambricon - Cambricon MLU; mounts /usr/bin/cnmon and /usr/local/neuware
   #   thead     - T-Head PPU; mounts /usr/local/PPU_SDK
   #
-  # A CPU worker DaemonSet (`<release>-worker`) is always rendered and uses
-  # the nodeSelector `feature.gpustack.ai/acceleratable: "false"` to schedule
-  # onto non-acceleratable (CPU-only) nodes. It has no vendor-specific volume
-  # mounts or runtimeClassName.
+  # A CPU worker DaemonSet (`<release>-worker`) is rendered alongside these
+  # unless `cpuEnabled` below is false; see that key for what it covers.
   #
   # Rendering modes:
   #   - [] (empty): only the CPU DaemonSet `<release>-worker` is rendered
   #     (single mode — no vendor labels, no anti-affinity).
-  #   - 1+ entries: CPU DaemonSet `<release>-worker` plus one DaemonSet per
-  #     GPU vendor named `<release>-worker-<vendor>` (multi-vendor mode).
-  #     All worker pods get a required podAntiAffinity
+  #   - 1+ entries: the CPU DaemonSet `<release>-worker` (when enabled) plus one
+  #     DaemonSet per GPU vendor named `<release>-worker-<vendor>` (multi-vendor
+  #     mode). All worker pods get a required podAntiAffinity
   #     (topologyKey=hostname, namespaceSelector={}) so two GPUStack worker
   #     pods cannot share a node even across namespaces — protects the
   #     `hostNetwork: true` ports from collision.
@@ -319,6 +317,19 @@ worker:
   # schedule onto GPU nodes.
   gpuVendors:
     - nvidia
+  # Render the CPU worker DaemonSet (`<release>-worker`), which uses the
+  # nodeSelector `feature.gpustack.ai/acceleratable: "false"` to schedule onto
+  # non-acceleratable (CPU-only) nodes and carries no vendor-specific volume
+  # mounts or runtimeClassName.
+  #
+  # Set false for a cluster whose CPU-only nodes must not gain workers — the
+  # usual case being a control plane sharing the cluster with its GPU nodes.
+  # `gpuVendors` must then name at least one vendor, otherwise the release would
+  # render no worker DaemonSet at all and the install is refused.
+  #
+  # The GPU DaemonSets keep their `-<vendor>` suffix either way: turning this
+  # off never promotes one of them onto the unsuffixed name.
+  cpuEnabled: true
   # Base nodeSelector for ALL worker DaemonSets. When non-empty, REPLACES
   # `global.nodeSelector` entirely (no merging with global). Leave empty
   # to fall back to `global.nodeSelector`. Each DaemonSet additionally

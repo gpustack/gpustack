@@ -13,10 +13,19 @@ Build the list of DaemonSets to render. Each entry carries:
 */}}
 {{- $workers := list }}
 
-{{- /* CPU DaemonSet — always rendered first, owns the legacy name. */}}
+{{- /*
+CPU DaemonSet — rendered first, and the only one that takes the unsuffixed
+legacy name. Switched off for a cluster whose CPU nodes carry the control plane
+(or anything else that must not gain a worker); the vendor DaemonSets below keep
+their `-<vendor>` suffix either way, so turning it off never promotes one of
+them onto this name — a rename that would make a vendor DaemonSet adopt the CPU
+one's pods and reschedule a whole runtime for a nodeSelector change.
+*/}}
+{{- if include "gpustack.workerCPUEnabled" . }}
 {{- $cpuLabel := dict "feature.gpustack.ai/acceleratable" "false" }}
 {{- $cpuSel := mergeOverwrite (deepCopy $base) $cpuLabel }}
 {{- $workers = append $workers (dict "name" "cpu" "dsName" $dsBasename "runtime" "" "nodeSelector" $cpuSel) }}
+{{- end }}
 
 {{- /* GPU vendor DaemonSets — all get suffixed names. */}}
 {{- range $vendor := $vendors }}
@@ -30,7 +39,12 @@ Build the list of DaemonSets to render. Each entry carries:
   {{- $workers = append $workers (dict "name" $vendor "dsName" (printf "%s-%s" $dsBasename $vendor) "runtime" $vendor "nodeSelector" $merged) }}
 {{- end }}
 
-{{- $multiVendor := gt (len $workers) 1 }}
+{{- /*
+Shared with worker-service.yaml, which selects on the labels this flag renders:
+computing it here from `len $workers` instead would disagree with that Service
+the moment the CPU DaemonSet is off and a single vendor is on.
+*/}}
+{{- $multiVendor := include "gpustack.multiVendorMode" . }}
 
 {{- range $idx, $w := $workers }}
 {{- if $idx }}

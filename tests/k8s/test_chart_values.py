@@ -23,6 +23,7 @@ import yaml
 from gpustack.k8s.chart import chart_available
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.k8s.values import (
+    CANONICAL_GPU_VENDORS,
     applied_revision,
     build_chart_values,
     split_image_reference,
@@ -173,6 +174,108 @@ class TestGpuVendors:
         assert match, "the chart no longer declares a canonical vendor order"
         canonical = json.loads(match.group(1))
         assert canonical == sorted(canonical)
+
+    def test_python_knows_the_same_vendors_the_chart_renders(self):
+        # `CANONICAL_GPU_VENDORS` decides whether a manifest would deploy any
+        # worker at all, and it is only right while it names what the chart
+        # renders a DaemonSet for. A vendor added on one side alone makes the
+        # server refuse a release the chart installs, or hand over an empty one.
+        helper = (pathlib.Path(CHART) / "templates" / "_helper.tpl").read_text()
+        match = re.search(
+            r'define "gpustack\.canonicalVendorOrder".*?(\[[^]]*\])', helper, re.S
+        )
+        assert match, "the chart no longer declares a canonical vendor order"
+        assert set(json.loads(match.group(1))) == CANONICAL_GPU_VENDORS
+
+
+class TestCPUWorker:
+    """`cpu_worker_enabled` — whether the manifest covers the nodes no GPU
+    runtime claims. Off is for a cluster whose CPU-only nodes carry the control
+    plane and must not gain a worker."""
+
+    def test_enabled_by_default(self):
+        assert build_chart_values(config())["worker"]["cpuEnabled"] is True
+
+    def test_disabling_it_leaves_the_vendor_daemonsets_suffixed(self):
+        # The name is the whole point: were the single remaining DaemonSet
+        # promoted to `gpustack-worker`, it would adopt the CPU DaemonSet's pods
+        # on the upgrade that disables this and reschedule the runtime.
+        values = build_chart_values(
+            config(runtimes=[ManufacturerEnum.NVIDIA], cpu_worker_enabled=False)
+        )
+        assert values["worker"]["cpuEnabled"] is False
+        # DaemonSets only: the worker ServiceAccount and RBAC carry the
+        # unsuffixed name too, and they are not per-runtime.
+        daemonsets = {
+            doc["metadata"]["name"]
+            for doc in render(values)
+            if doc["kind"] == "DaemonSet"
+        }
+        assert "gpustack-worker-nvidia" in daemonsets
+        assert "gpustack-worker" not in daemonsets
+
+    def test_refuses_a_manifest_that_would_deploy_no_worker(self):
+        # The chart refuses it too, but there the failure lands in the
+        # in-cluster Job's logs instead of in this response.
+        with pytest.raises(ValueError, match="no worker at all"):
+            build_chart_values(config(cpu_worker_enabled=False))
+
+    def test_the_no_gpu_sentinel_is_not_a_selected_runtime(self):
+        # `_gpu_vendors` drops it, so a request carrying only the sentinel
+        # selects nothing — the case the guard has to catch on a non-empty list.
+        with pytest.raises(ValueError, match="no worker at all"):
+            build_chart_values(
+                config(runtimes=[ManufacturerEnum.UNKNOWN], cpu_worker_enabled=False)
+            )
+
+    def test_an_overlay_can_supply_the_runtime_the_request_left_out(self):
+        # `helmValues` reaches `worker.gpuVendors`, so the release this asks for
+        # has a worker in it. Checking the request instead of the merged values
+        # would refuse a manifest the chart installs happily.
+        values = build_chart_values(
+            config(
+                cpu_worker_enabled=False,
+                k8s_options=K8sOptions(
+                    helm_values={"worker": {"gpuVendors": ["nvidia"]}}
+                ),
+            )
+        )
+        assert values["worker"]["gpuVendors"] == ["nvidia"]
+        daemonsets = {
+            doc["metadata"]["name"]
+            for doc in render(values)
+            if doc["kind"] == "DaemonSet"
+        }
+        assert "gpustack-worker-nvidia" in daemonsets
+        assert "gpustack-worker" not in daemonsets
+
+    @pytest.mark.parametrize("written", [False, "false", "False"])
+    def test_an_overlay_can_be_what_empties_the_release(self, written):
+        # The mirror image: the request kept the CPU worker, the overlay took it
+        # away, and nothing selected a runtime. Read off the request this passes
+        # and fails in the cluster instead. Any spelling of false, as in the
+        # chart.
+        with pytest.raises(ValueError, match="no worker at all"):
+            build_chart_values(
+                config(
+                    k8s_options=K8sOptions(
+                        helm_values={"worker": {"cpuEnabled": written}}
+                    )
+                )
+            )
+
+    def test_an_overlay_vendor_the_chart_would_drop_is_not_a_worker(self):
+        # The chart renders a DaemonSet only for a vendor it knows, so a name
+        # outside that set leaves the release as empty as no name at all.
+        with pytest.raises(ValueError, match="no worker at all"):
+            build_chart_values(
+                config(
+                    cpu_worker_enabled=False,
+                    k8s_options=K8sOptions(
+                        helm_values={"worker": {"gpuVendors": ["bogus"]}}
+                    ),
+                )
+            )
 
 
 class TestWorkerOnlyValues:

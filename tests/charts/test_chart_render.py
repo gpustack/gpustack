@@ -195,6 +195,107 @@ class TestServerAndWorker:
         }
 
 
+class TestCPUWorkerDisabled:
+    """`worker.cpuEnabled=false` — no workers on the nodes no runtime claims.
+
+    The case it exists for is a control plane sharing the cluster with its GPU
+    nodes: the CPU DaemonSet would otherwise cover exactly the nodes that must
+    not gain a worker.
+    """
+
+    ARGS = (
+        "--set",
+        "worker.enabled=true",
+        "--set",
+        "worker.cpuEnabled=false",
+        "--set",
+        "worker.gpuVendors={nvidia}",
+    )
+
+    def test_renders_the_vendor_daemonsets_and_not_the_cpu_one(self):
+        docs = render(*self.ARGS)
+        daemonsets = names(docs, "DaemonSet")
+        assert "gpustack-worker-nvidia" in daemonsets
+        # Suffixed even as the only worker DaemonSet. Promoting it onto the
+        # unsuffixed name would make it adopt the CPU DaemonSet's pods on an
+        # upgrade and reschedule the whole runtime for a nodeSelector change.
+        assert "gpustack-worker" not in daemonsets
+
+    def test_the_worker_service_still_selects_the_daemonset_it_has(self):
+        # The Service picks its selector from the same mode flag the DaemonSet
+        # labels do. Deriving that flag from the DaemonSet count instead would
+        # leave this single-vendor case labelled `app: gpustack-worker` and
+        # selected by `component: worker`, i.e. a Service with no endpoints.
+        docs = render(*self.ARGS)
+        service = next(
+            d
+            for d in docs
+            if d["kind"] == "Service" and d["metadata"]["name"] == "worker"
+        )
+        daemonset = next(
+            d
+            for d in docs
+            if d["kind"] == "DaemonSet"
+            and d["metadata"]["name"] == "gpustack-worker-nvidia"
+        )
+        labels = daemonset["spec"]["template"]["metadata"]["labels"]
+        assert service["spec"]["selector"].items() <= labels.items()
+
+    def test_refuses_a_release_with_no_worker_left_to_deploy(self):
+        error = render_error(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            "worker.cpuEnabled=false",
+            "--set",
+            "worker.gpuVendors=null",
+        )
+        assert "no worker DaemonSet at all" in error
+
+    def test_refuses_a_vendor_the_daemonsets_would_not_render(self):
+        # The DaemonSet template iterates the *canonical* vendors and renders
+        # nothing for a name outside them, so a guard counting the raw list
+        # would pass a typo straight into the state it exists to reject.
+        error = render_error(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            "worker.cpuEnabled=false",
+            "--set",
+            "worker.gpuVendors={bogus}",
+        )
+        assert "no supported GPU vendor" in error
+        # The names it would have accepted, so the typo is fixable from the
+        # message alone.
+        assert "nvidia" in error
+
+    def test_an_unset_value_keeps_the_cpu_daemonset(self):
+        # Helm drops a key set to null, and plain truthiness would read that
+        # `nil` as false — deleting the CPU workers from a cluster that only
+        # meant to leave the key out.
+        docs = render("--set", "worker.enabled=true", "--set", "worker.cpuEnabled=null")
+        assert "gpustack-worker" in names(docs, "DaemonSet")
+
+    @pytest.mark.parametrize("written", ["false", "False", "FALSE"])
+    def test_a_string_false_turns_it_off_like_a_bool(self, written):
+        # `--set-string` (and a values file quoting the value) would otherwise
+        # be a non-empty string, i.e. read as "on" — the opposite of what it
+        # says. YAML reads an unquoted `False` as the bool, so only the quoted
+        # spellings reach the template with their case intact.
+        docs = render(
+            "--set",
+            "worker.enabled=true",
+            "--set-string",
+            f"worker.cpuEnabled={written}",
+        )
+        assert "gpustack-worker" not in names(docs, "DaemonSet")
+
+    def test_a_server_only_release_is_unaffected(self):
+        # The guard is about workers; a control plane that renders none of them
+        # must not be refused for switching this off.
+        render("--set", "worker.cpuEnabled=false")
+
+
 class TestWorkerOnly:
     def test_deploys_no_server_side_components(self):
         docs = render(*WORKER_ONLY, *SERVER_AND_TOKEN)

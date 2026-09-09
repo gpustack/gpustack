@@ -60,6 +60,15 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
     cluster_owner_namespace: Optional[str] = None
     cluster_owner_principal_identifier: Optional[str] = None
     runtimes: Optional[List[ManufacturerEnum]] = None
+    # Whether the CPU worker DaemonSet is part of this deployment. It covers the
+    # nodes no GPU runtime claims, so a cluster whose CPU-only nodes carry the
+    # control plane — the case this switch exists for — turns it off and gets
+    # workers on its GPU nodes alone. Something then has to name a supported
+    # vendor, or there would be nothing left to deploy — ``runtimes`` here or
+    # ``worker.gpuVendors`` in the cluster's ``helmValues``, which is why
+    # ``build_chart_values`` refuses this on the merged values rather than on
+    # this field.
+    cpu_worker_enabled: bool = True
     k8s_options: Optional[K8sOptions] = None
     # Cluster-level default container registry (mirrors
     # ``clusters.system_default_container_registry``). Drives the operator
