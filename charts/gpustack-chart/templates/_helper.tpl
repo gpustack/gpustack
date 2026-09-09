@@ -252,6 +252,75 @@ tls:
 {{- end -}}
 
 
+{{/*
+Normalize one TLS protocol version onto Higress' spelling, or fail the render.
+
+Refusing the install is the point. Higress fails *open* on a version string it
+cannot parse: the Ingress applies, the listener keeps its TLS 1.0 default, and
+the only trace is a line in the higress-controller log. A `TLSv1.4` or a
+`TLSv1_2` that rendered fine would leave the floor exactly where it was while
+looking like it had been raised.
+
+Underscores and case are normalized rather than rejected -- `TLSv1_2` is Envoy's
+own spelling and the likeliest thing to reach for. Mirrors
+`_normalized_tls_protocol_version` in gpustack/gateway/utils.py, which does the
+same for the environment variables the non-in-cluster modes use.
+
+Args: dict with `input` (the configured value) and `field` (its values path,
+used in the error message).
+*/}}
+{{- define "normalized_tls_protocol_version" -}}
+{{- $candidate := .input | toString | replace "_" "." | lower -}}
+{{- $match := "" -}}
+{{- range $supported := list "TLSv1.0" "TLSv1.1" "TLSv1.2" "TLSv1.3" -}}
+{{- if eq $candidate (lower $supported) -}}{{- $match = $supported -}}{{- end -}}
+{{- end -}}
+{{- if not $match -}}
+{{/* `.input | toString` before %q: %q on a bool or int renders as %!q(bool=false)
+or an escape sequence, which tells the operator nothing about what they typed. */}}
+{{- fail (printf "%s: %q is not a TLS version Higress accepts. Valid values are TLSv1.0, TLSv1.1, TLSv1.2, TLSv1.3 -- anything else is ignored by Higress, which keeps accepting TLS 1.0." .field (.input | toString)) -}}
+{{- end -}}
+{{- $match -}}
+{{- end -}}
+
+{{/*
+TLS protocol version bounds for this Ingress' listener, as Higress' annotations.
+
+Only rendered here. The Ingress this chart creates is the anchor GPUStack reads
+when it generates an Ingress per LLM route, so setting the bounds once here puts
+them on the whole gateway -- there is no second place to keep in step.
+*/}}
+{{- define "ingress_tls_protocol_annotations" -}}
+{{- $tls := .Values.server.ingress.tls -}}
+{{- $min := "" -}}
+{{- $max := "" -}}
+{{/* An explicit nil/empty test rather than `with`, which also treats `false`
+and `0` as unset. Those are not TLS versions, but letting them skip validation
+would render no annotation at all and leave the listener on TLS 1.0 -- the
+silent failure this block exists to prevent. Anything not null and not empty
+goes to the validator, which names it in the error. */}}
+{{- $rawMin := $tls.minProtocolVersion -}}
+{{- if and (not (kindIs "invalid" $rawMin)) (ne (toString $rawMin) "") -}}
+{{- $min = include "normalized_tls_protocol_version" (dict "input" $rawMin "field" "server.ingress.tls.minProtocolVersion") -}}
+{{- end -}}
+{{- $rawMax := $tls.maxProtocolVersion -}}
+{{- if and (not (kindIs "invalid" $rawMax)) (ne (toString $rawMax) "") -}}
+{{- $max = include "normalized_tls_protocol_version" (dict "input" $rawMax "field" "server.ingress.tls.maxProtocolVersion") -}}
+{{- end -}}
+{{/* Lexical order matches version order across these four, all same length and
+differing only in the last digit, so this needs no index lookup. */}}
+{{- if and $min $max (gt $min $max) -}}
+{{- fail (printf "server.ingress.tls.minProtocolVersion (%s) is higher than server.ingress.tls.maxProtocolVersion (%s); no TLS version would be accepted." $min $max) -}}
+{{- end -}}
+{{- with $min }}
+higress.io/tls-min-protocol-version: "{{ . }}"
+{{- end }}
+{{- with $max }}
+higress.io/tls-max-protocol-version: "{{ . }}"
+{{- end }}
+{{- end -}}
+
+
 {{- define "image_pull_secrets" -}}
 {{- with .Values.global.imagePullSecrets }}
 imagePullSecrets:

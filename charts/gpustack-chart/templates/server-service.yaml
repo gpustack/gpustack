@@ -60,6 +60,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
 {{ include "chart_labels" . | indent 4 }}
+  {{- with (include "ingress_tls_protocol_annotations" . | trim) }}
+  annotations:
+    {{- nindent 4 . }}
+  {{- end }}
 spec:
   ingressClassName: {{ .Values.gateway.ingressClassname }}
   rules:

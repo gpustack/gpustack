@@ -462,3 +462,100 @@ class TestGuards:
             assert "gpustack.ai/pool" not in selectors.get(
                 name, {}
             ), f"{name} covers the nodes it serves and must not be confined"
+
+
+class TestGatewayTLSVersions:
+    """The chart's Ingress is the anchor the whole gateway's TLS floor comes from.
+
+    GPUStack copies the bounds off it onto every Ingress it generates for an LLM
+    route, so this one annotation is the only place they are set. The server is
+    deliberately *not* told through its environment: two owners for one anchor is
+    how the chart and the server end up disagreeing about it.
+    """
+
+    def ingress_annotations(self, docs: list[dict]) -> dict[str, str]:
+        for doc in docs:
+            if doc["kind"] == "Ingress" and doc["metadata"]["name"] == "gpustack":
+                return doc["metadata"].get("annotations") or {}
+        pytest.fail("Ingress/gpustack not rendered")
+
+    def test_unset_by_default(self):
+        # Existing releases keep Higress' defaults: stamping a floor on upgrade
+        # would drop clients they still serve.
+        assert self.ingress_annotations(render()) == {}
+
+    def test_both_bounds_land_on_the_anchor(self):
+        docs = render(
+            "--set",
+            "server.ingress.tls.minProtocolVersion=TLSv1.2",
+            "--set",
+            "server.ingress.tls.maxProtocolVersion=TLSv1.3",
+        )
+        assert self.ingress_annotations(docs) == {
+            "higress.io/tls-min-protocol-version": "TLSv1.2",
+            "higress.io/tls-max-protocol-version": "TLSv1.3",
+        }
+
+    def test_a_floor_alone_leaves_the_ceiling_to_higress(self):
+        docs = render("--set", "server.ingress.tls.minProtocolVersion=TLSv1.2")
+        assert self.ingress_annotations(docs) == {
+            "higress.io/tls-min-protocol-version": "TLSv1.2"
+        }
+
+    def test_the_server_is_not_told_through_its_environment(self):
+        # In-cluster the server reads the anchor, not its own environment. An env
+        # var here would be a second owner for the same setting.
+        docs = render("--set", "server.ingress.tls.minProtocolVersion=TLSv1.2")
+        env = container_env(docs, "StatefulSet", "gpustack-server")
+        assert not [name for name in env if "TLS_MIN" in name or "TLS_MAX" in name]
+
+    def test_a_release_predating_these_keys_renders_unchanged(self):
+        # A values file that sets only cert/key, as every existing release has.
+        # The new keys must be absent rather than empty-valued: `higress.io/
+        # tls-min-protocol-version: ""` is a value Higress rejects, and it
+        # rejects it by keeping TLS 1.0.
+        docs = render(
+            "--set",
+            "server.ingress.hostname=gpustack.example.com",
+            "--set",
+            "server.ingress.tls.cert=dGVzdA==",
+            "--set",
+            "server.ingress.tls.key=dGVzdA==",
+        )
+        assert self.ingress_annotations(docs) == {}
+
+    def test_the_envoy_spelling_is_normalized(self):
+        # TLSv1_2 is Envoy's spelling and the likeliest thing to reach for.
+        # Higress rejects it, so the chart translates rather than passes it on.
+        docs = render("--set", "server.ingress.tls.minProtocolVersion=tlsv1_2")
+        assert self.ingress_annotations(docs) == {
+            "higress.io/tls-min-protocol-version": "TLSv1.2"
+        }
+
+    def test_an_unusable_version_is_refused(self):
+        # Refusing the install is the point: Higress ignores a value it cannot
+        # parse and keeps accepting TLS 1.0, so a render that succeeded here
+        # would look like a raised floor and be none.
+        error = render_error("--set", "server.ingress.tls.minProtocolVersion=TLSv1.4")
+        assert "is not a TLS version Higress accepts" in error
+
+    def test_an_inverted_range_is_refused(self):
+        error = render_error(
+            "--set",
+            "server.ingress.tls.minProtocolVersion=TLSv1.3",
+            "--set",
+            "server.ingress.tls.maxProtocolVersion=TLSv1.2",
+        )
+        assert "no TLS version would be accepted" in error
+
+    def test_falsey_scalars_are_validated_not_skipped(self):
+        # `with` treats false and 0 as unset. Neither is a TLS version, but
+        # skipping them would render no annotation and leave TLS 1.0 in place --
+        # the silent failure this validation exists to prevent.
+        for value in ("false", "0"):
+            error = render_error(
+                "--set", f"server.ingress.tls.minProtocolVersion={value}"
+            )
+            assert "is not a TLS version Higress accepts" in error
+            # The operator has to recognize what they typed in the message.
+            assert f'"{value}"' in error

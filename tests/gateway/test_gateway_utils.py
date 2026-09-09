@@ -4,8 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
+from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException
 
+from gpustack import envs
 from gpustack.api.exceptions import NotFoundException
 from gpustack.gateway.utils import (
     RoutePrefix,
@@ -13,10 +15,13 @@ from gpustack.gateway.utils import (
     diff_proxies,
     diff_registries,
     ensure_model_ingress,
+    gateway_tls_annotations,
     generate_model_ingress,
     generic_proxy_router_diff_spec,
     get_instance_id_from_header,
+    higress_metadata_equal,
     lora_registry_name_suffix,
+    mirror_from_anchor_ingress,
     model_instance_registry,
     model_instances_registry_list,
     provider_proxy_plugin_spec,
@@ -776,3 +781,186 @@ async def test_ensure_model_ingress_with_destinations_still_creates():
         body.metadata.annotations["higress.io/destination"]
         == "100% svc.gpustack.svc.cluster.local:80"
     )
+
+
+# --- Gateway TLS protocol version bounds -----------------------------------
+#
+# The failure these guard is silent: Higress refuses an annotation value it
+# cannot parse by keeping its own TLS 1.0 floor, logging one line in a container
+# nobody watches, and applying the Ingress anyway. So a wrong spelling here does
+# not break a deployment loudly -- it leaves a security scan's finding in place
+# while the operator believes it is fixed.
+
+
+@pytest.fixture
+def tls_versions(monkeypatch):
+    """Set the two TLS environment variables as the server reads them."""
+
+    def _set(minimum: str = "", maximum: str = ""):
+        monkeypatch.setattr(envs, "GATEWAY_TLS_MIN_PROTOCOL_VERSION", minimum)
+        monkeypatch.setattr(envs, "GATEWAY_TLS_MAX_PROTOCOL_VERSION", maximum)
+
+    return _set
+
+
+def test_tls_annotations_are_absent_by_default(tls_versions):
+    # Unset must stay unset: stamping a floor on upgrade would drop clients an
+    # existing deployment still serves.
+    tls_versions()
+    assert gateway_tls_annotations() == {}
+
+
+def test_tls_annotations_use_higress_spelling(tls_versions):
+    tls_versions(minimum="TLSv1.2", maximum="TLSv1.3")
+    assert gateway_tls_annotations() == {
+        "higress.io/tls-min-protocol-version": "TLSv1.2",
+        "higress.io/tls-max-protocol-version": "TLSv1.3",
+    }
+
+
+def test_tls_annotations_normalize_the_envoy_spelling(tls_versions):
+    # TLSv1_2 is Envoy's own spelling and the likeliest thing to reach for, but
+    # Higress rejects it. Normalized rather than passed through and ignored.
+    tls_versions(minimum="tlsv1_2")
+    assert gateway_tls_annotations() == {
+        "higress.io/tls-min-protocol-version": "TLSv1.2"
+    }
+
+
+@pytest.mark.parametrize("value", ["1.2", "TLS1.2", "TLSv1.4", "yes"])
+def test_tls_annotations_reject_an_unusable_version(tls_versions, value):
+    tls_versions(minimum=value)
+    with pytest.raises(ValueError, match="Valid values are"):
+        gateway_tls_annotations()
+
+
+def test_tls_annotations_reject_an_inverted_range(tls_versions):
+    tls_versions(minimum="TLSv1.3", maximum="TLSv1.2")
+    with pytest.raises(ValueError, match="no TLS version would be accepted"):
+        gateway_tls_annotations()
+
+
+def test_model_ingress_carries_the_mirrored_bounds(tls_versions):
+    # Mirrored off the anchor, never read from the environment here: in-cluster
+    # the anchor belongs to the helm chart and this server's environment has
+    # nothing to say about it.
+    tls_versions(minimum="TLSv1.3")
+    ingress = generate_model_ingress(
+        ingress_name="ai-route-route-42.internal",
+        namespace="default",
+        route_name="my-route",
+        destinations="100% svc.default.svc.cluster.local:80",
+        tls_protocol_annotations={"higress.io/tls-min-protocol-version": "TLSv1.2"},
+    )
+    assert (
+        ingress.metadata.annotations["higress.io/tls-min-protocol-version"] == "TLSv1.2"
+    )
+    assert "higress.io/tls-max-protocol-version" not in ingress.metadata.annotations
+
+
+def test_model_ingress_without_an_anchor_bound_carries_none(tls_versions):
+    tls_versions(minimum="TLSv1.2")
+    ingress = generate_model_ingress(
+        ingress_name="ai-route-route-42.internal",
+        namespace="default",
+        route_name="my-route",
+        destinations="100% svc.default.svc.cluster.local:80",
+    )
+    assert not [
+        k for k in ingress.metadata.annotations if "tls-m" in k
+    ], "the environment must not reach a generated route directly"
+
+
+@pytest.mark.asyncio
+async def test_anchor_mirroring_reads_hostname_tls_and_bounds():
+    anchor = k8s_client.V1Ingress(
+        metadata=k8s_client.V1ObjectMeta(
+            annotations={
+                "higress.io/tls-min-protocol-version": "TLSv1.2",
+                "higress.io/destination": "svc:80",
+            }
+        ),
+        spec=k8s_client.V1IngressSpec(
+            rules=[k8s_client.V1IngressRule(host="gpustack.example.com")],
+            tls=[
+                k8s_client.V1IngressTLS(
+                    hosts=["gpustack.example.com"], secret_name="tls-x"
+                )
+            ],
+        ),
+    )
+    api = MagicMock()
+    api.read_namespaced_ingress = AsyncMock(return_value=anchor)
+
+    settings = await mirror_from_anchor_ingress(
+        network_v1_client=api,
+        gateway_namespace="higress-system",
+        target_ingress_name="gpustack",
+    )
+
+    assert settings.hostname == "gpustack.example.com"
+    assert settings.tls[0].secret_name == "tls-x"
+    # Only the TLS bounds are mirrored; the anchor's own routing annotations
+    # would send every generated route to the control plane.
+    assert settings.tls_protocol_annotations == {
+        "higress.io/tls-min-protocol-version": "TLSv1.2"
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_anchor_without_metadata_or_spec_mirrors_nothing():
+    # Both are optional on V1Ingress. Nothing the API server returns looks like
+    # this, but the anchor is re-read on every model-route reconcile, so raising
+    # here would take the whole loop down rather than mirror nothing.
+    api = MagicMock()
+    api.read_namespaced_ingress = AsyncMock(return_value=k8s_client.V1Ingress())
+
+    settings = await mirror_from_anchor_ingress(
+        network_v1_client=api,
+        gateway_namespace="higress-system",
+        target_ingress_name="gpustack",
+    )
+
+    assert settings.hostname is None
+    assert settings.tls is None
+    assert settings.tls_protocol_annotations == {}
+
+
+@pytest.mark.asyncio
+async def test_a_missing_anchor_mirrors_nothing():
+    api = MagicMock()
+    api.read_namespaced_ingress = AsyncMock(
+        side_effect=ApiException(status=404, reason="Not Found")
+    )
+
+    settings = await mirror_from_anchor_ingress(
+        network_v1_client=api,
+        gateway_namespace="higress-system",
+        target_ingress_name="gpustack",
+    )
+
+    assert settings.hostname is None
+    assert settings.tls is None
+    assert settings.tls_protocol_annotations == {}
+
+
+def test_clearing_the_tls_bound_makes_a_live_ingress_unequal():
+    # Dropping a bound from the expected set has to read as a difference. If it
+    # did not, the object would be judged equal, never rewritten, and the floor
+    # would stay in force after it was turned off.
+    existing = k8s_client.V1ObjectMeta(
+        annotations={
+            "higress.io/destination": "svc:80",
+            "higress.io/tls-min-protocol-version": "TLSv1.2",
+        }
+    )
+    expected = k8s_client.V1ObjectMeta(annotations={"higress.io/destination": "svc:80"})
+    assert not higress_metadata_equal(existing, expected)
+    # Other higress.io annotations stay compared one-way, so an unmanaged one
+    # does not on its own provoke a rewrite. Whether it survives a rewrite
+    # provoked by something else is the caller's call, not this function's.
+    existing.annotations = {
+        "higress.io/destination": "svc:80",
+        "higress.io/ignore-path-case": "true",
+    }
+    assert higress_metadata_equal(existing, expected)
