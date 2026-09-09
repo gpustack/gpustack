@@ -988,8 +988,19 @@ async def get_cluster_manifests(
         description=(
             "GPU vendor runtimes to include in the manifest. Repeat the "
             "parameter for multiple vendors (e.g. ?runtime=nvidia&runtime=ascend). "
-            "The CPU worker DaemonSet is always rendered regardless of this "
-            "parameter."
+            "The CPU worker DaemonSet is rendered alongside them unless "
+            "`disable_cpu_worker` turns it off."
+        ),
+    ),
+    disable_cpu_worker: bool = Query(
+        False,
+        description=(
+            "Leave the CPU worker DaemonSet out of the manifest. It covers the "
+            "nodes no GPU runtime claims, so this is what keeps workers off the "
+            "CPU-only nodes of a cluster that also hosts the control plane. A "
+            "supported GPU vendor must then be selected, by `runtime` here or "
+            "by `worker.gpuVendors` in the cluster's `helmValues`; a manifest "
+            "that would deploy no worker at all is refused."
         ),
     ),
 ):
@@ -1031,6 +1042,7 @@ async def get_cluster_manifests(
         "registration": get_registration_from_cluster(request, cluster),
         "cluster_owner_principal_identifier": principal_namespace_identifier(principal),
         "runtimes": runtime,
+        "cpu_worker_enabled": not disable_cpu_worker,
         "k8s_options": k8s_options,
         "system_default_container_registry": cluster.system_default_container_registry
         or cfg.system_default_container_registry,
@@ -1054,11 +1066,13 @@ async def get_cluster_manifests(
     try:
         yaml_content = render_bootstrap(config)
     except ValueError as e:
-        # The cluster is configured in a way the chart cannot express — an image
-        # pinned by digest, or carrying no tag. Its own message names which, and
-        # the fix is to edit the cluster, so this is the caller's error and not a
-        # server fault. Raised here rather than deeper because this is where a
-        # cluster record becomes a request.
+        # Either the cluster is configured in a way the chart cannot express —
+        # an image pinned by digest, or carrying no tag — or this request asks
+        # for a manifest that deploys nothing, by disabling the CPU worker
+        # without selecting a runtime. Its own message names which, and the fix
+        # is the caller's either way, so this is not a server fault. Raised here
+        # rather than deeper because this is where a cluster record becomes a
+        # request.
         raise InvalidException(message=str(e))
     return Response(
         content=yaml_content,

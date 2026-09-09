@@ -35,13 +35,38 @@ entries. Returns a JSON-encoded list so callers can `fromJsonArray` it.
 {{- end -}}
 
 {{/*
-True when the chart should render in multi-vendor mode (CPU DS + at least one
-GPU vendor DS, meaning 2+ DaemonSets total). Controls anti-affinity, component
-labels, and service selector.
+Whether the CPU worker DaemonSet is part of this release, as "true" or "".
+
+Read through this rather than off `.Values.worker.cpuEnabled` directly — the
+DaemonSet, the mode flag below and the guard in validate.yaml all do — for two
+reasons. They have to agree: a mode flag reading "labelled" while the DaemonSet
+renders the legacy name leaves the worker Service selecting labels no pod
+carries. And `nil` has to read as this chart's default (true) rather than as
+false, which plain truthiness would give: Helm drops a key set to null, so
+`worker: {cpuEnabled: }` in a partial values file would otherwise delete the CPU
+workers from a cluster that never asked for that. Compared as a lowercased
+string, so `--set-string worker.cpuEnabled=false` and a quoted `"False"` in a
+values file turn them off as an unquoted `false` does, rather than being
+non-empty strings that silently read as "on".
+*/}}
+{{- define "gpustack.workerCPUEnabled" -}}
+{{- if ne (lower (toString .Values.worker.cpuEnabled)) "false" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+True when the chart should render in multi-vendor mode: component + runtime
+labels on every worker pod, a hostname anti-affinity between them, and a worker
+Service that selects on the component label.
+
+That is every case except the one where a single DaemonSet carries the
+unsuffixed legacy name `<release>-worker` — CPU only, which is what a Service
+selecting `app: <release>-worker` matches. At least one GPU vendor means a
+suffixed DaemonSet exists, and so does turning the CPU one off, which leaves
+nothing but suffixed names however few vendors are selected.
 */}}
 {{- define "gpustack.multiVendorMode" -}}
 {{- $vendors := include "gpustack.workerVendors" . | fromJsonArray -}}
-{{- if gt (len $vendors) 0 -}}true{{- end -}}
+{{- if or (gt (len $vendors) 0) (not (include "gpustack.workerCPUEnabled" .)) -}}true{{- end -}}
 {{- end -}}
 
 {{/*

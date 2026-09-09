@@ -188,6 +188,8 @@ def build_chart_values(config: TemplateConfig) -> Dict[str, Any]:
         )
     k8s_options = config.k8s_options
 
+    gpu_vendors = _gpu_vendors(config)
+
     configured_node_selector = (
         k8s_options.node_selector if k8s_options else None
     ) or {}
@@ -209,7 +211,11 @@ def build_chart_values(config: TemplateConfig) -> Dict[str, Any]:
         "worker": {
             "enabled": True,
             "serverURL": config.server_url,
-            "gpuVendors": _gpu_vendors(config),
+            "gpuVendors": gpu_vendors,
+            # Written even when true, which is what it almost always is: the
+            # chart's own default already agrees, but a values file that states
+            # it is what makes a downloaded manifest say which deployment it is.
+            "cpuEnabled": config.cpu_worker_enabled,
             "port": config.worker_port,
             "metricsPort": config.worker_metrics_port,
             "extraVolumeMounts": extra_mounts,
@@ -292,7 +298,61 @@ def build_chart_values(config: TemplateConfig) -> Dict[str, Any]:
                 "imageRegistry"
             ] = image_registry
 
-    return _merge_helm_values(values, k8s_options.helm_values if k8s_options else None)
+    merged = _merge_helm_values(
+        values, k8s_options.helm_values if k8s_options else None
+    )
+    _refuse_a_workerless_release(merged)
+    return merged
+
+
+# The vendors the chart renders a DaemonSet for. It normalizes the list itself
+# and drops anything outside this set, so a name it does not know is not a
+# worker — see `gpustack.canonicalVendorOrder` in the chart's `_helper.tpl`,
+# which `tests/k8s/test_chart_values.py` checks this against rather than
+# trusting the two copies to stay in step.
+CANONICAL_GPU_VENDORS = frozenset(
+    runtime.value for runtime in ManufacturerEnum if runtime != ManufacturerEnum.UNKNOWN
+)
+
+
+def _cpu_worker_enabled(values: Dict[str, Any]) -> bool:
+    """Whether these values render the CPU worker DaemonSet.
+
+    Mirrors `gpustack.workerCPUEnabled` in the chart, which is the authority:
+    absent reads as the chart's default (on), and only a `false` — in any case,
+    quoted or not — turns it off. Reading it any other way would have this
+    refuse a release the chart installs, or pass one it refuses.
+    """
+    worker = values.get("worker")
+    if not isinstance(worker, dict) or "cpuEnabled" not in worker:
+        return True
+    return str(worker["cpuEnabled"]).lower() != "false"
+
+
+def _refuse_a_workerless_release(values: Dict[str, Any]) -> None:
+    """Stop a manifest that would install a release with no worker in it.
+
+    Read off the *effective* values, after the cluster's own `helmValues` have
+    been merged, because that overlay reaches both halves of this: it can
+    disable the CPU worker on a request that selected no runtime, and it can
+    supply the vendors a request left out. Checking the request instead would
+    hand over the first and refuse the second.
+
+    The chart refuses this too. Doing it here as well is about where the
+    failure lands: on the request that asked for it, rather than in the
+    in-cluster Job's logs minutes after the manifest was handed over.
+    """
+    if _cpu_worker_enabled(values):
+        return
+    vendors = (values.get("worker") or {}).get("gpuVendors") or []
+    if isinstance(vendors, list) and any(v in CANONICAL_GPU_VENDORS for v in vendors):
+        return
+    raise ValueError(
+        "the CPU worker DaemonSet is disabled and no supported GPU runtime is "
+        "selected, which would deploy no worker at all. Select at least one "
+        "GPU runtime, or leave the CPU worker enabled. Both are also reachable "
+        "from helmValues, as worker.gpuVendors and worker.cpuEnabled."
+    )
 
 
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:

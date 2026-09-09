@@ -13,6 +13,24 @@ separate change, not here: two such guards currently sit dead at the top of
 {{- end }}
 
 {{/*
+A worker install with no DaemonSet to render. The CPU DaemonSet is the one that
+covers the nodes no GPU runtime claims, so switching it off without naming a
+vendor asks for a worker release that installs, reports success, and adds no
+worker to the cluster at all.
+
+Counted over the *sorted* vendors, which is the list worker-daemonset.yaml
+iterates: it renders nothing for a name outside the canonical set, so a typo
+would otherwise satisfy a guard reading the raw list and land in exactly the
+state this rejects. A name it drops while the CPU DaemonSet is on still installs
+today — that is a separate guard, and this file is not where one of those goes.
+*/}}
+{{- if and .Values.worker.enabled (not (include "gpustack.workerCPUEnabled" .)) }}
+{{- if not (include "gpustack.sortedVendors" . | fromJsonArray) }}
+{{- fail (printf "worker.cpuEnabled is false and worker.gpuVendors names no supported GPU vendor: the release would render no worker DaemonSet at all. Name at least one of %s in worker.gpuVendors, or leave the CPU DaemonSet enabled." (include "gpustack.canonicalVendorOrder" . | fromJsonArray | join ", ")) }}
+{{- end }}
+{{- end }}
+
+{{/*
 Credentials with nothing to write them into. `create: false` means a sibling
 release owns the Secret, so these would be silently dropped — and the pods would
 go on using whatever credentials that sibling put there, which is not what

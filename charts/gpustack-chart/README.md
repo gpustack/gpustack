@@ -135,7 +135,8 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | higressPlugins.image.repository          | gpustack/higress-plugins          | Image repo with namespace; see note below                                 |
 | higressPlugins.image.tag                 | "0.2.3.post5"                     | Higress plugins image tag; CI overrides from uv.lock at package time      |
 | higressPlugins.image.pullPolicy          | IfNotPresent                      | Higress plugins image pull policy                                         |
-| worker.gpuVendors                        | [nvidia]                          | List of GPU vendors; `[]` disables worker DaemonSet                       |
+| worker.gpuVendors                        | [nvidia]                          | List of GPU vendors; `[]` renders the CPU worker DaemonSet only           |
+| worker.cpuEnabled                        | true                              | Render the CPU worker DaemonSet; `false` requires a GPU vendor            |
 | worker.nodeSelector                      | {}                                | Base worker nodeSelector; replaces `global.nodeSelector` when non-empty   |
 | worker.port                              | 10150                             | Worker service port                                                       |
 | worker.metricsPort                       | 10151                             | Worker metrics port                                                       |
@@ -150,7 +151,7 @@ To customize parameters, use `--set key=value` or `-f your-values.yaml` during i
 
 ### Multi-vendor Worker Deployment
 
-When `worker.gpuVendors` lists one or more vendors, the chart renders a per-vendor DaemonSet (`<release>-worker-<vendor>`) for each, alongside the always-present CPU DaemonSet (`<release>-worker`). Each vendor DS gets the per-vendor driver mounts, `runtimeClassName`, and an automatic PCI-presence nodeSelector label (e.g. `feature.node.kubernetes.io/pci-10de.present: "true"` for NVIDIA) based on the vendor's PCI ID. Whenever at least one GPU vendor is listed, all worker pods additionally get a required `podAntiAffinity` (topologyKey=hostname, namespaceSelector={}) so two workers can't share a node — protects the `hostNetwork: true` ports from collision across namespaces.
+When `worker.gpuVendors` lists one or more vendors, the chart renders a per-vendor DaemonSet (`<release>-worker-<vendor>`) for each, alongside the CPU DaemonSet (`<release>-worker`) unless `worker.cpuEnabled` is false. Each vendor DS gets the per-vendor driver mounts, `runtimeClassName`, and an automatic PCI-presence nodeSelector label (e.g. `feature.node.kubernetes.io/pci-10de.present: "true"` for NVIDIA) based on the vendor's PCI ID. Whenever at least one GPU vendor is listed, all worker pods additionally get a required `podAntiAffinity` (topologyKey=hostname, namespaceSelector={}) so two workers can't share a node — protects the `hostNetwork: true` ports from collision across namespaces.
 
 > **Prerequisite:** The PCI-presence labels are advertised by [Node Feature Discovery (NFD)](https://kubernetes-sigs.github.io/node-feature-discovery/). NFD must be installed in the cluster for worker pods to schedule onto GPU nodes. Without NFD, no nodes will carry the required labels and all worker pods will remain Pending.
 
@@ -161,6 +162,15 @@ worker:
   gpuVendors:
     - nvidia
     - amd
+```
+
+The CPU DaemonSet covers the nodes no GPU runtime claims, via the nodeSelector `feature.gpustack.ai/acceleratable: "false"`. Set `worker.cpuEnabled: false` to leave those nodes alone — typically when the control plane shares the cluster with its GPU nodes and must not gain workers. `worker.gpuVendors` must then name at least one vendor; otherwise the release would render no worker DaemonSet at all and the install is refused. The vendor DaemonSets keep their `-<vendor>` suffix either way, so switching the CPU one off never promotes one of them onto the unsuffixed `<release>-worker` name.
+
+```yaml
+worker:
+  cpuEnabled: false
+  gpuVendors:
+    - nvidia
 ```
 
 ### NodeSelector Scoping

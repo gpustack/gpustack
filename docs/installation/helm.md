@@ -136,7 +136,7 @@ Open the address in a browser and log in with username `admin` and the password 
 
 ### Enabling Worker DaemonSets
 
-Worker DaemonSets are disabled by default (`worker.enabled=false`). When enabled, the chart always renders a CPU worker DaemonSet (`<release>-worker`), and one DaemonSet per GPU vendor listed in `worker.gpuVendors` (named `<release>-worker-<vendor>`).
+Worker DaemonSets are disabled by default (`worker.enabled=false`). When enabled, the chart renders a CPU worker DaemonSet (`<release>-worker`), and one DaemonSet per GPU vendor listed in `worker.gpuVendors` (named `<release>-worker-<vendor>`).
 
 ```bash
 helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
@@ -152,6 +152,18 @@ Supported `worker.gpuVendors` values: `nvidia`, `mthreads`, `amd`, `ascend`, `hy
     Each GPU DaemonSet receives an automatic PCI-presence `nodeSelector` label (e.g. `feature.node.kubernetes.io/pci-10de.present: "true"` for NVIDIA), advertised by Node Feature Discovery. **NFD must be installed** in the cluster, otherwise no nodes carry the required labels and all worker pods stay `Pending`.
 
 Whenever at least one GPU vendor is listed (i.e. `worker.gpuVendors` is non-empty), every worker pod additionally gets a required `podAntiAffinity` (topologyKey=hostname) so two workers cannot share a node — this protects the `hostNetwork: true` ports from collision.
+
+The CPU worker DaemonSet covers the nodes no GPU vendor claims, through the `nodeSelector` `feature.gpustack.ai/acceleratable: "false"`. Set `worker.cpuEnabled=false` to leave those nodes alone — typically when the control plane shares the cluster with the GPU nodes and must not gain workers:
+
+```bash
+helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+  --namespace gpustack-system --create-namespace \
+  --set worker.enabled=true \
+  --set worker.cpuEnabled=false \
+  --set 'worker.gpuVendors={nvidia}'
+```
+
+`worker.gpuVendors` must then name at least one supported vendor; otherwise the release would render no worker DaemonSet at all and the install is refused. The GPU DaemonSets keep their `-<vendor>` suffix either way, so turning the CPU one off never renames one of them to `<release>-worker`.
 
 Alternatively, add GPU clusters and worker nodes through the UI on the **Clusters** and **Workers** pages after installation.
 
@@ -252,7 +264,8 @@ The most commonly used parameters are listed below. For the complete and authori
 | `gateway.ingressClassname`             | `higress`                | Higress IngressClass name; enables in-cluster gateway mode when found.     |
 | `higress-core.enabled`                 | `true`                   | Deploy the bundled Higress gateway; disable if already installed.          |
 | `worker.enabled`                       | `false`                  | Render worker DaemonSets.                                                 |
-| `worker.gpuVendors`                    | `[nvidia]`               | GPU vendors; one DaemonSet per vendor plus a CPU DaemonSet.                |
+| `worker.gpuVendors`                    | `[nvidia]`               | GPU vendors; one DaemonSet per vendor plus the CPU DaemonSet.              |
+| `worker.cpuEnabled`                    | `true`                   | Render the CPU worker DaemonSet; `false` requires a GPU vendor.            |
 | `worker.nodeSelector`                  | `{}`                     | Base worker nodeSelector; replaces `global.nodeSelector` when non-empty.   |
 | `worker.port`                          | `10150`                  | Worker service port.                                                      |
 | `worker.metricsPort`                   | `10151`                  | Worker metrics port.                                                      |
