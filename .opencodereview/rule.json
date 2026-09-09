@@ -47,6 +47,11 @@
       "rule": "Scheduling code. Flag candidate selection or scoring that violates requested resource constraints, worker availability, model compatibility, cluster/pool affinity, or multi-tenant visibility. Scheduling decisions must be deterministic for equivalent inputs and must not mutate shared state during evaluation. Flag resource arithmetic that can overcommit GPU, VRAM, RAM, or ports, and failure paths that strand reservations. Test changes with representative candidates and edge cases."
     },
     {
+      "path": "gpustack/policies/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Scheduling policies: worker filters, candidate selectors, and scorers. Flag logic that violates requested resource constraints, worker availability, model compatibility, cluster or pool affinity, or multi-tenant visibility. Policy evaluation must be deterministic for equivalent inputs and must not mutate shared state. Flag resource arithmetic that can overcommit GPU, VRAM, RAM, or ports, and failure paths that strand reservations. Test changes with representative candidates and edge cases."
+    },
+    {
       "path": "gpustack/worker/**/*.py",
       "merge_system_rule": true,
       "rule": "Worker runtime, inference backends, benchmarks, and local resource management. Flag shell-command or container arguments built from untrusted values without safe argument handling; command, process, port, temporary-file, or GPU allocation leaks; and backend lifecycle operations that cannot safely retry or clean up after a partial failure. Do not log backend credentials or user prompts. Keep hardware and process interaction mocked at the client boundary in tests."
@@ -65,6 +70,16 @@
       "path": "charts/gpustack-chart/**",
       "merge_system_rule": true,
       "rule": "GPUStack Helm chart. Flag templates that make configuration, resource, security, or lifecycle behavior diverge from charts/gpustack-chart/values.yaml and the server or worker runtime they configure. Ensure Secret values are never emitted into ConfigMaps, logs, or unsafe command arguments; generated Secrets must remain stable across upgrades where required. Flag invalid resource names, selectors, service ports, probes, volume mounts, RBAC, or server/worker topology. Chart.yaml dependency pins must remain compatible with their consumers: the gpustack-operator dependency pin tracks gpustack/__init__.py as enforced by tests/charts/test_operator_version_pin.py. Do not review vendored dependencies in charts/gpustack-chart/charts/; they are excluded."
+    },
+    {
+      "path": "README.md",
+      "merge_system_rule": true,
+      "rule": "The canonical repository README. Flag a meaningful change without a corresponding note that README_CN.md and README_JP.md require translation updates. Flag credentials or other secrets in examples, and documentation that contradicts the CLI, configuration, or shipped behavior."
+    },
+    {
+      "path": "mkdocs.yml",
+      "merge_system_rule": true,
+      "rule": "MkDocs configuration. A new page under docs/ must be registered in the nav tree or it will not be published. Flag navigation entries that point to a missing page or conflict with the documentation structure."
     }
   ]
 }
