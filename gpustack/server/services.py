@@ -151,6 +151,16 @@ class UserService:
             await delete_cache_by_key(self.get_by_username, old_name)
 
     async def delete(self, user: User):
+        # The keys have to be read before the delete and invalidated by hand:
+        # ``Principal.api_keys`` is ``lazy="noload"``, so ``_handle_cascade_delete``
+        # sees an empty list and ``ApiKey.delete`` — which would otherwise drop
+        # each entry — never runs. The rows themselves do go: both principal FKs
+        # on ``api_keys`` carry ``ON DELETE CASCADE`` in the schema the
+        # migrations build (``c45e397531d1``, ``7c5e3f9a2d18``), whatever the
+        # model's own ``user_id`` declaration says — nothing ever builds this
+        # table from the model. That is exactly why the cache is what's left:
+        # losing this loop leaves every key of a deleted user authenticating
+        # from its cached entry for the rest of the TTL.
         apikeys = await APIKeyService(self.session).get_by_user_id(user.id)
         result = await user.delete(self.session)
         await delete_cache_by_key(self.get_by_id, user.id)
@@ -456,7 +466,27 @@ class APIKeyService:
 
     @locked_cached()
     async def get_by_access_key(self, access_key: str) -> Optional[ApiKey]:
-        result = await ApiKey.one_by_field(self.session, "access_key", access_key)
+        """Look up a live key by its access key, for authentication.
+
+        ``deleted_at IS NULL`` is part of the predicate, not a caller's
+        responsibility. This is the query behind ``/token-auth``'s credential
+        path, which is what every request falls back to when the gateway's own
+        local key table cannot answer -- and that table is built with the same
+        filter (``build_local_auth_tables``). Without it here, a soft-deleted
+        row keeps authenticating on the fallback path forever while the gateway
+        has already stopped honouring it, so revocation never converges.
+
+        No caller soft-deletes a key today: ``ApiKey.delete()`` hard-deletes
+        unless asked otherwise, and an owner's removal never reaches the row
+        through the ORM at all -- ``Principal.api_keys`` is ``lazy="noload"``,
+        so the cascade reads an empty list. The filter is here because a
+        revocation that depends on which delete path ran is not a revocation --
+        the first ``soft=True`` caller must not silently keep the credential
+        alive on the one path that still answers when the gateway cannot.
+        """
+        result = await ApiKey.one_by_fields(
+            self.session, {"access_key": access_key, "deleted_at": None}
+        )
         if result is None:
             return None
         self.session.expunge(result)
