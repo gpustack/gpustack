@@ -156,6 +156,28 @@ def make_model_spec(**kwargs):
             ],
         ),
         (
+            "unmapped ascend SoC falls back to vendor-only",
+            [
+                GPUDevice(vendor="ascend", arch_family="AscendUnknownSoC"),
+            ],
+            [
+                make_model_spec(
+                    mode="standard",
+                    gpu_filters=GPUFilters(vendor=["ascend"], vendor_variant="910b"),
+                ),
+                make_model_spec(
+                    mode="any-ascend",
+                    gpu_filters=GPUFilters(vendor=["ascend"]),
+                ),
+            ],
+            [
+                make_model_spec(
+                    mode="any-ascend",
+                    gpu_filters=GPUFilters(vendor=["ascend"]),
+                ),
+            ],
+        ),
+        (
             "no gpu filters",
             [
                 GPUDevice(vendor="amd", compute_capability=None),

@@ -384,6 +384,63 @@ async def test_ascend_gpu_variant_handling():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arch_family, expected_variant",
+    [
+        ("Ascend910B2", "910b"),
+        ("AscendUnknownSoC", None),
+    ],
+)
+async def test_ascend_soc_name_drives_cann_variant(arch_family, expected_variant):
+    """
+    Test 7b: The SoC name gates the runner query by CANN variant, and an
+    unmapped SoC keeps the worker schedulable instead of failing the filter.
+    """
+
+    def set_arch_family(worker):
+        for gpu in worker.status.gpu_devices:
+            gpu.arch_family = arch_family
+
+    model = create_model(backend="MindIE", backend_version=None)
+    workers = [linux_ascend_1_910b_64gx8(callback=set_arch_family)]
+
+    filter_instance = BackendFrameworkFilter(model)
+
+    async def mock_session_exec(statement):
+        # No version configs, so the check falls through to merged_service_runners.
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        mock_result.first.return_value = None
+        return mock_result
+
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
+        with patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners'
+        ) as mock_list:
+            mock_list.return_value = [{"version": "2.1.RC1", "backend": "cann"}]
+
+            filtered_workers, messages = await filter_instance.filter(workers)
+
+            assert len(filtered_workers) == 1
+            assert filtered_workers[0].name == "ascend_0"
+            assert len(messages) == 0
+
+            call_kwargs = mock_list.call_args[1]
+            assert call_kwargs["backend"] == "cann"
+            if expected_variant is None:
+                # Absent, not passed as None, so the query stays unfiltered.
+                assert "backend_variant" not in call_kwargs
+            else:
+                assert call_kwargs["backend_variant"] == expected_variant
+
+
+@pytest.mark.asyncio
 async def test_empty_gpu_list_treated_as_cpu():
     """
     Test 8: Worker with empty GPU list should be treated as CPU worker - should be filtered out when CPU is not in supported frameworks.

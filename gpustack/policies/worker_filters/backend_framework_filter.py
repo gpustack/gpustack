@@ -47,7 +47,16 @@ class BackendFrameworkFilter(WorkerFilter):
             for gpu in worker.status.gpu_devices:
                 variant = None
                 if gpu.vendor == ManufacturerEnum.ASCEND and gpu.arch_family:
-                    variant = get_ascend_cann_variant(gpu.arch_family).lower()
+                    cann_variant = get_ascend_cann_variant(gpu.arch_family)
+                    if cann_variant:
+                        variant = cann_variant.lower()
+                    else:
+                        # No variant matches any CANN runner, while _resolve_image
+                        # falls back to the 910b image.
+                        logger.warning(
+                            f"Worker {worker.name}: unrecognized Ascend SoC {gpu.arch_family}, "
+                            f"matching runners without a CANN variant"
+                        )
                 query_conditions.add(
                     (gpu.type, gpu.runtime_version, self.model.backend_version, variant)
                 )
