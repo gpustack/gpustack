@@ -131,3 +131,35 @@ async def test_delete_model_keeps_a_created_route_other_targets_still_use(sessio
     assert kept is not None and kept.created_model_id == model.id
     remaining = await ModelRouteTarget.all_by_fields(session, {"route_name": "shared"})
     assert [target.model_id for target in remaining] == [other.id]
+
+
+@pytest.mark.asyncio
+async def test_delete_model_ignores_soft_deleted_targets_of_other_models(session):
+    model = await _model_with_created_route(session, "stale")
+    other = await Model.create(
+        session,
+        source=Model(
+            name="other-stale",
+            source=SourceEnum.HUGGING_FACE,
+            huggingface_repo_id="org/other",
+            owner_principal_id=ORG_ID,
+        ),
+    )
+    route = await _route(session, "stale")
+    stale_target = await ModelRouteTarget.create(
+        session,
+        source=ModelRouteTarget(
+            name="other-stale-deployment",
+            route_name=route.name,
+            model_route=route,
+            model=other,
+            weight=100,
+            state=TargetStateEnum.UNAVAILABLE,
+        ),
+    )
+    await stale_target.delete(session, soft=True)
+
+    await ModelService(session).delete(model)
+
+    assert await _route(session, "stale") is None
+

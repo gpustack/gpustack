@@ -890,6 +890,7 @@ class ModelService:
                     .select_from(ModelRouteTarget)
                     .where(
                         ModelRouteTarget.route_id == route.id,
+                        ModelRouteTarget.deleted_at.is_(None),
                         or_(
                             ModelRouteTarget.model_id.is_(None),
                             ModelRouteTarget.model_id != model.id,
