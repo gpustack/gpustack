@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import ClassVar, Optional, List, TYPE_CHECKING
 from sqlalchemy import Column, ForeignKey, Integer, UniqueConstraint
 from sqlmodel import Field, SQLModel, Text, JSON, Relationship
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import ListParams, PaginatedList, UTCDateTime
@@ -103,6 +104,35 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
     @property
     def user_name(self) -> Optional[str]:
         return self.user.name if self.user else None
+
+    async def delete(self, session: AsyncSession, soft=False, auto_commit=True):
+        """Delete the key and drop its cached authentication lookup.
+
+        ``APIKeyService.get_by_access_key`` is cached process-globally for
+        ``SERVER_CACHE_TTL_SECONDS``, so a delete that doesn't invalidate it
+        leaves the credential authenticating on ``/token-auth``'s fallback path
+        for the rest of the TTL. Invalidating here rather than only in
+        ``APIKeyService.delete`` means any caller reaching for the row's own
+        ``delete`` converges too, instead of the guarantee depending on going
+        through the service.
+
+        ``auto_commit=False`` is the caller's to finish. The entry is left alone
+        in that case, because dropping it while the row is still live to every
+        other session invites a concurrent read to put it straight back -- and
+        the stale value would then outlive the commit by a full TTL, which is
+        worse than not dropping it. Such a caller owns the invalidation too, and
+        has to do it after its own commit.
+        """
+        # Imported here because the service layer imports this module.
+        from gpustack.server.cache import build_cache_key, delete_cache_by_key
+        from gpustack.server.services import APIKeyService
+
+        result = await super().delete(session, soft=soft, auto_commit=auto_commit)
+        if auto_commit:
+            await delete_cache_by_key(
+                _key=build_cache_key(APIKeyService.get_by_access_key, self.access_key)
+            )
+        return result
 
 
 class ApiKeyListParams(ListParams):
