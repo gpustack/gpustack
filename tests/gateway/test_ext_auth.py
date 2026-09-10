@@ -6,9 +6,12 @@ because both fail silently rather than loudly:
 * a key that should be gone must not survive into ``keys`` -- there it is
   authenticated locally, and on a PUBLIC route nothing behind the plugin will
   catch it;
-* a PUBLIC rule must list the fallback ingress name too, or the fallback trip
-  drops to the catch-all rule at the exact moment ``ai-proxy`` has replaced the
-  credential it would need there.
+* a rule must list the fallback ingress name too, or the fallback trip drops to
+  the catch-all rule at the exact moment ``ai-proxy`` has replaced the
+  credential it would need there;
+* ``unrestricted`` must never be set on a key whose scope or
+  ``allowed_model_names`` the server would still have checked -- on an AUTHED
+  route the flag is what removes that check.
 """
 
 import logging
@@ -24,9 +27,10 @@ from gpustack.gateway.client import WasmPluginMatchRule, WasmPluginSpec
 from gpustack.gateway.ext_auth import (
     ext_auth_init_spec_diff,
     ext_auth_reconcile_spec_diff,
-    public_route_match_rules,
+    route_match_rules,
     route_match_regexes,
 )
+from gpustack.schemas.api_keys import PermissionScope
 from gpustack.schemas.model_routes import AccessPolicyEnum
 from gpustack.schemas.principals import PrincipalType
 from gpustack.server.bus import EventType
@@ -34,13 +38,15 @@ from gpustack.server.gateway_auth_reconciler import (
     KEY_ENTRY_BYTES,
     MATCH_RULE_BYTES,
     GatewayAuthReconciler,
+    authed_rules_budget,
     build_local_auth_tables,
+    build_skippable_routes,
     split_cr_budget,
-    build_public_route_ids,
     gateway_digest_publishable,
+    gateway_key_unrestricted,
     gateway_ref_eligible,
     gateway_ref_indexable,
-    public_route_ingresses,
+    route_rule_ingresses,
 )
 
 
@@ -90,6 +96,11 @@ def _key(**overrides):
         "user_id": 7,
         "is_custom": False,
         "deleted_at": None,
+        # What the create endpoint defaults to, so the common row is one that
+        # earns ``unrestricted``.
+        "scope": [PermissionScope.ALL],
+        "allowed_model_names": None,
+        "principal_kind": PrincipalType.USER,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -102,10 +113,11 @@ def _principal(kind=PrincipalType.USER, is_active=True):
 def _row(**overrides):
     """One row in the shape and order the column select returns.
 
-    Principal state does not appear: it is filtered in SQL, so a row reaching
-    the loop has already passed those checks. What the loop still decides --
-    which table a row belongs in -- is covered by
-    ``test_ref_indexability_is_one_predicate``.
+    Principal state is only partly here: activity and soft-deletion are
+    filtered in SQL, so a row reaching the loop has already passed those, while
+    ``kind`` is selected because ``gateway_key_unrestricted`` needs the value
+    rather than the exclusion. What the loop still decides -- which table a row
+    belongs in -- is covered by ``test_ref_indexability_is_one_predicate``.
     """
     k = _key(**overrides)
     return (
@@ -115,6 +127,9 @@ def _row(**overrides):
         k.expires_at,
         k.user_id,
         k.is_custom,
+        k.scope,
+        k.allowed_model_names,
+        k.principal_kind,
     )
 
 
@@ -155,8 +170,11 @@ async def test_refs_holds_a_custom_key_only_where_none_may_be_published(monkeypa
     # Keyed by api_keys.id, and deliberately carrying no user_id: a custom key's
     # consumer embeds its access_key, which is itself a hash of the secret and
     # so is exactly what the switch withholds. user_id alone could not rebuild
-    # the consumer anyway.
-    assert refs["2"] == {}
+    # the consumer anyway. ``unrestricted`` is the one thing a refs entry does
+    # share with a keys entry -- a marker or a cache hit can name a ref, and
+    # both may then skip an authed route's call.
+    assert refs["2"] == {"unrestricted": True}
+    assert "user_id" not in refs["2"]
 
 
 @pytest.mark.asyncio
@@ -348,6 +366,7 @@ async def test_keys_carry_the_user_id_for_local_consumer_rebuilding():
     assert keys["3192253c1f4a9b7e"] == {
         "digest": _CONFIG_DIGEST,
         "user_id": 7,
+        "unrestricted": True,
     }
 
 
@@ -390,6 +409,102 @@ async def test_a_key_entry_always_carries_a_digest():
     assert all(entry.get("digest") for entry in keys.values())
 
 
+# --- unrestricted -----------------------------------------------------------
+#
+# The flag stands in for both checks /token-auth would have run after
+# authentication on an AUTHED route: inference_scope, and the
+# allowed_model_names half of model_allowed_for_user. Setting it where either
+# would have refused is an authorization bypass, so every way of *not* earning
+# it is enumerated below.
+
+
+@pytest.mark.parametrize(
+    "scope,allowed_model_names,kind,expected",
+    [
+        # Earns it: the two scopes that admit inference, and no model list.
+        ([PermissionScope.ALL], None, PrincipalType.USER, True),
+        ([PermissionScope.INFERENCE], None, PrincipalType.USER, True),
+        ([PermissionScope.INFERENCE], [], PrincipalType.USER, True),
+        (
+            [PermissionScope.MANAGEMENT, PermissionScope.INFERENCE],
+            None,
+            PrincipalType.USER,
+            True,
+        ),
+        # inference_scope would have refused: no scope admitting inference.
+        ([PermissionScope.MANAGEMENT], None, PrincipalType.USER, False),
+        ([], None, PrincipalType.USER, False),
+        # A NULL scope column is a broken row, and "ask the server" is the
+        # right answer for one.
+        (None, None, PrincipalType.USER, False),
+        # model_allowed_for_user would have intersected against this list, and
+        # the route may not be in it.
+        ([PermissionScope.ALL], ["llama"], PrincipalType.USER, False),
+        (
+            [PermissionScope.INFERENCE],
+            ["llama", "qwen"],
+            PrincipalType.USER,
+            False,
+        ),
+        # Only a USER-principal is covered by the argument that makes the RBAC
+        # term constant-true: non_admin_user_models filters u.kind = 'USER',
+        # and a non-admin principal of any other kind falls through it to an
+        # empty accessible set, i.e. the server refuses.
+        ([PermissionScope.ALL], None, PrincipalType.ORG, False),
+        ([PermissionScope.ALL], None, PrincipalType.GROUP, False),
+        ([PermissionScope.ALL], None, PrincipalType.SYSTEM, False),
+    ],
+)
+def test_unrestricted_is_both_key_side_checks_and_nothing_else(
+    scope, allowed_model_names, kind, expected
+):
+    assert gateway_key_unrestricted(scope, allowed_model_names, kind) is expected
+
+
+@pytest.mark.asyncio
+async def test_a_key_naming_models_carries_no_flag_at_all():
+    """Absent, not ``false``. The plugin reads absence as "ask the server", so
+    the negative case costs ~20 bytes of a shared budget to say what silence
+    already says."""
+    rows = [
+        _row(id=1, access_key="ak-open"),
+        _row(id=2, access_key="ak-narrowed", allowed_model_names=["llama"]),
+    ]
+
+    keys, _ = await build_local_auth_tables(_FakeSession(rows))
+
+    assert keys["ak-open"]["unrestricted"] is True
+    assert "unrestricted" not in keys["ak-narrowed"]
+
+
+@pytest.mark.asyncio
+async def test_a_management_only_key_carries_no_flag():
+    """``inference_scope`` would have refused it outright, so a skip would let
+    a management-only key reach a model."""
+    rows = [_row(scope=[PermissionScope.MANAGEMENT])]
+
+    keys, _ = await build_local_auth_tables(_FakeSession(rows))
+
+    assert "unrestricted" not in keys["3192253c1f4a9b7e"]
+
+
+@pytest.mark.asyncio
+async def test_the_flag_rides_the_entry_it_belongs_to():
+    """Withdrawing it has to be the same CR write, on the same immediate flush,
+    as withdrawing the entry -- on a skipped route nothing else asks the server
+    whether the key still qualifies. A table of its own would have made those
+    two separate writes."""
+    session = _FakeSession([_row()])
+
+    keys, _ = await build_local_auth_tables(session)
+
+    assert keys["3192253c1f4a9b7e"] == {
+        "digest": _CONFIG_DIGEST,
+        "user_id": 7,
+        "unrestricted": True,
+    }
+
+
 @pytest.mark.asyncio
 async def test_the_entry_cap_drops_rather_than_truncates_silently(caplog):
     rows = [_row(id=i, access_key=f"ak-{i}") for i in range(1, 6)]
@@ -401,35 +516,84 @@ async def test_the_entry_cap_drops_rather_than_truncates_silently(caplog):
 
 
 @pytest.mark.asyncio
-async def test_public_rules_list_the_fallback_ingress_too():
-    # The query selects the id column, so a row *is* the id.
-    ids = await build_public_route_ids(_FakeSession([42, 7]))
-    ingresses = public_route_ingresses(ids, _cfg())
+async def test_rules_list_the_fallback_ingress_too():
+    # The query selects (id, access_policy), so a row is that pair.
+    routes = await build_skippable_routes(
+        _FakeSession([(42, AccessPolicyEnum.PUBLIC), (7, AccessPolicyEnum.AUTHED)])
+    )
 
-    assert ids == [42, 7]
-    assert ingresses == [
-        [
-            "default/ai-route-route-42.internal",
-            "default/ai-route-route-42.fallback.internal",
-        ],
-        [
-            "default/ai-route-route-7.internal",
-            "default/ai-route-route-7.fallback.internal",
-        ],
+    assert route_rule_ingresses(routes, _cfg()) == [
+        (
+            [
+                "default/ai-route-route-42.internal",
+                "default/ai-route-route-42.fallback.internal",
+            ],
+            "public",
+        ),
+        (
+            [
+                "default/ai-route-route-7.internal",
+                "default/ai-route-route-7.fallback.internal",
+            ],
+            "authed",
+        ),
     ]
 
 
-def test_only_public_routes_get_a_rule_at_all():
-    """Everything else takes the global config and keeps authorizing per
-    request, so a newly created route is covered the moment it exists and the
-    reconciler never has to write a rule for it."""
-    rules = public_route_match_rules([["ns/route-42", "ns/route-42.fallback"]])
+@pytest.mark.asyncio
+async def test_public_routes_are_ordered_ahead_of_authed_ones():
+    """The order is what the budget truncates against, and the two are not
+    worth the same: a PUBLIC rule delivers a skip on its own, while an AUTHED
+    one delivers nothing unless the caller's key also made it into the tables
+    the same budget pays for."""
+    rows = [
+        (1, AccessPolicyEnum.AUTHED),
+        (2, AccessPolicyEnum.PUBLIC),
+        (3, AccessPolicyEnum.AUTHED),
+        (4, AccessPolicyEnum.PUBLIC),
+    ]
 
-    assert len(rules) == 1
-    assert rules[0].ingress == ["ns/route-42", "ns/route-42.fallback"]
-    assert rules[0].config == {"access_policy": "public"}
+    routes = await build_skippable_routes(_FakeSession(rows))
+
+    # PUBLIC first, ascending id preserved inside each group so two passes over
+    # the same rows render byte-identical rules.
+    assert routes == [(2, "public"), (4, "public"), (1, "authed"), (3, "authed")]
+
+
+@pytest.mark.asyncio
+async def test_only_the_policies_the_gateway_can_act_on_are_queried():
+    """``ALLOWED_PRINCIPALS`` turns on per-principal grants that are published
+    nowhere near the edge, so it takes the global config and keeps authorizing
+    per request."""
+    session = _FakeSession([])
+
+    await build_skippable_routes(session)
+
+    where = str(session.statement.whereclause)
+    assert "access_policy IN" in where
+    assert "ALLOWED_PRINCIPALS" not in where
+
+
+def test_a_rule_carries_its_route_policy_verbatim():
+    """The plugin's own constants are ``AccessPolicyEnum``'s wire values, so a
+    mapping on this side would only be a second place for the two to drift."""
+    rules = route_match_rules(
+        [
+            (["ns/route-42", "ns/route-42.fallback"], "public"),
+            (["ns/route-43", "ns/route-43.fallback"], "authed"),
+        ]
+    )
+
+    assert [rule.ingress for rule in rules] == [
+        ["ns/route-42", "ns/route-42.fallback"],
+        ["ns/route-43", "ns/route-43.fallback"],
+    ]
+    assert [rule.config for rule in rules] == [
+        {"access_policy": "public"},
+        {"access_policy": "authed"},
+    ]
     # Absent, not empty -- see the next test for what an empty array costs.
-    assert public_route_match_rules([]) is None
+    assert route_match_rules([]) is None
 
 
 def test_the_route_gate_is_anchored():
@@ -468,6 +632,55 @@ def test_startup_keeps_the_tables_the_database_owns():
     # Refreshed from cfg.
     assert merged.defaultConfig["status_on_error"] == 403
     assert merged.defaultConfig["route_match_regexes"] == ["^ns/ai-route-route-"]
+
+
+def test_startup_strips_the_authorization_skip_flag():
+    """Everything else carried across a restart is bounded by something -- a
+    key entry still has to verify a secret, a rule still has to name a caller.
+    ``unrestricted`` bounds nothing: it is the whole authorization check on an
+    AUTHED route. Republishing a stale one lets a key that has since been
+    narrowed reach a model its ``allowed_model_names`` no longer admits, for
+    the whole of a server boot, since this runs before the schema is even
+    migrated."""
+    live = WasmPluginSpec(
+        defaultConfig={
+            "local_auth": {
+                "enabled": True,
+                "keys": {
+                    "ak": {
+                        "digest": _CONFIG_DIGEST,
+                        "user_id": 7,
+                        "exp": 4102444800,
+                        "unrestricted": True,
+                    }
+                },
+                "refs": {"7": {"unrestricted": True}},
+            }
+        },
+        matchRules=[
+            WasmPluginMatchRule(ingress=["ns/r"], config={"access_policy": "authed"})
+        ],
+    )
+    expected = WasmPluginSpec(
+        defaultConfig={"local_auth": {"enabled": True, "keys": {}, "refs": {}}},
+        matchRules=[],
+    )
+
+    merged = ext_auth_init_spec_diff(live, expected)
+
+    local_auth = merged.defaultConfig["local_auth"]
+    assert "unrestricted" not in local_auth["keys"]["ak"]
+    assert "unrestricted" not in local_auth["refs"]["7"]
+    # Only that key is dropped -- authentication still happens locally from the
+    # same entry, which is the whole reason the table is carried over at all.
+    assert local_auth["keys"]["ak"] == {
+        "digest": _CONFIG_DIGEST,
+        "user_id": 7,
+        "exp": 4102444800,
+    }
+    # The rule stays. With no entry carrying the flag nothing qualifies for the
+    # skip, so it is inert until the reconciler republishes from live rows.
+    assert [rule.config for rule in merged.matchRules] == [{"access_policy": "authed"}]
 
 
 def test_startup_survives_an_unrecognizable_live_config():
@@ -515,7 +728,7 @@ def test_a_deployment_with_no_public_routes_stops_rewriting_the_cr():
         live.model_copy(deep=True),
         keys={},
         refs={},
-        public_route_ingresses=[],
+        route_rules=[],
         cfg=_cfg(),
         registry=MagicMock(),
     )
@@ -538,7 +751,7 @@ def test_the_last_public_route_leaving_still_reaches_the_cr():
         live.model_copy(deep=True),
         keys={},
         refs={},
-        public_route_ingresses=[],
+        route_rules=[],
         cfg=_cfg(),
         registry=MagicMock(),
     )
@@ -565,7 +778,7 @@ def test_reconcile_replaces_the_tables_wholesale():
         live,
         keys={"fresh": {"digest": _CONFIG_DIGEST, "user_id": 7}},
         refs={},
-        public_route_ingresses=[["default/ai-route-route-42.internal"]],
+        route_rules=[(["default/ai-route-route-42.internal"], "public")],
         cfg=_cfg(),
         registry=MagicMock(),
     )
@@ -597,7 +810,7 @@ def test_a_missing_cr_is_rebuilt_in_full():
         None,
         keys={"ak": {"digest": _CONFIG_DIGEST, "user_id": 7}},
         refs={"58": {}},
-        public_route_ingresses=[["default/ai-route-route-42.internal"]],
+        route_rules=[(["default/ai-route-route-42.internal"], "authed")],
         cfg=_cfg(),
         registry=registry,
     )
@@ -607,7 +820,7 @@ def test_a_missing_cr_is_rebuilt_in_full():
         "ak": {"digest": _CONFIG_DIGEST, "user_id": 7}
     }
     assert spec.defaultConfig["local_auth"]["refs"] == {"58": {}}
-    assert [rule.config for rule in spec.matchRules] == [{"access_policy": "public"}]
+    assert [rule.config for rule in spec.matchRules] == [{"access_policy": "authed"}]
     # The static base is present too, not just the tables.
     assert spec.defaultConfig["authz"]["endpoint"]["path"] == "/token-auth"
     assert spec.phase == "AUTHN" and spec.priority == 360
@@ -621,9 +834,9 @@ def test_a_missing_cr_is_rebuilt_in_full():
 # allowed to be wrong only in the direction that costs a redundant pass.
 
 
-def _reconciler(applied_ids):
+def _reconciler(applied_policies):
     reconciler = GatewayAuthReconciler.__new__(GatewayAuthReconciler)
-    reconciler._applied_public_route_ids = applied_ids
+    reconciler._applied_route_policies = applied_policies
     return reconciler
 
 
@@ -631,50 +844,121 @@ def _route_event(**fields):
     return SimpleNamespace(type=EventType.UPDATED, data=SimpleNamespace(**fields))
 
 
-def test_a_route_losing_public_still_flushes():
-    """The case the whole applied-set invariant exists for. The payload already
-    reads AUTHED, so only "the CR has a rule for this id" can catch it -- and
-    missing it would leave the route allowed locally with no second gate."""
-    reconciler = _reconciler({42})
+def test_a_route_leaving_the_skippable_policies_still_flushes():
+    """The case the whole applied-state invariant exists for. The payload
+    already reads the policy that gets no rule, so only "the CR has a rule for
+    this route" can catch it -- and missing it would leave the route skipped
+    locally with no second gate."""
+    reconciler = _reconciler({42: "authed"})
 
-    event = _route_event(id=42, access_policy=AccessPolicyEnum.AUTHED)
+    event = _route_event(id=42, access_policy=AccessPolicyEnum.ALLOWED_PRINCIPALS)
 
     assert reconciler._model_route_may_change_rules(event) is True
 
 
-def test_a_route_becoming_public_still_flushes():
-    reconciler = _reconciler(set())
+def test_a_route_gaining_a_skippable_policy_still_flushes():
+    reconciler = _reconciler({})
 
-    event = _route_event(id=42, access_policy=AccessPolicyEnum.PUBLIC)
+    for policy in (AccessPolicyEnum.PUBLIC, AccessPolicyEnum.AUTHED):
+        event = _route_event(id=42, access_policy=policy)
+
+        assert reconciler._model_route_may_change_rules(event) is True
+
+
+@pytest.mark.parametrize(
+    "applied,policy",
+    [
+        ("public", AccessPolicyEnum.AUTHED),
+        ("authed", AccessPolicyEnum.PUBLIC),
+    ],
+    ids=["public-to-authed", "authed-to-public"],
+)
+def test_a_route_crossing_between_the_two_policies_flushes(applied, policy):
+    """The rule stays but its value changes, so tracking ids alone would miss
+    it -- and the route would keep being skipped under the policy it just left
+    until the periodic pass caught up."""
+    reconciler = _reconciler({42: applied})
+
+    event = _route_event(id=42, access_policy=policy)
+
+    assert reconciler._model_route_may_change_rules(event) is True
+
+
+def test_a_deleted_route_always_flushes():
+    """A delete carries the row as it was, so its policy still matches what the
+    last pass recorded -- the comparison would read the removal as "nothing
+    moved" and leave the rule on the CR outliving the route it names."""
+    reconciler = _reconciler({42: "authed"})
+
+    event = SimpleNamespace(
+        type=EventType.DELETED,
+        data=SimpleNamespace(id=42, access_policy=AccessPolicyEnum.AUTHED),
+    )
 
     assert reconciler._model_route_may_change_rules(event) is True
 
 
 def test_churn_on_a_route_that_has_no_rule_is_dropped():
     """The high-frequency case: a target came up, ready_targets was restamped.
-    The route is not public and has no rule, so the rules array cannot move."""
-    reconciler = _reconciler({7})
+    The route's policy gets no rule and it has none in the CR, so the rules
+    array cannot move."""
+    reconciler = _reconciler({7: "public"})
 
-    event = _route_event(id=42, access_policy=AccessPolicyEnum.AUTHED)
+    event = _route_event(id=42, access_policy=AccessPolicyEnum.ALLOWED_PRINCIPALS)
 
     assert reconciler._model_route_may_change_rules(event) is False
 
 
 @pytest.mark.parametrize(
     "policy",
-    [AccessPolicyEnum.PUBLIC, "public", "PUBLIC"],
-    ids=["enum", "value", "column-name"],
+    [AccessPolicyEnum.PUBLIC, AccessPolicyEnum.AUTHED],
+    ids=["public", "authed"],
 )
-def test_public_is_recognised_in_every_shape_the_payload_may_carry(policy):
-    """Hydrated model, JSON round-trip, and the name the column stores."""
-    assert _reconciler(set())._model_route_may_change_rules(
+def test_churn_on_a_route_whose_rule_is_unchanged_is_dropped(policy):
+    """AUTHED is the default policy, so nearly every route now carries a rule.
+    Matching on the id alone would make this both the common case and the case
+    the filter never suppresses -- every target state transition in the
+    deployment would cost a pass."""
+    reconciler = _reconciler({42: policy.value})
+
+    event = _route_event(id=42, access_policy=policy)
+
+    assert reconciler._model_route_may_change_rules(event) is False
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        AccessPolicyEnum.PUBLIC,
+        "public",
+        "PUBLIC",
+        AccessPolicyEnum.AUTHED,
+        "authed",
+        "AUTHED",
+    ],
+    ids=[
+        "public-enum",
+        "public-value",
+        "public-column-name",
+        "authed-enum",
+        "authed-value",
+        "authed-column-name",
+    ],
+)
+def test_a_skippable_policy_is_recognised_in_every_shape_the_payload_may_carry(
+    policy,
+):
+    """Hydrated model, JSON round-trip, and the name the column stores. Read
+    against an empty applied state, so recognising the policy at all is the
+    whole of what makes this reconcile."""
+    assert _reconciler({})._model_route_may_change_rules(
         _route_event(id=42, access_policy=policy)
     )
 
 
 def test_nothing_applied_yet_means_nothing_can_be_ruled_out():
     assert _reconciler(None)._model_route_may_change_rules(
-        _route_event(id=42, access_policy=AccessPolicyEnum.AUTHED)
+        _route_event(id=42, access_policy=AccessPolicyEnum.ALLOWED_PRINCIPALS)
     )
 
 
@@ -689,7 +973,7 @@ def test_nothing_applied_yet_means_nothing_can_be_ruled_out():
     ids=["id-only-dict", "no-policy-attr", "no-payload", "empty-dict"],
 )
 def test_an_unreadable_payload_reconciles_anyway(data):
-    reconciler = _reconciler({7})
+    reconciler = _reconciler({7: "public"})
 
     event = SimpleNamespace(type=EventType.UPDATED, data=data)
 
@@ -697,13 +981,13 @@ def test_an_unreadable_payload_reconciles_anyway(data):
 
 
 def test_a_dict_payload_is_read_like_a_model():
-    reconciler = _reconciler({7})
+    reconciler = _reconciler({7: "public"})
 
     dropped = SimpleNamespace(
-        type=EventType.UPDATED, data={"id": 42, "access_policy": "authed"}
+        type=EventType.UPDATED, data={"id": 42, "access_policy": "allowed_principals"}
     )
     kept = SimpleNamespace(
-        type=EventType.UPDATED, data={"id": 42, "access_policy": "public"}
+        type=EventType.UPDATED, data={"id": 42, "access_policy": "authed"}
     )
 
     assert reconciler._model_route_may_change_rules(dropped) is False
@@ -715,7 +999,7 @@ def stub_reconcile_inputs(monkeypatch):
     """Point a reconciler's queries and its CR write at doubles."""
     from contextlib import asynccontextmanager
 
-    state = {"public_ids": [42], "applied": []}
+    state = {"routes": [(42, "public")], "applied": []}
 
     @asynccontextmanager
     async def _session():
@@ -724,8 +1008,8 @@ def stub_reconcile_inputs(monkeypatch):
     async def _tables(session, max_entries=0):
         return {}, {}
 
-    async def _ids(session):
-        return state["public_ids"]
+    async def _routes(session):
+        return state["routes"]
 
     async def _ensure(**kwargs):
         if state.get("fail"):
@@ -739,7 +1023,7 @@ def stub_reconcile_inputs(monkeypatch):
         "gpustack.server.gateway_auth_reconciler.build_local_auth_tables", _tables
     )
     monkeypatch.setattr(
-        "gpustack.server.gateway_auth_reconciler.build_public_route_ids", _ids
+        "gpustack.server.gateway_auth_reconciler.build_skippable_routes", _routes
     )
     monkeypatch.setattr(
         "gpustack.server.gateway_auth_reconciler.ensure_wasm_plugin", _ensure
@@ -753,7 +1037,7 @@ def _live_reconciler():
     reconciler._budget = 10_000_000
     reconciler._extensions_api = object()
     reconciler._registry = MagicMock()
-    reconciler._applied_public_route_ids = None
+    reconciler._applied_route_policies = None
     reconciler._applied_state = None
     return reconciler
 
@@ -764,7 +1048,7 @@ async def test_the_applied_set_records_what_was_written(stub_reconcile_inputs):
 
     await reconciler.reconcile()
 
-    assert reconciler._applied_public_route_ids == {42}
+    assert reconciler._applied_route_policies == {42: "public"}
 
 
 @pytest.mark.asyncio
@@ -778,28 +1062,35 @@ async def test_a_failed_write_leaves_the_applied_set_alone(stub_reconcile_inputs
     with pytest.raises(RuntimeError):
         await reconciler.reconcile()
 
-    assert reconciler._applied_public_route_ids is None
+    assert reconciler._applied_route_policies is None
 
 
 # --- The shared byte budget --------------------------------------------------
 #
-# Keys and PUBLIC match rules live in one CR and therefore under one etcd object
-# limit. Capping them separately would let the sum overrun it, and overrunning
-# it is not a partial failure: the write is refused, the tables freeze, and
+# Keys and match rules live in one CR and therefore under one etcd object limit.
+# Capping them separately would let the sum overrun it, and overrunning it is
+# not a partial failure: the write is refused, the tables freeze, and
 # revocations stop propagating.
+#
+# Three claims, served PUBLIC rules -> key entries -> AUTHED rules.
 
 
-def test_routes_and_keys_together_stay_inside_the_budget():
+def test_everything_together_stays_inside_the_budget():
     for public_routes in (0, 10, 1000, 100_000):
-        routes, entries = split_cr_budget(1_100_000, public_routes)
+        for keys in (0, 500, 100_000):
+            public_rules, entries = split_cr_budget(1_100_000, public_routes)
+            published = min(keys, entries)
+            authed = authed_rules_budget(1_100_000, public_rules, published)
 
-        used = routes * MATCH_RULE_BYTES + entries * KEY_ENTRY_BYTES
-        assert used <= 1_100_000, f"{public_routes} public routes overran the budget"
-        assert routes <= public_routes
+            used = (
+                public_rules + authed
+            ) * MATCH_RULE_BYTES + published * KEY_ENTRY_BYTES
+            assert used <= 1_100_000, f"{public_routes} routes / {keys} keys overran"
+            assert public_rules <= public_routes
 
 
-def test_public_routes_squeeze_the_key_table():
-    """The interaction the budget exists to make explicit, rather than two caps
+def test_public_rules_squeeze_the_key_table():
+    """The interaction the budget exists to make explicit, rather than caps
     that each look fine on their own."""
     _, without = split_cr_budget(1_100_000, 0)
     _, with_routes = split_cr_budget(1_100_000, 1000)
@@ -811,24 +1102,99 @@ def test_public_routes_squeeze_the_key_table():
     assert abs(displaced - 1000 * MATCH_RULE_BYTES) < KEY_ENTRY_BYTES
 
 
-def test_routes_are_served_before_keys():
-    """There are orders of magnitude fewer routes than keys -- one per public
-    model against one per API key -- so the keys are what absorbs the variation.
-    Both overflows are the same benign thing: asking the server per request."""
-    routes, entries = split_cr_budget(1_100_000, 500)
+def test_keys_are_served_before_authed_rules():
+    """The ordering the whole split exists for. A route past the budget loses
+    only its authorization skip -- its callers still authenticate locally. A
+    key past it loses local authentication too, so every one of its requests
+    carries a credential to the server. Serving all rules first, as this did
+    when PUBLIC was the only policy that got one, would invert that."""
+    public_rules, entries = split_cr_budget(1_100_000, 0)
 
-    assert routes == 500
+    # Every key the cap admits is published, and only then do AUTHED rules get
+    # a look in.
+    assert authed_rules_budget(1_100_000, public_rules, entries) == 0
+    assert entries > 7_000
+
+
+def test_authed_rules_get_what_the_keys_did_not_use():
+    """The cap is a ceiling, not a reservation: a deployment with few keys
+    spends the remainder on rules rather than holding it for keys that do not
+    exist."""
+    public_rules, entries = split_cr_budget(1_100_000, 0)
+
+    assert authed_rules_budget(1_100_000, public_rules, 100) > 6_000
+    assert authed_rules_budget(1_100_000, public_rules, entries // 2) > 3_000
+
+
+def test_public_rules_are_served_before_keys():
+    """The one exception to keys-first: a public route with no rule needs a
+    live server even for anonymous traffic, since nothing else in the chain can
+    name that caller."""
+    public_rules, entries = split_cr_budget(1_100_000, 500)
+
+    assert public_rules == 500
     assert entries > 0
 
 
-def test_a_budget_the_routes_exhaust_leaves_no_keys():
+def test_a_budget_the_public_rules_exhaust_leaves_no_keys():
     """Not a hypothetical shape -- it is what a deployment with far more public
     routes than budget looks like, and every key then authenticates at the
     server exactly as it did before any of this existed."""
-    routes, entries = split_cr_budget(MATCH_RULE_BYTES * 5, 100)
+    public_rules, entries = split_cr_budget(MATCH_RULE_BYTES * 5, 100)
 
-    assert routes == 5  # capped by the budget, not by the 100 asked for
+    assert public_rules == 5  # capped by the budget, not by the 100 asked for
     assert entries == 0
+    assert authed_rules_budget(MATCH_RULE_BYTES * 5, public_rules, 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_tight_budget_drops_authed_rules_and_keeps_public_ones(
+    stub_reconcile_inputs, caplog
+):
+    """The ordering, end to end. Room for two rules and no keys: both PUBLIC
+    routes keep theirs and both AUTHED routes lose theirs, rather than the
+    array being truncated in the order the query returned it."""
+    stub_reconcile_inputs["routes"] = [
+        (1, "public"),
+        (2, "public"),
+        (3, "authed"),
+        (4, "authed"),
+    ]
+    reconciler = _live_reconciler()
+    reconciler._budget = MATCH_RULE_BYTES * 2
+
+    with caplog.at_level(logging.WARNING):
+        await reconciler.reconcile()
+
+    # Recorded for every skippable route, including the two the budget
+    # dropped: the filter asks whether an event changes the input, and a route
+    # dropped for want of budget has the same input as one that fits.
+    assert reconciler._applied_route_policies == {
+        1: "public",
+        2: "public",
+        3: "authed",
+        4: "authed",
+    }
+    assert "2 routes left out" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_churn_on_a_route_the_budget_dropped_is_still_suppressed(
+    stub_reconcile_inputs,
+):
+    """The filter has to keep working past the budget. A route left out for
+    want of it has the same input as one that fits -- re-running the pass would
+    drop it again -- so recording only what was written would turn every
+    ``targets`` restamp on those routes into a reconcile, failing exactly where
+    the deployment is already large enough to need the suppression."""
+    stub_reconcile_inputs["routes"] = [(1, "public"), (2, "authed")]
+    reconciler = _live_reconciler()
+    reconciler._budget = MATCH_RULE_BYTES  # room for the PUBLIC rule alone
+
+    await reconciler.reconcile()
+
+    dropped_route_churn = _route_event(id=2, access_policy=AccessPolicyEnum.AUTHED)
+    assert reconciler._model_route_may_change_rules(dropped_route_churn) is False
 
 
 @pytest.mark.asyncio
@@ -847,7 +1213,7 @@ async def test_an_unchanged_pass_says_nothing(stub_reconcile_inputs, caplog):
         caplog.clear()
         await reconciler.reconcile()
 
-    assert "public routes" in first, "the first pass established the state"
+    assert "skippable routes" in first, "the first pass established the state"
     assert caplog.text == ""
 
 
@@ -859,11 +1225,11 @@ async def test_a_changed_pass_says_so(stub_reconcile_inputs, caplog):
         logging.DEBUG, logger="gpustack.server.gateway_auth_reconciler"
     ):
         await reconciler.reconcile()
-        stub_reconcile_inputs["public_ids"] = [42, 7]
+        stub_reconcile_inputs["routes"] = [(42, "public"), (7, "authed")]
         caplog.clear()
         await reconciler.reconcile()
 
-    assert "2 public routes" in caplog.text
+    assert "2 skippable routes (1 public)" in caplog.text
 
 
 @pytest.mark.asyncio

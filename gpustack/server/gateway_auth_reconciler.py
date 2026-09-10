@@ -28,12 +28,13 @@ migration. Those are exactly the changes nobody remembers to think about, so
 the periodic interval is a security parameter rather than a refresh rate.
 
 **Tightening flushes now, widening waits.** The direction of a change decides
-its urgency. A revocation, a deactivated principal, a route losing PUBLIC
-status: those are all "someone should stop being let in", and they go out
-immediately. A new digest or a new PUBLIC rule is monotonic and idempotent --
-the key already works through the fallback path, the route already authorizes
-per request -- so those ride the next tick, which is what keeps a mass digest
-backfill from turning into thousands of CR writes.
+its urgency. A revocation, a deactivated principal, a key that stops being
+``unrestricted``, a route leaving the set of policies the gateway may act on:
+those are all "someone should stop being let in", and they go out immediately.
+A new digest or a new rule is monotonic and idempotent -- the key already works
+through the fallback path, the route already authorizes per request -- so those
+ride the next tick, which is what keeps a mass digest backfill from turning
+into thousands of CR writes.
 
 Expiry needs neither: ``exp`` travels in the entry itself and the plugin
 compares it against its own clock, so a key expiring changes nothing here. It
@@ -45,7 +46,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from kubernetes_asyncio import client as k8s_client
 from sqlalchemy import or_
@@ -64,7 +65,7 @@ from gpustack.gateway.ext_auth import (
     ext_auth_resource_name,
 )
 from gpustack.gateway.utils import ensure_wasm_plugin, route_ingress_names_for_plugins
-from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.api_keys import ApiKey, PermissionScope
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.model_routes import AccessPolicyEnum, ModelRoute
 from gpustack.schemas.principals import Principal, PrincipalType
@@ -77,13 +78,30 @@ logger = logging.getLogger(__name__)
 
 # Rendered sizes, measured against a real CR rather than estimated: a key entry
 # with a truncated digest (``"<16 hex ak>":{"digest":"s128$...","user_id":N}``)
-# came out at 112 bytes and one PUBLIC match rule (two ingress names plus the
-# access policy) at 169. Both are rounded up here, and a refs entry is far
-# smaller than a key entry, so sizing every entry as a key entry errs toward
-# leaving room -- which is the direction that matters, since the cost of
-# underestimating is a refused write rather than a smaller table.
-KEY_ENTRY_BYTES = 115
+# came out at 112 bytes, ``"unrestricted":true`` adds about 20 more, and one
+# match rule (two ingress names plus the access policy) at 169. All are rounded
+# up here, and a refs entry is far smaller than a key entry, so sizing every
+# entry as a key entry that carries the flag errs toward leaving room -- which
+# is the direction that matters, since the cost of underestimating is a refused
+# write rather than a smaller table. The two policy values render to the same
+# width, so one rule size covers both.
+KEY_ENTRY_BYTES = 135
 MATCH_RULE_BYTES = 170
+
+# The route policies whose authorization verdict the gateway can reproduce from
+# what it already holds, and so the only values that may reach a match rule.
+# PUBLIC first: the order is the order the budget serves them in, and the two
+# are not worth the same -- see :func:`split_cr_budget`.
+#
+# ``ALLOWED_PRINCIPALS`` is deliberately absent. Its verdict turns on
+# per-principal grants that are published nowhere near the edge, so it is
+# authorization proper and stays on the server.
+SKIPPABLE_ROUTE_POLICIES = (AccessPolicyEnum.PUBLIC, AccessPolicyEnum.AUTHED)
+
+# The same order, as the wire values a rule carries, for sorting by.
+_POLICY_RANK = {
+    policy.value: rank for rank, policy in enumerate(SKIPPABLE_ROUTE_POLICIES)
+}
 
 # Bounds on how fast a dropped event watch reconnects.
 _WATCH_RETRY_MIN_SECONDS = 1
@@ -91,23 +109,52 @@ _WATCH_RETRY_MAX_SECONDS = 30
 
 
 def split_cr_budget(budget: int, public_route_count: int) -> Tuple[int, int]:
-    """``(public routes to keep, key entries that then fit)``.
+    """``(PUBLIC rules to keep, key entries that then fit)`` -- the first two
+    of the three claims on one budget.
 
-    One budget rather than two independent caps. The key tables and the PUBLIC
-    match rules share a single CR and therefore a single etcd object limit;
-    capping them separately means the sum can still overrun it, and overrunning
-    it is not a partial failure -- the write is refused, the tables freeze, and
-    revocations stop propagating.
+    One budget rather than independent caps. The key tables and the match rules
+    share a single CR and therefore a single etcd object limit; capping them
+    separately means the sum can still overrun it, and overrunning it is not a
+    partial failure -- the write is refused, the tables freeze, and revocations
+    stop propagating.
 
-    Routes are served first because there are orders of magnitude fewer of them
-    (one per public model, against one per API key), so in any realistic mix the
-    keys absorb the variation. Both overflows are benign and identical in kind:
-    a key past the budget authenticates at the server on every request, a route
-    past it authorizes there per request.
+    The order is **PUBLIC rules, then key entries, then AUTHED rules** (the
+    third served by :func:`authed_rules_budget` from whatever the first two
+    leave). Serving *all* rules first, as this did when PUBLIC was the only
+    policy that got one, rested on there being orders of magnitude fewer routes
+    than keys. AUTHED is the default policy, so that premise is gone: at ~170
+    bytes a rule against the default 1.1 MB budget, 2000 routes cut the key
+    table by about 41% and ~6500 reduce it to nothing.
+
+    What settles the order is that the two overflows are not equivalent:
+
+    * a **route** past the budget loses only its authorization skip -- its
+      callers still authenticate locally and the server evaluates policy per
+      request, exactly as it does today;
+    * a **key** past the budget loses local authentication too, so every one of
+      its requests carries a credential to the server.
+
+    PUBLIC is the exception that goes first, because a public route with no
+    rule needs a live server even for anonymous traffic -- nothing else in the
+    chain can name that caller.
     """
-    routes = min(public_route_count, budget // MATCH_RULE_BYTES)
-    entries = max(0, (budget - routes * MATCH_RULE_BYTES) // KEY_ENTRY_BYTES)
-    return routes, entries
+    public_rules = min(public_route_count, budget // MATCH_RULE_BYTES)
+    entries = max(0, (budget - public_rules * MATCH_RULE_BYTES) // KEY_ENTRY_BYTES)
+    return public_rules, entries
+
+
+def authed_rules_budget(budget: int, public_rules: int, key_entries: int) -> int:
+    """How many AUTHED rules fit in what the first two claims left.
+
+    Takes the key entries actually published rather than the cap
+    :func:`split_cr_budget` handed out, so a deployment with fewer keys than
+    the cap spends the difference on rules instead of reserving it for keys
+    that do not exist. That is the whole reason this is a second call and not
+    a third return value: the real count is only known once the tables are
+    built.
+    """
+    spent = public_rules * MATCH_RULE_BYTES + key_entries * KEY_ENTRY_BYTES
+    return max(0, (budget - spent) // MATCH_RULE_BYTES)
 
 
 def gateway_digest_publishable(is_custom: bool, digest: Optional[str]) -> bool:
@@ -189,6 +236,60 @@ def gateway_ref_indexable(api_key: ApiKey, principal: Principal) -> bool:
     )
 
 
+def gateway_key_unrestricted(
+    scope: Optional[List[Any]],
+    allowed_model_names: Optional[List[str]],
+    principal_kind: Any,
+) -> bool:
+    """Whether this key adds nothing to what its user may already reach.
+
+    What the plugin does with it: on an ``authed`` route it skips the
+    authorization call for a caller whose entry carries this flag. So the flag
+    has to stand in for everything ``/token-auth`` would have evaluated after
+    authentication, which on a non-PUBLIC route is exactly two things
+    (``routes/token.py``)::
+
+        inference_scope(request, user)
+        model_allowed_for_user(model_name, user.id, api_key)
+
+    The first is the scope test below, transcribed from ``api.auth``. The
+    second is ``model_name in accessible_model_names(user) ∩
+    allowed_model_names(key)``, whose second term drops out entirely when the
+    key names no models -- which is the other half of this predicate.
+
+    Its *first* term is not checked here because on an AUTHED route it is
+    constant-true. ``non_admin_user_models`` (``schemas/stmt.py``) cross-joins
+    every live non-admin USER-principal with every route whose policy is
+    ``PUBLIC`` or ``AUTHED``, and ``get_user_accessible_model_names`` hands an
+    admin every route unconditionally. A rule is only emitted for a route with
+    one of those two policies, so for any caller the tables can name, the
+    accessible set contains it.
+
+    ``principal_kind`` is what makes that last sentence true rather than nearly
+    true. Both branches above are about a USER: the view filters
+    ``u.kind = 'USER'``, and a non-admin principal of any other kind falls
+    through it to an *empty* accessible set -- the server would refuse, while a
+    gateway acting on this flag would allow. Nothing in the product gives an
+    ORG- or GROUP-principal an API key today, and the table build already
+    excludes SYSTEM; naming the condition is what keeps that from being load
+    bearing.
+
+    The encoding is positive on purpose, and that direction is not negotiable:
+    absent means "ask the server", so a gateway config written before this
+    field existed, or one this server has withdrawn the flag from, costs a
+    round trip rather than a wrong verdict. Withdrawing it is a tightening in
+    the same class as a revocation -- on a skipped route nothing else asks the
+    server whether the key still qualifies -- so it has to ride the same
+    immediate flush, which is what the ``ApiKey`` watch already gives it.
+    """
+    if principal_kind != PrincipalType.USER:
+        return False
+    scopes = scope or []
+    if PermissionScope.ALL not in scopes and PermissionScope.INFERENCE not in scopes:
+        return False
+    return not allowed_model_names
+
+
 async def build_local_auth_tables(
     session: AsyncSession, max_entries: Optional[int] = None
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -214,6 +315,12 @@ async def build_local_auth_tables(
 
     Both predicates are evaluated here on every pass rather than trusted from
     key creation, because a stored digest outlives the switch that allowed it.
+
+    An entry in either table may also carry ``unrestricted``, which is what
+    lets the plugin skip the authorization call on an AUTHED route. It rides
+    the entry rather than a table of its own precisely so that withdrawing it
+    is the same write, on the same immediate flush, as withdrawing the entry --
+    see :func:`gateway_key_unrestricted`.
 
     Excluded, and each for its own reason:
 
@@ -243,7 +350,7 @@ async def build_local_auth_tables(
     key past the cap still works, it just asks the server on every request.
     ``None`` means no cap; zero is a real cap and must stay distinguishable
     from it, because :func:`split_cr_budget` returns zero for a budget that the
-    public routes have already spent -- read as "no cap" that would publish
+    match rules have already spent -- read as "no cap" that would publish
     every key in the deployment, which is the exact opposite.
     """
     now = datetime.now(timezone.utc)
@@ -251,8 +358,14 @@ async def build_local_auth_tables(
     # deployment and the hydration is synchronous, so building 10k ApiKey +
     # Principal instances would block the event loop for ~110 ms a pass against
     # ~2 ms of actual query -- serving tuples instead costs ~22 ms. It also
-    # avoids fetching the argon2 hash, the description and the allowed-model
-    # JSON, none of which is read here.
+    # avoids fetching the argon2 hash and the description, neither of which is
+    # read here.
+    #
+    # ``scope`` and ``allowed_model_names`` are the two JSON columns
+    # :func:`gateway_key_unrestricted` folds into one bit; only their emptiness
+    # is read, never their contents. ``Principal.kind`` is selected as well as
+    # filtered on because that predicate needs the value, not just the
+    # exclusion the WHERE below already applies.
     statement = (
         select(
             ApiKey.id,
@@ -261,6 +374,9 @@ async def build_local_auth_tables(
             ApiKey.expires_at,
             ApiKey.user_id,
             ApiKey.is_custom,
+            ApiKey.scope,
+            ApiKey.allowed_model_names,
+            Principal.kind,
         )
         .join(Principal, Principal.id == ApiKey.user_id)
         .where(
@@ -299,7 +415,17 @@ async def build_local_auth_tables(
     keys: Dict[str, Any] = {}
     refs: Dict[str, Any] = {}
     dropped = False
-    for key_id, access_key, digest, expires_at, user_id, is_custom in rows:
+    for (
+        key_id,
+        access_key,
+        digest,
+        expires_at,
+        user_id,
+        is_custom,
+        scope,
+        allowed_model_names,
+        principal_kind,
+    ) in rows:
         publishable = gateway_digest_publishable(is_custom, digest)
         if not publishable and not gateway_ref_eligible(is_custom):
             # A key on its way to a digest: neither table serves it until the
@@ -325,6 +451,11 @@ async def build_local_auth_tables(
         entry: Dict[str, Any] = {}
         if expires_at is not None:
             entry["exp"] = int(expires_at.timestamp())
+        # Emitted only when true, never as ``false``. Absent already means
+        # false to the plugin, so writing the negative case would spend ~20
+        # bytes of the shared budget per entry to say what silence says.
+        if gateway_key_unrestricted(scope, allowed_model_names, principal_kind):
+            entry["unrestricted"] = True
         if publishable:
             gateway_digest_value = gateway_digest(digest)
             if gateway_digest_value is None:
@@ -343,8 +474,8 @@ async def build_local_auth_tables(
                 continue
             entry["digest"] = gateway_digest_value
             # Just the id: the plugin rebuilds "<access_key>.gpustack-<id>"
-            # locally for PUBLIC routes, and a few bytes of integer replace a
-            # ~40-byte string on the larger of the two tables.
+            # locally on any route it skips, and a few bytes of integer replace
+            # a ~40-byte string on the larger of the two tables.
             entry["user_id"] = user_id
             keys[access_key] = entry
         else:
@@ -363,64 +494,101 @@ async def build_local_auth_tables(
     return keys, refs
 
 
-async def build_public_route_ids(session: AsyncSession) -> List[int]:
-    """Ids of every PUBLIC route, which is the whole input to the rules.
+async def build_skippable_routes(session: AsyncSession) -> List[Tuple[int, str]]:
+    """``(id, policy)`` for every route the gateway may act on by itself.
 
     Ids rather than names because the names are derived from them
     (``ai-route-route-<id>.internal``), which is why renaming a route, changing
-    its weight or adding a target cannot move this value -- only joining or
-    leaving the PUBLIC set can. That is what keeps the rules stable across the
-    high-frequency churn ``ModelRoute`` rows see.
+    its weight or adding a target cannot move this value -- only its policy
+    crossing into or out of :data:`SKIPPABLE_ROUTE_POLICIES` can. That is what
+    keeps the rules stable across the high-frequency churn ``ModelRoute`` rows
+    see.
 
-    Each id here is a standing authorization to allow requests through without
-    asking the server, which is why *losing* PUBLIC status has to propagate
-    immediately while gaining it can wait.
+    The policy travels with the id because the rule carries it verbatim: the
+    two are different standing authorizations, and the plugin decides what it
+    may skip from the value, not from the rule's presence. Each entry is one
+    such authorization, which is why *losing* a skippable policy has to
+    propagate immediately while gaining one can wait.
+
+    PUBLIC routes are ordered ahead of AUTHED ones, then by id within each,
+    because the budget serves the two groups on either side of the key table --
+    see :func:`split_cr_budget`. Keeping them in one ordered list means the
+    caller splits rather than re-sorts.
     """
     statement = (
-        # Only the id is read; the names are derived from it.
-        select(ModelRoute.id)
+        # Only the id and the policy are read; the names are derived from the
+        # id.
+        select(ModelRoute.id, ModelRoute.access_policy)
         .where(
             ModelRoute.deleted_at.is_(None),
-            ModelRoute.access_policy == AccessPolicyEnum.PUBLIC,
+            ModelRoute.access_policy.in_(SKIPPABLE_ROUTE_POLICIES),
         )
         .order_by(ModelRoute.id)
     )
-    return [row for row in (await session.exec(statement)).all() if row is not None]
+    rows = (await session.exec(statement)).all()
+    # Through the same normaliser the event filter uses, rather than
+    # ``AccessPolicyEnum(policy)``. A typed column select hands back the enum
+    # member on every dialect we support, but stating the mapping twice is what
+    # lets the two drift, and this form also survives a driver that returns the
+    # stored name. A value it cannot name is dropped rather than raised on: a
+    # route the gateway cannot place is one it should authorize at the server,
+    # which is what no rule already means.
+    routes = [
+        (route_id, rule_value)
+        for route_id, rule_value in (
+            (route_id, _policy_rule_value(policy)) for route_id, policy in rows
+        )
+        if route_id is not None and rule_value is not None
+    ]
+    # Stable, so ids stay ascending inside each policy group and the rules
+    # array is byte-identical between two passes that read the same rows.
+    routes.sort(key=lambda route: _POLICY_RANK[route[1]])
+    return routes
 
 
-def public_route_ingresses(route_ids: List[int], cfg: Config) -> List[List[str]]:
-    """Ingress names for those routes, main and fallback together.
+def route_rule_ingresses(
+    routes: List[Tuple[int, str]], cfg: Config
+) -> List[Tuple[List[str], str]]:
+    """``(ingress names, policy)`` per route, main and fallback together.
 
     Both names, always: the fallback trip re-runs the filter chain under the
     fallback route's name, and listing only the main one would drop it to the
     catch-all rule at the exact moment its credential is gone.
     """
     return [
-        list(
-            route_ingress_names_for_plugins(
-                model_route_id=route_id,
-                resource_namespace=cfg.get_namespace(),
-                gateway_namespace=cfg.gateway_namespace,
-            )
+        (
+            list(
+                route_ingress_names_for_plugins(
+                    model_route_id=route_id,
+                    resource_namespace=cfg.get_namespace(),
+                    gateway_namespace=cfg.gateway_namespace,
+                )
+            ),
+            policy,
         )
-        for route_id in route_ids
+        for route_id, policy in routes
     ]
 
 
-def _is_public_policy(policy: Any) -> bool:
-    """Whether an access policy read off an event payload means PUBLIC.
+def _policy_rule_value(policy: Any) -> Optional[str]:
+    """The rule value an access policy off an event payload would render as.
+
+    ``None`` for a policy that gets no rule, which includes one this build does
+    not recognise -- the same rollback-safe direction the plugin takes for a
+    value it cannot name.
 
     The value arrives in three shapes depending on how the event travelled:
     the enum member on a hydrated model, its value (``"public"``) once it has
     been through JSON, and its name (``"PUBLIC"``) as the column stores it.
     """
-    if isinstance(policy, AccessPolicyEnum):
-        return policy is AccessPolicyEnum.PUBLIC
-    return policy in (AccessPolicyEnum.PUBLIC.value, AccessPolicyEnum.PUBLIC.name)
+    for skippable in SKIPPABLE_ROUTE_POLICIES:
+        if policy is skippable or policy in (skippable.value, skippable.name):
+            return skippable.value
+    return None
 
 
 class GatewayAuthReconciler:
-    """Writes the key tables and PUBLIC rules into the ext-auth CR."""
+    """Writes the key tables and the per-route rules into the ext-auth CR."""
 
     def __init__(self, cfg: Config):
         self._config = cfg
@@ -430,22 +598,39 @@ class GatewayAuthReconciler:
         self._flush_now = asyncio.Event()
         self._extensions_api: Optional[ExtensionsHigressIoV1Api] = None
         self._registry: Optional[McpBridgeRegistry] = None
-        # PUBLIC route ids as of the last successfully applied CR -- not "as of
-        # the last database read". The invariant that buys is
+        # The policy each skippable route had as of the last successfully
+        # applied CR -- not "as of the last database read". The invariant that
+        # buys is
         #
-        #     the CR carries a rule for a route  <=>  its id is in this set
+        #     the last pass saw route R with policy P  <=>  this maps R to P
         #
         # which is what lets ``_model_route_may_change_rules`` rule an event
         # out. None means nothing has been applied yet, so nothing can be ruled
         # out.
-        self._applied_public_route_ids: Optional[Set[int]] = None
+        #
+        # The policy is carried, not just the id, and with AUTHED in the
+        # picture it has to be. AUTHED is the default policy, so nearly every
+        # route now has a rule -- an id-keyed set would match every route event
+        # and the filter would suppress nothing, turning the steady restamping
+        # of ``targets`` / ``ready_targets`` into a reconcile pass apiece.
+        # Comparing the policy is what keeps "this route already renders like
+        # this" separable from "this route's rule is about to change".
+        #
+        # Every skippable route is recorded, including the ones the byte budget
+        # left out. What the filter asks is whether an event changes the
+        # *input*, and a route dropped for want of budget has the same input as
+        # one that fits: re-running the pass would drop it again. Recording only
+        # what was written would leave those routes matching nothing, so each of
+        # their churn events would reconcile -- the suppression would fail
+        # exactly where the deployment is already large enough to need it.
+        self._applied_route_policies: Optional[Dict[int, str]] = None
         # The same thing the tuple above records, kept whole so a pass can tell
         # whether it changed anything. Compared rather than hashed: the tables
         # are already in hand, equality short-circuits on the first difference,
         # and serializing them again to fingerprint them would cost more than
         # the comparison saves.
         self._applied_state: Optional[
-            Tuple[Dict[str, Any], Dict[str, Any], List[int]]
+            Tuple[Dict[str, Any], Dict[str, Any], List[Tuple[int, str]]]
         ] = None
 
     async def start(self):
@@ -486,44 +671,49 @@ class GatewayAuthReconciler:
         those events costs a pointless pass -- two queries and a call to the
         API server -- which is the thing worth avoiding.
 
-        Two cases can matter, and between them they are exhaustive:
+        The whole test is therefore "would this route's policy still render the
+        way the last pass saw it", and it is one comparison because both sides
+        reduce to the same thing: the rule value the policy produces, with
+        ``None`` for a policy that gets no rule. Equal means nothing can move --
+        the churn case, and by far the common one. Unequal covers all four ways
+        it can: a route gaining a rule, losing one, or crossing between PUBLIC
+        and AUTHED in either direction. That last pair is the reason the applied
+        state carries the policy and not just the id.
 
-        * the route **is** PUBLIC now, so a rule may need adding;
-        * its id is in the applied set, so the CR has a rule for it and this
-          event may be taking it away. This is the one that catches PUBLIC ->
-          AUTHED, where the payload already reads as AUTHED.
-
-        Anything else is a route that has no rule and would not get one, and
-        nothing about it can move the array.
+        A deletion never reaches that comparison. The event carries the row as
+        it was, so its policy still matches what the last pass recorded and the
+        comparison would read the removal as "nothing moved" -- which is the one
+        direction this filter must never be wrong in, since the rule outlives
+        the route it names until the next periodic pass.
 
         The rest is deliberately conservative: nothing applied yet, no id, or a
         policy the payload does not carry (distributed mode delivers id-only
         events) all mean "do the work". Being wrong in that direction costs one
-        redundant pass; being wrong the other way would leave a route allowed
-        locally after it stopped being public, until the periodic pass caught
-        it.
+        redundant pass; being wrong the other way would leave a route skipped
+        locally after it stopped qualifying, until the periodic pass caught it.
         """
-        applied = self._applied_public_route_ids
+        if event.type is EventType.DELETED:
+            return True
+        applied = self._applied_route_policies
         if applied is None:
             return True
         route_id = event_field(event.data, "id")
         if route_id is None:
             return True
-        if route_id in applied:
-            return True
         policy = event_field(event.data, "access_policy")
         if policy is None:
             return True
-        return _is_public_policy(policy)
+        return _policy_rule_value(policy) != applied.get(route_id)
 
     async def _watch(self, resource, label: str, relevant=None):
         """Turn events into flush urgency -- never into incremental state.
 
         Only the direction matters here. A deletion or an update may take
-        something away (revoked key, a deactivated principal, a route leaving
-        PUBLIC), so it flushes immediately. A creation can only add, and adding
-        late is harmless: until the push lands the key authenticates via the
-        server and the route authorizes per request, exactly as before.
+        something away (revoked key, a deactivated principal, a key narrowed
+        to a model list, a route leaving the skippable policies), so it flushes
+        immediately. A creation can only add, and adding late is harmless:
+        until the push lands the key authenticates via the server and the route
+        authorizes per request, exactly as before.
 
         ``relevant`` narrows that further for a resource whose rows change far
         more often than the config derived from them; see
@@ -565,7 +755,8 @@ class GatewayAuthReconciler:
                 )
             # Resubscribed rather than left dead. Events are what makes a
             # tightening -- a revocation, a deactivated principal, a route
-            # leaving PUBLIC -- take effect on the next request instead of
+            # leaving the skippable policies -- take effect on the next
+            # request instead of
             # waiting out the periodic pass; a watch that exits silently
             # downgrades every one of those to that interval, and stays
             # downgraded for the life of the process.
@@ -598,21 +789,34 @@ class GatewayAuthReconciler:
 
     async def reconcile(self):
         async with async_session() as session:
-            # Routes first: they decide how much of the shared budget is left
-            # for keys.
-            public_route_ids = await build_public_route_ids(session)
-            route_count, max_entries = split_cr_budget(
-                self._budget, len(public_route_ids)
-            )
-            if route_count < len(public_route_ids):
-                logger.warning(
-                    f"Gateway auth: {len(public_route_ids) - route_count} public "
-                    f"routes left out of the ext-auth config ({self._budget} byte "
-                    "budget). They keep authorizing via the server per request."
-                )
-                public_route_ids = public_route_ids[:route_count]
+            # Three claims on one budget, served in the order
+            # :func:`split_cr_budget` explains: PUBLIC rules, key entries, then
+            # AUTHED rules from whatever is left. The query returns them
+            # PUBLIC-first, so the split is a partition, not a re-sort.
+            skippable = await build_skippable_routes(session)
+            public_routes = [
+                r for r in skippable if r[1] == AccessPolicyEnum.PUBLIC.value
+            ]
+            authed_routes = skippable[len(public_routes) :]
+            public_kept, max_entries = split_cr_budget(self._budget, len(public_routes))
             keys, refs = await build_local_auth_tables(session, max_entries=max_entries)
-        ingresses = public_route_ingresses(public_route_ids, self._config)
+        # Against the entries actually published, not the cap: a deployment
+        # with fewer keys than the cap spends the remainder on AUTHED rules
+        # rather than reserving it for keys that do not exist.
+        authed_kept = authed_rules_budget(
+            self._budget, public_kept, len(keys) + len(refs)
+        )
+        dropped = (len(public_routes) - public_kept) + (
+            len(authed_routes) - min(authed_kept, len(authed_routes))
+        )
+        if dropped:
+            logger.warning(
+                f"Gateway auth: {dropped} routes left out of the ext-auth config "
+                f"({self._budget} byte budget). They keep authorizing via the "
+                "server per request."
+            )
+        routes = public_routes[:public_kept] + authed_routes[:authed_kept]
+        rule_ingresses = route_rule_ingresses(routes, self._config)
 
         # ``ensure_wasm_plugin`` compares the rendered spec and skips the write
         # when nothing moved, so an unchanged recomputation costs no CR write,
@@ -626,7 +830,7 @@ class GatewayAuthReconciler:
                 ext_auth_reconcile_spec_diff,
                 keys=keys,
                 refs=refs,
-                public_route_ingresses=ingresses,
+                route_rules=rule_ingresses,
                 cfg=self._config,
                 # Only used to rebuild a CR that has gone missing, but it has
                 # to be passed in: this module can import the gateway package,
@@ -645,10 +849,16 @@ class GatewayAuthReconciler:
         # it looks identical whether the CR was rewritten or diffed away. This
         # way its presence *is* the signal. Liveness, when it is the question,
         # comes from the exception logs in the flush loop and the watches.
-        if (keys, refs, public_route_ids) != self._applied_state:
+        if (keys, refs, routes) != self._applied_state:
+            public = sum(
+                1 for _, policy in routes if policy == AccessPolicyEnum.PUBLIC.value
+            )
             logger.debug(
                 f"Gateway auth: {len(keys)} locally verifiable keys, "
-                f"{len(refs)} refs, {len(public_route_ids)} public routes."
+                f"{len(refs)} refs, {len(routes)} skippable routes "
+                f"({public} public)."
             )
-        self._applied_state = (keys, refs, public_route_ids)
-        self._applied_public_route_ids = set(public_route_ids)
+        self._applied_state = (keys, refs, routes)
+        # Every skippable route, not just the ones that fit -- see the field's
+        # own comment for why the budget must not narrow this.
+        self._applied_route_policies = dict(skippable)
