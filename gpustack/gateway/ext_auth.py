@@ -18,7 +18,7 @@ database; the two halves meet at :func:`ext_auth_spec`.
 
 The CR is a **hybrid** resource: the static base (endpoint, timeouts, signing
 key) comes from ``cfg`` and is rewritten at every startup, while ``local_auth``
-and the PUBLIC route rules come from the database and must survive that
+and the per-route rules come from the database and must survive that
 rewrite -- see :func:`ext_auth_init_spec_diff`.
 """
 
@@ -49,11 +49,6 @@ logger = logging.getLogger(__name__)
 ext_auth_resource_name = "gpustack-llm-ext-auth"
 
 ext_auth_plugin_name = "gpustack-ext-auth"
-
-# Access-policy value the plugin understands. Lower-case on purpose: it mirrors
-# ``AccessPolicyEnum.PUBLIC``'s wire value, which is what the reconciler
-# compares against.
-ACCESS_POLICY_PUBLIC = "public"
 
 
 class LocalAuthOverride(BaseModel):
@@ -229,18 +224,24 @@ def route_match_regexes(cfg: Config) -> List[str]:
     return [f"^{re.escape(model_route_prefix(cfg))}"]
 
 
-def public_route_match_rules(
-    public_route_ingresses: Optional[List[List[str]]] = None,
+def route_match_rules(
+    route_rules: Optional[List[Tuple[List[str], str]]] = None,
 ) -> Optional[List[WasmPluginMatchRule]]:
-    """One CR match rule per PUBLIC route, keyed by ingress.
+    """One CR match rule per route the gateway may act on, keyed by ingress.
 
-    This is the only thing that needs a rule at all: a route that is not PUBLIC
-    takes the global config, never sees an ``access_policy``, and so keeps
-    authorizing per request. The catch-all that used to occupy
-    ``defaultConfig._rules_`` is gone -- ``route_match_regexes`` covers it, and
-    a hand-written ``_rules_`` could not coexist with these rules anyway, since
-    the Higress controller overwrites it wholesale once ``matchRules`` is
-    non-empty.
+    A rule exists to tell the plugin one route's policy, and only the policies
+    it can act on are ever passed here. A route with any other policy takes the
+    global config, never sees an ``access_policy``, and so keeps authorizing
+    per request. The catch-all that used to occupy ``defaultConfig._rules_`` is
+    gone -- ``route_match_regexes`` covers it, and a hand-written ``_rules_``
+    could not coexist with these rules anyway, since the Higress controller
+    overwrites it wholesale once ``matchRules`` is non-empty.
+
+    The policy is written verbatim rather than mapped: the plugin's own
+    constants are ``AccessPolicyEnum``'s wire values, so a mapping here would
+    be a second place for the two to drift. A value the plugin does not
+    recognise falls through to the authorization call, which is what makes
+    passing one through safe rather than merely untidy.
 
     Each rule lists both the main and the ``.fallback`` ingress. The fallback
     trip is a fresh pass over the whole filter chain against a rewritten
@@ -249,14 +250,15 @@ def public_route_match_rules(
     it would then need.
 
     ``access_policy`` belongs here and nowhere else: in ``defaultConfig`` it
-    would declare every route public.
+    would declare every route's policy to be one route's. The plugin drops the
+    field there rather than trusting the reconciler not to write it.
 
-    No PUBLIC route yields ``None`` rather than ``[]``, and the difference is
+    No rule at all yields ``None`` rather than ``[]``, and the difference is
     not cosmetic. Some API servers store this field through a typed decoder
     that omits an empty array, so a CR written with ``matchRules: []`` reads
     back with no ``matchRules`` at all -- while ``ensure_wasm_plugin`` compares
     with ``exclude_none=True``, which drops ``None`` but keeps ``[]``. The two
-    then never compare equal, and a deployment with no public routes rewrites
+    then never compare equal, and a deployment with no such routes rewrites
     this CR on every reconcile tick: an xDS push, and a wasm VM rebuilt on
     every gateway pod, every 30 seconds, forever. Rendering the empty case as
     absent makes both sides agree whichever way the store normalizes it.
@@ -269,9 +271,9 @@ def public_route_match_rules(
     rules = [
         WasmPluginMatchRule(
             ingress=list(ingress_names),
-            config={"access_policy": ACCESS_POLICY_PUBLIC},
+            config={"access_policy": policy},
         )
-        for ingress_names in public_route_ingresses or []
+        for ingress_names, policy in route_rules or []
     ]
     return rules or None
 
@@ -281,7 +283,6 @@ def ext_auth_default_config(
     registry: McpBridgeRegistry,
     keys: Optional[Dict[str, Any]] = None,
     refs: Optional[Dict[str, Any]] = None,
-    public_route_ingresses: Optional[List[List[str]]] = None,
 ) -> Dict[str, Any]:
     override = ext_auth_override(cfg)
     return {
@@ -421,7 +422,7 @@ def ext_auth_spec(
     registry: McpBridgeRegistry,
     keys: Optional[Dict[str, Any]] = None,
     refs: Optional[Dict[str, Any]] = None,
-    public_route_ingresses: Optional[List[List[str]]] = None,
+    route_rules: Optional[List[Tuple[List[str], str]]] = None,
 ) -> WasmPluginSpec:
     return WasmPluginSpec(
         defaultConfig=ext_auth_default_config(
@@ -429,9 +430,8 @@ def ext_auth_spec(
             registry=registry,
             keys=keys,
             refs=refs,
-            public_route_ingresses=public_route_ingresses,
         ),
-        matchRules=public_route_match_rules(public_route_ingresses),
+        matchRules=route_match_rules(route_rules),
         defaultConfigDisable=False,
         # Unchanged from the upstream plugin, and the exposure it carries is a
         # real one: a module Envoy cannot load means this filter is absent, and
@@ -461,9 +461,9 @@ def _rule_access_policy(rule: Any) -> Any:
     """The access policy on a match rule, whichever shape it arrived in.
 
     Reading the CR back yields parsed ``WasmPluginMatchRule`` objects, but this
-    accepts a plain dict too: the alternative is silently dropping every PUBLIC
-    rule on a restart if that ever stops being true, which would quietly put
-    every public route back on a live server.
+    accepts a plain dict too: the alternative is silently dropping every rule
+    on a restart if that ever stops being true, which would quietly put every
+    route the gateway was serving locally back on a live server.
     """
     config = rule.config if isinstance(rule, WasmPluginMatchRule) else None
     if config is None and isinstance(rule, dict):
@@ -474,7 +474,7 @@ def _rule_access_policy(rule: Any) -> Any:
 def _database_owned_parts(
     current_spec: Optional[WasmPluginSpec],
 ) -> Tuple[Dict[str, Any], Dict[str, Any], List[WasmPluginMatchRule]]:
-    """``(keys, refs, public_rules)`` as they currently stand in the CR.
+    """``(keys, refs, policy_rules)`` as they currently stand in the CR.
 
     Everything the reconciler owns, read back off the live spec so a restart
     does not blank it out. Anything unrecognizable is treated as absent: the
@@ -493,16 +493,33 @@ def _database_owned_parts(
             local_auth.get("refs") if isinstance(local_auth.get("refs"), dict) else {}
         )
     rules = getattr(current_spec, "matchRules", None)
-    public_rules = [
+    policy_rules = [
         rule
         for rule in (rules if isinstance(rules, list) else [])
-        # A rule that authorizes local allow-through is exactly one naming an
-        # access policy. Nothing else has any business being in here, but
-        # filtering on the field rather than taking the list wholesale means a
-        # rule somebody added by hand cannot ride along through a restart.
+        # A rule this reconciler owns is exactly one naming an access policy.
+        # Nothing else has any business being in here, but filtering on the
+        # field rather than taking the list wholesale means a rule somebody
+        # added by hand cannot ride along through a restart.
         if _rule_access_policy(rule)
     ]
-    return keys, refs, public_rules
+    return keys, refs, policy_rules
+
+
+def _without_unrestricted(table: Dict[str, Any]) -> Dict[str, Any]:
+    """``table`` with the authorization-skip flag dropped from every entry.
+
+    A non-dict entry is passed through untouched rather than repaired: a
+    hand-edited CR is the reconciler's to overwrite on its next pass, and
+    raising here would leave the plugin with no config at all.
+    """
+    return {
+        access_key: (
+            {k: v for k, v in entry.items() if k != "unrestricted"}
+            if isinstance(entry, dict)
+            else entry
+        )
+        for access_key, entry in table.items()
+    }
 
 
 def ext_auth_init_spec_diff(
@@ -514,23 +531,43 @@ def ext_auth_init_spec_diff(
     Runs on every server start, when the reconciler has not produced anything
     yet. Dropping the key tables here would be safe but wasteful -- every key
     would fall back to asking the server until the first reconcile -- and
-    dropping the PUBLIC rules would take PUBLIC routes off local allow-through
-    for the same window. Both come back on their own; carrying them over just
-    avoids the gap, and avoids two CR writes (and two xDS pushes) per restart.
+    dropping the rules would take every route the gateway serves locally back
+    onto the server for the same window. Both come back on their own; carrying
+    them over just avoids the gap, and avoids two CR writes (and two xDS
+    pushes) per restart.
+
+    ``unrestricted`` is the exception, and is stripped from every entry carried
+    over. What is carried here is a *stale* copy of the database, and this
+    process runs before the schema is even migrated -- the first reconcile is a
+    whole server boot away, not a moment.
+
+    It is singled out because it is the only thing carried here that decides an
+    authorization on its own. A stale key entry still has to verify a secret
+    against the digest it carries; a stale rule only restates a policy that
+    cannot have changed while no server was running to change it. This one is
+    the whole of the authorization check on an AUTHED route, so republishing
+    one the database has since withdrawn lets that key reach a model its
+    ``allowed_model_names`` no longer admits, for as long as the boot takes.
+
+    Dropping it costs the round trip its own encoding was designed around:
+    absent means "ask the server", so those requests authorize per request
+    until the reconciler republishes the flag from live rows. Nothing else
+    degrades -- authentication still happens locally from the same entries, and
+    a PUBLIC route never consults the flag.
     """
     if current_spec is None:
         return expected_spec
-    keys, refs, public_rules = _database_owned_parts(current_spec)
+    keys, refs, policy_rules = _database_owned_parts(current_spec)
     default_config = dict(expected_spec.defaultConfig or {})
     local_auth = dict(default_config.get("local_auth") or {})
-    local_auth["keys"] = keys
-    local_auth["refs"] = refs
+    local_auth["keys"] = _without_unrestricted(keys)
+    local_auth["refs"] = _without_unrestricted(refs)
     default_config["local_auth"] = local_auth
     return expected_spec.model_copy(
-        # ``or None`` for the same reason :func:`public_route_match_rules` ends
-        # that way: an empty array here is what a store that omits one turns
-        # into a permanent difference.
-        update={"defaultConfig": default_config, "matchRules": public_rules or None}
+        # ``or None`` for the same reason :func:`route_match_rules` ends that
+        # way: an empty array here is what a store that omits one turns into a
+        # permanent difference.
+        update={"defaultConfig": default_config, "matchRules": policy_rules or None}
     )
 
 
@@ -538,7 +575,7 @@ def ext_auth_reconcile_spec_diff(
     current_spec: Optional[WasmPluginSpec],
     keys: Dict[str, Any],
     refs: Dict[str, Any],
-    public_route_ingresses: List[List[str]],
+    route_rules: List[Tuple[List[str], str]],
     cfg: Config,
     registry: McpBridgeRegistry,
 ) -> WasmPluginSpec:
@@ -577,7 +614,7 @@ def ext_auth_reconcile_spec_diff(
             registry=registry,
             keys=keys,
             refs=refs,
-            public_route_ingresses=public_route_ingresses,
+            route_rules=route_rules,
         )
     default_config = dict(current_spec.defaultConfig or {})
     # Anything unrecognizable is treated as absent, as in _database_owned_parts:
@@ -591,9 +628,9 @@ def ext_auth_reconcile_spec_diff(
     default_config["local_auth"] = local_auth
     # Rewritten alongside the rules even though it is part of the static base:
     # the two have to agree, and a CR whose gate went missing would carry
-    # PUBLIC rules for routes the plugin then ignores entirely. Deriving it
+    # policy rules for routes the plugin then ignores entirely. Deriving it
     # from cfg makes writing it here idempotent.
     default_config["route_match_regexes"] = route_match_regexes(cfg)
     current_spec.defaultConfig = default_config
-    current_spec.matchRules = public_route_match_rules(public_route_ingresses)
+    current_spec.matchRules = route_match_rules(route_rules)
     return current_spec
