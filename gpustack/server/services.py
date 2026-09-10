@@ -456,7 +456,23 @@ class APIKeyService:
 
     @locked_cached()
     async def get_by_access_key(self, access_key: str) -> Optional[ApiKey]:
-        result = await ApiKey.one_by_field(self.session, "access_key", access_key)
+        """Look up a live key by its access key, for authentication.
+
+        ``deleted_at IS NULL`` is part of the predicate, not a caller's
+        responsibility. This is the query behind ``/token-auth``'s credential
+        path, which is what every request falls back to when the gateway's own
+        local key table cannot answer -- and that table is built with the same
+        filter (``build_local_auth_tables``). Without it here, a soft-deleted
+        row keeps authenticating on the fallback path forever while the gateway
+        has already stopped honouring it, so revocation never converges.
+
+        ``ApiKey.delete()`` hard-deletes, so the column is only ever set by a
+        cascade taking the soft path -- but a revocation that depends on which
+        delete path ran is not a revocation.
+        """
+        result = await ApiKey.one_by_fields(
+            self.session, {"access_key": access_key, "deleted_at": None}
+        )
         if result is None:
             return None
         self.session.expunge(result)
