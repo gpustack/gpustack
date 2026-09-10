@@ -162,4 +162,3 @@ async def test_delete_model_ignores_soft_deleted_targets_of_other_models(session
     await ModelService(session).delete(model)
 
     assert await _route(session, "stale") is None
-
