@@ -295,7 +295,7 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     ``.fallback.``), nothing else matches, and non-matching routes pass
     through untouched.
 
-    The key tables and the PUBLIC route rules are absent here and filled in by
+    The key tables and the per-route rules are absent here and filled in by
     :class:`~gpustack.server.gateway_auth_reconciler.GatewayAuthReconciler`;
     see :func:`gpustack.gateway.ext_auth.ext_auth_init_spec_diff` for how they
     survive this rewrite on restart.
@@ -894,7 +894,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
                     )
                 elif plugin_name == ext_auth_resource_name:
                     # Hybrid resource: the static base is rewritten from cfg on
-                    # every start, the key tables and PUBLIC rules are carried
+                    # every start, the key tables and route rules are carried
                     # over from the live CR because the database owns them.
                     spec_diff_func = partial(
                         ext_auth_init_spec_diff, expected_spec=plugin_spec
