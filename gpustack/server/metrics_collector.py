@@ -77,6 +77,18 @@ class ModelUsageMetrics(BaseModel):
     # downstream (see ``_unixmilli_to_naive_utc``).
     started_at: Optional[int] = None
     completed_at: Optional[int] = None
+    # Milliseconds from request entry to the first response body chunk.
+    # Streaming only -- the non-streaming path never sees intermediate
+    # chunks -- so ``None`` is the ordinary case, not a degraded one. No
+    # duration field beside it: the duration is the two stamps above.
+    ttft_ms: Optional[int] = None
+    # Envoy's ``x-request-id``, echoed to the caller by the gateway plugin so
+    # there is an id to quote. Not unique per row: a fallback pass is an
+    # internal redirect of one downstream request and reports twice.
+    request_id: Optional[str] = None
+    # The model's own id for the response (``chatcmpl-…`` / ``resp_…`` /
+    # ``msg_…``), taken verbatim from the upstream body.
+    upstream_response_id: Optional[str] = None
     user_id: Optional[int] = None
     model_id: Optional[int] = None
     model_route_id: Optional[int] = None
@@ -95,6 +107,41 @@ class ModelUsageMetrics(BaseModel):
     # Tenant identifier sourced from the gateway's X-Organization-Id header
     # (configurable via the token-usage plugin's ``organizationIDHeader``).
     organization_id: Optional[str] = None
+
+
+# Width of the two reported-id columns, which ``AutoString`` renders as
+# VARCHAR(255) on MySQL and OceanBase. Those two reject an over-long value
+# rather than truncating it, and a rejected insert is not one lost row:
+# ``flush_gateway_metrics`` re-buffers the whole batch on failure, so a single
+# oversized value would fail every later flush too and usage would stop
+# persisting for good. PostgreSQL and openGauss render TEXT and would take it,
+# which is exactly what would make this show up on one deployment and not
+# another.
+_MAX_REPORTED_ID_CHARS = 255
+
+
+def _bounded_reported_id(value: Optional[str], field: str) -> Optional[str]:
+    """A reported id, or ``None`` if it could not be stored.
+
+    ``upstream_response_id`` is copied verbatim out of a third-party response
+    body and is bounded by nothing on the way here, so the length has to be
+    checked rather than assumed.
+
+    Dropped rather than truncated: both columns are already nullable with a
+    documented absent case, and they exist to be looked up by. A truncated id
+    is indistinguishable from a real one to whoever is doing the looking, so it
+    would answer a question wrongly where absence answers it honestly.
+    """
+    if value is None or len(value) <= _MAX_REPORTED_ID_CHARS:
+        return value
+    logger.warning(
+        "Gateway usage report carried a %s of %d characters, over the %d the "
+        "column holds; storing it as absent.",
+        field,
+        len(value),
+        _MAX_REPORTED_ID_CHARS,
+    )
+    return None
 
 
 def _unixmilli_to_naive_utc(ms: Optional[int]) -> Optional[datetime]:
@@ -821,6 +868,19 @@ async def store_usage_metrics(
                         # ones.
                         started_at=started_dt,
                         completed_at=completed_dt,
+                        # Per-request locating data, on the audit row only:
+                        # a daily rollup covers many requests, so neither id
+                        # nor a single TTFT would mean anything there. The
+                        # server has nothing to add to a reported value or to
+                        # check it against, so the only handling is the length
+                        # bound below.
+                        ttft_ms=metric.ttft_ms,
+                        request_id=_bounded_reported_id(
+                            metric.request_id, "request_id"
+                        ),
+                        upstream_response_id=_bounded_reported_id(
+                            metric.upstream_response_id, "upstream_response_id"
+                        ),
                         # Audit timestamps still pinned to the request's
                         # wall-clock so the row's lifecycle stamps don't
                         # drift by the flush interval.
