@@ -334,6 +334,11 @@ class Server:
             port=self._config.get_api_port(),
             access_log=False,
             log_level="error",
+            # uvicorn already parses X-Forwarded-Proto, but only from peers in
+            # this list, and its default is loopback. Leaving it unset is why the
+            # server reads "http" behind a TLS-terminating proxy on any other
+            # host — see Config.get_forwarded_allow_ips.
+            forwarded_allow_ips=self._config.get_forwarded_allow_ips(),
         )
 
         setup_logging()

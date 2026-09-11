@@ -60,6 +60,9 @@ class ForwardedHostPortMiddleware:
         # Debounce warnings; capped so a hostile client rotating fake hosts
         # cannot grow this unbounded.
         self._warned_hosts = set()
+        # One shot: the proto mismatch below describes a deployment, not a
+        # request, so repeating it per request would only bury it.
+        self._warned_proto = False
 
     def _is_trusted(self, forwarded_host: bytes) -> bool:
         if self.wildcard:
@@ -78,9 +81,41 @@ class ForwardedHostPortMiddleware:
             "not in trusted_hosts / server_external_url."
         )
 
+    def _warn_ignored_proto(self, forwarded_proto: str, scheme: str):
+        """Report an X-Forwarded-Proto that uvicorn declined to act on.
+
+        uvicorn parses this header itself, ahead of any application middleware,
+        and rewrites ``scope["scheme"]`` when the peer is in
+        ``forwarded_allow_ips``. So a header that still disagrees with the scheme
+        by the time it reaches here means the peer was not trusted — and since
+        the request is served anyway, nothing else would ever say so.
+
+        Only flagged in the direction that loses protection: the proxy reports
+        HTTPS while the server still believes it is on HTTP, which is what makes
+        every scheme-dependent decision (the ``Secure`` cookie flag above all)
+        take the wrong branch.
+        """
+        if self._warned_proto:
+            return
+        self._warned_proto = True
+        logger.warning(
+            f"Ignoring X-Forwarded-Proto {forwarded_proto!r} from an untrusted "
+            f"peer; treating this request as {scheme!r}. Set "
+            "forwarded_allow_ips to the proxy's address, or the Secure flag "
+            "will never be set on session cookies."
+        )
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
             headers = dict((k.lower(), v) for k, v in scope.get("headers", []))
+            # Diagnostic only — the scheme itself is uvicorn's to decide.
+            forwarded_proto = headers.get(b"x-forwarded-proto")
+            if forwarded_proto:
+                # "https, http" when several proxies each appended; the first is
+                # the one the client actually spoke to.
+                proto = forwarded_proto.split(b",")[0].strip().decode("latin-1").lower()
+                if proto == "https" and scope.get("scheme") != "https":
+                    self._warn_ignored_proto(proto, scope.get("scheme"))
             # X-Forwarded-Host
             forwarded_host = headers.get(b"x-forwarded-host")
             if forwarded_host:
