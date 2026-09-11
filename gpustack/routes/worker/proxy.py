@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import aiohttp
-from typing import Callable, List, Optional, Tuple
+from typing import AsyncIterator, Callable, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
@@ -15,6 +15,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack import envs
 from gpustack.utils.network import use_proxy_env_for_url
+from gpustack.utils.stall import stall_error_sse
 from gpustack.gateway.utils import get_instance_id_from_header, router_header_key
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
@@ -42,6 +43,69 @@ _EXCLUDED_RESPONSE_HEADERS = frozenset(
         "content-encoding",
     }
 )
+
+
+_EVENT_STREAM_CONTENT_TYPE = "text/event-stream"
+
+
+def _is_event_stream(content_type: Optional[str]) -> bool:
+    return _EVENT_STREAM_CONTENT_TYPE in (content_type or "").lower()
+
+
+async def _read_first_chunk(
+    body_iter: AsyncIterator[bytes], timeout: Optional[float]
+) -> Optional[bytes]:
+    """Wait for the first body chunk, or None when the body is empty.
+
+    ``timeout`` is None for a non-streaming response: it is only sent once
+    generation has finished, so its first chunk *is* the end of generation and
+    a tight budget here would kill a legitimate long completion. The absolute
+    ceiling (``PROXY_TIMEOUT``) still applies via the aiohttp client timeout.
+
+    An empty body (204/304, HEAD, ``content-length: 0``) reaches EOF right
+    away, so it never waits out the budget.
+    """
+    try:
+        return await asyncio.wait_for(body_iter.__anext__(), timeout)
+    except StopAsyncIteration:
+        return None
+
+
+async def _stream_body(
+    body_iter: AsyncIterator[bytes],
+    first_chunk: Optional[bytes],
+    idle_timeout: Optional[float],
+) -> AsyncIterator[bytes]:
+    """Stream the response body, bounding the gap between chunks.
+
+    ``idle_timeout`` is only set for a streaming response, where a gap of tens
+    of seconds means the upstream is wedged: a healthy engine emits tokens
+    continuously. When the gap is exceeded the headers are long committed, so
+    the stall is reported as a terminal in-stream error rather than by dropping
+    the connection, which would look exactly like a truncated generation.
+
+    Anything other than a timeout (upstream reset, for one) propagates as
+    before.
+    """
+    if first_chunk is not None:
+        yield first_chunk
+    while True:
+        try:
+            yield await asyncio.wait_for(body_iter.__anext__(), idle_timeout)
+        except StopAsyncIteration:
+            return
+        except (asyncio.TimeoutError, TimeoutError):
+            if idle_timeout is None:
+                # Non-streaming response: nothing meaningful can be appended to
+                # a half-delivered JSON body, so keep the existing behavior of
+                # letting the connection break.
+                raise
+            logger.error(
+                f"Upstream stopped sending data for {idle_timeout}s mid-stream, "
+                "terminating the response with an error event"
+            )
+            yield stall_error_sse()
+            return
 
 
 def _filter_response_headers(resp_headers) -> List[Tuple[str, str]]:
@@ -90,16 +154,17 @@ async def proxy(path: str, request: Request):  # noqa: C901
         else:
             content = await request.body()
 
-        async def stream_response(resp):
-            async for chunk in resp.content.iter_chunked(1024):
-                yield chunk
-
         use_proxy_env = use_proxy_env_for_url(url)
         http_client: aiohttp.ClientSession = (
             request.app.state.http_client
             if use_proxy_env
             else request.app.state.http_client_no_proxy
         )
+        # ``total`` remains the absolute ceiling. It is a bad failure detector on
+        # its own, so what actually bounds a stalled upstream is the segmented
+        # budget below. Note that ``sock_read`` cannot be used for it: it starts
+        # counting when the request is sent and covers the wait for response
+        # headers, which has to stay generous.
         timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT)
         resp = await http_client.request(
             method=request.method,
@@ -109,11 +174,37 @@ async def proxy(path: str, request: Request):  # noqa: C901
             timeout=timeout,
         )
 
-        # Heuristic: treat a non-error HTTP status as a successful inference
+        streaming = _is_event_stream(resp.headers.get("content-type"))
+        body_iter = resp.content.iter_chunked(1024)
+
+        # Hold the downstream headers until the first body chunk arrives. vLLM
+        # answers an SSE request with 200 + text/event-stream *before* prefill,
+        # so committing headers on arrival would fix the status code before we
+        # can tell whether a first token is ever coming, leaving a pre-first-
+        # token stall reportable only in-stream. Deferring turns it into a real
+        # 504 that SDKs retry; for an SSE client the delay is invisible, since
+        # it is already waiting for the first event.
+        try:
+            first_chunk = await _read_first_chunk(
+                body_iter, envs.PROXY_TTFT_TIMEOUT if streaming else None
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            # close(), not release(): data may still be in flight, so the
+            # connection must not go back to the pool.
+            resp.close()
+            raise GatewayTimeoutException(
+                message=(
+                    f"Upstream {url} sent no response data within "
+                    f"{envs.PROXY_TTFT_TIMEOUT}s"
+                ),
+                is_openai_exception=True,
+            )
+
+        # Heuristic: treat a started response body as a successful inference
         # signal so the active health-check loop can skip this instance.
-        # For streaming responses the status is available before body
-        # transfer, so a mid-stream failure will still be counted — this is
-        # acceptable as a best-effort optimisation.
+        # Recorded here rather than off the status code alone because an SSE 200
+        # arrives before prefill, which would let a wedged instance report
+        # itself healthy.
         target_instance_id = getattr(request.state, "x_target_instance_id", None)
         if resp.status < 400 and target_instance_id:
             record_fn = getattr(request.app.state, "record_successful_inference", None)
@@ -121,7 +212,11 @@ async def proxy(path: str, request: Request):  # noqa: C901
                 record_fn(int(target_instance_id))
 
         response = StreamingResponse(
-            stream_response(resp),
+            _stream_body(
+                body_iter,
+                first_chunk,
+                envs.PROXY_STREAM_IDLE_TIMEOUT if streaming else None,
+            ),
             status_code=resp.status,
             background=BackgroundTask(resp.close),
         )
@@ -132,6 +227,10 @@ async def proxy(path: str, request: Request):  # noqa: C901
             response.headers.append(k, v)
         return response
 
+    except GatewayTimeoutException:
+        # Already carries the right status code and message; keep the catch-all
+        # below from downgrading a detected stall to a 503.
+        raise
     except asyncio.TimeoutError as e:
         error_message = f"Request to {url} timed out"
         if str(e):

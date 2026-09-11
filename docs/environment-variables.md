@@ -54,11 +54,13 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Network Configuration
 
-| Variable                                       | Description                                  | Default | Applies to      |
-| ---------------------------------------------- | -------------------------------------------- | ------- | --------------- |
-| `GPUSTACK_PROXY_TIMEOUT_SECONDS`               | Proxy timeout in seconds.                    | `1800`  | Server          |
-| `GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS` | Upstream idle timeout in seconds for higress | `3`     | Server          |
-| `GPUSTACK_TCP_CONNECTOR_LIMIT`                 | HTTP client TCP connector limit.             | `1000`  | Server & Worker |
+| Variable                                       | Description                                                                                                                                                  | Default | Applies to      |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- | --------------- |
+| `GPUSTACK_PROXY_TIMEOUT_SECONDS`               | Absolute ceiling on a proxied inference request, in seconds.                                                                                                 | `1800`  | Server & Worker |
+| `GPUSTACK_PROXY_TTFT_TIMEOUT_SECONDS`          | Backstop on the wait for the first chunk of a streaming response, in seconds. Covers queueing and prefill, so it stays generous.                             | `300`   | Server & Worker |
+| `GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS`   | Maximum gap between chunks once a streaming response has started, in seconds. Never applied to a non-streaming response, whose body only arrives at the end. | `60`    | Server & Worker |
+| `GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS` | Upstream connection-pool idle timeout for higress, in seconds. Unrelated to request duration: it reaps idle connections, it does not bound a request.        | `3`     | Server          |
+| `GPUSTACK_TCP_CONNECTOR_LIMIT`                 | HTTP client TCP connector limit.                                                                                                                             | `1000`  | Server & Worker |
 
 ### Server Cache Configuration
 
