@@ -93,6 +93,12 @@ def test_archive_shape_alignment_includes_all_business_columns():
         "operation",
         "started_at",
         "completed_at",
+        "ttft_ms",
+        # The id an audit lookup keys on. Losing it at archival would break
+        # exactly the lookups that matter -- the ones for requests old enough
+        # for a user to be asking about them.
+        "request_id",
+        "upstream_response_id",
         "created_at",
         "updated_at",
         "deleted_at",

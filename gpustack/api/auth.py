@@ -633,9 +633,10 @@ async def authenticate_gateway_asserted_identity(
             session.expunge(api_key)
     if api_key is None:
         return None, None
-    # Unlike the credential path this also rejects a soft-deleted row. The
-    # divergence is deliberate and one-directional: it can only reject a key the
-    # gateway's own table has gone stale about, never a live one.
+    # The access-key branch is already filtered by ``get_by_access_key``; the
+    # ref branch reads the row by id and is not. Checked here so both branches
+    # -- and the gateway's own table, which the assertion came from -- agree on
+    # what a deleted key is.
     if api_key.deleted_at is not None:
         return None, None
     if api_key.expires_at is not None and api_key.expires_at <= datetime.now(
