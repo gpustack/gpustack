@@ -200,6 +200,7 @@ saml_security: '{"wantAssertionsSigned": true, "wantMessagesSigned": true}'
 cas_server_url: https://your_cas_server_url
 cas_username_attribute: uid
 cas_full_name_attribute: displayName
+external_auth_provider_name: Okta
 external_auth_name: email
 external_auth_full_name: name
 external_auth_avatar_url: picture
