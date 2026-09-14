@@ -1322,8 +1322,10 @@ async def get_auth_config(request: Request, session: SessionDep):
             # Operator-provided IdP name for the SSO button. Stays
             # ``None`` when unset so the UI renders its own localized
             # "Log in with <protocol>" wording from ``type`` rather than
-            # a server-side string no translation can reach.
-            "display_name": config.external_auth_provider_name or None,
+            # a server-side string no translation can reach. Blank values
+            # count as unset — an env var or Helm value that ends up as
+            # "" / "   " would otherwise render a nameless button.
+            "display_name": (config.external_auth_provider_name or "").strip() or None,
         }
 
     req_dict = {

@@ -501,16 +501,17 @@ async def test_get_auth_config_advertises_configured_provider_name():
 
 
 @pytest.mark.asyncio
-async def test_get_auth_config_treats_blank_provider_name_as_unset():
-    """An empty env var (``GPUSTACK_EXTERNAL_AUTH_PROVIDER_NAME=""``)
-    must not blank out the button — it falls back to the protocol name
-    like an unset flag."""
+@pytest.mark.parametrize("blank", ["", "   ", "\n"])
+async def test_get_auth_config_treats_blank_provider_name_as_unset(blank):
+    """A blank env var / Helm value (``GPUSTACK_EXTERNAL_AUTH_PROVIDER_NAME=""``,
+    or whitespace) must not blank out the button — it falls back to the
+    protocol name like an unset flag."""
     from gpustack.schemas.users import AuthProviderEnum
 
     request = _request_with_config(
         _auth_config(
             external_auth_type=AuthProviderEnum.SAML,
-            external_auth_provider_name="",
+            external_auth_provider_name=blank,
         )
     )
     result = await auth_route.get_auth_config(request=request, session=None)
