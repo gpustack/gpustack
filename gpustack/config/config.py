@@ -207,6 +207,12 @@ class Config(WorkerConfig, BaseSettings):
     allow_methods: Optional[List[str]] = ['GET', 'POST']
     allow_headers: Optional[List[str]] = ['Authorization', 'Content-Type', 'X-API-Key']
     external_auth_type: Optional[str] = None  # external auth type
+    # Human-readable name of the identity provider behind the active SSO
+    # provider (e.g. "Okta"), shown on the login page's SSO button. Left
+    # unset, the login page falls back to the protocol name in
+    # ``external_auth_type``. Global rather than per-provider because
+    # ``init_auth`` activates at most one provider.
+    external_auth_provider_name: Optional[str] = None
     external_auth_name: Optional[str] = None  # external auth name
     external_auth_full_name: Optional[str] = None  # external auth full name
     external_auth_avatar_url: Optional[str] = None  # external auth avatar url

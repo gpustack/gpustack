@@ -432,10 +432,12 @@ class _AsyncClientFake:
 def _auth_config(
     *,
     external_auth_type=None,
+    external_auth_provider_name=None,
     data_dir: str = "/tmp/__gpustack_test_nonexistent__",
 ) -> MagicMock:
     cfg = MagicMock()
     cfg.external_auth_type = external_auth_type
+    cfg.external_auth_provider_name = external_auth_provider_name
     cfg.data_dir = data_dir
     return cfg
 
@@ -451,6 +453,7 @@ async def test_get_auth_config_advertises_cas_external_auth():
     assert result["external_auth"] == {
         "type": AuthProviderEnum.CAS,
         "login_url": "/auth/cas/login",
+        "display_name": None,
     }
     # CAS post-dates the deprecated boolean shape, so it must not be
     # backfilled into a fourth ``is_cas`` field.
@@ -470,10 +473,48 @@ async def test_get_auth_config_advertises_oidc_external_auth():
     assert result["external_auth"] == {
         "type": AuthProviderEnum.OIDC,
         "login_url": "/auth/oidc/login",
+        "display_name": None,
     }
     # Deprecated boolean shape kept for older UI bundles.
     assert result["is_oidc"] is True
     assert result["is_saml"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_auth_config_advertises_configured_provider_name():
+    """``--external-auth-provider-name`` reaches the login page as
+    ``display_name``, so the SSO button can name the IdP ("Okta")
+    instead of the protocol it speaks."""
+    from gpustack.schemas.users import AuthProviderEnum
+
+    request = _request_with_config(
+        _auth_config(
+            external_auth_type=AuthProviderEnum.OIDC,
+            external_auth_provider_name="Okta",
+        )
+    )
+    result = await auth_route.get_auth_config(request=request, session=None)
+    assert result["external_auth"]["display_name"] == "Okta"
+    # The protocol stays advertised alongside it: it keys the login URL
+    # and the UI's fallback wording.
+    assert result["external_auth"]["type"] == AuthProviderEnum.OIDC
+
+
+@pytest.mark.asyncio
+async def test_get_auth_config_treats_blank_provider_name_as_unset():
+    """An empty env var (``GPUSTACK_EXTERNAL_AUTH_PROVIDER_NAME=""``)
+    must not blank out the button — it falls back to the protocol name
+    like an unset flag."""
+    from gpustack.schemas.users import AuthProviderEnum
+
+    request = _request_with_config(
+        _auth_config(
+            external_auth_type=AuthProviderEnum.SAML,
+            external_auth_provider_name="",
+        )
+    )
+    result = await auth_route.get_auth_config(request=request, session=None)
+    assert result["external_auth"]["display_name"] is None
 
 
 def _cas_request(
