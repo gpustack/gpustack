@@ -527,6 +527,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
 
     # External Authentication settings
     server_group.add_argument(
+        "--external-auth-provider-name",
+        type=str,
+        help="Name of the identity provider shown on the login page's SSO button, e.g., 'Okta'. Applies to the enabled SSO provider. Defaults to the protocol name (OIDC/SAML/CAS) when unset. This is a display label, unlike --external-auth-name, which maps a claim/attribute to the username.",
+        default=get_gpustack_env("EXTERNAL_AUTH_PROVIDER_NAME"),
+    )
+    server_group.add_argument(
         "--external-auth-name",
         type=str,
         help="Mapping of external authentication user information to username, e.g., 'preferred_username'. For SAML, you must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.",
@@ -852,6 +858,7 @@ def set_server_options(args, config_data: dict):
         "allow_methods",
         "allow_headers",
         "trusted_hosts",
+        "external_auth_provider_name",
         "external_auth_name",
         "external_auth_full_name",
         "external_auth_avatar_url",
