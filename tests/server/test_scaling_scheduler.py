@@ -1,4 +1,6 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -21,7 +23,8 @@ from gpustack.routes.models import (
     apply_scaling_schedule_baseline,
     validate_model_in,
 )
-from gpustack.server.scaling_scheduler import compute_desired_replicas
+from gpustack.server import scaling_scheduler
+from gpustack.server.scaling_scheduler import ScalingScheduler, compute_desired_replicas
 
 TZ = "Asia/Shanghai"
 HOUR = 3600
@@ -338,3 +341,53 @@ async def test_tick_query_skips_models_without_a_schedule():
             assert sorted(m.name for m in rows) == ["disabled", "enabled"]
     finally:
         await engine.dispose()
+
+
+# --- DP node-per-instance is exempt from scheduled scaling -------------------
+
+
+def _dp_model(replicas=4, **kwargs):
+    """A vLLM external-LB model whose replicas is the DP node count."""
+    return Model(
+        name="dp",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="a/b",
+        replicas=replicas,
+        backend=BackendEnum.VLLM.value,
+        backend_parameters=[
+            "--data-parallel-external-lb",
+            "--data-parallel-size=4",
+        ],
+        distributed_inference_across_workers=True,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dp_node_per_instance_is_exempt_from_scheduled_scaling(monkeypatch):
+    # replicas is the DP node count fixed by --data-parallel-size, not a scaling
+    # knob: every node launches with that size baked into its command, so a
+    # timetable trimming the count leaves the survivors waiting forever on ranks
+    # that no longer exist. Both the request path and the tick must skip it.
+    always_on = _schedule(baseline_replicas=1, rules=[_rule("0 0 * * *", 24 * HOUR, 2)])
+    model = _dp_model(scaling_schedule=always_on)
+
+    apply_scaling_schedule_baseline(model)
+    assert model.replicas == 4
+
+    opened = []
+
+    @asynccontextmanager
+    async def fake_session():
+        session = MagicMock()
+        opened.append(session)
+        yield session
+
+    monkeypatch.setattr(scaling_scheduler, "async_session", fake_session)
+    monkeypatch.setattr(Model, "all_by_fields", AsyncMock(return_value=[model]))
+
+    await ScalingScheduler.__new__(ScalingScheduler)._sync_scheduled_replicas()
+
+    assert model.replicas == 4
+    # Only the read session; the tick never reached the write one.
+    assert len(opened) == 1
