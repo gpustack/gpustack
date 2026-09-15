@@ -123,7 +123,6 @@ from gpustack.schemas.cache_services import (
     CacheServiceInstanceUpdate,
     CacheServiceInstancePublic,
     CacheServiceInstancesPublic,
-    CacheServiceModeEnum,
     CacheServiceStateEnum,
     CacheConfigSnapshot,
 )
@@ -340,7 +339,6 @@ __all__ = [
     "CacheServiceInstanceUpdate",
     "CacheServiceInstancePublic",
     "CacheServiceInstancesPublic",
-    "CacheServiceModeEnum",
     "CacheServiceStateEnum",
     "CacheConfigSnapshot",
     "CacheProvider",

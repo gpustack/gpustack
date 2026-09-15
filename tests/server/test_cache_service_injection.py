@@ -1,5 +1,3 @@
-import asyncio
-import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,13 +13,10 @@ from gpustack.schemas.cache_services import (
     CacheServiceConfig,
     CacheServiceEndpoint,
     CacheServiceInstance,
-    CacheServiceModeEnum,
     CacheServiceStateEnum,
 )
 from gpustack.schemas.models import ExtendedKVCacheConfig, KVCacheModeEnum
-from gpustack.server.cache_provider_catalog import get_cache_provider
 from gpustack.server.cache_services import (
-    probe_cache_service,
     resolve_instance_cache_config,
     resolve_instance_cache_config_safe,
 )
@@ -48,11 +43,10 @@ def managed_cache_service(**overrides):
         name="lmcache-svc",
         provider_name="LMCache",
         provider_version="v0.5.2",
-        mode=CacheServiceModeEnum.MANAGED,
         cluster_id=1,
         worker_id=2,
         state=CacheServiceStateEnum.RUNNING,
-        config=CacheServiceConfig(ram_size=8, chunk_size=256),
+        config=CacheServiceConfig(fields={"ram_size": 8, "chunk_size": 256}),
     )
     fields.update(overrides)
     return CacheService(**fields)
@@ -66,6 +60,9 @@ def cache_service_instance(**overrides):
         worker_id=2,
         cluster_id=1,
         port=9000,
+        # LMCache's cache servers are its "server" component; engines
+        # attach to that one.
+        component="server",
         state=CacheServiceStateEnum.RUNNING,
     )
     fields.update(overrides)
@@ -390,118 +387,50 @@ async def test_resolve_degrades_when_instance_worker_missing():
     assert "worker" in snapshot.reason
 
 
-@pytest.mark.asyncio
-async def test_resolve_uses_external_endpoint_passthrough():
-    model = shared_cache_model()
-    service = managed_cache_service(
-        mode=CacheServiceModeEnum.EXTERNAL,
-        worker_id=None,
-        endpoint=CacheServiceEndpoint(host="cache.example.com", port=8100),
+def cluster_attach_provider() -> CacheProvider:
+    """A pool engines reach over the network: its endpoint is one address
+    for the whole cluster, not one per node."""
+    return CacheProvider(
+        name="Pool",
+        attach_locality="cluster",
+        default_image="repo/pool:v1",
+        versions={"v1.0": {}},
+        inference_backend_integrations=[
+            {
+                "backend": "vLLM",
+                "injection": {
+                    "kv_transfer_config": {
+                        "kv_connector": "PoolStoreConnector",
+                        "kv_connector_extra_config": {
+                            "master_server_address": "{{host}}:{{port}}"
+                        },
+                    }
+                },
+            }
+        ],
     )
-    with patch_lookups(service, worker=None, instances=[]):
-        snapshot = await resolve_instance_cache_config(MagicMock(), model)
-
-    assert snapshot.injected is True
-    assert snapshot.endpoint == CacheServiceEndpoint(
-        host="cache.example.com", port=8100
-    )
-    assert '"lmcache.mp.host":"tcp://cache.example.com"' in snapshot.args[1]
-    assert '"lmcache.mp.port":8100' in snapshot.args[1]
-
-
-@pytest.mark.asyncio
-async def test_resolve_degrades_when_external_service_not_running():
-    model = shared_cache_model()
-    service = managed_cache_service(
-        mode=CacheServiceModeEnum.EXTERNAL,
-        worker_id=None,
-        state=CacheServiceStateEnum.UNREACHABLE,
-        endpoint=CacheServiceEndpoint(host="cache.example.com", port=8100),
-    )
-    with patch_lookups(service, worker=None, instances=[]):
-        snapshot = await resolve_instance_cache_config(MagicMock(), model)
-
-    assert snapshot.injected is False
-    assert "unreachable" in snapshot.reason
-    assert snapshot.cache_service_name == "lmcache-svc"
 
 
 @pytest.mark.asyncio
-async def test_resolve_worker_param_ignored_for_fixed_external_endpoint():
-    model = shared_cache_model()
-    service = managed_cache_service(
-        mode=CacheServiceModeEnum.EXTERNAL,
-        worker_id=None,
-        endpoint=CacheServiceEndpoint(host="cache.example.com", port=8100),
-    )
-    instance_worker = SimpleNamespace(id=7, ip="10.0.0.7", deleted_at=None)
-    with patch_lookups(service, worker=None, instances=[]):
-        snapshot = await resolve_instance_cache_config(
-            MagicMock(), model, worker=instance_worker
-        )
-
-    assert snapshot.injected is True
-    assert snapshot.endpoint.host == "cache.example.com"
-
-
-def mooncake_cache_service(**overrides):
-    fields = dict(
-        name="mooncake-svc",
-        provider_name="Mooncake",
-        provider_version=None,
-        mode=CacheServiceModeEnum.EXTERNAL,
-        worker_id=None,
-        config=None,
-        endpoint=CacheServiceEndpoint(
-            host="10.0.0.9",
-            port=50051,
-            params={"metadata_server": "P2PHANDSHAKE", "protocol": "tcp"},
-        ),
-    )
-    fields.update(overrides)
-    return managed_cache_service(**fields)
-
-
-@pytest.mark.asyncio
-async def test_resolve_external_mooncake_injects_store_connector():
-    model = shared_cache_model()
-    instance_worker = SimpleNamespace(id=7, ip="10.0.0.7", deleted_at=None)
-    with patch_lookups(mooncake_cache_service(), worker=None, instances=[]):
-        snapshot = await resolve_instance_cache_config(
-            MagicMock(), model, worker=instance_worker
-        )
-
-    assert snapshot.injected is True
-    # The connector reads its configuration solely from the JSON file
-    # MOONCAKE_CONFIG_PATH points at; the snapshot carries the rendered
-    # file for the serving script to write, with the registered external
-    # fields and the declared defaults (local_buffer_size) filled in.
-    assert snapshot.env == {
-        "MOONCAKE_CONFIG_PATH": "/tmp/gpustack-mooncake.json",
-        # TCP transport pools connections instead of opening one per
-        # transfer slice, which exhausts ephemeral ports under prefill
-        # bursts; the RDMA path ignores the switch.
-        "MC_TCP_ENABLE_CONNECTION_POOL": "1",
-    }
-    config = json.loads(snapshot.files["/tmp/gpustack-mooncake.json"])
-    assert config["mode"] == "standalone-store"
-    assert config["global_segment_size"] == 0
-    assert config["master_server_address"] == "10.0.0.9:50051"
-    assert config["metadata_server"] == "P2PHANDSHAKE"
-    assert config["protocol"] == "tcp"
-    assert config["local_buffer_size"] == "1GB"
-    assert '"kv_connector":"MooncakeStoreConnector"' in snapshot.args[1]
-
-
-@pytest.mark.asyncio
-async def test_resolve_external_provider_attaches_spanning_instances():
+async def test_resolve_cluster_attach_provider_serves_spanning_instances():
     """Node-locality is the per_node providers' contract, not a
-    shared-cache property: a cross-host pool (Mooncake, external mode,
-    singleton topology) serves multi-worker instances by design — every
-    subordinate worker's engine reaches the master over the network."""
+    shared-cache property: a pool engines reach over the network serves
+    multi-worker instances by design — every subordinate worker's engine
+    reaches the same endpoint."""
     model = shared_cache_model()
     instance_worker = SimpleNamespace(id=7, ip="10.0.0.7", deleted_at=None)
-    with patch_lookups(mooncake_cache_service(), worker=None, instances=[]):
+    pool_worker = SimpleNamespace(id=9, ip="10.0.0.9", deleted_at=None)
+    with (
+        patch(
+            "gpustack.server.cache_services.get_cache_provider",
+            return_value=cluster_attach_provider(),
+        ),
+        patch_lookups(
+            managed_cache_service(provider_name="Pool", provider_version="v1.0"),
+            worker=pool_worker,
+            instances=[cache_service_instance(worker_id=9, port=50051, component="")],
+        ),
+    ):
         snapshot = await resolve_instance_cache_config(
             MagicMock(),
             model,
@@ -510,7 +439,8 @@ async def test_resolve_external_provider_attaches_spanning_instances():
         )
 
     assert snapshot.injected is True
-    assert '"kv_connector":"MooncakeStoreConnector"' in snapshot.args[1]
+    assert '"kv_connector":"PoolStoreConnector"' in snapshot.args[1]
+    assert '"master_server_address":"10.0.0.9:50051"' in snapshot.args[1]
 
 
 @pytest.mark.asyncio
@@ -566,6 +496,7 @@ async def test_resolve_chunk_size_is_service_scoped():
 
 def tcp_provider():
     return CacheProvider(
+        custom_version=True,
         name="tcp-provider",
         health_check=CacheProviderHealthCheck(scheme="tcp"),
     )
@@ -573,209 +504,7 @@ def tcp_provider():
 
 def http_provider(path=None, target="port"):
     return CacheProvider(
+        custom_version=True,
         name="http-provider",
         health_check=CacheProviderHealthCheck(scheme="http", path=path, target=target),
     )
-
-
-@pytest.mark.asyncio
-async def test_probe_tcp_success():
-    server = await asyncio.start_server(
-        lambda reader, writer: writer.close(), host="127.0.0.1", port=0
-    )
-    port = server.sockets[0].getsockname()[1]
-    try:
-        ok, message = await probe_cache_service(
-            tcp_provider(), CacheServiceEndpoint(host="127.0.0.1", port=port)
-        )
-    finally:
-        server.close()
-        await server.wait_closed()
-
-    assert ok is True
-    assert message is None
-
-
-@pytest.mark.asyncio
-async def test_probe_tcp_failure():
-    # Bind then close a listener so the port is known to be refused.
-    server = await asyncio.start_server(
-        lambda reader, writer: writer.close(), host="127.0.0.1", port=0
-    )
-    port = server.sockets[0].getsockname()[1]
-    server.close()
-    await server.wait_closed()
-
-    ok, message = await probe_cache_service(
-        tcp_provider(),
-        CacheServiceEndpoint(host="127.0.0.1", port=port),
-        timeout=1.0,
-    )
-    assert ok is False
-    assert message
-
-
-@pytest.mark.asyncio
-async def test_probe_tcp_parses_host_port_from_url():
-    server = await asyncio.start_server(
-        lambda reader, writer: writer.close(), host="127.0.0.1", port=0
-    )
-    port = server.sockets[0].getsockname()[1]
-    try:
-        ok, message = await probe_cache_service(
-            tcp_provider(),
-            CacheServiceEndpoint(url=f"http://127.0.0.1:{port}"),
-        )
-    finally:
-        server.close()
-        await server.wait_closed()
-
-    assert ok is True
-    assert message is None
-
-
-@pytest.mark.asyncio
-async def test_probe_rejects_unresolvable_endpoint():
-    ok, message = await probe_cache_service(tcp_provider(), CacheServiceEndpoint())
-    assert ok is False
-    assert message
-
-
-class _FakeAsyncCtx:
-    def __init__(self, value):
-        self._value = value
-
-    async def __aenter__(self):
-        return self._value
-
-    async def __aexit__(self, *args):
-        return False
-
-
-class _FakeHTTPClient:
-    def __init__(self, status):
-        self._status = status
-        self.requested_urls = []
-
-    def get(self, url):
-        self.requested_urls.append(url)
-        return _FakeAsyncCtx(SimpleNamespace(status=self._status))
-
-
-@pytest.mark.asyncio
-async def test_probe_http_success():
-    client = _FakeHTTPClient(status=200)
-    with patch(
-        "gpustack.server.cache_services.aiohttp.ClientSession",
-        lambda *args, **kwargs: _FakeAsyncCtx(client),
-    ):
-        ok, message = await probe_cache_service(
-            http_provider(path="/health"),
-            CacheServiceEndpoint(host="10.0.0.5", port=8080),
-        )
-
-    assert ok is True
-    assert message is None
-    assert client.requested_urls == ["http://10.0.0.5:8080/health"]
-
-
-@pytest.mark.asyncio
-async def test_probe_http_error_status():
-    client = _FakeHTTPClient(status=503)
-    with patch(
-        "gpustack.server.cache_services.aiohttp.ClientSession",
-        lambda *args, **kwargs: _FakeAsyncCtx(client),
-    ):
-        ok, message = await probe_cache_service(
-            http_provider(),
-            CacheServiceEndpoint(host="10.0.0.5", port=8080),
-        )
-
-    assert ok is False
-    assert "503" in message
-    assert client.requested_urls == ["http://10.0.0.5:8080/"]
-
-
-@pytest.mark.asyncio
-async def test_probe_metrics_target_prefers_metrics_url():
-    """A metrics-targeted probe honors the endpoint schema's precedence:
-    metrics_url over host+metrics_port (the exporter follows the same
-    rule), so an external service registered by URL alone stays
-    probeable."""
-    client = _FakeHTTPClient(status=200)
-    with patch(
-        "gpustack.server.cache_services.aiohttp.ClientSession",
-        lambda *args, **kwargs: _FakeAsyncCtx(client),
-    ):
-        ok, _ = await probe_cache_service(
-            http_provider(path="/healthcheck", target="metrics"),
-            CacheServiceEndpoint(
-                host="10.0.0.5",
-                port=8100,
-                metrics_url="http://metrics.example.com:9188/metrics",
-            ),
-        )
-
-    assert ok is True
-    assert client.requested_urls == ["http://metrics.example.com:9188/healthcheck"]
-
-
-@pytest.mark.asyncio
-async def test_probe_http_normalizes_declared_path():
-    """A declared health path without a leading slash still yields a
-    well-formed URL."""
-    client = _FakeHTTPClient(status=200)
-    with patch(
-        "gpustack.server.cache_services.aiohttp.ClientSession",
-        lambda *args, **kwargs: _FakeAsyncCtx(client),
-    ):
-        ok, _ = await probe_cache_service(
-            http_provider(path="healthcheck"),
-            CacheServiceEndpoint(host="10.0.0.5", port=8080),
-        )
-
-    assert ok is True
-    assert client.requested_urls == ["http://10.0.0.5:8080/healthcheck"]
-
-
-@pytest.mark.asyncio
-async def test_resolve_strips_password_params_from_snapshot():
-    """The snapshot lands on the model instance row, outside the cache
-    service redaction's reach: declared password-typed values must not
-    ride into it. Non-secret params stay — connectors and operators read
-    them off the instance."""
-    from gpustack.schemas.cache_providers import CacheProviderExternalField
-
-    provider = CacheProvider(
-        name="LMCache",
-        supported_modes=["external"],
-        external_fields=[
-            CacheProviderExternalField(name="metadata_server"),
-            CacheProviderExternalField(name="auth_token", type="password"),
-        ],
-        inference_backend_integrations=get_cache_provider(
-            "LMCache"
-        ).inference_backend_integrations,
-    )
-    model = shared_cache_model()
-    service = managed_cache_service(
-        mode=CacheServiceModeEnum.EXTERNAL,
-        worker_id=None,
-        endpoint=CacheServiceEndpoint(
-            host="cache.example.com",
-            port=8100,
-            params={"metadata_server": "P2PHANDSHAKE", "auth_token": "hunter2"},
-        ),
-    )
-    with (
-        patch_lookups(service, worker=None, instances=[]),
-        patch(
-            "gpustack.server.cache_services.get_cache_provider",
-            return_value=provider,
-        ),
-    ):
-        snapshot = await resolve_instance_cache_config(MagicMock(), model)
-
-    assert snapshot.injected is True
-    assert snapshot.endpoint.params.get("metadata_server") == "P2PHANDSHAKE"
-    assert "auth_token" not in snapshot.endpoint.params

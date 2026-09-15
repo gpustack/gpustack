@@ -29,14 +29,6 @@ def cache_service_instance_workload_name(
     return f"cache-svc-{cache_service_id}-i{instance_id}"
 
 
-class CacheServiceModeEnum(str, Enum):
-    MANAGED = "managed"
-    EXTERNAL = "external"
-
-    def __str__(self):
-        return self.value
-
-
 class CacheServiceStateEnum(str, Enum):
     r"""
     Enum for Cache Service / Cache Service Instance State
@@ -67,27 +59,21 @@ class CacheServiceStateEnum(str, Enum):
 
 
 class CacheServiceEndpoint(BaseModel):
+    """Where an engine attaches, resolved from the instance the platform
+    picked for it: never stored, carried from resolution to injection."""
+
     host: Optional[str] = None
     port: Optional[int] = None
     url: Optional[str] = None
     """Alternative to host+port for providers addressed by URL."""
 
-    metrics_port: Optional[int] = None
-    """External mode: port of the service's Prometheus metrics endpoint,
-    combined with host and the provider-declared path."""
-
-    metrics_url: Optional[str] = None
-    """External mode: full URL of the metrics endpoint; takes precedence
-    over host+metrics_port."""
-
     params: Dict[str, Any] = {}
-    """External mode: values for the provider's declared external_fields,
-    keyed by field name (e.g. metadata_server, protocol). Rendered into
-    the connector injection alongside the endpoint address."""
+    """Facts about the resolved placement the provider's injection
+    templates read, in the platform's own vocabulary (e.g. locality)."""
 
 
 class CacheServiceL2Storage(BaseModel):
-    """Managed mode only: the L2 storage backend the cache server spills
+    """The L2 storage backend the cache server spills
     KV cache to when its in-memory (L1) capacity is exceeded."""
 
     backend: str
@@ -103,24 +89,25 @@ class CacheServiceL2Storage(BaseModel):
 
 
 class CacheServiceConfig(BaseModel):
-    ram_size: Optional[int] = None
-    """Cache capacity held in the cache server's memory (unit: GiB)."""
-
-    chunk_size: Optional[int] = None
-    """Size for each KV cache chunk (unit: number of tokens)."""
-
     image: Optional[str] = None
     """Container image for the custom provider version; ignored otherwise."""
 
     env: Optional[Dict[str, str]] = None
-    """Extra environment variables for the managed cache server container."""
+    """Extra environment variables, set on every component's container.
+    Unlike a command-line flag, an env var is namespaced by the program
+    that reads it, so one meant for a single role is inert in the others
+    — and the vars worth setting here (a log level, a proxy) are usually
+    meant for all of them anyway."""
 
-    parameters: Optional[List[str]] = None
-    """Extra command-line flags appended to the cache server command;
-    user-specified flags override template defaults."""
+    parameters: Optional[Dict[str, List[str]]] = None
+    """Extra command-line flags appended to a component's command, keyed
+    by the component they belong to ("" for the one process a provider
+    without components runs). Flags belong to a role rather than to the
+    service: each component runs its own binary, whose parser rejects
+    another's flags. User-specified flags override template defaults."""
 
     fields: Optional[Dict[str, Any]] = None
-    """Values for the provider's declared managed_fields, keyed by field
+    """Values for the provider's declared fields, keyed by field
     name;
     they fill the fields' {{name}} template placeholders (free-form
     parameters still override any flag the templates produce)."""
@@ -145,32 +132,24 @@ class CacheServiceBase(SQLModel):
     name: str = Field(index=True)
     provider_name: str
     provider_version: Optional[str] = None
-    # Stored as a plain string (the migration creates VARCHAR, not a native
-    # DB enum); the enum type still validates values at the pydantic layer.
-    mode: CacheServiceModeEnum = Field(
-        sa_column=Column(String(length=64), nullable=False)
-    )
     cluster_id: int = Field(foreign_key="clusters.id", nullable=False)
     worker_id: Optional[int] = None
-    """Managed mode with singleton topology only: the worker the cache
-    server runs on, picked at creation. Per-node providers derive their
-    placement from the cluster's workers instead."""
+    """Replicas topology only: pins one instance to an explicitly chosen
+    worker; empty leaves placement to the controller.
+    Per-node providers derive their placement from the cluster's workers
+    instead."""
 
     worker_selector: Optional[Dict[str, str]] = Field(
         sa_column=Column(JSON), default=None
     )
-    """Managed mode with per_node topology only: labels a cluster worker
-    must ALL match for the service to place an instance on it. None or
-    empty means every worker of the cluster."""
+    """Labels a cluster worker must ALL match for the service to place an
+    instance on it: per_node components run on the matching workers,
+    replicas components pick theirs from the same set. None or empty
+    means every worker of the cluster."""
 
     config: Optional[CacheServiceConfig] = Field(
         sa_column=Column(pydantic_column_type(CacheServiceConfig)), default=None
     )
-    endpoint: Optional[CacheServiceEndpoint] = Field(
-        sa_column=Column(pydantic_column_type(CacheServiceEndpoint)), default=None
-    )
-    """External mode only: connection info of the externally-run cache service."""
-
     state: CacheServiceStateEnum = Field(
         default=CacheServiceStateEnum.PENDING,
         sa_column=Column(String(length=64), nullable=False),
@@ -183,15 +162,9 @@ class CacheServiceBase(SQLModel):
         sa_column=Column(UTCDateTime), default=None
     )
     restart_on_error: Optional[bool] = True
-    """Managed mode: automatically restart (with backoff) when a cache
+    """Automatically restart (with backoff) when a cache
     server instance exits; False parks the instance in ERROR for manual
     handling. Applies to all of the service's instances."""
-
-    def resolved_endpoint(self) -> CacheServiceEndpoint:
-        """External mode: the address inference engines should connect to —
-        the registered endpoint as-is. Managed services resolve endpoints
-        per instance (instance worker IP + instance port) instead."""
-        return self.endpoint or CacheServiceEndpoint()
 
 
 class CacheService(CacheServiceBase, BaseModelMixin, table=True):
@@ -231,13 +204,32 @@ CacheServicesPublic = PaginatedList[CacheServicePublic]
 
 class CacheServiceInstanceBase(SQLModel):
     """One cache server container of a managed cache service. The parent
-    service's provider topology dictates the desired set: singleton
-    providers get exactly one instance on the user-picked worker; per-node
-    providers get one instance per non-deleted worker of the service's
-    cluster (narrowed by the service's worker_selector when one is set);
-    rows on NOT_READY workers are kept — the worker restarts its
-    container when it comes back.
+    provider's topology dictates the desired rows: a replicas component
+    gets its configured count placed across the cluster's matching
+    workers, one per worker — what a component's instances share on a
+    node they would collide over — so a cluster with fewer workers runs
+    what fits; a per_node component gets one instance per non-deleted
+    matching worker. Rows on NOT_READY workers are kept —
+    the worker restarts its container when it comes back.
     """
+
+    component: str = Field(
+        default="", sa_column=Column(String(length=64), nullable=False)
+    )
+    """Which of the provider's declared components this instance runs
+    (e.g. "master" / "store"). Empty for single-component
+    providers."""
+
+    component_addresses: Optional[Dict[str, str]] = Field(
+        sa_column=Column(JSON), default=None
+    )
+    """Dependency addresses resolved by the controller at creation
+    (component name -> host:port), rendered into this instance's
+    templates as {{component.<name>.address}}. Stamped rather than
+    looked up on the worker: the server knows the dependency's placement,
+    and a stamp that stops matching the current address marks the
+    instance for recreation (the address is baked into the running
+    process's config)."""
 
     name: str = Field(index=True)
     """Display identity: the parent service's name (as of instance
@@ -257,12 +249,17 @@ class CacheServiceInstanceBase(SQLModel):
     """Denormalized from the parent service so cluster-bound service
     accounts' reads (list conditions, watch filter) scope without a join."""
 
-    port: Optional[int] = None
-    """Port allocated on the instance's worker."""
+    ports: Optional[Dict[str, int]] = Field(sa_column=Column(JSON), default=None)
+    """Every port allocated for this instance on its worker (port name ->
+    port), one per name its component declares, rendered into its
+    templates as {{ports.<name>}}. Recorded so a restart keeps the ports
+    it already published to peers."""
 
-    metrics_port: Optional[int] = None
-    """Port the cache server exposes Prometheus metrics on, allocated on
-    the instance's worker alongside ``port``."""
+    port: Optional[int] = None
+    """The port this instance is addressed by — its component's
+    address_port, denormalized out of ``ports``. A reader that has only
+    the row (the instance list, a watch event) builds the instance's
+    address from it without resolving the provider's catalog."""
 
     state: CacheServiceStateEnum = Field(
         default=CacheServiceStateEnum.PENDING,
@@ -304,10 +301,15 @@ class CacheServiceInstanceBase(SQLModel):
 class CacheServiceInstance(CacheServiceInstanceBase, BaseModelMixin, table=True):
     __tablename__ = "cache_service_instances"
     __table_args__ = (
+        # A component places one instance per worker, so this is the row's
+        # identity — and the database saying so is what keeps two
+        # reconcile passes racing over the same missing row from creating
+        # it twice.
         UniqueConstraint(
             "cache_service_id",
+            "component",
             "worker_id",
-            name="uix_cache_service_instances_service_worker",
+            name="uix_cache_service_instances_component_per_worker",
         ),
     )
 
@@ -345,17 +347,6 @@ class CacheServiceModelSummary(BaseModel):
 CacheServiceModelsPublic = ItemList[CacheServiceModelSummary]
 
 
-class TestCacheServiceConnectionRequest(BaseModel):
-    provider_name: str
-    provider_version: Optional[str] = None
-    endpoint: CacheServiceEndpoint
-
-
-class TestCacheServiceConnectionResponse(BaseModel):
-    reachable: bool
-    message: Optional[str] = None
-
-
 class CacheServiceMetricSeries(BaseModel):
     """One chartable series of a semantic metric: filtered identifying
     labels (worker/instance) plus [timestamp, value] points; value is
@@ -389,6 +380,24 @@ class CacheServiceAttachedMetrics(BaseModel):
     hit_tokens: Optional[float] = None
     queried_tokens: Optional[float] = None
     hit_rate: Optional[float] = None
+
+
+class ModelCacheMetricsPublic(BaseModel):
+    """The same hit accounting read from the deployment's side: every
+    instance of one model, so the model view can tell what the shared
+    cache is doing for it without reading the cache service's telemetry
+    (which is the service owner's to see).
+
+    ``available=False`` carries why no numbers can be read at all (the
+    deployment uses no shared cache, observability is off, Prometheus is
+    unreachable); rows stay database-enumerated, so an instance whose
+    engine exports no counters is present with empty values.
+    """
+
+    available: bool = False
+    reason: Optional[str] = None
+    window: Optional[int] = None
+    instances: List[CacheServiceAttachedMetrics] = []
 
 
 class CacheServiceMetricsPublic(BaseModel):

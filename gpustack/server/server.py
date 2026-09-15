@@ -96,7 +96,6 @@ from gpustack.server.usage_archiver import TableArchiver
 from gpustack.schemas.metered_usage import MeteredUsage, MeteredUsageArchive
 from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
-from gpustack.server.cache_services import CacheServiceHealthChecker
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.server.scaling_scheduler import ScalingScheduler
 from gpustack.utils.platform import is_inside_kubernetes
@@ -529,12 +528,6 @@ class Server:
         self._create_async_task(worker_syncer.start())
 
         logger.debug("Worker syncer started.")
-
-    def _start_cache_service_health_checker(self):
-        health_checker = CacheServiceHealthChecker()
-        self._create_async_task(health_checker.start())
-
-        logger.debug("Cache service health checker started.")
 
     def _start_worker_status_flusher(self):
         self._create_async_task(flush_worker_status_to_db())
@@ -1527,6 +1520,3 @@ class Server:
         # Operator Settings (converges the operator settings GPU Service
         # clusters are configured with)
         self._start_gpustack_operator_settings()
-
-        # Cache Service Health Checker (probes external cache services)
-        self._start_cache_service_health_checker()

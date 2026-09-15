@@ -135,6 +135,19 @@ class Plugin:
         return []
 
     @classmethod
+    def cache_provider_assets(cls) -> List[Tuple[str, str]]:
+        """Contribute cache-provider catalog assets as (package, resource)
+        pairs, read after the bundled catalog.
+
+        A declaration replaces the bundled entry of the same name, which is
+        how a plugin carrying what a provider needs turns the catalog's
+        placeholder for it into the real thing. Read wherever the catalog
+        is (the API server and every worker), so this must be a classmethod
+        and must not depend on instance state.
+        """
+        return []
+
+    @classmethod
     def get_version_info(cls) -> Optional[Tuple[str, str]]:
         """Override the version reported by ``gpustack version`` and the
         ``/version`` endpoint.

@@ -831,8 +831,8 @@ class InferenceServer(ABC):
     def _cache_injection_files(self) -> dict[str, str]:
         """Connector config files (container path -> contents) the shared
         cache service's injection declares; the serving script writes them
-        before the engine starts (e.g. Mooncake's MOONCAKE_CONFIG_PATH
-        JSON)."""
+        before the engine starts (a connector that reads its settings from
+        a path an env var points at)."""
         cache_config = getattr(self._model_instance, "cache_config", None)
         if cache_config and cache_config.injected:
             return cache_config.files or {}

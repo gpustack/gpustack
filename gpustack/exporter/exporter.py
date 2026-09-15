@@ -13,11 +13,10 @@ import uvicorn
 from gpustack.config.config import Config
 from gpustack.exporter.bus_metrics import BusMetricsCollector
 from gpustack.logging import setup_logging
+from gpustack.schemas.cache_providers import DEFAULT_METRICS_PORT_NAME
 from gpustack.schemas.cache_services import (
     CacheService,
-    CacheServiceEndpoint,
     CacheServiceInstance,
-    CacheServiceModeEnum,
     CacheServiceStateEnum,
 )
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
@@ -427,38 +426,13 @@ def _normalize_metrics_path(path: Optional[str]) -> str:
     return path
 
 
-def _external_metrics_address(
-    endpoint: Optional[CacheServiceEndpoint], provider_path: str
-) -> Optional[Tuple[str, str, str]]:
-    """(host:port, metrics path, scheme) of an external cache service's
-    metrics endpoint. metrics_url takes precedence over host+metrics_port,
-    mirroring the server-side metrics collector."""
-    if endpoint is None:
-        return None
-    if endpoint.metrics_url:
-        parsed = urlsplit(endpoint.metrics_url)
-        if not parsed.hostname:
-            return None
-        scheme = parsed.scheme or "http"
-        port = parsed.port or (443 if scheme == "https" else 80)
-        return (
-            f"{parsed.hostname}:{port}",
-            _normalize_metrics_path(parsed.path),
-            scheme,
-        )
-    if endpoint.host and endpoint.metrics_port:
-        return f"{endpoint.host}:{endpoint.metrics_port}", provider_path, "http"
-    return None
-
-
 async def _cache_service_targets(
     session: AsyncSession, workers: List[Worker], is_proxy: bool
 ) -> List[dict]:
     """HTTP SD target groups for running cache services whose provider
-    declares a metrics endpoint. Managed services are scraped per running
+    declares a metrics endpoint. A service is scraped per running
     instance on the instance's worker, so each instance follows its own
-    worker's proxy split; external services are reachable from the server
-    network and only appear on the direct target list."""
+    worker's proxy split."""
     services = await CacheService.all_by_fields(
         session,
         fields={"state": CacheServiceStateEnum.RUNNING},
@@ -472,14 +446,11 @@ async def _cache_service_targets(
     cluster_names = {cluster.id: cluster.name for cluster in clusters}
 
     instances_by_service: dict = {}
-    if any(service.mode == CacheServiceModeEnum.MANAGED for service in services):
-        instances = await CacheServiceInstance.all_by_fields(
-            session, fields={"state": CacheServiceStateEnum.RUNNING}
-        )
-        for instance in instances:
-            instances_by_service.setdefault(instance.cache_service_id, []).append(
-                instance
-            )
+    instances = await CacheServiceInstance.all_by_fields(
+        session, fields={"state": CacheServiceStateEnum.RUNNING}
+    )
+    for instance in instances:
+        instances_by_service.setdefault(instance.cache_service_id, []).append(instance)
 
     groups = []
     for service in services:
@@ -496,39 +467,36 @@ async def _cache_service_targets(
             continue
         provider_path = _normalize_metrics_path(metrics.path)
 
-        if service.mode == CacheServiceModeEnum.MANAGED:
-            groups.extend(
-                _managed_cache_service_groups(
-                    service,
-                    instances_by_service.get(service.id, []),
-                    workers_by_id,
-                    is_proxy,
-                    provider_path,
-                    cluster_names,
-                )
+        # Only the component that exposes the declared exposition is
+        # scraped, on the port it names for it (a master, say, whose
+        # stores serve no Prometheus endpoint). Single-component
+        # providers scrape their sole ("") component.
+        scraped = {
+            name: component.metrics_port
+            for name, component in (provider.components.items() if provider else [])
+            if component.metrics_port
+        } or {"": DEFAULT_METRICS_PORT_NAME}
+        groups.extend(
+            _managed_cache_service_groups(
+                service,
+                [
+                    (instance, scraped[instance.component or ""])
+                    for instance in instances_by_service.get(service.id, [])
+                    if (instance.component or "") in scraped
+                ],
+                workers_by_id,
+                is_proxy,
+                provider_path,
+                cluster_names,
             )
-            continue
-
-        if is_proxy:
-            continue
-        resolved = _external_metrics_address(service.endpoint, provider_path)
-        if resolved is None:
-            continue
-        target, path, scheme = resolved
-
-        labels = _cache_service_labels(service, cluster_names)
-        if path != DEFAULT_METRICS_PATH:
-            labels["__metrics_path__"] = path
-        if scheme != "http":
-            labels["__scheme__"] = scheme
-        groups.append({"labels": labels, "targets": [target]})
+        )
     return groups
 
 
 def _parse_scrape_address(value) -> Optional[Tuple[str, str, str]]:
     """(host:port, metrics path, scheme) parsed from a metrics_target
     field value: a full URL, or host:port with an optional path. The port
-    defaults per scheme when omitted, mirroring _external_metrics_address.
+    defaults per scheme when omitted.
     Non-HTTP schemes yield None — Prometheus cannot scrape them."""
     if not isinstance(value, str) or not value.strip():
         return None
@@ -576,11 +544,6 @@ def _extra_metrics_target_groups(
             labels["__scheme__"] = scheme
         groups.append({"labels": labels, "targets": [target]})
 
-    endpoint_params = service.endpoint.params if service.endpoint else {}
-    for field in provider.external_fields:
-        if field.metrics_target and endpoint_params.get(field.name):
-            add_target(endpoint_params[field.name], {})
-
     storages = (service.config.l2_storages if service.config else None) or []
     for storage in storages:
         backend = provider.l2_backends.get(storage.backend)
@@ -598,18 +561,21 @@ def _extra_metrics_target_groups(
 
 def _managed_cache_service_groups(
     service: CacheService,
-    instances: List[CacheServiceInstance],
+    instances: List[Tuple[CacheServiceInstance, str]],
     workers_by_id: dict,
     is_proxy: bool,
     provider_path: str,
     cluster_names: dict,
 ) -> List[dict]:
     """One target group per running instance with an allocated metrics
-    port. Each group carries worker_name and cache_service_instance_id
-    labels so per-instance series stay distinguishable."""
+    port, each paired with the name of the port its component serves the
+    exposition on. Each group carries worker_name and
+    cache_service_instance_id labels so per-instance series stay
+    distinguishable."""
     groups = []
-    for instance in instances:
-        if not instance.metrics_port or instance.metrics_port <= 0:
+    for instance, metrics_port_name in instances:
+        metrics_port = (instance.ports or {}).get(metrics_port_name)
+        if not metrics_port or metrics_port <= 0:
             continue
         worker = workers_by_id.get(instance.worker_id)
         if worker is None:
@@ -627,7 +593,7 @@ def _managed_cache_service_groups(
         groups.append(
             {
                 "labels": labels,
-                "targets": [f"{address}:{instance.metrics_port}"],
+                "targets": [f"{address}:{metrics_port}"],
             }
         )
     return groups

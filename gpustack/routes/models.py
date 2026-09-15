@@ -24,7 +24,15 @@ from gpustack.schemas.models import (
     BackendEnum,
     ModelListParams,
 )
-from gpustack.schemas.cache_services import CacheService
+from gpustack.schemas.cache_services import (
+    CacheService,
+    CacheServiceAttachedMetrics,
+    ModelCacheMetricsPublic,
+)
+from gpustack.server.cache_service_metrics import (
+    collect_model_cache_metrics,
+    parse_window as parse_metrics_window,
+)
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.gpu_instance_types import GPUInstanceType
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
@@ -314,6 +322,48 @@ async def get_model_instances(ctx: TenantContextDep, id: int, params: ListParams
         )
 
         return ModelInstancesPublic(items=instances, pagination=pagination)
+
+
+@router.get("/{id}/cache-metrics", response_model=ModelCacheMetricsPublic)
+async def get_model_cache_metrics(
+    request: Request,
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    window: str = "1h",
+):
+    """What the shared cache service is doing for this deployment: the
+    engines' own external-cache hit accounting, per instance, over the
+    window. Gated on the deployment's visibility — a caller reading its
+    own deployment's hit rate is not reading the cache service's
+    telemetry, which stays the service owner's."""
+    model = await Model.one_by_id(session, id, options=[selectinload(Model.instances)])
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
+    try:
+        window_seconds = parse_metrics_window(window)
+    except ValueError as e:
+        raise BadRequestException(message=str(e))
+    if not (model.extended_kv_cache and model.extended_kv_cache.is_shared()):
+        return ModelCacheMetricsPublic(
+            available=False,
+            reason="The deployment does not use a shared cache service",
+        )
+    attached = [
+        CacheServiceAttachedMetrics(
+            model_id=model.id,
+            model_name=model.name,
+            model_instance_name=instance.name,
+            worker_name=instance.worker_name,
+        )
+        for instance in model.instances
+    ]
+    attached.sort(key=lambda row: row.model_instance_name or "")
+    return await collect_model_cache_metrics(
+        model.cluster_id,
+        attached,
+        window_seconds,
+        client=getattr(request.app.state, "http_client_no_proxy", None),
+    )
 
 
 def apply_scaling_schedule_baseline(

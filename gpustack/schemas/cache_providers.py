@@ -1,7 +1,7 @@
 import json
 import re
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, model_validator
 
@@ -73,6 +73,22 @@ class CacheProviderLink(BaseModel):
     url: str
 
 
+DEFAULT_PORT_NAME = "port"
+"""Name of the port a component answers on when it declares none: the
+one every cache server has, the one its address is built from."""
+
+DEFAULT_METRICS_PORT_NAME = "metrics"
+"""Name of the port a Prometheus exposition conventionally sits on, and
+the second port a component that declares none is given."""
+
+IMPLICIT_PORT_NAMES = (DEFAULT_PORT_NAME, DEFAULT_METRICS_PORT_NAME)
+"""What a component binds without saying so: a service port and a
+metrics port, which is what a cache server usually is. A component that
+declares ``ports`` replaces this list outright — that is how a role with
+no HTTP surface stops holding a metrics listener on every worker it runs
+on, and how one with three listeners describes all three."""
+
+
 class CacheProviderHealthCheck(BaseModel):
     scheme: str = "tcp"
     """Probe scheme: "tcp" (connect check) or "http" (GET on path)."""
@@ -80,10 +96,11 @@ class CacheProviderHealthCheck(BaseModel):
     path: Optional[str] = None
     """HTTP path for scheme "http". Ignored for "tcp"."""
 
-    target: str = "port"
-    """Which of the service's ports the probe hits: "port" (the service
-    port) or "metrics" (the metrics port) — e.g. LMCache's /healthcheck
-    lives on the HTTP frontend, not the ZMQ control port."""
+    target: Optional[str] = None
+    """Name of the port the probe hits, one the component declares; None
+    hits the port the component is addressed by. Declared where readiness
+    does not live where the component serves — LMCache's /healthcheck is
+    on its HTTP frontend, not on the ZMQ port engines use."""
 
 
 class CacheProviderVersionConfig(BaseModel):
@@ -199,7 +216,8 @@ class CacheProviderInjection(BaseModel):
     """Config files written inside the engine container before it starts,
     keyed by absolute path; contents support {{placeholder}}. For
     connectors that read a config file instead of env/args (e.g.
-    Mooncake's MOONCAKE_CONFIG_PATH JSON)."""
+    a connector that reads its settings from a path an env var
+    points at)."""
 
     locality_params: Dict[str, Dict[str, Any]] = {}
     """Placeholder defaults keyed by the engine-to-instance placement the
@@ -233,7 +251,11 @@ class CacheProviderIntegration(BaseModel):
 
 
 class CacheProviderResourceProfile(BaseModel):
-    """How capacity config maps to host resource claims. Informational in v1."""
+    """How capacity config maps to per-instance host resource claims.
+    ram_gib is a template over the declared field values (e.g.
+    "{{ram_size}}"); the service form's placement pre-flight renders it
+    to warn about workers that cannot hold an instance. The scheduler
+    does not enforce it."""
 
     ram_gib: Optional[str] = None
     cpu: Optional[float] = None
@@ -299,10 +321,6 @@ class CacheProviderMetrics(BaseModel):
     path: str = "/metrics"
     """HTTP path of the Prometheus exposition on the metrics port."""
 
-    default_port: Optional[int] = None
-    """The engine's conventional metrics port (external mode: seeds the
-    registration form's metrics-port field)."""
-
     mappings: Dict[str, CacheProviderMetricValue] = {}
     """Semantic key -> extraction rule. Keys use the platform's tier
     vocabulary — L1 is the memory (near) tier, L2 the capacity tier
@@ -325,6 +343,11 @@ class CacheProviderL2Field(BaseModel):
     name: str
     label: Optional[LocalizedText] = None
     """UI label; defaults to name."""
+
+    description: Optional[LocalizedText] = None
+    """What the value does, for a parameter whose label does not say it —
+    the backend's own description covers the field set as a whole, not
+    the one knob whose effect an operator cannot guess."""
 
     type: str = "string"
     """Value type: "string" | "number" | "boolean" | "password"."""
@@ -376,6 +399,16 @@ class CacheProviderL2Backend(BaseModel):
     fields: List[CacheProviderL2Field] = []
 
 
+class CacheProviderFieldOption(BaseModel):
+    """A choice of an options field whose display text differs from the
+    stored value."""
+
+    value: str
+    label: Optional[LocalizedText] = None
+    description: Optional[LocalizedText] = None
+    """One-line explanation rendered under the label in the dropdown."""
+
+
 class CacheProviderField(BaseModel):
     """A managed-mode configuration value promoted to a structured field
     in the service form's advanced section. The field carries no
@@ -387,18 +420,58 @@ class CacheProviderField(BaseModel):
 
     name: str
     """Placeholder name; must not collide with the reserved platform
-    placeholders (host/port/metrics_port/ram_size/chunk_size)."""
+    placeholders (host/port/metrics_port/service_id)."""
 
     label: Optional[LocalizedText] = None
     description: Optional[LocalizedText] = None
+
+    placeholder: Optional[str] = None
+    """Sample value shown in the empty input — the shape of the value
+    where prose cannot convey it (an endpoint list, a device name)."""
 
     type: str = "string"
     """Value type: "string" | "number" | "boolean" (booleans render as
     "true"/"false")."""
 
     default: Optional[Any] = None
-    options: Optional[List[str]] = None
-    """When set, the UI offers a fixed choice."""
+
+    required: bool = False
+    """Managed creation rejects a blank value (a declared default
+    satisfies it), and the form marks the input accordingly."""
+
+    options: Optional[List[Union[str, "CacheProviderFieldOption"]]] = None
+    """When set, the UI offers a fixed choice. An entry is either the
+    value itself or {value, label} when the display text differs from
+    the stored value (e.g. "Standalone Store" over standalone-store)."""
+
+    visible_by: Optional[str] = None
+    """Name of another declared field this one's visibility follows; the
+    field renders only while that field equals visible_when (e.g. the
+    RDMA device only matters on the rdma protocol). Value resolution
+    honors the gate only when gated_default is declared; a plain
+    default still renders while hidden."""
+
+    def option_values(self) -> List[str]:
+        return [
+            option if isinstance(option, str) else option.value
+            for option in (self.options or [])
+        ]
+
+    visible_when: Optional[Any] = None
+    """Value of the visible_by field that shows this one."""
+
+    framework_defaults: Optional[Dict[str, Any]] = None
+    """Default per accelerator framework of the workers the service will
+    run on (the runtime_images key vocabulary: cuda, cann, ...), falling
+    back to ``default`` for the rest. For a value the hardware decides
+    rather than the operator — a transport that is the accelerator's own
+    on NPU nodes and nothing else works there."""
+
+    gated_default: Optional[Any] = None
+    """Value the field resolves to while its visible_by gate does not
+    match. The form never submits a hidden field, but its plain default
+    would still render — e.g. the engine's segment contribution must
+    render 0 while a standalone store owns the pool."""
 
     min: Optional[float] = None
     max: Optional[float] = None
@@ -407,33 +480,321 @@ class CacheProviderField(BaseModel):
     the UI control and the API validation both honor them."""
 
 
-class CacheProviderExternalField(BaseModel):
-    """One connection parameter a user supplies when registering an external
-    service of this provider (e.g. Mooncake's metadata_server, protocol). The
-    value is rendered into the provider's injection templates via the
-    {{name}} placeholder; the primary service address lives on the endpoint
-    (host/port) instead, not here."""
+class CacheProviderComponentPort(BaseModel):
+    """A port a component binds, optionally only for the configurations
+    that need it."""
 
     name: str
-    label: Optional[LocalizedText] = None
-    """UI label; defaults to name."""
+    enabled_by: Optional[str] = None
+    """Name of a declared field that turns this port on; None means
+    always. Without enabled_when the field reads as a boolean."""
 
-    description: Optional[LocalizedText] = None
+    enabled_when: Optional[Any] = None
 
-    type: str = "string"
-    """Value type: "string" | "number" | "boolean" | "password"."""
 
-    required: bool = False
-    default: Optional[Any] = None
+class CacheProviderComponent(BaseModel):
+    """One process role of a multi-component managed provider (e.g. a
+    coordinating master and the per-node stores holding its capacity).
+    A provider without ``components`` is single-component: the
+    provider-level topology and the version launch templates describe
+    its one process, and nothing changes for it."""
 
-    options: Optional[List[str]] = None
-    """When set, the UI offers a fixed choice (e.g. protocol tcp/rdma)."""
+    topology: str = "replicas"
+    """Instance layout of this component: "replicas" runs ``replicas``
+    scheduler-placed instances spread across matching workers (sticky to
+    the workers they already run on), "per_node" runs one per matching
+    cluster worker."""
 
-    metrics_target: bool = False
-    """When set, the value is an additional Prometheus scrape address
-    (host:port or URL) added to the service's scrape targets. It is
-    observability config, not connector config: the value never enters
-    the injection placeholder namespace."""
+    replicas: int = 1
+    """Instance count for the "replicas" topology. Fewer matching
+    workers than replicas deploys what fits (a smaller pool beats
+    parking the service). Ignored by "per_node"."""
+
+    replicas_by: Optional[str] = None
+    """Name of a number declared field whose configured value overrides
+    ``replicas`` (e.g. a user-sized store fleet); None keeps the declared
+    count."""
+
+    depends_on: Optional[str] = None
+    """Name of a component whose instances must be RUNNING (with ports
+    known) before this component's instances are created — e.g. stores
+    need the master's address. The dependency must be addressable: either
+    a single fixed replica, or a component declaring an
+    ``address_template``."""
+
+    address_template: Optional[str] = None
+    """How clients address this component when an indirection stands in
+    for one instance's host:port — HA masters that elect a leader
+    that clients discover through the coordination backend
+    (``etcd://{{ha_backend_connstring}}``). Engines attaching to the
+    component and dependents rendering {{component.<name>.address}} use
+    it while every placeholder it references has a value, and fall back
+    to the resolved instance address otherwise. A component sized by a
+    field (``replicas_by``) must declare one to be addressable at all."""
+
+    run_command: Optional[str] = None
+    run_args: Optional[str] = None
+    """Launch template of this component, same semantics as the version
+    slots (a command takes the entrypoint, args ride the image's own).
+    Components own their launch: version-level launch templates apply
+    only to single-component providers, since one template cannot serve
+    two roles. {{component.<name>.address}} resolves to a
+    single-replica component's host:port."""
+
+    ports: List[Union[str, "CacheProviderComponentPort"]] = []
+    """Every port this component binds — the one it serves on, a metrics
+    or admin listener, the handshake socket a peer-to-peer transfer
+    channel needs. An entry is a bare name, or {name, enabled_by,
+    enabled_when} for a port only some configurations need — a list
+    holding one of the latter writes all of its entries that way, so a
+    reader compares like with like. Empty means IMPLICIT_PORT_NAMES; a
+    declared list replaces them.
+
+    The worker allocates one port per enabled name, records them on the
+    instance so a restart keeps the ports it already published to peers,
+    and renders each as {{ports.<name>}}, plus {{ports.<name>.url}} for
+    the worker-routable host:port a peer would dial. Both render empty
+    while the port is not allocated, so a flag carrying one drops with
+    it. {{port}} and {{metrics_port}} address the same allocation by
+    role — the component's address port and its metrics port — which is
+    the spelling templates outside a component (a version's launch
+    template, an engine's injection) have to use."""
+
+    address_port: Optional[str] = None
+    """Which declared port the component answers on: its instance
+    address, what {{component.<name>.address}} and {{port}} render and
+    what engines attaching to it dial. None takes the port named "port"
+    if there is one, else the first declared."""
+
+    def enabled_ports(
+        self, config_fields: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        """Names of the ports to allocate for the given field values.
+
+        The values are read as given: callers deciding what to allocate
+        pass what a launch would render (see
+        ``CacheProvider.enabled_port_names``), so a port follows exactly
+        the value its component's gate did. Passing raw request values
+        here asks a different question — which ports that configuration
+        alone turns on — and the declaration check below is the one place
+        that wants it.
+        """
+        if not self.ports:
+            return list(IMPLICIT_PORT_NAMES)
+        values = config_fields or {}
+        names: List[str] = []
+        for entry in self.ports:
+            if isinstance(entry, str):
+                names.append(entry)
+                continue
+            if entry.enabled_by is None:
+                names.append(entry.name)
+                continue
+            value = values.get(entry.enabled_by)
+            wanted = entry.enabled_when
+            if (value == wanted) if wanted is not None else bool(value):
+                names.append(entry.name)
+        return names
+
+    def declared_ports(self) -> List[str]:
+        """Every port name the component may bind, gated or not."""
+        if not self.ports:
+            return list(IMPLICIT_PORT_NAMES)
+        return [entry if isinstance(entry, str) else entry.name for entry in self.ports]
+
+    def address_port_name(self) -> str:
+        """The port name the component's address is built from."""
+        if self.address_port:
+            return self.address_port
+        declared = self.declared_ports()
+        if DEFAULT_PORT_NAME in declared:
+            return DEFAULT_PORT_NAME
+        return declared[0] if declared else DEFAULT_PORT_NAME
+
+    env: Dict[str, str] = {}
+    """Env template for this component's container; values support
+    {{placeholder}} including cross-component addresses."""
+
+    data_dirs: List[str] = []
+    """Directories this component keeps its data in (templates, e.g. a
+    configured disk-tier path). The worker creates each before the
+    container starts — a server told to keep data somewhere expects the
+    directory to exist — on the filesystem the cache container shares
+    with it. An entry whose placeholders have no value renders empty and
+    is skipped, so a path only some configurations use costs nothing when
+    unused."""
+
+    health_check: Optional[CacheProviderHealthCheck] = None
+    """Probe for this component's instances; None inherits the
+    provider-level health_check."""
+
+    common_parameters: List[str] = []
+    """Flags the UI offers as completion hints in this component's
+    parameters editor. Each role runs its own binary with its own flags,
+    so the provider-level list — which describes the one engines attach
+    to — is no help to the others. Excludes what the platform injects
+    (host, ports, capacity), which a hand-written copy would fight."""
+
+    metrics_port: Optional[str] = None
+    """Which declared port carries the exposition the provider's metrics
+    declaration describes: what {{metrics_port}} renders and what the
+    platform scrapes. None means this component is not scraped at all —
+    scrape targets are built from the components naming one (a
+    coordinating master, not the stores behind it). A listener that serves something else
+    belongs in ``ports`` under its own name."""
+
+    attach_endpoint: bool = False
+    """Whether engines attach to this component's address (exactly one
+    component of a multi-component provider declares it — a master,
+    say, where the stores behind it are internal). It must be addressable (one
+    fixed replica or an address_template) and cannot be gated by
+    enabled_by."""
+
+    enabled_by: Optional[str] = None
+    """Name of a declared field that turns this component on; None means
+    always on. Without enabled_when the field reads as a boolean; with
+    it, the component is on while the field equals that value (e.g.
+    a pool's stores exist while its mode is "standalone-store"). A
+    disabled component keeps no instances."""
+
+    enabled_when: Optional[Any] = None
+    """Value of the enabled_by field that turns this component on."""
+
+    gpu_access: bool = True
+    """Whether this component's container mounts the node's GPUs. LMCache
+    needs a CUDA context for its IPC transport; a pure-RAM component
+    opts out and saves the per-GPU context memory."""
+
+    resource_profile: Optional[CacheProviderResourceProfile] = None
+    """Per-instance host resource claim of this component (e.g. the
+    store's segment size), same template semantics as the provider-level
+    profile — which describes the single-component case only and does
+    not apply to components."""
+
+    def addressable_alone(self) -> bool:
+        """Whether one instance of this component is the whole address:
+        true only for a single fixed replica, since a field-sized or
+        per-node component has several endpoints."""
+        return (
+            self.topology == "replicas" and self.replicas == 1 and not self.replicas_by
+        )
+
+    @model_validator(mode="after")
+    def _one_launch_slot(self):
+        if self.run_command and self.run_args:
+            raise ValueError("a component declares run_command or run_args, not both")
+        return self
+
+
+IMPLICIT_COMPONENT = CacheProviderComponent(
+    ports=list(IMPLICIT_PORT_NAMES),
+    metrics_port=DEFAULT_METRICS_PORT_NAME,
+    attach_endpoint=True,
+)
+"""The one process a provider without ``components`` describes: it
+serves engines on the platform's port, exposes its metrics on the
+metrics port, and its launch templates live at the version level."""
+
+
+def _validate_port_gates(
+    name: str, component: CacheProviderComponent, fields: List["CacheProviderField"]
+) -> None:
+    """A port gated on a field nobody declares would never be bound, and
+    every flag carrying {{ports.<name>}} would drop with it — silently,
+    at launch, where a misspelled gate looks exactly like a feature that
+    is off."""
+    declared = {field.name for field in fields}
+    for entry in component.ports:
+        if isinstance(entry, str) or entry.enabled_by is None:
+            continue
+        if entry.enabled_by not in declared:
+            raise ValueError(
+                f"component '{name}' gates port '{entry.name}' on "
+                f"'{entry.enabled_by}', which is not a declared field"
+            )
+
+
+def _validate_component_shape(name: str, component: CacheProviderComponent) -> None:
+    """Check what a component declares about itself, independent of how it
+    relates to the others."""
+    if component.topology not in ("replicas", "per_node"):
+        raise ValueError(
+            f"component '{name}' declares unknown topology " f"'{component.topology}'"
+        )
+    if component.replicas < 1:
+        raise ValueError(
+            f"component '{name}' declares replicas "
+            f"{component.replicas}; at least one is required"
+        )
+    declared = component.declared_ports()
+    for port_name in declared:
+        if not port_name.isidentifier():
+            raise ValueError(
+                f"component '{name}' declares port '{port_name}', "
+                "which is not a valid placeholder name"
+            )
+    if len(set(declared)) != len(declared):
+        raise ValueError(f"component '{name}' declares a port name twice")
+
+    # A role naming a port the component never binds resolves to nothing
+    # at runtime — an address with no port, a scrape target that is never
+    # built, a probe that can never pass.
+    for role, port_name in (
+        ("address_port", component.address_port),
+        ("metrics_port", component.metrics_port),
+        (
+            "health_check target",
+            component.health_check.target if component.health_check else None,
+        ),
+    ):
+        if port_name is not None and port_name not in declared:
+            raise ValueError(
+                f"component '{name}' points {role} at port '{port_name}', "
+                f"which it does not declare (declares: {', '.join(declared)})"
+            )
+
+    # The address has to hold for every configuration the component runs
+    # in. A port gated on nothing always does; one gated exactly as the
+    # component is does too, since the configurations that close it are
+    # the ones with no instances to address. Anything else leaves the
+    # component running without an address for some configuration.
+    address_port = component.address_port_name()
+    gate = next(
+        (
+            entry
+            for entry in component.ports
+            if not isinstance(entry, str) and entry.name == address_port
+        ),
+        None,
+    )
+    if gate is not None and gate.enabled_by is not None:
+        follows_component = (
+            gate.enabled_by == component.enabled_by
+            and gate.enabled_when == component.enabled_when
+        )
+        if not follows_component:
+            raise ValueError(
+                f"component '{name}' takes its address from port "
+                f"'{address_port}', which is gated on "
+                f"'{gate.enabled_by}': a configuration closing that gate "
+                "leaves the component running with no address"
+            )
+
+    # A component rendering {{metrics_port}} without naming one renders
+    # nothing — a flag silently dropped from the launch, which is how a
+    # listener a probe depends on goes missing.
+    if component.metrics_port is None:
+        for template in (
+            component.run_command,
+            component.run_args,
+            *component.env.values(),
+        ):
+            if _references_placeholder(template, "metrics_port"):
+                raise ValueError(
+                    f"component '{name}' renders {{{{metrics_port}}}} but "
+                    "declares no metrics_port; a listener it is not scraped "
+                    "on belongs in ports under its own name"
+                )
 
 
 class CacheProvider(BaseModel):
@@ -446,19 +807,26 @@ class CacheProvider(BaseModel):
     links: List[CacheProviderLink] = []
     """Brand links (docs, product page) rendered on the catalog card."""
 
+    unavailable_reason: Optional[LocalizedText] = None
+    """Why this installation cannot run the provider, which is also what
+    marks it unavailable: the catalog lists it so the choice is visible,
+    the form does not offer it, and a service naming it is refused. A
+    declaration an extension registers over this one carries no reason and
+    the provider becomes usable — the placeholder holds the card's place
+    until whatever it needs is installed, and describes nothing else."""
+
     dashboard_uid: Optional[str] = None
     """UID of a provider-specific Grafana dashboard provisioned alongside
     the generic cache-service one; the service's Grafana entry points
     redirect to it. None falls back to the generic dashboard."""
 
-    supported_modes: List[str] = []
-    """Deployment modes the provider supports: "managed" and/or "external"."""
-
-    topology: str = "singleton"
-    """Managed-mode instance layout: "singleton" runs exactly one instance
-    on the worker picked at service creation; "per_node" runs one instance
-    per active worker of the service's cluster, following workers as they
-    join and leave."""
+    topology: str = "replicas"
+    """Instance layout of a single-component provider:
+    "replicas" runs one scheduler-placed instance (pinned when the
+    service names a worker_id); "per_node" runs one instance per active
+    worker of the service's cluster, following workers as they join and
+    leave. Multi-component providers declare topology per component
+    instead."""
 
     attach_locality: str = "cluster"
     """Where an engine may attach from: "node_local" means the connector
@@ -474,6 +842,13 @@ class CacheProvider(BaseModel):
     """Whether the engine ships its own management UI worth linking to:
     the service form then offers a management_url config field, rendered
     as a link beside the service name."""
+
+    components: Dict[str, CacheProviderComponent] = {}
+    """Managed-mode process roles, keyed by component name. Empty means
+    single-component (the provider-level topology and version launch
+    templates describe the one process). Declared components each own
+    their topology, launch and env; the shared image layout still comes
+    from the version."""
 
     default_version: Optional[str] = None
     versions: Dict[str, CacheProviderVersionConfig] = {}
@@ -506,12 +881,7 @@ class CacheProvider(BaseModel):
     a declared version; the default version's run command and env templates
     still apply, so the image must be command-compatible."""
 
-    external_fields: List[CacheProviderExternalField] = []
-    """External-mode connection parameters the user fills at registration.
-    Rendered into the connector injection via {{name}} alongside the
-    endpoint address; empty for managed-only providers."""
-
-    managed_fields: List[CacheProviderField] = []
+    fields: List[CacheProviderField] = []
     """Managed-mode configuration values promoted to structured form
     fields (e.g. the eviction policy), wired into the runtime config by
     the version templates via {{name}}; everything else stays reachable
@@ -539,6 +909,185 @@ class CacheProvider(BaseModel):
     l2_backends: Dict[str, CacheProviderL2Backend] = {}
     """Adapter type identifier (the "type" value in the adapter JSON)
     -> backend declaration."""
+
+    def component_layouts(self) -> Dict[str, str]:
+        """Component name -> topology. A single-component provider maps
+        {"": topology} — the empty string is the stored component value
+        of its instance rows (a real column value, not NULL, so the
+        (service, worker, component) uniqueness holds on every database:
+        NULLs compare distinct inside unique constraints)."""
+        if self.components:
+            return {name: c.topology for name, c in self.components.items()}
+        return {"": self.topology}
+
+    def get_component(self, name: str) -> Optional[CacheProviderComponent]:
+        if not name:
+            return None
+        return self.components.get(name)
+
+    def _port_layout(self, component: Optional[str]) -> CacheProviderComponent:
+        """The declaration answering port questions for a component —
+        IMPLICIT_COMPONENT for the single process a provider without
+        ``components`` describes, which declares nothing about itself."""
+        return self.components.get(component or "") or IMPLICIT_COMPONENT
+
+    def enabled_port_names(
+        self,
+        component: Optional[str],
+        config_fields: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        """Ports to allocate for an instance of this component under the
+        given configuration. The gates read the values a launch would
+        render, as the component's own gate does: a port whose gate sits
+        behind a closed one must not be bound from a stale value."""
+        return self._port_layout(component).enabled_ports(
+            resolved_field_values(self.fields, config_fields or {})
+        )
+
+    def declared_port_names(self, component: Optional[str]) -> List[str]:
+        """Every port name an instance of this component may bind, gated
+        or not — the placeholders its templates can reference."""
+        return self._port_layout(component).declared_ports()
+
+    def address_port_name(self, component: Optional[str]) -> str:
+        """Port name an instance of this component is addressed by."""
+        return self._port_layout(component).address_port_name()
+
+    def metrics_port_name(self, component: Optional[str]) -> Optional[str]:
+        """Port name this component serves the declared exposition on;
+        None when it is not scraped."""
+        return self._port_layout(component).metrics_port
+
+    def health_check_for(self, component: Optional[str]) -> CacheProviderHealthCheck:
+        """Probe for a component's instances: its own declaration, else
+        the provider-level one — an HTTP metrics endpoint for one role where
+        another answers on a plain port."""
+        spec = self.get_component(component or "")
+        if spec is not None and spec.health_check is not None:
+            return spec.health_check
+        return self.health_check or CacheProviderHealthCheck()
+
+    def probe_port_name(self, component: Optional[str]) -> str:
+        """Port name a component's probe hits: what its health check
+        targets, else the port it is addressed by."""
+        return self.health_check_for(component).target or self.address_port_name(
+            component
+        )
+
+    @model_validator(mode="after")
+    def _validate_components(self) -> "CacheProvider":
+        for name, component in self.components.items():
+            _validate_component_shape(name, component)
+            # A component without its own probe inherits the provider's,
+            # whose target has to name a port this component binds.
+            if component.health_check is None and self.health_check is not None:
+                declared = component.declared_ports()
+                if (
+                    self.health_check.target is not None
+                    and self.health_check.target not in declared
+                ):
+                    raise ValueError(
+                        f"component '{name}' inherits the provider health "
+                        f"check, which probes port '{self.health_check.target}'; "
+                        f"the component declares: {', '.join(declared)}"
+                    )
+            _validate_port_gates(name, component, self.fields)
+            dep_name = component.depends_on
+            if dep_name is None:
+                continue
+            dependency = self.components.get(dep_name)
+            if dependency is None or dep_name == name:
+                raise ValueError(
+                    f"component '{name}' depends on unknown component " f"'{dep_name}'"
+                )
+            if not (dependency.addressable_alone() or dependency.address_template):
+                raise ValueError(
+                    f"component '{name}' depends on '{dep_name}', which is "
+                    "neither a single-replica component nor declares an "
+                    "address_template: a dependent needs one address"
+                )
+            if dependency.depends_on:
+                raise ValueError(
+                    f"component '{name}' depends on '{dep_name}', which has "
+                    "its own dependency: chains are not supported"
+                )
+        if self.components:
+            attach = [
+                name
+                for name, component in self.components.items()
+                if component.attach_endpoint
+            ]
+            if len(attach) != 1:
+                raise ValueError(
+                    "a multi-component provider declares exactly one "
+                    "attach_endpoint component; engines need one address"
+                )
+            spec = self.components[attach[0]]
+            # Addressable means an engine can name one endpoint. A single
+            # replica is one; an address_template stands in for one; and
+            # a per_node component is one per consumer, which only holds
+            # while the provider says engines attach node-locally.
+            per_node_local = (
+                spec.topology == "per_node" and self.attach_locality == "node_local"
+            )
+            if not (
+                spec.addressable_alone() or spec.address_template or per_node_local
+            ):
+                raise ValueError(
+                    f"attach_endpoint component '{attach[0]}' must be "
+                    "addressable: a single replica, an address_template, or "
+                    "per_node with node_local attach"
+                )
+            if spec.enabled_by:
+                raise ValueError(
+                    f"attach_endpoint component '{attach[0]}' cannot be "
+                    "gated by enabled_by: the attach address must always "
+                    "exist"
+                )
+            declared_fields = {field.name for field in self.fields}
+            for name, component in self.components.items():
+                if component.enabled_by and component.enabled_by not in declared_fields:
+                    raise ValueError(
+                        f"component '{name}' is enabled by undeclared "
+                        f"declared field '{component.enabled_by}'"
+                    )
+                if (
+                    component.replicas_by
+                    and component.replicas_by not in declared_fields
+                ):
+                    raise ValueError(
+                        f"component '{name}' sizes replicas by undeclared "
+                        f"declared field '{component.replicas_by}'"
+                    )
+        return self
+
+    def attach_component(self) -> str:
+        """Name of the component engines attach to ("" for
+        single-component providers)."""
+        for name, component in self.components.items():
+            if component.attach_endpoint:
+                return name
+        return ""
+
+    def component_enabled(
+        self, name: str, config_fields: Optional[Dict[str, Any]]
+    ) -> bool:
+        """Whether the component should have instances for a service
+        configured with ``config_fields``.
+
+        The gate reads the value the launch would render, not the one the
+        request carried: a field behind a closed gate of its own resolves
+        to its gated default, and a value left over from when that gate
+        was open must not keep a component alive."""
+        spec = self.get_component(name)
+        if spec is None or not spec.enabled_by:
+            return True
+        value = resolved_field_values(self.fields, config_fields or {}).get(
+            spec.enabled_by
+        )
+        if spec.enabled_when is not None:
+            return value == spec.enabled_when
+        return bool(value)
 
     def metrics_for(self, version: Optional[str]) -> Optional[CacheProviderMetrics]:
         """The effective metrics declaration for a service pinned to
@@ -603,15 +1152,17 @@ class CacheProvider(BaseModel):
                     "neither image nor runtime_images and inherit the "
                     "provider's default_image"
                 )
-        if not self.versions and "managed" in self.supported_modes:
+        if not self.versions:
             # A provider with no release line to declare (an image that is
             # not published, so every service names its own) still needs a
-            # way to reach an image: the custom version is it.
-            if not self.custom_version:
+            # way to reach an image: the custom version is it. A
+            # declaration holding a card's place launches nothing at all,
+            # so it is held to none of this.
+            if not self.custom_version and not self.unavailable_reason:
                 raise ValueError(
-                    f"Cache provider '{self.name}' declares no versions: a "
-                    "managed provider then resolves no image at all unless "
-                    "it allows the custom version"
+                    f"Cache provider '{self.name}' declares no versions: it "
+                    "then resolves no image at all unless it allows the "
+                    "custom version"
                 )
             if self.default_run_command and self.default_run_args:
                 raise ValueError(
@@ -673,7 +1224,47 @@ class CacheProvider(BaseModel):
         return matches[0] if matches else None
 
 
-_TEMPLATE_PATTERN = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
+# Dots namespace cross-component placeholders (component.master.address);
+# a trailing |filter converts the value on the way out.
+_TEMPLATE_PATTERN = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_.]*)(?:\|([a-z_]+))?\}\}")
+
+
+def _references_placeholder(template: Optional[str], name: str) -> bool:
+    """Whether a template renders the named placeholder, with or without
+    a filter."""
+    if not template:
+        return False
+    return any(match.group(1) == name for match in _TEMPLATE_PATTERN.finditer(template))
+
+
+_GIB_BYTES = 1024**3
+
+
+def _gib_to_bytes(value: Any) -> Any:
+    """A size a field states in GiB, as the byte count a program that
+    takes no unit wants."""
+    try:
+        return int(float(value) * _GIB_BYTES)
+    except (TypeError, ValueError):
+        return value
+
+
+TEMPLATE_FILTERS = {"gib_to_bytes": _gib_to_bytes}
+"""Conversions a placeholder may name (``{{cap_gb|gib_to_bytes}}``), for
+values a declaration states in the unit a user thinks in and a program
+reads in another."""
+
+
+def _render_value(value: Any, filter_name: Optional[str] = None) -> str:
+    """One resolved value as a template renders it. Booleans render
+    lowercase: that is the literal JSON accepts and gflags parses, so one
+    declared boolean serves a config file and a command-line flag
+    alike."""
+    if filter_name:
+        value = TEMPLATE_FILTERS[filter_name](value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def render_template(value: str, params: Dict[str, Any]) -> str:
@@ -687,10 +1278,59 @@ def render_template(value: str, params: Dict[str, Any]) -> str:
         var_name = match.group(1)
         if var_name in params:
             resolved = params[var_name]
-            return "" if resolved is None else str(resolved)
+            return "" if resolved is None else _render_value(resolved, match.group(2))
         return match.group(0)
 
     return _TEMPLATE_PATTERN.sub(replace_var, value)
+
+
+def render_argument(value: str, params: Dict[str, Any]) -> str:
+    """Render one launch argument or env value. A placeholder the params
+    know but have no value for empties the whole token, not just its own
+    span: a flag reading "http://{{addr}}" has to disappear with its
+    address rather than carry a bare scheme. A placeholder the params do
+    not know at all is left as written, so a typo in a declaration fails
+    loudly instead of silently dropping the flag it was meant to fill."""
+    empty = False
+
+    def replace_var(match):
+        nonlocal empty
+        name = match.group(1)
+        if name not in params:
+            return match.group(0)
+        resolved = params[name]
+        if resolved is None or resolved == "":
+            empty = True
+            return ""
+        return _render_value(resolved, match.group(2))
+
+    rendered = _TEMPLATE_PATTERN.sub(replace_var, value)
+    return "" if empty else rendered
+
+
+def render_optional_template(
+    value: Optional[str], params: Dict[str, Any]
+) -> Optional[str]:
+    """Render a template that only means something once every placeholder
+    it references has a value: an unset one makes the whole rendering
+    None rather than a string with a hole in it ("etcd://" for an unset
+    connection string). Same idiom as a flag dropped with its empty
+    value."""
+    if not value:
+        return None
+    missing = False
+
+    def replace_var(match):
+        nonlocal missing
+        name = match.group(1)
+        resolved = params.get(name)
+        if resolved is None or resolved == "":
+            missing = True
+            return ""
+        return _render_value(resolved, match.group(2))
+
+    rendered = _TEMPLATE_PATTERN.sub(replace_var, value)
+    return None if missing else rendered
 
 
 def _coerce_l2_field_value(field: CacheProviderL2Field, value: Any) -> Any:
@@ -827,13 +1467,49 @@ def render_l2_adapter(
     return args, env
 
 
+def resolved_field_values(
+    fields: List["CacheProviderField"], values: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Field values as the templates should see them: the configured
+    value falling back to the declared default — except that a field
+    whose visible_by gate does not match resolves to its gated_default
+    when one is declared.
+
+    A gate is read resolved, not raw, so gates chain: a field behind a
+    switch that is itself behind a mode closes with the mode, however the
+    switch was left when the mode last offered it."""
+    declared = {field.name: field for field in fields}
+    resolved: Dict[str, Any] = {}
+    resolving: Set[str] = set()
+
+    def resolve(field: "CacheProviderField") -> Any:
+        if field.name in resolved:
+            return resolved[field.name]
+        value = values.get(field.name, field.default)
+        if field.visible_by and field.gated_default is not None:
+            gate_field = declared.get(field.visible_by)
+            if gate_field is not None and field.name not in resolving:
+                resolving.add(field.name)
+                gate_value = resolve(gate_field)
+                resolving.discard(field.name)
+            else:
+                gate_value = values.get(field.visible_by)
+            if gate_value != field.visible_when:
+                value = field.gated_default
+        resolved[field.name] = value
+        return value
+
+    for field in fields:
+        resolve(field)
+    return resolved
+
+
 RESERVED_INJECTION_PLACEHOLDERS = frozenset(
     {
         "host",
         "port",
         "metrics_port",
-        "ram_size",
-        "chunk_size",
+        "service_id",
         "local_hostname",
         "master_server_address",
         "locality",
@@ -847,27 +1523,14 @@ def validate_injection_templates(provider: "CacheProvider") -> List[str]:
     Check a provider's injection templates against the placeholder
     contract; returns human-readable violations (empty when clean).
 
-    Two invariants are enforced at load time because their failure modes
-    are silent at runtime: a placeholder that nothing resolves renders
-    literally into connector config (corrupting it), and a password- or
-    metrics_target-typed field rendered into injection would ride into
-    the cache_config snapshot on the model instance row, outside the
-    cache-service redaction's reach. Every referenced placeholder must
-    be a reserved platform placeholder, a declared (non-secret,
-    non-scrape) field, or a key present in every locality bucket.
+    Enforced at load time because the failure mode is silent at runtime:
+    a placeholder that nothing resolves renders literally into connector
+    config, corrupting it. Every referenced placeholder must be a
+    reserved platform placeholder, a declared field, or a key present in
+    every locality bucket.
     """
     errors: List[str] = []
-    declared = {
-        field.name
-        for field in provider.external_fields
-        if field.type != "password" and not field.metrics_target
-    }
-    declared |= {field.name for field in provider.managed_fields}
-    excluded = {
-        field.name
-        for field in provider.external_fields
-        if field.type == "password" or field.metrics_target
-    }
+    declared = {field.name for field in provider.fields}
     for integration in provider.inference_backend_integrations:
         injection = integration.injection
         buckets = [set(bucket) for bucket in injection.locality_params.values()]
@@ -883,18 +1546,13 @@ def validate_injection_templates(provider: "CacheProvider") -> List[str]:
                 if isinstance(value, str)
             )
         referenced = {
-            name
+            match.group(1)
             for template in templates
-            for name in _TEMPLATE_PATTERN.findall(template)
+            for match in _TEMPLATE_PATTERN.finditer(template)
         }
         prefix = f"'{provider.name}' integration '{integration.backend}'"
-        for name in sorted(referenced & excluded):
-            errors.append(
-                f"{prefix} references field '{name}': password and "
-                "metrics_target values never enter injection"
-            )
         allowed = RESERVED_INJECTION_PLACEHOLDERS | declared | locality_common
-        for name in sorted(referenced - allowed - excluded):
+        for name in sorted(referenced - allowed):
             errors.append(
                 f"{prefix} references placeholder '{name}', which is not a "
                 "reserved placeholder, a declared field, or a key present "
@@ -937,18 +1595,27 @@ def validate_localized_text(provider: "CacheProvider") -> List[str]:
         _localized_violations(provider.display_name, f"{prefix} display_name")
     )
     errors.extend(_localized_violations(provider.description, f"{prefix} description"))
+    errors.extend(
+        _localized_violations(
+            provider.unavailable_reason, f"{prefix} unavailable_reason"
+        )
+    )
     for index, link in enumerate(provider.links):
         errors.extend(
             _localized_violations(link.label, f"{prefix} link #{index} label")
         )
-    for field in provider.external_fields:
-        where = f"{prefix} external field '{field.name}'"
+    for field in provider.fields:
+        where = f"{prefix} declared field '{field.name}'"
         errors.extend(_localized_violations(field.label, f"{where} label"))
         errors.extend(_localized_violations(field.description, f"{where} description"))
-    for field in provider.managed_fields:
-        where = f"{prefix} managed field '{field.name}'"
-        errors.extend(_localized_violations(field.label, f"{where} label"))
-        errors.extend(_localized_violations(field.description, f"{where} description"))
+        for option in field.options or []:
+            if isinstance(option, str):
+                continue
+            at = f"{where} option '{option.value}'"
+            errors.extend(_localized_violations(option.label, f"{at} label"))
+            errors.extend(
+                _localized_violations(option.description, f"{at} description")
+            )
     for key, backend in provider.l2_backends.items():
         where = f"{prefix} l2 backend '{key}'"
         errors.extend(
@@ -963,11 +1630,9 @@ def validate_localized_text(provider: "CacheProvider") -> List[str]:
             )
         )
         for field in backend.fields:
-            errors.extend(
-                _localized_violations(
-                    field.label, f"{where} field '{field.name}' label"
-                )
-            )
+            at = f"{where} field '{field.name}'"
+            errors.extend(_localized_violations(field.label, f"{at} label"))
+            errors.extend(_localized_violations(field.description, f"{at} description"))
     return errors
 
 
@@ -981,7 +1646,9 @@ def render_typed_template(value: Any, params: Dict[str, Any]) -> Any:
     if not isinstance(value, str):
         return value
     match = _TEMPLATE_PATTERN.fullmatch(value)
-    if match and match.group(1) in params:
+    # a filtered placeholder has converted its value, so it renders as
+    # the string the conversion produced rather than passing through
+    if match and not match.group(2) and match.group(1) in params:
         return params[match.group(1)]
     return render_template(value, params)
 
