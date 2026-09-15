@@ -40,6 +40,17 @@ def _add_metric(
     metric.add_metric(labels, value)
 
 
+def _drain(future, kind: str):
+    """
+    Collected metrics, or an empty list if that half of the collection failed.
+    """
+    try:
+        return future.result()
+    except Exception as e:
+        logger.error(f"Failed to collect {kind} metrics: {e}")
+        return []
+
+
 class MetricExporter(Collector):
     _worker_ip_getter: Callable[[], str]
     _worker_name_getter: Callable[[], str]
@@ -68,10 +79,10 @@ class MetricExporter(Collector):
         with ThreadPoolExecutor() as executor:
             worker_future = executor.submit(list, self.collect_worker_metrics())
             runtime_future = executor.submit(list, self.collect_runtime_metrics())
-            for metric in worker_future.result():
-                yield metric
-            for metric in runtime_future.result():
-                yield metric
+            # Collected independently: worker metrics failing should not take the
+            # runtime metrics down with them, nor the other way round.
+            yield from _drain(worker_future, "worker")
+            yield from _drain(runtime_future, "runtime")
 
     def collect_worker_metrics(self):  # noqa: C901
         labels = ["worker_id", "worker_name", "instance"]
@@ -371,7 +382,6 @@ class MetricExporter(Collector):
 
     def start(self):
         try:
-
             raw_collector = RawCollector(
                 cache=self._cache,
             )
