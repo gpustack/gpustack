@@ -120,7 +120,10 @@ class RuntimeMetricsAggregator:
             except Exception as e:
                 # Keep one endpoint from discarding the metrics collected from
                 # the others on this worker.
-                logger.warning(f"Skipping metrics from endpoint {ep}: {e}")
+                logger.warning(
+                    f"Skipping metrics from endpoint {ep}: {e}",
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
 
         self._cache["unified"] = unified_metrics
         self._cache["raw"] = raw_metrics
@@ -242,7 +245,10 @@ class RuntimeMetricsAggregator:
             except Exception as e:
                 # Keep a single unsupported family from discarding every metric
                 # collected on this worker.
-                logger.warning(f"Skipping metric family {source_family_name}: {e}")
+                logger.warning(
+                    f"Skipping metric family {source_family_name}: {e}",
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
 
     def _process_metric_family(
         self,

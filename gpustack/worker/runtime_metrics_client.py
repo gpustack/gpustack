@@ -38,7 +38,14 @@ def parse_metrics_text(text: str, content_type: Optional[str] = None):
                 f"Failed to parse OpenMetrics exposition, "
                 f"falling back to the Prometheus text format: {e}"
             )
-    return text_string_to_metric_families(text)
+    try:
+        return list(text_string_to_metric_families(text))
+    except Exception as e:
+        # Materialized here on purpose: left lazy, a malformed payload would
+        # raise while the caller iterates and be retried as if it were a
+        # request failure, which no amount of retrying can fix.
+        logger.warning(f"Failed to parse metrics exposition: {e}")
+        return []
 
 
 class Config:
