@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from typing import List, NamedTuple, Optional, Tuple, Union, Set
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -900,6 +901,35 @@ class ModelService:
                 )
             )
 
+        route_service = ModelRouteService(self.session)
+        # A route this model created (enable_model_route, plus the LoRA child
+        # routes) must not outlive the model: while one exists, the
+        # unique-name lookup in create_model resolves it and rejects a new
+        # model of that name. Delete it in the same transaction as the model,
+        # unless targets other than this model's still point at it — a shared
+        # route stays, and ModelRouteTargetController owns it from there.
+        created_routes = await ModelRoute.all_by_fields(
+            self.session,
+            fields={"created_model_id": model.id, "deleted_at": None},
+        )
+        for route in created_routes or []:
+            other_targets = (
+                await self.session.exec(
+                    select(func.count())
+                    .select_from(ModelRouteTarget)
+                    .where(
+                        ModelRouteTarget.route_id == route.id,
+                        ModelRouteTarget.deleted_at.is_(None),
+                        or_(
+                            ModelRouteTarget.model_id.is_(None),
+                            ModelRouteTarget.model_id != model.id,
+                        ),
+                    )
+                )
+            ).one()
+            if other_targets == 0:
+                await route_service.delete(route, auto_commit=False)
+
         result = await model.delete(self.session)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
@@ -909,7 +939,6 @@ class ModelService:
         for instance_id in instance_ids:
             await delete_cache_by_key(instance_service.get_by_id, instance_id)
 
-        route_service = ModelRouteService(self.session)
         for route_name in route_names:
             await delete_cache_by_key(route_service.resolve_route_targets, route_name)
             await delete_cache_by_key(
