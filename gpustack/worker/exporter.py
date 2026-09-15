@@ -47,7 +47,10 @@ def _drain(future, kind: str):
     try:
         return future.result()
     except Exception as e:
-        logger.error(f"Failed to collect {kind} metrics: {e}")
+        logger.error(
+            f"Failed to collect {kind} metrics: {e}",
+            exc_info=logger.isEnabledFor(logging.DEBUG),
+        )
         return []
 
 

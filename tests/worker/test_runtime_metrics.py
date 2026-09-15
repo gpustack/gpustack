@@ -72,6 +72,16 @@ def test_parse_without_content_type_uses_prometheus_text():
     assert [s.value for s in families["vllm:num_requests_running"].samples] == [3.0]
 
 
+def test_unparsable_payload_yields_no_families():
+    """A malformed body must not escape as an exception: the caller retries the
+    endpoint whenever one is raised, and no retry can fix a bad payload."""
+    malformed = "this is not a metrics payload at all\n"
+
+    assert parse_metrics_text(malformed, PROMETHEUS_CONTENT_TYPE) == []
+    # OpenMetrics first, then the text format as a fallback — both fail here.
+    assert parse_metrics_text(malformed, OPENMETRICS_CONTENT_TYPE) == []
+
+
 def test_create_prom_metric_family_supports_untyped():
     family = create_prom_metric_family(
         type="unknown", name="x", description="d", labels=["a"]
