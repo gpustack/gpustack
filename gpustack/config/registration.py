@@ -1,4 +1,3 @@
-import logging
 import os
 import time
 from cachetools import TTLCache, cached
@@ -8,12 +7,11 @@ from gpustack.client.worker_manager_clients import (
     WorkerRegistrationClient,
 )
 from gpustack.security import API_KEY_PREFIX
-from gpustack.utils.uuid import get_legacy_uuid, get_system_uuid, get_worker_name
+from gpustack.utils.uuid import get_legacy_uuid
 from gpustack.utils.network import check_registry_reachable
 
 registration_token_filename = "token"
 worker_token_filename = "worker_token"
-logger = logging.getLogger(__name__)
 
 
 def read_token(data_dir: str, filename) -> Optional[str]:
@@ -70,15 +68,9 @@ def registration_client(
             time.sleep(0.5)
     if registration_token:
         if not registration_token.startswith(API_KEY_PREFIX):
+            # The server stores deployment registration tokens with an empty
+            # access key, so raw and legacy UUID-wrapped tokens resolve alike.
             legacy_uuid = get_legacy_uuid(data_dir)
-            if not legacy_uuid and get_worker_name(data_dir):
-                try:
-                    legacy_uuid = get_system_uuid()
-                except Exception:
-                    logger.warning(
-                        "Failed to get system UUID; using raw registration token",
-                        exc_info=True,
-                    )
             if legacy_uuid:
                 registration_token = (
                     f"{API_KEY_PREFIX}_{legacy_uuid}_{registration_token}"
