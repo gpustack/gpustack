@@ -872,13 +872,12 @@ class ModelService:
             )
 
         route_service = ModelRouteService(self.session)
-        # Routes this model created (enable_model_route, LoRA child routes)
-        # used to be removed by the controller once the cascade-deleted
-        # target's event arrived. Creating a model with the same name inside
-        # that window hit the unique-name check and answered 409 although the
-        # model itself was already gone (#6197). Remove them here, in the
-        # same transaction as the model, unless other targets still use the
-        # route; the controller keeps handling that case as before.
+        # A route this model created (enable_model_route, plus the LoRA child
+        # routes) must not outlive the model: while one exists, the
+        # unique-name lookup in create_model resolves it and rejects a new
+        # model of that name. Delete it in the same transaction as the model,
+        # unless targets other than this model's still point at it — a shared
+        # route stays, and ModelRouteTargetController owns it from there.
         created_routes = await ModelRoute.all_by_fields(
             self.session,
             fields={"created_model_id": model.id, "deleted_at": None},

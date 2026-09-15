@@ -1,10 +1,9 @@
-"""Deleting a model tears down the route it created in the same transaction.
+"""Deleting a model tears down the route it created, in the same transaction.
 
-The controller removed a model-created route only after the DELETED event
-of the cascade-deleted target arrived. Creating a model with the same name
-inside that window hit the unique-name check in ``create_model`` and got
-``409 Model route with name '...' already exists.`` although the model was
-already gone (#6197).
+A route with ``created_model_id`` must not outlive the model that created it:
+while one exists, the unique-name lookup in ``create_model`` resolves it and
+rejects a new model of that name. A route that other targets still point at is
+kept instead, with ``created_model_id`` intact.
 """
 
 from sqlalchemy import event
