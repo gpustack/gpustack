@@ -31,6 +31,7 @@ from gpustack.schemas.cache_services import (
     CacheServiceMetricChart,
     CacheServiceMetricSeries,
     CacheServiceMetricsPublic,
+    ModelCacheMetricsPublic,
 )
 
 logger = logging.getLogger(__name__)
@@ -292,8 +293,10 @@ async def _collect_attached(
     window = f"{window_seconds}s"
     by_instance = {record.model_instance_name: record for record in attached}
     # Both counters buffer before any record is touched: hits landing
-    # while queries fail would leave rows claiming hits out of zero
-    # lookups. Failure leaves every row empty instead.
+    # while the second query fails would leave rows claiming hits out of
+    # zero lookups. A failed query raises, leaving what to make of it to
+    # the caller — a deployment's own view has nothing else to show, a
+    # service's view has its own numbers already.
     buffered: dict = {}
     for field, counter in (
         ("hit_tokens", _ENGINE_HIT_COUNTER),
@@ -303,11 +306,7 @@ async def _collect_attached(
             f"sum by {_ATTACHED_GROUP_LABELS} "
             f"(increase({counter}{selector}[{window}]))"
         )
-        try:
-            result = await _query_instant(client, prometheus_url, query, at)
-        except ValueError as e:
-            logger.warning(f"Attached cache metrics query failed: {e}")
-            return attached
+        result = await _query_instant(client, prometheus_url, query, at)
         buffered[field] = {
             (entry.get("metric") or {}).get("model_instance_name"): _instant_value(
                 entry
@@ -393,6 +392,74 @@ async def _collect_charts(
         )
 
 
+async def collect_model_cache_metrics(
+    cluster_id: int,
+    attached: List[CacheServiceAttachedMetrics],
+    window_seconds: int,
+    client: Optional[aiohttp.ClientSession] = None,
+) -> ModelCacheMetricsPublic:
+    """Engine-side external-cache hit accounting for one deployment's
+    instances.
+
+    The rows come in database-enumerated (the caller knows the
+    deployment's instances); this fills their numbers from the same
+    engine counters the cache service's own view reads, bounded to the
+    handed-in rows.
+    """
+    prometheus_url = get_global_config().get_builtin_prometheus_url()
+    if not prometheus_url:
+        return ModelCacheMetricsPublic(
+            available=False,
+            reason=(
+                "The built-in Prometheus is not available (observability is "
+                "disabled or delegated to an external stack)"
+            ),
+            instances=attached,
+        )
+    if not attached:
+        return ModelCacheMetricsPublic(
+            available=True, window=window_seconds, instances=[]
+        )
+
+    owned = client is None
+    try:
+        if owned:
+            client = aiohttp.ClientSession()
+        await asyncio.wait_for(
+            _collect_attached(
+                client,
+                prometheus_url,
+                cluster_id,
+                attached,
+                window_seconds,
+                time.time(),
+            ),
+            timeout=_COLLECT_DEADLINE_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return ModelCacheMetricsPublic(
+            available=False,
+            reason="Prometheus queries timed out",
+            instances=attached,
+        )
+    except ValueError as e:
+        return ModelCacheMetricsPublic(
+            available=False, reason=str(e), instances=attached
+        )
+    except (aiohttp.ClientError, OSError) as e:
+        return ModelCacheMetricsPublic(
+            available=False,
+            reason=f"Prometheus is unreachable: {str(e) or e.__class__.__name__}",
+            instances=attached,
+        )
+    finally:
+        if owned and client is not None:
+            await client.close()
+    return ModelCacheMetricsPublic(
+        available=True, window=window_seconds, instances=attached
+    )
+
+
 async def collect_cache_service_metrics(
     metrics: Optional[CacheProviderMetrics],
     cache_service_id: int,
@@ -474,14 +541,21 @@ async def collect_cache_service_metrics(
                 step,
             )
             if cluster_id is not None:
-                result.attached = await _collect_attached(
-                    client,
-                    prometheus_url,
-                    cluster_id,
-                    attached or [],
-                    window_seconds,
-                    end,
-                )
+                try:
+                    result.attached = await _collect_attached(
+                        client,
+                        prometheus_url,
+                        cluster_id,
+                        attached or [],
+                        window_seconds,
+                        end,
+                    )
+                except ValueError as e:
+                    # The service's own numbers are already collected and
+                    # real; losing the per-deployment breakdown leaves
+                    # them worth serving, with its rows empty.
+                    logger.warning(f"Attached cache metrics query failed: {e}")
+                    result.attached = attached or []
 
         await asyncio.wait_for(_run(), timeout=_COLLECT_DEADLINE_SECONDS)
     # On 3.11+ asyncio.TimeoutError is TimeoutError, a subclass of

@@ -155,6 +155,7 @@ class Worker:
 
         self._cache_service_manager = CacheServiceManager(
             worker_id_getter=self.worker_id,
+            worker_ip_getter=self.worker_ip,
             clientset_getter=self.clientset,
             cfg=self._config,
         )

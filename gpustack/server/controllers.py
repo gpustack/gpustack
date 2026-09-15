@@ -73,8 +73,11 @@ from gpustack.schemas.cache_services import (
     CacheService,
     CacheServiceInstance,
     CacheServiceInstanceCreate,
-    CacheServiceModeEnum,
     CacheServiceStateEnum,
+)
+from gpustack.schemas.cache_providers import (
+    render_optional_template,
+    resolved_field_values,
 )
 from gpustack.server.cache_provider_catalog import get_cache_provider
 from gpustack.server.cache_services import resolve_instance_cache_config_safe
@@ -365,12 +368,35 @@ class ModelInstanceController:
             )
 
 
+def _component_replica_count(
+    spec, provider, config_fields: Optional[Dict[str, Any]]
+) -> int:
+    """The component's replica count: its declared one unless a managed
+    field sizes it (a value below one, or one that is not a number at
+    all, keeps the declaration). The sizing field resolves through its
+    visibility gate, so a count offered only with a feature falls back to
+    the gated default while the feature is off."""
+    count = spec.replicas if spec else 1
+    if spec is None or not spec.replicas_by:
+        return count
+    resolved = resolved_field_values(
+        provider.fields if provider else [], config_fields or {}
+    )
+    configured = resolved.get(spec.replicas_by)
+    try:
+        if configured is not None and int(configured) >= 1:
+            count = int(configured)
+    except (TypeError, ValueError):
+        pass
+    return count
+
+
 class CacheServiceController:
     """
     Reconciles managed cache services onto their desired CacheServiceInstance
     set and aggregates instance states back onto the service row.
 
-    The provider declaration's topology dictates the desired set: singleton
+    The provider declaration's topology dictates the desired set: replicas
     services run exactly one instance on the user-picked worker; per_node
     services run one instance per non-deleted worker of the service's cluster
     (narrowed to workers matching the service's worker_selector labels when
@@ -384,6 +410,18 @@ class CacheServiceController:
 
     def __init__(self, cfg: Config):
         self._config = cfg
+        # Four drivers reconcile the same service — its own events, worker
+        # events, instance events and the periodic pass — and each reads
+        # the instance rows before deciding what is missing. Without a
+        # turn each, two of them observe the same gap and both fill it.
+        self._service_locks: Dict[int, asyncio.Lock] = {}
+
+    def _service_lock(self, cache_service_id: int) -> asyncio.Lock:
+        lock = self._service_locks.get(cache_service_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._service_locks[cache_service_id] = lock
+        return lock
 
     async def start(self):
         """
@@ -403,10 +441,7 @@ class CacheServiceController:
                 # ON DELETE CASCADE drops the rows with it.
                 continue
             cache_service: CacheService = event.data
-            if (
-                cache_service is None
-                or cache_service.mode != CacheServiceModeEnum.MANAGED
-            ):
+            if cache_service is None:
                 continue
             await self._reconcile_service_by_id(cache_service.id)
 
@@ -456,11 +491,7 @@ class CacheServiceController:
                     service = await CacheService.one_by_id(
                         session, instance.cache_service_id
                     )
-                    if (
-                        service is None
-                        or service.deleted_at is not None
-                        or service.mode != CacheServiceModeEnum.MANAGED
-                    ):
+                    if service is None or service.deleted_at is not None:
                         continue
                     if event.type == EventType.DELETED:
                         # A deleted instance whose worker is still in the
@@ -475,6 +506,19 @@ class CacheServiceController:
                     else:
                         await self._sync_service_aggregate(session, service)
                         changed = set(event.changed_fields or {})
+                        # A component turning RUNNING may unblock a
+                        # dependent component's creation (the stores
+                        # wait for the master's address), so state flips
+                        # re-run the reconcile for multi-component
+                        # providers.
+                        if "state" in changed:
+                            provider = get_cache_provider(service.provider_name)
+                            if provider and provider.components:
+                                # through the id, which is where the
+                                # per-service turn is taken: reconciling
+                                # here directly is one of the four
+                                # drivers the lock exists for
+                                await self._reconcile_service_by_id(service.id)
                         # Both directions matter: turning RUNNING attaches
                         # waiting engines, leaving RUNNING (or moving
                         # ports) invalidates attached ones.
@@ -615,7 +659,7 @@ class CacheServiceController:
                 async with async_session() as session:
                     services = await CacheService.all_by_fields(
                         session,
-                        fields={"mode": CacheServiceModeEnum.MANAGED},
+                        fields={},
                         extra_conditions=[CacheService.deleted_at.is_(None)],
                     )
                 for service in services:
@@ -635,10 +679,7 @@ class CacheServiceController:
             async with async_session() as session:
                 services = await CacheService.all_by_fields(
                     session,
-                    fields={
-                        "mode": CacheServiceModeEnum.MANAGED,
-                        "cluster_id": cluster_id,
-                    },
+                    fields={"cluster_id": cluster_id},
                     extra_conditions=[CacheService.deleted_at.is_(None)],
                 )
             for service in services:
@@ -650,23 +691,33 @@ class CacheServiceController:
 
     async def _reconcile_service_by_id(self, cache_service_id: int):
         try:
-            async with async_session() as session:
-                service = await CacheService.one_by_id(session, cache_service_id)
-                if (
-                    service is None
-                    or service.deleted_at is not None
-                    or service.mode != CacheServiceModeEnum.MANAGED
-                ):
-                    return
-                await self._reconcile_service(session, service)
+            async with self._service_lock(cache_service_id):
+                async with async_session() as session:
+                    service = await CacheService.one_by_id(session, cache_service_id)
+                    if service is None or service.deleted_at is not None:
+                        # The lock stays: dropping it here, while holding
+                        # it, hands a waiter a lock no later caller will
+                        # look up — two reconciles for one service could
+                        # then run at once. Ids are never reused, so what
+                        # is left behind is one lock per service seen.
+                        return
+                    await self._reconcile_service(session, service)
         except Exception as e:
             logger.error(f"Failed to reconcile cache service {cache_service_id}: {e}")
 
     async def _reconcile_service(self, session: AsyncSession, service: CacheService):
-        """Drive the service's instance rows to the desired worker set,
-        then refresh the service-level aggregate state."""
-        desired_worker_ids, error_message, reconcile = await self._desired_worker_ids(
-            session, service
+        """Drive the service's instance rows to the desired per-component
+        worker sets, then refresh the service-level aggregate state. A
+        component depending on another (stores needing the master's
+        address) only gets instances once a dependency instance is
+        RUNNING with its port known; the dependency's RUNNING event
+        re-runs this reconcile, so the gate converges without polling."""
+        provider = get_cache_provider(service.provider_name)
+        instances = await CacheServiceInstance.all_by_fields(
+            session, {"cache_service_id": service.id}
+        )
+        desired_by_component, error_message, reconcile = (
+            await self._desired_component_workers(session, service, instances)
         )
         if error_message is not None and not reconcile:
             await self._set_service_state(
@@ -678,43 +729,106 @@ class CacheServiceController:
             )
             return
 
-        instances = await CacheServiceInstance.all_by_fields(
-            session, {"cache_service_id": service.id}
+        # Dependency addresses stamp into dependent instances at creation
+        # (the running process bakes them into its config), so they are
+        # resolved once per pass: the dependency's RUNNING instance plus
+        # its worker's IP.
+        config_fields = service.config.fields if service.config else None
+        addresses = await self._component_addresses(
+            session, provider, instances, config_fields
         )
-        existing_worker_ids = set()
+
+        surviving: List[CacheServiceInstance] = []
+        # How many rows of each (component, worker) pair the desired
+        # layout still has room for; a replica beyond that count is
+        # surplus (the count dropped, or the pool moved elsewhere).
+        room: Dict[Tuple[str, int], int] = {
+            (component, worker_id): replicas
+            for component, layout in desired_by_component.items()
+            for worker_id, replicas in layout.items()
+        }
         for instance in instances:
-            if instance.worker_id not in desired_worker_ids:
+            component = instance.component or ""
+            spec = provider.get_component(component) if provider else None
+            stale_address = False
+            if spec is not None and spec.depends_on:
+                expected = {
+                    name: address
+                    for name, address in addresses.items()
+                    if name == spec.depends_on
+                }
+                stale_address = bool(expected) and (
+                    (instance.component_addresses or {}) != expected
+                )
+            key = (component, instance.worker_id)
+            surplus = room.get(key, 0) <= 0
+            if surplus or stale_address:
                 await instance.delete(session)
+                reason = (
+                    "its dependency's address changed"
+                    if stale_address
+                    else (
+                        f"worker {instance.worker_id} holds no more replicas "
+                        f"of component '{component}'"
+                    )
+                )
                 logger.info(
                     f"Deleted instance {instance.id} of cache service "
-                    f"{service.name}: worker {instance.worker_id} left "
-                    "the desired set"
+                    f"{service.name}: {reason}"
                 )
             else:
-                existing_worker_ids.add(instance.worker_id)
+                surviving.append(instance)
+                room[key] -= 1
 
-        for worker_id in sorted(desired_worker_ids - existing_worker_ids):
-            # Same display-name convention as model instances: the parent's
-            # name (as of instance creation; a later service rename does not
-            # rename instances) plus a short random suffix.
-            name_suffix = ''.join(
-                random.choices(string.ascii_lowercase + string.digits, k=5)
-            )
-            await CacheServiceInstance.create(
-                session,
-                CacheServiceInstanceCreate(
-                    name=f"{service.name}-{name_suffix}",
-                    cache_service_id=service.id,
-                    worker_id=worker_id,
-                    cluster_id=service.cluster_id,
-                    state=CacheServiceStateEnum.PENDING,
-                    spec_digest=cache_service_spec_digest(service),
-                ),
-            )
-            logger.info(
-                f"Created instance of cache service {service.name} "
-                f"on worker {worker_id}"
-            )
+        for component, layout in desired_by_component.items():
+            spec = provider.get_component(component) if provider else None
+            instance_addresses: Optional[Dict[str, str]] = None
+            # A dependency turned off by its declared field is not something
+            # to wait for: it will never run, so the dependent stands on
+            # its own (stores need their master; LMCache's
+            # servers only need a coordinator once P2P is on).
+            if (
+                spec is not None
+                and spec.depends_on
+                and provider is not None
+                and provider.component_enabled(spec.depends_on, config_fields)
+            ):
+                if spec.depends_on not in addresses:
+                    # Converges on the dependency's RUNNING event.
+                    continue
+                instance_addresses = {spec.depends_on: addresses[spec.depends_on]}
+            # Whatever room the surviving rows left over is what to create.
+            missing = [
+                worker_id
+                for worker_id in sorted(layout)
+                for _ in range(room.get((component, worker_id), 0))
+            ]
+            for worker_id in missing:
+                # Same display-name convention as model instances: the
+                # parent's name (as of instance creation; a later service
+                # rename does not rename instances), the component role
+                # when there is one, and a short random suffix.
+                name_suffix = ''.join(
+                    random.choices(string.ascii_lowercase + string.digits, k=5)
+                )
+                name_role = f"-{component}" if component else ""
+                await CacheServiceInstance.create(
+                    session,
+                    CacheServiceInstanceCreate(
+                        name=f"{service.name}{name_role}-{name_suffix}",
+                        cache_service_id=service.id,
+                        worker_id=worker_id,
+                        cluster_id=service.cluster_id,
+                        component=component,
+                        component_addresses=instance_addresses,
+                        state=CacheServiceStateEnum.PENDING,
+                        spec_digest=cache_service_spec_digest(service),
+                    ),
+                )
+                logger.info(
+                    f"Created instance of cache service {service.name}"
+                    f"{name_role} on worker {worker_id}"
+                )
 
         if error_message is not None:
             await self._set_service_state(
@@ -727,57 +841,157 @@ class CacheServiceController:
             return
         await self._sync_service_aggregate(session, service)
 
-    async def _desired_worker_ids(
-        self, session: AsyncSession, service: CacheService
-    ) -> Tuple[Set[int], Optional[str], bool]:
-        """The workers the service should have instances on, an error
-        message when the desired set is unsatisfiable, and whether the
-        instance rows should still be reconciled onto that set. A per_node
-        selector matching nothing is an authoritative empty set — labels
-        change only by explicit edits, so the instances follow (the
-        selector can scale the service to zero) and the service parks in
-        ERROR to say why. A singleton service whose picked worker is gone
-        parks without touching its rows: the identity worker vanishing is
-        a fault, not a narrowing."""
-        provider = get_cache_provider(service.provider_name)
-        topology = provider.topology if provider else "singleton"
-        if topology == "per_node":
-            workers = await Worker.all_by_fields(
-                session,
-                fields={"cluster_id": service.cluster_id},
-                extra_conditions=[Worker.deleted_at.is_(None)],
+    async def _component_addresses(
+        self,
+        session: AsyncSession,
+        provider,
+        instances: List[CacheServiceInstance],
+        config_fields: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        """The address of every depended-on component that is up: the one
+        RUNNING instance's host:port, or the component's rendered
+        address_template where it declares one (an HA master pool is
+        reached through its coordination backend, not through whichever
+        replica answered first). A dependent still waits for an instance
+        to run either way — the pool has to exist before it is useful."""
+        if provider is None or not provider.components:
+            return {}
+        depended = {
+            spec.depends_on for spec in provider.components.values() if spec.depends_on
+        }
+        resolved_fields = resolved_field_values(provider.fields, config_fields or {})
+        addresses: Dict[str, str] = {}
+        for name in depended:
+            instance = next(
+                (
+                    candidate
+                    for candidate in instances
+                    if (candidate.component or "") == name
+                    and candidate.state == CacheServiceStateEnum.RUNNING
+                    and candidate.port
+                ),
+                None,
             )
-            if not workers:
-                return (
-                    set(),
-                    "Cluster has no active workers to run cache instances.",
-                    True,
-                )
-            selector = service.worker_selector
-            if selector:
-                workers = [
-                    worker
-                    for worker in workers
-                    if label_matching(selector, worker.labels or {})
-                ]
+            if instance is None:
+                continue
+            spec = provider.get_component(name)
+            templated = render_optional_template(
+                spec.address_template if spec else None, resolved_fields
+            )
+            if templated:
+                addresses[name] = templated
+                continue
+            worker = await Worker.one_by_id(session, instance.worker_id)
+            if worker is None or not worker.ip:
+                continue
+            addresses[name] = f"{worker.ip}:{instance.port}"
+        return addresses
+
+    async def _desired_component_workers(
+        self,
+        session: AsyncSession,
+        service: CacheService,
+        instances: List[CacheServiceInstance],
+    ) -> Tuple[Dict[str, Dict[int, int]], Optional[str], bool]:
+        """How many instances each provider component should have on each
+        worker ("" keys the sole component of single-component
+        providers), an error message when a desired layout is
+        unsatisfiable, and whether the instance rows should still be
+        reconciled. A per_node selector matching nothing is
+        an authoritative empty layout — labels change only by explicit
+        edits, so the instances follow (the selector can scale the
+        service to zero) and the service parks in ERROR to say why. A
+        replicas component is scheduler-placed: an explicit service
+        worker_id pins one replica, the rest stay sticky to where they
+        already run and spread over the matching workers by lowest id,
+        one per worker — a cluster smaller than the replica count runs
+        what fits rather than stacking two on a node. A pinned worker
+        vanishing is a fault that parks the service without touching its
+        rows (the user chose it); an auto-placed replica just moves (pool
+        reset — the provider self-heals by remounting)."""
+        provider = get_cache_provider(service.provider_name)
+        layouts = provider.component_layouts() if provider else {"": "replicas"}
+        multi_component = bool(provider and provider.components)
+
+        workers = await Worker.all_by_fields(
+            session,
+            fields={"cluster_id": service.cluster_id},
+            extra_conditions=[Worker.deleted_at.is_(None)],
+        )
+        selector = service.worker_selector
+        matching = [
+            worker
+            for worker in workers
+            if not selector or label_matching(selector, worker.labels or {})
+        ]
+        matching_ids = {worker.id for worker in matching}
+
+        config_fields = service.config.fields if service.config else None
+        desired: Dict[str, Dict[int, int]] = {}
+        for component, topology in layouts.items():
+            # A component turned off by its declared field keeps no
+            # instances: its desired set is empty, and the diff below
+            # deletes any leftovers from before the toggle.
+            if provider and not provider.component_enabled(component, config_fields):
+                desired[component] = {}
+                continue
+            if topology == "per_node":
                 if not workers:
                     return (
-                        set(),
+                        {},
+                        "Cluster has no active workers to run cache instances.",
+                        True,
+                    )
+                if not matching:
+                    return (
+                        {},
                         f"No workers match the worker selector: {selector}.",
                         True,
                     )
-            return {worker.id for worker in workers}, None, True
+                desired[component] = {worker_id: 1 for worker_id in matching_ids}
+                continue
 
-        if not service.worker_id:
-            return set(), "No worker assigned.", False
-        worker = await Worker.one_by_id(session, service.worker_id)
-        if (
-            worker is None
-            or worker.deleted_at is not None
-            or worker.cluster_id != service.cluster_id
-        ):
-            return set(), "Assigned worker no longer exists.", False
-        return {service.worker_id}, None, True
+            spec = provider.get_component(component) if provider else None
+            count = _component_replica_count(spec, provider, config_fields)
+
+            pinned: Set[int] = set()
+            if service.worker_id:
+                if service.worker_id in matching_ids:
+                    pinned = {service.worker_id}
+                elif not multi_component:
+                    # The user chose this worker; its vanishing is a
+                    # fault, not a narrowing.
+                    return {}, "Assigned worker no longer exists.", False
+
+            if not matching_ids:
+                label = component or "cache"
+                return (
+                    {},
+                    f"No workers available to place the '{label}' component.",
+                    True,
+                )
+
+            current: Dict[int, int] = {}
+            for instance in instances:
+                if (instance.component or "") != component:
+                    continue
+                if instance.worker_id in matching_ids:
+                    current[instance.worker_id] = current.get(instance.worker_id, 0) + 1
+
+            # Sticky workers first (a moved replica resets its share of
+            # the pool), then the rest by id. One replica per worker: a
+            # component's instances share whatever the node holds for it
+            # — a data directory, a device — so two of them on one worker
+            # would collide over it. A cluster smaller than the replica
+            # count therefore runs what fits rather than stacking the
+            # remainder; the form warns before it comes to that.
+            rotation = (
+                sorted(pinned)
+                + sorted(set(current) - pinned)
+                + sorted(matching_ids - pinned - set(current))
+            )
+            desired[component] = {worker_id: 1 for worker_id in rotation[:count]}
+        return desired, None, True
 
     async def _sync_service_aggregate(
         self, session: AsyncSession, service: CacheService
@@ -789,6 +1003,31 @@ class CacheServiceController:
         instances = await CacheServiceInstance.all_by_fields(
             session, {"cache_service_id": service.id}
         )
+
+        provider = get_cache_provider(service.provider_name)
+        config_fields = service.config.fields if service.config else None
+        components = (
+            [
+                name
+                for name in provider.components
+                if provider.component_enabled(name, config_fields)
+            ]
+            if provider
+            else []
+        )
+        if provider and provider.components:
+            # A component turned off still has its rows until the next
+            # reconcile deletes them, and this aggregate also runs straight off
+            # an instance event. Counting them would let an intentionally
+            # disabled component's leftovers park the service in ERROR, or hold
+            # it unhealthy for a container that is on its way out.
+            enabled = set(components)
+            instances = [
+                instance
+                for instance in instances
+                if (instance.component or "") in enabled
+            ]
+
         total = len(instances)
         running = sum(
             1
@@ -801,8 +1040,68 @@ class CacheServiceController:
         pending = any(
             instance.state == CacheServiceStateEnum.PENDING for instance in instances
         )
-
-        if total and running == total:
+        if components:
+            # Multi-component service: available means every component
+            # has at least one RUNNING instance (a distributed pool serves
+            # with the master and any store up); healthy means all of
+            # them are. A component with no rows yet (its creation gated
+            # on a dependency) reads as pending, not as a fault.
+            tallies = {name: [0, 0] for name in components}
+            for instance in instances:
+                tally = tallies[instance.component or ""]
+                tally[1] += 1
+                if instance.state == CacheServiceStateEnum.RUNNING:
+                    tally[0] += 1
+            breakdown = " · ".join(
+                f"{name} {tally[0]}/{tally[1]}" for name, tally in tallies.items()
+            )
+            # A component takes one worker per replica, so a cluster with
+            # fewer matching workers than replicas runs a smaller pool.
+            # It serves, and says so: a count that silently stops short
+            # of what was asked for reads as the pool being at size.
+            short = " · ".join(
+                f"{name} {tallies[name][1]}/{requested}"
+                for name, requested in (
+                    (
+                        name,
+                        _component_replica_count(
+                            provider.get_component(name), provider, config_fields
+                        ),
+                    )
+                    for name in components
+                )
+                if provider.component_layouts().get(name) != "per_node"
+                and tallies[name][1] < requested
+            )
+            if all(tally[0] > 0 for tally in tallies.values()):
+                healthy_all = running == total
+                state, healthy, message = (
+                    CacheServiceStateEnum.RUNNING,
+                    healthy_all,
+                    (
+                        f"Fewer workers than replicas: {short}"
+                        if short
+                        else None if healthy_all else breakdown
+                    ),
+                )
+            elif starting:
+                state, healthy, message = CacheServiceStateEnum.STARTING, None, None
+            elif (
+                pending or any(tally[1] == 0 for tally in tallies.values())
+            ) and not any(
+                instance.state == CacheServiceStateEnum.ERROR for instance in instances
+            ):
+                # A component still without rows is waiting on the one it
+                # depends on — unless that one failed, which is a fault to
+                # report rather than a wait to keep showing.
+                state, healthy, message = CacheServiceStateEnum.PENDING, None, None
+            else:
+                state, healthy, message = (
+                    CacheServiceStateEnum.ERROR,
+                    False,
+                    breakdown if total else "no instances running",
+                )
+        elif total and running == total:
             state, healthy, message = CacheServiceStateEnum.RUNNING, True, None
         elif running:
             state, healthy, message = (

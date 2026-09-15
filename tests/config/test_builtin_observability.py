@@ -112,9 +112,12 @@ def test_cache_service_dashboard_json_matches_route_contract(tmp_path):
 
 
 def test_provider_dashboard_json_matches_declaration():
-    """Every provider declaring a dashboard_uid must ship a provisioned
-    dashboard JSON with that uid and the template variables the redirect
-    query string sets."""
+    """A provider dashboard and the declaration pointing at it ship
+    together. A declared uid with no dashboard is a dead link from the
+    service page; a dashboard no provider claims is dead weight — what a
+    provider moving to a package of its own leaves behind. Neither side
+    is checked by the other's absence, so both are."""
+    from gpustack.config.config import Config
     from gpustack.server.cache_provider_catalog import load_cache_providers
 
     dashboards_dir = (
@@ -129,13 +132,35 @@ def test_provider_dashboard_json_matches_declaration():
             dashboard = json.load(f)
         dashboards_by_uid[dashboard["uid"]] = dashboard
 
-    declared = [p for p in load_cache_providers(reload=True) if p.dashboard_uid]
-    assert declared, "XSKY MeshFusion declares a provider dashboard"
-    for provider in declared:
-        dashboard = dashboards_by_uid.get(provider.dashboard_uid)
+    declared = {
+        provider.dashboard_uid: provider.name
+        for provider in load_cache_providers(reload=True)
+        if provider.dashboard_uid
+    }
+    for uid, name in declared.items():
+        dashboard = dashboards_by_uid.get(uid)
         assert dashboard is not None, (
-            f"provider '{provider.name}' declares dashboard_uid "
-            f"'{provider.dashboard_uid}' but no dashboard JSON ships with it"
+            f"provider '{name}' declares dashboard_uid '{uid}' but no "
+            "dashboard JSON ships with it"
         )
         var_names = [var["name"] for var in dashboard["templating"]["list"]]
         assert var_names[:2] == ["cluster_name", "cache_service_name"]
+
+    # The platform's own dashboards answer to the config defaults rather
+    # than to a provider; a gpustack-prefixed one that neither claims is
+    # a leftover.
+    fields = Config.model_fields
+    platform = {
+        fields[name].default
+        for name in (
+            "grafana_worker_dashboard_uid",
+            "grafana_model_dashboard_uid",
+            "grafana_cache_service_dashboard_uid",
+        )
+    }
+    orphans = sorted(
+        uid
+        for uid in dashboards_by_uid
+        if uid.startswith("gpustack-") and uid not in platform and uid not in declared
+    )
+    assert not orphans, f"dashboards no provider declares: {orphans}"

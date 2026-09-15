@@ -15,9 +15,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gpustack.api.exceptions import BadRequestException, ForbiddenException
+from gpustack.api.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import cache_services as cache_services_route
+from gpustack.routes import models as models_route
 from gpustack.schemas.cache_providers import (
     CacheProviderMetrics,
     CacheProviderMetricValue,
@@ -29,6 +34,7 @@ from gpustack.server.cache_service_metrics import (
     build_aggregate_query,
     build_metric_query,
     collect_cache_service_metrics,
+    collect_model_cache_metrics,
     parse_window,
 )
 
@@ -609,3 +615,180 @@ async def test_collect_attached_engine_hit_accounting(monkeypatch):
         assert "_total{" in query
         assert 'cluster_id="1"' in query
         assert 'model_id=~"3|4"' in query
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_reads_the_same_accounting(monkeypatch):
+    """The deployment-side view fills the same engine counters, scoped to
+    one model's instances."""
+    payload = {
+        "status": "success",
+        "data": {
+            "result": [
+                {"metric": {"model_instance_name": "qwen-abc12"}, "value": [1000, "60"]}
+            ]
+        },
+    }
+    client = _FakeHTTPClient(payload)
+    _patch_prometheus(monkeypatch, client)
+
+    attached = [
+        CacheServiceAttachedMetrics(
+            model_id=3, model_name="qwen", model_instance_name="qwen-abc12"
+        ),
+        CacheServiceAttachedMetrics(
+            model_id=3, model_name="qwen", model_instance_name="qwen-def34"
+        ),
+    ]
+    result = await collect_model_cache_metrics(1, attached, 3600)
+
+    assert result.available is True
+    assert result.window == 3600
+    assert result.instances[0].hit_rate == 1.0
+    # an instance the counters never named keeps its row, empty
+    assert result.instances[1].hit_rate is None
+    for _, params in client.requests:
+        assert 'cluster_id="1"' in params["query"]
+        assert 'model_id=~"3"' in params["query"]
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_without_observability(monkeypatch):
+    monkeypatch.setattr(
+        metrics_module,
+        "get_global_config",
+        lambda: SimpleNamespace(get_builtin_prometheus_url=lambda: None),
+    )
+    result = await collect_model_cache_metrics(
+        1, [CacheServiceAttachedMetrics(model_id=3)], 3600
+    )
+    assert result.available is False
+    assert "Prometheus" in result.reason
+    # the rows the caller enumerated survive the missing numbers
+    assert len(result.instances) == 1
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_endpoint_follows_deployment_visibility(monkeypatch):
+    """Reading what the shared cache does for one's own deployment is
+    gated on the deployment, not on the cache service's owner-only
+    telemetry; a deployment that uses no shared cache says so instead of
+    querying."""
+    instances = [SimpleNamespace(name="qwen-abc12", worker_name="worker-1")]
+    shared = SimpleNamespace(
+        id=3,
+        name="qwen",
+        cluster_id=1,
+        owner_principal_id=ORG_PRINCIPAL,
+        deleted_at=None,
+        instances=instances,
+        extended_kv_cache=SimpleNamespace(is_shared=lambda: True),
+    )
+    collected = AsyncMock(
+        return_value=metrics_module.ModelCacheMetricsPublic(available=True)
+    )
+    monkeypatch.setattr(models_route, "collect_model_cache_metrics", collected)
+    with patch(
+        "gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=shared)
+    ):
+        result = await models_route.get_model_cache_metrics(
+            request=_request(),
+            session=MagicMock(),
+            ctx=_ctx(org_role=OrgRole.MEMBER),
+            id=3,
+        )
+    assert result.available is True
+    assert collected.await_args.args[0] == 1
+    assert collected.await_args.args[1][0].model_instance_name == "qwen-abc12"
+
+    local = SimpleNamespace(
+        id=4,
+        name="glm",
+        cluster_id=1,
+        owner_principal_id=ORG_PRINCIPAL,
+        deleted_at=None,
+        instances=[],
+        extended_kv_cache=SimpleNamespace(is_shared=lambda: False),
+    )
+    with patch("gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=local)):
+        result = await models_route.get_model_cache_metrics(
+            request=_request(),
+            session=MagicMock(),
+            ctx=_ctx(org_role=OrgRole.MEMBER),
+            id=4,
+        )
+    assert result.available is False
+    assert "shared cache service" in result.reason
+    assert collected.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_route_gates_on_the_deployment(monkeypatch):
+    """The route reads a deployment's own hit accounting, so it answers
+    to the deployment's visibility: another Org's model is not found, not
+    merely empty. A caller reading its own deployment is not reading the
+    cache service's telemetry, which stays the service owner's."""
+    model = SimpleNamespace(
+        id=7,
+        name="qwen",
+        cluster_id=1,
+        owner_principal_id=999,
+        instances=[],
+        extended_kv_cache=None,
+    )
+    monkeypatch.setattr(models_route.Model, "one_by_id", AsyncMock(return_value=model))
+
+    with pytest.raises(NotFoundException):
+        await models_route.get_model_cache_metrics(
+            request=MagicMock(), session=MagicMock(), ctx=_ctx(OrgRole.MEMBER), id=7
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_route_rejects_an_unparsable_window(monkeypatch):
+    model = SimpleNamespace(
+        id=7,
+        name="qwen",
+        cluster_id=1,
+        owner_principal_id=None,
+        instances=[],
+        extended_kv_cache=None,
+    )
+    monkeypatch.setattr(models_route.Model, "one_by_id", AsyncMock(return_value=model))
+
+    with pytest.raises(BadRequestException):
+        await models_route.get_model_cache_metrics(
+            request=MagicMock(),
+            session=MagicMock(),
+            ctx=_ctx(is_platform_admin=True),
+            id=7,
+            window="last tuesday",
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_route_says_when_there_is_no_shared_cache(
+    monkeypatch,
+):
+    """A deployment that attaches no cache service has nothing to read:
+    the view says so rather than returning an empty-but-available one,
+    which would read as a cache that never hits."""
+    model = SimpleNamespace(
+        id=7,
+        name="qwen",
+        cluster_id=1,
+        owner_principal_id=None,
+        instances=[],
+        extended_kv_cache=None,
+    )
+    monkeypatch.setattr(models_route.Model, "one_by_id", AsyncMock(return_value=model))
+
+    result = await models_route.get_model_cache_metrics(
+        request=MagicMock(),
+        session=MagicMock(),
+        ctx=_ctx(is_platform_admin=True),
+        id=7,
+    )
+
+    assert result.available is False
+    assert "shared cache" in result.reason

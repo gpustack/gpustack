@@ -8,15 +8,12 @@ import pytest
 from gpustack.exporter.exporter import MetricExporter, _metrics_targets
 from gpustack.schemas.cache_providers import (
     CacheProvider,
-    CacheProviderExternalField,
     CacheProviderL2Backend,
     CacheProviderL2Field,
 )
 from gpustack.schemas.cache_services import (
     CacheServiceConfig,
-    CacheServiceEndpoint,
     CacheServiceL2Storage,
-    CacheServiceModeEnum,
     CacheServiceStateEnum,
 )
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
@@ -331,7 +328,6 @@ def _cache_service(**overrides):
         name="shared-lmcache",
         provider_name="LMCache",
         provider_version=None,
-        mode=CacheServiceModeEnum.MANAGED,
         state=CacheServiceStateEnum.RUNNING,
         cluster_id=1,
         worker_id=2,
@@ -347,8 +343,11 @@ def _instance(**overrides):
         id=31,
         cache_service_id=3,
         worker_id=2,
+        # LMCache's cache servers are its "server" component, the one
+        # that declares it serves the metrics.
+        component="server",
         state=CacheServiceStateEnum.RUNNING,
-        metrics_port=40011,
+        ports={"port": 40010, "metrics": 40011},
     )
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -431,8 +430,8 @@ async def test_managed_cache_service_emits_group_per_instance(monkeypatch):
         _worker(id=3, name="node-b", advertise_address="10.0.0.6"),
     ]
     instances = [
-        _instance(id=31, worker_id=2, metrics_port=40011),
-        _instance(id=32, worker_id=3, metrics_port=40021),
+        _instance(id=31, worker_id=2, ports={"metrics": 40011}),
+        _instance(id=32, worker_id=3, ports={"metrics": 40021}),
     ]
     _patch_target_sources(
         monkeypatch, workers=workers, services=[_cache_service()], instances=instances
@@ -472,8 +471,8 @@ async def test_managed_cache_service_instance_follows_its_workers_proxy_split(
         ),
     ]
     instances = [
-        _instance(id=31, worker_id=2, metrics_port=40011),
-        _instance(id=32, worker_id=3, metrics_port=40021),
+        _instance(id=31, worker_id=2, ports={"metrics": 40011}),
+        _instance(id=32, worker_id=3, ports={"metrics": 40021}),
     ]
     _patch_target_sources(
         monkeypatch, workers=workers, services=[_cache_service()], instances=instances
@@ -492,68 +491,14 @@ async def test_managed_cache_service_instance_follows_its_workers_proxy_split(
 
 
 @pytest.mark.asyncio
-async def test_external_cache_service_with_metrics_url(monkeypatch):
-    service = _cache_service(
-        mode=CacheServiceModeEnum.EXTERNAL,
-        worker_id=None,
-        metrics_port=None,
-        endpoint=CacheServiceEndpoint(
-            host="cache.example.com",
-            port=8100,
-            metrics_url="http://cache.example.com:9500/custom/metrics",
-        ),
-    )
-    _patch_target_sources(monkeypatch, workers=[], services=[service])
-
-    targets = await _metrics_targets(session=SimpleNamespace(), is_proxy=False)
-
-    (group,) = _cache_groups(targets)
-    assert group["targets"] == ["cache.example.com:9500"]
-    assert group["labels"]["__metrics_path__"] == "/custom/metrics"
-
-    # External services are reached from the server network directly.
-    proxy_targets = await _metrics_targets(session=SimpleNamespace(), is_proxy=True)
-    assert _cache_groups(proxy_targets) == []
-
-
-@pytest.mark.asyncio
-async def test_external_cache_service_with_host_and_metrics_port(monkeypatch):
-    service = _cache_service(
-        mode=CacheServiceModeEnum.EXTERNAL,
-        worker_id=None,
-        metrics_port=None,
-        endpoint=CacheServiceEndpoint(
-            host="cache.internal", port=8100, metrics_port=9500
-        ),
-    )
-    _patch_target_sources(monkeypatch, workers=[], services=[service])
-
-    targets = await _metrics_targets(session=SimpleNamespace(), is_proxy=False)
-
-    (group,) = _cache_groups(targets)
-    assert group["targets"] == ["cache.internal:9500"]
-    # The provider's declared path is the Prometheus default, so no
-    # __metrics_path__ override is emitted.
-    assert "__metrics_path__" not in group["labels"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "service",
-    [
-        # Provider unknown to the catalog declares no metrics.
-        _cache_service(provider_name="NoSuchProvider"),
-        # External without any registered metrics endpoint.
-        _cache_service(
-            mode=CacheServiceModeEnum.EXTERNAL,
-            worker_id=None,
-            endpoint=CacheServiceEndpoint(host="cache.internal", port=8100),
-        ),
-    ],
-)
-async def test_uncollectable_cache_services_are_excluded(monkeypatch, service):
+async def test_uncollectable_cache_services_are_excluded(monkeypatch):
+    """A provider the catalog does not know declares no metrics, so its
+    service is not a scrape target."""
     _patch_target_sources(
-        monkeypatch, workers=[_worker()], services=[service], instances=[_instance()]
+        monkeypatch,
+        workers=[_worker()],
+        services=[_cache_service(provider_name="NoSuchProvider")],
+        instances=[_instance()],
     )
 
     for is_proxy in (False, True):
@@ -652,55 +597,12 @@ async def test_l2_metrics_target_accepts_full_url(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("field_value", "expected_targets"),
-    [
-        ("10.1.1.5:9100", [["10.1.1.5:9100"]]),
-        # A blank value yields no target rather than a broken one.
-        ("   ", []),
-        # Prometheus cannot scrape non-HTTP schemes; drop them.
-        ("redis://10.1.1.5:6379", []),
-    ],
-)
-async def test_external_fields_metrics_target_field(
-    monkeypatch, field_value, expected_targets
-):
-    """An external_fields field flagged metrics_target adds a scrape
-    target even when the provider declares no engine metrics of its own."""
-    provider = CacheProvider(
-        name="StubCache",
-        supported_modes=["external"],
-        external_fields=[
-            CacheProviderExternalField(name="metrics_endpoint", metrics_target=True)
-        ],
-    )
-    monkeypatch.setattr(
-        "gpustack.exporter.exporter.get_cache_provider", lambda name: provider
-    )
-    service = _cache_service(
-        provider_name="StubCache",
-        mode=CacheServiceModeEnum.EXTERNAL,
-        worker_id=None,
-        endpoint=CacheServiceEndpoint(
-            host="cache.internal",
-            port=8100,
-            params={"metrics_endpoint": field_value},
-        ),
-    )
-    _patch_target_sources(monkeypatch, workers=[], services=[service])
-
-    targets = await _metrics_targets(session=SimpleNamespace(), is_proxy=False)
-
-    assert [group["targets"] for group in _cache_groups(targets)] == expected_targets
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
     "instances",
     [
         # No running instances, nothing to scrape.
         [],
         # Instance without an allocated metrics port cannot be scraped.
-        [_instance(metrics_port=None)],
+        [_instance(ports={})],
         # Instance whose worker is gone has no scrape address.
         [_instance(worker_id=99)],
     ],

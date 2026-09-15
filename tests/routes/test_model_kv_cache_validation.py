@@ -65,6 +65,7 @@ def _patch_lookups(
     )
     provider = CacheProvider(
         name="LMCache",
+        custom_version=True,
         inference_backend_integrations=[
             CacheProviderIntegration(
                 backend=b, frameworks=frameworks, versions=versions

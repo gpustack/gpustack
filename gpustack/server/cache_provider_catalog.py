@@ -15,19 +15,64 @@ logger = logging.getLogger(__name__)
 
 _cache_providers: Optional[List[CacheProvider]] = None
 
+BUNDLED_CATALOG_ASSET = ("gpustack.assets", "cache-providers.yaml")
+
+
+def _catalog_assets() -> List[Tuple[str, str]]:
+    """(package, resource) of every catalog asset to read, in precedence
+    order: the bundled one, then what each installed plugin ships."""
+    from gpustack.extension import iter_plugin_classes
+
+    assets = [BUNDLED_CATALOG_ASSET]
+    for name, plugin_class in iter_plugin_classes():
+        try:
+            assets.extend(plugin_class.cache_provider_assets() or [])
+        except Exception:
+            logger.warning(
+                f"Failed to read cache provider assets from plugin '{name}'",
+                exc_info=True,
+            )
+    return assets
+
 
 def load_cache_providers(reload: bool = False) -> List[CacheProvider]:
     """
-    Load the declarative cache-provider catalog from the bundled asset.
-    The catalog is read-only and cached for the process lifetime.
+    Load the declarative cache-provider catalog from the bundled asset and
+    from every asset an installed plugin ships. The catalog is read-only
+    and cached for the process lifetime.
     """
     global _cache_providers
     if _cache_providers is not None and not reload:
         return _cache_providers
 
     providers: List[CacheProvider] = []
+    for package, resource in _catalog_assets():
+        providers = _merge(providers, _load_asset(package, resource))
+
+    _cache_providers = providers
+    return _cache_providers
+
+
+def _merge(
+    providers: List[CacheProvider], loaded: List[CacheProvider]
+) -> List[CacheProvider]:
+    """Fold a newly read asset into the catalog, a same-named declaration
+    replacing the one already there — in its place, so the catalog's order
+    is the order a user sees the cards in."""
+    # An asset naming one provider twice keeps its last declaration, the
+    # way a later asset replaces an earlier one's: one name, one card.
+    by_name = {provider.name.lower(): provider for provider in loaded}
+    merged = [by_name.pop(p.name.lower(), p) for p in providers]
+    merged.extend(
+        by_name.pop(p.name.lower()) for p in loaded if p.name.lower() in by_name
+    )
+    return merged
+
+
+def _load_asset(package: str, resource: str) -> List[CacheProvider]:
+    providers: List[CacheProvider] = []
     try:
-        yaml_file = files("gpustack.assets").joinpath("cache-providers.yaml")
+        yaml_file = files(package).joinpath(resource)
         if yaml_file.is_file():
             raw = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
             for index, entry in enumerate(raw or []):
@@ -56,12 +101,11 @@ def load_cache_providers(reload: bool = False) -> List[CacheProvider]:
                     continue
                 providers.append(provider)
         else:
-            logger.warning("cache-providers.yaml not found, catalog is empty")
+            logger.warning(f"Cache provider asset {package}/{resource} not found")
     except Exception as e:
-        logger.error(f"Failed to load cache providers: {e}")
+        logger.error(f"Failed to load cache providers from {package}/{resource}: {e}")
 
-    _cache_providers = providers
-    return _cache_providers
+    return providers
 
 
 def get_cache_providers() -> List[CacheProvider]:
@@ -106,23 +150,10 @@ def render_injection(
     # Every declared field backstops its placeholder — an unresolved
     # {{name}} would render literally and corrupt file contents. A field
     # without a default backfills as "" (an optional field the user left
-    # empty, e.g. Mooncake's device_name on TCP), matching the managed
-    # run-command path where None renders empty and drops with its flag.
-    # metrics_target values are scrape addresses, not connector config:
-    # by contract they never enter the injection namespace (they would
-    # otherwise ride into the rendered snapshot on the model instance).
-    scrape_only = {
-        field.name for field in provider.external_fields if field.metrics_target
-    }
-    for name in scrape_only:
-        params.pop(name, None)
-    for field in provider.external_fields:
-        if field.metrics_target:
-            continue
-        params.setdefault(
-            field.name, field.default if field.default is not None else ""
-        )
-    for field in provider.managed_fields:
+    # empty, e.g. a device name a TCP transport does not read), matching
+    # the managed run-command path where None renders empty and drops
+    # with its flag.
+    for field in provider.fields:
         params.setdefault(
             field.name, field.default if field.default is not None else ""
         )

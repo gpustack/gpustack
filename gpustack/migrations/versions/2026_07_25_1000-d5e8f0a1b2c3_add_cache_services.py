@@ -4,12 +4,10 @@ Introduces the shared KV cache service resource:
 
 1. New ``cache_services`` table. A cache service is an Org-scoped,
    cluster-scoped resource that model deployments attach to for shared
-   KV cache. ``mode`` distinguishes managed (cache server containers
-   run on cluster workers) from external (connection reference to a
-   cache system running outside GPUStack).
+   KV cache; the platform runs its cache servers on cluster workers.
 
 2. New ``cache_service_instances`` table: one row per cache server
-   container of a managed service. The provider's declared topology
+   container of a service. The provider's declared topology
    dictates the desired set (singleton: one instance on the user-picked
    worker; per_node: one instance per active worker of the cluster,
    narrowed by the service's ``worker_selector`` labels when set).
@@ -52,12 +50,10 @@ def upgrade() -> None:
         sa.Column(
             'provider_version', sqlmodel.sql.sqltypes.AutoString(), nullable=True
         ),
-        sa.Column('mode', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column('cluster_id', sa.Integer(), nullable=False),
         sa.Column('worker_id', sa.Integer(), nullable=True),
         sa.Column('worker_selector', sa.JSON(), nullable=True),
         sa.Column('config', sa.JSON(), nullable=True),
-        sa.Column('endpoint', sa.JSON(), nullable=True),
         sa.Column('state', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column('state_message', sa.Text(), nullable=True),
         sa.Column('healthy', sa.Boolean(), nullable=True),
@@ -87,8 +83,15 @@ def upgrade() -> None:
         sa.Column('cache_service_id', sa.Integer(), nullable=False),
         sa.Column('worker_id', sa.Integer(), nullable=False),
         sa.Column('cluster_id', sa.Integer(), nullable=False),
+        sa.Column(
+            'component',
+            sa.String(length=64),
+            nullable=False,
+            server_default='',
+        ),
+        sa.Column('component_addresses', sa.JSON(), nullable=True),
+        sa.Column('ports', sa.JSON(), nullable=True),
         sa.Column('port', sa.Integer(), nullable=True),
-        sa.Column('metrics_port', sa.Integer(), nullable=True),
         sa.Column('state', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column('state_message', sa.Text(), nullable=True),
         sa.Column('healthy', sa.Boolean(), nullable=True),
@@ -103,10 +106,14 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ['cache_service_id'], ['cache_services.id'], ondelete='CASCADE'
         ),
+        # A component places one instance per worker; the database says so
+        # too, so two reconcile passes racing over the same missing row
+        # cannot both create it.
         sa.UniqueConstraint(
             'cache_service_id',
+            'component',
             'worker_id',
-            name='uix_cache_service_instances_service_worker',
+            name='uix_cache_service_instances_component_per_worker',
         ),
     )
     op.create_index(
