@@ -30,6 +30,28 @@ body[data-md-color-scheme][data-md-color-primary] {
     --md-typeset-a-color: var(--gps-accent);
 }
 
+/* ── Logo ────────────────────────────────────────────
+   The header used to be a saturated blue block, so a single white mark
+   worked everywhere. Now that the light scheme has a white header, the
+   white mark would disappear into it — swap in the colour mark there.
+   Both files are shipped by partials/logo.html. */
+/* Material forces `display: block` on the logo image from several
+   places (.md-header__button.md-logo img, and again for the drawer's
+   .md-nav__button.md-logo img). Selector tweaks only won the header
+   and left the drawer rendering both marks side by side, so this is
+   one of the few spots where !important is the honest fix: exactly one
+   mark may be visible, and no theme rule should be able to override
+   that. */
+.md-logo img.gps-logo--dark {
+    display: none !important;
+}
+[data-md-color-scheme="slate"] .md-logo img.gps-logo--light {
+    display: none !important;
+}
+[data-md-color-scheme="slate"] .md-logo img.gps-logo--dark {
+    display: block !important;
+}
+
 /* ── Chrome ──────────────────────────────────────────
    Hairline separators instead of a shadow under a colour block. */
 .md-header {
