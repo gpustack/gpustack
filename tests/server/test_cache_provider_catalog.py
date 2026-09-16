@@ -992,7 +992,11 @@ def test_render_injection_substitutes_host_and_port():
     # attachments may negotiate CUDA IPC (auto), remote ones stay on
     # engine-driven copies since IPC handles cannot cross hosts.
     assert '"lmcache.mp.mp_transfer_mode":"auto"' in args[1]
-    assert args[2] == "--disable-hybrid-kv-cache-manager"
+    # Nothing in the injection touches the hybrid KV cache manager: the
+    # connector advertises hybrid support, and an engine told to disable it
+    # cannot start a model whose Mamba and full-attention layers need
+    # different cache specs.
+    assert not any("hybrid-kv-cache-manager" in arg for arg in args)
 
 
 def test_meshfusion_vllm_injection_includes_connector_module_path():
@@ -1055,13 +1059,9 @@ def test_kv_transfer_config_renders_structured_slot_with_types():
     assert extra["lmcache.mp.port"] == 9000
     assert isinstance(extra["lmcache.mp.port"], int)
     assert extra["lmcache.mp.mp_transfer_mode"] == "auto"
-    # Free-form args follow the slot: the non-hybrid manager requirement
-    # and the graceful-shutdown window (CUDA IPC teardown).
-    assert args[2:] == [
-        "--disable-hybrid-kv-cache-manager",
-        "--shutdown-timeout",
-        "20",
-    ]
+    # Free-form args follow the slot: the graceful-shutdown window that
+    # lets the engine tear its CUDA IPC handles down.
+    assert args[2:] == ["--shutdown-timeout", "20"]
 
 
 def test_render_injection_maps_node_local_locality_to_auto():

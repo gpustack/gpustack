@@ -358,10 +358,14 @@
   # excludes the flags GPUStack always renders from structured config.
   common_parameters:
     - --l2-adapter
-    # CLI-entry-only groups (coordinator / P2P), valid again now that the
-    # run command uses `lmcache server` instead of the module entry.
+    # CLI-entry-only groups (coordinator / P2P), which the `lmcache
+    # server` entry point accepts.
     - --coordinator-url
     - --p2p-advertise-url
+    # A hybrid model (Mamba or Gated-DeltaNet layers beside full
+    # attention) needs each attention window stored as its own object
+    # group, and the server keeps that off by default.
+    - --separate-object-groups
     - --max-workers
     - --max-gpu-workers
     - --max-cpu-workers
@@ -431,9 +435,14 @@
       l2_load: { histogram_avg: lmcache_mp_l2_load_throughput_GB_per_second }
   inference_backend_integrations:
     # The MP server speaks ZMQ: clients attach through the MP connector
-    # pointed at tcp://host:port (the server's --port), and the connector
-    # requires the non-hybrid KV cache manager. Engines attach node-local
-    # only (the per_node resolver degrades instead of crossing nodes:
+    # pointed at tcp://host:port (the server's --port). The connector
+    # advertises hybrid support, so vLLM keeps its hybrid KV cache manager
+    # on and none of the injected arguments touch it: forcing it off puts
+    # a hybrid model (Mamba or linear-attention layers beside full
+    # attention) on the unified-group path, where the two layer kinds have
+    # no common cache spec and the engine fails to start.
+    # Engines attach node-local only (the per_node resolver degrades
+    # instead of crossing nodes:
     # the engine-driven copy path measures slower than no cache at all),
     # so the placement fact always renders {{mp_transfer_mode}} "auto" —
     # the CUDA-IPC zero-copy path, both containers sharing the host IPC
@@ -466,7 +475,6 @@
             lmcache.mp.port: "{{port}}"
             lmcache.mp.mp_transfer_mode: "{{mp_transfer_mode}}"
         args:
-          - "--disable-hybrid-kv-cache-manager"
           # vLLM defaults --shutdown-timeout to 0: on SIGTERM the engine
           # dies without closing its CUDA IPC handles and the driver
           # keeps its KV VRAM charged to the cache server until the
@@ -664,10 +672,14 @@
           default: nixl
   common_parameters:
     - --l2-adapter
-    # CLI-entry-only groups (coordinator / P2P), valid again now that the
-    # run command uses `lmcache server` instead of the module entry.
+    # CLI-entry-only groups (coordinator / P2P), which the `lmcache
+    # server` entry point accepts.
     - --coordinator-url
     - --p2p-advertise-url
+    # A hybrid model (Mamba or Gated-DeltaNet layers beside full
+    # attention) needs each attention window stored as its own object
+    # group, and the server keeps that off by default.
+    - --separate-object-groups
     - --max-workers
     - --max-gpu-workers
     - --max-cpu-workers
