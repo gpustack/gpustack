@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gpustack.exporter.exporter import MetricExporter, _metrics_targets
+from gpustack.server.cache_provider_catalog import asset_providers
 from gpustack.schemas.cache_providers import (
     CacheProvider,
     CacheProviderL2Backend,
@@ -19,6 +20,28 @@ from gpustack.schemas.cache_services import (
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.schemas.workers import WorkerStateEnum
+
+
+def _fake_catalog(*providers):
+    """Stand in for the catalog read, which hits a table these tests have no
+    session for."""
+
+    async def catalog(_session):
+        return list(providers)
+
+    return catalog
+
+
+@pytest.fixture(autouse=True)
+def catalog_lookup(monkeypatch):
+    """The catalog is a table these tests have no session for; what an
+    installation carries is the packaged declarations, which is what it serves
+    with no document configured. Tests needing a specific one install it."""
+
+    async def catalog(_session):
+        return asset_providers()
+
+    monkeypatch.setattr("gpustack.exporter.exporter.get_cache_providers", catalog)
 
 
 def _sample_value(metrics, metric_name):
@@ -532,8 +555,8 @@ async def test_l2_metrics_target_field_adds_direct_scrape_target(monkeypatch):
     target group labeled with the backend, independent of the engine's
     per-instance targets."""
     monkeypatch.setattr(
-        "gpustack.exporter.exporter.get_cache_provider",
-        lambda name: _l2_metrics_provider(),
+        "gpustack.exporter.exporter.get_cache_providers",
+        _fake_catalog(_l2_metrics_provider()),
     )
     service = _cache_service(
         provider_name="StubCache",
@@ -568,8 +591,8 @@ async def test_l2_metrics_target_field_adds_direct_scrape_target(monkeypatch):
 @pytest.mark.asyncio
 async def test_l2_metrics_target_accepts_full_url(monkeypatch):
     monkeypatch.setattr(
-        "gpustack.exporter.exporter.get_cache_provider",
-        lambda name: _l2_metrics_provider(),
+        "gpustack.exporter.exporter.get_cache_providers",
+        _fake_catalog(_l2_metrics_provider()),
     )
     service = _cache_service(
         provider_name="StubCache",

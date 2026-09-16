@@ -1,19 +1,33 @@
+"""The cache-provider catalog: the declarations a cache service can run.
+
+The catalog is materialized into ``CacheProviderEntry`` by the leader, from the
+source rows an admin configures — the same shape the model catalog and the
+community backends already have. Readers query that table, so every server
+serves what was last written without any process state to keep in step.
+
+What stays here is the packaged side of it: reading the bundled asset and the
+ones installed plugins contribute, which is what the leader seeds the baseline
+row from and what an admin downloads to edit against.
+"""
+
 import logging
 from importlib.resources import files
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
+from sqlmodel.ext.asyncio.session import AsyncSession
 
+from gpustack.schemas.cache_provider_source import (
+    CacheProviderEntry,
+    dump_cache_providers,
+    load_cache_providers_document,
+    merge_cache_providers,
+)
 from gpustack.schemas.cache_providers import (
     CacheProvider,
     render_injection as _render_injection,
-    validate_injection_templates,
-    validate_localized_text,
 )
 
 logger = logging.getLogger(__name__)
-
-_cache_providers: Optional[List[CacheProvider]] = None
 
 BUNDLED_CATALOG_ASSET = ("gpustack.assets", "cache-providers.yaml")
 
@@ -35,87 +49,79 @@ def _catalog_assets() -> List[Tuple[str, str]]:
     return assets
 
 
-def load_cache_providers(reload: bool = False) -> List[CacheProvider]:
-    """
-    Load the declarative cache-provider catalog from the bundled asset and
-    from every asset an installed plugin ships. The catalog is read-only
-    and cached for the process lifetime.
-    """
-    global _cache_providers
-    if _cache_providers is not None and not reload:
-        return _cache_providers
-
-    providers: List[CacheProvider] = []
-    for package, resource in _catalog_assets():
-        providers = _merge(providers, _load_asset(package, resource))
-
-    _cache_providers = providers
-    return _cache_providers
-
-
-def _merge(
-    providers: List[CacheProvider], loaded: List[CacheProvider]
-) -> List[CacheProvider]:
-    """Fold a newly read asset into the catalog, a same-named declaration
-    replacing the one already there — in its place, so the catalog's order
-    is the order a user sees the cards in."""
-    # An asset naming one provider twice keeps its last declaration, the
-    # way a later asset replaces an earlier one's: one name, one card.
-    by_name = {provider.name.lower(): provider for provider in loaded}
-    merged = [by_name.pop(p.name.lower(), p) for p in providers]
-    merged.extend(
-        by_name.pop(p.name.lower()) for p in loaded if p.name.lower() in by_name
-    )
-    return merged
-
-
 def _load_asset(package: str, resource: str) -> List[CacheProvider]:
-    providers: List[CacheProvider] = []
+    """One asset's declarations. A malformed declaration costs its own provider
+    and not the catalog — the others still serve — which is why the lenient
+    parse is the one an asset gets."""
     try:
         yaml_file = files(package).joinpath(resource)
-        if yaml_file.is_file():
-            raw = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
-            for index, entry in enumerate(raw or []):
-                # An entry that is not a mapping has no name to report;
-                # its position is what identifies it in the asset.
-                name = entry.get("name") if isinstance(entry, dict) else f"#{index}"
-                try:
-                    provider = CacheProvider(**entry)
-                except Exception as e:
-                    # One malformed declaration costs its own provider,
-                    # not the catalog: the others still serve.
-                    logger.error(f"Skipping malformed cache provider {name}: {e}")
-                    continue
-                # A provider violating the injection placeholder or the
-                # localized-text contract is excluded outright: both fail
-                # silently at runtime (literal placeholders corrupting
-                # connector config, secrets riding into instance
-                # snapshots, text that renders for no locale).
-                violations = validate_injection_templates(provider)
-                violations += validate_localized_text(provider)
-                if violations:
-                    logger.error(
-                        f"Skipping cache provider {provider.name}: "
-                        + "; ".join(violations)
-                    )
-                    continue
-                providers.append(provider)
-        else:
+        if not yaml_file.is_file():
             logger.warning(f"Cache provider asset {package}/{resource} not found")
+            return []
+        return load_cache_providers_document(yaml_file.read_text(encoding="utf-8"))
     except Exception as e:
         logger.error(f"Failed to load cache providers from {package}/{resource}: {e}")
+        return []
 
+
+def asset_providers() -> List[CacheProvider]:
+    """The declarations this installation carries: the bundled asset merged
+    with every asset an installed plugin ships.
+
+    Not what serves — that is the materialized table — but what the baseline is
+    seeded from, and so what an installation falls back to with no document
+    configured.
+    """
+    providers: List[CacheProvider] = []
+    for package, resource in _catalog_assets():
+        providers = merge_cache_providers(providers, _load_asset(package, resource))
     return providers
 
 
-def get_cache_providers() -> List[CacheProvider]:
-    return load_cache_providers()
+def builtin_catalog_text() -> str:
+    """The packaged baseline as a document, in the form an admin edits.
+
+    Seeded onto the BUILTIN source row and offered in the UI as the starting
+    point for a document of one's own — which, under replace semantics, is the
+    only way an installation carrying plugin-contributed providers can write one
+    without losing them.
+    """
+    return dump_cache_providers(asset_providers())
 
 
-def get_cache_provider(name: str) -> Optional[CacheProvider]:
-    for provider in load_cache_providers():
-        if provider.name.lower() == (name or "").lower():
-            return provider
+def providers_from_documents(documents: List[Optional[str]]) -> List[CacheProvider]:
+    """The catalog a sequence of documents produces, later documents replacing
+    same-named declarations of earlier ones.
+
+    What the source layer hands its checks is a list of documents rather than a
+    catalog, so this is how a check judges the catalog a write would produce.
+    """
+    providers: List[CacheProvider] = []
+    for document in documents:
+        providers = merge_cache_providers(
+            providers, load_cache_providers_document(document)
+        )
+    return providers
+
+
+async def get_cache_providers(session: AsyncSession) -> List[CacheProvider]:
+    """The catalog as it serves, in card order."""
+    entries = await CacheProviderEntry.all(session)
+    return [
+        CacheProvider(**entry.payload)
+        for entry in sorted(entries, key=lambda entry: entry.position)
+    ]
+
+
+async def get_cache_provider(
+    session: AsyncSession, name: Optional[str]
+) -> Optional[CacheProvider]:
+    """One provider by name, case-insensitively — the name a cache service
+    stores is whatever case the document declared it in."""
+    wanted = (name or "").lower()
+    for entry in await CacheProviderEntry.all(session):
+        if entry.name.lower() == wanted:
+            return CacheProvider(**entry.payload)
     return None
 
 

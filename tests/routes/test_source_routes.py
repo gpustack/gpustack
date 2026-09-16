@@ -25,8 +25,12 @@ from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.auth import get_admin_user
-from gpustack.api.exceptions import BadRequestException, ServiceUnavailableException
-from gpustack.routes import inference_backend, model_sets, ota_sources
+from gpustack.api.exceptions import (
+    BadRequestException,
+    NotFoundException,
+    ServiceUnavailableException,
+)
+from gpustack.routes import cache_providers, inference_backend, model_sets, ota_sources
 from gpustack.routes.source_probe import run_source_probe, source_probe_status
 from gpustack.schemas.catalog_source import (
     BUILTIN_CATALOG_SOURCE_NAME,
@@ -75,14 +79,27 @@ from gpustack.server.sources.routes import (
     SourceConfigUpsert,
     delete_source_config,
     get_source_config,
+    read_builtin_document,
     reload_source_config,
     update_source_config,
+)
+from gpustack.schemas.cache_provider_source import (
+    BUILTIN_CACHE_PROVIDER_SOURCE_NAME,
+    CacheProviderEntry,
+    CacheProviderSource,
+    reconcile_cache_providers,
+)
+from gpustack.schemas.cache_services import CacheService
+from gpustack.server.cache_provider_catalog import (
+    builtin_catalog_text,
+    get_cache_providers,
 )
 
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
 _COMMUNITY_BACKEND_SPEC = inference_backend.COMMUNITY_BACKEND_SPEC
 _CATALOG_SPEC = model_sets.CATALOG_SOURCE_SPEC
 _BUILTIN_BACKEND_SPEC = inference_backend.BUILTIN_BACKEND_SPEC
+_CACHE_PROVIDER_SPEC = cache_providers.CACHE_PROVIDER_SOURCE_SPEC
 
 # The document the faked URL fetch returns; a URL-based helper sets it per write.
 _REMOTE = {"doc": ""}
@@ -173,6 +190,7 @@ def test_the_ota_endpoints_are_one_admin_only_family_outside_any_id_namespace():
         ("/v2/ota-sources/{kind}", "GET"),
         ("/v2/ota-sources/{kind}", "PUT"),
         ("/v2/ota-sources/{kind}", "DELETE"),
+        ("/v2/ota-sources/{kind}/builtin", "GET"),
         ("/v2/ota-sources/{kind}/reload", "POST"),
         ("/v2/source-probe", "GET"),
         ("/v2/source-probe", "POST"),
@@ -194,10 +212,16 @@ def test_every_source_kind_is_addressable_and_named_as_the_probe_names_it():
     """One identifier across the two endpoints the same screen calls: the path
     ``kind`` is exactly the key ``GET /source-probe`` reports under, so a client
     needs no translation table, and every published kind is configurable."""
-    assert {kind.value for kind in ota_sources.SourceKind} == {
-        kind.name for kind in probe_module.OFFICIAL_KINDS
-    }
+    configurable = {kind.value for kind in ota_sources.SourceKind}
+    published = {kind.name for kind in probe_module.OFFICIAL_KINDS}
+    assert published <= configurable
     assert set(ota_sources._SPECS) == set(ota_sources.SourceKind)
+
+    # The other direction does not hold: content assembled locally is
+    # configurable without being published, and a kind that no OTA server serves
+    # has no official slot to refresh. Pinned, so adding another one is
+    # deliberate rather than an omission from the probe.
+    assert configurable - published == {"cache-provider"}
 
 
 # --- catalog ---------------------------------------------------------------
@@ -1621,3 +1645,194 @@ class TestSourceProbe:
         # refreshing it from the wrong process.
         with pytest.raises(ServiceUnavailableException):
             await reload_source_config(session, _CATALOG_SPEC, None)
+
+
+# --- cache providers -------------------------------------------------------
+
+
+def _cache_provider_document(*names, version: str = "v1") -> str:
+    """A catalog document with one minimal declaration per name."""
+    return yaml.safe_dump(
+        [
+            {
+                "name": name,
+                "display_name": name,
+                "description": f"{name} for tests.",
+                "topology": "per_node",
+                "default_version": version,
+                "default_image": f"{name.lower()}:{version}",
+                "versions": {version: {}},
+                "default_run_command": f"{name.lower()} --port {{{{port}}}}",
+            }
+            for name in names
+        ]
+    )
+
+
+async def _seed_cache_provider_builtin(session) -> None:
+    """The row the leader seeds on start, which is what an installation serves
+    with no document of its own."""
+    content = builtin_catalog_text()
+    await CacheProviderSource.create(
+        session,
+        CacheProviderSource(
+            name=BUILTIN_CACHE_PROVIDER_SOURCE_NAME,
+            source_type=SourceTypeEnum.BUILTIN,
+            content=content,
+            content_hash=sha256_of(content),
+        ),
+    )
+
+
+async def _materialize(session) -> None:
+    """What the leader's controller does after a source write: fold the enabled
+    rows into the table readers query."""
+    await gather_and_merge(session, CacheProviderSource, reconcile_cache_providers)
+
+
+class TestCacheProviderSourceConfig:
+    """The fourth kind, driven through the same engine: an inline document only,
+    replacing a catalog that is process state rather than a table."""
+
+    @pytest_asyncio.fixture
+    async def session(self):
+        async with _make_source_session(
+            CacheProviderSource, CacheProviderEntry, CacheService
+        ) as session:
+            yield session
+
+    @pytest.mark.asyncio
+    async def test_a_configured_document_replaces_the_packaged_catalog(self, session):
+        # The baseline serves while nothing else is configured.
+        await _seed_cache_provider_builtin(session)
+        await _materialize(session)
+        assert "LMCache" in [
+            provider.name for provider in await get_cache_providers(session)
+        ]
+
+        await update_source_config(
+            session,
+            _CACHE_PROVIDER_SPEC,
+            _upsert(
+                source_type=SourceTypeEnum.FILE,
+                content=_cache_provider_document("Demo"),
+            ),
+        )
+        await _materialize(session)
+        assert [provider.name for provider in await get_cache_providers(session)] == [
+            "Demo"
+        ]
+
+        # DELETE restores the packaged baseline, which is a source row of its own.
+        await delete_source_config(session, _CACHE_PROVIDER_SPEC)
+        await _materialize(session)
+        assert "LMCache" in [
+            provider.name for provider in await get_cache_providers(session)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_document_of_ones_own_may_live_at_a_url(self, session, monkeypatch):
+        """The same two source types as anywhere else. What a URL buys here is
+        one place to maintain the catalog for several clusters."""
+        _REMOTE["doc"] = _cache_provider_document("Demo")
+        _install_fake_url_fetch(monkeypatch)
+
+        await update_source_config(
+            session,
+            _CACHE_PROVIDER_SPEC,
+            _upsert(source_type=SourceTypeEnum.URL, url="https://example.com/p.yaml"),
+        )
+        await _materialize(session)
+        assert [provider.name for provider in await get_cache_providers(session)] == [
+            "Demo"
+        ]
+
+        # Re-read on demand, which is what this kind has instead of a schedule.
+        _REMOTE["doc"] = _cache_provider_document("Demo", "Added")
+        assert (
+            await reload_source_config(session, _CACHE_PROVIDER_SPEC, None)
+        ).changed is True
+        await _materialize(session)
+        assert [provider.name for provider in await get_cache_providers(session)] == [
+            "Demo",
+            "Added",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_document_taking_away_a_provider_in_use_is_rejected(self, session):
+        await CacheService.create(
+            session,
+            CacheService(
+                name="shared-cache",
+                provider_name="Demo",
+                provider_version="v1",
+                cluster_id=1,
+            ),
+        )
+        with pytest.raises(BadRequestException) as rejected:
+            await update_source_config(
+                session,
+                _CACHE_PROVIDER_SPEC,
+                _upsert(
+                    source_type=SourceTypeEnum.FILE,
+                    content=_cache_provider_document("Other"),
+                ),
+            )
+        assert "shared-cache" in rejected.value.message
+        # Refused outright: nothing stored, and the catalog has not moved.
+        assert (await get_source_config(session, _CACHE_PROVIDER_SPEC)).custom is None
+
+        # Keeping it is all the document has to do; adding to it is free.
+        await update_source_config(
+            session,
+            _CACHE_PROVIDER_SPEC,
+            _upsert(
+                source_type=SourceTypeEnum.FILE,
+                content=_cache_provider_document("Demo", "Other"),
+            ),
+        )
+        assert (await get_source_config(session, _CACHE_PROVIDER_SPEC)).custom
+
+    @pytest.mark.asyncio
+    async def test_a_kind_with_no_packaged_baseline_has_nothing_to_download(
+        self, session
+    ):
+        """Runner's baseline is in code rather than a row, so the endpoint says
+        the kind has none instead of reporting it as not seeded yet — the two
+        read the same on screen and mean different things."""
+        with pytest.raises(NotFoundException):
+            await read_builtin_document(session, _BUILTIN_BACKEND_SPEC)
+
+    @pytest.mark.asyncio
+    async def test_the_baseline_is_downloadable_once_the_leader_has_seeded_it(
+        self, session
+    ):
+        """The starting point a custom document is written against — and under
+        replace semantics the only way to write one without losing what the
+        assets carry."""
+        with pytest.raises(ServiceUnavailableException):
+            await read_builtin_document(session, _CACHE_PROVIDER_SPEC)
+
+        content = builtin_catalog_text()
+        await CacheProviderSource.create(
+            session,
+            CacheProviderSource(
+                name=BUILTIN_CACHE_PROVIDER_SOURCE_NAME,
+                source_type=SourceTypeEnum.BUILTIN,
+                content=content,
+                content_hash=sha256_of(content),
+            ),
+        )
+
+        downloaded = await read_builtin_document(session, _CACHE_PROVIDER_SPEC)
+        # Saving it back unchanged is accepted, which is what makes it an
+        # editing starting point rather than a report.
+        await update_source_config(
+            session,
+            _CACHE_PROVIDER_SPEC,
+            _upsert(source_type=SourceTypeEnum.FILE, content=downloaded),
+        )
+        await _materialize(session)
+        assert "LMCache" in [
+            provider.name for provider in await get_cache_providers(session)
+        ]

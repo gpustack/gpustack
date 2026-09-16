@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gpustack.server.cache_provider_catalog import asset_providers
 from gpustack.schemas.cache_providers import CacheProvider
 from gpustack.schemas.cache_services import (
     CacheServiceConfig,
@@ -22,6 +23,39 @@ from gpustack.schemas.cache_services import (
 from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.server import controllers as cache_service_controller
 from gpustack.server.controllers import CacheServiceController
+
+
+@pytest.fixture(autouse=True)
+def catalog_lookup(monkeypatch):
+    """The catalog is a table, and these tests hand their code a mock session.
+    Default to what this installation carries — the packaged declarations are
+    what a cluster serves with no document configured — and let a test install
+    a declaration of its own over it."""
+
+    async def lookup(_session, name=None):
+        wanted = (name or "").lower()
+        return next(
+            (
+                provider
+                for provider in asset_providers()
+                if provider.name.lower() == wanted
+            ),
+            None,
+        )
+
+    for target in ("gpustack.server.controllers.get_cache_provider",):
+        monkeypatch.setattr(target, lookup)
+
+
+def _fake_lookup(provider):
+    """Stand in for the catalog lookup, which reads a table: a coroutine taking
+    the session its caller holds. Whatever a test's service names, it resolves
+    to the declaration that test pinned."""
+
+    async def lookup(_session, _name=None):
+        return provider
+
+    return lookup
 
 
 def _provider(topology="replicas") -> CacheProvider:
@@ -92,7 +126,7 @@ def _patch_reconcile(
     CacheServiceInstance.all_by_fields results (reconcile pass, then
     aggregate pass)."""
     monkeypatch.setattr(
-        "gpustack.server.controllers.get_cache_provider", lambda name: provider
+        "gpustack.server.controllers.get_cache_provider", _fake_lookup(provider)
     )
     monkeypatch.setattr(
         "gpustack.server.controllers.Worker.all_by_fields",
@@ -737,7 +771,7 @@ def _patch_aggregate_instances(monkeypatch, instances):
     # they read that path rather than whatever the catalog declares.
     monkeypatch.setattr(
         "gpustack.server.controllers.get_cache_provider",
-        lambda name: _provider("per_node"),
+        _fake_lookup(_provider("per_node")),
     )
 
 
@@ -1231,7 +1265,7 @@ async def test_aggregate_flags_spec_drift():
         ),
         patch(
             "gpustack.server.controllers.get_cache_provider",
-            lambda name: _provider("per_node"),
+            _fake_lookup(_provider("per_node")),
         ),
     ):
         controller = CacheServiceController(MagicMock())
@@ -1257,7 +1291,7 @@ async def test_aggregate_flags_spec_drift():
         ),
         patch(
             "gpustack.server.controllers.get_cache_provider",
-            lambda name: _provider("per_node"),
+            _fake_lookup(_provider("per_node")),
         ),
     ):
         controller = CacheServiceController(MagicMock())

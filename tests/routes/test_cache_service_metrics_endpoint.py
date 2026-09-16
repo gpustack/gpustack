@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gpustack.server.cache_provider_catalog import asset_providers
 from gpustack.api.exceptions import (
     BadRequestException,
     ForbiddenException,
@@ -39,6 +40,30 @@ from gpustack.server.cache_service_metrics import (
 )
 
 ORG_PRINCIPAL = 42
+
+
+@pytest.fixture(autouse=True)
+def catalog_lookup(monkeypatch):
+    """The catalog is a table, and these tests hand the handler a mock session.
+    Default to what this installation carries; a test needing a declaration of
+    its own installs it over this."""
+
+    async def lookup(_session, name=None):
+        wanted = (name or "").lower()
+        return next(
+            (
+                provider
+                for provider in asset_providers()
+                if provider.name.lower() == wanted
+            ),
+            None,
+        )
+
+    for target in (
+        "gpustack.routes.cache_services.get_cache_provider",
+        "gpustack.routes.models.get_cache_provider",
+    ):
+        monkeypatch.setattr(target, lookup)
 
 
 def _ctx(org_role=None, is_platform_admin=False) -> TenantContext:

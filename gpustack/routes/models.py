@@ -865,7 +865,7 @@ async def validate_shared_kv_cache(
             message="The cache service must be in the same cluster as the model."
         )
 
-    provider = get_cache_provider(cache_service.provider_name)
+    provider = await get_cache_provider(session, cache_service.provider_name)
     backend = model_in.backend or BackendEnum.VLLM.value
     if provider is None or provider.integration_for(backend) is None:
         raise BadRequestException(

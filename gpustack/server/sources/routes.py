@@ -15,7 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from gpustack.api.exceptions import BadRequestException, ServiceUnavailableException
+from gpustack.api.exceptions import (
+    BadRequestException,
+    NotFoundException,
+    ServiceUnavailableException,
+)
 
 from gpustack.schemas.source import SourceContent, SourceMixin, SourceTypeEnum
 
@@ -384,6 +388,30 @@ async def get_source_config(
     session: AsyncSession, spec: SourceConfigSpec
 ) -> SourceConfig:
     return _config(*await _read_rows(session, spec))
+
+
+async def read_builtin_document(session: AsyncSession, spec: SourceConfigSpec) -> str:
+    """The packaged baseline's text, for an admin to edit from.
+
+    A document of one's own replaces what it is written against rather than
+    layering over it, so the baseline is the only safe starting point — and for
+    a kind whose baseline is assembled locally (the packaged asset plus what
+    installed plugins contribute) there is no published file to fetch instead.
+
+    Served from the BUILTIN row rather than re-read from disk: that row is what
+    the merge actually serves, so what an admin downloads and what their cluster
+    runs cannot drift.
+    """
+    if spec.builtin_name is None:
+        raise NotFoundException(message="This kind has no packaged baseline.")
+    builtin = await spec.source_cls.one_by_field(session, "name", spec.builtin_name)
+    if builtin is None or not builtin.content:
+        # The leader seeds it on start; a follower asked in that window has
+        # nothing to hand back yet.
+        raise ServiceUnavailableException(
+            message="The packaged baseline has not been seeded yet. Try again."
+        )
+    return builtin.content
 
 
 async def _apply_official_settings(
