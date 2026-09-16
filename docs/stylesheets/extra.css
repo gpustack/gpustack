@@ -1,7 +1,107 @@
+/* ── Brand ───────────────────────────────────────────
+   Indigo, matching gpustack.ai so the docs and the marketing site
+   read as one product. The hue carries meaning through links and
+   accents; the chrome (header, tabs) stays neutral — a saturated
+   bar across the top is what made the page feel heavy. */
 :root {
-    --md-primary-fg-color: #007BFF;
-    --md-primary-fg-color--light: #2997FF;
-    --md-primary-fg-color--dark: #0062d9;
+    --gps-accent: #4f46e5;
+    --gps-accent-hover: #6366f1;
+    --gps-accent-tint: rgba(79, 70, 229, 0.1);
+}
+
+/* On the dark scheme the same indigo is too dim against the slate
+   background, so step up to the lighter end of the ramp. */
+[data-md-color-scheme="slate"] {
+    --gps-accent: #818cf8;
+    --gps-accent-hover: #a5b4fc;
+    --gps-accent-tint: rgba(129, 140, 248, 0.14);
+}
+
+/* Material sets --md-typeset-a-color from the *primary* palette, and on
+   the slate scheme it does so through a combined
+   [data-md-color-scheme][data-md-color-primary] rule (0,2,0). Matching
+   both attributes plus `body` gives (0,2,1), which clears it; anything
+   less and the links silently fall back to Material's blue. One rule
+   serves both schemes — the custom properties it reads are already
+   scheme-aware. */
+body[data-md-color-scheme][data-md-color-primary] {
+    --md-accent-fg-color: var(--gps-accent-hover);
+    --md-accent-fg-color--transparent: var(--gps-accent-tint);
+    --md-typeset-a-color: var(--gps-accent);
+}
+
+/* ── Chrome ──────────────────────────────────────────
+   Hairline separators instead of a shadow under a colour block. */
+.md-header {
+    box-shadow: none;
+    border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+.md-tabs {
+    border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+.md-tabs__link {
+    opacity: 1;
+    color: var(--md-default-fg-color--light);
+    font-size: 0.72rem;
+}
+.md-tabs__link:hover,
+.md-tabs__link--active {
+    color: var(--md-default-fg-color);
+}
+/* Mark the active tab with a rule rather than by colouring the text,
+   so the tab strip stays quiet. */
+.md-tabs__item--active {
+    box-shadow: inset 0 -2px 0 var(--gps-accent);
+}
+
+/* ── Reading rhythm ──────────────────────────────────
+   Slightly larger type and looser leading: the docs are long-form
+   reference, read for minutes at a time, not scanned. */
+.md-typeset {
+    font-size: 0.8rem;
+    line-height: 1.75;
+}
+.md-typeset h1 {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--md-default-fg-color);
+}
+.md-typeset h2 {
+    margin-top: 2.2em;
+    font-weight: 650;
+    letter-spacing: -0.012em;
+}
+.md-typeset h3 {
+    margin-top: 1.7em;
+    font-weight: 600;
+}
+/* Give a section break some air before the next heading. */
+.md-typeset h2 + h3 {
+    margin-top: 1em;
+}
+
+/* ── Links ───────────────────────────────────────────
+   Prose here is dense with inline links; at full brand saturation
+   every one of them competes with the sentence. Hold them close to
+   the body colour and let the accent appear on hover. */
+.md-typeset a {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--gps-accent) 35%, transparent);
+    transition: color 0.15s, border-color 0.15s;
+}
+.md-typeset a:hover,
+.md-typeset a:focus-visible {
+    color: var(--gps-accent);
+    border-bottom-color: var(--gps-accent);
+}
+/* Navigation, tables of contents and cards are not prose — no rule. */
+.md-typeset .md-nav a,
+.md-typeset .md-button,
+.md-typeset .grid.cards a,
+.md-typeset a.headerlink,
+.md-typeset .tabbed-labels a {
+    border-bottom: none;
 }
 
 
@@ -47,8 +147,11 @@
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
 }
 
+/* The "primary" icon in the overview cards — follows the brand hue.
+   The semantic colours below (green/orange/red/purple) are content
+   categories, not brand, so they stay put. */
 .icon-blue {
-    color: #007BFF;
+    color: var(--gps-accent);
 }
 
 .icon-green {
@@ -136,8 +239,8 @@
 }
 
 .logo-tile:hover {
-    border-color: var(--md-primary-fg-color);
-    box-shadow: 0 10px 30px rgba(0, 123, 255, 0.08);
+    border-color: var(--gps-accent);
+    box-shadow: 0 10px 30px var(--gps-accent-tint);
     transform: translateY(-4px);
     z-index: 1;
 }

@@ -26,15 +26,17 @@ theme:
         name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: custom
-      accent: orange
+      # `white` / `black` keep the header out of a saturated colour block;
+      # the brand hue lives in links and accents instead (see extra.css).
+      primary: white
+      accent: indigo
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: light blue
-      accent: orange
+      primary: black
+      accent: indigo
       toggle:
         icon: material/brightness-4
         name: Switch to system preference
