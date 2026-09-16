@@ -18,9 +18,9 @@ source id is per-table, so ``{kind}`` never gives up its segment to an id.
 from enum import Enum
 from typing import Dict
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 
-from gpustack.routes import inference_backend, model_sets
+from gpustack.routes import cache_providers, inference_backend, model_sets
 from gpustack.server.deps import SessionDep
 from gpustack.server.sources.probe import running_refresher
 from gpustack.server.sources.routes import (
@@ -30,6 +30,7 @@ from gpustack.server.sources.routes import (
     SourceWriteResult,
     delete_source_config,
     get_source_config,
+    read_builtin_document,
     reload_source_config,
     update_source_config,
 )
@@ -39,21 +40,24 @@ router = APIRouter()
 
 class SourceKind(str, Enum):
     """Which kind of content a request configures. An enum, so an unknown kind is
-    a 422 naming the three rather than a 404 from a dict lookup, and a generated
-    client gets the union. Values are ``OfficialKind.name`` verbatim.
+    a 422 naming them rather than a 404 from a dict lookup, and a generated
+    client gets the union. The kinds an OTA server publishes carry
+    ``OfficialKind.name`` verbatim.
     """
 
     CATALOG = "catalog"
     COMMUNITY_BACKEND = "community-backend"
     BUILT_IN_BACKEND = "built-in-backend"
+    CACHE_PROVIDER = "cache-provider"
 
 
 # Each kind's binding for the shared engine, from the module that owns that
-# content — the two backend specs carry in-use checks that live there.
+# content — the specs carry in-use checks that live there.
 _SPECS: Dict[SourceKind, SourceConfigSpec] = {
     SourceKind.CATALOG: model_sets.CATALOG_SOURCE_SPEC,
     SourceKind.COMMUNITY_BACKEND: inference_backend.COMMUNITY_BACKEND_SPEC,
     SourceKind.BUILT_IN_BACKEND: inference_backend.BUILTIN_BACKEND_SPEC,
+    SourceKind.CACHE_PROVIDER: cache_providers.CACHE_PROVIDER_SOURCE_SPEC,
 }
 
 
@@ -72,6 +76,24 @@ async def update_config(
 @router.delete("/{kind}")
 async def delete_config(kind: SourceKind, session: SessionDep) -> SourceConfig:
     return await delete_source_config(session, _SPECS[kind])
+
+
+@router.get("/{kind}/builtin")
+async def get_builtin_document(kind: SourceKind, session: SessionDep) -> Response:
+    """Download the packaged baseline, the document to edit a custom one from.
+
+    A file response rather than a field on ``GET /{kind}``: a baseline runs to
+    hundreds of KB, which every read of the configuration screen would otherwise
+    carry for the sake of a button pressed once.
+    """
+    content = await read_builtin_document(session, _SPECS[kind])
+    return Response(
+        content=content,
+        media_type="application/yaml",
+        headers={
+            "Content-Disposition": f'attachment; filename="{kind.value}-builtin.yaml"'
+        },
+    )
 
 
 @router.post("/{kind}/reload")

@@ -22,6 +22,18 @@ from gpustack.schemas.models import ExtendedKVCacheConfig, KVCacheModeEnum
 OWNER_PRINCIPAL = 42
 
 
+def _fake_lookup(provider):
+    """Stand in for the catalog lookup, which reads a table: a coroutine taking
+    the session its caller holds."""
+
+    async def lookup(_session, name=None):
+        if name is None or provider is None:
+            return provider
+        return provider if name.lower() == provider.name.lower() else None
+
+    return lookup
+
+
 def _model_in(ext, backend=None, distributed=False, backend_version=None):
     return SimpleNamespace(
         extended_kv_cache=ext,
@@ -60,6 +72,7 @@ def _patch_lookups(
     workers=(),
     versions=None,
 ):
+
     monkeypatch.setattr(
         models_route.CacheService, "one_by_id", AsyncMock(return_value=service)
     )
@@ -73,7 +86,7 @@ def _patch_lookups(
             for b in provider_backends
         ],
     )
-    monkeypatch.setattr(models_route, "get_cache_provider", lambda name: provider)
+    monkeypatch.setattr(models_route, "get_cache_provider", _fake_lookup(provider))
     monkeypatch.setattr(
         models_route.Worker, "all_by_fields", AsyncMock(return_value=list(workers))
     )

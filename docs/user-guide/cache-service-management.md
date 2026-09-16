@@ -29,6 +29,34 @@ Cache services attach to the built-in vLLM and SGLang backends only, and a deplo
 
 Each instance reports the cache service it attached to and its recent hit rate. An instance that started without the cache — because no cache instance was available on its worker, for example — reports the shared KV cache as not active rather than failing.
 
+## Customize the Provider Catalog
+
+The providers you can pick from are the ones this release carries, plus any an installed extension adds. Platform admins can replace that catalog with a document of their own — to pin a different image, add a version, or declare a provider GPUStack does not ship.
+
+1. Navigate to the `Cache Service` page.
+2. Click the `Manage Providers` button.
+3. In the `Provider Source` drawer, choose one of the three sources:
+
+    - `Yaml File`: paste the content into the editor, or click `Import` to load a file into it.
+    - `URL`: fill in `Source URL`. The server fetches it when you save, and again when you click `Update Now`. It must be `http(s)`, must not carry credentials, must point at the file itself rather than at a repository page, and must be UTF-8 and no larger than 4 MB.
+    - `Embedded`: go back to the providers this release carries.
+
+4. Click the `Save` button.
+
+!!! warning
+
+    **Start from the built-in file, not from an empty editor.** A document of your own replaces the catalog outright — every provider it does not declare goes out of service, including the ones an installed extension contributes. Click `Built-in File` in the editor header to download what this installation currently serves, and edit that.
+
+Your document is validated when you save it, and refused as a whole if anything in it will not serve — a declaration this version cannot read, a placeholder that would render literally, or a field name that does not exist. The last one matters more than it looks: an unknown key is simply ignored, so a component whose `run_command` was spelled `run_cmd` would otherwise launch with no command at all.
+
+A save is also refused when it would take away a provider, or the version, that a cache service still runs. The message names every service affected. Delete those services first, or move them onto something the new document carries.
+
+!!! note
+
+    Running instances keep the declaration they started with. A new one takes effect when an instance is recreated, the same way a provider changes across a GPUStack upgrade.
+
+    Nothing updates this catalog on a schedule: a URL source is read when you save it and when you click `Update Now`. While a document of your own is configured, providers added by a GPUStack upgrade or by a newly installed extension do not appear until you fold them in — download the built-in file again to see what they added.
+
 ## Hybrid Models
 
 A hybrid model interleaves recurrent layers — Mamba, or Gated-DeltaNet (GDN) linear attention — with full-attention layers. The Qwen3.5 and Qwen3.6 series, Qwen3-Next, Kimi-Linear and Kimi K3 are all of this kind.

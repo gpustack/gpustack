@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gpustack.server.cache_provider_catalog import asset_providers
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     BadRequestException,
@@ -45,6 +46,40 @@ from gpustack.schemas.principals import PrincipalType
 ORG_PRINCIPAL = 42
 
 
+@pytest.fixture(autouse=True)
+def catalog_lookup(monkeypatch):
+    """The catalog is a table, and these tests hand their code a mock session.
+    Default to what this installation carries — the packaged declarations are
+    what a cluster serves with no document configured — and let a test install
+    a declaration of its own over it."""
+
+    async def lookup(_session, name=None):
+        wanted = (name or "").lower()
+        return next(
+            (
+                provider
+                for provider in asset_providers()
+                if provider.name.lower() == wanted
+            ),
+            None,
+        )
+
+    for target in ("gpustack.routes.cache_services.get_cache_provider",):
+        monkeypatch.setattr(target, lookup)
+
+
+def _fake_lookup(provider):
+    """Stand in for the catalog lookup, which reads a table: a coroutine taking
+    the session its caller holds."""
+
+    async def lookup(_session, name=None):
+        if name is None or provider is None:
+            return provider
+        return provider if name.lower() == provider.name.lower() else None
+
+    return lookup
+
+
 def _user_ctx(principal_id: int = ORG_PRINCIPAL) -> TenantContext:
     user = MagicMock()
     user.kind = PrincipalType.USER
@@ -73,6 +108,7 @@ def _provider(
     custom_version=False,
     management_url=False,
 ) -> CacheProvider:
+
     return CacheProvider(
         name="LMCache",
         topology=topology,
@@ -139,7 +175,7 @@ def _patch_provider(monkeypatch, provider: CacheProvider):
     monkeypatch.setattr(
         cache_services_route,
         "get_cache_provider",
-        lambda name: provider if name.lower() == provider.name.lower() else None,
+        _fake_lookup(provider),
     )
 
 
@@ -1839,6 +1875,87 @@ async def test_get_redacts_password_fields_for_users(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_redacts_every_row_from_one_read_of_the_catalog(monkeypatch):
+    """A list redacts many services at once, so it resolves the catalog once
+    rather than per row — and a row whose provider the catalog no longer
+    carries is returned rather than dropped."""
+    provider = _provider_with_l2()
+    reads = []
+
+    async def providers(_session):
+        reads.append(1)
+        return [provider]
+
+    monkeypatch.setattr(cache_services_route, "get_cache_providers", providers)
+    known = _secretful_service()
+    unknown = _secretful_service()
+    unknown.provider_name = "Retired"
+    monkeypatch.setattr(
+        cache_services_route.CacheService,
+        "paginated_by_query",
+        AsyncMock(return_value=SimpleNamespace(items=[known, unknown])),
+    )
+    # The handler opens its own session; the reads it makes are mocked.
+    opened = MagicMock()
+    opened.__aenter__ = AsyncMock(return_value=MagicMock())
+    opened.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(cache_services_route, "async_session", lambda: opened)
+
+    result = await cache_services_route.get_cache_services(
+        ctx=_user_ctx(),
+        params=SimpleNamespace(watch=False, page=1, perPage=10),
+    )
+
+    assert len(reads) == 1
+    assert (
+        result.items[0].config.l2_storages[0].params["password"]
+        == cache_services_route.SECRET_PLACEHOLDER
+    )
+    # No declaration to read the password fields off: the row still serves,
+    # with nothing redacted.
+    assert result.items[1].config.l2_storages[0].params["password"] == "hunter2"
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_row_is_redacted_against_its_own_provider(monkeypatch):
+    """The stream has no session of its own, and the payload it carries may be
+    a row or the dict an event was rebuilt from — both name the provider to
+    read the password fields off."""
+    provider = _provider_with_l2()
+    seen = []
+
+    async def lookup(_session, name=None):
+        seen.append(name)
+        return provider
+
+    monkeypatch.setattr(cache_services_route, "get_cache_provider", lookup)
+    opened = MagicMock()
+    opened.__aenter__ = AsyncMock(return_value=MagicMock())
+    opened.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(cache_services_route, "async_session", lambda: opened)
+
+    captured = {}
+
+    def streaming(**kwargs):
+        captured.update(kwargs)
+        return iter(())
+
+    monkeypatch.setattr(cache_services_route.CacheService, "streaming", streaming)
+    await cache_services_route.get_cache_services(
+        ctx=_user_ctx(), params=SimpleNamespace(watch=True, page=1, perPage=10)
+    )
+    event = SimpleNamespace(data=_secretful_service())
+
+    await captured["event_transform"](event)
+
+    assert seen == ["LMCache"]
+    assert (
+        event.data.config.l2_storages[0].params["password"]
+        == cache_services_route.SECRET_PLACEHOLDER
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_returns_raw_secrets_to_system_callers(monkeypatch):
     """Workers render the real credentials into the cache server's env;
     redacting their read path would break L2 backends outright."""
@@ -2090,7 +2207,7 @@ def test_a_password_typed_declared_field_is_redacted(monkeypatch):
         updated_at=datetime.now(timezone.utc),
     )
 
-    public = cache_services_route._redacted_for_user(service)
+    public = cache_services_route._redacted_for_user(service, provider)
 
     assert public.config.fields["token"] == cache_services_route.SECRET_PLACEHOLDER
     # the row itself keeps the secret: redaction is for the reader

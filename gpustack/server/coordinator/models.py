@@ -54,6 +54,13 @@ class _ModelRegistry:
         'inferencebackend': lambda: _import_model(
             'gpustack.schemas.inference_backend', 'InferenceBackend'
         ),
+        # The leader materializes the cache-provider catalog from these rows,
+        # and a write lands on whichever server served the request — so without
+        # an entry here, a document configured through a standby would never
+        # reach the leader that has to act on it.
+        'cacheprovidersource': lambda: _import_model(
+            'gpustack.schemas.cache_provider_source', 'CacheProviderSource'
+        ),
     }
 
     @classmethod

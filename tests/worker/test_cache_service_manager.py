@@ -23,6 +23,7 @@ from gpustack.schemas.cache_services import (
     CacheServiceStateEnum,
 )
 from gpustack.server.bus import Event, EventType
+from gpustack.worker.cache_provider_manager import CacheProviderManager
 from gpustack.worker.cache_service_manager import (
     MAX_CONSECUTIVE_RESTARTS,
     CacheServiceManager,
@@ -41,8 +42,13 @@ def _build_manager(worker_id: int = 1):
         # worker and this field is only a user override.
         worker_ip=None,
     )
+    # A catalog stub: the declarations come from the server, and each test
+    # states the one its instance launches from.
+    provider_catalog = MagicMock(spec=CacheProviderManager)
+    provider_catalog.loaded = True
+    provider_catalog.get.return_value = None
     manager = CacheServiceManager(
-        lambda: worker_id, lambda: "10.0.0.1", lambda: clientset, cfg
+        lambda: worker_id, lambda: "10.0.0.1", lambda: clientset, cfg, provider_catalog
     )
     return manager, clientset
 
@@ -147,10 +153,7 @@ def _run_start(
     clientset.cache_services.get.return_value = cache_service
     ports = iter([40001, 40002])
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=provider,
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=provider),
         patch(
             "gpustack.worker.cache_service_manager.network.get_free_port",
             side_effect=lambda **kwargs: next(ports),
@@ -296,10 +299,7 @@ def test_start_instance_creates_workload_and_patches_starting():
         return 40001 if len(port_calls) == 1 else 40002
 
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch(
             "gpustack.worker.cache_service_manager.network.get_free_port",
             side_effect=fake_get_free_port,
@@ -379,10 +379,7 @@ def test_start_instance_removes_stale_workload_first():
     ports = iter([40001, 40002])
 
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch(
             "gpustack.worker.cache_service_manager.network.get_free_port",
             side_effect=lambda **kwargs: next(ports),
@@ -420,10 +417,7 @@ def test_start_instance_tolerates_missing_stale_workload():
     instance = _new_instance()
 
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch(
             "gpustack.worker.cache_service_manager.network.get_free_port",
             return_value=40001,
@@ -470,10 +464,7 @@ def test_start_instance_drops_flags_with_empty_rendered_values():
     )
 
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=provider,
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=provider),
         patch(
             "gpustack.worker.cache_service_manager.network.get_free_port",
             return_value=40001,
@@ -1231,10 +1222,7 @@ def test_start_instance_unknown_provider_sets_error():
     )
 
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=None,
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=None),
         patch("gpustack.worker.cache_service_manager.create_workload") as create,
         patch.object(manager, "_update_cache_service_instance") as update,
     ):
@@ -1256,10 +1244,7 @@ def test_start_instance_unknown_version_sets_error():
     )
 
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch("gpustack.worker.cache_service_manager.create_workload") as create,
         patch.object(manager, "_update_cache_service_instance") as update,
     ):
@@ -1276,10 +1261,7 @@ def test_start_instance_failure_sets_error_and_releases_port():
     instance = _new_instance()
 
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch(
             "gpustack.worker.cache_service_manager.network.get_free_port",
             return_value=40001,
@@ -1687,10 +1669,7 @@ def test_sync_ready_probe_resets_restart_count_after_stable_window():
             "gpustack.worker.cache_service_manager.get_workload",
             return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
         ),
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch("gpustack.worker.cache_service_manager.socket.create_connection"),
         patch.object(manager, "_update_cache_service_instance") as update,
     ):
@@ -1719,10 +1698,7 @@ def test_sync_ready_probe_keeps_restart_count_within_stable_window():
             "gpustack.worker.cache_service_manager.get_workload",
             return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
         ),
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch("gpustack.worker.cache_service_manager.socket.create_connection"),
         patch.object(manager, "_update_cache_service_instance") as update,
     ):
@@ -1745,10 +1721,7 @@ def test_sync_ready_tcp_probe_marks_running_healthy():
             "gpustack.worker.cache_service_manager.get_workload",
             return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
         ),
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch(
             "gpustack.worker.cache_service_manager.socket.create_connection"
         ) as connect,
@@ -1780,10 +1753,7 @@ def test_sync_probe_failure_after_running_marks_unreachable():
             "gpustack.worker.cache_service_manager.get_workload",
             return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
         ),
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch(
             "gpustack.worker.cache_service_manager.socket.create_connection",
             side_effect=OSError("connection refused"),
@@ -1814,10 +1784,7 @@ def test_sync_probe_failure_while_starting_is_left_alone():
             "gpustack.worker.cache_service_manager.get_workload",
             return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
         ),
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch(
             "gpustack.worker.cache_service_manager.socket.create_connection",
             side_effect=OSError("connection refused"),
@@ -1941,10 +1908,7 @@ def test_sync_fetches_shared_parent_service_once_per_pass():
             "gpustack.worker.cache_service_manager.get_workload",
             return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
         ),
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch("gpustack.worker.cache_service_manager.socket.create_connection"),
         patch.object(manager, "_update_cache_service_instance"),
     ):
@@ -2136,10 +2100,7 @@ def test_start_instance_reuses_recorded_ports():
     )
     clientset.cache_services.get.return_value = cache_service
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=_new_provider(),
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=_new_provider()),
         patch(
             "gpustack.worker.cache_service_manager.network.is_port_available",
             return_value=True,
@@ -2177,10 +2138,7 @@ def test_probe_targets_metrics_port_for_http_health_check(monkeypatch):
         )
     )
     with (
-        patch(
-            "gpustack.worker.cache_service_manager.get_cache_provider",
-            return_value=provider,
-        ),
+        patch.object(manager._provider_catalog, "get", return_value=provider),
         patch("gpustack.worker.cache_service_manager.httpx.get") as http_get,
     ):
         http_get.return_value = SimpleNamespace(status_code=200)

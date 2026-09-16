@@ -20,14 +20,27 @@ from gpustack.schemas.cache_providers import (
 )
 from gpustack.server import cache_provider_catalog
 from gpustack.server.cache_provider_catalog import (
-    get_cache_provider,
-    load_cache_providers,
+    asset_providers,
     render_injection,
 )
 
 
+def _asset_provider(name: str):
+    """One declaration out of what this installation carries.
+
+    These tests read the packaged catalog, not what a cluster serves — the
+    serving catalog is a table the leader materializes, and its contents are
+    whatever document an admin configured.
+    """
+    wanted = name.lower()
+    return next(
+        (provider for provider in asset_providers() if provider.name.lower() == wanted),
+        None,
+    )
+
+
 def test_catalog_asset_loads():
-    providers = load_cache_providers(reload=True)
+    providers = asset_providers()
     assert providers, "bundled cache-providers.yaml should yield at least one provider"
 
 
@@ -57,13 +70,10 @@ def test_malformed_entry_costs_only_its_own_provider(monkeypatch):
     try:
         monkeypatch.setattr(cache_provider_catalog, "files", lambda _package: _Asset())
         monkeypatch.setattr(_Asset, "joinpath", lambda self, _name: self, raising=False)
-        providers = load_cache_providers(reload=True)
+        providers = asset_providers()
         assert [provider.name for provider in providers] == ["Good"]
     finally:
-        # The loader caches for the process lifetime; leave the bundled
-        # catalog in place for the tests that read it.
         monkeypatch.undo()
-        load_cache_providers(reload=True)
 
 
 def test_a_placeholder_provider_is_listed_with_nothing_to_launch():
@@ -72,7 +82,7 @@ def test_a_placeholder_provider_is_listed_with_nothing_to_launch():
     about it — and nothing behind it: no version, no image, no component.
     A declaration that launches nothing is held to none of the rules
     about the two."""
-    provider = get_cache_provider("Mooncake")
+    provider = _asset_provider("Mooncake")
     assert localized_default(provider.unavailable_reason)
     assert localized_default(provider.description)
     # the card's accelerator tags: with no images to read them off, the
@@ -127,15 +137,14 @@ def test_a_plugin_asset_replaces_the_placeholder_in_place(monkeypatch):
             "gpustack.extension.iter_plugin_classes",
             lambda: iter([("plugin", _Plugin)]),
         )
-        providers = load_cache_providers(reload=True)
+        providers = asset_providers()
         names = [provider.name for provider in providers]
         assert names.index("Mooncake") == 1
-        mooncake = get_cache_provider("Mooncake")
+        mooncake = _asset_provider("Mooncake")
         assert mooncake.unavailable_reason is None
         assert list(mooncake.versions) == ["v1.0"]
     finally:
         monkeypatch.undo()
-        load_cache_providers(reload=True)
 
 
 def test_provider_defaults_fold_into_every_version():
@@ -406,7 +415,7 @@ def test_component_port_roles_must_name_declared_ports():
 
 
 def test_lmcache_provider_declaration():
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     assert provider is not None
     # Managed only: LMCache is the single-container engine GPUStack runs
     # itself; reference-only distributed caches are what external is for.
@@ -601,7 +610,7 @@ def test_metrics_for_resolves_version_override():
 
 
 def test_lmcache_metrics_declaration():
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     assert provider is not None
 
     metrics = provider.default_metrics
@@ -637,7 +646,7 @@ def test_lmcache_metrics_declaration():
 
 
 def test_lmcache_l2_declaration():
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     assert provider is not None
     assert provider.l2_adapter_flag == "--l2-adapter"
     assert set(provider.l2_backends) == {"fs_native", "resp", "s3"}
@@ -706,8 +715,8 @@ def test_lmcache_l2_declaration():
 
 
 def test_meshfusion_provider_is_a_branded_lmcache_clone():
-    meshfusion = get_cache_provider("XSKY MeshFusion")
-    lmcache = get_cache_provider("LMCache")
+    meshfusion = _asset_provider("XSKY MeshFusion")
+    lmcache = _asset_provider("LMCache")
     assert meshfusion is not None and lmcache is not None
 
     # XSKY partner branding. The catalog carries the public product name
@@ -916,14 +925,14 @@ def test_provider_brand_links():
     def labels(provider):
         return {localized_default(link.label) for link in provider.links}
 
-    lmcache = get_cache_provider("LMCache")
+    lmcache = _asset_provider("LMCache")
     assert labels(lmcache) == {"Documentation", "GitHub"}
     assert all(link.url.startswith("https://") for link in lmcache.links)
 
-    mooncake = get_cache_provider("Mooncake")
+    mooncake = _asset_provider("Mooncake")
     assert labels(mooncake) == {"Documentation", "GitHub"}
 
-    meshfusion = get_cache_provider("XSKY MeshFusion")
+    meshfusion = _asset_provider("XSKY MeshFusion")
     assert meshfusion.links, "partner card needs at least one brand link"
 
 
@@ -959,12 +968,12 @@ def test_version_config_runtime_support_matrix():
 
 
 def test_provider_lookup_is_case_insensitive():
-    assert get_cache_provider("lmcache") is not None
-    assert get_cache_provider("no-such-provider") is None
+    assert _asset_provider("lmcache") is not None
+    assert _asset_provider("no-such-provider") is None
 
 
 def test_render_injection_substitutes_host_and_port():
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     rendered = render_injection(
         provider,
         "vLLM",
@@ -1000,7 +1009,7 @@ def test_render_injection_substitutes_host_and_port():
 
 
 def test_meshfusion_vllm_injection_includes_connector_module_path():
-    provider = get_cache_provider("XSKY MeshFusion")
+    provider = _asset_provider("XSKY MeshFusion")
     rendered = render_injection(
         provider,
         "vLLM",
@@ -1038,7 +1047,7 @@ def test_kv_transfer_config_renders_structured_slot_with_types():
     """The connector slot is declared structured (one owner assembles the
     single-value engine flag) and placeholder types survive into the
     JSON payload — the port must be a number, not a string."""
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     integration = provider.integration_for("vLLM", "cuda")
     slot = integration.injection.kv_transfer_config
     assert slot is not None
@@ -1068,7 +1077,7 @@ def test_render_injection_maps_node_local_locality_to_auto():
     """Engines attach node-local only (the resolver degrades instead of
     crossing nodes), so the declaration maps the sole placement fact to
     the auto-negotiated zero-copy path."""
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     rendered = render_injection(
         provider,
         "vLLM",
@@ -1080,7 +1089,7 @@ def test_render_injection_maps_node_local_locality_to_auto():
 
 
 def test_render_injection_explicit_param_beats_locality_default():
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     rendered = render_injection(
         provider,
         "vLLM",
@@ -1097,7 +1106,7 @@ def test_render_injection_explicit_param_beats_locality_default():
 
 
 def test_render_injection_returns_none_for_incompatible_backend():
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     rendered = render_injection(
         provider,
         "no-such-backend",
@@ -1125,7 +1134,7 @@ def test_lmcache_sglang_injection_renders_config_file():
     """SGLang attaches through --enable-lmcache with a YAML config file
     carrying the MP server address; the adapter pulls the chunk size from
     the server, so host/port is the whole contract."""
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     compat = provider.integration_for("SGLang")
     assert compat is not None
     # LMCache MP support landed in sglang v0.5.13 (PR #24089).
@@ -1170,7 +1179,7 @@ def test_integration_for_framework_scoping():
 def test_bundled_catalog_passes_injection_contract():
     """Every shipped provider must satisfy the placeholder contract the
     loader enforces (a violating provider is excluded at load time)."""
-    for provider in load_cache_providers():
+    for provider in asset_providers():
         assert validate_injection_templates(provider) == []
 
 
@@ -1302,11 +1311,10 @@ def test_localized_violation_costs_only_its_own_provider(monkeypatch):
     try:
         monkeypatch.setattr(cache_provider_catalog, "files", lambda _package: _Asset())
         monkeypatch.setattr(_Asset, "joinpath", lambda self, _name: self, raising=False)
-        providers = load_cache_providers(reload=True)
+        providers = asset_providers()
         assert [provider.name for provider in providers] == ["Good"]
     finally:
         monkeypatch.undo()
-        load_cache_providers(reload=True)
 
 
 def test_every_form_field_declares_a_label():
@@ -1314,7 +1322,7 @@ def test_every_form_field_declares_a_label():
     English identifier: a field without a label is a slot that stays
     English in every other locale."""
     missing = []
-    for provider in load_cache_providers(reload=True):
+    for provider in asset_providers():
         for field in provider.fields:
             if field.label is None:
                 missing.append(f"{provider.name} declared field '{field.name}'")
@@ -1331,7 +1339,7 @@ def test_every_declared_description_is_translated():
     left untranslated shows up as English in the middle of a translated
     form."""
     untranslated = []
-    for provider in load_cache_providers():
+    for provider in asset_providers():
         slots = [(f"{provider.name}", provider.description)]
         for field in provider.fields:
             where = f"{provider.name} field '{field.name}'"
@@ -1486,12 +1494,11 @@ def test_one_asset_naming_a_provider_twice_yields_one_card(monkeypatch):
 
     try:
         monkeypatch.setattr(cache_provider_catalog, "files", lambda _package: _Asset())
-        providers = load_cache_providers(reload=True)
+        providers = asset_providers()
         assert [provider.name for provider in providers] == ["Twice"]
         assert list(providers[0].versions) == ["v2.0"]
     finally:
         monkeypatch.undo()
-        load_cache_providers(reload=True)
 
 
 def test_a_port_gated_on_an_undeclared_field_is_rejected():
@@ -1563,7 +1570,7 @@ def test_a_component_may_declare_its_own_completion_hints():
     the one engines attach to, and a role that runs something else
     declares what its parser takes — offering the other's would suggest
     flags it rejects."""
-    provider = get_cache_provider("LMCache")
+    provider = _asset_provider("LMCache")
     coordinator = provider.components["coordinator"]
     server = provider.components["server"]
 

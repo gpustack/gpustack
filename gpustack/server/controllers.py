@@ -79,7 +79,10 @@ from gpustack.schemas.cache_providers import (
     render_optional_template,
     resolved_field_values,
 )
-from gpustack.server.cache_provider_catalog import get_cache_provider
+from gpustack.server.cache_provider_catalog import (
+    builtin_catalog_text,
+    get_cache_provider,
+)
 from gpustack.server.cache_services import resolve_instance_cache_config_safe
 from gpustack.schemas.workers import (
     Worker,
@@ -104,6 +107,12 @@ from gpustack.schemas.users import (
 from gpustack.schemas.runner_source import (
     InferenceRunnerSource,
     reconcile_runner_overrides,
+)
+from gpustack.schemas.cache_providers import CacheProvider
+from gpustack.schemas.cache_provider_source import (
+    BUILTIN_CACHE_PROVIDER_SOURCE_NAME,
+    CacheProviderSource,
+    reconcile_cache_providers,
 )
 from gpustack.schemas.catalog_source import (
     BUILTIN_CATALOG_SOURCE_NAME,
@@ -504,7 +513,10 @@ class CacheServiceController:
                         # instance (e.g. a narrowed worker_selector).
                         await self._refresh_attached_snapshots(session, service)
                     else:
-                        await self._sync_service_aggregate(session, service)
+                        provider = await get_cache_provider(
+                            session, service.provider_name
+                        )
+                        await self._sync_service_aggregate(session, service, provider)
                         changed = set(event.changed_fields or {})
                         # A component turning RUNNING may unblock a
                         # dependent component's creation (the stores
@@ -512,7 +524,6 @@ class CacheServiceController:
                         # re-run the reconcile for multi-component
                         # providers.
                         if "state" in changed:
-                            provider = get_cache_provider(service.provider_name)
                             if provider and provider.components:
                                 # through the id, which is where the
                                 # per-service turn is taken: reconciling
@@ -712,12 +723,12 @@ class CacheServiceController:
         address) only gets instances once a dependency instance is
         RUNNING with its port known; the dependency's RUNNING event
         re-runs this reconcile, so the gate converges without polling."""
-        provider = get_cache_provider(service.provider_name)
+        provider = await get_cache_provider(session, service.provider_name)
         instances = await CacheServiceInstance.all_by_fields(
             session, {"cache_service_id": service.id}
         )
         desired_by_component, error_message, reconcile = (
-            await self._desired_component_workers(session, service, instances)
+            await self._desired_component_workers(session, service, instances, provider)
         )
         if error_message is not None and not reconcile:
             await self._set_service_state(
@@ -839,7 +850,7 @@ class CacheServiceController:
                 healthy=False,
             )
             return
-        await self._sync_service_aggregate(session, service)
+        await self._sync_service_aggregate(session, service, provider)
 
     async def _component_addresses(
         self,
@@ -892,6 +903,7 @@ class CacheServiceController:
         session: AsyncSession,
         service: CacheService,
         instances: List[CacheServiceInstance],
+        provider: Optional[CacheProvider] = None,
     ) -> Tuple[Dict[str, Dict[int, int]], Optional[str], bool]:
         """How many instances each provider component should have on each
         worker ("" keys the sole component of single-component
@@ -909,7 +921,8 @@ class CacheServiceController:
         vanishing is a fault that parks the service without touching its
         rows (the user chose it); an auto-placed replica just moves (pool
         reset — the provider self-heals by remounting)."""
-        provider = get_cache_provider(service.provider_name)
+        if provider is None:
+            provider = await get_cache_provider(session, service.provider_name)
         layouts = provider.component_layouts() if provider else {"": "replicas"}
         multi_component = bool(provider and provider.components)
 
@@ -994,17 +1007,25 @@ class CacheServiceController:
         return desired, None, True
 
     async def _sync_service_aggregate(
-        self, session: AsyncSession, service: CacheService
+        self,
+        session: AsyncSession,
+        service: CacheService,
+        provider: Optional[CacheProvider] = None,
     ):
         """Fold the instances' states into the service row: all RUNNING →
         RUNNING/healthy; some RUNNING → RUNNING/unhealthy with an N/M
         breakdown; none RUNNING but a cache server already launching →
-        STARTING; none launched yet → PENDING; otherwise ERROR."""
+        STARTING; none launched yet → PENDING; otherwise ERROR.
+
+        ``provider`` is the declaration the caller already resolved; reading
+        the catalog is a query, and a reconcile pass would otherwise repeat it
+        for the same service."""
         instances = await CacheServiceInstance.all_by_fields(
             session, {"cache_service_id": service.id}
         )
 
-        provider = get_cache_provider(service.provider_name)
+        if provider is None:
+            provider = await get_cache_provider(session, service.provider_name)
         config_fields = service.config.fields if service.config else None
         components = (
             [
@@ -2692,6 +2713,84 @@ class CatalogSourceController:
                     session,
                     CatalogSource(
                         name=BUILTIN_CATALOG_SOURCE_NAME,
+                        source_type=SourceTypeEnum.BUILTIN,
+                        content=content,
+                        content_hash=content_hash,
+                        enabled=True,
+                    ),
+                )
+
+
+class CacheProviderSourceController:
+    """
+    Leader-only controller that materializes CacheProviderEntry from
+    CacheProviderSource. On start it seeds the BUILTIN source from the packaged
+    asset merged with every asset an installed plugin ships, then (like
+    CatalogSourceController) subscribes and full-rewrites the materialized table
+    on any source change; the initial replay of existing sources drives the
+    first reconcile.
+    """
+
+    async def start(self):
+        await self._seed_builtin_source()
+        async for event in CacheProviderSource.subscribe(
+            source="cache_provider_source_controller"
+        ):
+            if event.type in (
+                EventType.CREATED,
+                EventType.UPDATED,
+                EventType.DELETED,
+            ):
+                await self._reconcile()
+
+    async def _reconcile(self):
+        try:
+            async with async_session() as session:
+                await gather_and_merge(
+                    session, CacheProviderSource, reconcile_cache_providers
+                )
+        except Exception as e:
+            logger.error(f"Failed to reconcile cache provider entries: {e}")
+
+    async def _seed_builtin_source(self):
+        """Upsert the BUILTIN row from the assets this release carries.
+
+        Refreshed on every start, so an upgrade — or a newly installed plugin
+        carrying a provider — ships its declarations; the user's ``enabled``
+        toggle on the row is left untouched.
+        """
+        try:
+            content = await asyncio.to_thread(builtin_catalog_text)
+        except Exception as e:
+            logger.error(f"Failed to seed the built-in cache provider source: {e}")
+            return
+
+        content_hash = sha256_of(content)
+        async with async_session() as session:
+            existing = await CacheProviderSource.one_by_field(
+                session, "name", BUILTIN_CACHE_PROVIDER_SOURCE_NAME
+            )
+            if existing:
+                # Skip the write when a restart re-seeds the same assets, judged
+                # by the same hash every other writer in the source layer uses.
+                if (
+                    existing.content_hash == content_hash
+                    and existing.source_type == SourceTypeEnum.BUILTIN
+                ):
+                    return
+                await existing.update(
+                    session,
+                    {
+                        "content": content,
+                        "content_hash": content_hash,
+                        "source_type": SourceTypeEnum.BUILTIN,
+                    },
+                )
+            else:
+                await CacheProviderSource.create(
+                    session,
+                    CacheProviderSource(
+                        name=BUILTIN_CACHE_PROVIDER_SOURCE_NAME,
                         source_type=SourceTypeEnum.BUILTIN,
                         content=content,
                         content_hash=content_hash,

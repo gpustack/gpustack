@@ -23,6 +23,7 @@ from gpustack.api.tenant import (
 from gpustack.routes.models import assert_cluster_belongs_to_org
 from gpustack.schemas.cache_providers import (
     CUSTOM_VERSION,
+    CacheProvider,
     CacheProviderL2Backend,
     localized_default,
     resolved_field_values,
@@ -50,7 +51,10 @@ from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.models import Model, ModelInstance, get_backend
 from gpustack.schemas.principals import PrincipalType, platform_principal_id
 from gpustack.schemas.workers import Worker
-from gpustack.server.cache_provider_catalog import get_cache_provider
+from gpustack.server.cache_provider_catalog import (
+    get_cache_provider,
+    get_cache_providers,
+)
 from gpustack.server.db import async_session
 from gpustack.schemas.principals import OrgRole
 from gpustack.server.cache_service_metrics import (
@@ -99,11 +103,25 @@ def _secret_param_slots(provider, service) -> List[Tuple[Dict[str, Any], str]]:
     return slots
 
 
-def _redacted_for_user(cache_service) -> CacheServicePublic:
+def _provider_name_of(cache_service) -> Optional[str]:
+    """The provider a row names, read off whichever shape carries it: a stream
+    hands out model instances, a payload rebuilt from an event a plain dict."""
+    if isinstance(cache_service, dict):
+        return cache_service.get("provider_name")
+    return getattr(cache_service, "provider_name", None)
+
+
+def _redacted_for_user(
+    cache_service, provider: Optional[CacheProvider]
+) -> CacheServicePublic:
     """A detached copy of the service with declared password-typed values
     replaced by the placeholder. Detached because redaction must never
     write through to the row (or to the event payload other stream
-    subscribers see)."""
+    subscribers see).
+
+    The provider is passed in rather than looked up: a list redacts many
+    services at once, and resolving the catalog per row would be a query per
+    card."""
     data = (
         # The dump-then-validate pair is the deep copy (validating from
         # attributes would pass nested objects through by reference and
@@ -120,7 +138,6 @@ def _redacted_for_user(cache_service) -> CacheServicePublic:
     # objects through by reference, and redacting one of those would
     # write the placeholder onto the row itself.
     public = CacheServicePublic.model_validate(data).model_copy(deep=True)
-    provider = get_cache_provider(public.provider_name)
     if provider is None:
         return public
     for params, name in _secret_param_slots(provider, public):
@@ -130,7 +147,9 @@ def _redacted_for_user(cache_service) -> CacheServicePublic:
 
 
 def _restore_secret_params(
-    cache_service_in: CacheServiceUpdate, existing: CacheService
+    cache_service_in: CacheServiceUpdate,
+    existing: CacheService,
+    provider: Optional[CacheProvider],
 ) -> None:
     """Placeholder values in an update mean "unchanged": put the stored
     secret back so a redacted GET round-trips through an edit. A
@@ -138,7 +157,6 @@ def _restore_secret_params(
     entry) is dropped rather than stored literally. L2 entries match
     their stored counterpart by backend, positionally among same-backend
     entries."""
-    provider = get_cache_provider(existing.provider_name)
     if provider is None:
         return
 
@@ -181,10 +199,11 @@ def _restore_secret_params(
                 restore(storage.params, field.name, stored_params)
 
 
-def _reject_placeholder_secrets(cache_service_in: CacheServiceBase) -> None:
+def _reject_placeholder_secrets(
+    cache_service_in: CacheServiceBase, provider: Optional[CacheProvider]
+) -> None:
     """A create has no stored value a placeholder could stand for;
     storing it literally would silently break the credential."""
-    provider = get_cache_provider(cache_service_in.provider_name)
     if provider is None:
         return
     for params, name in _secret_param_slots(provider, cache_service_in):
@@ -246,7 +265,13 @@ async def get_cache_services(
         if not _system_caller(ctx):
 
             async def redact_event(event):
-                event.data = _redacted_for_user(event.data)
+                # One read per event, which a cache service's own change rate
+                # makes cheap; the stream has no session of its own to reuse.
+                async with async_session() as session:
+                    provider = await get_cache_provider(
+                        session, _provider_name_of(event.data)
+                    )
+                event.data = _redacted_for_user(event.data, provider)
 
             event_transform = redact_event
         return StreamingResponse(
@@ -270,7 +295,16 @@ async def get_cache_services(
             per_page=params.perPage,
         )
         if not _system_caller(ctx):
-            result.items = [_redacted_for_user(item) for item in result.items]
+            providers = {
+                provider.name.lower(): provider
+                for provider in await get_cache_providers(session)
+            }
+            result.items = [
+                _redacted_for_user(
+                    item, providers.get((item.provider_name or "").lower())
+                )
+                for item in result.items
+            ]
         return result
 
 
@@ -499,7 +533,7 @@ async def get_cache_service_dashboard(
     # A provider may declare its own Grafana dashboard (provisioned
     # alongside the generic one); its services' Grafana entries land there
     # instead of the generic cache-service dashboard.
-    provider = get_cache_provider(cache_service.provider_name)
+    provider = await get_cache_provider(session, cache_service.provider_name)
     dashboard_uid = (
         provider.dashboard_uid if provider and provider.dashboard_uid else None
     ) or cfg.grafana_cache_service_dashboard_uid
@@ -548,7 +582,7 @@ async def get_cache_service_metrics(
         window_seconds = parse_metrics_window(window)
     except ValueError as e:
         raise BadRequestException(message=str(e))
-    provider = get_cache_provider(cache_service.provider_name)
+    provider = await get_cache_provider(session, cache_service.provider_name)
     # The database enumerates the attached deployments' instances (the
     # rows the UI shows); metrics only fill their numbers. The model-id
     # scope also bounds the Prometheus queries, so a caller only ever
@@ -622,14 +656,16 @@ async def get_cache_service(
     )
     if _system_caller(ctx):
         return cache_service
-    return _redacted_for_user(cache_service)
+    provider = await get_cache_provider(session, cache_service.provider_name)
+    return _redacted_for_user(cache_service, provider)
 
 
 def _validate_cache_service_provider(
-    cache_service_in: CacheServiceCreate, creating: bool = True
+    cache_service_in: CacheServiceCreate,
+    provider: Optional[CacheProvider],
+    creating: bool = True,
 ) -> None:
     """Reject provider/version combinations the catalog can't serve."""
-    provider = get_cache_provider(cache_service_in.provider_name)
     if provider is None:
         raise BadRequestException(
             message=f"Unknown cache provider '{cache_service_in.provider_name}'"
@@ -678,7 +714,9 @@ def _validate_cache_service_provider(
         )
 
 
-def _validate_cache_service_custom_version(cache_service_in: CacheServiceBase) -> None:
+def _validate_cache_service_custom_version(
+    cache_service_in: CacheServiceBase, provider: Optional[CacheProvider]
+) -> None:
     """The reserved provider_version "custom" pins a user-supplied container
     image: the provider must opt in and config.image carries the image.
     With any declared version the provider's image is rendered instead, so
@@ -696,7 +734,6 @@ def _validate_cache_service_custom_version(cache_service_in: CacheServiceBase) -
             )
         return
 
-    provider = get_cache_provider(cache_service_in.provider_name)
     if provider is None or not provider.custom_version:
         raise BadRequestException(
             message=(
@@ -714,7 +751,9 @@ def _validate_cache_service_custom_version(cache_service_in: CacheServiceBase) -
         )
 
 
-def _validate_cache_service_config(cache_service_in: CacheServiceBase) -> None:
+def _validate_cache_service_config(
+    cache_service_in: CacheServiceBase, provider: Optional[CacheProvider]
+) -> None:
     """Config parameters are a free-form escape hatch passed to a
     component's command line; only items that can never form a valid
     command token are rejected. The component they are keyed by has to be
@@ -724,7 +763,6 @@ def _validate_cache_service_config(cache_service_in: CacheServiceBase) -> None:
     if config is None or config.parameters is None:
         return
 
-    provider = get_cache_provider(cache_service_in.provider_name)
     known = set(provider.components) if provider and provider.components else {""}
     for component, parameters in config.parameters.items():
         if component not in known:
@@ -845,7 +883,9 @@ def _record_l2_env_sources(
         env_sources[field.env_name] = backend_key
 
 
-def _validate_cache_service_l2_storage(cache_service_in: CacheServiceBase) -> None:
+def _validate_cache_service_l2_storage(
+    cache_service_in: CacheServiceBase, provider: Optional[CacheProvider]
+) -> None:
     """L2 storage config only applies to managed services and must match the
     provider's declared adapter backends. Each entry is checked for a known
     backend key, all required fields set, no undeclared parameter names
@@ -862,7 +902,6 @@ def _validate_cache_service_l2_storage(cache_service_in: CacheServiceBase) -> No
         config.l2_storages = None
         return
 
-    provider = get_cache_provider(cache_service_in.provider_name)
     if provider is None or not provider.l2_adapter_flag:
         raise BadRequestException(
             message=(
@@ -906,7 +945,9 @@ def _validate_cache_service_worker_selector(
         return
 
 
-def _validate_management_url(cache_service_in: CacheServiceCreate) -> None:
+def _validate_management_url(
+    cache_service_in: CacheServiceCreate, provider: Optional[CacheProvider]
+) -> None:
     """Validate the engine-management link and canonicalize blanks to None.
 
     Runs with the top-level validators, after
@@ -918,7 +959,6 @@ def _validate_management_url(cache_service_in: CacheServiceCreate) -> None:
     cache_service_in.config.management_url = management_url or None
     if not management_url:
         return
-    provider = get_cache_provider(cache_service_in.provider_name)
     if provider is None or not provider.management_url:
         raise BadRequestException(
             message=(
@@ -958,7 +998,7 @@ async def _validate_cache_service_placement(
     their placement from the cluster's workers, so a worker pick would be
     meaningless.
     """
-    provider = get_cache_provider(cache_service_in.provider_name)
+    provider = await get_cache_provider(session, cache_service_in.provider_name)
     layouts = provider.component_layouts() if provider else {"": "replicas"}
     if all(topology == "per_node" for topology in layouts.values()):
         if cache_service_in.worker_id is not None:
@@ -1012,7 +1052,9 @@ def _validate_required_fields(
             )
 
 
-def _validate_fields(cache_service_in: CacheServiceBase) -> None:
+def _validate_fields(
+    cache_service_in: CacheServiceBase, provider: Optional[CacheProvider]
+) -> None:
     """config.fields must match the provider's fields declaration:
     an unknown name is a typo (the worker would silently ignore it), and a
     non-numeric value or an off-list option would render into the cache
@@ -1020,7 +1062,6 @@ def _validate_fields(cache_service_in: CacheServiceBase) -> None:
     budget."""
     config = cache_service_in.config
     values = (config.fields if config else None) or {}
-    provider = get_cache_provider(cache_service_in.provider_name)
     if provider is None:
         return
     _validate_required_fields(cache_service_in, provider, values)
@@ -1122,14 +1163,17 @@ async def create_cache_service(
             )
         )
 
-    _validate_cache_service_provider(cache_service_in)
-    _validate_cache_service_custom_version(cache_service_in)
-    _validate_cache_service_config(cache_service_in)
-    _validate_management_url(cache_service_in)
-    _validate_fields(cache_service_in)
-    _validate_cache_service_l2_storage(cache_service_in)
+    # Resolved once and handed to every check below: they all judge the same
+    # declaration, and the catalog is a table now.
+    provider = await get_cache_provider(session, cache_service_in.provider_name)
+    _validate_cache_service_provider(cache_service_in, provider)
+    _validate_cache_service_custom_version(cache_service_in, provider)
+    _validate_cache_service_config(cache_service_in, provider)
+    _validate_management_url(cache_service_in, provider)
+    _validate_fields(cache_service_in, provider)
+    _validate_cache_service_l2_storage(cache_service_in, provider)
     _validate_cache_service_worker_selector(cache_service_in)
-    _reject_placeholder_secrets(cache_service_in)
+    _reject_placeholder_secrets(cache_service_in, provider)
     await _validate_cache_service_placement(session, cache_service_in)
 
     cache_service_dict = cache_service_in.model_dump()
@@ -1158,6 +1202,11 @@ async def update_cache_service(
         ctx, cache_service, not_found_message="Cache service not found"
     )
 
+    # Resolved once and handed to every check below. Read against the stored
+    # row's provider: a user caller cannot re-point that field, and a system
+    # caller writing state back has no business changing what the service is.
+    provider = await get_cache_provider(session, cache_service.provider_name)
+
     # SYSTEM principals (workers writing back state / port / health) may
     # touch any field. User callers cannot re-point the identity fields
     # that drive deployment — a provider or cluster change is a different
@@ -1176,7 +1225,7 @@ async def update_cache_service(
         # Redacted reads round-trip through edits: placeholder values mean
         # "unchanged" and are restored from the stored row before the
         # validations below see them.
-        _restore_secret_params(cache_service_in, cache_service)
+        _restore_secret_params(cache_service_in, cache_service, provider)
 
         # Renames stay unique per Org — without the pre-check the unique
         # constraint surfaces as a 500 instead of a conflict.
@@ -1200,16 +1249,16 @@ async def update_cache_service(
     # provider_version unknown to the catalog or a cleared required field
     # only surfaces as a worker-side start failure, and worker_id could
     # be re-pointed across clusters.
-    _validate_cache_service_provider(cache_service_in, creating=False)
-    _validate_cache_service_custom_version(cache_service_in)
-    _validate_cache_service_config(cache_service_in)
-    _validate_management_url(cache_service_in)
-    _validate_fields(cache_service_in)
-    _validate_cache_service_l2_storage(cache_service_in)
+    _validate_cache_service_provider(cache_service_in, provider, creating=False)
+    _validate_cache_service_custom_version(cache_service_in, provider)
+    _validate_cache_service_config(cache_service_in, provider)
+    _validate_management_url(cache_service_in, provider)
+    _validate_fields(cache_service_in, provider)
+    _validate_cache_service_l2_storage(cache_service_in, provider)
     _validate_cache_service_worker_selector(cache_service_in)
     # Restore resolved every placeholder above; anything still carrying
     # the literal sentinel would be stored as the secret itself.
-    _reject_placeholder_secrets(cache_service_in)
+    _reject_placeholder_secrets(cache_service_in, provider)
     await _validate_cache_service_placement(session, cache_service_in)
 
     try:

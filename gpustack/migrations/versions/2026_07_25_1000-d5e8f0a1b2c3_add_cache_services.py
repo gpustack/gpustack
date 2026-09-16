@@ -18,6 +18,18 @@ Introduces the shared KV cache service resource:
    connection info resolved at instance creation, so the worker can
    inject engine config without a server round-trip.
 
+4. New ``cache_provider_sources`` / ``cache_provider_entries`` tables:
+   where the provider catalog a service picks from comes from — the
+   packaged baseline and the document an admin configures in its place —
+   and the declarations the leader materializes out of them, which is
+   what every reader queries.
+
+   The source table has the same shape as the other content sources,
+   which the shared source layer reads through ``SourceMixin``.
+   ``content`` is LONGTEXT on MySQL, where ``TEXT`` caps at 64 KiB and a
+   catalog carrying every provider's declaration is past it. PostgreSQL
+   keeps TEXT, which has no length limit there.
+
 
 Revision ID: d5e8f0a1b2c3
 Revises: a3f5c1d9e0b2
@@ -29,7 +41,10 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import mysql
 import sqlmodel
+
+import gpustack
 
 
 # revision identifiers, used by Alembic.
@@ -132,8 +147,68 @@ def upgrade() -> None:
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.add_column(sa.Column('cache_config', sa.JSON(), nullable=True))
 
+    op.create_table(
+        'cache_provider_sources',
+        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        sa.Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
+        sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('source_type', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column(
+            'content', sa.Text().with_variant(mysql.LONGTEXT(), 'mysql'), nullable=True
+        ),
+        sa.Column('url', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('content_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('remote_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('enabled', sa.Boolean(), nullable=False),
+        sa.Column('auto_update_hours', sa.Integer(), nullable=False),
+        sa.Column('owner_principal_id', sa.Integer(), nullable=True),
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    with op.batch_alter_table('cache_provider_sources', schema=None) as batch_op:
+        # The rows are addressed by name ('builtin' / 'custom'), and writers
+        # check-then-write, which two leaders can interleave.
+        batch_op.create_index(
+            batch_op.f('ix_cache_provider_sources_name'),
+            ['name'],
+            unique=True,
+        )
+
+    op.create_table(
+        'cache_provider_entries',
+        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        sa.Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
+        sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        # Card order, which is the document's own order.
+        sa.Column('position', sa.Integer(), nullable=False),
+        sa.Column('payload', sa.JSON(), nullable=False),
+        sa.Column('source_name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('source_type', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.PrimaryKeyConstraint('id'),
+        # The upsert key, named so the constraint is droppable by name on every
+        # dialect.
+        sa.UniqueConstraint('name', name='uix_cache_provider_entries_name'),
+    )
+    with op.batch_alter_table('cache_provider_entries', schema=None) as batch_op:
+        batch_op.create_index(
+            batch_op.f('ix_cache_provider_entries_name'),
+            ['name'],
+            unique=False,
+        )
+
 
 def downgrade() -> None:
+    with op.batch_alter_table('cache_provider_entries', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_cache_provider_entries_name'))
+    op.drop_table('cache_provider_entries')
+
+    with op.batch_alter_table('cache_provider_sources', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_cache_provider_sources_name'))
+    op.drop_table('cache_provider_sources')
+
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.drop_column('cache_config')
 

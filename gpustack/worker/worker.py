@@ -42,6 +42,7 @@ from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
 from gpustack.worker.benchmark_manager import BenchmarkManager
+from gpustack.worker.cache_provider_manager import CacheProviderManager
 from gpustack.worker.cache_service_manager import CacheServiceManager
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 from gpustack.worker.model_file_manager import ModelFileManager
@@ -153,11 +154,13 @@ class Worker:
             cfg=self._config,
         )
 
+        self._cache_provider_manager = CacheProviderManager(self.clientset)
         self._cache_service_manager = CacheServiceManager(
             worker_id_getter=self.worker_id,
             worker_ip_getter=self.worker_ip,
             clientset_getter=self.clientset,
             cfg=self._config,
+            provider_catalog=self._cache_provider_manager,
         )
 
         self._workload_cleaner = WorkloadCleaner(
@@ -309,6 +312,9 @@ class Worker:
         run_periodically_in_thread(
             self._cache_service_manager.sync_cache_service_instances_state, 15, 15
         )
+        # Ahead of the instance loops above by one pass: the catalog decides
+        # what those loops launch and probe.
+        run_periodically_in_thread(self._cache_provider_manager.sync, 60)
 
         self._create_async_task(self._serve_manager.watch_models())
         self._create_async_task(self._serve_manager.watch_model_instances_event())

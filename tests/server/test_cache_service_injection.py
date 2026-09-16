@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gpustack.server.cache_provider_catalog import asset_providers
 from gpustack.schemas.cache_providers import (
     CacheProvider,
     CacheProviderHealthCheck,
@@ -21,6 +22,28 @@ from gpustack.server.cache_services import (
     resolve_instance_cache_config_safe,
 )
 from tests.utils.model import new_model
+
+
+@pytest.fixture(autouse=True)
+def catalog_lookup(monkeypatch):
+    """The catalog is a table, and these tests hand their code a mock session.
+    Default to what this installation carries — the packaged declarations are
+    what a cluster serves with no document configured — and let a test install
+    a declaration of its own over it."""
+
+    async def lookup(_session, name=None):
+        wanted = (name or "").lower()
+        return next(
+            (
+                provider
+                for provider in asset_providers()
+                if provider.name.lower() == wanted
+            ),
+            None,
+        )
+
+    for target in ("gpustack.server.cache_services.get_cache_provider",):
+        monkeypatch.setattr(target, lookup)
 
 
 def shared_cache_model(cache_service_id=5, chunk_size=None):

@@ -118,7 +118,7 @@ def test_provider_dashboard_json_matches_declaration():
     provider moving to a package of its own leaves behind. Neither side
     is checked by the other's absence, so both are."""
     from gpustack.config.config import Config
-    from gpustack.server.cache_provider_catalog import load_cache_providers
+    from gpustack.server.cache_provider_catalog import asset_providers
 
     dashboards_dir = (
         Path(__file__).resolve().parents[2]
@@ -134,7 +134,7 @@ def test_provider_dashboard_json_matches_declaration():
 
     declared = {
         provider.dashboard_uid: provider.name
-        for provider in load_cache_providers(reload=True)
+        for provider in asset_providers()
         if provider.dashboard_uid
     }
     for uid, name in declared.items():

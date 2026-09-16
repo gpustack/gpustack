@@ -186,7 +186,7 @@ async def resolve_instance_cache_config(
         chunk_size=chunk_size,
     )
 
-    provider = get_cache_provider(service.provider_name)
+    provider = await get_cache_provider(session, service.provider_name)
     if provider is None:
         return CacheConfigSnapshot(
             **snapshot_base,

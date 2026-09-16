@@ -60,6 +60,7 @@ from gpustack.server.controllers import (
     WorkerPoolController,
     InferenceBackendController,
     RunnerSourceController,
+    CacheProviderSourceController,
     CatalogSourceController,
     ModelRouteController,
     ModelRouteTargetController,
@@ -488,6 +489,9 @@ class Server:
 
         catalog_source_controller = CatalogSourceController(self._config)
         tasks.append(asyncio.create_task(catalog_source_controller.start()))
+
+        cache_provider_source_controller = CacheProviderSourceController()
+        tasks.append(asyncio.create_task(cache_provider_source_controller.start()))
 
         gpu_instance_controller = GPUInstanceController(self._config)
         tasks.append(asyncio.create_task(gpu_instance_controller.start()))

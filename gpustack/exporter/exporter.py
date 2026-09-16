@@ -23,7 +23,7 @@ from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.models import CategoryEnum, Model
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.cache_provider_catalog import get_cache_provider
+from gpustack.server.cache_provider_catalog import get_cache_providers
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
 from gpustack.utils.name import metric_name
@@ -452,9 +452,17 @@ async def _cache_service_targets(
     for instance in instances:
         instances_by_service.setdefault(instance.cache_service_id, []).append(instance)
 
+    # One read per poll: this endpoint is Prometheus HTTP service discovery,
+    # scraped on a schedule, and the catalog is the same for every service in
+    # the list.
+    providers = {
+        provider.name.lower(): provider
+        for provider in await get_cache_providers(session)
+    }
+
     groups = []
     for service in services:
-        provider = get_cache_provider(service.provider_name)
+        provider = providers.get((service.provider_name or "").lower())
         # Fields flagged metrics_target carry extra scrape endpoints (e.g.
         # an L2 storage cluster's exporter); they are independent of the
         # provider's own metrics declaration.
