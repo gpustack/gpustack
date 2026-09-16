@@ -80,6 +80,30 @@ body[data-md-color-scheme][data-md-color-primary] {
     margin-top: 1em;
 }
 
+/* Cap the measure of running prose at ~78 characters. Full column
+   width came out at 88, which is past the point where the eye starts
+   losing the start of the next line. Tables, code blocks, figures and
+   admonitions are deliberately excluded — they carry wide content and
+   should keep the whole column. */
+.md-typeset > p,
+.md-typeset > ul,
+.md-typeset > ol,
+.md-typeset > blockquote {
+    max-width: 38em;
+}
+
+/* Tables and code sat at 12.8px/13.6px against 16px body text — enough
+   of a drop to make scanning a spec table tiring. */
+.md-typeset table:not([class]) {
+    font-size: 0.7rem;
+}
+.md-typeset table:not([class]) th {
+    font-weight: 600;
+}
+.md-typeset pre > code {
+    font-size: 0.72rem;
+}
+
 /* ── Links ───────────────────────────────────────────
    Prose here is dense with inline links; at full brand saturation
    every one of them competes with the sentence. Hold them close to
