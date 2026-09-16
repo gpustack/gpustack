@@ -52,6 +52,24 @@ body[data-md-color-scheme][data-md-color-primary] {
     display: block !important;
 }
 
+/* The title's 20px left margin is there to clear the drawer toggle —
+   but that toggle is hidden once the viewport is wide enough for the
+   tabs bar, leaving the wordmark stranded 32px from a 24px logo when
+   the two should read as one lockup. Tighten it on that breakpoint
+   only, so the narrow layout keeps its room for the toggle.
+
+   The [dir] prefix is required, not decorative: Material writes every
+   direction-dependent property as `[dir=ltr] .foo` for RTL support, so
+   a bare `.md-header__title` is a specificity step short and loses. */
+@media screen and (min-width: 76.25em) {
+    [dir="ltr"] .md-header__title {
+        margin-left: 4px;
+    }
+    [dir="rtl"] .md-header__title {
+        margin-right: 4px;
+    }
+}
+
 /* ── Chrome ──────────────────────────────────────────
    Hairline separators instead of a shadow under a colour block. */
 .md-header {
