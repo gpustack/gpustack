@@ -1,6 +1,7 @@
 """Database-related utilities shared across GPUStack components."""
 
 import re
+from typing import List, Tuple
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import asyncpg
@@ -16,22 +17,87 @@ _pg_version_patched = False
 # in place would fail startup whenever the DSN happens to name a standby.
 PROBE_EXCLUDED_PARAMS = {'options', 'target_session_attrs'}
 
+DEFAULT_POSTGRES_PORT = '5432'
+
+
+def _netloc_host_list(hosts: str, ports: str) -> str:
+    """Render libpq's comma-separated host and port lists as one netloc.
+
+    libpq allows a single port for every host; asyncpg wants the port spelled
+    out next to each one. A count that matches neither one port nor one per
+    host is left for SQLAlchemy to reject when it builds the engine, which it
+    does with a message naming the mismatch.
+
+    Args:
+        hosts: Comma-separated host list, as it appeared in the query string.
+        ports: Comma-separated port list, possibly empty.
+
+    Returns:
+        The ``host:port,host:port`` form asyncpg's DSN parser reads.
+    """
+    host_list = [h.strip() for h in hosts.split(',')]
+    port_list = [p.strip() for p in ports.split(',')] if ports else []
+    if len(port_list) == 1:
+        port_list = port_list * len(host_list)
+    if len(port_list) != len(host_list):
+        port_list = [DEFAULT_POSTGRES_PORT] * len(host_list)
+    return ','.join(
+        # A bare IPv6 address carries colons of its own and has to be bracketed
+        # before a port can be appended to it.
+        f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
+        for host, port in zip(host_list, port_list)
+    )
+
+
+def _probe_dsn(db_url: str) -> str:
+    """Build the DSN the openGauss probe connects with.
+
+    asyncpg reads the host list from the netloc only: ``host`` and ``port`` in
+    the query string are ignored outright, so a URL naming several nodes would
+    leave the probe talking to whichever one the netloc happens to name. That
+    is the node most likely to be down, since listing several is what an
+    operator does when one of them may be, and the probe failing takes startup
+    down with it before an engine is ever built. Moving the lists into the
+    netloc lets asyncpg try each node in turn.
+
+    Args:
+        db_url: The PostgreSQL URL as configured.
+
+    Returns:
+        A DSN with ``PROBE_EXCLUDED_PARAMS`` removed and any host list moved
+        into the netloc.
+    """
+    parsed = urlparse(db_url)
+    params: List[Tuple[str, str]] = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k not in PROBE_EXCLUDED_PARAMS
+    ]
+    hosts = [v for k, v in params if k == 'host' and v]
+    ports = [v for k, v in params if k == 'port' and v]
+    if not hosts:
+        return urlunparse(parsed._replace(query=urlencode(params)))
+
+    params = [(k, v) for k, v in params if k not in ('host', 'port')]
+    userinfo, sep, _ = parsed.netloc.rpartition('@')
+    netloc = userinfo + sep + _netloc_host_list(hosts[-1], ports[-1] if ports else '')
+    return urlunparse(parsed._replace(netloc=netloc, query=urlencode(params)))
+
 
 async def is_opengauss(db_url: str) -> bool:
     """Return True when the PostgreSQL-shaped URL points at openGauss.
 
     Opens a one-off asyncpg connection and inspects ``SELECT version()`` —
     openGauss reports itself with ``openGauss`` in the version string
-    rather than ``PostgreSQL``. Parameters listed in
-    ``PROBE_EXCLUDED_PARAMS`` are stripped from the DSN; others such as
-    ``sslmode`` are preserved.
+    rather than ``PostgreSQL``.
+
+    Args:
+        db_url: The PostgreSQL URL as configured.
+
+    Returns:
+        True when the server identifies itself as openGauss.
     """
-    parsed = urlparse(db_url)
-    filtered = [
-        (k, v) for k, v in parse_qsl(parsed.query) if k not in PROBE_EXCLUDED_PARAMS
-    ]
-    dsn = urlunparse(parsed._replace(query=urlencode(filtered)))
-    conn = await asyncpg.connect(dsn=dsn)
+    conn = await asyncpg.connect(dsn=_probe_dsn(db_url))
     try:
         version_str = await conn.fetchval("SELECT version()")
     finally:

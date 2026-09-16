@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock
+from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy.dialects.postgresql import base as pg_base
@@ -90,3 +91,58 @@ async def test_opengauss_version_string_is_detected(monkeypatch):
 
     monkeypatch.setattr(db_utils.asyncpg, "connect", _fake_connect)
     assert await db_utils.is_opengauss("postgresql://user:pw@h:5432/gpustack") is True
+
+
+@pytest.mark.asyncio
+async def test_probe_dsn_moves_a_host_list_into_the_netloc(monkeypatch):
+    """asyncpg reads the host list from the netloc and ignores host and port in
+    the query string, so a DSN naming several nodes has to be respelled before
+    the probe can try more than the one the netloc happens to name.
+    """
+    captured = {}
+
+    async def _fake_connect(dsn=None, **_kwargs):
+        captured["dsn"] = dsn
+        return _FakeConnection("PostgreSQL 16.1 on x86_64")
+
+    monkeypatch.setattr(db_utils.asyncpg, "connect", _fake_connect)
+
+    await db_utils.is_opengauss(
+        "postgresql://user:pw@db-a.example.com:5432/gpustack"
+        "?host=db-a.example.com,db-b.example.com&port=5432,5433"
+        "&target_session_attrs=read-write"
+    )
+
+    parsed = urlparse(captured["dsn"])
+    assert parsed.netloc == "user:pw@db-a.example.com:5432,db-b.example.com:5433"
+    assert "host=" not in (parsed.query or "")
+    assert "port=" not in (parsed.query or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query, expected_netloc",
+    [
+        # One port applies to every host, the way libpq reads it.
+        ("host=a,b&port=6432", "user:pw@a:6432,b:6432"),
+        # No port at all leaves each host on the default.
+        ("host=a,b", "user:pw@a:5432,b:5432"),
+        # A bare IPv6 address carries colons of its own and needs bracketing.
+        (
+            "host=fd00::1,fd00::2&port=5432,5433",
+            "user:pw@[fd00::1]:5432,[fd00::2]:5433",
+        ),
+    ],
+)
+async def test_probe_dsn_host_and_port_pairing(monkeypatch, query, expected_netloc):
+    captured = {}
+
+    async def _fake_connect(dsn=None, **_kwargs):
+        captured["dsn"] = dsn
+        return _FakeConnection("PostgreSQL 16.1 on x86_64")
+
+    monkeypatch.setattr(db_utils.asyncpg, "connect", _fake_connect)
+
+    await db_utils.is_opengauss(f"postgresql://user:pw@h:5432/gpustack?{query}")
+
+    assert urlparse(captured["dsn"]).netloc == expected_netloc
