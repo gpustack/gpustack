@@ -5,6 +5,7 @@ import threading
 import time
 import traceback
 import re
+from typing import Any, Dict, List, Set, Tuple
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import asyncpg
@@ -67,6 +68,40 @@ NON_URL_ASYNCPG_PARAMS = {
     "connection_class",
     "record_class",
     "server_settings",
+}
+
+# Accepted by SQLAlchemy's asyncpg dialect rather than by asyncpg.connect():
+# AsyncAdapt_asyncpg_dbapi.connect pops it before calling the driver, so it is
+# absent from asyncpg.connect's signature even though the driver chain takes it.
+# The dialect coerces it to int itself, so it can stay in the query string.
+# Setting it to 0 is the documented way to run through PgBouncer.
+DIALECT_ASYNCPG_PARAMS = {"prepared_statement_cache_size"}
+
+# asyncpg.connect() parameters that are not strings. Out of the query string the
+# dialect coerces only "port" and "prepared_statement_cache_size"; every other
+# value reaches asyncpg.connect() as the str the URL held it in, where a number
+# raises TypeError and a bool is worse than that -- bool("false") is True, so
+# "direct_tls=false" would switch direct TLS on. These are parsed here and go
+# through connect_args, which create_engine merges over the dialect's output.
+ASYNCPG_TYPED_PARAMS = {
+    "command_timeout": float,
+    "direct_tls": bool,
+    "max_cached_statement_lifetime": int,
+    "max_cacheable_statement_size": int,
+    "statement_cache_size": int,
+    "timeout": float,
+}
+
+# Spellings libpq accepts for a boolean connection parameter.
+BOOLEAN_PARAM_VALUES = {
+    "1": True,
+    "true": True,
+    "yes": True,
+    "on": True,
+    "0": False,
+    "false": False,
+    "no": False,
+    "off": False,
 }
 
 # Query counter for performance monitoring
@@ -138,50 +173,146 @@ def flag_readonly_error_as_disconnect(context):
     context.is_disconnect = True
 
 
-def supported_asyncpg_params() -> set:
-    """Connection parameters asyncpg.connect() accepts from a URL query string."""
-    return set(inspect.signature(asyncpg.connect).parameters) - NON_URL_ASYNCPG_PARAMS
+def supported_asyncpg_params() -> Set[str]:
+    """Connection parameters that survive the trip from a URL query string.
 
-
-def build_postgres_connect_args(db_url: str, opengauss: bool):
-    """Translate a libpq-style PostgreSQL URL into asyncpg's spelling.
-
-    asyncpg does not accept every libpq connection parameter, so the query
-    string cannot simply be handed over as-is. The parameters that do have an
-    asyncpg equivalent are translated and passed on, and anything left over is
-    logged instead of being discarded without a trace.
-
-    ``target_session_attrs`` matters most here: in a replicated cluster it is
-    what keeps the server on a node that accepts writes, so it has to survive
-    this rewrite to be of any use at all.
+    Returns:
+        The names asyncpg.connect() accepts, minus the ones that cannot come
+        from a URL, plus the ones SQLAlchemy's dialect consumes on its behalf.
     """
-    db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
-    parsed = urlparse(db_url)
-    query_params = parse_qs(parsed.query)
+    return (
+        set(inspect.signature(asyncpg.connect).parameters) - NON_URL_ASYNCPG_PARAMS
+    ) | DIALECT_ASYNCPG_PARAMS
 
-    # libpq's "options=-csearch_path=..." has no asyncpg counterpart, so it
-    # becomes a server setting instead.
-    server_settings = {}
+
+def _pop_server_settings(
+    query_params: Dict[str, List[str]], opengauss: bool
+) -> Dict[str, str]:
+    """Take the parameters that belong in a SET rather than in the DSN.
+
+    libpq's ``options=-csearch_path=...`` has no asyncpg counterpart, so it
+    becomes a server setting instead.
+
+    Args:
+        query_params: Parsed query string; the keys consumed here are removed.
+        opengauss: True when the server is openGauss, which rejects
+            PostgreSQL's millisecond-scale idle transaction timeout.
+
+    Returns:
+        The settings to hand asyncpg as ``server_settings``.
+    """
+    server_settings: Dict[str, str] = {}
     qoptions = query_params.pop('options', None)
-    if qoptions is not None and len(qoptions) > 0:
-        option = qoptions[0]
+    if qoptions:
+        option = qoptions[-1]
         if option.startswith('-csearch_path='):
             server_settings['search_path'] = option[len('-csearch_path=') :]
     if not opengauss and envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS > 0:
         server_settings['idle_in_transaction_session_timeout'] = str(
             envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS * 1000
         )
+    return server_settings
+
+
+def _pop_typed_connect_args(query_params: Dict[str, List[str]]) -> Dict[str, Any]:
+    """Take the parameters asyncpg wants as a number or a bool.
+
+    A value left in the query string arrives at asyncpg.connect() as a string,
+    which raises TypeError for the numeric ones and quietly reads as True for
+    the boolean one whatever it says. Parsing them here and passing them as
+    connect_args keeps their Python type, because create_engine applies
+    connect_args over whatever the dialect produced from the URL.
+
+    Args:
+        query_params: Parsed query string; the keys consumed here are removed.
+
+    Returns:
+        The parsed values, keyed by asyncpg parameter name. A value that does
+        not parse is reported and left out.
+    """
+    typed_args: Dict[str, Any] = {}
+    for name, param_type in ASYNCPG_TYPED_PARAMS.items():
+        values = query_params.pop(name, None)
+        if not values:
+            continue
+        raw = values[-1]
+        try:
+            if param_type is bool:
+                typed_args[name] = BOOLEAN_PARAM_VALUES[raw.lower()]
+            else:
+                typed_args[name] = param_type(raw)
+        except (KeyError, ValueError):
+            logger.warning(
+                "Ignoring database URL parameter %s=%s: asyncpg expects a %s.",
+                name,
+                raw,
+                param_type.__name__,
+            )
+    return typed_args
+
+
+def build_postgres_connect_args(
+    db_url: str, opengauss: bool
+) -> Tuple[str, Dict[str, Any]]:
+    """Translate a libpq-style PostgreSQL URL into asyncpg's spelling.
+
+    asyncpg does not accept every libpq connection parameter, and the ones it
+    does accept do not all survive a trip through a query string with the type
+    they need, so the query string cannot simply be handed over as-is. What has
+    an asyncpg equivalent is translated and passed on, and anything left over is
+    logged instead of being discarded without a trace.
+
+    ``target_session_attrs`` matters most here: in a replicated cluster it is
+    what keeps the server on a node that accepts writes, so it has to survive
+    this rewrite to be of any use at all.
+
+    Args:
+        db_url: The PostgreSQL URL as configured.
+        opengauss: True when the server is openGauss.
+
+    Returns:
+        The rewritten URL and the ``connect_args`` to pass to create_engine.
+    """
+    db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
+    parsed = urlparse(db_url)
+    query_params = parse_qs(parsed.query, keep_blank_values=True)
+
+    server_settings = _pop_server_settings(query_params, opengauss)
+
+    # asyncpg raises ClientConfigurationError on an empty value rather than
+    # falling back to the default the way libpq does, so a blank cannot be
+    # forwarded. It is named rather than dropped in silence.
+    blank = sorted(name for name, values in query_params.items() if not any(values))
+    for name in blank:
+        del query_params[name]
+    if blank:
+        logger.warning(
+            "Ignoring database URL parameter(s) given without a value: %s",
+            ", ".join(blank),
+        )
 
     for libpq_name, asyncpg_name in LIBPQ_TO_ASYNCPG_PARAMS.items():
         values = query_params.pop(libpq_name, None)
-        if values:
-            query_params[asyncpg_name] = values
+        if not values:
+            continue
+        if asyncpg_name in query_params:
+            logger.warning(
+                "Database URL sets both %s and %s, which are the same setting "
+                "under two names; using %s=%s.",
+                libpq_name,
+                asyncpg_name,
+                libpq_name,
+                values[-1],
+            )
+        query_params[asyncpg_name] = values
 
-    # Anything asyncpg accepts stays in the query string: SQLAlchemy's asyncpg
-    # dialect turns those into connect keyword arguments, and it is also what
-    # splits a comma-separated host/port list into the form asyncpg wants, so a
-    # multi-host DSN keeps working. Parameters it would choke on are reported
-    # rather than dropped in silence.
+    typed_args = _pop_typed_connect_args(query_params)
+
+    # Anything asyncpg accepts as a string stays in the query string:
+    # SQLAlchemy's asyncpg dialect turns those into connect keyword arguments,
+    # and it is also what splits a comma-separated host/port list into the form
+    # asyncpg wants, so a multi-host DSN keeps working. Parameters it would
+    # choke on are reported rather than dropped in silence.
     supported = supported_asyncpg_params()
     forwarded = {k: v for k, v in query_params.items() if k in supported}
     ignored = sorted(set(query_params) - set(forwarded))
@@ -192,7 +323,7 @@ def build_postgres_connect_args(db_url: str, opengauss: bool):
             ", ".join(ignored),
         )
 
-    connect_args = {}
+    connect_args: Dict[str, Any] = dict(typed_args)
     if server_settings:
         connect_args['server_settings'] = server_settings
 

@@ -4,7 +4,11 @@ import asyncpg
 from sqlalchemy.dialects.postgresql import asyncpg as sa_asyncpg
 from sqlalchemy.engine import make_url
 
-from gpustack.server.init_db import build_postgres_connect_args
+from gpustack.server.init_db import (
+    ASYNCPG_TYPED_PARAMS,
+    build_postgres_connect_args,
+    supported_asyncpg_params,
+)
 
 BASE_URL = "postgresql://user:pw@db.example.com:5432/gpustack"
 
@@ -22,8 +26,7 @@ def effective_asyncpg_kwargs(db_url, connect_args):
 
 def test_target_session_attrs_survives_the_url_rewrite():
     """The parameter that keeps the server on a writable node has to reach the
-    driver. It used to be dropped along with the rest of the query string, which
-    left an operator no way to ask for one.
+    driver, because it is the only way an operator can ask for one.
     """
     kwargs = effective_asyncpg_kwargs(
         *build_postgres_connect_args(
@@ -118,3 +121,91 @@ def test_opengauss_skips_the_idle_transaction_timeout():
     assert "idle_in_transaction_session_timeout" not in connect_args.get(
         "server_settings", {}
     )
+
+
+def test_numeric_parameters_reach_the_driver_as_numbers():
+    """asyncpg does arithmetic on these, so a str raises TypeError inside
+    connect(). Out of a query string the dialect coerces only the port, so
+    everything else has to be parsed before it is handed over.
+    """
+    kwargs = effective_asyncpg_kwargs(
+        *build_postgres_connect_args(
+            f"{BASE_URL}?timeout=5&statement_cache_size=0&command_timeout=2.5",
+            opengauss=False,
+        )
+    )
+    assert kwargs["timeout"] == 5.0
+    assert isinstance(kwargs["timeout"], float)
+    assert kwargs["statement_cache_size"] == 0
+    assert isinstance(kwargs["statement_cache_size"], int)
+    assert kwargs["command_timeout"] == 2.5
+
+
+def test_boolean_parameter_is_parsed_rather_than_read_as_a_non_empty_string():
+    """bool("false") is True, so a forwarded string turns direct TLS on for
+    whoever asked to turn it off.
+    """
+    kwargs = effective_asyncpg_kwargs(
+        *build_postgres_connect_args(f"{BASE_URL}?direct_tls=false", opengauss=False)
+    )
+    assert kwargs["direct_tls"] is False
+
+    kwargs = effective_asyncpg_kwargs(
+        *build_postgres_connect_args(f"{BASE_URL}?direct_tls=on", opengauss=False)
+    )
+    assert kwargs["direct_tls"] is True
+
+
+def test_typed_parameter_that_does_not_parse_is_reported_not_forwarded(caplog):
+    with caplog.at_level("WARNING"):
+        kwargs = effective_asyncpg_kwargs(
+            *build_postgres_connect_args(f"{BASE_URL}?timeout=soon", opengauss=False)
+        )
+    assert "timeout" not in kwargs
+    assert "timeout=soon" in caplog.text
+
+
+def test_typed_parameter_table_names_real_driver_parameters():
+    """Guards the table against a driver rename: a name that asyncpg no longer
+    takes would be parsed here and then rejected at connect time.
+    """
+    assert set(ASYNCPG_TYPED_PARAMS) <= supported_asyncpg_params()
+
+
+def test_prepared_statement_cache_size_reaches_the_dialect(caplog):
+    """SQLAlchemy's asyncpg dbapi pops this one before calling the driver, so it
+    is absent from asyncpg.connect's signature while still being accepted.
+    Setting it to 0 is the documented way to run through PgBouncer.
+    """
+    with caplog.at_level("WARNING"):
+        kwargs = effective_asyncpg_kwargs(
+            *build_postgres_connect_args(
+                f"{BASE_URL}?prepared_statement_cache_size=0", opengauss=False
+            )
+        )
+    assert kwargs["prepared_statement_cache_size"] == 0
+    assert "prepared_statement_cache_size" not in caplog.text
+
+
+def test_ssl_and_sslmode_together_are_reported(caplog):
+    """They are one setting under two names, and only one of them can win."""
+    with caplog.at_level("WARNING"):
+        kwargs = effective_asyncpg_kwargs(
+            *build_postgres_connect_args(
+                f"{BASE_URL}?ssl=require&sslmode=disable", opengauss=False
+            )
+        )
+    assert kwargs["ssl"] == "disable"
+    assert "ssl" in caplog.text and "sslmode" in caplog.text
+
+
+def test_parameter_without_a_value_is_reported_not_forwarded(caplog):
+    """libpq reads an empty value as "use the default"; asyncpg raises
+    ClientConfigurationError instead, so a blank cannot be passed on.
+    """
+    with caplog.at_level("WARNING"):
+        kwargs = effective_asyncpg_kwargs(
+            *build_postgres_connect_args(f"{BASE_URL}?sslmode=", opengauss=False)
+        )
+    assert "ssl" not in kwargs
+    assert "sslmode" in caplog.text
