@@ -1066,8 +1066,8 @@ async def test_update_targets_keeps_omitted_fields(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_update_targets_returns_targets_when_update_returns_none(monkeypatch):
-    """The batch helper must collect the target itself: ``ActiveRecord.update()``
-    mutates the instance in place and returns nothing."""
+    """The batch helper returns the updated targets themselves; the return value
+    of ``update()`` carries nothing that callers may rely on."""
     captured = _capture_target_updates(monkeypatch)
     existing = ModelRouteTarget(
         id=1,
@@ -1091,10 +1091,8 @@ async def test_update_targets_returns_targets_when_update_returns_none(monkeypat
 
 @pytest.mark.asyncio
 async def test_add_targets_refreshes_real_targets_only(monkeypatch):
-    """End-to-end shape of the reported 500: the handler commits a batch that
-    both updates an existing target and adds a new one, then refreshes every
-    entry it got back.  A ``None`` entry made it call ``session.refresh(None)``
-    and answer 500 although the change had already been persisted."""
+    """A batch that updates an existing target and adds a new one is answered
+    with both, and the handler refreshes exactly those two objects."""
     route = SimpleNamespace(
         id=1, name="r1", targets=2, owner_principal_id=None, deleted_at=None
     )
@@ -1153,4 +1151,4 @@ async def test_add_targets_refreshes_real_targets_only(monkeypatch):
     )
 
     assert result == [existing, created]
-    session.refresh.assert_has_awaits([call(existing), call(created)])
+    assert session.refresh.await_args_list == [call(existing), call(created)]
