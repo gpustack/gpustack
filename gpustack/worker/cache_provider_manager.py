@@ -85,7 +85,15 @@ class CacheProviderManager:
         # nothing about what the catalog carries.
         outcome = self.refresh()
         with _cache_lock:
-            return self._providers.get(key), outcome is RefreshOutcome.FETCHED
+            # A throttled refresh protects a copy fetched within the window,
+            # which is recent enough to answer a miss: reporting it as a
+            # catalog this worker could not read would blame connectivity for
+            # a provider that genuinely is not declared. Only a failed fetch,
+            # or never having managed one, leaves the question open.
+            authoritative = outcome is RefreshOutcome.FETCHED or (
+                outcome is RefreshOutcome.THROTTLED and self._loaded
+            )
+            return self._providers.get(key), authoritative
 
     def get(self, name: Optional[str]) -> Optional[CacheProvider]:
         """The declaration alone, for callers with nothing to say about why it
