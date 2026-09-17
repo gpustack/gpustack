@@ -94,7 +94,7 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/gpustack
     - icon: fontawesome/brands/docker
-      link: https://hub.docker.com/r/gpustack
+      link: https://hub.docker.com/u/gpustack
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/gpustack/
     - icon: fontawesome/brands/discord
