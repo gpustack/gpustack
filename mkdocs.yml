@@ -60,11 +60,12 @@ theme:
     - toc.follow
   icon:
     repo: fontawesome/brands/github
-  # Matches gpustack.ai, which loads the same pair — the docs were still on
-  # Material's default Roboto, which read as a different product.
-  font:
-    text: Inter
-    code: JetBrains Mono
+  # `false` stops Material from emitting the fonts.googleapis.com link.
+  # Inter and JetBrains Mono — the pair gpustack.ai uses — are served from
+  # docs/assets/fonts/ instead; see the @font-face block at the top of
+  # stylesheets/extra.css, which also sets --md-text-font/--md-code-font
+  # so Material builds its stacks around them.
+  font: false
   language: en
 plugins:
   - glightbox
