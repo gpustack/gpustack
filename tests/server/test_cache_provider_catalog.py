@@ -1073,6 +1073,51 @@ def test_kv_transfer_config_renders_structured_slot_with_types():
     assert args[2:] == ["--shutdown-timeout", "20"]
 
 
+def test_a_single_process_provider_may_only_probe_a_port_it_binds():
+    """It declares no ports, so it binds the implicit pair; a probe naming
+    anything else names a port nothing allocates and fails for the life of the
+    service."""
+    with pytest.raises(ValidationError, match="does not bind"):
+        CacheProvider(
+            name="Probed",
+            default_image="demo:v1",
+            versions={"v1.0": {}},
+            default_run_command="demo",
+            health_check={"scheme": "http", "target": "admin"},
+        )
+
+    for target in ("port", "metrics"):
+        CacheProvider(
+            name="Probed",
+            default_image="demo:v1",
+            versions={"v1.0": {}},
+            default_run_command="demo",
+            health_check={"scheme": "http", "target": target},
+        )
+
+
+def test_a_field_gate_must_name_a_field_that_exists():
+    """A gate naming nothing resolves to None, matches no visible_when, and
+    leaves the field it guards rendering its plain default as though ungated —
+    a value quietly not being what the declaration says."""
+    with pytest.raises(ValidationError, match="does not declare"):
+        CacheProvider(
+            name="Gated",
+            default_image="demo:v1",
+            versions={"v1.0": {}},
+            default_run_command="demo",
+            fields=[
+                {"name": "mode", "type": "select", "options": ["a", "b"]},
+                {
+                    "name": "size",
+                    "type": "number",
+                    "visible_by": "moed",
+                    "visible_when": "a",
+                },
+            ],
+        )
+
+
 def test_injection_backstops_a_gated_field_with_its_gated_default():
     """A field behind a closed gate renders the value the launch would use, not
     the plain default — an engine's contribution has to read 0 while something

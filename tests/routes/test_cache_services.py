@@ -1961,6 +1961,38 @@ async def test_a_streamed_row_is_redacted_against_its_own_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_stream_survives_a_catalog_read_that_fails(monkeypatch):
+    """The transform runs inside the stream: letting a lookup raise ends it for
+    every subscriber over one event."""
+
+    async def boom(_session, _name=None):
+        raise RuntimeError("database is away")
+
+    monkeypatch.setattr(cache_services_route, "get_cache_provider", boom)
+    opened = MagicMock()
+    opened.__aenter__ = AsyncMock(return_value=MagicMock())
+    opened.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(cache_services_route, "async_session", lambda: opened)
+
+    captured = {}
+
+    def streaming(**kwargs):
+        captured.update(kwargs)
+        return iter(())
+
+    monkeypatch.setattr(cache_services_route.CacheService, "streaming", streaming)
+    await cache_services_route.get_cache_services(
+        ctx=_user_ctx(), params=SimpleNamespace(watch=True, page=1, perPage=10)
+    )
+    event = SimpleNamespace(data=_secretful_service())
+
+    await captured["event_transform"](event)
+
+    # Nothing to redact against, so nothing is redacted — and the stream lives.
+    assert event.data.config.l2_storages[0].params["password"] == "hunter2"
+
+
+@pytest.mark.asyncio
 async def test_get_returns_raw_secrets_to_system_callers(monkeypatch):
     """Workers render the real credentials into the cache server's env;
     redacting their read path would break L2 backends outright."""
@@ -2135,12 +2167,11 @@ async def test_a_partial_update_is_judged_against_what_the_service_holds(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_a_placeholder_is_refused_when_no_declaration_can_restore_it(monkeypatch):
-    """The redacted read is provider-independent, so a service whose provider
-    the catalog no longer carries still round-trips the placeholder through an
-    edit — and the restore that would swap it back needs the declaration this
-    case does not have. Storing it would overwrite the credential with a
-    sentinel."""
+async def test_a_user_cannot_edit_a_service_whose_provider_is_gone(monkeypatch):
+    """Every value here is rendered into a container command or a config file,
+    and with no declaration there is nothing to judge a field name or an option
+    against — including the redaction placeholder, whose restore needs the
+    declaration this case does not have."""
     service = _existing_service(
         config=CacheServiceConfig(fields={"token": "s3cret"}),
     )
@@ -2155,12 +2186,36 @@ async def test_a_placeholder_is_refused_when_no_declaration_can_restore_it(monke
             session=MagicMock(),
             ctx=_user_ctx(),
             id=9,
+            # A plain edit, carrying no placeholder: what is refused is the
+            # edit itself, not a sentinel the restore cannot resolve.
+            cache_service_in=_update_in(
+                config=CacheServiceConfig(fields={"ram_size": 40})
+            ),
+        )
+    assert "cannot be validated" in exc_info.value.message
+    service.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_system_write_back_still_refuses_the_placeholder(monkeypatch):
+    """The one write taken without a declaration is a worker reporting state.
+    The sentinel can never be a value it means to store, and nothing here can
+    swap it back for the secret it stands for."""
+    service = _existing_service(config=CacheServiceConfig(fields={"token": "s3cret"}))
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
+    )
+    _patch_provider(monkeypatch, None)
+    _patch_worker_lookup(monkeypatch)
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await cache_services_route.update_cache_service(
+            session=MagicMock(),
+            ctx=_system_ctx(),
+            id=9,
             cache_service_in=_update_in(
                 config=CacheServiceConfig(
-                    fields={
-                        "ram_size": 20,
-                        "token": cache_services_route.SECRET_PLACEHOLDER,
-                    }
+                    fields={"token": cache_services_route.SECRET_PLACEHOLDER}
                 )
             ),
         )

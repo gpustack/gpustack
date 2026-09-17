@@ -263,14 +263,18 @@ class CacheServiceManager:
                 )
                 return
 
-            provider = self._provider_catalog.get(cache_service.provider_name)
+            provider, catalog_read = self._provider_catalog.lookup(
+                cache_service.provider_name
+            )
             if provider is None:
-                # Told apart deliberately: a catalog this worker has never read
-                # is a connectivity problem to fix, while a catalog that simply
-                # does not carry the provider is a configuration one.
+                # Told apart deliberately: a catalog this worker could not read
+                # is a connectivity problem to fix, while one that was read and
+                # does not carry the provider is a configuration one. Reporting
+                # the second for the first sends whoever reads the instance
+                # after a declaration that is probably there.
                 reason = (
                     f"Unknown cache provider: {cache_service.provider_name}"
-                    if self._provider_catalog.loaded
+                    if catalog_read
                     else "Cannot read the cache provider catalog from the server."
                 )
                 self._update_cache_service_instance(
@@ -1072,7 +1076,7 @@ class CacheServiceManager:
         Managed cache servers run with host networking on this worker, so
         loopback reaches them directly.
         """
-        provider = self._provider_catalog.get(provider_name)
+        provider, _ = self._provider_catalog.lookup(provider_name)
         # A declared component may probe differently from the provider
         # default (e.g. a master's HTTP metrics endpoint vs a store's
         # plain TCP port).

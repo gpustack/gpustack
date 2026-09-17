@@ -130,6 +130,39 @@ def test_a_worker_that_never_read_the_catalog_says_so(catalog):
     assert provider_manager.loaded is True
 
 
+def test_a_miss_says_whether_the_catalog_could_be_read(catalog):
+    """The two things a miss can mean: a catalog read that does not carry the
+    provider (its declaration is gone), and a catalog this worker could not
+    read (the provider may well exist). Reporting the second as the first sends
+    whoever reads the instance after a declaration that is probably there."""
+    provider_manager, http = catalog
+    http.responses.append(_Response([], error=RuntimeError("connection refused")))
+
+    provider, catalog_read = provider_manager.lookup("Demo")
+    assert provider is None and catalog_read is False
+
+    http.responses.append(_Response([_declaration("Other")]))
+    provider, catalog_read = provider_manager.lookup("Demo")
+    assert provider is None and catalog_read is True
+
+
+def test_a_throttled_miss_is_not_claimed_as_an_answer(monkeypatch):
+    """A provider added to the catalog right after a periodic pass misses
+    against a copy that predates it. The throttle is worth keeping — a
+    genuinely absent provider is looked up on every probe — but a miss under it
+    must not be reported as "this provider does not exist"."""
+    http = _HttpxClient()
+    provider_manager = CacheProviderManager(lambda: _ClientSet(http))
+    http.responses.append(_Response([_declaration("Demo")]))
+    provider_manager.sync()
+
+    provider, catalog_read = provider_manager.lookup("Added")
+
+    assert provider is None and catalog_read is False
+    # Nothing was fetched: the periodic pass had just run.
+    assert len(http.calls) == 1
+
+
 def test_a_failed_refresh_keeps_serving_what_was_fetched(catalog):
     """A blip on the API must not empty the catalog a running worker launches
     from."""
