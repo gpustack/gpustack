@@ -92,6 +92,20 @@ class CacheProviderManager:
         is missing."""
         return self.lookup(name)[0]
 
+    def reread(self, name: Optional[str]) -> Optional[CacheProvider]:
+        """The declaration as the server has it now, fetched whatever the
+        throttle says.
+
+        A name that is present does not mean the declaration behind it is
+        current: this worker's copy can predate the document a service was
+        created against, and a provider the packaged catalog holds a
+        placeholder for is present under both. What says the copy is stale is
+        the service asking it for something it does not carry.
+        """
+        self.refresh(force=True)
+        with _cache_lock:
+            return self._providers.get((name or "").lower())
+
     def refresh(self, force: bool = False) -> RefreshOutcome:
         """Re-fetch the catalog, answering what happened: throttled unless
         ``force``, and a fetch that ran either landed or failed."""

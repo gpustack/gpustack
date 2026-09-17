@@ -50,6 +50,9 @@ def _build_manager(worker_id: int = 1):
     # (declaration, whether the catalog it was looked up in could be read) —
     # the two a miss can mean.
     provider_catalog.lookup.return_value = (None, True)
+    # Nothing newer to be had unless a test says so: the re-read runs only when
+    # the declaration on hand cannot serve the service.
+    provider_catalog.reread.return_value = None
     manager = CacheServiceManager(
         lambda: worker_id, lambda: "10.0.0.1", lambda: clientset, cfg, provider_catalog
     )
@@ -1253,6 +1256,38 @@ def test_start_instance_unknown_provider_sets_error():
         state=CacheServiceStateEnum.ERROR,
         state_message="Unknown cache provider: nonexistent",
     )
+
+
+def test_start_instance_rereads_a_catalog_that_predates_the_service():
+    """A name that is present does not mean the declaration behind it is
+    current — the packaged catalog carries a placeholder under the same name as
+    the document an admin pastes. What says the copy is stale is the service
+    asking it for a version it does not carry."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+    stale = _new_provider()
+    stale.versions = {}
+    cache_service = _new_cache_service()
+    clientset.cache_services.get.return_value = cache_service
+    manager._provider_catalog.lookup.return_value = (stale, True)
+    manager._provider_catalog.reread.return_value = _new_provider()
+    ports = iter([40001, 40002])
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_port",
+            side_effect=lambda **kwargs: next(ports),
+        ),
+        patch("gpustack.worker.cache_service_manager.create_workload") as create,
+        patch("gpustack.worker.cache_service_manager.delete_workload"),
+        patch.object(manager, "_update_cache_service_instance", return_value=True),
+    ):
+        manager._start_cache_service_instance(instance)
+
+    manager._provider_catalog.reread.assert_called_once_with(
+        cache_service.provider_name
+    )
+    create.assert_called_once()
 
 
 def test_start_instance_unknown_version_sets_error():
