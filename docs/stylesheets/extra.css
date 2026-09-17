@@ -111,6 +111,35 @@
     --gps-accent-tint: rgba(129, 140, 248, 0.14);
 }
 
+/* ── Dark scheme legibility ──────────────────────────
+   Material's slate ramp puts secondary text at 0.56 alpha, which
+   measures 4.08:1 against the page — under AA, and it is what makes
+   the left nav read as a grey haze. Raising it also lifts code
+   comments, punctuation and variables, which all derive from this
+   same variable.
+
+   Code blocks barely separate from the prose (their surface is only 4%
+   lighter than the page), but lifting that surface is the wrong fix:
+   the syntax palette is tuned against it, and raising it to 21% pushed
+   four token colours below 4.5:1. A hairline gives the same separation
+   and costs the highlighting nothing. */
+[data-md-color-scheme="slate"] {
+    --md-default-fg-color--light: hsla(var(--md-hue), 15%, 90%, 0.74);
+}
+[data-md-color-scheme="slate"] .md-typeset pre > code {
+    border: 1px solid hsla(var(--md-hue), 15%, 32%, 1);
+}
+
+/* Headings and body text are both 0.82 on slate, so hierarchy rests
+   entirely on size. A brighter heading restores the step that the
+   light scheme gets for free from pure black on white. */
+[data-md-color-scheme="slate"] .md-typeset h1,
+[data-md-color-scheme="slate"] .md-typeset h2,
+[data-md-color-scheme="slate"] .md-typeset h3,
+[data-md-color-scheme="slate"] .md-typeset h4 {
+    color: hsla(var(--md-hue), 15%, 95%, 0.96);
+}
+
 /* Material sets --md-typeset-a-color from the *primary* palette, and on
    the slate scheme it does so through a combined
    [data-md-color-scheme][data-md-color-primary] rule (0,2,0). Matching
