@@ -60,6 +60,11 @@ theme:
     - toc.follow
   icon:
     repo: fontawesome/brands/github
+  # Matches gpustack.ai, which loads the same pair — the docs were still on
+  # Material's default Roboto, which read as a different product.
+  font:
+    text: Inter
+    code: JetBrains Mono
   language: en
 plugins:
   - glightbox
