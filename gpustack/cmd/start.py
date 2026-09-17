@@ -238,6 +238,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("SSL_CERTFILE"),
     )
     server_group.add_argument(
+        "--ssl-ca-certfile",
+        type=str,
+        help="Path to the CA bundle workers use to verify the server.",
+        default=get_gpustack_env("SSL_CA_CERTFILE"),
+    )
+    server_group.add_argument(
         "--force-auth-localhost",
         action=OptionalBoolAction,
         help="(DEPRECATED) No-op. Localhost callers are always authenticated; "
@@ -846,6 +852,7 @@ def set_server_options(args, config_data: dict):
         "bootstrap_password",
         "ssl_keyfile",
         "ssl_certfile",
+        "ssl_ca_certfile",
         "force_auth_localhost",
         "disable_update_check",
         "disable_openapi_docs",

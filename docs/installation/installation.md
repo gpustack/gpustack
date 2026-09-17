@@ -69,6 +69,23 @@ The following sections describe examples of custom configuration options when st
      ...
 ```
 
+`GPUSTACK_SSL_CERTFILE` should contain the server certificate followed by any
+intermediate certificates. When the server certificate is signed by a private
+CA, also add its PEM CA bundle so worker and benchmark containers can verify
+the server automatically:
+
+```diff
+ sudo docker run -d --name gpustack \
+     ...
++    -e GPUSTACK_SSL_CA_CERTFILE=/path/to/cert_files/ca-bundle.crt \
+     gpustack/gpustack
+     ...
+```
+
+For a self-signed server certificate, the certificate file itself is used when
+no separate CA bundle is configured. Certificates issued by public CAs require
+no additional CA configuration.
+
 ### Using an External Database
 
 By default, GPUStack uses an embedded PostgreSQL database. To use an external database such as PostgreSQL or MySQL, set the `GPUSTACK_DATABASE_URL` environment variable or use the `--database-url` argument when starting the GPUStack container. See [Database Requirements](requirements.md#database-requirements) for the list of compatible databases and verified versions.
