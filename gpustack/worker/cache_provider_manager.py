@@ -55,6 +55,11 @@ class CacheProviderManager:
         # from a catalog that genuinely carries no such provider.
         self._providers: Dict[str, CacheProvider] = {}
         self._loaded = False
+        # When the copy on hand was fetched, which is not when the last fetch
+        # was attempted: the throttle slot is claimed before fetching and kept
+        # on failure, so a failed attempt would otherwise pass for a recent
+        # read of the catalog.
+        self._loaded_at: Optional[float] = None
         self._last_refresh: float = 0.0
 
     @property
@@ -88,10 +93,14 @@ class CacheProviderManager:
             # A throttled refresh protects a copy fetched within the window,
             # which is recent enough to answer a miss: reporting it as a
             # catalog this worker could not read would blame connectivity for
-            # a provider that genuinely is not declared. Only a failed fetch,
-            # or never having managed one, leaves the question open.
+            # a provider that genuinely is not declared. Measured from the last
+            # successful fetch, not the last attempt — a failed one claims the
+            # throttle slot too, and answering from the copy it left standing
+            # is the conflation this is here to avoid.
             authoritative = outcome is RefreshOutcome.FETCHED or (
-                outcome is RefreshOutcome.THROTTLED and self._loaded
+                outcome is RefreshOutcome.THROTTLED
+                and self._loaded_at is not None
+                and time.monotonic() - self._loaded_at < _REFRESH_MIN_INTERVAL_SECONDS
             )
             return self._providers.get(key), authoritative
 
@@ -139,6 +148,7 @@ class CacheProviderManager:
                 provider.name.lower(): provider for provider in providers
             }
             self._loaded = True
+            self._loaded_at = time.monotonic()
         logger.debug(
             f"Cache provider catalog refreshed: "
             f"{', '.join(sorted(self._providers)) or 'no providers'}"

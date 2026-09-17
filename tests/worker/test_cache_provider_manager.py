@@ -163,6 +163,34 @@ def test_a_throttled_miss_answers_from_the_copy_the_throttle_protects(monkeypatc
     assert len(http.calls) == 1
 
 
+def test_a_failed_fetch_does_not_pass_for_a_recent_read(monkeypatch):
+    """The throttle slot is claimed before fetching and kept on failure, so the
+    last attempt and the last successful read are different times. Answering a
+    miss from the copy a failed attempt left standing is the conflation this
+    distinction exists to avoid."""
+    http = _HttpxClient()
+    provider_manager = CacheProviderManager(lambda: _ClientSet(http))
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        manager_module.time, "monotonic", lambda: clock["now"], raising=False
+    )
+
+    http.responses.append(_Response([_declaration("Demo")]))
+    provider_manager.sync()
+
+    # Well past the window, so the periodic pass runs again — and fails.
+    clock["now"] += 120
+    http.responses.append(_Response([], error=RuntimeError("connection refused")))
+    provider_manager.sync()
+
+    # Inside the window of that failed attempt: throttled, and the copy on hand
+    # is two minutes old.
+    clock["now"] += 5
+    provider, catalog_read = provider_manager.lookup("Added")
+
+    assert provider is None and catalog_read is False
+
+
 def test_a_miss_before_any_successful_read_answers_nothing(monkeypatch):
     """The other side of it: a worker that has never read the catalog knows
     nothing about what it does or does not carry."""
