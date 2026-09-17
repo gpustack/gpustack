@@ -3,7 +3,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from sqlalchemy import true
@@ -862,7 +862,10 @@ def _capture_target_updates(monkeypatch):
         captured.append(source)
         for key, value in (source or {}).items():
             setattr(self, key, value)
-        return self
+        # ActiveRecord.update() mutates the instance in place and has no
+        # return value; mirroring that keeps the helper honest about what the
+        # callers can rely on.
+        return None
 
     monkeypatch.setattr(ModelRouteTarget, "update", fake_update)
     return captured
@@ -1059,3 +1062,95 @@ async def test_update_targets_keeps_omitted_fields(monkeypatch):
     assert source["weight"] == 9
     # overridden_model_name was not sent, so it is preserved.
     assert source["overridden_model_name"] == "base:lora"
+
+
+@pytest.mark.asyncio
+async def test_update_targets_returns_targets_when_update_returns_none(monkeypatch):
+    """The batch helper must collect the target itself: ``ActiveRecord.update()``
+    mutates the instance in place and returns nothing."""
+    captured = _capture_target_updates(monkeypatch)
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    result = await model_routes.update_model_route_targets(
+        session=MagicMock(),
+        targets=[ModelRouteTargetUpdateItem(id=1, model_id=5, weight=2)],
+        existing_target_map={1: existing},
+    )
+
+    assert len(captured) == 1
+    assert result == [existing]
+
+
+@pytest.mark.asyncio
+async def test_add_targets_refreshes_real_targets_only(monkeypatch):
+    """End-to-end shape of the reported 500: the handler commits a batch that
+    both updates an existing target and adds a new one, then refreshes every
+    entry it got back.  A ``None`` entry made it call ``session.refresh(None)``
+    and answer 500 although the change had already been persisted."""
+    route = SimpleNamespace(
+        id=1, name="r1", targets=2, owner_principal_id=None, deleted_at=None
+    )
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+    created = ModelRouteTarget(
+        id=2,
+        name="r1-fghij",
+        route_name="r1",
+        route_id=1,
+        model_id=6,
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+    _capture_target_updates(monkeypatch)
+    session = MagicMock(commit=AsyncMock(), refresh=AsyncMock())
+
+    async def fake_all_by_field(**kwargs):
+        return [existing]
+
+    async def fake_validate_targets(**kwargs):
+        return None
+
+    async def fake_create_model_route_targets(**kwargs):
+        return [created]
+
+    async def fake_one_by_id(**kwargs):
+        return route
+
+    monkeypatch.setattr(ModelRouteTarget, "all_by_field", fake_all_by_field)
+    monkeypatch.setattr(model_routes, "validate_targets", fake_validate_targets)
+    monkeypatch.setattr(
+        model_routes, "create_model_route_targets", fake_create_model_route_targets
+    )
+    monkeypatch.setattr(ModelRoute, "one_by_id", fake_one_by_id)
+    monkeypatch.setattr(model_routes, "assert_resource_visible", lambda *a, **k: None)
+    monkeypatch.setattr(
+        model_routes.ModelRouteService, "update", AsyncMock(return_value=None)
+    )
+
+    result = await model_routes.add_model_route_targets(
+        id=1,
+        session=session,
+        ctx=MagicMock(),
+        targets=[
+            ModelRouteTargetUpdateItem(id=1, model_id=5, weight=2),
+            ModelRouteTargetUpdateItem(model_id=6, weight=1),
+        ],
+    )
+
+    assert result == [existing, created]
+    session.refresh.assert_has_awaits([call(existing), call(created)])

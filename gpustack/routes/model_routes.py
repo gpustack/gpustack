@@ -780,7 +780,7 @@ async def add_model_route_targets(
         route,
         not_found_message=f"ModelRoute with id '{id}' not found.",
     )
-    target_count, created_targets = await batch_handle_targets(
+    target_count, touched_targets = await batch_handle_targets(
         session=session,
         route_id=route.id,
         route_name=route.name,
@@ -793,9 +793,9 @@ async def add_model_route_targets(
         route.targets = target_count
         await ModelRouteService(session=session).update(route, auto_commit=True)
         await session.commit()
-        for target in created_targets:
+        for target in touched_targets:
             await session.refresh(target)
-        return created_targets
+        return touched_targets
     except Exception as e:
         raise InternalServerErrorException(
             f"Failed to add targets to ModelRoute '{id}': {e}"
@@ -969,10 +969,10 @@ async def update_model_route_targets(
                 }
             )
         if len(update_source) > 0:
-            updated = await existing_target.update(
+            await existing_target.update(
                 session=session, source=update_source, auto_commit=auto_commit
             )
-            targets_to_return.append(updated)
+            targets_to_return.append(existing_target)
 
     return targets_to_return
 
