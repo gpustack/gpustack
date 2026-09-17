@@ -1,10 +1,10 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple, Type
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import SQLModel, Field as SQLField
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -12,7 +12,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.mixins import BaseModelMixin
 from .models import Model
 from .model_sets import Catalog, DraftModel, ModelSet, ModelSpec
-from .source import SourceContent, SourceMixin, SourceTypeEnum, validate_icon
+from .source import (
+    SourceContent,
+    SourceMixin,
+    SourceTypeEnum,
+    unknown_keys,
+    validate_icon,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,19 +73,6 @@ class CatalogModelEntry(CatalogModelEntryBase, BaseModelMixin, table=True):
     id: Optional[int] = SQLField(default=None, primary_key=True)
 
 
-def _unknown_keys(raw: dict, model: Type[BaseModel]) -> Set[str]:
-    """Keys ``model`` has no field for, as strings (a YAML key can be an int).
-
-    ``.``-prefixed keys host YAML anchors the document references, not fields;
-    the packaged catalog puts them at every level, so the rule lives here.
-    """
-    return {
-        str(key)
-        for key in raw
-        if key not in model.model_fields and not str(key).startswith(".")
-    }
-
-
 def _string_keys_only(raw: Any) -> Any:
     """Drop non-string keys, which ``**`` rejects; a non-mapping passes through."""
     if not isinstance(raw, dict):
@@ -102,13 +95,13 @@ def _load_model_set(
         if not isinstance(raw_specs, list):
             raise ValueError("specs must be a list")
         card_unknown_fields: Set[str] = (
-            _unknown_keys(raw, ModelSet) if isinstance(raw, dict) else set()
+            unknown_keys(raw, ModelSet) if isinstance(raw, dict) else set()
         )
         specs: List[ModelSpec] = []
         for raw_spec in raw_specs:
             try:
                 specs.append(ModelSpec(**_string_keys_only(raw_spec)))
-                card_unknown_fields.update(_unknown_keys(raw_spec, ModelSpec))
+                card_unknown_fields.update(unknown_keys(raw_spec, ModelSpec))
             except (ValidationError, TypeError, ValueError) as e:
                 if strict:
                     raise  # bare: the outer handler names the card once
@@ -157,13 +150,13 @@ def _load_catalog(raw: Optional[str], strict: bool = False) -> Catalog:
     if not isinstance(raw_model_sets, list) or not isinstance(raw_draft_models, list):
         raise ValueError("model_sets and draft_models must be lists")
 
-    unknown_fields = _unknown_keys(data, Catalog)
+    unknown_fields = unknown_keys(data, Catalog)
 
     draft_models: List[DraftModel] = []
     for raw_draft in raw_draft_models:
         try:
             draft_models.append(DraftModel(**_string_keys_only(raw_draft)))
-            unknown_fields.update(_unknown_keys(raw_draft, DraftModel))
+            unknown_fields.update(unknown_keys(raw_draft, DraftModel))
         except (ValidationError, TypeError, ValueError) as e:
             name = raw_draft.get("name") if isinstance(raw_draft, dict) else None
             if strict:

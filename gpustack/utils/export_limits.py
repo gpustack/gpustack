@@ -12,6 +12,7 @@ lives outside the routes rather than being imported from one into the other.
 
 from math import ceil, floor
 from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import quote
 
 from gpustack import envs
 from gpustack.api.exceptions import InvalidException
@@ -26,8 +27,35 @@ from gpustack.schemas.usage import (
 
 
 def attachment_headers(filename: str) -> Dict[str, str]:
-    """Response headers that make a browser save the body under ``filename``."""
-    return {"Content-Disposition": f'attachment; filename="{filename}"'}
+    """Response headers that make a browser save the body under ``filename``.
+
+    Starlette encodes headers as latin-1, so a non-ASCII name needs the RFC
+    6266 ``filename*`` form next to an ASCII fallback. The fallback is a
+    quoted-string, so quotes and backslashes in it become ``_`` as well.
+    """
+    quoted = quote(filename, safe="")
+    if quoted == filename:
+        return {"Content-Disposition": f'attachment; filename="{filename}"'}
+    ascii_filename = "".join(
+        ch if ch.isascii() and ch.isprintable() and ch not in '"\\' else "_"
+        for ch in filename
+    )
+    return {
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{quoted}'
+        )
+    }
+
+
+def sanitize_filename(name: str, fallback: str) -> str:
+    """Make a name safe as a download filename / zip entry name.
+
+    Non-ASCII stays: zip entries are UTF-8, and ``attachment_headers``
+    percent-encodes it. ``fallback`` is used when nothing printable is left.
+    """
+    cleaned = name.replace("/", "_").replace("\\", "_").replace('"', "_")
+    cleaned = "".join(ch for ch in cleaned if ch.isprintable()).strip(". ")
+    return cleaned or fallback
 
 
 def requested_platform_wide(request) -> bool:

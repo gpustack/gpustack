@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import AsyncIterator, Dict, List, Optional, Tuple
+from typing import AsyncIterator, List, Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Request, status, HTTPException
 from fastapi.responses import (
@@ -8,7 +8,7 @@ from fastapi.responses import (
     StreamingResponse,
     RedirectResponse,
 )
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
@@ -47,6 +47,7 @@ from gpustack.schemas.models import (
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.config.config import get_global_config
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack.utils.export_limits import attachment_headers, sanitize_filename
 from gpustack.utils.tabular_export import stream_zip
 
 router = APIRouter()
@@ -380,11 +381,13 @@ def _stream_single_worker_log(
     stream: dict,
 ) -> StreamingResponse:
     """Stream one worker/container's logs straight through, without buffering."""
-    filename = _sanitize_filename(f"{model_instance.name or model_instance.id}.log")
+    filename = sanitize_filename(
+        f"{model_instance.name or model_instance.id}.log", "logs"
+    )
     return StreamingResponse(
         _worker_log_chunks(request, model_instance, stream),
         media_type="text/plain; charset=utf-8",
-        headers=_attachment_headers(filename),
+        headers=attachment_headers(filename),
     )
 
 
@@ -394,13 +397,13 @@ def _stream_zipped_worker_logs(
     streams: List[dict],
 ) -> StreamingResponse:
     """Stream a flat zip with one member per log; peak memory is one chunk."""
-    zip_name = _sanitize_filename(
-        f"{model_instance.name or model_instance.id}.logs.zip"
+    zip_name = sanitize_filename(
+        f"{model_instance.name or model_instance.id}.logs.zip", "logs"
     )
     return StreamingResponse(
         stream_zip(_zip_members(request, model_instance, streams)),
         media_type="application/zip",
-        headers=_attachment_headers(zip_name),
+        headers=attachment_headers(zip_name),
     )
 
 
@@ -413,10 +416,10 @@ async def _zip_members(
     seen: set[str] = set()
     for stream in streams:
         label = f"{stream['worker_label']}.{stream['container_display']}"
-        name = _sanitize_filename(f"{label}.log")
+        name = sanitize_filename(f"{label}.log", "logs")
         index = 1
         while name in seen:
-            name = _sanitize_filename(f"{label}.{index}.log")
+            name = sanitize_filename(f"{label}.{index}.log", "logs")
             index += 1
         seen.add(name)
         yield name, _worker_log_chunks(request, model_instance, stream)
@@ -464,34 +467,6 @@ async def _worker_log_chunks(
             yield payload
     except Exception as e:
         yield f"\nFailed to fetch logs: {e}\n".encode()
-
-
-def _sanitize_filename(name: str) -> str:
-    """Make a name safe as a download filename / zip entry name.
-
-    Non-ASCII stays: zip entries are UTF-8, and the header percent-encodes it.
-    """
-    cleaned = name.replace("/", "_").replace("\\", "_").replace('"', "_")
-    cleaned = "".join(ch for ch in cleaned if ch.isprintable()).strip(". ")
-    return cleaned or "logs"
-
-
-def _attachment_headers(filename: str) -> Dict[str, str]:
-    """A Content-Disposition that survives a non-ASCII filename (RFC 6266).
-
-    Starlette encodes headers as latin-1, so a CJK name needs ``filename*``.
-    """
-    quoted = quote(filename, safe="")
-    if quoted == filename:
-        return {"Content-Disposition": f'attachment; filename="{filename}"'}
-    ascii_filename = "".join(
-        ch if ch.isascii() and ch.isprintable() else "_" for ch in filename
-    )
-    return {
-        "Content-Disposition": (
-            f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{quoted}'
-        )
-    }
 
 
 def _build_serve_log_params(
