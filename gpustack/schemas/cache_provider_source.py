@@ -28,6 +28,7 @@ from .cache_providers import (
     CacheProvider,
     validate_injection_templates,
     validate_localized_text,
+    validate_template_filters,
 )
 from .source import SourceContent, SourceMixin, SourceTypeEnum
 
@@ -117,25 +118,46 @@ def _unknown_keys(raw: Any, model: Type[BaseModel], path: str = "") -> Set[str]:
             continue
         nested = _model_for(field.annotation)
         if nested is None:
+            # Nothing with field names under here: a mapping of strings (env
+            # vars, the files an injection writes) carries keys the document
+            # invents, not fields to check.
             continue
-        for label, item in _walk(key, value):
+        for label, item in _nested_declarations(key, value, field.annotation):
             unknown |= _unknown_keys(item, nested, f"{path}{label}.")
     return unknown
 
 
-def _walk(key: Any, value: Any):
-    """(label, mapping) pairs to check under ``key``: a mapping is itself one, a
-    list is its items by index, a mapping of declarations is its values by name.
+def _nested_declarations(key: Any, value: Any, annotation: Any):
+    """(label, mapping) pairs to check under ``key``, read off the annotation
+    rather than the value.
+
+    Which of the three shapes a field holds — one declaration, a list of them,
+    or a mapping of them keyed by a name the document chooses — is what the
+    declaration says it is. Guessing from the value cannot tell a mapping of
+    declarations from a declaration whose every field happens to be a mapping,
+    and an injection carrying only env, files and a transfer config is exactly
+    that.
     """
-    if isinstance(value, list):
+    origin = get_origin(annotation)
+    if origin is Union:
+        # Optional[X], and "a name or a mapping" alike: the shape is whichever
+        # member carries the model.
+        for arg in get_args(annotation):
+            if arg is type(None):
+                continue
+            nested = _nested_declarations(key, value, arg)
+            if nested:
+                return nested
+        return []
+    if origin in (list, set, tuple):
+        if not isinstance(value, list):
+            return []
         return [(f"{key}[{index}]", item) for index, item in enumerate(value)]
-    if isinstance(value, dict):
-        # A dict of declarations (``components``) vs a declaration itself: the
-        # former's values are mappings, the latter's are scalars.
-        if value and all(isinstance(item, dict) for item in value.values()):
-            return [(f"{key}.{name}", item) for name, item in value.items()]
-        return [(key, value)]
-    return []
+    if origin is dict:
+        if not isinstance(value, dict):
+            return []
+        return [(f"{key}.{name}", item) for name, item in value.items()]
+    return [(str(key), value)] if isinstance(value, dict) else []
 
 
 def load_cache_providers_document(
@@ -175,6 +197,7 @@ def load_cache_providers_document(
         # renders for no locale), so it never reaches the catalog.
         violations = validate_injection_templates(provider)
         violations += validate_localized_text(provider)
+        violations += validate_template_filters(provider)
         if violations:
             listed = "; ".join(violations)
             if strict:
@@ -236,7 +259,17 @@ def build_cache_provider_entries(
     merged: List[CacheProvider] = []
     origin: Dict[str, SourceContent] = {}
     for source in sources:
-        loaded = load_cache_providers_document(source.content)
+        try:
+            loaded = load_cache_providers_document(source.content)
+        except ValueError as e:
+            # A document is validated when it is written, so one that will not
+            # parse here was corrupted after the fact. It costs its own
+            # declarations and not the catalog: raising would leave the table
+            # serving whatever it last held, with no way to notice.
+            logger.error(
+                f"Skipping unreadable cache provider source {source.name}: {e}"
+            )
+            continue
         for provider in loaded:
             origin[provider.name.lower()] = source
         merged = merge_cache_providers(merged, loaded)

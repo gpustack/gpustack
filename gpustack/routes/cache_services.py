@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
@@ -65,6 +66,8 @@ from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
 from gpustack.server.worker_request import request_to_worker, stream_to_worker
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack.worker.logs import LogOptionsDep
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -199,12 +202,47 @@ def _restore_secret_params(
                 restore(storage.params, field.name, stored_params)
 
 
+def _every_config_value(
+    cache_service_in: CacheServiceBase,
+) -> List[Tuple[Dict[str, Any], str]]:
+    """(mapping, key) of every value a service configuration carries — the
+    declared fields and every L2 backend's params. Used where there is no
+    declaration to say which of them are secrets."""
+    config = cache_service_in.config
+    if config is None:
+        return []
+    slots: List[Tuple[Dict[str, Any], str]] = []
+    for name in config.fields or {}:
+        slots.append((config.fields, name))
+    for storage in config.l2_storages or []:
+        for name in storage.params or {}:
+            slots.append((storage.params, name))
+    return slots
+
+
 def _reject_placeholder_secrets(
     cache_service_in: CacheServiceBase, provider: Optional[CacheProvider]
 ) -> None:
     """A create has no stored value a placeholder could stand for;
-    storing it literally would silently break the credential."""
+    storing it literally would silently break the credential.
+
+    With no declaration to say which values are secrets, every one is checked
+    for the sentinel instead: a redacted read is provider-independent, so a
+    service whose provider the catalog no longer carries still round-trips the
+    placeholder through an edit — and the restore that would have swapped it
+    back needs the declaration this case does not have."""
     if provider is None:
+        for params, name in _every_config_value(cache_service_in):
+            if params.get(name) == SECRET_PLACEHOLDER:
+                raise BadRequestException(
+                    message=(
+                        f"'{name}' carries the redaction placeholder, and the "
+                        f"cache provider "
+                        f"'{cache_service_in.provider_name}' is no longer in "
+                        f"the catalog, so its stored value cannot be restored. "
+                        f"Enter the value again."
+                    )
+                )
         return
     for params, name in _secret_param_slots(provider, cache_service_in):
         if params.get(name) == SECRET_PLACEHOLDER:
@@ -1053,7 +1091,9 @@ def _validate_required_fields(
 
 
 def _validate_fields(
-    cache_service_in: CacheServiceBase, provider: Optional[CacheProvider]
+    cache_service_in: CacheServiceBase,
+    provider: Optional[CacheProvider],
+    stored: Optional[Dict[str, Any]] = None,
 ) -> None:
     """config.fields must match the provider's fields declaration:
     an unknown name is a typo (the worker would silently ignore it), and a
@@ -1064,7 +1104,11 @@ def _validate_fields(
     values = (config.fields if config else None) or {}
     if provider is None:
         return
-    _validate_required_fields(cache_service_in, provider, values)
+    # An update is a partial body — ``BaseModelMixin.update`` merges only the
+    # fields it set — so a request that carries no config at all is not a
+    # service with no fields. Requiredness is judged against what the service
+    # will hold, which on create is the request alone.
+    _validate_required_fields(cache_service_in, provider, {**(stored or {}), **values})
     if not values:
         return
     declared = {field.name: field for field in provider.fields}
@@ -1249,12 +1293,31 @@ async def update_cache_service(
     # provider_version unknown to the catalog or a cleared required field
     # only surfaces as a worker-side start failure, and worker_id could
     # be re-pointed across clusters.
-    _validate_cache_service_provider(cache_service_in, provider, creating=False)
-    _validate_cache_service_custom_version(cache_service_in, provider)
-    _validate_cache_service_config(cache_service_in, provider)
-    _validate_management_url(cache_service_in, provider)
-    _validate_fields(cache_service_in, provider)
-    _validate_cache_service_l2_storage(cache_service_in, provider)
+    #
+    # Every one of them judges the service against its declaration, so a
+    # service whose provider the catalog no longer carries — an extension
+    # uninstalled, a configured document that dropped it — has nothing to be
+    # judged against. Refusing the write instead would take the service's own
+    # instances offline in the reports sense: the worker writing their state
+    # back is a system caller updating this row, and losing those writes loses
+    # the very account of what happened to a service that can no longer start.
+    if provider is not None:
+        _validate_cache_service_provider(cache_service_in, provider, creating=False)
+        _validate_cache_service_custom_version(cache_service_in, provider)
+        _validate_cache_service_config(cache_service_in, provider)
+        _validate_management_url(cache_service_in, provider)
+        _validate_fields(
+            cache_service_in,
+            provider,
+            stored=(cache_service.config.fields if cache_service.config else None),
+        )
+        _validate_cache_service_l2_storage(cache_service_in, provider)
+    else:
+        logger.warning(
+            f"Cache service {cache_service.name} names cache provider "
+            f"'{cache_service.provider_name}', which the catalog no longer "
+            f"carries; updating it without the checks that read a declaration."
+        )
     _validate_cache_service_worker_selector(cache_service_in)
     # Restore resolved every placeholder above; anything still carrying
     # the literal sentinel would be stored as the secret itself.

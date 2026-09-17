@@ -25,6 +25,7 @@ from gpustack.schemas.cache_provider_source import (
 from gpustack.schemas.cache_providers import (
     CacheProvider,
     render_injection as _render_injection,
+    resolved_field_values,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,8 +160,13 @@ def render_injection(
     # empty, e.g. a device name a TCP transport does not read), matching
     # the managed run-command path where None renders empty and drops
     # with its flag.
+    #
+    # Resolved rather than declared: a field behind a closed gate carries its
+    # gated default, which is the value the launch renders — an engine's
+    # segment contribution has to read 0 while a standalone store owns the
+    # pool, and the plain default would say otherwise.
+    resolved = resolved_field_values(provider.fields, params)
     for field in provider.fields:
-        params.setdefault(
-            field.name, field.default if field.default is not None else ""
-        )
+        fallback = resolved.get(field.name)
+        params.setdefault(field.name, fallback if fallback is not None else "")
     return _render_injection(integration, params)

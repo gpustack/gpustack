@@ -844,6 +844,106 @@ async def test_aggregate_transitions(monkeypatch, states, expected):
 
 
 @pytest.mark.asyncio
+async def test_a_dependent_waits_out_a_dependency_that_is_not_up_yet(monkeypatch):
+    """The other reading of "no address to hand down": the dependency is
+    enabled and still coming up. Deleting the dependent there would restart it
+    on every pass until the master lands."""
+    from gpustack.schemas.cache_providers import CacheProviderComponent
+
+    provider = _pool_provider()
+    provider.components["master"] = CacheProviderComponent(
+        run_command="pool-master --port {{port}}",
+        gpu_access=False,
+    )
+    provider.components["store"] = CacheProviderComponent(
+        topology="per_node",
+        depends_on="master",
+        attach_endpoint=True,
+        run_command="pool-store --port {{port}}",
+        gpu_access=False,
+    )
+    # The master exists but has not reached RUNNING, so it contributes no
+    # address this pass.
+    master = _instance(
+        id=50,
+        worker_id=5,
+        state=CacheServiceStateEnum.STARTING,
+        component="master",
+    )
+    store = _instance(
+        id=51,
+        worker_id=5,
+        state=CacheServiceStateEnum.RUNNING,
+        component="store",
+    )
+    # Stamped when the master was up before: what must not be read as stale
+    # while the master is on its way back.
+    store.component_addresses = {"master": "10.0.0.9:9000"}
+    service = _service(worker_id=None, config=CacheServiceConfig(fields={}))
+    _patch_reconcile(
+        monkeypatch,
+        provider,
+        workers=[_worker(5)],
+        instance_lists=[[master, store], [master, store]],
+    )
+
+    controller = CacheServiceController(MagicMock())
+    await controller._reconcile_service(MagicMock(), service)
+
+    store.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_dependent_drops_the_address_of_a_dependency_turned_off(monkeypatch):
+    """Turning the dependency off leaves nothing to hand down, which reads the
+    same as one that has not come up yet. A dependent already carrying its
+    address is running against something that will never answer, so it is
+    recreated rather than left pointing at it."""
+    from gpustack.schemas.cache_providers import (
+        CacheProviderComponent,
+        CacheProviderField,
+    )
+
+    provider = _pool_provider()
+    provider.fields = [
+        CacheProviderField(name="enable_extra", type="boolean", default=False),
+    ]
+    provider.components["master"] = CacheProviderComponent(
+        enabled_by="enable_extra",
+        run_command="pool-master --port {{port}}",
+        gpu_access=False,
+    )
+    provider.components["store"] = CacheProviderComponent(
+        topology="per_node",
+        depends_on="master",
+        attach_endpoint=True,
+        run_command="pool-store --port {{port}}",
+        gpu_access=False,
+    )
+    stale = _instance(
+        id=41,
+        worker_id=5,
+        state=CacheServiceStateEnum.RUNNING,
+        component="store",
+    )
+    stale.component_addresses = {"master": "10.0.0.9:9000"}
+    service = _service(
+        worker_id=None, config=CacheServiceConfig(fields={"enable_extra": False})
+    )
+    _patch_reconcile(
+        monkeypatch,
+        provider,
+        workers=[_worker(5)],
+        instance_lists=[[stale], [stale]],
+    )
+
+    controller = CacheServiceController(MagicMock())
+    await controller._reconcile_service(MagicMock(), service)
+
+    stale.delete.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_aggregate_ignores_a_disabled_component_still_holding_rows(monkeypatch):
     """A component turned off keeps its rows until the next reconcile deletes
     them, and this aggregate also runs straight off an instance event. Counting

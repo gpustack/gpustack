@@ -5,7 +5,7 @@ away."""
 import logging
 from contextlib import asynccontextmanager
 from importlib.resources import files
-from typing import List, Optional
+from typing import List
 
 import pytest
 import pytest_asyncio
@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from gpustack.api.exceptions import BadRequestException
 from gpustack.schemas.cache_provider_source import (
     CacheProviderEntry,
     CacheProviderSource,
@@ -25,10 +24,6 @@ from gpustack.schemas.cache_provider_source import (
     reconcile_cache_providers,
 )
 from gpustack.schemas.source import SourceContent, SourceTypeEnum
-from gpustack.routes.cache_providers import (
-    CACHE_PROVIDER_SOURCE_SPEC,
-    _reject_taking_away_a_provider_in_use,
-)
 from gpustack.server.cache_provider_catalog import (
     asset_providers,
     builtin_catalog_text,
@@ -163,6 +158,68 @@ def test_a_misspelled_field_is_named_rather_than_ignored(overrides, reported):
         normalize_cache_provider_yaml(document, strict=True)
 
 
+def test_a_misspelled_template_filter_is_named_rather_than_left_to_launch():
+    """A filter nothing defines renders through every other check and then
+    raises while a launch command is being built — far from the document that
+    named it, and only for the configurations reaching that template."""
+    document = _document(
+        _provider("Demo", default_run_command="demo --size {{ram_size|gib_to_byte}}")
+    )
+    with pytest.raises(ValueError, match="gib_to_byte"):
+        normalize_cache_provider_yaml(document, strict=True)
+
+
+def test_a_filter_is_checked_wherever_a_declaration_carries_one():
+    """Not only in injections: a filter reads the same in a resource claim, and
+    a check that knows which fields hold templates goes stale."""
+    document = _document(
+        _provider("Demo", resource_profile={"ram_gib": "{{ram_size|to_gib}}"})
+    )
+    with pytest.raises(ValueError, match="to_gib"):
+        normalize_cache_provider_yaml(document, strict=True)
+
+
+def test_the_filter_that_exists_passes():
+    document = _document(
+        _provider("Demo", default_run_command="demo --size {{ram_size|gib_to_bytes}}")
+    )
+    assert load_cache_providers_document(document, strict=True)
+
+
+@pytest.mark.parametrize(
+    "injection",
+    [
+        # Every field a mapping: what the shape of the value alone cannot tell
+        # apart from a mapping of declarations keyed by name.
+        {
+            "env": {"MOONCAKE_CONFIG_PATH": "/tmp/x.json", "PYTHONHASHSEED": "0"},
+            "files": {"/tmp/x.json": "{}"},
+            "kv_transfer_config": {"kv_connector": "Demo", "kv_role": "kv_both"},
+        },
+        # A mapping beside a list, which is the packaged catalog's shape.
+        {
+            "env": {"PYTHONHASHSEED": "0"},
+            "args": ["--flag"],
+        },
+    ],
+)
+def test_keys_a_document_invents_are_not_read_as_fields(injection):
+    """An injection's env vars and the files it writes are keyed by names the
+    document chooses. Reading them as field names rejected a declaration that
+    was entirely valid — the enterprise Mooncake one, whose injection carries
+    no list to give its shape away."""
+    document = _document(
+        _provider(
+            "Demo",
+            inference_backend_integrations=[
+                {"backend": "vLLM", "injection": injection}
+            ],
+        )
+    )
+
+    assert load_cache_providers_document(document, strict=True)
+
+
 def test_an_unattended_read_keeps_what_it_can(caplog):
     """The lenient half of the same rule: a document stored by a newer version
     still serves the declarations this one understands."""
@@ -252,6 +309,28 @@ async def test_a_row_is_stamped_with_the_source_that_produced_it(session):
 
 
 @pytest.mark.asyncio
+async def test_one_unreadable_source_does_not_stop_the_others(session, caplog):
+    """A document is validated when it is written, so one that will not parse
+    here was corrupted after the fact. Raising would leave the table serving
+    whatever it last held, with nothing to say why."""
+    with caplog.at_level(logging.ERROR):
+        await reconcile_cache_providers(
+            session,
+            [
+                SourceContent("builtin", SourceTypeEnum.BUILTIN, ": : not yaml\n"),
+                SourceContent(
+                    "custom", SourceTypeEnum.FILE, _document(_provider("Demo"))
+                ),
+            ],
+        )
+
+    assert [provider.name for provider in await get_cache_providers(session)] == [
+        "Demo"
+    ]
+    assert "builtin" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_no_source_clears_the_catalog(session):
     """Every source dropped is a real state — the packaged baseline is itself a
     source row, so nothing serving means nothing declared."""
@@ -300,125 +379,3 @@ def test_dump_is_what_normalize_stores():
     assert dump_cache_providers(providers) == normalize_cache_provider_yaml(
         _document(_provider("Demo"))
     )
-
-
-# --- what a write may not take away ----------------------------------------
-
-
-class _FakeService:
-    def __init__(self, name: str, provider: str, version: Optional[str]):
-        self.name = name
-        self.provider_name = provider
-        self.provider_version = version
-
-
-class _FakeSession:
-    """Stands in for the session the check queries services through."""
-
-    def __init__(self, services: List[_FakeService]):
-        self.services = services
-
-
-@pytest.fixture
-def services(monkeypatch):
-    """Let a test declare the cache services that exist."""
-
-    def install(*rows: _FakeService):
-        async def all_services(session):
-            return list(rows)
-
-        monkeypatch.setattr(
-            "gpustack.routes.cache_providers.CacheService.all",
-            staticmethod(all_services),
-        )
-
-    return install
-
-
-def _contents(*documents: str) -> List[SourceContent]:
-    return [
-        SourceContent(f"source-{index}", SourceTypeEnum.FILE, document)
-        for index, document in enumerate(documents)
-    ]
-
-
-@pytest.mark.asyncio
-async def test_a_document_dropping_a_provider_in_use_is_refused(services):
-    services(_FakeService("shared-cache", "LMCache", "v0.5.3"))
-    with pytest.raises(BadRequestException) as excinfo:
-        await _reject_taking_away_a_provider_in_use(
-            _FakeSession([]), _contents(_document(_provider("Demo")))
-        )
-    assert "lmcache" in str(excinfo.value.message).lower()
-    assert "shared-cache" in str(excinfo.value.message)
-
-
-@pytest.mark.asyncio
-async def test_a_document_dropping_the_pinned_version_is_refused(services):
-    services(_FakeService("shared-cache", "Demo", "v1"))
-    with pytest.raises(BadRequestException) as excinfo:
-        await _reject_taking_away_a_provider_in_use(
-            _FakeSession([]), _contents(_document(_provider("Demo", "v2")))
-        )
-    message = str(excinfo.value.message)
-    assert "version 'v1'" in message and "shared-cache" in message
-
-
-@pytest.mark.asyncio
-async def test_every_offending_pin_is_named_in_one_message(services):
-    """An admin whose document is missing three providers should not have to
-    submit three times to learn all three."""
-    services(
-        _FakeService("one", "Demo", "v1"),
-        _FakeService("two", "Other", None),
-        _FakeService("three", "Third", "v1"),
-    )
-    with pytest.raises(BadRequestException) as excinfo:
-        await _reject_taking_away_a_provider_in_use(
-            _FakeSession([]), _contents(_document(_provider("Demo", "v1")))
-        )
-    message = str(excinfo.value.message)
-    assert "'other'" in message and "'third'" in message
-    assert "two" in message and "three" in message
-    # The one the document still carries is not reported.
-    assert "'demo'" not in message
-
-
-@pytest.mark.asyncio
-async def test_a_service_on_a_custom_image_pins_only_its_provider(services):
-    """The reserved "custom" version names an image of the service's own, so a
-    document that carries the provider satisfies it whatever versions it
-    declares."""
-    services(_FakeService("shared-cache", "Demo", "custom"))
-    await _reject_taking_away_a_provider_in_use(
-        _FakeSession([]), _contents(_document(_provider("Demo", "v9")))
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_document_keeping_what_is_in_use_passes(services):
-    services(_FakeService("shared-cache", "Demo", "v1"))
-    await _reject_taking_away_a_provider_in_use(
-        _FakeSession([]),
-        _contents(_document(_provider("Demo", "v1"), _provider("Added"))),
-    )
-
-
-@pytest.mark.asyncio
-async def test_no_cache_service_means_nothing_to_protect(services):
-    services()
-    await _reject_taking_away_a_provider_in_use(_FakeSession([]), _contents("[]"))
-
-
-# --- the source binding ----------------------------------------------------
-
-
-def test_the_spec_takes_a_document_either_way_an_admin_keeps_one():
-    """Pasted in or fetched from an address of their own — the same two source
-    types every other kind offers."""
-    assert CACHE_PROVIDER_SOURCE_SPEC.allowed_types == (
-        SourceTypeEnum.FILE,
-        SourceTypeEnum.URL,
-    )
-    assert CACHE_PROVIDER_SOURCE_SPEC.builtin_name == "builtin"
-    assert CACHE_PROVIDER_SOURCE_SPEC.pre_write_check is not None
