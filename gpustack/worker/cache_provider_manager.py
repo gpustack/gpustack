@@ -12,10 +12,11 @@ report one), and a stale catalog on disk would make an instance's declaration
 depend on when that worker last had a connection.
 """
 
+import enum
 import logging
 import threading
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from gpustack.client import ClientSet
 from gpustack.schemas.cache_providers import CacheProvider
@@ -27,6 +28,19 @@ logger = logging.getLogger(__name__)
 _REFRESH_MIN_INTERVAL_SECONDS = 30
 
 _cache_lock = threading.RLock()
+
+
+class RefreshOutcome(enum.Enum):
+    """What a refresh did, which is what a miss after it means.
+
+    Only ``FETCHED`` makes a miss authoritative: the catalog was read just now
+    and does not carry the provider. The other two say the copy on hand is
+    whatever it was, so a miss against it says nothing about the catalog.
+    """
+
+    FETCHED = "fetched"
+    THROTTLED = "throttled"
+    FAILED = "failed"
 
 
 class CacheProviderManager:
@@ -49,26 +63,38 @@ class CacheProviderManager:
         with _cache_lock:
             return self._loaded
 
-    def get(self, name: Optional[str]) -> Optional[CacheProvider]:
-        """The declaration of a provider, refreshing once if it is not cached.
+    def lookup(self, name: Optional[str]) -> Tuple[Optional[CacheProvider], bool]:
+        """The declaration of a provider, and whether the catalog it was looked
+        up in is one this worker could actually read.
 
-        A provider added to the catalog after the last refresh is the normal
-        reason for a miss — an instance of it can be scheduled here before the
-        next periodic pass — so a miss is worth one fetch.
+        The two say different things about a miss. A catalog read successfully
+        that does not carry the provider is a configuration fact — the
+        declaration is gone, and the instance cannot start. A read that failed,
+        or a copy too old to trust, is a connectivity fact: the provider may
+        well exist, and reporting it as unknown would blame the wrong thing.
         """
         key = (name or "").lower()
         with _cache_lock:
             provider = self._providers.get(key)
         if provider is not None:
-            return provider
-        if self.refresh():
-            with _cache_lock:
-                return self._providers.get(key)
-        return None
+            return provider, True
+        # A provider added to the catalog after the last pass is the normal
+        # reason for a miss — an instance of it can be scheduled here before
+        # the next one — so a miss is worth a fetch. A throttled or failed one
+        # leaves the copy on hand as it was, and a miss against that says
+        # nothing about what the catalog carries.
+        outcome = self.refresh()
+        with _cache_lock:
+            return self._providers.get(key), outcome is RefreshOutcome.FETCHED
 
-    def refresh(self, force: bool = False) -> bool:
-        """Re-fetch the catalog. Answers whether a fetch actually ran and
-        succeeded; throttled unless ``force``."""
+    def get(self, name: Optional[str]) -> Optional[CacheProvider]:
+        """The declaration alone, for callers with nothing to say about why it
+        is missing."""
+        return self.lookup(name)[0]
+
+    def refresh(self, force: bool = False) -> RefreshOutcome:
+        """Re-fetch the catalog, answering what happened: throttled unless
+        ``force``, and a fetch that ran either landed or failed."""
         with _cache_lock:
             # Claim the throttle slot before fetching, so concurrent callers
             # (instance starts, the health loop) cannot issue duplicate
@@ -79,13 +105,13 @@ class CacheProviderManager:
                 and time.monotonic() - self._last_refresh
                 < _REFRESH_MIN_INTERVAL_SECONDS
             ):
-                return False
+                return RefreshOutcome.THROTTLED
             self._last_refresh = time.monotonic()
         try:
             providers = self._fetch()
         except Exception as e:
             logger.error(f"Failed to read the cache provider catalog: {e}")
-            return False
+            return RefreshOutcome.FAILED
         with _cache_lock:
             self._providers = {
                 provider.name.lower(): provider for provider in providers
@@ -95,7 +121,7 @@ class CacheProviderManager:
             f"Cache provider catalog refreshed: "
             f"{', '.join(sorted(self._providers)) or 'no providers'}"
         )
-        return True
+        return RefreshOutcome.FETCHED
 
     def sync(self) -> None:
         """The periodic pass. Unthrottled: its own cadence is the throttle."""

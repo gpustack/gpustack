@@ -305,9 +305,19 @@ async def get_cache_services(
             async def redact_event(event):
                 # One read per event, which a cache service's own change rate
                 # makes cheap; the stream has no session of its own to reuse.
-                async with async_session() as session:
-                    provider = await get_cache_provider(
-                        session, _provider_name_of(event.data)
+                # A read that fails redacts nothing rather than raising: this
+                # transform runs inside the stream, and an exception here ends
+                # it for every subscriber over one event's lookup.
+                provider = None
+                try:
+                    async with async_session() as session:
+                        provider = await get_cache_provider(
+                            session, _provider_name_of(event.data)
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Could not read the cache provider catalog while "
+                        f"redacting a streamed cache service: {e}"
                     )
                 event.data = _redacted_for_user(event.data, provider)
 
@@ -1026,7 +1036,9 @@ def _validate_management_url(
 
 
 async def _validate_cache_service_placement(
-    session, cache_service_in: CacheServiceCreate
+    session,
+    cache_service_in: CacheServiceCreate,
+    provider: Optional[CacheProvider] = None,
 ) -> None:
     """Enforce the placement contract.
 
@@ -1036,7 +1048,8 @@ async def _validate_cache_service_placement(
     their placement from the cluster's workers, so a worker pick would be
     meaningless.
     """
-    provider = await get_cache_provider(session, cache_service_in.provider_name)
+    if provider is None:
+        provider = await get_cache_provider(session, cache_service_in.provider_name)
     layouts = provider.component_layouts() if provider else {"": "replicas"}
     if all(topology == "per_node" for topology in layouts.values()):
         if cache_service_in.worker_id is not None:
@@ -1218,7 +1231,7 @@ async def create_cache_service(
     _validate_cache_service_l2_storage(cache_service_in, provider)
     _validate_cache_service_worker_selector(cache_service_in)
     _reject_placeholder_secrets(cache_service_in, provider)
-    await _validate_cache_service_placement(session, cache_service_in)
+    await _validate_cache_service_placement(session, cache_service_in, provider)
 
     cache_service_dict = cache_service_in.model_dump()
     cache_service_dict["owner_principal_id"] = target_org_id
@@ -1312,17 +1325,34 @@ async def update_cache_service(
             stored=(cache_service.config.fields if cache_service.config else None),
         )
         _validate_cache_service_l2_storage(cache_service_in, provider)
-    else:
+    elif is_system:
+        # A worker reporting what happened to a service that can no longer
+        # start is the one write worth taking without a declaration to judge
+        # it against; losing it loses that account.
         logger.warning(
             f"Cache service {cache_service.name} names cache provider "
             f"'{cache_service.provider_name}', which the catalog no longer "
-            f"carries; updating it without the checks that read a declaration."
+            f"carries; taking a system write without the checks that read a "
+            f"declaration."
+        )
+    else:
+        # A configuration edit is not: every value here is rendered into a
+        # container command or a config file, and with no declaration there is
+        # nothing to judge a field name, an option or a capacity against.
+        raise BadRequestException(
+            message=(
+                f"Cache provider '{cache_service.provider_name}' is no longer "
+                f"in the catalog, so this service's configuration cannot be "
+                f"validated. Restore the provider to edit it, or delete the "
+                f"service."
+            )
         )
     _validate_cache_service_worker_selector(cache_service_in)
     # Restore resolved every placeholder above; anything still carrying
     # the literal sentinel would be stored as the secret itself.
     _reject_placeholder_secrets(cache_service_in, provider)
-    await _validate_cache_service_placement(session, cache_service_in)
+    if provider is not None:
+        await _validate_cache_service_placement(session, cache_service_in, provider)
 
     try:
         await cache_service.update(session, cache_service_in)

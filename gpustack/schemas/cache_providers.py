@@ -975,6 +975,42 @@ class CacheProvider(BaseModel):
         )
 
     @model_validator(mode="after")
+    def _validate_field_gates(self) -> "CacheProvider":
+        """Every visibility gate names a field that exists.
+
+        A gate naming nothing resolves to None, which matches no
+        ``visible_when``, so the field it guards reads as ungated and renders
+        its plain default — the failure is a value quietly not being what the
+        declaration says, which nothing downstream can report.
+        """
+        declared = {field.name for field in self.fields}
+        for field in self.fields:
+            gate = field.visible_by
+            if gate is not None and gate not in declared:
+                raise ValueError(
+                    f"provider '{self.name}' field '{field.name}' is gated by "
+                    f"'{gate}', which it does not declare"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_single_process_probe(self) -> "CacheProvider":
+        """A provider running one process declares no ports of its own: it
+        binds the implicit pair, so a probe naming anything else names a port
+        nothing allocates and fails for the life of the service. The component
+        case is checked against declared ports in ``_validate_components``."""
+        if self.components or self.health_check is None:
+            return self
+        target = self.health_check.target
+        if target is not None and target not in IMPLICIT_PORT_NAMES:
+            raise ValueError(
+                f"provider '{self.name}' health check probes port '{target}', "
+                f"which a single-process provider does not bind (it binds: "
+                f"{', '.join(IMPLICIT_PORT_NAMES)})"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_components(self) -> "CacheProvider":
         for name, component in self.components.items():
             _validate_component_shape(name, component)

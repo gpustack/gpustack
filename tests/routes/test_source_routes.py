@@ -1794,6 +1794,23 @@ class TestCacheProviderSourceConfig:
         assert (await get_source_config(session, _CACHE_PROVIDER_SPEC)).custom
 
     @pytest.mark.asyncio
+    async def test_the_download_endpoint_serves_the_row_as_a_file(self, session):
+        """What the editor links: the baseline as a file the browser saves,
+        named for the kind it belongs to."""
+        await _seed_cache_provider_builtin(session)
+
+        response = await ota_sources.get_builtin_document(
+            ota_sources.SourceKind.CACHE_PROVIDER, session
+        )
+
+        assert response.media_type == "application/yaml"
+        assert (
+            response.headers["content-disposition"]
+            == 'attachment; filename="cache-provider-builtin.yaml"'
+        )
+        assert "LMCache" in response.body.decode()
+
+    @pytest.mark.asyncio
     async def test_a_kind_with_no_packaged_baseline_has_nothing_to_download(
         self, session
     ):
