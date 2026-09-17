@@ -191,7 +191,9 @@ def _pop_server_settings(
     """Take the parameters that belong in a SET rather than in the DSN.
 
     libpq's ``options=-csearch_path=...`` has no asyncpg counterpart, so it
-    becomes a server setting instead.
+    becomes a server setting instead. Any other ``options`` value is named in a
+    warning, since it is popped here and so never reaches the generic report on
+    parameters the driver cannot take.
 
     Args:
         query_params: Parsed query string; the keys consumed here are removed.
@@ -207,6 +209,12 @@ def _pop_server_settings(
         option = qoptions[-1]
         if option.startswith('-csearch_path='):
             server_settings['search_path'] = option[len('-csearch_path=') :]
+        else:
+            logger.warning(
+                "Ignoring database URL parameter options=%s: the only libpq "
+                "option translated here is -csearch_path=...",
+                option,
+            )
     if not opengauss and envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS > 0:
         server_settings['idle_in_transaction_session_timeout'] = str(
             envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS * 1000

@@ -209,3 +209,17 @@ def test_parameter_without_a_value_is_reported_not_forwarded(caplog):
         )
     assert "ssl" not in kwargs
     assert "sslmode" in caplog.text
+
+
+def test_unhandled_options_value_is_reported_not_silently_dropped(caplog):
+    """options is consumed before the generic report on unusable parameters
+    runs, so a value that is not -csearch_path=... needs naming here or it
+    would vanish without one.
+    """
+    with caplog.at_level("WARNING"):
+        db_url, connect_args = build_postgres_connect_args(
+            f"{BASE_URL}?options=-cstatement_timeout%3D30s", opengauss=False
+        )
+    assert "search_path" not in connect_args.get("server_settings", {})
+    assert "options" not in db_url
+    assert "statement_timeout" in caplog.text

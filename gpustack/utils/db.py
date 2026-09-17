@@ -1,7 +1,7 @@
 """Database-related utilities shared across GPUStack components."""
 
 import re
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import asyncpg
@@ -17,30 +17,27 @@ _pg_version_patched = False
 # in place would fail startup whenever the DSN happens to name a standby.
 PROBE_EXCLUDED_PARAMS = {'options', 'target_session_attrs'}
 
-DEFAULT_POSTGRES_PORT = '5432'
 
-
-def _netloc_host_list(hosts: str, ports: str) -> str:
+def _netloc_host_list(hosts: str, ports: str) -> Optional[str]:
     """Render libpq's comma-separated host and port lists as one netloc.
 
-    libpq allows a single port for every host; asyncpg wants the port spelled
-    out next to each one. A count that matches neither one port nor one per
-    host is left for SQLAlchemy to reject when it builds the engine, which it
-    does with a message naming the mismatch.
+    Only a list naming a port for every host is rendered. SQLAlchemy's asyncpg
+    dialect accepts no other count and raises ``ArgumentError`` on one, so a
+    list that does not pair up cannot reach an engine either way; giving it a
+    default here would only send the probe somewhere the engine will never go.
 
     Args:
         hosts: Comma-separated host list, as it appeared in the query string.
-        ports: Comma-separated port list, possibly empty.
+        ports: Comma-separated port list, as it appeared in the query string.
 
     Returns:
-        The ``host:port,host:port`` form asyncpg's DSN parser reads.
+        The ``host:port,host:port`` form asyncpg's DSN parser reads, or None
+        when the two lists do not pair up.
     """
     host_list = [h.strip() for h in hosts.split(',')]
-    port_list = [p.strip() for p in ports.split(',')] if ports else []
-    if len(port_list) == 1:
-        port_list = port_list * len(host_list)
-    if len(port_list) != len(host_list):
-        port_list = [DEFAULT_POSTGRES_PORT] * len(host_list)
+    port_list = [p.strip() for p in ports.split(',')]
+    if len(host_list) != len(port_list) or not all(host_list) or not all(port_list):
+        return None
     return ','.join(
         # A bare IPv6 address carries colons of its own and has to be bracketed
         # before a port can be appended to it.
@@ -55,7 +52,7 @@ def _probe_dsn(db_url: str) -> str:
     asyncpg reads the host list from the netloc only: ``host`` and ``port`` in
     the query string are ignored outright, so a URL naming several nodes would
     leave the probe talking to whichever one the netloc happens to name. That
-    is the node most likely to be down, since listing several is what an
+    is the node most likely to be unreachable, since listing several is what an
     operator does when one of them may be, and the probe failing takes startup
     down with it before an engine is ever built. Moving the lists into the
     netloc lets asyncpg try each node in turn.
@@ -64,8 +61,8 @@ def _probe_dsn(db_url: str) -> str:
         db_url: The PostgreSQL URL as configured.
 
     Returns:
-        A DSN with ``PROBE_EXCLUDED_PARAMS`` removed and any host list moved
-        into the netloc.
+        A DSN with ``PROBE_EXCLUDED_PARAMS`` removed and a paired host list
+        moved into the netloc. The netloc is left as it stands otherwise.
     """
     parsed = urlparse(db_url)
     params: List[Tuple[str, str]] = [
@@ -75,13 +72,15 @@ def _probe_dsn(db_url: str) -> str:
     ]
     hosts = [v for k, v in params if k == 'host' and v]
     ports = [v for k, v in params if k == 'port' and v]
-    if not hosts:
+    netloc_hosts = _netloc_host_list(hosts[-1], ports[-1]) if hosts and ports else None
+    if netloc_hosts is None:
         return urlunparse(parsed._replace(query=urlencode(params)))
 
     params = [(k, v) for k, v in params if k not in ('host', 'port')]
     userinfo, sep, _ = parsed.netloc.rpartition('@')
-    netloc = userinfo + sep + _netloc_host_list(hosts[-1], ports[-1] if ports else '')
-    return urlunparse(parsed._replace(netloc=netloc, query=urlencode(params)))
+    return urlunparse(
+        parsed._replace(netloc=userinfo + sep + netloc_hosts, query=urlencode(params))
+    )
 
 
 async def is_opengauss(db_url: str) -> bool:
