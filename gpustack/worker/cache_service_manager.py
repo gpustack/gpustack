@@ -284,9 +284,22 @@ class CacheServiceManager:
                 )
                 return
 
-            version_config, resolved_version, source_image = (
-                self._resolve_version_config(cache_service, provider)
-            )
+            try:
+                version_config, resolved_version, source_image = (
+                    self._resolve_version_config(cache_service, provider)
+                )
+            except ValueError:
+                # The copy on hand may predate the declaration this service was
+                # created against — the catalog is something an admin changes,
+                # and a placeholder the packaged one carries answers to the
+                # same name. Re-read before reporting what it cannot serve.
+                reread = self._provider_catalog.reread(cache_service.provider_name)
+                if reread is None or reread == provider:
+                    raise
+                provider = reread
+                version_config, resolved_version, source_image = (
+                    self._resolve_version_config(cache_service, provider)
+                )
 
             # Starting is idempotent: a stale workload left over from a
             # previous run of this instance (crash, manual restart) is removed
