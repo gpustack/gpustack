@@ -4,6 +4,7 @@ from gpustack.policies.utils import should_skip_gpu_count_check
 from gpustack.scheduler.evaluator import evaluate_model_metadata
 from tests.utils.model import make_model, new_model
 from gpustack.scheduler.scheduler import (
+    UNSUPPORTED_MODEL_REMEDY,
     evaluate_pretrained_config,
     set_model_gpus_per_replica,
 )
@@ -101,6 +102,24 @@ from gpustack.schemas.models import CategoryEnum, BackendEnum
         ),
         (
             # Checkpoint:
+            # The model is of an unsupported architecture using a custom image.
+            # This should pass without errors.
+            "pass_unsupported_architecture_custom_image",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="google-t5/t5-base",
+                backend=BackendEnum.VLLM,
+                image_name="vllm/vllm-openai:nightly",
+                backend_parameters=[],
+            ),
+            None,
+            None,
+            None,
+        ),
+        (
+            # Checkpoint:
             # The model is of a supported architecture.
             # This should pass without errors.
             "supported_architecture",
@@ -187,7 +206,7 @@ async def test_evaluate_pretrained_config(
             ),
             False,
             [
-                "Unsupported architecture: ['T5ForConditionalGeneration']. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
+                f"Unsupported architecture: ['T5ForConditionalGeneration']. {UNSUPPORTED_MODEL_REMEDY}"
             ],
         ),
         (

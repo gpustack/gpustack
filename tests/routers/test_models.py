@@ -23,6 +23,7 @@ from gpustack.routes.models import (
     export_models,
     import_models,
     update_model,
+    validate_model_in,
 )
 from gpustack.routes.model_common import ModelStateFilterEnum
 from gpustack.schemas.clusters import Cluster
@@ -41,6 +42,7 @@ from gpustack.schemas.model_routes import (
     ModelRouteTarget,
 )
 from gpustack.schemas.models import (
+    BackendEnum,
     GPUSelector,
     LoraListEntry,
     Model,
@@ -85,6 +87,15 @@ def _model_create(cluster_id=None):
         source=SourceEnum.HUGGING_FACE,
         huggingface_repo_id="org/repo",
         cluster_id=cluster_id,
+    )
+
+
+def _model_update(**kwargs):
+    return ModelUpdate(
+        name="m1",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/repo",
+        **kwargs,
     )
 
 
@@ -277,6 +288,149 @@ async def test_update_model_hides_non_visible_cluster_as_missing(monkeypatch):
 async def test_update_model_rejects_missing_cluster(monkeypatch):
     with pytest.raises(NotFoundException):
         await _run_update(monkeypatch, _ctx(CUSTOM_ORG_ID), None)
+
+
+def _stored_model(backend, image_name=None, run_command=None, backend_version=None):
+    model = MagicMock()
+    model.owner_principal_id = CUSTOM_ORG_ID
+    model.cluster_id = CLUSTER_ID
+    model.backend = backend
+    model.image_name = image_name
+    model.run_command = run_command
+    model.backend_version = backend_version
+    # Backfilled into the patch before validation, so a bare MagicMock would
+    # read as "both selectors set" and trip their own mutual exclusion first.
+    model.gpu_type_selector = None
+    model.gpu_selector = None
+    return model
+
+
+async def _capture_update_patch(monkeypatch, model, model_in):
+    """Drive update_model past validation and return what ModelService saw."""
+    captured = {}
+
+    class _Service:
+        def __init__(self, session):
+            pass
+
+        async def update(self, model, source, auto_commit=True):
+            captured["source"] = source
+
+    monkeypatch.setattr(
+        "gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=model)
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_resource_visible", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_cluster_belongs_to_org",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(models_route, "validate_model_in", AsyncMock())
+    monkeypatch.setattr(
+        models_route, "apply_scaling_schedule_baseline", lambda *a, **k: None
+    )
+    monkeypatch.setattr(models_route, "validate_shared_kv_cache", AsyncMock())
+    monkeypatch.setattr(models_route, "ModelService", _Service)
+    monkeypatch.setattr(
+        "gpustack.routes.models.ModelRoute.one_by_field", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(models_route, "revoke_model_access_cache", AsyncMock())
+
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    await update_model(session, _ctx(CUSTOM_ORG_ID), 1, model_in)
+    return captured["source"]
+
+
+@pytest.mark.asyncio
+async def test_a_custom_image_and_a_backend_version_are_mutually_exclusive():
+    """An image pins a runtime the runner catalog does not carry, so it
+    replaces the backend version rather than joining it."""
+    with pytest.raises(BadRequestException) as exc_info:
+        await validate_model_in(
+            MagicMock(),
+            _model_update(
+                backend=BackendEnum.VLLM,
+                image_name="vllm/vllm-openai:nightly",
+                backend_version="0.11.0",
+            ),
+        )
+    assert "custom image" in exc_info.value.message
+
+    # Either one alone is fine.
+    await validate_model_in(
+        MagicMock(),
+        _model_update(backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"),
+    )
+    await validate_model_in(
+        MagicMock(), _model_update(backend=BackendEnum.VLLM, backend_version="0.11.0")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_sparse_update_cannot_pin_a_second_runtime(monkeypatch):
+    """Validation sees the merged state, so omitting backend_version cannot
+    leave the model pinned to both a version and an image."""
+    model = _stored_model(BackendEnum.VLLM, backend_version="0.11.0")
+
+    monkeypatch.setattr(
+        "gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=model)
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_resource_visible", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_cluster_belongs_to_org",
+        AsyncMock(return_value=None),
+    )
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await update_model(
+            MagicMock(),
+            _ctx(CUSTOM_ORG_ID),
+            1,
+            _model_update(
+                backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"
+            ),
+        )
+    assert "custom image" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_editing_an_unrelated_field_keeps_the_custom_image(monkeypatch):
+    model = _stored_model(BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly")
+    model_in = _model_update(backend=BackendEnum.VLLM, replicas=3)
+
+    source = await _capture_update_patch(monkeypatch, model, model_in)
+
+    assert source is model_in
+    assert "image_name" not in source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_switching_away_from_the_custom_backend_drops_its_image(monkeypatch):
+    """The image and command belong to the backend they were entered for, but a
+    request that supplies a replacement keeps it."""
+    model = _stored_model(
+        BackendEnum.CUSTOM, image_name="my/own:v1", run_command="python serve.py"
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch, model, _model_update(backend=BackendEnum.VLLM)
+    )
+    assert source.image_name is None
+    assert source.run_command is None
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"),
+    )
+    assert source.image_name == "vllm/vllm-openai:nightly"
+    assert source.run_command is None
 
 
 @pytest.mark.parametrize(

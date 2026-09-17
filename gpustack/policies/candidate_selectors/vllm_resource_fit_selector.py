@@ -765,7 +765,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         if (
             resolve_executor_backend(
-                self._model.backend_parameters, self._model.backend_version
+                self._model.backend_parameters,
+                self._model.backend_version,
+                self._model.image_name,
             )
             == "mp"
         ):
@@ -812,7 +814,9 @@ def _create_candidate(
     may still satisfy the requirements.
     """
     if len(selected_workers) > 1 and (
-        resolve_executor_backend(model.backend_parameters, model.backend_version)
+        resolve_executor_backend(
+            model.backend_parameters, model.backend_version, model.image_name
+        )
         == "mp"
     ):
         gpu_per_node = [len(w.status.gpu_devices or []) for w in selected_workers]
