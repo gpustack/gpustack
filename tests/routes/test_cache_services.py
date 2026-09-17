@@ -10,6 +10,7 @@ fields on update, and the instance-delete / log-proxy endpoints.
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -171,7 +172,7 @@ def _l2_cascade_config(*storages: CacheServiceL2Storage) -> CacheServiceConfig:
     return CacheServiceConfig(fields={"ram_size": 20}, l2_storages=list(storages))
 
 
-def _patch_provider(monkeypatch, provider: CacheProvider):
+def _patch_provider(monkeypatch, provider: Optional[CacheProvider]):
     monkeypatch.setattr(
         cache_services_route,
         "get_cache_provider",
@@ -643,6 +644,10 @@ def _existing_service(**overrides):
         id=9,
         name="svc",
         provider_name="LMCache",
+        # What the row holds today, which an update is judged against: its
+        # body is partial, so a request carrying no config is not a service
+        # with no fields.
+        config=None,
         cluster_id=1,
         owner_principal_id=ORG_PRINCIPAL,
         deleted_at=None,
@@ -2083,6 +2088,83 @@ async def test_update_rejects_unknown_provider_version(monkeypatch):
             id=9,
             cache_service_in=_update_in(provider_version="v999"),
         )
+    service.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_survives_a_provider_the_catalog_no_longer_carries(monkeypatch):
+    """An extension uninstalled, or a configured document that dropped the
+    provider, leaves services with no declaration to be judged against.
+    Refusing their updates would drop the worker's state write-backs — the
+    account of what happened to a service that can no longer start."""
+    service = _existing_service()
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
+    )
+    _patch_provider(monkeypatch, None)
+    _patch_worker_lookup(monkeypatch)
+
+    await cache_services_route.update_cache_service(
+        session=MagicMock(), ctx=_system_ctx(), id=9, cache_service_in=_update_in()
+    )
+
+    service.update.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_partial_update_is_judged_against_what_the_service_holds(monkeypatch):
+    """An update body is partial — only the fields it set are merged — so a
+    request carrying no config is not a service with no fields. Judging
+    requiredness against the request alone rejected a write that never touched
+    config."""
+    service = _existing_service(config=CacheServiceConfig(fields={"ram_size": 20}))
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
+    )
+    _patch_provider(monkeypatch, _provider())
+    _patch_worker_lookup(monkeypatch)
+
+    await cache_services_route.update_cache_service(
+        session=MagicMock(),
+        ctx=_system_ctx(),
+        id=9,
+        cache_service_in=_update_in(config=None),
+    )
+
+    service.update.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_placeholder_is_refused_when_no_declaration_can_restore_it(monkeypatch):
+    """The redacted read is provider-independent, so a service whose provider
+    the catalog no longer carries still round-trips the placeholder through an
+    edit — and the restore that would swap it back needs the declaration this
+    case does not have. Storing it would overwrite the credential with a
+    sentinel."""
+    service = _existing_service(
+        config=CacheServiceConfig(fields={"token": "s3cret"}),
+    )
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
+    )
+    _patch_provider(monkeypatch, None)
+    _patch_worker_lookup(monkeypatch)
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await cache_services_route.update_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            id=9,
+            cache_service_in=_update_in(
+                config=CacheServiceConfig(
+                    fields={
+                        "ram_size": 20,
+                        "token": cache_services_route.SECRET_PLACEHOLDER,
+                    }
+                )
+            ),
+        )
+    assert "token" in exc_info.value.message
     service.update.assert_not_called()
 
 

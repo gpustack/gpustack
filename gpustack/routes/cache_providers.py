@@ -94,17 +94,17 @@ async def _services_by_pinned_provider(
     session: AsyncSession,
 ) -> Dict[Tuple[str, Optional[str]], Set[str]]:
     """What every cache service pins, as ``(provider, version) -> service
-    names``. A service on the reserved "custom" version names its own image, so
-    it pins the provider alone and its version is ``None`` here.
+    names``.
+
+    The version is kept verbatim, because the three it can hold mean different
+    things: a declared version must still be declared, the reserved "custom"
+    identifier needs the provider to still opt into user-supplied images, and
+    ``None`` is a service that never named one — it runs whatever the provider
+    defaults to, so any document declaring versions satisfies it.
     """
     pinned: Dict[Tuple[str, Optional[str]], Set[str]] = {}
     for service in await CacheService.all(session):
-        version = (
-            None
-            if service.provider_version in (None, CUSTOM_VERSION)
-            else service.provider_version
-        )
-        key = (service.provider_name.lower(), version)
+        key = (service.provider_name.lower(), service.provider_version or None)
         pinned.setdefault(key, set()).add(service.name)
     return pinned
 
@@ -138,7 +138,24 @@ async def _reject_taking_away_a_provider_in_use(
         provider = catalog.get(name)
         if provider is None:
             blocked.append(f"cache provider '{name}' {used_by}")
-        elif version is not None and version not in (provider.versions or {}):
+        elif version == CUSTOM_VERSION:
+            # This one names its own image, which only a provider opting into
+            # user-supplied images can launch. Withdrawing the opt-in leaves
+            # those services with nothing to run, the same way dropping a
+            # declared version does.
+            if not provider.custom_version:
+                blocked.append(
+                    f"the custom version of cache provider '{name}' {used_by}"
+                )
+        elif version is None:
+            # Never named one: it runs whatever the provider defaults to, so a
+            # document declaring any version satisfies it and one declaring
+            # none does not.
+            if not provider.versions:
+                blocked.append(
+                    f"the default version of cache provider '{name}' {used_by}"
+                )
+        elif version not in (provider.versions or {}):
             blocked.append(f"version '{version}' of cache provider '{name}' {used_by}")
     if blocked:
         raise BadRequestException(

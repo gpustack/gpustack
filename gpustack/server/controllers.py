@@ -768,8 +768,18 @@ class CacheServiceController:
                     for name, address in addresses.items()
                     if name == spec.depends_on
                 }
-                stale_address = bool(expected) and (
+                # No address to hand down reads two ways: the dependency has
+                # not come up yet — leave the dependent alone — or it was
+                # turned off, in which case an instance still carrying its
+                # address is running against one that will never answer.
+                dependency_off = not (
+                    provider
+                    and provider.component_enabled(spec.depends_on, config_fields)
+                )
+                stale_address = (
                     (instance.component_addresses or {}) != expected
+                    if expected or dependency_off
+                    else False
                 )
             key = (component, instance.worker_id)
             surplus = room.get(key, 0) <= 0

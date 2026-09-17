@@ -1073,6 +1073,42 @@ def test_kv_transfer_config_renders_structured_slot_with_types():
     assert args[2:] == ["--shutdown-timeout", "20"]
 
 
+def test_injection_backstops_a_gated_field_with_its_gated_default():
+    """A field behind a closed gate renders the value the launch would use, not
+    the plain default — an engine's contribution has to read 0 while something
+    else owns the pool, and the declared default says otherwise."""
+    provider = CacheProvider(
+        name="Gated",
+        default_image="demo:v1",
+        versions={"v1.0": {}},
+        default_run_command="demo",
+        fields=[
+            {"name": "pool_mode", "type": "select", "options": ["shared", "own"]},
+            {
+                "name": "segment_size",
+                "type": "number",
+                "default": 32,
+                "visible_by": "pool_mode",
+                "visible_when": "shared",
+                "gated_default": 0,
+            },
+        ],
+        inference_backend_integrations=[
+            {
+                "backend": "vLLM",
+                "injection": {"env": {"SEGMENT": "{{segment_size}}"}},
+            }
+        ],
+    )
+
+    env, _, _ = render_injection(provider, "vLLM", {"pool_mode": "own"})
+    assert env["SEGMENT"] == "0"
+
+    # Gate open: the declared default is what the field is worth.
+    env, _, _ = render_injection(provider, "vLLM", {"pool_mode": "shared"})
+    assert env["SEGMENT"] == "32"
+
+
 def test_render_injection_maps_node_local_locality_to_auto():
     """Engines attach node-local only (the resolver degrades instead of
     crossing nodes), so the declaration maps the sole placement fact to

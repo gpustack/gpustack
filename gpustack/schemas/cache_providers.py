@@ -1261,7 +1261,14 @@ def _render_value(value: Any, filter_name: Optional[str] = None) -> str:
     declared boolean serves a config file and a command-line flag
     alike."""
     if filter_name:
-        value = TEMPLATE_FILTERS[filter_name](value)
+        conversion = TEMPLATE_FILTERS.get(filter_name)
+        if conversion is None:
+            # Caught at load time by ``validate_template_filters``; a
+            # declaration that reaches here naming an unknown one is a bug in
+            # that check, and a KeyError mid-render says nothing about which
+            # declaration carried it.
+            raise ValueError(f"unknown template filter '{filter_name}'")
+        value = conversion(value)
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
@@ -1576,6 +1583,48 @@ def _localized_violations(value: Any, where: str) -> List[str]:
     for locale in sorted(value):
         if not LOCALE_PATTERN.match(locale):
             errors.append(f"{where} has invalid locale key '{locale}'")
+    return errors
+
+
+def validate_template_filters(provider: "CacheProvider") -> List[str]:
+    """
+    Check every ``{{name|filter}}`` a declaration carries against the filters
+    that exist; returns human-readable violations (empty when clean).
+
+    Enforced at load time because the failure is both late and loud in the
+    wrong place: a misspelled filter renders fine through every check, then
+    raises while a launch command is being built — far from the document that
+    named it, and only for the configurations that reach that template.
+
+    Walks the whole declaration rather than named slots: a filter may appear in
+    a run command, a resource claim, a data directory or an injection alike,
+    and a check that knows which fields hold templates goes stale the moment
+    one is added.
+    """
+    errors: List[str] = []
+    prefix = f"'{provider.name}'"
+    unknown = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            for match in _TEMPLATE_PATTERN.finditer(value):
+                filter_name = match.group(2)
+                if filter_name and filter_name not in TEMPLATE_FILTERS:
+                    unknown.add(filter_name)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(provider.model_dump(mode="json"))
+    known = ", ".join(sorted(TEMPLATE_FILTERS))
+    for filter_name in sorted(unknown):
+        errors.append(
+            f"{prefix} references template filter '{filter_name}', which does "
+            f"not exist (known filters: {known})"
+        )
     return errors
 
 
