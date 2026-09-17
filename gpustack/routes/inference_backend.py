@@ -381,10 +381,12 @@ def merge_list_runners(  # noqa: C901
     for worker in workers:
         if worker.status and worker.status.gpu_devices:
             for gpu in worker.status.gpu_devices:
-                # Extract variant for Ascend GPUs
+                # Extract variant for Ascend GPUs. An unmapped SoC yields
+                # None, which queries without a variant.
                 variant = None
                 if gpu.vendor == ManufacturerEnum.ASCEND and gpu.arch_family:
-                    variant = get_ascend_cann_variant(gpu.arch_family).lower()
+                    cann_variant = get_ascend_cann_variant(gpu.arch_family)
+                    variant = cann_variant.lower() if cann_variant else None
 
                 query_conditions.add((gpu.type, variant))
 
@@ -475,15 +477,15 @@ async def list_backend_configs(  # noqa: C901
     """
     items = []
 
-    if cluster_id and cluster_id > 0:
-        workers = await Worker.all_by_field(session, "cluster_id", cluster_id)
-    else:
-        workers = await Worker.all(session)
-
-    overrides = await RunnerOverrideEntry.all(session)
-
     # Process all backends from database (includes both built-in and custom backends)
     try:
+        if cluster_id and cluster_id > 0:
+            workers = await Worker.all_by_field(session, "cluster_id", cluster_id)
+        else:
+            workers = await Worker.all(session)
+
+        overrides = await RunnerOverrideEntry.all(session)
+
         all_rows = await InferenceBackend.all(session)
         # Hybrid filter:
         # - Single-Org caller (member, or platform admin act-as): see
@@ -639,8 +641,12 @@ async def list_backend_configs(  # noqa: C901
         items.append(custom_backend_item)
 
     except Exception as e:
-        # Log error but don't fail the entire request
-        logger.error(f"Failed to load backends from database: {e}")
+        # A 200 with an empty list reads as "no backends available" in the UI.
+        # The cause stays in the log: a database error carries SQL details.
+        logger.exception(f"Failed to load backends from database: {e}")
+        raise InternalServerErrorException(
+            message="Failed to list backend configurations"
+        ) from e
 
     return InferenceBackendResponse(items=items)
 
