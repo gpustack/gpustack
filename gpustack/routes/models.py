@@ -1,12 +1,14 @@
+import asyncio
 import logging
 import math
-from typing import Any, Dict, List, Optional, Union
-from fastapi import APIRouter, Depends, Query, Request
+from datetime import datetime, timezone
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse, StreamingResponse
 from urllib.parse import urlencode
 from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy.orm import selectinload
-from sqlmodel import and_, or_
+from sqlmodel import and_, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
@@ -25,6 +27,21 @@ from gpustack.schemas.models import (
     ModelListParams,
 )
 from gpustack.schemas.cache_services import CacheService
+from gpustack.schemas.deployment_document import (
+    OVERWRITABLE_FIELDS,
+    DeploymentActionEnum,
+    DeploymentExportRequest,
+    DeploymentImportRequest,
+    DeploymentImportResult,
+    DeploymentPlanEntry,
+    LoadedEntry,
+    deployment_entry,
+    diff_entries,
+    dump_deployments,
+    entry_document_form,
+    entry_label,
+    load_deployments,
+)
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.gpu_instance_types import GPUInstanceType
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
@@ -63,6 +80,7 @@ from gpustack.schemas.model_routes import (
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.services import (
+    ModelRouteService,
     ModelService,
     WorkerService,
     revoke_model_access_cache,
@@ -76,6 +94,7 @@ from gpustack.server.lora_model_routes import (
     is_lora_list_stale,
 )
 from gpustack.utils.command import find_parameter
+from gpustack.utils.export_limits import attachment_headers, sanitize_filename
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
 from gpustack.routes.model_common import (
@@ -883,41 +902,59 @@ async def validate_shared_kv_cache(
             )
 
 
-@router.post(
-    "",
-    response_model=ModelPublic,
-)
-async def create_model(
-    session: SessionDep, ctx: TenantContextDep, model_in: ModelCreate
-):
-    # Resolve the owning Org first — admin in "All" mode (no current
-    # principal) inherits the chosen cluster's Org, or falls back to
-    # the platform Org. The same value drives both the uniqueness
-    # pre-check below and the row we stamp on insert; resolving it up
-    # front keeps them in sync so the pre-check actually catches a
-    # collision in the Org the model will land in.
+async def _resolve_target_org(
+    ctx: TenantContext, session: AsyncSession, cluster_id: Optional[int]
+) -> Tuple[int, Optional[Cluster]]:
+    """Resolve the Org a new model lands in, plus the cluster row if it
+    had to be fetched on the way.
+
+    Admin in "All" mode (no current principal) inherits the chosen
+    cluster's Org, or falls back to the platform Org. The same value
+    drives both the uniqueness pre-check and the row stamped on insert;
+    resolving it up front keeps them in sync so the pre-check actually
+    catches a collision in the Org the model will land in.
+    """
     target_org_id = ctx.current_principal_id
     cluster = None
-    if target_org_id is None and model_in.cluster_id is not None:
+    if target_org_id is None and cluster_id is not None:
         # Admin "All" mode has no principal context; derive the owning Org
-        # from the chosen cluster. Reused by the check below to avoid a
-        # second lookup. Under an Org context the helper does the single
-        # lookup itself.
-        cluster = await Cluster.one_by_id(session, model_in.cluster_id)
+        # from the chosen cluster. Returned so the ownership check can
+        # reuse it instead of doing a second lookup.
+        cluster = await Cluster.one_by_id(session, cluster_id)
         if cluster is None:
-            raise NotFoundException(message=f"Cluster {model_in.cluster_id} not found")
+            raise NotFoundException(message=f"Cluster {cluster_id} not found")
         target_org_id = cluster.owner_principal_id
     if target_org_id is None:
         target_org_id = platform_principal_id()
+    return target_org_id, cluster
 
-    # The chosen cluster must exist, be visible to the caller, and be owned
-    # by the target Org. In admin "All" mode target_org_id was derived from
-    # the cluster above, so the ownership check is trivially satisfied and
-    # this mainly rejects a missing/deleted or non-visible cluster_id.
-    await assert_cluster_belongs_to_org(
-        ctx, session, model_in.cluster_id, target_org_id, cluster=cluster
+
+async def _assert_route_name_available(
+    session: AsyncSession, model_in: ModelCreate, target_org_id: int
+) -> None:
+    """Reject a route name already taken in the target Org, when one is asked
+    for. Separate from the model-name check so a path that already knows the
+    model's fate can run just this half, and report it in the same words."""
+    if not model_in.enable_model_route:
+        return
+    existing_route = await ModelRoute.one_by_fields(
+        session,
+        {"name": model_in.name, "owner_principal_id": target_org_id},
     )
+    if existing_route:
+        raise AlreadyExistsException(
+            message=f"Model route with name '{model_in.name}' already exists."
+        )
 
+
+async def _assert_model_name_available(
+    session: AsyncSession, model_in: ModelCreate, target_org_id: int
+) -> None:
+    """Reject a name already taken in the target Org.
+
+    Only a new model has to clear this; overwriting an existing one collides
+    with itself by definition.
+    """
     # Model & ModelRoute names are unique within their Org. Two Orgs
     # can each have a "llama3" without colliding.
     existing = await Model.one_by_fields(
@@ -928,18 +965,18 @@ async def create_model(
         raise AlreadyExistsException(
             message=f"Model with name '{model_in.name}' already exists."
         )
-    should_create_route = (
-        model_in.enable_model_route is not None and model_in.enable_model_route
-    )
-    if should_create_route:
-        existing_route = await ModelRoute.one_by_fields(
-            session,
-            {"name": model_in.name, "owner_principal_id": target_org_id},
-        )
-        if existing_route:
-            raise AlreadyExistsException(
-                message=f"Model route with name '{model_in.name}' already exists."
-            )
+    await _assert_route_name_available(session, model_in, target_org_id)
+
+
+async def _validate_model_spec(
+    session: AsyncSession, model_in: ModelCreate, target_org_id: int
+) -> None:
+    """Validate the spec itself, independent of whether it is new or replaces
+    an existing row.
+
+    Mutates ``model_in`` in place: LoRA names are normalized to the stored
+    ``<base>:<short>`` form and the scaling-schedule baseline is applied.
+    """
     await validate_model_in(session, model_in)
     # Server-side assignment, after validation: validation must see the replica
     # count the caller submitted, not the schedule-driven one.
@@ -947,13 +984,44 @@ async def create_model(
     await validate_shared_kv_cache(
         session, model_in, target_org_id, model_in.cluster_id
     )
+
+
+async def _check_model_create(
+    session: AsyncSession,
+    ctx: TenantContext,
+    model_in: ModelCreate,
+    target_org_id: int,
+    cluster: Optional[Cluster],
+) -> None:
+    """Run every pre-insert check for a new model without writing anything.
+
+    Mutates ``model_in`` in place, via :func:`_validate_model_spec`.
+    """
+    # The chosen cluster must exist, be visible to the caller, and be owned
+    # by the target Org. In admin "All" mode target_org_id was derived from
+    # the cluster, so the ownership check is trivially satisfied and this
+    # mainly rejects a missing/deleted or non-visible cluster_id.
+    await assert_cluster_belongs_to_org(
+        ctx, session, model_in.cluster_id, target_org_id, cluster=cluster
+    )
+    await _assert_model_name_available(session, model_in, target_org_id)
+    await _validate_model_spec(session, model_in, target_org_id)
+
+
+async def _persist_model_create(
+    session: AsyncSession, model_in: ModelCreate, target_org_id: int
+) -> Model:
+    """Insert the model and, when ``enable_model_route`` is set, its
+    route, target, Org grant and LoRA child routes. Never commits, so a
+    caller can batch several models into one transaction.
+    """
     model_in_dict = model_in.model_dump(exclude={"enable_model_route"})
 
     # Stamp tenant scope. ModelBase has owner_principal_id defaulted to
     # PLATFORM_PRINCIPAL_ID, so `model_dump()` always emits the key —
     # `setdefault` would silently leave it at 1 even when the caller is
-    # acting under a different Org. Override directly with the value we
-    # resolved above.
+    # acting under a different Org. Override directly with the resolved
+    # value.
     model_in_dict["owner_principal_id"] = target_org_id
 
     # Multi-tenant default: a non-platform Org's new model (and the
@@ -970,55 +1038,80 @@ async def create_model(
     if org_scoped_default:
         model_in_dict["access_policy"] = AccessPolicyEnum.ALLOWED_PRINCIPALS
 
-    try:
-        model: Model = await Model.create(
-            session, source=model_in_dict, auto_commit=(not should_create_route)
+    model: Model = await Model.create(session, source=model_in_dict, auto_commit=False)
+    if not model_in.enable_model_route:
+        return model
+    await _create_model_route(session, model, grant_owning_org=org_scoped_default)
+    return model
+
+
+async def _create_model_route(
+    session: AsyncSession, model: Model, *, grant_owning_org: bool
+) -> None:
+    """Create the deployment's primary route, its target and its LoRA child
+    routes. Never commits.
+    """
+    model_route = ModelRoute(
+        name=model.name,
+        description=model.description,
+        categories=model.categories,
+        generic_proxy=model.generic_proxy,
+        created_model_id=model.id,
+        access_policy=model.access_policy,
+        owner_principal_id=model.owner_principal_id,
+    )
+    model_route: ModelRoute = await ModelRoute.create(
+        session, source=model_route, auto_commit=False
+    )
+    model_route_target = ModelRouteTarget(
+        name=f"{model.name}-deployment",
+        route_name=model_route.name,
+        generic_proxy=model.generic_proxy,
+        model_route=model_route,
+        model=model,
+        weight=100,
+        state=TargetStateEnum.UNAVAILABLE,
+    )
+    await ModelRouteTarget.create(
+        session,
+        source=model_route_target,
+        auto_commit=False,
+    )
+    if grant_owning_org:
+        # Auto-grant the owning Org on the primary route so its
+        # members see it out of the box. The route is brand new,
+        # so no existence check is needed; LoRA child routes get
+        # their own grants inside create_lora_model_routes.
+        session.add(
+            ModelRoutePrincipalLink(
+                route_id=model_route.id,
+                principal_id=model.owner_principal_id,
+            )
         )
-        if should_create_route:
-            model_route = ModelRoute(
-                name=model.name,
-                description=model.description,
-                categories=model.categories,
-                generic_proxy=model.generic_proxy,
-                created_model_id=model.id,
-                access_policy=model.access_policy,
-                owner_principal_id=model.owner_principal_id,
-            )
-            model_route: ModelRoute = await ModelRoute.create(
-                session, source=model_route, auto_commit=False
-            )
-            model_route_target = ModelRouteTarget(
-                name=f"{model.name}-deployment",
-                route_name=model_route.name,
-                generic_proxy=model.generic_proxy,
-                model_route=model_route,
-                model=model,
-                weight=100,
-                state=TargetStateEnum.UNAVAILABLE,
-            )
-            await ModelRouteTarget.create(
-                session,
-                source=model_route_target,
-                auto_commit=False,
-            )
-            if org_scoped_default:
-                # Auto-grant the owning Org on the primary route so its
-                # members see it out of the box. The route is brand new,
-                # so no existence check is needed; LoRA child routes get
-                # their own grants inside create_lora_model_routes.
-                session.add(
-                    ModelRoutePrincipalLink(
-                        route_id=model_route.id,
-                        principal_id=model.owner_principal_id,
-                    )
-                )
-            await create_lora_model_routes(
-                session,
-                model,
-                access_policy=model.access_policy,
-                generic_proxy=model.generic_proxy,
-            )
-            await session.commit()
+    await create_lora_model_routes(
+        session,
+        model,
+        access_policy=model.access_policy,
+        generic_proxy=model.generic_proxy,
+    )
+
+
+@router.post(
+    "",
+    response_model=ModelPublic,
+)
+async def create_model(
+    session: SessionDep, ctx: TenantContextDep, model_in: ModelCreate
+):
+    target_org_id, cluster = await _resolve_target_org(
+        ctx, session, model_in.cluster_id
+    )
+    await _check_model_create(session, ctx, model_in, target_org_id, cluster)
+
+    try:
+        model = await _persist_model_create(session, model_in, target_org_id)
+        await session.commit()
+        if model_in.enable_model_route:
             await revoke_model_access_cache(session=session)
     except BadRequestException:
         await session.rollback()
@@ -1028,6 +1121,499 @@ async def create_model(
         raise InternalServerErrorException(message=f"Failed to create model: {e}")
 
     return model
+
+
+async def _models_to_export(
+    session: AsyncSession, ctx: TenantContext, export_in: DeploymentExportRequest
+) -> List[Model]:
+    """The rows an export covers, by id so a re-export is byte-stable.
+
+    With ``ids`` given, every id must resolve to a row the caller can see
+    (and match ``cluster_id`` when set); otherwise 404 with no partial
+    result, mirroring ``GET /models/{id}`` for cross-tenant ids.
+    """
+    conditions = list(tenant_list_conditions(ctx, Model))
+    if export_in.ids is not None:
+        conditions.append(Model.id.in_(export_in.ids))
+    fields = {}
+    if export_in.cluster_id is not None:
+        fields["cluster_id"] = export_in.cluster_id
+    models = list(
+        await Model.all_by_fields(session, fields=fields, extra_conditions=conditions)
+    )
+    if export_in.ids is not None:
+        found = {model.id for model in models}
+        missing = [str(id) for id in export_in.ids if id not in found]
+        if missing:
+            raise NotFoundException(message=f"Model not found: {', '.join(missing)}")
+    models.sort(key=lambda model: model.id)
+    return models
+
+
+async def _route_backed_model_ids(
+    session: AsyncSession, models: List[Model]
+) -> Set[int]:
+    """Ids among ``models`` whose primary model route still exists.
+
+    LoRA child routes carry ``created_model_id`` too, so only the live route
+    named after the model counts: that is the one ``enable_model_route``
+    re-creates on import.
+    """
+    names_by_id = {model.id: model.name for model in models}
+    if not names_by_id:
+        return set()
+    result = await session.exec(
+        select(ModelRoute.created_model_id, ModelRoute.name).where(
+            ModelRoute.created_model_id.in_(list(names_by_id)),
+            ModelRoute.deleted_at.is_(None),
+        )
+    )
+    return {
+        created_model_id
+        for created_model_id, name in result.all()
+        if names_by_id.get(created_model_id) == name
+    }
+
+
+@router.post("/export")
+async def export_models(
+    session: SessionDep, ctx: TenantContextDep, export_in: DeploymentExportRequest
+):
+    """Download deployments as a YAML document (``schemas/deployment_document``).
+
+    POST rather than GET: ``/export`` is a fixed segment inside the ``/{id}``
+    namespace, and only a different method keeps it independent of route
+    registration order.
+    """
+    models = await _models_to_export(session, ctx, export_in)
+    route_backed_ids = await _route_backed_model_ids(session, models)
+    exported_at = datetime.now(timezone.utc)
+    content = dump_deployments(models, route_backed_ids, exported_at)
+    if len(models) == 1:
+        filename = sanitize_filename(f"{models[0].name}.yaml", "deployment.yaml")
+    else:
+        filename = f"gpustack-deployments-{exported_at:%Y%m%d-%H%M%S}.yaml"
+    return Response(
+        content=content,
+        media_type="application/x-yaml",
+        headers=attachment_headers(filename),
+    )
+
+
+class _ImportItem(NamedTuple):
+    """One document entry: what would happen to it, and what it acts on."""
+
+    plan: DeploymentPlanEntry
+    entry: Optional[ModelCreate]
+    """None when the entry did not parse."""
+    existing: Optional[Model]
+    """The row this entry would replace, if there is one."""
+
+
+def _apply_replica_override(model_in: ModelCreate, replicas: int) -> None:
+    """Use the caller's replica count for this entry.
+
+    Held to the same rules as the deploy form, which lets the count be set
+    beside a manual GPU selection and validates the pair afterwards. An
+    enabled scaling schedule is the one case where ``replicas`` is not the
+    user's to set -- ``apply_scaling_schedule_baseline`` recomputes it from
+    the schedule -- so the count lands on ``baseline_replicas``, which is what
+    the form's Replicas field edits in that mode too.
+    """
+    model_in.replicas = replicas
+    if model_in.scaling_schedule and model_in.scaling_schedule.enabled:
+        model_in.scaling_schedule.baseline_replicas = replicas
+
+
+async def _own_model_routes(session: AsyncSession, model: Model) -> List[ModelRoute]:
+    """The live routes this deployment created -- its primary route and its
+    LoRA children. The same test the export reads ``enable_model_route`` off,
+    so what a document says about routes and what an import settles agree."""
+    return list(
+        await ModelRoute.all_by_fields(
+            session, {"created_model_id": model.id, "deleted_at": None}
+        )
+    )
+
+
+async def _routes_serving_others(
+    session: AsyncSession, routes: List[ModelRoute], model_id: int
+) -> List[str]:
+    """Names of ``routes`` that also target a deployment other than this one."""
+    if not routes:
+        return []
+    targets = await ModelRouteTarget.all_by_fields(
+        session,
+        {"deleted_at": None},
+        extra_conditions=[
+            ModelRouteTarget.route_id.in_([route.id for route in routes])
+        ],
+    )
+    shared = {target.route_id for target in targets if target.model_id != model_id}
+    return sorted(route.name for route in routes if route.id in shared)
+
+
+async def _overwrite_blockers(
+    session: AsyncSession,
+    existing: Model,
+    model_in: ModelCreate,
+    own_routes: List[ModelRoute],
+    cluster_id: int,
+    target_org_id: int,
+) -> List[str]:
+    """Why this deployment cannot be replaced, if it cannot.
+
+    Overwriting is deliberately narrow, because a document is an easy thing to
+    apply by accident: only a deployment that is both meant to be stopped and
+    actually stopped, and only in the cluster the import targets.
+
+    ``replicas`` alone is the operator's intent, not the cluster's state --
+    instances are torn down asynchronously after a scale to zero, so a
+    deployment can read as stopped while it is still serving. Both are
+    checked, because the rest of the overwrite path (dropping model routes
+    especially) is only safe once nothing is running.
+    """
+    blockers = []
+    if existing.replicas > 0:
+        blockers.append(
+            f"already exists and is running (replicas={existing.replicas}); "
+            "stop it before overwriting"
+        )
+    else:
+        live = await ModelInstance.all_by_fields(
+            session, {"model_id": existing.id, "deleted_at": None}
+        )
+        if live:
+            blockers.append(
+                f"already exists and still has {len(live)} instance(s) "
+                "shutting down; wait for them to stop before overwriting"
+            )
+    if existing.cluster_id != cluster_id:
+        blockers.append(
+            f"already exists in cluster {existing.cluster_id}; "
+            f"this import targets cluster {cluster_id}"
+        )
+
+    primary = next((route for route in own_routes if route.name == existing.name), None)
+    if model_in.enable_model_route:
+        if primary is None:
+            try:
+                await _assert_route_name_available(session, model_in, target_org_id)
+            except AlreadyExistsException as e:
+                blockers.append(e.message)
+    elif own_routes:
+        # Disabling the route drops every route this deployment owns, so the
+        # check has to cover all of them -- not just when the primary still
+        # exists. Dropping these is safe only because the deployment is
+        # stopped, but another deployment attached to one (a LoRA child left
+        # after the primary was deleted out of band) need not be, and deleting
+        # it would cut that one off too.
+        shared = await _routes_serving_others(session, own_routes, existing.id)
+        if shared:
+            blockers.append(
+                f"model route(s) {', '.join(shared)} also target other "
+                "deployments; detach them before disabling the route"
+            )
+    return blockers
+
+
+async def _plan_import(
+    session: AsyncSession,
+    loaded: List[LoadedEntry],
+    import_in: DeploymentImportRequest,
+    target_org_id: int,
+) -> List[_ImportItem]:
+    """Work out what importing this document would do, writing nothing.
+
+    Every problem lands on the entry that caused it rather than aborting the
+    pass, so one round trip tells the user about all of them at once.
+
+    Rows are looked up scoped to ``target_org_id``, which is the caller's own
+    Org (or, for an admin with no principal context, the target cluster's).
+    That is the same boundary ``assert_resource_visible`` enforces, so an
+    entry can never name its way onto another Org's deployment.
+    """
+    items: List[_ImportItem] = []
+    for entry in loaded:
+        plan = DeploymentPlanEntry(
+            index=entry.index,
+            name=entry.name,
+            errors=list(entry.errors),
+            raw=entry.raw,
+        )
+        model_in = entry.entry
+        if model_in is None:
+            # An entry that failed to validate still names a deployment, and
+            # the one it would have replaced is what the user reads beside it
+            # to see what they broke. Projecting it here keeps the read-only
+            # side of the diff filled in exactly when it is most needed --
+            # there is no plan to show, but there is still a before.
+            if entry.name:
+                existing = await Model.one_by_fields(
+                    session,
+                    {"name": entry.name, "owner_principal_id": target_org_id},
+                )
+                if existing is not None:
+                    own_routes = await _own_model_routes(session, existing)
+                    plan.current = deployment_entry(
+                        existing,
+                        any(route.name == existing.name for route in own_routes),
+                    )
+            items.append(_ImportItem(plan, None, None))
+            continue
+
+        model_in.cluster_id = import_in.cluster_id
+        # Before the snapshot, so an adjusted count shows up in the diff and
+        # is what gets written -- the preview and the write read the same
+        # request.
+        if model_in.name in import_in.replica_overrides:
+            _apply_replica_override(
+                model_in, import_in.replica_overrides[model_in.name]
+            )
+        # Snapshot before the checks below normalize LoRA names and the
+        # replica count in place: the diff is against what the user wrote.
+        desired = entry_document_form(model_in)
+        plan.desired = desired
+        existing = await Model.one_by_fields(
+            session, {"name": model_in.name, "owner_principal_id": target_org_id}
+        )
+        if existing is None:
+            plan.action = DeploymentActionEnum.CREATE
+            # The model name is settled by the lookup above; only the route
+            # name is still open.
+            try:
+                await _assert_route_name_available(session, model_in, target_org_id)
+            except AlreadyExistsException as e:
+                plan.errors.append(e.message)
+        else:
+            own_routes = await _own_model_routes(session, existing)
+            route_backed = any(route.name == existing.name for route in own_routes)
+            plan.current = deployment_entry(existing, route_backed)
+            plan.changes = diff_entries(plan.current, desired)
+            plan.action = (
+                DeploymentActionEnum.UPDATE
+                if plan.changes
+                else DeploymentActionEnum.UNCHANGED
+            )
+            # Only an entry that would actually be written has to clear these.
+            # An unchanged one writes nothing, so holding it to the overwrite
+            # rules would reject re-importing an untouched export of a running
+            # deployment -- the very thing a backup is for.
+            if plan.action is DeploymentActionEnum.UPDATE:
+                plan.errors.extend(
+                    await _overwrite_blockers(
+                        session,
+                        existing,
+                        model_in,
+                        own_routes,
+                        import_in.cluster_id,
+                        target_org_id,
+                    )
+                )
+
+        try:
+            await _validate_model_spec(session, model_in, target_org_id)
+        except (BadRequestException, NotFoundException) as e:
+            plan.errors.append(e.message)
+        items.append(_ImportItem(plan, model_in, existing))
+    return items
+
+
+@router.post("/import", response_model=DeploymentImportResult)
+async def import_models(
+    session: SessionDep,
+    ctx: TenantContextDep,
+    import_in: DeploymentImportRequest,
+):
+    """Apply a deployment document, or none of it.
+
+    A dry run always answers with the plan — which entries would be created,
+    which overwritten and how, which are already as the document describes —
+    so the client can show it and ask. Writing is a single transaction.
+    """
+    try:
+        loaded = await asyncio.to_thread(load_deployments, import_in.content)
+    except ValueError as e:
+        raise BadRequestException(message=str(e))
+
+    # A misspelled name would otherwise just not take effect, and the caller
+    # would be told a count they never asked for is what will be written.
+    unmatched = sorted(
+        set(import_in.replica_overrides) - {entry.name for entry in loaded}
+    )
+    if unmatched:
+        raise BadRequestException(
+            message="replica_overrides names no deployment in the document: "
+            f"{', '.join(unmatched)}"
+        )
+
+    target_org_id, cluster = await _resolve_target_org(
+        ctx, session, import_in.cluster_id
+    )
+    if cluster is None:
+        cluster = await Cluster.one_by_id(session, import_in.cluster_id)
+    # Once, up front: a bad cluster is one 404/403, not one error per entry.
+    await assert_cluster_belongs_to_org(
+        ctx, session, import_in.cluster_id, target_org_id, cluster=cluster
+    )
+
+    items = await _plan_import(session, loaded, import_in, target_org_id)
+    plans = [item.plan for item in items]
+    valid = not any(plan.errors for plan in plans)
+    if import_in.dry_run:
+        return DeploymentImportResult(dry_run=True, valid=valid, entries=plans)
+    if not valid:
+        raise BadRequestException(
+            message="\n".join(
+                f"{entry_label(plan.index, plan.name)}: {error}"
+                for plan in plans
+                for error in plan.errors
+            )
+        )
+
+    # Every unconfirmed overwrite at once, like every other problem the import
+    # reports -- not just the first one the write loop happens to reach.
+    unconfirmed = [
+        f"{entry_label(item.plan.index, item.plan.name)}: already exists; "
+        "confirm the overwrite before importing"
+        for item in items
+        if item.plan.action is DeploymentActionEnum.UPDATE
+        and item.plan.name not in import_in.overwrite
+    ]
+    if unconfirmed:
+        raise BadRequestException(message="\n".join(unconfirmed))
+
+    try:
+        models = await _persist_deployments(
+            session, items, import_in.cluster_id, target_org_id
+        )
+        await session.commit()
+    except BadRequestException:
+        await session.rollback()
+        raise
+    except Exception as e:
+        await session.rollback()
+        # Only the type: the exception text carries SQLAlchemy's bound
+        # parameters, and for this route those include a deployment's `env`.
+        logger.error(f"Failed to import deployments: {type(e).__name__}")
+        raise InternalServerErrorException(message="Failed to import deployments")
+
+    # After the commit, and outside its try: a cache that fails to clear has
+    # not undone the write, and reporting 500 here would tell the caller
+    # nothing happened when everything did.
+    # An overwrite can create or drop routes either way, so it always
+    # invalidates; a plain create only when it asked for a route.
+    if any(
+        item.plan.action is DeploymentActionEnum.UPDATE
+        or (
+            item.plan.action is DeploymentActionEnum.CREATE
+            and item.entry.enable_model_route
+        )
+        for item in items
+    ):
+        await revoke_model_access_cache(session=session)
+
+    return DeploymentImportResult(
+        dry_run=False,
+        valid=True,
+        entries=plans,
+        items=[ModelPublic.model_validate(model) for model in models],
+    )
+
+
+async def _persist_model_update(
+    session: AsyncSession, existing: Model, model_in: ModelCreate
+) -> Model:
+    """Replace ``existing`` with the entry and settle its routes. Never
+    commits.
+
+    A whole replacement, not a merge: the document is the desired state, so a
+    field left out of it goes back to its default -- deleting a
+    ``gpu_selector`` from the file is how a deployment returns to automatic
+    placement. Only the document's own fields are written; see
+    ``OVERWRITABLE_FIELDS`` for why that list is a whitelist.
+    """
+    patch = {field: getattr(model_in, field) for field in OVERWRITABLE_FIELDS}
+    await ModelService(session).update(existing, patch, auto_commit=False)
+
+    own = await _own_model_routes(session, existing)
+    primary = next((route for route in own if route.name == existing.name), None)
+    if not model_in.enable_model_route:
+        # Safe because an overwrite only reaches a stopped deployment, so
+        # nothing is being served through these.
+        for route in own:
+            await ModelRouteService(session).delete(route, auto_commit=False)
+        return existing
+    if primary is None:
+        await _create_model_route(
+            session,
+            existing,
+            grant_owning_org=existing.access_policy
+            == AccessPolicyEnum.ALLOWED_PRINCIPALS,
+        )
+    else:
+        await create_lora_model_routes(
+            session,
+            existing,
+            access_policy=existing.access_policy,
+            generic_proxy=existing.generic_proxy,
+        )
+    # Either way the new lora_list decides which child routes survive: a
+    # rebuilt primary route can still have children left from the old one.
+    await cleanup_orphan_lora_routes(session, existing)
+    return existing
+
+
+async def _persist_deployments(
+    session: AsyncSession,
+    items: List[_ImportItem],
+    cluster_id: int,
+    target_org_id: int,
+) -> List[Model]:
+    """Write every entry without committing, and answer with the row each one
+    settled on, in document order.
+
+    Callers must have rejected the plan already if any entry carries errors,
+    so every item here has an ``action`` and a parsed ``entry``.
+
+    A LoRA route name conflict only surfaces while the routes are created, so
+    it is relabelled here with the entry it belongs to, like every other error
+    the import reports.
+    """
+    models = []
+    for item in items:
+        label = entry_label(item.plan.index, item.plan.name)
+        if item.plan.action is DeploymentActionEnum.UNCHANGED:
+            # The document already describes this row. Nothing to write, and
+            # so nothing to confirm either.
+            models.append(item.existing)
+            continue
+        try:
+            if item.plan.action is DeploymentActionEnum.UPDATE:
+                # Re-checked inside the transaction: the plan was built before
+                # it opened, and the gate it enforces -- nothing running -- is
+                # the whole reason dropping routes here is safe.
+                own_routes = await _own_model_routes(session, item.existing)
+                blockers = await _overwrite_blockers(
+                    session,
+                    item.existing,
+                    item.entry,
+                    own_routes,
+                    cluster_id,
+                    target_org_id,
+                )
+                if blockers:
+                    raise BadRequestException(message=blockers[0])
+                models.append(
+                    await _persist_model_update(session, item.existing, item.entry)
+                )
+            else:
+                models.append(
+                    await _persist_model_create(session, item.entry, target_org_id)
+                )
+        except BadRequestException as e:
+            raise BadRequestException(message=f"{label}: {e.message}")
+    return models
 
 
 @router.put(
