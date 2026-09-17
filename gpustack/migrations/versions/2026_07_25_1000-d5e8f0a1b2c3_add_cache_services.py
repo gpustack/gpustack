@@ -31,6 +31,13 @@ Introduces the shared KV cache service resource:
    keeps TEXT, which has no length limit there.
 
 
+This revision is edited in place as the feature it creates changes, rather
+than each change getting a revision of its own. It ships in no release: cache
+services exist only in v2.3.0rc1, and upgrading from an rc is not a supported
+path — such a cluster starts from a fresh database. A database that already
+applied an earlier form of this file will not receive the later ones, which is
+the same thing said differently.
+
 Revision ID: d5e8f0a1b2c3
 Revises: a3f5c1d9e0b2
 Create Date: 2026-07-25 10:00:00.000000

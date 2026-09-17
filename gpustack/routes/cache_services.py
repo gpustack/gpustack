@@ -114,6 +114,24 @@ def _provider_name_of(cache_service) -> Optional[str]:
     return getattr(cache_service, "provider_name", None)
 
 
+def _detached_public(cache_service) -> CacheServicePublic:
+    """A public copy nothing else holds a reference into.
+
+    The dump-then-validate pair is the deep copy: validating from attributes
+    passes nested objects through by reference, and redacting one of those
+    would write the placeholder onto the row itself — and onto the event
+    payload every other stream subscriber sees. The dump would warn on every
+    call: the enum-typed columns deliberately store plain strings (no DB enum
+    casts), so ORM rows carry str values the validation coerces.
+    """
+    data = (
+        cache_service.model_dump(warnings=False)
+        if hasattr(cache_service, "model_dump")
+        else cache_service
+    )
+    return CacheServicePublic.model_validate(data).model_copy(deep=True)
+
+
 def _redacted_for_user(
     cache_service, provider: Optional[CacheProvider]
 ) -> CacheServicePublic:
@@ -125,22 +143,7 @@ def _redacted_for_user(
     The provider is passed in rather than looked up: a list redacts many
     services at once, and resolving the catalog per row would be a query per
     card."""
-    data = (
-        # The dump-then-validate pair is the deep copy (validating from
-        # attributes would pass nested objects through by reference and
-        # let the redaction write through to the row). The dump itself
-        # would warn on every call: the enum-typed columns deliberately
-        # store plain strings (no DB enum casts), so ORM rows carry str
-        # values that the validation below coerces — expected, not a bug.
-        cache_service.model_dump(warnings=False)
-        if hasattr(cache_service, "model_dump")
-        else cache_service
-    )
-    # Deep copy whatever the validation produced: from a dump it is
-    # already detached, but validating from attributes passes nested
-    # objects through by reference, and redacting one of those would
-    # write the placeholder onto the row itself.
-    public = CacheServicePublic.model_validate(data).model_copy(deep=True)
+    public = _detached_public(cache_service)
     if provider is None:
         return public
     for params, name in _secret_param_slots(provider, public):
@@ -218,6 +221,21 @@ def _every_config_value(
         for name in storage.params or {}:
             slots.append((storage.params, name))
     return slots
+
+
+def _redacted_blindly(cache_service) -> CacheServicePublic:
+    """A detached copy with every configured value replaced by the
+    placeholder.
+
+    For the one path that has to redact without a declaration: which values are
+    secrets is what the declaration says, so with none in hand the only answer
+    that cannot disclose one is to mask them all.
+    """
+    public = _detached_public(cache_service)
+    for params, name in _every_config_value(public):
+        if params.get(name) not in (None, ""):
+            params[name] = SECRET_PLACEHOLDER
+    return public
 
 
 def _reject_placeholder_secrets(
@@ -305,21 +323,27 @@ async def get_cache_services(
             async def redact_event(event):
                 # One read per event, which a cache service's own change rate
                 # makes cheap; the stream has no session of its own to reuse.
-                # A read that fails redacts nothing rather than raising: this
-                # transform runs inside the stream, and an exception here ends
-                # it for every subscriber over one event's lookup.
-                provider = None
+                #
+                # Neither failure mode is acceptable on its own: raising ends
+                # the stream for every subscriber over one event's lookup, and
+                # carrying on without the declaration streams the very values
+                # this transform exists to mask. So a failed read masks
+                # everything the configuration carries — a reader sees
+                # placeholders where it cannot be told which values are
+                # secrets, and the next event redacts properly.
                 try:
                     async with async_session() as session:
                         provider = await get_cache_provider(
                             session, _provider_name_of(event.data)
                         )
+                    event.data = _redacted_for_user(event.data, provider)
                 except Exception as e:
                     logger.warning(
                         f"Could not read the cache provider catalog while "
-                        f"redacting a streamed cache service: {e}"
+                        f"redacting a streamed cache service; masking every "
+                        f"configured value for this event: {e}"
                     )
-                event.data = _redacted_for_user(event.data, provider)
+                    event.data = _redacted_blindly(event.data)
 
             event_transform = redact_event
         return StreamingResponse(
