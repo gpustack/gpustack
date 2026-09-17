@@ -1961,9 +1961,14 @@ async def test_a_streamed_row_is_redacted_against_its_own_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_stream_survives_a_catalog_read_that_fails(monkeypatch):
-    """The transform runs inside the stream: letting a lookup raise ends it for
-    every subscriber over one event."""
+async def test_a_stream_masks_everything_when_the_catalog_cannot_be_read(
+    monkeypatch,
+):
+    """Two ways to get this wrong: raising ends the stream for every subscriber
+    over one event's lookup, and carrying on without the declaration streams
+    the very values the transform exists to mask. Which values are secrets is
+    what the declaration says, so with none in hand every configured value is
+    masked."""
 
     async def boom(_session, _name=None):
         raise RuntimeError("database is away")
@@ -1988,8 +1993,10 @@ async def test_a_stream_survives_a_catalog_read_that_fails(monkeypatch):
 
     await captured["event_transform"](event)
 
-    # Nothing to redact against, so nothing is redacted — and the stream lives.
-    assert event.data.config.l2_storages[0].params["password"] == "hunter2"
+    # The stream lives, and nothing configured rode out in the clear.
+    params = event.data.config.l2_storages[0].params
+    assert params["password"] == cache_services_route.SECRET_PLACEHOLDER
+    assert params["username"] == cache_services_route.SECRET_PLACEHOLDER
 
 
 @pytest.mark.asyncio
