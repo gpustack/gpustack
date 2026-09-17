@@ -146,11 +146,11 @@ def test_a_miss_says_whether_the_catalog_could_be_read(catalog):
     assert provider is None and catalog_read is True
 
 
-def test_a_throttled_miss_is_not_claimed_as_an_answer(monkeypatch):
-    """A provider added to the catalog right after a periodic pass misses
-    against a copy that predates it. The throttle is worth keeping — a
-    genuinely absent provider is looked up on every probe — but a miss under it
-    must not be reported as "this provider does not exist"."""
+def test_a_throttled_miss_answers_from_the_copy_the_throttle_protects(monkeypatch):
+    """The throttle exists so a provider nothing declares is not looked up on
+    every probe. The copy it protects was fetched seconds ago, which is recent
+    enough to answer: calling that a catalog this worker could not read would
+    blame connectivity for a provider that genuinely is not declared."""
     http = _HttpxClient()
     provider_manager = CacheProviderManager(lambda: _ClientSet(http))
     http.responses.append(_Response([_declaration("Demo")]))
@@ -158,9 +158,21 @@ def test_a_throttled_miss_is_not_claimed_as_an_answer(monkeypatch):
 
     provider, catalog_read = provider_manager.lookup("Added")
 
-    assert provider is None and catalog_read is False
+    assert provider is None and catalog_read is True
     # Nothing was fetched: the periodic pass had just run.
     assert len(http.calls) == 1
+
+
+def test_a_miss_before_any_successful_read_answers_nothing(monkeypatch):
+    """The other side of it: a worker that has never read the catalog knows
+    nothing about what it does or does not carry."""
+    http = _HttpxClient()
+    provider_manager = CacheProviderManager(lambda: _ClientSet(http))
+    http.responses.append(_Response([], error=RuntimeError("connection refused")))
+
+    provider, catalog_read = provider_manager.lookup("Demo")
+
+    assert provider is None and catalog_read is False
 
 
 def test_a_failed_refresh_keeps_serving_what_was_fetched(catalog):

@@ -844,6 +844,54 @@ async def test_aggregate_transitions(monkeypatch, states, expected):
 
 
 @pytest.mark.asyncio
+async def test_the_dependency_address_does_not_depend_on_row_order(monkeypatch):
+    """The address is stamped on every dependent, so a different pick between
+    two passes reads as the dependency having moved — and deletes and recreates
+    them all while the pool is still up. Row order is not something to pick
+    by."""
+    from gpustack.schemas.cache_providers import CacheProviderComponent
+
+    provider = _pool_provider()
+    provider.components["master"] = CacheProviderComponent(
+        topology="per_node",
+        run_command="pool-master --port {{port}}",
+        gpu_access=False,
+    )
+    provider.components["store"] = CacheProviderComponent(
+        topology="per_node",
+        depends_on="master",
+        attach_endpoint=True,
+        run_command="pool-store --port {{port}}",
+        gpu_access=False,
+    )
+    masters = [
+        _instance(
+            id=61, worker_id=7, state=CacheServiceStateEnum.RUNNING, component="master"
+        ),
+        _instance(
+            id=62, worker_id=5, state=CacheServiceStateEnum.RUNNING, component="master"
+        ),
+    ]
+    for master in masters:
+        master.port = 41000
+
+    controller = CacheServiceController(MagicMock())
+    monkeypatch.setattr(
+        "gpustack.server.controllers.Worker.one_by_id",
+        AsyncMock(side_effect=lambda _s, worker_id: _worker(worker_id)),
+    )
+
+    first = await controller._component_addresses(MagicMock(), provider, masters, {})
+    second = await controller._component_addresses(
+        MagicMock(), provider, list(reversed(masters)), {}
+    )
+
+    assert first == second
+    # The lowest worker id, whichever order the rows came back in.
+    assert "10.0.0.5" in first["master"]
+
+
+@pytest.mark.asyncio
 async def test_a_dependent_waits_out_a_dependency_that_is_not_up_yet(monkeypatch):
     """The other reading of "no address to hand down": the dependency is
     enabled and still coming up. Deleting the dependent there would restart it

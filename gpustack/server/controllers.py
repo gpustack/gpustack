@@ -883,7 +883,11 @@ class CacheServiceController:
         resolved_fields = resolved_field_values(provider.fields, config_fields or {})
         addresses: Dict[str, str] = {}
         for name in depended:
-            instance = next(
+            # Lowest worker id, not whatever the query returned first: the
+            # address is stamped on every dependent, and a different pick
+            # between two passes reads as the dependency having moved — which
+            # deletes and recreates them all while the pool is still up.
+            running = sorted(
                 (
                     candidate
                     for candidate in instances
@@ -891,8 +895,9 @@ class CacheServiceController:
                     and candidate.state == CacheServiceStateEnum.RUNNING
                     and candidate.port
                 ),
-                None,
+                key=lambda candidate: (candidate.worker_id or 0, candidate.id or 0),
             )
+            instance = running[0] if running else None
             if instance is None:
                 continue
             spec = provider.get_component(name)

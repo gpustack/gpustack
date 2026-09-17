@@ -1883,7 +1883,7 @@ async def test_get_redacts_password_fields_for_users(monkeypatch):
 async def test_list_redacts_every_row_from_one_read_of_the_catalog(monkeypatch):
     """A list redacts many services at once, so it resolves the catalog once
     rather than per row — and a row whose provider the catalog no longer
-    carries is returned rather than dropped."""
+    carries is masked whole rather than dropped or disclosed."""
     provider = _provider_with_l2()
     reads = []
 
@@ -1916,9 +1916,11 @@ async def test_list_redacts_every_row_from_one_read_of_the_catalog(monkeypatch):
         result.items[0].config.l2_storages[0].params["password"]
         == cache_services_route.SECRET_PLACEHOLDER
     )
-    # No declaration to read the password fields off: the row still serves,
-    # with nothing redacted.
-    assert result.items[1].config.l2_storages[0].params["password"] == "hunter2"
+    # No declaration to read the password fields off, so every configured
+    # value is masked rather than the row riding out in the clear.
+    masked = result.items[1].config.l2_storages[0].params
+    assert masked["password"] == cache_services_route.SECRET_PLACEHOLDER
+    assert masked["username"] == cache_services_route.SECRET_PLACEHOLDER
 
 
 @pytest.mark.asyncio

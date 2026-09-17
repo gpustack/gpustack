@@ -1258,6 +1258,18 @@ def test_start_instance_unknown_provider_sets_error():
     )
 
 
+def test_health_probe_abstains_when_the_catalog_cannot_be_read():
+    """The declaration says which port to reach and how. Without it, an
+    instance whose component binds anything but the default port would be
+    called unreachable for want of a catalog this worker could not fetch — a
+    connectivity problem reported as a dead cache server."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+    manager._provider_catalog.lookup.return_value = (None, False)
+
+    assert manager._probe_ready(instance, "mooncake") is None
+
+
 def test_start_instance_rereads_a_catalog_that_predates_the_service():
     """A name that is present does not mean the declaration behind it is
     current — the packaged catalog carries a placeholder under the same name as

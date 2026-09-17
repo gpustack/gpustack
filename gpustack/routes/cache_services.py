@@ -142,10 +142,17 @@ def _redacted_for_user(
 
     The provider is passed in rather than looked up: a list redacts many
     services at once, and resolving the catalog per row would be a query per
-    card."""
-    public = _detached_public(cache_service)
+    card.
+
+    With no declaration — a provider the catalog no longer carries, which this
+    feature makes an ordinary state — every configured value is masked
+    instead: which of them are secrets is what the declaration says, so
+    without one the only answer that cannot disclose a credential is all of
+    them.
+    """
     if provider is None:
-        return public
+        return _redacted_blindly(cache_service)
+    public = _detached_public(cache_service)
     for params, name in _secret_param_slots(provider, public):
         if params.get(name):
             params[name] = SECRET_PLACEHOLDER

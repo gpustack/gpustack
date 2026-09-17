@@ -966,6 +966,14 @@ class CacheServiceManager:
             return
 
         ready = self._probe_ready(instance, cache_service.provider_name)
+        if ready is None:
+            # Nothing was learned about this instance, so nothing is written:
+            # the next pass probes again with a catalog it could read.
+            logger.debug(
+                f"Skipped the health probe of cache service instance "
+                f"{instance.name}: the cache provider catalog could not be read"
+            )
+            return
         now = datetime.now(timezone.utc)
         if ready:
             updates = {}
@@ -1083,13 +1091,23 @@ class CacheServiceManager:
             healthy=False,
         )
 
-    def _probe_ready(self, instance: CacheServiceInstance, provider_name: str) -> bool:
+    def _probe_ready(
+        self, instance: CacheServiceInstance, provider_name: str
+    ) -> Optional[bool]:
         """
         Probe the cache server per the provider's health check declaration.
         Managed cache servers run with host networking on this worker, so
         loopback reaches them directly.
+
+        ``None`` means the probe could not be made rather than that it failed:
+        the declaration says which port to reach and how, and without a catalog
+        to read it from, a component binding anything but the default port
+        would be called unreachable for want of a declaration this worker could
+        not fetch.
         """
-        provider, _ = self._provider_catalog.lookup(provider_name)
+        provider, catalog_read = self._provider_catalog.lookup(provider_name)
+        if provider is None and not catalog_read:
+            return None
         # A declared component may probe differently from the provider
         # default (e.g. a master's HTTP metrics endpoint vs a store's
         # plain TCP port).
