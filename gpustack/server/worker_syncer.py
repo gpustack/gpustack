@@ -66,29 +66,49 @@ class WorkerSyncer:
             ]
             await asyncio.gather(*tasks)
 
-        state_changed_workers = self.filter_state_change_workers(all_workers)
+        # only the unreachable flag carries over; readiness is recomputed below
+        unreachable_by_id = {worker.id: worker.unreachable for worker in all_workers}
 
-        should_update_workers = []
         state_to_worker_name = {
             WorkerStateEnum.NOT_READY: [],
             WorkerStateEnum.UNREACHABLE: [],
             WorkerStateEnum.READY: [],
             WorkerStateEnum.MAINTENANCE: [],
         }
-        for worker in state_changed_workers:
-            if worker and worker.state in state_to_worker_name:
-                should_update_workers.append(worker)
-                state_to_worker_name[worker.state].append(worker.name)
 
         async with async_session() as session:
-            for worker in should_update_workers:
-                # reload from DB and update states only
-                to_update_worker = await WorkerService(session).get_by_id(worker.id)
-                if to_update_worker:
-                    to_update_worker.unreachable = worker.unreachable
-                    to_update_worker.state = worker.state
-                    to_update_worker.state_message = worker.state_message
-                    await WorkerService(session).update(to_update_worker)
+            # One fresh, uncached read of every worker instead of N. Worker.all()
+            # bypasses get_by_id's cache the same way a per-id fetch did, since
+            # neither goes through the @locked_cached get_by_id path that
+            # flush_heartbeats() never invalidates.
+            fresh_workers_by_id = {w.id: w for w in await Worker.all(session)}
+
+            workers_to_update = []
+            for worker in all_workers:
+                to_update_worker = fresh_workers_by_id.get(worker.id)
+                if to_update_worker is None:
+                    continue
+
+                original_state = to_update_worker.state
+                original_state_message = to_update_worker.state_message
+
+                if worker.id in unreachable_by_id:
+                    to_update_worker.unreachable = unreachable_by_id[worker.id]
+                to_update_worker.compute_state()
+
+                if (
+                    to_update_worker.state == original_state
+                    and to_update_worker.state_message == original_state_message
+                ):
+                    continue
+
+                workers_to_update.append(to_update_worker)
+                if to_update_worker.state in state_to_worker_name:
+                    state_to_worker_name[to_update_worker.state].append(
+                        to_update_worker.name
+                    )
+
+            await WorkerService(session).batch_update(workers_to_update)
 
         for state, worker_names in state_to_worker_name.items():
             if worker_names:
@@ -129,28 +149,3 @@ class WorkerSyncer:
             no_proxy_client=self._http_client_no_proxy_getter(),
             timeout_in_second=self._worker_unreachable_timeout,
         )
-
-    @staticmethod
-    def filter_state_change_workers(workers: list[Worker]) -> list[Worker]:
-        """
-        Filter workers whose state has changed.
-
-        Args:
-            workers: List of workers to check
-
-        Returns:
-            List of workers whose state has changed
-        """
-        state_changed_workers = []
-        for worker in workers:
-            original_worker_state = worker.state
-            original_worker_state_message = worker.state_message
-
-            worker.compute_state()
-
-            if (
-                worker.state != original_worker_state
-                or worker.state_message != original_worker_state_message
-            ):
-                state_changed_workers.append(worker)
-        return state_changed_workers
