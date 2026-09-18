@@ -263,6 +263,9 @@ async def proxy_request_by_model(
     extra_headers = {
         router_header_key: f"{model_instance_prefix(instance)}.static",
     }
+    if getattr(model, "backend_api_key", None):
+        extra_headers["Authorization"] = f"Bearer {model.backend_api_key}"
+        
     path = f"v1/{endpoint}"
     logger.debug(
         f"proxying to {instance.worker_ip}:{instance.port}, instance port: {instance.port}"

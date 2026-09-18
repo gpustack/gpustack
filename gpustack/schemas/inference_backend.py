@@ -130,6 +130,7 @@ class InferenceBackendBase(SQLModel):
     common_parameters: Optional[List[str]] = SQLField(
         sa_column=Column(JSON), default=None
     )
+    api_key_parameter: Optional[str] = SQLField(default="--api-key")
 
     def resolve_target_version(self, version: Optional[str] = None) -> Optional[str]:
         """

@@ -2122,9 +2122,14 @@ async def accumulate_model_ai_proxy_group(
             cluster_api_tokens[model.cluster_id] = await cluster_registration_tokens(
                 session, model.cluster_id
             )
+        
+        api_tokens = cluster_api_tokens[model.cluster_id]
+        if getattr(model, "backend_api_key", None):
+            api_tokens = [model.backend_api_key]
+
         group = mcp_handler.ModelAIProxyGroup(
             model_id=model.id,
-            api_tokens=cluster_api_tokens[model.cluster_id],
+            api_tokens=api_tokens,
             native_anthropic_api=model.native_anthropic_api,
         )
         model_groups[model.id] = group

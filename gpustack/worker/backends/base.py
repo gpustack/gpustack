@@ -28,6 +28,7 @@ from gpustack_runtime.deployer.docker import DockerWorkloadPlan
 from gpustack_runtime.deployer import WorkloadPlan
 
 from gpustack.client.generated_clientset import ClientSet
+from gpustack.utils.command import find_parameter
 from gpustack import envs
 from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
@@ -211,6 +212,16 @@ class InferenceServer(ABC):
                 raise KeyError(
                     f"Inference backend {self._model.backend} not specified or not found"
                 )
+
+            # Inject backend API key into backend parameters if configured
+            api_key = getattr(self._model, "backend_api_key", None)
+            api_key_param = getattr(self.inference_backend, "api_key_parameter", None)
+            if api_key and api_key_param:
+                if self._model.backend_parameters is None:
+                    self._model.backend_parameters = []
+                # Ensure we don't inject it twice if the user somehow provided it
+                if not find_parameter(self._model.backend_parameters, [api_key_param.lstrip("-")]):
+                    self._model.backend_parameters.extend([api_key_param, api_key])
 
             logger.info("Preparing model files...")
 
