@@ -93,8 +93,11 @@ from gpustack.config.config import (
     get_global_config,
     get_cluster_image_name,
 )
+from gpustack.utils.certificates import read_server_ca_bundle, server_ca_checksum
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack_runtime.detector import ManufacturerEnum
+
+logger = logging.getLogger(__name__)
 
 CLUSTER_LOAD_OPTIONS = [
     selectinload(Cluster.cluster_workers),
@@ -953,13 +956,41 @@ def get_registration_from_cluster(
     sensitive_registration = SensitiveRegistrationConfig(
         token=cluster.registration_token, **config
     )
+    server_url = get_server_url(request, cluster.server_url)
+    env = parse_base_model_to_env_vars(sensitive_registration)
+    global_config = get_global_config()
+    is_server_configured_endpoint = cluster.server_url is None or bool(
+        global_config
+        and global_config.server_external_url
+        and server_url == global_config.server_external_url.rstrip("/")
+    )
+    if (
+        global_config
+        and is_server_configured_endpoint
+        and server_url.startswith("https://")
+    ):
+        try:
+            checksum = server_ca_checksum(
+                read_server_ca_bundle(
+                    global_config.ssl_ca_certfile, global_config.ssl_certfile
+                )
+            )
+        except (OSError, ValueError) as error:
+            logger.warning(
+                "Failed to read the server CA bundle for worker registration: %s",
+                error,
+            )
+            checksum = None
+        if checksum:
+            env["GPUSTACK_SERVER_CA_CERT_SHA256"] = checksum
+
     return ClusterRegistrationTokenPublic(
         token=cluster.registration_token,
-        server_url=get_server_url(request, cluster.server_url),
+        server_url=server_url,
         image=get_cluster_image_name(
             cluster.worker_config, cluster.system_default_container_registry
         ),  # Default image, can be customized
-        env=parse_base_model_to_env_vars(sensitive_registration),
+        env=env,
         args=[],
     )
 

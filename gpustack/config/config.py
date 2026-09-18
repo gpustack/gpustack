@@ -122,6 +122,7 @@ class Config(WorkerConfig, BaseSettings):
         disable_metrics: Disable server metrics.
         ssl_keyfile: Path to the SSL key file.
         ssl_certfile: Path to the SSL certificate file.
+        ssl_ca_certfile: Path to the CA bundle workers use to verify the server.
         database_url: URL of the database.
         disable_worker: (Deprecated) Disable embedded worker.
         enable_worker: Enable embedded worker.
@@ -195,6 +196,7 @@ class Config(WorkerConfig, BaseSettings):
     resources: Optional[dict] = None
     ssl_keyfile: Optional[str] = None
     ssl_certfile: Optional[str] = None
+    ssl_ca_certfile: Optional[str] = None
     # Deprecated, no-op. Localhost callers must always authenticate now.
     # Kept for backwards compatibility with existing config files
     # and CLI invocations. Will be removed in a future release.
@@ -444,6 +446,11 @@ class Config(WorkerConfig, BaseSettings):
         ):
             raise Exception(
                 'Both "ssl_keyfile" and "ssl_certfile" must be provided, or neither.'
+            )
+
+        if self.ssl_ca_certfile and not os.path.isfile(self.ssl_ca_certfile):
+            raise Exception(
+                f'CA certificate file "{self.ssl_ca_certfile}" does not exist.'
             )
 
         if self.server_url:
