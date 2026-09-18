@@ -510,6 +510,8 @@ class ModelSpecBase(SQLModel, ModelSource):
     # is migrated to ModelAccess. Keeping this field for backward compatibility
     generic_proxy: Optional[bool] = Field(default=False)
 
+    backend_api_key: Optional[str] = Field(default=None)
+
     lora_list: Optional[List[LoraListEntry]] = Field(
         default=None,
         sa_column=Column(pydantic_column_type(List[LoraListEntry]), nullable=True),

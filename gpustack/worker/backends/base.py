@@ -54,6 +54,7 @@ from gpustack.server.bus import Event
 from gpustack.utils.command import flatten_to_argv, is_parameter_key
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
+from gpustack.utils.command import find_parameter
 from gpustack.utils.hub import get_hf_text_config, get_max_model_len
 from gpustack.utils.hub import get_pretrained_config, safe_pretrained_config_from_dict
 from gpustack.utils.profiling import time_decorator
@@ -211,6 +212,18 @@ class InferenceServer(ABC):
                 raise KeyError(
                     f"Inference backend {self._model.backend} not specified or not found"
                 )
+
+            # Inject backend API key into backend parameters if configured
+            api_key = getattr(self._model, "backend_api_key", None)
+            api_key_param = getattr(self.inference_backend, "api_key_parameter", None)
+            if api_key and api_key_param:
+                if self._model.backend_parameters is None:
+                    self._model.backend_parameters = []
+                # Ensure we don't inject it twice if the user somehow provided it
+                if not find_parameter(
+                    self._model.backend_parameters, [api_key_param.lstrip("-")]
+                ):
+                    self._model.backend_parameters.extend([api_key_param, api_key])
 
             logger.info("Preparing model files...")
 

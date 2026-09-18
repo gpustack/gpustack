@@ -2263,13 +2263,17 @@ def is_ready(
         # Built-in backends (vLLM, SGLang, vox-box) except (Custom, MindIE) use /v1/models as health check path.
         health_check_path = "/v1/models"
 
+    headers = {}
+    if model and getattr(model, "backend_api_key", None):
+        headers["Authorization"] = f"Bearer {model.backend_api_key}"
+
     try:
         # Use the worker IP instead of localhost for health check.
         # Reasons:
         # 1. Connectivity to the loopback address does not work with Ascend MindIE.
         # 2. More adaptable to container networks.
         health_check_url = f"http://{mi.worker_ip}:{mi.port}{health_check_path}"
-        response = requests.get(health_check_url, timeout=1)
+        response = requests.get(health_check_url, headers=headers, timeout=1)
         if response.status_code == 200:
             return True
     except Exception as e:
@@ -2362,8 +2366,14 @@ def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bo
     endpoint_path, payload = result
     inference_url = f"http://{mi.worker_ip}:{mi.port}{endpoint_path}"
 
+    headers = {}
+    if getattr(model, "backend_api_key", None):
+        headers["Authorization"] = f"Bearer {model.backend_api_key}"
+
     try:
-        response = requests.post(inference_url, json=payload, timeout=timeout)
+        response = requests.post(
+            inference_url, json=payload, headers=headers, timeout=timeout
+        )
         if response.status_code == 200:
             return True
         else:
