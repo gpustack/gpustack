@@ -54,10 +54,21 @@ class _ModelRegistry:
         'inferencebackend': lambda: _import_model(
             'gpustack.schemas.inference_backend', 'InferenceBackend'
         ),
-        # The leader materializes the cache-provider catalog from these rows,
-        # and a write lands on whichever server served the request — so without
-        # an entry here, a document configured through a standby would never
-        # reach the leader that has to act on it.
+        # Every configurable-content kind: a controller on the leader
+        # subscribes to its rows, while the write that changes one lands on
+        # whichever server served the request. Without an entry here the
+        # event never crosses, so a document configured through a standby
+        # reaches the leader only on its next full pass -- or, for a kind
+        # whose controller acts on events alone, not at all.
+        'catalogsource': lambda: _import_model(
+            'gpustack.schemas.catalog_source', 'CatalogSource'
+        ),
+        'inferencebackendsource': lambda: _import_model(
+            'gpustack.schemas.inference_backend_source', 'InferenceBackendSource'
+        ),
+        'inferencerunnersource': lambda: _import_model(
+            'gpustack.schemas.runner_source', 'InferenceRunnerSource'
+        ),
         'cacheprovidersource': lambda: _import_model(
             'gpustack.schemas.cache_provider_source', 'CacheProviderSource'
         ),
