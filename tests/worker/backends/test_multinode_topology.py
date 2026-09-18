@@ -49,6 +49,11 @@ def _instance(g_main, *subordinate_gs):
     return mi
 
 
+def _argument_value(arguments, key):
+    """Value following ``key`` in a CLI argument list, or None if absent."""
+    return arguments[arguments.index(key) + 1] if key in arguments else None
+
+
 def _meta(role, follower_index=None):
     """role: 'leader' or 'follower'. follower_index is 0-based."""
     m = MagicMock()
@@ -199,12 +204,13 @@ def test_world_size_hybrid_lb_without_dpl():
 
 
 # ---------------------------------------------------------------------------
-# follower --headless injection (gated by --data-parallel-hybrid-lb)
+# dp_only argument injection (--headless / --data-parallel-start-rank), both
+# gated by --data-parallel-hybrid-lb
 # ---------------------------------------------------------------------------
 
 
-def _follower_mp_arguments(backend_parameters):
-    """Drive _build_mp_multinode_arguments for a dp_only follower node."""
+def _dp_only_mp_arguments(backend_parameters, is_follower=True):
+    """Drive _build_mp_multinode_arguments for one node of a dp_only cluster."""
     server = object.__new__(VLLMServer)
     server._model = MagicMock(backend_parameters=backend_parameters)
     server._model_instance = MagicMock(worker_ip="10.0.0.1", ports=[8000, 8001, 8002])
@@ -215,9 +221,9 @@ def _follower_mp_arguments(backend_parameters):
         dp=16,
         dpl=8,
         nnodes=2,
-        node_rank=1,
-        start_rank=8,
-        is_follower=True,
+        node_rank=1 if is_follower else 0,
+        start_rank=8 if is_follower else 0,
+        is_follower=is_follower,
     )
     ctx = _VLLMArgsContext(
         port=8000,
@@ -233,11 +239,35 @@ def _follower_mp_arguments(backend_parameters):
 
 
 def test_follower_gets_headless_by_default():
-    assert "--headless" in _follower_mp_arguments([])
+    assert "--headless" in _dp_only_mp_arguments([])
 
 
 def test_follower_skips_headless_under_hybrid_lb():
-    assert "--headless" not in _follower_mp_arguments(["--data-parallel-hybrid-lb"])
+    assert "--headless" not in _dp_only_mp_arguments(["--data-parallel-hybrid-lb"])
+
+
+@pytest.mark.parametrize(
+    "backend_parameters,is_follower,expected_start_rank",
+    [
+        # Only followers carry a start rank. On the leader vLLM reads it as an
+        # opt-in to hybrid LB and then refuses the headless followers; its own
+        # rank is implicitly 0 either way, so the leader stays silent even when
+        # the user asked for hybrid LB explicitly.
+        ([], False, None),
+        ([], True, "8"),
+        (["--data-parallel-hybrid-lb"], False, None),
+        (["--data-parallel-hybrid-lb"], True, "8"),
+    ],
+)
+def test_dp_only_start_rank_injection(
+    backend_parameters, is_follower, expected_start_rank
+):
+    arguments = _dp_only_mp_arguments(backend_parameters, is_follower=is_follower)
+    start_rank = _argument_value(arguments, "--data-parallel-start-rank")
+    assert start_rank == expected_start_rank
+    # Every dp_only node still needs to find the DP coordinator.
+    assert _argument_value(arguments, "--data-parallel-address") == "10.0.0.1"
+    assert _argument_value(arguments, "--data-parallel-rpc-port") == "8001"
 
 
 # ---------------------------------------------------------------------------

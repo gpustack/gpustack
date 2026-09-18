@@ -747,7 +747,9 @@ class VLLMServer(InferenceServer):
         shapes based on the resolved topology:
 
         - ``dp_only``  → ``--data-parallel-*`` only; vLLM treats every node as
-          a DP engine head (no PP/TP spans nodes).
+          a DP engine head (no PP/TP spans nodes). Only followers carry
+          ``--data-parallel-start-rank``; on the leader it would select hybrid
+          LB instead of internal LB.
         - ``mp_only``  → ``--nnodes`` + ``--node-rank`` only; a single DP rank
           is spread across all nodes for cross-node TP/PP.
         - ``nested``   → both sets; vLLM derives node role internally via
@@ -783,9 +785,16 @@ class VLLMServer(InferenceServer):
         dp_rpc_port = str(self._model_instance.ports[1])
         master_port = str(self._model_instance.ports[2])
         if topology.shape == "dp_only":
+            # Since vLLM 0.28, --data-parallel-start-rank on the leader reads as
+            # an opt-in to hybrid LB, which then rejects the headless followers.
+            # The leader's DP rank is implicitly 0, so only followers send it.
+            if topology.start_rank > 0:
+                extend_args_no_exist(
+                    arguments,
+                    ("--data-parallel-start-rank", str(topology.start_rank)),
+                )
             extend_args_no_exist(
                 arguments,
-                ("--data-parallel-start-rank", str(topology.start_rank)),
                 ("--data-parallel-address", leader_ip),
                 ("--data-parallel-rpc-port", dp_rpc_port),
             )
