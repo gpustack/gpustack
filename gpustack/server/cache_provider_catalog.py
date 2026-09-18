@@ -96,12 +96,22 @@ def providers_from_documents(documents: List[Optional[str]]) -> List[CacheProvid
 
     What the source layer hands its checks is a list of documents rather than a
     catalog, so this is how a check judges the catalog a write would produce.
+
+    A document that will not parse is skipped, as the materialization skips it:
+    every document is validated when it is written, so one that fails here was
+    corrupted after the fact, and it must not be the reason an admin's own write
+    is refused — least of all with the unexplained server error that an
+    exception out of a pre-write check becomes. The document being written is
+    validated before it reaches any check, so nothing is waved through here.
     """
     providers: List[CacheProvider] = []
     for document in documents:
-        providers = merge_cache_providers(
-            providers, load_cache_providers_document(document)
-        )
+        try:
+            loaded = load_cache_providers_document(document)
+        except ValueError as e:
+            logger.error(f"Skipping unreadable cache provider document: {e}")
+            continue
+        providers = merge_cache_providers(providers, loaded)
     return providers
 
 
