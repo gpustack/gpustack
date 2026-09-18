@@ -3,6 +3,8 @@ satisfy to be stored, what it replaces once it is, and what a write may not take
 away."""
 
 import logging
+import subprocess
+import sys
 from contextlib import asynccontextmanager
 from importlib.resources import files
 from typing import List
@@ -378,4 +380,51 @@ def test_dump_is_what_normalize_stores():
     providers = load_cache_providers_document(_document(_provider("Demo")))
     assert dump_cache_providers(providers) == normalize_cache_provider_yaml(
         _document(_provider("Demo"))
+    )
+
+
+def test_an_unreadable_stored_document_does_not_refuse_a_write(caplog):
+    """A pre-write check reads every stored document to judge the catalog a
+    write would produce. One of them may have been corrupted after it was
+    written — every document is validated as it is stored — and that is not a
+    reason to refuse an admin's own write, least of all with the unexplained
+    server error an exception out of a check becomes. Skipped here as the
+    materialization skips it, so the check sees the catalog that will serve."""
+    with caplog.at_level(logging.ERROR):
+        providers = providers_from_documents(
+            [
+                _document(_provider("Demo", "v1")),
+                "name: not a list\n",
+                _document(_provider("Other", "v1")),
+            ]
+        )
+
+    assert [provider.name for provider in providers] == ["Demo", "Other"]
+    # Silently dropping a declaration is how a catalog goes wrong unnoticed.
+    assert any("Skipping unreadable" in record.message for record in caplog.records)
+
+
+def test_both_source_tables_are_registered_for_migrations():
+    """``migrations/env.py`` fills ``target_metadata`` by importing this package
+    alone, so a table whose module the package does not import is absent from it
+    — and the next ``alembic revision --autogenerate`` writes a drop_table for it
+    against a database that has one. A fresh install is no safer than an
+    upgraded one.
+
+    Asked in a new interpreter: metadata is process-global, so importing the
+    module anywhere — including from this test file — registers the tables and
+    would answer for an import the package does not make."""
+    probe = (
+        "import gpustack.schemas; from sqlmodel import SQLModel; "
+        "print(sorted(t for t in SQLModel.metadata.tables "
+        "if t.startswith('cache_provider_')))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == str(
+        ["cache_provider_entries", "cache_provider_sources"]
     )

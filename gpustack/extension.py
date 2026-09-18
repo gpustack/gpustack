@@ -141,9 +141,15 @@ class Plugin:
 
         A declaration replaces the bundled entry of the same name, which is
         how a plugin carrying what a provider needs turns the catalog's
-        placeholder for it into the real thing. Read wherever the catalog
-        is (the API server and every worker), so this must be a classmethod
-        and must not depend on instance state.
+        placeholder for it into the real thing.
+
+        Read where the packaged baseline is seeded into its source row — the
+        server, and only the instance holding leadership. Everything else
+        reads that row or the catalog it materializes: another server
+        instance serves the download from it, and a worker fetches the
+        merged catalog over the API. A plugin therefore belongs on the
+        server; installing it on a worker contributes nothing. Still a
+        classmethod, and must not depend on instance state.
         """
         return []
 

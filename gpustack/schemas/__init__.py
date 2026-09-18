@@ -33,6 +33,10 @@ from gpustack.schemas.catalog_source import (  # noqa: F401  table registration
 from gpustack.schemas.inference_backend_source import (  # noqa: F401  table registration
     InferenceBackendSource,
 )
+from gpustack.schemas.cache_provider_source import (  # noqa: F401  table registration
+    CacheProviderSource,
+    CacheProviderEntry,
+)
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
