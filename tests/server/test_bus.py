@@ -446,6 +446,29 @@ def test_principal_topic_is_registered_for_cross_instance_enrichment():
     assert get_model_for_topic("principal") is not None
 
 
+def test_every_configurable_content_source_is_registered():
+    """Each of these has a controller on the leader subscribing to its rows,
+    while the write that changes one lands on whichever server served the
+    request. An unregistered topic has its cross-instance events dropped, so a
+    document configured through a standby would never reach the leader that
+    acts on it — silently, since a dropped topic looks exactly like a quiet
+    one."""
+    from gpustack.schemas.catalog_source import CatalogSource
+    from gpustack.schemas.inference_backend_source import InferenceBackendSource
+    from gpustack.schemas.runner_source import InferenceRunnerSource
+    from gpustack.schemas.cache_provider_source import CacheProviderSource
+    from gpustack.server.coordinator.models import get_model_for_topic
+
+    for model in (
+        CatalogSource,
+        InferenceBackendSource,
+        InferenceRunnerSource,
+        CacheProviderSource,
+    ):
+        topic = model.__name__.lower()
+        assert get_model_for_topic(topic) is model, topic
+
+
 async def _deliver(event_type, warm_cache):
     """Push a wire-shaped event through the bus and return what a subscriber got.
 
