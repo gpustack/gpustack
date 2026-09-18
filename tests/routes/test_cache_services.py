@@ -744,6 +744,44 @@ async def test_update_allows_system_writeback_of_any_field(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_system_writeback_survives_a_field_the_service_predates(monkeypatch):
+    """A declaration may gain a required field after a service was
+    created — an edited catalog document, an upgraded provider. The
+    service then holds no value for it, and a worker reporting instance
+    state carries none either, so judging requiredness against the stored
+    row would refuse the report and lose the account of what happened to a
+    service that already cannot start. A user's own edit is still judged:
+    they are the one who can fill the field in."""
+    service = _existing_service(
+        config=CacheServiceConfig(fields={"ram_size": 20}),
+    )
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
+    )
+    provider = _provider()
+    provider.fields.append(
+        CacheProviderField(name="transport", type="string", required=True)
+    )
+    _patch_provider(monkeypatch, provider)
+    _patch_worker_lookup(monkeypatch)
+
+    # the shape of a worker's report: state only, no config at all
+    report = _update_in(config=None, state=CacheServiceStateEnum.RUNNING, healthy=True)
+    await cache_services_route.update_cache_service(
+        session=MagicMock(), ctx=_system_ctx(), id=9, cache_service_in=report
+    )
+    service.update.assert_awaited_once()
+
+    with pytest.raises(BadRequestException):
+        await cache_services_route.update_cache_service(
+            session=MagicMock(),
+            ctx=_user_ctx(),
+            id=9,
+            cache_service_in=_update_in(config=None),
+        )
+
+
+@pytest.mark.asyncio
 async def test_update_accepts_worker_selector_for_replicas(monkeypatch):
     service = _existing_service()
     monkeypatch.setattr(
