@@ -2,6 +2,9 @@ import logging
 from typing import Optional
 import requests
 from prometheus_client.parser import text_string_to_metric_families
+from prometheus_client.openmetrics.parser import (
+    text_string_to_metric_families as openmetrics_text_string_to_metric_families,
+)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from gpustack.schemas.models import BackendEnum
@@ -9,11 +12,40 @@ from gpustack.schemas.models import BackendEnum
 
 logger = logging.getLogger(__name__)
 
+OPENMETRICS_CONTENT_TYPE = "application/openmetrics-text"
+
 BackendVersionAPI = {
     BackendEnum.VLLM.value: ["version"],
     BackendEnum.SGLANG.value: ["server_info", "get_server_info"],
     BackendEnum.ASCEND_MINDIE.value: ["info"],
 }
+
+
+def parse_metrics_text(text: str, content_type: Optional[str] = None):
+    """
+    Parse an exposition response, picking the parser that matches its content type.
+
+    Runtimes serving OpenMetrics (such as vLLM with the Rust frontend) declare a
+    counter by its base name and suffix the samples with _total. The Prometheus
+    text parser reports those samples as separate untyped families instead, which
+    leaves every counter family empty and breaks the unified metric mapping.
+    """
+    if content_type and OPENMETRICS_CONTENT_TYPE in content_type:
+        try:
+            return list(openmetrics_text_string_to_metric_families(text))
+        except Exception as e:
+            logger.warning(
+                f"Failed to parse OpenMetrics exposition, "
+                f"falling back to the Prometheus text format: {e}"
+            )
+    try:
+        return list(text_string_to_metric_families(text))
+    except Exception as e:
+        # Materialized here on purpose: left lazy, a malformed payload would
+        # raise while the caller iterates and be retried as if it were a
+        # request failure, which no amount of retrying can fix.
+        logger.warning(f"Failed to parse metrics exposition: {e}")
+        return []
 
 
 class Config:
@@ -45,7 +77,9 @@ class Client:
                 )
                 if resp.status_code == 200:
                     metrics = {}
-                    for family in text_string_to_metric_families(resp.text):
+                    for family in parse_metrics_text(
+                        resp.text, resp.headers.get("Content-Type")
+                    ):
                         metrics[family.name] = family
                     return metrics
                 else:

@@ -6,6 +6,7 @@ from prometheus_client.core import (  # noqa: F401
     HistogramMetricFamily,
     CounterMetricFamily,
     SummaryMetricFamily,
+    UnknownMetricFamily,
 )
 from prometheus_client import CollectorRegistry
 from gpustack.client.generated_clientset import ClientSet
@@ -99,22 +100,30 @@ class RuntimeMetricsAggregator:
         for ep, metrics in endpoint_metrics.items():
             if not metrics:
                 continue
-            mi = endpoint_to_instance[ep]
-            m = instance_id_to_model.get(mi.id)
+            try:
+                mi = endpoint_to_instance[ep]
+                m = instance_id_to_model.get(mi.id)
 
-            runtime = get_backend(m)
-            runtime_version = self.fetch_and_update_api_backend_version(mi, ep)
+                runtime = get_backend(m)
+                runtime_version = self.fetch_and_update_api_backend_version(mi, ep)
 
-            base_labels = self._build_base_labels(mi, m, runtime)
-            self._process_endpoint_metrics(
-                metrics,
-                base_labels,
-                runtime,
-                runtime_version,
-                unified_metrics,
-                raw_metrics,
-                metrics_config,
-            )
+                base_labels = self._build_base_labels(mi, m, runtime)
+                self._process_endpoint_metrics(
+                    metrics,
+                    base_labels,
+                    runtime,
+                    runtime_version,
+                    unified_metrics,
+                    raw_metrics,
+                    metrics_config,
+                )
+            except Exception as e:
+                # Keep one endpoint from discarding the metrics collected from
+                # the others on this worker.
+                logger.warning(
+                    f"Skipping metrics from endpoint {ep}: {e}",
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
 
         self._cache["unified"] = unified_metrics
         self._cache["raw"] = raw_metrics
@@ -222,87 +231,120 @@ class RuntimeMetricsAggregator:
         Process metrics for a single endpoint, aggregate to unified and raw.
         """
         for source_family_name, family in metrics.items():
-            first_sample = family.samples[0] if family.samples else None
-            if not first_sample:
-                continue
-
-            label_keys = list(base_labels.keys())
-            for k in first_sample.labels.keys():
-                if k not in label_keys:
-                    label_keys.append(k)
-
-            # raw metrics
-            if source_family_name not in raw_metrics:
-                raw_metrics[source_family_name] = create_prom_metric_family(
-                    name=source_family_name,
-                    type=family.type,
-                    description=family.documentation,
-                    labels=label_keys,
+            try:
+                self._process_metric_family(
+                    source_family_name,
+                    family,
+                    base_labels,
+                    runtime,
+                    runtime_version,
+                    unified_metrics,
+                    raw_metrics,
+                    metrics_config,
                 )
-            raw_family = raw_metrics[source_family_name]
+            except Exception as e:
+                # Keep a single unsupported family from discarding every metric
+                # collected on this worker.
+                logger.warning(
+                    f"Skipping metric family {source_family_name}: {e}",
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
 
-            # unified metrics
-            unified_family = None
-            unified_metric_family_name = get_unified_metric_family_name(
-                metrics_config, source_family_name, runtime, runtime_version
+    def _process_metric_family(
+        self,
+        source_family_name,
+        family,
+        base_labels,
+        runtime,
+        runtime_version,
+        unified_metrics,
+        raw_metrics,
+        metrics_config,
+    ):
+        """
+        Aggregate a single metric family into the unified and raw collections.
+        """
+        first_sample = family.samples[0] if family.samples else None
+        if not first_sample:
+            return
+
+        label_keys = list(base_labels.keys())
+        for k in first_sample.labels.keys():
+            if k not in label_keys:
+                label_keys.append(k)
+
+        # raw metrics
+        if source_family_name not in raw_metrics:
+            raw_metrics[source_family_name] = create_prom_metric_family(
+                name=source_family_name,
+                type=family.type,
+                description=family.documentation,
+                labels=label_keys,
             )
-            if unified_metric_family_name:
-                cfg = get_unified_metric_family_config(
-                    metrics_config, unified_metric_family_name
-                )
-                if cfg:
-                    if unified_metric_family_name not in unified_metrics:
-                        unified_metrics[unified_metric_family_name] = (
-                            create_prom_metric_family(
-                                name=unified_metric_family_name,
-                                type=cfg.get("type"),
-                                description=cfg.get("description"),
-                                labels=label_keys,
-                            )
+        raw_family = raw_metrics[source_family_name]
+
+        # unified metrics
+        unified_family = None
+        unified_metric_family_name = get_unified_metric_family_name(
+            metrics_config, source_family_name, runtime, runtime_version
+        )
+        if unified_metric_family_name:
+            cfg = get_unified_metric_family_config(
+                metrics_config, unified_metric_family_name
+            )
+            if cfg:
+                if unified_metric_family_name not in unified_metrics:
+                    unified_metrics[unified_metric_family_name] = (
+                        create_prom_metric_family(
+                            name=unified_metric_family_name,
+                            type=cfg.get("type"),
+                            description=cfg.get("description"),
+                            labels=label_keys,
                         )
-                    unified_family = unified_metrics[unified_metric_family_name]
-
-            for sample in family.samples:
-                label_values = [
-                    (
-                        base_labels.get(k, sample.labels.get(k, ""))
-                        if k in base_labels
-                        else sample.labels.get(k, "")
                     )
-                    for k in label_keys
-                ]
-                labels = sample.labels.copy()
-                labels.update(base_labels)
+                unified_family = unified_metrics[unified_metric_family_name]
 
-                if family.type in ("histogram", "summary"):
-                    raw_family.add_sample(
-                        name=sample.name,
+        for sample in family.samples:
+            label_values = [
+                (
+                    base_labels.get(k, sample.labels.get(k, ""))
+                    if k in base_labels
+                    else sample.labels.get(k, "")
+                )
+                for k in label_keys
+            ]
+            labels = sample.labels.copy()
+            labels.update(base_labels)
+
+            if family.type in ("histogram", "summary"):
+                raw_family.add_sample(
+                    name=sample.name,
+                    labels=labels,
+                    value=sample.value,
+                    timestamp=sample.timestamp,
+                )
+                if unified_family:
+                    new_name = sample.name.replace(
+                        source_family_name, unified_metric_family_name
+                    )
+                    unified_family.add_sample(
+                        name=new_name,
                         labels=labels,
                         value=sample.value,
                         timestamp=sample.timestamp,
                     )
-                    if unified_family:
-                        new_name = sample.name.replace(
-                            source_family_name, unified_metric_family_name
-                        )
-                        unified_family.add_sample(
-                            name=new_name,
-                            labels=labels,
-                            value=sample.value,
-                            timestamp=sample.timestamp,
-                        )
-                else:
-                    raw_family.add_metric(
+            else:
+                raw_family.add_metric(
+                    labels=label_values,
+                    value=sample.value,
+                    timestamp=sample.timestamp,
+                )
+                if unified_family:
+                    unified_family.add_metric(
                         labels=label_values,
                         value=sample.value,
                         timestamp=sample.timestamp,
                     )
-                    if unified_family:
-                        unified_family.add_metric(
-                            labels=label_values,
-                            value=sample.value,
-                            timestamp=sample.timestamp,
-                        )
 
     def _should_skip_endpoint(
         self, model: Model, model_instance: ModelInstance, metrics_config: dict
@@ -397,6 +439,9 @@ _METRIC_FAMILY_CLASS = {
     "histogram": HistogramMetricFamily,
     "counter": CounterMetricFamily,
     "summary": SummaryMetricFamily,
+    # Samples a runtime exposes without a TYPE declaration.
+    "unknown": UnknownMetricFamily,
+    "untyped": UnknownMetricFamily,
 }
 
 
