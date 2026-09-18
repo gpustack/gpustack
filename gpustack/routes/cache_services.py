@@ -1138,6 +1138,7 @@ def _validate_fields(
     cache_service_in: CacheServiceBase,
     provider: Optional[CacheProvider],
     stored: Optional[Dict[str, Any]] = None,
+    enforce_required: bool = True,
 ) -> None:
     """config.fields must match the provider's fields declaration:
     an unknown name is a typo (the worker would silently ignore it), and a
@@ -1152,7 +1153,17 @@ def _validate_fields(
     # fields it set — so a request that carries no config at all is not a
     # service with no fields. Requiredness is judged against what the service
     # will hold, which on create is the request alone.
-    _validate_required_fields(cache_service_in, provider, {**(stored or {}), **values})
+    #
+    # Judged only for a caller that decides the configuration. A worker
+    # reporting instance state sets no fields at all, so the values judged
+    # would be the stored row's: the moment a declaration gains a required
+    # field the service predates, every one of those reports is refused, and
+    # what is lost is the account of what happened to a service that already
+    # cannot start. The edit that fills the field in is a user's to make.
+    if enforce_required:
+        _validate_required_fields(
+            cache_service_in, provider, {**(stored or {}), **values}
+        )
     if not values:
         return
     declared = {field.name: field for field in provider.fields}
@@ -1354,6 +1365,7 @@ async def update_cache_service(
             cache_service_in,
             provider,
             stored=(cache_service.config.fields if cache_service.config else None),
+            enforce_required=not is_system,
         )
         _validate_cache_service_l2_storage(cache_service_in, provider)
     elif is_system:
