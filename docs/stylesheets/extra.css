@@ -93,22 +93,22 @@
 }
 
 /* ── Brand ───────────────────────────────────────────
-   Indigo, matching gpustack.ai so the docs and the marketing site
+   #0055ff, matching gpustack.ai so the docs and the marketing site
    read as one product. The hue carries meaning through links and
    accents; the chrome (header, tabs) stays neutral — a saturated
    bar across the top is what made the page feel heavy. */
 :root {
-    --gps-accent: #4f46e5;
-    --gps-accent-hover: #6366f1;
-    --gps-accent-tint: rgba(79, 70, 229, 0.1);
+    --gps-accent: #0055ff;
+    --gps-accent-hover: #3377ff;
+    --gps-accent-tint: rgba(0, 85, 255, 0.1);
 }
 
-/* On the dark scheme the same indigo is too dim against the slate
-   background, so step up to the lighter end of the ramp. */
+/* On the dark scheme the brand blue is too dim against the slate
+   background, so step up to a lighter tint of the same hue. */
 [data-md-color-scheme="slate"] {
-    --gps-accent: #818cf8;
-    --gps-accent-hover: #a5b4fc;
-    --gps-accent-tint: rgba(129, 140, 248, 0.14);
+    --gps-accent: #66a3ff;
+    --gps-accent-hover: #99c2ff;
+    --gps-accent-tint: rgba(102, 163, 255, 0.14);
 }
 
 /* ── Dark scheme legibility ──────────────────────────
