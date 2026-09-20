@@ -797,6 +797,19 @@ def _validate_cache_service_provider(
             )
         )
 
+    # An omitted version means the provider's default, and that default is
+    # read again at every instance start: for a provider reading its release
+    # line off the runner images it moves whenever those are upgraded, which
+    # would change the image under a running service. The spec digest hashes
+    # the stored version, so it would not even show the drift. Storing what
+    # the default resolved to makes the version the service's own.
+    #
+    # On the way in only. An edit carries the fields it changes, so an absent
+    # version means "unchanged" — assigning one here would enter
+    # model_fields_set and write today's default over what the service pins.
+    if creating:
+        cache_service_in.provider_version = resolved_version
+
 
 def _validate_cache_service_custom_version(
     cache_service_in: CacheServiceBase, provider: Optional[CacheProvider]

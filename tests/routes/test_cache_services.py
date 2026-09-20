@@ -361,6 +361,54 @@ async def test_create_defaults_to_custom_version_without_declared_versions(monke
 
 
 @pytest.mark.asyncio
+async def test_create_stores_the_version_an_omitted_one_resolved_to(monkeypatch):
+    """The default is read again at every instance start, and for a provider
+    reading its release line off the runner images it moves when those are
+    upgraded. Storing what it resolved to keeps a running service on the
+    version it was created with."""
+    worker = SimpleNamespace(id=5, deleted_at=None, cluster_id=1)
+    _patch_create_prereqs(monkeypatch, worker=worker)
+    _patch_provider(monkeypatch, _provider())
+    monkeypatch.setattr(
+        cache_services_route.CacheService,
+        "create",
+        AsyncMock(side_effect=lambda session, source: SimpleNamespace(**source)),
+    )
+
+    created = await cache_services_route.create_cache_service(
+        session=MagicMock(),
+        ctx=_user_ctx(),
+        cache_service_in=_managed_create(),
+    )
+
+    assert created.provider_version == "v1"
+
+
+@pytest.mark.asyncio
+async def test_update_without_a_version_leaves_the_pinned_one(monkeypatch):
+    """An edit carries the fields it changes, so an absent version means
+    unchanged. Resolving one here would write today's default over what the
+    service pins — which for a version the node cannot run is a service that
+    stops coming up after an unrelated edit."""
+    service = _existing_service(provider_version="v0")
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
+    )
+    _patch_provider(monkeypatch, _provider())
+    _patch_worker_lookup(monkeypatch)
+
+    await cache_services_route.update_cache_service(
+        session=MagicMock(),
+        ctx=_user_ctx(),
+        id=9,
+        cache_service_in=_update_in(),
+    )
+
+    (_, applied), _ = service.update.call_args
+    assert "provider_version" not in applied.model_fields_set
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_missing_image_without_declared_versions(monkeypatch):
     """The image is the only way such a provider reaches one, so leaving
     it out fails as a missing custom-version image."""
