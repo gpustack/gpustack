@@ -6,6 +6,7 @@ from gpustack.routes import (
     api_keys,
     auth,
     cache_providers,
+    cacerts,
     cache_service_instances,
     cache_services,
     cluster_access,
@@ -470,6 +471,11 @@ inference_router.include_router(
 
 # Following routes should not check api scope as it is publicly accessible and used for authentication by external services.
 api_router.include_router(probes.router, tags=["Probes"])
+# Workers retrieve this public-key material before they can authenticate. The
+# registration command's checksum gates what an unverified download may install.
+api_router.include_router(
+    cacerts.router, prefix=versioned_prefix, tags=["TLS"], include_in_schema=False
+)
 api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 api_router.include_router(
     router=token.router,
