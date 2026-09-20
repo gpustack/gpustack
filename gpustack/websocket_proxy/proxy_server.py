@@ -13,6 +13,7 @@ Test:
     curl --proxy http://localhost:8080 http://example.com
     curl --proxy http://localhost:8080 https://example.com
 """
+
 import logging
 import asyncio
 from fastapi import HTTPException

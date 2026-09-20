@@ -134,7 +134,7 @@ def any_gpu_match(
 
 
 def find_one_gpu(
-    worker: Union[List[WorkerBase], WorkerBase]
+    worker: Union[List[WorkerBase], WorkerBase],
 ) -> Union[GPUDeviceStatus, None]:
     if isinstance(worker, list):
         for w in worker:
