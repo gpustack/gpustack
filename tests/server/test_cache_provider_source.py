@@ -13,6 +13,7 @@ from typing import List
 import pytest
 import pytest_asyncio
 import yaml
+from gpustack_runner import list_runners
 from sqlalchemy.dialects import mysql, postgresql
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import SQLModel
@@ -26,7 +27,8 @@ from gpustack.schemas.cache_provider_source import (
     normalize_cache_provider_yaml,
     reconcile_cache_providers,
 )
-from gpustack.schemas.runner_source import RunnerOverrideEntry
+from gpustack.schemas import runner_source
+from gpustack.schemas.runner_source import RunnerOverrideEntry, merged_runners
 from gpustack.schemas.source import SourceContent, SourceTypeEnum
 from gpustack.schemas.cache_providers import (
     CPU_BACKEND,
@@ -618,6 +620,22 @@ def test_a_family_with_one_build_serves_every_variant_of_it():
 
     assert version.supports_runtime("cann", "910b") is True
     assert version.resolve_image("cann", "9.1", "910b") == "repo:cann9.1"
+
+
+def test_a_runner_source_in_service_keeps_the_derived_release_line():
+    """Override rows stand in for the packaged catalog whole, so what a
+    provider derives has to survive the round trip through them — and every
+    installation makes that trip, the OFFICIAL runner source being created
+    enabled and refreshing on its own."""
+    packaged = list_runners()
+    overrides = [runner_source._entry_from_runner(runner) for runner in packaged]
+
+    provider = CacheProvider(name="Pool", runner_dependency="lmcache")
+    through_rows = with_runner_versions([provider], merged_runners(overrides))[0]
+    direct = with_runner_versions([provider], packaged)[0]
+
+    assert direct.versions, "the packaged runners should carry lmcache"
+    assert through_rows.versions == direct.versions
 
 
 def test_one_package_version_across_engine_releases_takes_the_newest_build():

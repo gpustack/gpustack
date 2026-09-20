@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import Column, Text
+from sqlalchemy import JSON, Column, Text
 from sqlmodel import SQLModel, Field as SQLField
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -53,6 +53,7 @@ _RUNNER_FIELDS: Tuple[str, ...] = (
     "platform",
     "docker_image",
     "deprecated",
+    "dependencies",
 )
 
 # Exact-match filter keys the merge helpers accept (the ``list_runners`` subset
@@ -73,6 +74,14 @@ class RunnerOverrideEntryBase(SQLModel):
     platform: str = SQLField(default="")
     docker_image: str = SQLField(sa_column=Column(Text, nullable=False))
     deprecated: bool = SQLField(default=False)
+    # Package versions the image was probed to carry, which is what a cache
+    # provider reads its release line off. These rows stand in for the packaged
+    # catalog whole, so what they do not carry, nothing else has. None is a row
+    # no probe has run over, distinct from an empty map only to a reader — a
+    # version comes of neither.
+    dependencies: Optional[Dict[str, str]] = SQLField(
+        sa_column=Column(JSON), default=None
+    )
     # Which source produced this row (last writer wins a key), same shape as
     # ``CatalogModelEntry``. Workers merge overrides without a DB session, so the
     # replace-or-layer decision has to travel with the entries themselves.
@@ -129,6 +138,7 @@ def _to_runner(entry: RunnerOverrideEntry) -> Runner:
         platform=entry.platform,
         docker_image=entry.docker_image,
         deprecated=entry.deprecated,
+        dependencies=entry.dependencies,
     )
 
 
@@ -144,6 +154,7 @@ def _entry_from_runner(runner: Runner) -> RunnerOverrideEntry:
         platform=runner.platform,
         docker_image=runner.docker_image,
         deprecated=runner.deprecated,
+        dependencies=getattr(runner, "dependencies", None),
     )
 
 
@@ -257,6 +268,7 @@ def _parse_runner_json(
             platform=item["platform"],
             docker_image=item["docker_image"],
             deprecated=bool(item.get("deprecated", False)),
+            dependencies=item.get("dependencies"),
         )
         entries.append(_entry_from_runner(runner))
     if unknown_fields:
@@ -401,7 +413,10 @@ async def reconcile_runner_overrides(
                 f"models off it; the coordinate goes away once they are gone."
             )
     # Delete + insert in one transaction so a partial failure never empties the
-    # table. Nothing subscribes to RunnerOverrideEntry, so no watch event.
+    # table: an empty one is not a smaller catalog but no override layer at all
+    # — every consumer falls back to the packaged catalog (see
+    # ``merged_runners``), and the coordinates the admin's document added, or
+    # withdrew, go with it.
     for existing in existing_rows:
         if (existing.service, existing.service_version) in survivors:
             continue

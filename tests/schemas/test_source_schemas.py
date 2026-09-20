@@ -1057,6 +1057,32 @@ async def test_falling_back_to_the_packaged_catalog_keeps_nothing():
     await engine.dispose()
 
 
+def test_an_override_row_carries_the_probed_package_versions():
+    """These rows stand in for the packaged catalog whole, and a cache provider
+    reads its release line off what each image was probed to carry. Dropping
+    the field on the way through would leave every such provider with no
+    version at all the moment a source is in service — which, the OFFICIAL one
+    being created enabled, is every installation."""
+    document = json.dumps(
+        [dict(_entry("1.0.0"), dependencies={"lmcache": "0.5.4"})],
+    )
+
+    assert '"lmcache"' in normalize_runner_json(document)
+
+    (entry,) = runner_source._parse_runner_json(document)
+    assert entry.dependencies == {"lmcache": "0.5.4"}
+    assert runner_source._to_runner(entry).dependencies == {"lmcache": "0.5.4"}
+
+
+def test_an_override_row_without_a_probe_carries_none():
+    """None is "never probed", which the derivation keeps apart from a probe
+    that ran and found nothing — reading the two the same way would retire
+    every version on an accelerator whose images predate probing."""
+    (entry,) = runner_source._parse_runner_json(json.dumps([_entry("1.0.0")]))
+
+    assert entry.dependencies is None
+
+
 def test_normalize_runner_json_leaves_the_source_stamp_out():
     """The stamp is row metadata, not document content: leaking it into the
     canonical text would change every source's ``content_hash`` and defeat the

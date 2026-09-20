@@ -6,8 +6,9 @@ backend / runner) and adds two columns to ``inference_backends``:
 - ``inference_runner_sources`` / ``runner_override_entries``: the built-in-
   backend-version source rows and the materialized per-platform overrides, which
   the three consumption points serve in place of the packaged gpustack-runner
-  catalog. Each override carries the same ``source_name`` / ``source_type`` stamp
-  ``catalog_model_entries`` has, for origin display.
+  catalog. An override row is the packaged ``Runner`` field for field, plus the
+  same ``source_name`` / ``source_type`` stamp ``catalog_model_entries`` has,
+  for origin display.
 - ``catalog_sources`` / ``catalog_model_entries``: model-catalog source rows and
   the materialized catalog records (model sets + draft models, full-rewritten by
   the leader).
@@ -60,6 +61,7 @@ def upgrade() -> None:
         sa.Column('platform', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column('docker_image', sa.Text(), nullable=False),
         sa.Column('deprecated', sa.Boolean(), nullable=False),
+        sa.Column('dependencies', sa.JSON(), nullable=True),
         sa.Column('source_name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column('source_type', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column('owner_principal_id', sa.Integer(), nullable=True),
