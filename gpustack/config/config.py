@@ -125,6 +125,11 @@ class Config(WorkerConfig, BaseSettings):
         ssl_certfile: Path to the SSL certificate file.
         ssl_ca_certfile: Path to the CA bundle workers use to verify the server.
         database_url: URL of the database.
+        redis_url: URL of the Redis used by features that need shared,
+                    fast state (e.g. LB plugin's shared state backend).
+                    Format: redis://[[user]:[pass]@]host[:port][/db].
+                    TLS (rediss://) is not supported: the LB plugin's
+                    redis client has no TLS knob.
         disable_worker: (Deprecated) Disable embedded worker.
         enable_worker: Enable embedded worker.
         bootstrap_password: Password for the bootstrap admin user.
@@ -190,6 +195,13 @@ class Config(WorkerConfig, BaseSettings):
     proxy_port: Optional[int] = 30079
     database_port: Optional[int] = 5432
     database_url: Optional[str] = None
+    # Redis URL for features that need shared, fast state (LB plugin's
+    # shared-state backend, and enterprise features when the enterprise
+    # edition is installed). May carry credentials
+    # (redis://[[user]:[pass]@]host[:port][/db]; rediss:// is refused —
+    # the LB plugin's redis client has no TLS knob) —
+    # never log it verbatim; redact first like database_url.
+    redis_url: Optional[str] = None
     disable_worker: Optional[bool] = None  # Deprecated
     enable_worker: bool = False
     bootstrap_password: Optional[str] = None

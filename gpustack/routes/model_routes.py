@@ -17,7 +17,7 @@ from gpustack.schemas.model_routes import (
     ModelRouteListParams,
     ModelRouteTarget,
     ModelRouteTargetUpdateItem,
-    ModelRouteTargetUpdate,
+    ModelRouteTargetUpdateWithPlugins,
     ModelRouteTargetPublic,
     ModelRouteTargetsPublic,
     ModelRouteTargetListParams,
@@ -36,6 +36,7 @@ from gpustack.schemas.principals import platform_principal_id
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.models import Model
+from gpustack.server.controllers import notify_model_ai_proxy_change
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.api.tenant import (
@@ -60,6 +61,13 @@ from gpustack.routes.model_common import (
     categories_filter,
     state_stream_filter,
 )
+from gpustack.routes.plugins import (
+    dispatch_route_hooks,
+    dispatch_target_hooks,
+    enrich_routes,
+    enrich_targets,
+)
+from gpustack.routes.plugins.lb.plugin import LB_MODE_META_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -397,6 +405,11 @@ async def _get_model_routes(
         await _apply_effective_name_to_my_models(
             session, result.items, enabled=include_owner_prefix
         )
+        # Only the hoisted lb mode on the list — the badge every row
+        # wants. The full plugin sections stay detail-only, and meta is
+        # dropped: a browse view shows neither plugin storage nor the
+        # row's grab-bag column.
+        _apply_route_lb_mode(result.items)
         return result
 
 
@@ -456,6 +469,97 @@ async def _apply_effective_name_to_my_models(
             owner_name=owner_names.get(owner_id) if owner_id is not None else None,
             is_platform_org=owner_id == platform_id,
         )
+
+
+def _drop_derived_meta_keys(meta: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Strip server-derived meta keys from client input.
+    ``meta[lb_mode]`` is a passive record of what the route's targets
+    add up to, re-derived on every reconcile; a client-supplied value
+    would be stale at best and a lie at worst, so it never reaches the
+    row."""
+    if not meta:
+        return meta
+    return {k: v for k, v in meta.items() if k != LB_MODE_META_KEY}
+
+
+async def _refresh_route_lb_mode(session: AsyncSession, route_id: int) -> None:
+    """Synchronously re-derive ``meta["lb_mode"]`` after a write
+    commits. The API write path is the primary refresh point — the
+    response of the save and the watch events it emits should carry the
+    mode the edit produced, not the previous one. The reconcile-side
+    refresh covers the writes that have no API path (target state
+    transitions); both writers derive the same value and skip the write
+    when nothing moved, so neither can fight the other. A failure here
+    degrades to the async path rather than failing the committed
+    save."""
+    from gpustack.routes.plugins.lb.plugin import lb_plugin
+
+    try:
+        route = await ModelRoute.one_by_id(session=session, id=route_id)
+        if route is not None:
+            await lb_plugin.refresh_lb_mode(route, session)
+    except Exception:
+        logger.exception(
+            "Failed to refresh lb_mode for route %s after write; "
+            "the reconcile will retry",
+            route_id,
+        )
+
+
+async def _route_with_fresh_lb_mode(session: AsyncSession, route_id: int) -> ModelRoute:
+    """Re-read the route for a write response with ``meta["lb_mode"]``
+    already refreshed."""
+    await _refresh_route_lb_mode(session, route_id)
+    return await ModelRoute.one_by_id(session=session, id=route_id)
+
+
+def _apply_route_lb_mode(items: List[Any]) -> None:
+    """Top-level ``lb_mode`` for list rows, read straight from the
+    passively-derived ``meta`` copy (written by the lb plugin's
+    reconcile — see refresh_lb_mode), plus the meta drop (a browse view
+    shows neither plugin storage nor the row's grab-bag column).
+    Written through ``__dict__`` to keep the instances clean of
+    column-level dirt."""
+    for item in items:
+        item.__dict__["lb_mode"] = (item.meta or {}).get(LB_MODE_META_KEY)
+        item.__dict__["meta"] = None
+
+
+def _strip_plugin_meta_keys(items: List[Any]) -> None:
+    """Hide plugin-owned meta keys from responses: ``plugins.*`` is the
+    plugins' public face, and a visible storage copy invites clients to
+    write it directly. The stored row is untouched (``__dict__`` write,
+    like the other response rewrites)."""
+    from gpustack.routes.plugins import route_plugins
+
+    plugin_keys = {p.name for p in route_plugins()}
+    for item in items:
+        meta = item.__dict__.get("meta") or getattr(item, "meta", None) or {}
+        if any(k in meta for k in plugin_keys):
+            item.__dict__["meta"] = {
+                k: v for k, v in meta.items() if k not in plugin_keys
+            }
+
+
+async def _apply_route_plugin_sections(session: AsyncSession, items: List[Any]) -> None:
+    """Route-plugin response sections. Written through ``__dict__`` for
+    the same reason as the effective-name rewrite: keep the instances
+    clean of column-level dirt on rows that must not UPDATE."""
+    if not items:
+        return
+    sections = await enrich_routes(items, session)
+    for item in items:
+        item.__dict__["plugins"] = sections.get(item.id) or None
+
+
+async def _apply_target_plugin_sections(
+    session: AsyncSession, items: List[Any]
+) -> None:
+    if not items:
+        return
+    sections = await enrich_targets(items, session)
+    for item in items:
+        item.__dict__["plugins"] = sections.get(item.id) or None
 
 
 def _append_my_model_conditions(extra_conditions, target_class, visibility_filter):
@@ -563,6 +667,8 @@ async def _get_model_route(
     await _apply_effective_name_to_my_models(
         session, [existing], enabled=include_owner_prefix
     )
+    await _apply_route_plugin_sections(session, [existing])
+    _strip_plugin_meta_keys([existing])
     return existing
 
 
@@ -597,7 +703,8 @@ async def create_model_route(
         raise AlreadyExistsException(
             message=f"Model route with name '{input.name}' already exists."
         )
-    source = input.model_dump(exclude={"targets"})
+    source = input.model_dump(exclude={"targets", "plugins"})
+    source["meta"] = _drop_derived_meta_keys(source.get("meta"))
     targets = input.targets or []
     await validate_targets(session, targets, route_owner_principal_id=target_org_id)
     source["targets"] = len(targets)
@@ -643,7 +750,9 @@ async def create_model_route(
                     principal_id=owner_org_id,
                 )
             )
+        await dispatch_route_hooks("create", route, input.plugins, session)
         await session.commit()
+        await _refresh_route_lb_mode(session, route.id)
         await session.refresh(route)
         await revoke_model_access_cache(session=session)
         return route
@@ -693,7 +802,11 @@ async def update_model_route(
         )
     existing_name = existing.name
     input_name = input.name
-    input_data = input.model_dump(exclude={"targets"}, include=input.model_fields_set)
+    input_data = input.model_dump(
+        exclude={"targets", "plugins"}, include=input.model_fields_set
+    )
+    if "meta" in input_data:
+        input_data["meta"] = _drop_derived_meta_keys(input_data["meta"])
     try:
         if input.targets is not None or input.name != existing.name:
             target_count, _ = await batch_handle_targets(
@@ -709,12 +822,13 @@ async def update_model_route(
         await ModelRouteService(session).update(
             existing, source=input_data, auto_commit=False
         )
+        await dispatch_route_hooks("update", existing, input.plugins, session)
         await session.commit()
         if existing_name != input_name:
             await revoke_model_access_cache(session=session)
     except Exception as e:
         raise InternalServerErrorException(f"Failed to update ModelRoute '{id}': {e}")
-    return await ModelRoute.one_by_id(session=session, id=id)
+    return await _route_with_fresh_lb_mode(session, id)
 
 
 @router.delete(
@@ -738,8 +852,19 @@ async def delete_model_route(
         not_found_message=f"ModelRoute with id '{id}' not found.",
     )
     try:
+        await dispatch_route_hooks("delete", existing, None, session)
         await revoke_model_access_cache(session=session, model=existing)
+        # The ORM cascade removes the targets without per-target events,
+        # so the ai-proxy reference loss is enqueued here — the Model
+        # controller owns the ai-proxy CR and rebuilds each affected
+        # deployment's entry from its remaining references.
+        deleted_model_ids = {
+            target.model_id
+            for target in existing.route_targets
+            if target.model_id is not None
+        }
         await ModelRouteService(session).delete(existing)
+        await notify_model_ai_proxy_change(session, deleted_model_ids)
     except Exception as e:
         raise InternalServerErrorException(f"Failed to delete ModelRoute '{id}': {e}")
 
@@ -793,8 +918,10 @@ async def add_model_route_targets(
         route.targets = target_count
         await ModelRouteService(session=session).update(route, auto_commit=True)
         await session.commit()
+        await _refresh_route_lb_mode(session, id)
         for target in touched_targets:
             await session.refresh(target)
+        await _apply_target_plugin_sections(session, touched_targets)
         return touched_targets
     except Exception as e:
         raise InternalServerErrorException(
@@ -852,6 +979,7 @@ async def batch_handle_targets(
         # Delete
         for target_id in to_delete_target_ids:
             target = existing_target_map[target_id]
+            await dispatch_target_hooks("delete", target, None, session)
             await target.delete(session=session, auto_commit=auto_commit)
 
         # Update
@@ -904,6 +1032,7 @@ async def update_model_route_targets(
             "model_id",
             "provider_id",
             "fallback_status_codes",
+            "max_running_requests",
         }
         # Dump every compare field with its real value (including None) so the
         # before/after dicts compare symmetrically; ``exclude_none`` would hide
@@ -973,6 +1102,10 @@ async def update_model_route_targets(
                 session=session, source=update_source, auto_commit=auto_commit
             )
             targets_to_return.append(existing_target)
+        if input_target is not None:
+            await dispatch_target_hooks(
+                "update", existing_target, input_target.plugins, session
+            )
 
     return targets_to_return
 
@@ -990,7 +1123,7 @@ async def create_model_route_targets(
             continue
         route_target = ModelRouteTarget.model_validate(
             {
-                **target.model_dump(),
+                **target.model_dump(exclude={"plugins"}),
                 "route_id": route_id,
                 "name": route_name + "-" + secrets.token_hex(5),
                 "route_name": route_name,
@@ -1001,6 +1134,7 @@ async def create_model_route_targets(
         route_target: ModelRouteTarget = await ModelRouteTarget.create(
             session=session, source=route_target, auto_commit=auto_commit
         )
+        await dispatch_target_hooks("create", route_target, target.plugins, session)
         created_targets.append(route_target)
     if auto_commit:
         await session.commit()
@@ -1135,7 +1269,7 @@ async def get_model_route_targets(
         )
 
     async with async_session() as session:
-        return await ModelRouteTarget.paginated_by_query(
+        result = await ModelRouteTarget.paginated_by_query(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
@@ -1143,6 +1277,8 @@ async def get_model_route_targets(
             per_page=params.perPage,
             order_by=params.order_by,
         )
+        await _apply_target_plugin_sections(session, result.items)
+        return result
 
 
 @target_router.put(
@@ -1154,7 +1290,7 @@ async def update_model_route_target(
     id: int,
     session: SessionDep,
     ctx: TenantContextDep,
-    input: ModelRouteTargetUpdate,
+    input: ModelRouteTargetUpdateWithPlugins,
 ):
     existing = await ModelRouteTarget.one_by_id(
         session=session,
@@ -1200,7 +1336,10 @@ async def update_model_route_target(
         raise InternalServerErrorException(
             f"Failed to update ModelRouteTarget '{id}': {e}"
         )
-    return await ModelRouteTarget.one_by_id(session=session, id=id)
+    await _refresh_route_lb_mode(session, existing.route_id)
+    result = await ModelRouteTarget.one_by_id(session=session, id=id)
+    await _apply_target_plugin_sections(session, [result])
+    return result
 
 
 @target_router.delete(
@@ -1223,11 +1362,13 @@ async def delete_model_route_target(
         not_found_message=f"ModelRouteTarget with id '{id}' not found.",
     )
     try:
+        await dispatch_target_hooks("delete", existing, None, session)
         await existing.delete(session=session, auto_commit=False)
         if route:
             route.targets = max(0, route.targets - 1)
             await ModelRouteService(session=session).update(route, auto_commit=False)
         await session.commit()
+        await _refresh_route_lb_mode(session, existing.route_id)
     except Exception as e:
         await session.rollback()
         raise InternalServerErrorException(
@@ -1266,6 +1407,7 @@ async def set_fallback_target(
         existing.fallback_status_codes = input.fallback_status_codes
         await existing.update(session=session, auto_commit=False)
         await session.commit()
+        await _refresh_route_lb_mode(session, existing.route_id)
     except Exception as e:
         await session.rollback()
         raise InternalServerErrorException(

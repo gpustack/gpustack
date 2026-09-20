@@ -278,7 +278,12 @@ class TestSupportedPlugins:
             "ai-statistics",
             "gpustack-ext-auth",
             "gpustack-generic-proxy-router",
-            "gpustack-model-mapper",
+            # the standalone model-mapper module was folded into gpustack-lb
+            # (the context role reuses its CR name and behaviour), and the lb
+            # capability band ships as separate modules.
+            "gpustack-lb",
+            "gpustack-lb-session-affinity",
+            "gpustack-lb-least-load",
             "transformer",
             "gpustack-token-usage",
             "gpustack-set-header-pre-route",

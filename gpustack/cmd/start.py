@@ -279,6 +279,18 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("OTA_SERVER_URL"),
     )
     server_group.add_argument(
+        "--redis-url",
+        type=str,
+        help=(
+            "Redis URL used by features that need shared, fast state "
+            "(e.g. the LB gateway plugin's shared-state backend). "
+            "Format: redis://[[user]:[pass]@]host[:port][/db]. "
+            "TLS (rediss://) is not supported: the LB plugin's redis "
+            "client has no TLS knob."
+        ),
+        default=get_gpustack_env("REDIS_URL"),
+    )
+    server_group.add_argument(
         "--model-catalog-file",
         type=str,
         help="Path or URL to the model catalog file.",
@@ -847,6 +859,7 @@ def set_server_options(args, config_data: dict):
         "database_port",
         "disable_metrics",
         "database_url",
+        "redis_url",
         "disable_worker",
         "enable_worker",
         "bootstrap_password",
