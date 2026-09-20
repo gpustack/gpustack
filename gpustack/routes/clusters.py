@@ -980,7 +980,9 @@ def get_registration_from_cluster(
                 "Failed to read the server CA bundle for worker registration: %s",
                 error,
             )
-            checksum = None
+            raise InternalServerErrorException(
+                message="Failed to read the server CA bundle for worker registration."
+            ) from error
         if checksum:
             env["GPUSTACK_SERVER_CA_CERT_SHA256"] = checksum
 

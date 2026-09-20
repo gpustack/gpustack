@@ -1,5 +1,7 @@
 import hashlib
+import os
 import re
+from functools import lru_cache
 from typing import Optional
 
 from cryptography import x509
@@ -43,6 +45,17 @@ def read_server_ca_bundle(
     if not path:
         return None
 
+    stat = os.stat(path)
+    return _read_server_ca_bundle(
+        path, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino
+    )
+
+
+@lru_cache(maxsize=8)
+def _read_server_ca_bundle(
+    path: str, mtime_ns: int, ctime_ns: int, size: int, inode: int
+) -> bytes:
+    """Cache parsed certificates until the source file changes or is replaced."""
     with open(path, "rb") as certfile:
         bundle = certfile.read()
 

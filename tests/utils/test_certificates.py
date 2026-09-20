@@ -1,5 +1,7 @@
 import datetime
 import hashlib
+import os
+from unittest.mock import Mock
 
 import pytest
 from cryptography import x509
@@ -8,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from gpustack.utils.certificates import read_server_ca_bundle, server_ca_checksum
+from gpustack.utils import certificates
 
 
 @pytest.fixture
@@ -82,3 +85,29 @@ def test_read_server_ca_bundle_rejects_invalid_certificate(tmp_path):
 def test_read_server_ca_bundle_returns_none_without_tls_files():
     assert read_server_ca_bundle(None, None) is None
     assert server_ca_checksum(None) is None
+
+
+@pytest.mark.parametrize("replace_file", [True, False])
+def test_ca_bundle_cache_invalidates_when_file_changes(
+    monkeypatch, tmp_path, certificate, replace_file
+):
+    path = tmp_path / "ca.pem"
+    path.write_bytes(certificate)
+    extract = Mock(wraps=certificates._extract_certificates)
+    monkeypatch.setattr(certificates, "_extract_certificates", extract)
+    assert read_server_ca_bundle(str(path), None) == certificate
+    assert read_server_ca_bundle(str(path), None) == certificate
+    assert extract.call_count == 1
+
+    if replace_file:
+        replacement = tmp_path / "replacement.pem"
+        replacement.write_bytes(certificate * 2)
+        os.replace(replacement, path)
+    else:
+        path.write_bytes(certificate * 2)
+    assert read_server_ca_bundle(str(path), None) == certificate * 2
+    assert extract.call_count == 2
+
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        read_server_ca_bundle(str(path), None)

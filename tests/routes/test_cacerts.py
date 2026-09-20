@@ -6,6 +6,14 @@ from fastapi import HTTPException
 from gpustack.routes import cacerts
 
 
+def test_ca_certificates_route_is_public_but_hidden_from_schema():
+    from gpustack.routes.routes import api_router
+
+    route = next(route for route in api_router.routes if route.path == "/v2/cacerts")
+    assert route.include_in_schema is False
+    assert not route.dependencies
+
+
 def test_get_ca_certificates_returns_explicit_ca_bundle(monkeypatch):
     monkeypatch.setattr(
         cacerts,
