@@ -101,28 +101,46 @@ gpustack_fallback_path_header = "x-gpustack-fallback-path"
 DestinationTupleList = List[Tuple[int, str, McpBridgeRegistry]]
 
 
+def is_lb_match_rule(rule) -> bool:
+    """Whether a matchRule's config carries the LB plugin's shape
+    (``candidates``). This is the LEGACY ownership signal: rules written
+    through the route-plugin rule collector carry an explicit owner
+    stamp (``x-gpustack-owner``) and are recycled by that, and only
+    rules without the stamp — written before the collector existed, or
+    by hand — fall back to this shape inference. It must stay in step
+    with the gpustack-lb plugin's config contract: the fallback rule of
+    the mapper sync (``modelMapping``-keyed) lists the main ingress just
+    like an LB rule does, so an ingress-based predicate can never tell
+    the two apart."""
+    config = getattr(rule, "config", None)
+    return isinstance(config, dict) and "candidates" in config
+
+
 @dataclass
 class ModelAIProxyGroup:
-    """AI proxy grouping for one deployment (Model) inside a single route.
+    """AI proxy grouping for one deployment (Model).
 
-    The upstream services of a deployment are its model instances' registries
-    (plus the LoRA aliases of those instances), or the remote cluster gateway
-    registry when the deployment lives in another cluster. They all accept the
-    same credential — the registration token of the deployment's cluster — so
-    one provider per Model is both necessary and sufficient, and it is shared by
-    every route pointing at that Model.
+    The upstream services of a deployment are its model instances' registries,
+    or the remote cluster gateway registry when the deployment lives in
+    another cluster. They all accept the same credential — the registration
+    token of the deployment's cluster — so one provider per Model is both
+    necessary and sufficient, and it is shared by every route pointing at
+    that Model. Model names the deployment serves (LoRA aliases, overrides)
+    are not services: they are expressed on the mapper/lb CR, so they never
+    enter the group.
 
-    ``service_names`` and ``fallback_service_names`` are kept apart because the
-    main and the fallback ingress each get their own match rule.
-    ``fallback_service_names`` is a subset: a fallback target also serves the
-    main ingress (see the FIXME in ``sync_gateway``), so the fallback rule
-    covers fewer services, never other ones.
+    The match rule is service-only: a deployment's service names are globally
+    unique (``model-<id>-<inst>.<type>``), so one rule per Model selects its
+    provider on every path that can reach it — the main ingress, the fallback
+    ingress, and the LB plugin's request-time cluster selection alike (Envoy
+    resolves ``cluster_name`` lazily from the LB-written header, which is what
+    makes service matching work on cluster_header routes). Whether a target is
+    a fallback therefore adds nothing to the rule set.
     """
 
     model_id: int
     api_tokens: List[str] = dataclass_field(default_factory=list)
     service_names: Set[str] = dataclass_field(default_factory=set)
-    fallback_service_names: Set[str] = dataclass_field(default_factory=set)
     # Declared on the deployment (``Model.native_anthropic_api``). One answer
     # per Model is not a simplification but a constraint: the provider entry is
     # per Model, while the image -- and so the API surfaces actually served --
@@ -312,7 +330,7 @@ def model_prefix(model_id: int) -> str:
 
 
 def model_instance_prefix(
-    model_instance: Union[ModelInstance, ModelInstancePublic]
+    model_instance: Union[ModelInstance, ModelInstancePublic],
 ) -> str:
     return f"{model_prefix(model_instance.model_id)}{model_instance.id}"
 
@@ -1353,22 +1371,19 @@ def get_expected_match_list(
     route_name: str,
     ingress_prefix: str,
     ingress_name: str,
-    model_name_to_registries: Dict[str, List[str]],
     fallback_model_name_to_registries: Dict[str, List[str]],
 ) -> List[WasmPluginMatchRule]:
+    """Match rules the mapper sync owns: fallback traffic only. The
+    main-path model rewrite is the LB rule's job — its candidates carry
+    one model name per cluster, which a route-name-keyed ``modelMapping``
+    cannot express when a single upstream serves several models and the
+    rewrite must follow the LB selection."""
     match_list: List[WasmPluginMatchRule] = []
     ingress_name = f"{ingress_prefix}{ingress_name}"
-    for model_name, service_names in model_name_to_registries.items():
-        config = {"modelMapping": {route_name: model_name}}
-        match_list.append(
-            WasmPluginMatchRule(
-                config=config,
-                ingress=[ingress_name],
-                configDisable=False,
-                service=service_names,
-            )
-        )
     for model_name, service_names in fallback_model_name_to_registries.items():
+        if route_name == model_name:
+            # Skip self mapping
+            continue
         # the fallback mapping should include both normal ingress and fallback ingress
         # as the normal ingress may not exist when only fallback model is set
         fallback_name = fallback_ingress_name(ingress_name)
@@ -1542,23 +1557,20 @@ def ai_proxy_model_provider_config(
 
 def model_ai_proxy_plugin_spec(
     groups: Iterable[ModelAIProxyGroup],
-    main_ingress: str,
-    fallback_ingress: str,
 ) -> Tuple[List[Dict[str, Any]], List[WasmPluginMatchRule]]:
-    """Build the providers and match rules of one route, grouped by deployment.
+    """Build the providers and match rules of one reconcile, grouped by
+    deployment.
 
-    ``main_ingress`` / ``fallback_ingress`` must already carry the namespace
-    prefix Higress expects for cross-namespace routes.
-
-    A rule is keyed by (ingress, services) so two routes pointing at the same
-    Model each get their own rule while sharing one provider entry. Service
-    lists are sorted so an unchanged deployment produces a byte-identical CR and
-    the reconciler's diff stays quiet.
+    A rule is service-only and per deployment: services are globally unique
+    per deployment, so one rule selects the provider on every path that can
+    reach those services (main ingress, fallback ingress, LB-selected
+    cluster). Service lists are sorted so an unchanged deployment produces a
+    byte-identical CR and the reconciler's diff stays quiet.
     """
     providers: List[Dict[str, Any]] = []
     match_rules: List[WasmPluginMatchRule] = []
     for group in sorted(groups, key=lambda g: g.model_id):
-        if not group.service_names and not group.fallback_service_names:
+        if not group.service_names:
             continue
         provider_id = group.provider_id()
         providers.append(
@@ -1568,20 +1580,13 @@ def model_ai_proxy_plugin_spec(
                 native_anthropic_api=group.native_anthropic_api,
             )
         )
-        for ingress, service_names in (
-            (main_ingress, group.service_names),
-            (fallback_ingress, group.fallback_service_names),
-        ):
-            if not service_names:
-                continue
-            match_rules.append(
-                WasmPluginMatchRule(
-                    config={"activeProviderId": provider_id},
-                    configDisable=False,
-                    service=sorted(service_names),
-                    ingress=[ingress],
-                )
+        match_rules.append(
+            WasmPluginMatchRule(
+                config={"activeProviderId": provider_id},
+                configDisable=False,
+                service=sorted(group.service_names),
             )
+        )
     return providers, match_rules
 
 
@@ -1647,19 +1652,20 @@ def compare_and_append_proxy_match_rules(
     existing_rules: List[WasmPluginMatchRule],
     expected_rules: List[WasmPluginMatchRule],
     operating_id_prefix: Optional[str] = None,
-    owned_ingresses: Optional[Set[str]] = None,
+    owned_provider_ids: Optional[Set[str]] = None,
 ) -> List[WasmPluginMatchRule]:
     """Merge ``expected_rules`` into the existing list.
 
     Ownership can be expressed two ways: by provider id prefix (external model
-    providers, whose rules match on service only) or by ingress
-    (``owned_ingresses``, one route's ingress plus its fallback ingress). The
-    latter is required now that provider ids are per deployment: dropping rules
-    by id prefix would delete the rules other routes hold for the same
-    deployment.
+    providers, whose rules match on service only, are refreshed wholesale) or
+    by exact provider id (``owned_provider_ids`` — the deployment entries this
+    reconcile replaces, whatever form their previous rules took: the fresh
+    per-deployment service-only rule, or the older per-route ingress-keyed
+    one, which is how a legacy entry retires in the same write). Rules of
+    providers nobody owns are never touched.
     """
     to_keep_config = []
-    owned = owned_ingresses or set()
+    owned = owned_provider_ids or set()
     for rule in existing_rules:
         provider_id: Optional[str] = _match_rule_provider_id(rule)
         if (
@@ -1668,7 +1674,7 @@ def compare_and_append_proxy_match_rules(
             and provider_id.startswith(operating_id_prefix)
         ):
             continue
-        if owned and owned.intersection(rule.ingress or []):
+        if provider_id is not None and provider_id in owned:
             continue
         to_keep_config.append(rule)
 
@@ -1682,30 +1688,25 @@ async def cleanup_ai_proxy_config(
     providers: List[ModelProvider],
     models: List[Model],
     routes: List[ModelRoute],
-    expected_ingresses: Set[str],
     k8s_config: k8s_client.Configuration,
     namespace: str,
 ):
     """Prune the ai-proxy CR at startup, before the controllers replay routes.
 
-    Kept: one entry per live external provider, one per live deployment, and the
-    legacy per-route entry of every live route. Legacy entries are deliberately
-    *not* pruned here: each route retires its own when it reconciles, in the same
-    write that adds the deployment entry replacing it, so no route is ever left
-    without a provider. Pruning them here would open a window between this pass
-    and the route replay — which only starts after leader election.
+    Kept: one entry per live external provider, one per live deployment, and
+    the legacy per-route entry of every live route. Legacy entries are
+    deliberately *not* pruned here: each route retires its own when it
+    reconciles, in the same write that adds the deployment entry replacing it,
+    so no route is ever left without a provider. Pruning them here would open a
+    window between this pass and the route replay — which only starts after
+    leader election.
 
-    Dropped: everything else, i.e. entries whose route, deployment or provider no
-    longer exists — the case this pass exists for, since nothing will reconcile
-    them.
-
-    Rules are filtered on both axes. Provider retention alone is not enough now
-    that provider ids are per deployment: a route deleted while the server was
-    down leaves a rule that still references a live deployment provider, and no
-    reconcile will ever revisit it. ``expected_ingresses`` therefore carries the
-    namespace-prefixed ingress names (main and fallback) of every live route, in
-    the same form the rules store. Rules with no ingress at all belong to external
-    providers, which match on service, and are judged by provider id only.
+    Dropped: everything whose route, deployment or provider no longer exists —
+    the case this pass exists for, since nothing will reconcile those. Retention
+    is judged by provider id alone: rules are per provider (per deployment or
+    per external provider), and a rule a deleted route left behind on a live
+    deployment is inert — no route leads traffic to those services — and
+    retires with the deployment.
     """
     ids_to_keep = {model_ai_proxy_provider_id(model.id) for model in models}
     ids_to_keep.update({provider_registry_name(provider.id) for provider in providers})
@@ -1714,11 +1715,7 @@ async def cleanup_ai_proxy_config(
     def should_keep_rule(
         rule: WasmPluginMatchRule, kept_provider_ids: Set[str]
     ) -> bool:
-        if _match_rule_provider_id(rule) not in kept_provider_ids:
-            return False
-        if not rule.ingress:
-            return True
-        return any(ingress in expected_ingresses for ingress in rule.ingress)
+        return _match_rule_provider_id(rule) in kept_provider_ids
 
     try:
         extensions_api = ExtensionsHigressIoV1Api(k8s_client.ApiClient(k8s_config))
@@ -1892,7 +1889,7 @@ def ai_proxy_diff_spec(
     expected_providers: List[Dict[str, Any]],
     expected_match_rules: List[WasmPluginMatchRule],
     operating_id_prefix: Optional[str] = None,
-    owned_ingresses: Optional[Set[str]] = None,
+    owned_provider_ids: Optional[Set[str]] = None,
 ) -> WasmPluginSpec:
     if current_spec is None:
         return current_spec
@@ -1902,7 +1899,7 @@ def ai_proxy_diff_spec(
         existing_rules=current_spec.matchRules or [],
         expected_rules=expected_match_rules,
         operating_id_prefix=operating_id_prefix,
-        owned_ingresses=owned_ingresses,
+        owned_provider_ids=owned_provider_ids,
     )
     # Providers are merged against the *resulting* rules so a deployment
     # provider disappears together with the last rule referencing it.

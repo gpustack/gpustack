@@ -108,7 +108,6 @@ from gpustack.gateway.utils import (
     model_route_ingress_prefix,
     model_route_ingress_name,
     fallback_ingress_name,
-    route_ingress_names_for_plugins,
     cleanup_ingresses,
     cleanup_model_mapper,
     cleanup_fallback_filters,
@@ -1220,25 +1219,11 @@ class Server:
             reason="orphaned",
             k8s_config=k8s_config,
         )
-        # Both ingress names of every live route, spelled as the plugin's match
-        # rules store them, so rules left behind by a route deleted while the
-        # server was down are pruned even when the deployment they point at is
-        # still alive.
-        expected_plugin_ingresses = {
-            name
-            for model_route in model_routes
-            for name in route_ingress_names_for_plugins(
-                model_route_id=model_route.id,
-                resource_namespace=self.config.get_namespace(),
-                gateway_namespace=self.config.gateway_namespace,
-            )
-        }
         await cleanup_ai_proxy_config(
             namespace=self.config.gateway_namespace,
             providers=providers,
             models=models,
             routes=model_routes,
-            expected_ingresses=expected_plugin_ingresses,
             k8s_config=k8s_config,
         )
         await cleanup_generic_proxy_router(

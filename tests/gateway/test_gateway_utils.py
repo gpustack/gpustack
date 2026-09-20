@@ -18,6 +18,7 @@ from gpustack.gateway.utils import (
     gateway_tls_annotations,
     generate_model_ingress,
     generic_proxy_router_diff_spec,
+    get_expected_match_list,
     get_instance_id_from_header,
     higress_metadata_equal,
     lora_registry_name_suffix,
@@ -964,3 +965,45 @@ def test_clearing_the_tls_bound_makes_a_live_ingress_unequal():
         "higress.io/ignore-path-case": "true",
     }
     assert higress_metadata_equal(existing, expected)
+
+
+class TestGetExpectedMatchList:
+    def test_fallback_rules_are_dual_attached(self):
+        rules = get_expected_match_list(
+            route_name="tmp1",
+            ingress_prefix="higress-system/",
+            ingress_name="ai-route-route-6.internal",
+            fallback_model_name_to_registries={"qwen3-0.6b": ["model-1-1.static"]},
+        )
+        assert len(rules) == 1
+        rule = rules[0]
+        # The fallback rule lists the main ingress too: when only fallback
+        # targets exist the main ingress may be the only one carrying the
+        # traffic.
+        assert rule.ingress == [
+            "higress-system/ai-route-route-6.internal",
+            "higress-system/ai-route-route-6.fallback.internal",
+        ]
+        assert rule.config == {"modelMapping": {"tmp1": "qwen3-0.6b"}}
+        assert rule.service == ["model-1-1.static"]
+
+    def test_no_main_path_rules_are_emitted(self):
+        # The main-path model rewrite is owned by the LB rule — candidates
+        # carry one model name per cluster — so the mapper emits nothing
+        # for non-fallback destinations.
+        rules = get_expected_match_list(
+            route_name="tmp1",
+            ingress_prefix="higress-system/",
+            ingress_name="ai-route-route-6.internal",
+            fallback_model_name_to_registries={},
+        )
+        assert rules == []
+
+    def test_self_mapping_is_skipped(self):
+        rules = get_expected_match_list(
+            route_name="tmp1",
+            ingress_prefix="",
+            ingress_name="ai-route-route-6.internal",
+            fallback_model_name_to_registries={"tmp1": ["svc"]},
+        )
+        assert rules == []
