@@ -136,6 +136,22 @@ class ModelRouteTargetUpdate(SQLModel):
             nullable=True,
         ),
     )
+    # LB base-capability knobs. max_running_requests is deploy-level
+    # (one value per instance of the target): the engine's max_num_seqs
+    # is a start argument, not a metric, so it cannot be collected.
+    # None means no concurrency filtering — the default and recommended
+    # behavior.
+    max_running_requests: Optional[int] = Field(default=None, nullable=True)
+
+    @field_validator("max_running_requests", mode="before")
+    def validate_max_running_requests(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, int):
+            raise ValueError("max_running_requests must be an integer")
+        if v < 0:
+            raise ValueError("max_running_requests must not be negative")
+        return v
 
     @model_validator(mode="before")
     @classmethod
@@ -270,7 +286,8 @@ class ModelRouteTarget(ModelRouteTargetBase, BaseModelMixin, table=True):
 
 
 class ModelRouteTargetPublic(ModelRouteTargetBase, PublicFields):
-    pass
+    # Route-plugin response sections; see ModelRoutePublic.plugins.
+    plugins: Optional[Dict[str, Any]] = None
 
 
 ModelRouteTargetsPublic = PaginatedList[ModelRouteTargetPublic]
@@ -293,6 +310,17 @@ class ModelRouteTargetListParams(ListParams):
 
 class ModelRouteTargetUpdateItem(ModelRouteTargetCreate):
     id: Optional[int] = None
+    # Route-plugin payload sections, same contract as
+    # ``ModelRouteUpdate.plugins``. Not persisted on the target row.
+    plugins: Optional[Dict[str, Any]] = Field(default=None, nullable=True)
+
+
+# Body of the single-target PUT endpoint. ``ModelRouteTargetUpdate``
+# itself is in the ModelRouteTarget table's inheritance chain, so the
+# plugin-section field lives on this request-only subclass instead of
+# becoming a column.
+class ModelRouteTargetUpdateWithPlugins(ModelRouteTargetUpdate):
+    plugins: Optional[Dict[str, Any]] = Field(default=None, nullable=True)
 
 
 class ModelRouteUpdateBase(SQLModel):
@@ -324,6 +352,11 @@ class ModelRouteUpdate(ModelRouteUpdateBase):
     targets: Optional[List[ModelRouteTargetUpdateItem]] = Field(
         default=None, nullable=True
     )
+    # Route-plugin payload sections: ``{plugin_name: section}``, each
+    # dispatched to the registered plugin's CRUD hooks. Not persisted on
+    # the route row — plugins own their storage. Absent means "no plugin
+    # was touched"; an explicit null section means "clear", per plugin.
+    plugins: Optional[Dict[str, Any]] = Field(default=None, nullable=True)
 
     # Name validation lives on the write path only. Read-side classes
     # (``ModelRouteBase`` and descendants — ``ModelRoute``, ``MyModel``,
@@ -389,6 +422,17 @@ class ModelRoutePublic(ModelRouteBase, PublicFields):
     # reserved here so a future server-side enrichment can populate it
     # without breaking consumers.
     effective_name: Optional[str] = None
+    # Route-plugin response sections, filled by the read-path
+    # enrichment from each registered plugin. Detail only — the list
+    # carries just the hoisted ``lb_mode`` badge.
+    plugins: Optional[Dict[str, Any]] = None
+    # What the route's targets currently add up to on the gateway:
+    # weighted (business split) / scoring (capability policies) /
+    # invalid (mixed — LB refused to render). None when the route has
+    # neither weights nor capability policies: plain round-robin has
+    # nothing to report. Hoisted to the top level because every list
+    # row wants it and nothing else from the plugin sections.
+    lb_mode: Optional[str] = None
 
 
 ModelRoutesPublic = PaginatedList[ModelRoutePublic]
