@@ -482,6 +482,35 @@ async def test_a_masked_official_is_not_fetched_and_a_user_url_refreshes(
 
 
 @pytest.mark.asyncio
+async def test_an_installation_can_come_up_on_its_embedded_content(
+    session, mirror, monkeypatch
+):
+    """Configured that way, every slot is created out of service and nothing is
+    fetched — what the build ships serves. A cluster that cannot reach the OTA
+    server, one pinned to its build, and a development tree whose packaged
+    content is ahead of the published document all want this.
+
+    The starting point only: a slot put in service afterwards refreshes like
+    any other, and a later round leaves it there.
+    """
+    monkeypatch.setattr(probe.envs, "BOOTSTRAP_WITH_EMBEDDED_SOURCES", True)
+
+    result = await refresh_sources(session, now=_T0)
+
+    assert not result.changed, "no slot should have been written"
+    assert not mirror.file_requests, "not even the index should be fetched"
+    for source_cls in (CatalogSource, InferenceBackendSource, InferenceRunnerSource):
+        assert (await _official(session, source_cls)).enabled is False
+
+    catalog = await _official(session, CatalogSource)
+    await catalog.update(session, {"enabled": True})
+    result = await refresh_sources(session, now=_T0 + 13 * _HOUR)
+
+    assert result.changed["catalog"] is True
+    assert (await _official(session, CatalogSource)).enabled is True
+
+
+@pytest.mark.asyncio
 async def test_a_kind_that_opted_out_is_skipped_while_the_others_refresh(
     session, mirror
 ):

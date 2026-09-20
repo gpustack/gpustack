@@ -148,6 +148,12 @@ warning.
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
 | `GPUSTACK_DEFAULT_CLUSTER_KUBERNETES` | If a default cluster is created automatically, it will use the `Kubernetes` provider when this variable is set. | `false` | Server     |
 
+### Content Source Configuration
+
+| Variable                                   | Description                                                                                                                                                                                                                                                                                                                 | Default | Applies to |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_BOOTSTRAP_WITH_EMBEDDED_SOURCES` | Bring every content kind (model catalog, community backends, built-in backend versions, cache providers) up on its embedded content instead of the published documents, so nothing is fetched from the OTA server. This sets the starting point only: a kind put in service afterwards stays there. Useful where the OTA server is unreachable, or to keep content pinned to the installed version. | `false` | Server     |
+
 ### Scheduler Configuration
 
 | Variable                                            | Description                                                                 | Default | Applies to |
