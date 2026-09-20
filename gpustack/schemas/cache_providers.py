@@ -1,15 +1,21 @@
 import json
 import re
 from enum import Enum
+from functools import cmp_to_key
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, model_validator
 
-from gpustack.utils.version import pick_runtime_version
+from gpustack.utils.version import compare_versions, pick_runtime_version
 
 CUSTOM_VERSION = "custom"
 """Reserved provider_version identifier: the service pins a user-supplied
 container image (config.image) instead of a declared version."""
+
+CPU_BACKEND = "cpu"
+"""The accelerator key of a node that has none, spelled as the rest of the
+platform spells it — the framework token a worker with no GPU is matched
+against when its inference backend picks an image."""
 
 LocalizedText = Union[str, Dict[str, str]]
 """A user-facing string, either bare or keyed by locale.
@@ -105,9 +111,13 @@ class CacheProviderHealthCheck(BaseModel):
 
 class CacheProviderVersionConfig(BaseModel):
     image: Optional[str] = None
-    """Container image for the managed cache server; the fallback when
-    runtime_images has no entry for the node's accelerator runtime. A
-    version resolving to no image at all is a catalog error."""
+    """Container image for the managed cache server: the one a declaration
+    names when it has a single build for everything, and what a node with
+    no accelerator runs when runtime_images has no "cpu" entry. A declared
+    version resolving to no image at all is a catalog error; a version
+    derived from the runner images has none, since every image there is
+    built for an accelerator and the device-free one is a runtime_images
+    key like the rest."""
 
     runtime_images: Dict[str, Dict[str, str]] = {}
     """Images keyed by accelerator backend (e.g. "cuda") then runtime
@@ -116,6 +126,11 @@ class CacheProviderVersionConfig(BaseModel):
     (see pick_runtime_version), so a heterogeneous per_node fleet mixes
     images correctly. All entries must be command-compatible with
     run_command.
+
+    A backend whose SoC generations need their own build takes a
+    "<backend>-<variant>" key (e.g. "cann-910b"), matching the runner
+    catalog's backend/backend_variant pair; the bare family key serves
+    every variant that has none of its own.
 
     Together with image this forms the version's image layout, inherited
     from the provider's defaults as a unit: a version declaring either
@@ -145,20 +160,53 @@ class CacheProviderVersionConfig(BaseModel):
     inheritance would hide half the picture). Undeclared versions read
     the provider default."""
 
-    def supports_runtime(self, backend: Optional[str]) -> bool:
+    def _backend_images(
+        self, backend: Optional[str], variant: Optional[str]
+    ) -> Dict[str, str]:
+        """The images this node's accelerator may run: the variant's own
+        entry where the catalog distinguishes one, otherwise the family's.
+
+        A family whose SoC generations are not interchangeable is built per
+        variant (Ascend's 910b, a3, 950, 310p are four images), and a
+        derived version keys them apart — a 310p node handed the 910b build
+        runs the wrong one, and where the package is in one build and not
+        another it runs one that cannot serve at all. A declaration naming
+        the family alone means one image for all of it, which is what a
+        provider with no per-variant build has.
+        """
+        if variant:
+            images = self.runtime_images.get(f"{backend}-{variant}")
+            if images:
+                return images
+        return self.runtime_images.get(backend) or {}
+
+    def supports_runtime(
+        self, backend: Optional[str], variant: Optional[str] = None
+    ) -> bool:
         """Whether the version can run on the node's accelerator.
-        runtime_images doubles as the support matrix: a node with a
-        detected accelerator is only served when its backend has an
-        entry — the plain image targets one accelerator family and
-        would just crash-loop elsewhere. Accelerator-less nodes always
-        pass (the cache server runs CPU-only there), as does a version
-        declaring no runtime_images."""
-        return not backend or not self.runtime_images or backend in self.runtime_images
+        runtime_images doubles as the support matrix: a node is only
+        served when its backend has an entry — an image built for
+        another accelerator family would just crash-loop. A version
+        declaring no runtime_images has one build for everything and
+        serves every node.
+
+        A node with no accelerator asks under the "cpu" key, and the
+        plain image answers for it where there is none: that is the
+        single build a declaration names for everything, so it runs
+        there as much as anywhere. It answers for that node alone — on
+        an accelerator whose family it was not built for, serving it is
+        the crash-loop this matrix exists to prevent."""
+        if not backend:
+            return bool(self.image)
+        if not self.runtime_images or self._backend_images(backend, variant):
+            return True
+        return backend == CPU_BACKEND and bool(self.image)
 
     def resolve_image(
         self,
         backend: Optional[str] = None,
         runtime_version: Optional[str] = None,
+        variant: Optional[str] = None,
     ) -> str:
         """The image for a node's accelerator runtime, matched with the
         same rule inference-backend runners use (newest declared version
@@ -167,7 +215,7 @@ class CacheProviderVersionConfig(BaseModel):
         plain image."""
         if not backend:
             return self.image
-        by_version = self.runtime_images.get(backend) or {}
+        by_version = self._backend_images(backend, variant)
         picked = pick_runtime_version(list(by_version), runtime_version)
         if picked is None:
             return self.image
@@ -853,6 +901,31 @@ class CacheProvider(BaseModel):
     default_version: Optional[str] = None
     versions: Dict[str, CacheProviderVersionConfig] = {}
 
+    runner_dependency: Optional[str] = None
+    """Name of the package whose presence in a runner image makes that image a
+    version of this provider, as the runner catalog's ``dependencies`` spells it
+    (e.g. "mooncake-transfer-engine").
+
+    Declaring it replaces ``versions`` entirely: the release line, its images
+    and the default version are read off the images the installation actually
+    has. A version then names a release some image really carries, which a
+    hand-written one could not be held to — it appears when such an image does,
+    with no edit here, and an accelerator whose images were never probed offers
+    no version at all rather than one that cannot run.
+
+    What a version names is the wheel, not a build of one: the same string is
+    compiled into several images, and nothing here pairs the build a cache
+    server runs with the build inside an engine attaching to it. Where that
+    matters — a provider whose wire format breaks across builds — this narrows
+    the gap rather than closing it; the engine's side is gated by the
+    integration's version range alone.
+
+    A provider whose images are not runner images (a partner's own registry)
+    declares ``versions`` by hand instead. The two are exclusive to an author,
+    and the check sits on the document rather than here: once the derivation
+    has run this model carries both, which is what a reader of the catalog —
+    and the row it was materialized into — is given."""
+
     default_run_command: Optional[str] = None
     default_run_args: Optional[str] = None
     """Launch template shared by versions that declare none of their own.
@@ -1181,7 +1254,13 @@ class CacheProvider(BaseModel):
                 }
                 for backend, images in config.runtime_images.items()
             }
-            if not config.image:
+            # A derived version may legitimately have none: the images it is
+            # built from are each for an accelerator, and the plain slot is
+            # filled only by a family that also runs without a device. Absent,
+            # the version serves accelerator nodes alone, which
+            # ``supports_runtime`` reports rather than leaving to a container
+            # that cannot load. A declared version has no such excuse.
+            if not config.image and not self.runner_dependency:
                 raise ValueError(
                     f"Cache provider '{self.name}' version '{version}' "
                     "resolves to no image: it must declare one, or declare "
@@ -1193,8 +1272,14 @@ class CacheProvider(BaseModel):
             # not published, so every service names its own) still needs a
             # way to reach an image: the custom version is it. A
             # declaration holding a card's place launches nothing at all,
-            # so it is held to none of this.
-            if not self.custom_version and not self.unavailable_reason:
+            # so it is held to none of this — and neither is one whose
+            # release line is read off the runner catalog, which has none
+            # to show until the catalog is in hand.
+            if (
+                not self.custom_version
+                and not self.unavailable_reason
+                and not self.runner_dependency
+            ):
                 raise ValueError(
                     f"Cache provider '{self.name}' declares no versions: it "
                     "then resolves no image at all unless it allows the "
@@ -1789,3 +1874,135 @@ def render_injection(
         for path, content in (integration.injection.files or {}).items()
     }
     return env, args, files
+
+
+_DEVICE_FREE_IMAGE_BACKENDS = ("cuda", "rocm")
+"""Image families whose builds run on a node with no accelerator, in the order
+a derived version borrows one from.
+
+Runner images are built per accelerator, and the catalog publishes no "cpu"
+one, so what a node without a device runs has to come from a family whose
+binaries load without a driver. Measured, not inferred: the cache server starts
+under ``docker run`` with no device present in a cuda image and in a rocm one,
+and fails in a cann image with ``libascend_hal.so: cannot open shared object
+file`` — that family links the host's driver library outright, and the host
+mounts it only where a device was asked for. A family stays out of this tuple
+until it has been run that way.
+
+A version carrying none of them offers nothing to such a node, which the
+support matrix reports where the instance would start rather than leaving it to
+a container that cannot load. Little is lost: what lands there holds no cache —
+a coordinator, or a store on a RAM-rich host — and a component that needs a
+device is placed where its engines are.
+"""
+
+
+def derive_runner_versions(
+    provider: CacheProvider, runners: List[Any]
+) -> Dict[str, CacheProviderVersionConfig]:
+    """The release line a provider's ``runner_dependency`` produces from the
+    runner catalog: one version per distinct package version, carrying the
+    images that were probed to hold it.
+
+    Images are keyed by the runner's own backend version rather than its major,
+    which ``resolve_image`` already matches the way an inference backend does —
+    so a node runs the newest image at or below its runtime instead of whatever
+    the major happens to name.
+
+    Skipped, and why none of them is the same as "unsupported":
+
+    - ``deprecated`` rows, which are images an installation still has but
+      should stop starting.
+    - an accelerator family the declaration does not name, whatever its images
+      hold.
+    - rows whose ``dependencies`` is None, meaning the image was never probed,
+      and rows whose probe ran and does not list the package. The two mean
+      different things — unknown, and absent — and yield the same nothing: an
+      image nobody has looked inside is not one to build a release line from.
+    """
+    by_version: Dict[str, Dict[str, Dict[str, str]]] = {}
+    engine_of: Dict[Tuple[str, str, str], str] = {}
+    for runner in runners:
+        if getattr(runner, "deprecated", False):
+            continue
+        dependencies = getattr(runner, "dependencies", None)
+        if not dependencies:
+            continue
+        found = dependencies.get(provider.runner_dependency)
+        if not found:
+            continue
+        # A variant is a build of its own, so it gets a key of its own: the
+        # four Ascend SoC generations are four images, and they do not all
+        # carry the same packages — 310p has no Mooncake where 910b does.
+        # Collapsing them onto the family would hand a node an image built
+        # for another generation, or one the probe says lacks the package.
+        backend = runner.backend
+        if runner.backend_variant:
+            backend = f"{backend}-{runner.backend_variant}"
+        # Several engine releases can carry one package version, and the
+        # platform's own images repeat across host architectures. Both land
+        # on this coordinate, so the newest engine build takes it: the
+        # package is the same either way, and that is the build the fleet's
+        # engines are moving to. Left to arrival order, the pick would be
+        # whatever the catalog happens to list last.
+        coordinate = (found, backend, runner.backend_version)
+        incumbent = engine_of.get(coordinate)
+        if incumbent and compare_versions(runner.service_version, incumbent) <= 0:
+            continue
+        engine_of[coordinate] = runner.service_version
+        backends = by_version.setdefault(found, {})
+        backends.setdefault(backend, {})[runner.backend_version] = runner.docker_image
+
+    versions: Dict[str, CacheProviderVersionConfig] = {}
+    for version, runtime_images in by_version.items():
+        # A node with no accelerator is one more entry in the matrix rather
+        # than a case beside it, and nothing publishes an image for it, so it
+        # borrows one from a family that runs without a device. Keyed by the
+        # version it was borrowed under, which says where it came from and
+        # leaves the map one shape; a version with no such family gets no
+        # entry, and the matrix then reports the node as unserved.
+        if CPU_BACKEND not in runtime_images:
+            for family in _DEVICE_FREE_IMAGE_BACKENDS:
+                by_runtime = runtime_images.get(family)
+                if not by_runtime:
+                    continue
+                newest = max(by_runtime, key=cmp_to_key(compare_versions))
+                runtime_images[CPU_BACKEND] = {newest: by_runtime[newest]}
+                break
+        versions[version] = CacheProviderVersionConfig(runtime_images=runtime_images)
+    return versions
+
+
+def with_runner_versions(
+    providers: List[CacheProvider], runners: Optional[List[Any]]
+) -> List[CacheProvider]:
+    """The catalog with every derived provider's release line filled in.
+
+    Rebuilt through the model rather than assigned onto it, so a derived
+    provider is held to the same rules as a declared one — the checks that read
+    versions run on what will actually serve.
+
+    A provider whose dependency no runner image carries keeps no versions, which
+    is how an accelerator with nothing to run it says so: the card is listed and
+    offers no version, rather than offering one that is not there.
+    """
+    if not runners:
+        return providers
+    resolved: List[CacheProvider] = []
+    for provider in providers:
+        if not provider.runner_dependency:
+            resolved.append(provider)
+            continue
+        versions = derive_runner_versions(provider, runners)
+        data = provider.model_dump()
+        data["versions"] = {
+            name: config.model_dump() for name, config in versions.items()
+        }
+        # Tolerant ordering, as everywhere a version string off a probe is
+        # compared: these are whatever a wheel calls itself, and one that is
+        # not PEP 440 would take the whole catalog build down with it.
+        data["default_version"] = (
+            max(versions, key=cmp_to_key(compare_versions)) if versions else None
+        )
+        resolved.append(CacheProvider(**data))
+    return resolved

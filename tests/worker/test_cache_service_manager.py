@@ -699,6 +699,69 @@ def test_start_instance_resolves_runtime_image():
     assert container.image == "registry.example.com/mooncake/server:v1-cu129"
 
 
+@pytest.mark.parametrize(
+    "socs, expected",
+    [
+        (["Ascend910B4"], "910b"),
+        # The generation a node reports is the answer even when another
+        # device on it reports one this build does not know. Not the
+        # default, which is what an unanswered node falls back to — this
+        # node answered.
+        (["AscendSomethingNew", "Ascend950PR"], "950"),
+        (["Ascend950PR", "Ascend950PR"], "950"),
+        # No device names a generation this build knows, so the node takes
+        # the one the inference path defaults such a node to — being served
+        # another generation's build is what that default is for, and going
+        # unresolved would read as an accelerator with no image at all.
+        (["AscendSomethingNew"], "910b"),
+        ([None], "910b"),
+    ],
+)
+def test_the_ascend_generation_a_node_is_served(socs, expected):
+    manager, _ = _build_manager(worker_id=1)
+    devices = [
+        SimpleNamespace(
+            runtime_version="8.0",
+            appendix={"arch_family": soc} if soc else {},
+        )
+        for soc in socs
+    ]
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.detect_backend",
+            return_value="cann",
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.detect_devices",
+            return_value=devices,
+        ),
+    ):
+        backend, _, variant = manager._detect_runtime()
+
+    assert (backend, variant) == ("cann", expected)
+
+
+def test_an_unreadable_device_still_names_a_generation():
+    """A probe that raises says nothing about the node, and a node left
+    without a generation has no per-generation image to run."""
+    manager, _ = _build_manager(worker_id=1)
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.detect_backend",
+            return_value="cann",
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.detect_devices",
+            side_effect=RuntimeError("driver not loaded"),
+        ),
+    ):
+        backend, _, variant = manager._detect_runtime()
+
+    assert (backend, variant) == ("cann", "910b")
+
+
 def test_start_instance_fails_fast_on_unsupported_accelerator():
     """A node whose accelerator has no runtime_images entry must error
     with the cause before any container exists — the plain image targets
@@ -726,7 +789,10 @@ def test_start_instance_fails_fast_on_unsupported_accelerator():
 
     create.assert_not_called()
     assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
-    assert "no image for cann workers" in update.call_args[1]["state_message"]
+    # Named down to the generation, which is what the images are keyed by.
+    # This device reports no SoC, so it takes the generation the inference
+    # path defaults such a node to rather than going unresolved.
+    assert "no image for cann-910b workers" in update.call_args[1]["state_message"]
 
 
 def _field_provider(**overrides):

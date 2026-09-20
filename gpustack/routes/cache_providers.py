@@ -11,6 +11,10 @@ from gpustack.schemas.cache_provider_source import (
     CacheProviderSource,
     normalize_cache_provider_yaml,
 )
+from gpustack.schemas.runner_source import (
+    RunnerOverrideEntry,
+    merged_runners,
+)
 from gpustack.schemas.cache_providers import (
     CUSTOM_VERSION,
     CacheProvider,
@@ -124,10 +128,15 @@ async def _reject_taking_away_a_provider_in_use(
     missing three providers should not have to submit three times to learn all
     three.
     """
+    # The catalog judged here is the one the write would materialize, derived
+    # release lines and all: a version a service pins may come from the runner
+    # images rather than from any document, and a check blind to those would
+    # read every such pin as taken away.
+    runners = merged_runners(await RunnerOverrideEntry.all(session))
     catalog = {
         provider.name.lower(): provider
         for provider in providers_from_documents(
-            [source.content for source in proposed]
+            [source.content for source in proposed], runners
         )
     }
     blocked: List[str] = []

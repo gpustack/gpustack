@@ -4,7 +4,7 @@ import string
 import asyncio
 from importlib.resources import files
 from functools import partial
-from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Tuple, Optional, Set
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -2632,7 +2632,15 @@ class RunnerSourceController:
     InferenceRunnerSource. On any source change (and the initial replay), it
     gathers all enabled sources, merges them in a stable order, and
     full-rewrites the override table (pure derived materialization).
+
+    ``on_materialized`` is awaited once the table holds the new set, for a
+    reader that has to be current with it rather than with the source it came
+    from. Both would see the same source event, and nothing orders two
+    subscribers — this says when the rows are actually there.
     """
+
+    def __init__(self, on_materialized: Optional[Callable[[], Awaitable]] = None):
+        self._on_materialized = on_materialized
 
     async def start(self):
         async for event in InferenceRunnerSource.subscribe(
@@ -2653,6 +2661,10 @@ class RunnerSourceController:
                 )
         except Exception as e:
             logger.error(f"Failed to reconcile runner override entries: {e}")
+            # The table is as it was, so a reader current with it still is.
+            return
+        if self._on_materialized is not None:
+            await self._on_materialized()
 
 
 class CatalogSourceController:
@@ -2746,6 +2758,18 @@ class CacheProviderSourceController:
     first reconcile.
     """
 
+    def __init__(self):
+        # Two drivers rewrite this table -- a source change, and the runner
+        # overrides landing -- and on a first start they arrive together. Each
+        # reads the sources, then writes every row; interleaved, one of them
+        # loses its inserts to the name uniqueness constraint, which is caught
+        # and logged rather than retried. The loser being the runner one would
+        # leave the table holding what was derived from the packaged catalog,
+        # with nothing to come back for it: a source that did not move
+        # publishes no event, so the next round is 12 hours away at best.
+        # (SourceRefresher._round_lock exists for the same reason.)
+        self._rewrite_lock = asyncio.Lock()
+
     async def start(self):
         await self._seed_builtin_source()
         async for event in CacheProviderSource.subscribe(
@@ -2756,16 +2780,30 @@ class CacheProviderSourceController:
                 EventType.UPDATED,
                 EventType.DELETED,
             ):
-                await self._reconcile()
+                await self.rebuild()
+
+    async def rebuild(self) -> None:
+        """Rewrite the materialized catalog from the sources as they stand.
+
+        Also what the runner materialization calls when it has finished: a
+        provider reading its release line off the runner images reads the
+        admin's additions to those too, and the version they add appears here
+        only once this runs. Driven from there rather than from the source
+        those overrides come from, which both controllers see at once with
+        nothing to order them — this catalog would read the rows as they were
+        before the rewrite, and nothing would come back for it.
+        """
+        await self._reconcile()
 
     async def _reconcile(self):
-        try:
-            async with async_session() as session:
-                await gather_and_merge(
-                    session, CacheProviderSource, reconcile_cache_providers
-                )
-        except Exception as e:
-            logger.error(f"Failed to reconcile cache provider entries: {e}")
+        async with self._rewrite_lock:
+            try:
+                async with async_session() as session:
+                    await gather_and_merge(
+                        session, CacheProviderSource, reconcile_cache_providers
+                    )
+            except Exception as e:
+                logger.error(f"Failed to reconcile cache provider entries: {e}")
 
     async def _seed_builtin_source(self):
         """Upsert the BUILTIN row from the assets this release carries.

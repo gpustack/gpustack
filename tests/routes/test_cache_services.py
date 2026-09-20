@@ -15,6 +15,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gpustack_runner import list_runners
+
+from gpustack.schemas.cache_providers import with_runner_versions
 from gpustack.server.cache_provider_catalog import asset_providers
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -50,18 +53,16 @@ ORG_PRINCIPAL = 42
 @pytest.fixture(autouse=True)
 def catalog_lookup(monkeypatch):
     """The catalog is a table, and these tests hand their code a mock session.
-    Default to what this installation carries — the packaged declarations are
-    what a cluster serves with no document configured — and let a test install
-    a declaration of its own over it."""
+    Default to what this installation serves with no document configured — the
+    packaged declarations with their release lines filled in, since a provider
+    reading its versions off the runner images has none before that — and let a
+    test install a declaration of its own over it."""
+    served = with_runner_versions(asset_providers(), list_runners())
 
     async def lookup(_session, name=None):
         wanted = (name or "").lower()
         return next(
-            (
-                provider
-                for provider in asset_providers()
-                if provider.name.lower() == wanted
-            ),
+            (provider for provider in served if provider.name.lower() == wanted),
             None,
         )
 

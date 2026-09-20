@@ -785,10 +785,15 @@ def _validate_cache_service_provider(
         cache_service_in.provider_version
     )
     if version_config is None:
+        # Nothing resolved at all: a provider reading its release line off the
+        # runner images has none where no image this installation carries holds
+        # the package, and there is no version name to quote back.
         raise BadRequestException(
             message=(
-                f"Cache provider '{provider.name}' has no "
-                f"version '{resolved_version}'"
+                f"Cache provider '{provider.name}' has no version "
+                f"'{resolved_version}'"
+                if resolved_version
+                else f"Cache provider '{provider.name}' declares no versions"
             )
         )
 

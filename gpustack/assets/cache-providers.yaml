@@ -63,26 +63,23 @@
   # The MP connector's zero-copy path is CUDA IPC: engines can only
   # attach the cache server on their own node.
   attach_locality: node_local
-  default_version: "v0.5.3"
   # A service may pin a user-supplied image ("custom" version); it runs
   # with the default version's run command and env templates, so the image
   # must be command-compatible.
   custom_version: true
-  # The vLLM runner images, not upstream's lmcache/vllm-openai: P2P reads
-  # go through nixl, which upstream ships as an optional extra and its
-  # image does not carry. The runners bundle it, and sourcing the cache
-  # servers and the engines from one build keeps the connector and the
-  # server on the same LMCache release.
-  default_image: gpustack/runner:cuda12.9-vllm0.27.1
-  default_runtime_images:
-    cuda:
-      "13": gpustack/runner:cuda13.0-vllm0.27.1
-      "12": gpustack/runner:cuda12.9-vllm0.27.1
-  # One declared version: the release the runner bundles. Version = the
-  # bundled wheel — a label that names something the image does not carry
-  # would misreport what a service runs.
-  versions:
-    "v0.5.3": {}
+  # The release line is whichever runner images carry the wheel — any of
+  # them, not the vLLM ones alone, though today those are the only ones
+  # built with it. They are the images rather than upstream's
+  # lmcache/vllm-openai because P2P reads go through nixl, which upstream
+  # ships as an optional extra its image does not carry. Naming the wheel
+  # instead of the images is what keeps a version from naming a release the
+  # image does not have, as images come and go.
+  #
+  # A version names a wheel, not a build of one: the same string is compiled
+  # into several images, and nothing pairs the one a cache server runs with
+  # the one inside an engine attaching to it — the integration's version
+  # range is the whole of what is checked there.
+  runner_dependency: lmcache
   components:
     # Peer discovery for P2P: cache servers register with it and poll it
     # for peers. It holds no cache and no GPU — an in-memory registry,

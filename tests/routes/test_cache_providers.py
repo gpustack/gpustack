@@ -15,7 +15,9 @@ from gpustack.routes.cache_providers import (
     CACHE_PROVIDER_SOURCE_SPEC,
     _reject_taking_away_a_provider_in_use,
 )
+from gpustack.schemas.cache_providers import CacheProvider, with_runner_versions
 from gpustack.schemas.source import SourceContent, SourceTypeEnum
+from gpustack_runner import list_runners
 
 
 def _provider(name: str, version: str = "v1", **overrides) -> dict:
@@ -50,6 +52,21 @@ class _FakeSession:
 
     def __init__(self, services: List[_FakeService]):
         self.services = services
+
+
+@pytest.fixture(autouse=True)
+def _no_runner_overrides(monkeypatch):
+    """The check reads the runner catalog to see the versions a derived provider
+    contributes. These cases are about documents, so the installation adds
+    nothing to the packaged catalog."""
+
+    async def none(session):
+        return []
+
+    monkeypatch.setattr(
+        "gpustack.routes.cache_providers.RunnerOverrideEntry.all",
+        staticmethod(none),
+    )
 
 
 @pytest.fixture
@@ -195,3 +212,49 @@ def test_the_spec_takes_a_document_either_way_an_admin_keeps_one():
     )
     assert CACHE_PROVIDER_SOURCE_SPEC.builtin_name == "builtin"
     assert CACHE_PROVIDER_SOURCE_SPEC.pre_write_check is not None
+
+
+def _derived_declaration() -> dict:
+    """A provider whose release line the runner images decide, which is the
+    shape the check cannot see by reading the document alone."""
+    return {
+        "name": "Pool",
+        "display_name": "Pool",
+        "description": "Pool for tests.",
+        "topology": "per_node",
+        "runner_dependency": "lmcache",
+        "runner_frameworks": ["cuda"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_pin_on_a_derived_version_is_not_read_as_taken_away(services):
+    """A version read off the runner images is named by no document. Judging a
+    write against the document alone would read every such pin as a version the
+    write dropped, and refuse an admin's document for keeping exactly what it
+    should."""
+    declaration = _derived_declaration()
+    derived = with_runner_versions([CacheProvider(**declaration)], list_runners())[0]
+    assert derived.default_version, "the packaged runners should carry lmcache"
+    services(_FakeService("shared-cache", "Pool", derived.default_version))
+
+    await _reject_taking_away_a_provider_in_use(
+        _FakeSession([]), _contents(_document(declaration))
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_stops_deriving_still_has_to_keep_the_pin(services):
+    """The other half: a write replacing the derived line with declared
+    versions takes those images away, and a pin on one of them is refused like
+    any other."""
+    declaration = _derived_declaration()
+    derived = with_runner_versions([CacheProvider(**declaration)], list_runners())[0]
+    services(_FakeService("shared-cache", "Pool", derived.default_version))
+
+    with pytest.raises(BadRequestException) as excinfo:
+        await _reject_taking_away_a_provider_in_use(
+            _FakeSession([]), _contents(_document(_provider("Pool", "v9")))
+        )
+    message = str(excinfo.value.message)
+    assert derived.default_version in message and "shared-cache" in message

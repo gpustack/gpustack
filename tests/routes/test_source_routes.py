@@ -1696,8 +1696,11 @@ class TestCacheProviderSourceConfig:
 
     @pytest_asyncio.fixture
     async def session(self):
+        # RunnerOverrideEntry is here because a cache-provider write reads it:
+        # a provider deriving its release line from the runner catalog reads the
+        # admin's additions to that catalog too.
         async with _make_source_session(
-            CacheProviderSource, CacheProviderEntry, CacheService
+            CacheProviderSource, CacheProviderEntry, CacheService, RunnerOverrideEntry
         ) as session:
             yield session
 
