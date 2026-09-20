@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.datastructures import State
 
-from gpustack import __version__
+from gpustack import __version__, envs
 from gpustack.config.config import get_global_config
 from gpustack.schemas.catalog_source import CatalogSource, normalize_catalog_yaml
 from gpustack.schemas.inference_backend_source import (
@@ -217,11 +217,12 @@ async def _has_enabled_custom(
 
 
 async def _ensure_official_row(
-    session: AsyncSession, kind: OfficialKind, masked: bool
+    session: AsyncSession, kind: OfficialKind, start_disabled: bool
 ) -> SourceMixin:
-    """The kind's OFFICIAL row, created if missing. This task is its only creator;
-    a new row starts disabled when a user source masks it. ``masked`` is passed by
-    the caller, which already computed it to re-assert the mask each round.
+    """The kind's OFFICIAL row, created if missing. This task is its only
+    creator, and ``start_disabled`` says whether the slot it creates is in
+    service — a user source masking it, or an installation configured to come
+    up on its embedded content.
     """
     source = await kind.source_cls.one_by_field(session, "name", OFFICIAL_SOURCE_NAME)
     if source is not None:
@@ -231,7 +232,7 @@ async def _ensure_official_row(
         kind.source_cls(
             name=OFFICIAL_SOURCE_NAME,
             source_type=SourceTypeEnum.OFFICIAL,
-            enabled=not masked,
+            enabled=not start_disabled,
             auto_update_hours=OFFICIAL_DEFAULT_HOURS,
         ),
     )
@@ -365,7 +366,12 @@ async def _due_official_rows(
     due: List[Tuple[OfficialKind, SourceMixin]] = []
     for kind in OFFICIAL_KINDS:
         masked = await _has_enabled_custom(session, kind.source_cls)
-        source = await _ensure_official_row(session, kind, masked)
+        # Only the row this round may create is held to the configured starting
+        # point. One that exists carries whatever the source configuration last
+        # made of it, which outranks a default.
+        source = await _ensure_official_row(
+            session, kind, masked or envs.BOOTSTRAP_WITH_EMBEDDED_SOURCES
+        )
         # Only ever disables: ``enabled`` is also the admin's fall-back switch, so
         # a round must not turn a slot back on that someone turned off. This
         # direction is the one protecting an invariant — OFFICIAL and a custom
@@ -556,7 +562,7 @@ async def refresh_official_kind(
     """
     # Only reached with no custom source configured, so a slot created here
     # starts in service.
-    source = await _ensure_official_row(session, kind, masked=False)
+    source = await _ensure_official_row(session, kind, start_disabled=False)
     if not source.enabled:
         raise ValueError(
             "official content is out of service for this kind; "

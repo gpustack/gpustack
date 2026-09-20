@@ -530,3 +530,15 @@ XLSX_MAX_ROWS_PER_SHEET = 1048576
 SCALING_SCHEDULER_INTERVAL = max(
     1, int(os.getenv("GPUSTACK_SCALING_SCHEDULER_INTERVAL", 30))
 )  # in seconds
+
+# Whether a content kind's OFFICIAL slot is created out of service, leaving the
+# embedded content — what this build ships — to serve.
+#
+# The starting point alone: a slot put in service afterwards stays there, and
+# the source configuration decides what an installation follows from then on.
+# Wanted where the OTA server is out of reach, where the content should stay
+# pinned to the build, and in development, where the published document belongs
+# to a release while the build under test is ahead of it.
+BOOTSTRAP_WITH_EMBEDDED_SOURCES = (
+    os.getenv("GPUSTACK_BOOTSTRAP_WITH_EMBEDDED_SOURCES", "false").lower() == "true"
+)
