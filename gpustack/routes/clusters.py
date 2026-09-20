@@ -809,6 +809,22 @@ async def update_cluster(
         raise NotFoundException(message=f"cluster {id} not found")
     assert_cluster_writable(ctx, cluster)
 
+    # Same rule as create: unique within the owning Org, so anything resolving
+    # a cluster by name still finds one.
+    if input.name != cluster.name:
+        conflict = await Cluster.one_by_fields(
+            session,
+            {
+                'deleted_at': None,
+                "name": input.name,
+                "owner_principal_id": cluster.owner_principal_id,
+            },
+        )
+        if conflict:
+            raise AlreadyExistsException(
+                message=f"Cluster with name '{input.name}' already exists."
+            )
+
     create_update_check(cluster.provider, input, existing=cluster)
     if cluster.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
