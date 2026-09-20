@@ -27,9 +27,11 @@ from gpustack.mixins import BaseModelMixin
 from .cache_providers import (
     CacheProvider,
     validate_injection_templates,
+    with_runner_versions,
     validate_localized_text,
     validate_template_filters,
 )
+from .runner_source import RunnerOverrideEntry, merged_runners
 from .source import SourceContent, SourceMixin, SourceTypeEnum
 
 logger = logging.getLogger(__name__)
@@ -160,6 +162,39 @@ def _nested_declarations(key: Any, value: Any, annotation: Any):
     return [(str(key), value)] if isinstance(value, dict) else []
 
 
+_DERIVED_VERSION_KEYS = (
+    "versions",
+    "default_version",
+    "default_image",
+    "default_runtime_images",
+)
+
+
+def _reject_mixed_version_sources(name: Any, entry: Any) -> None:
+    """A declaration naming ``runner_dependency`` may not also name versions.
+
+    Judged on the document rather than on the model, because it is a rule about
+    what an author may write: once the derivation has run, the provider
+    legitimately carries both. And it is the only form of the rule that can be
+    checked here — the runner catalog the derivation reads is not in hand when a
+    document is validated, so "the declared default is among the derived
+    versions" is not a question this layer can answer.
+
+    On the values, not on the keys: what a derived provider dumps back carries
+    these keys holding nothing, so a document downloaded and saved unchanged
+    would be refused by a check that read presence alone.
+    """
+    if not isinstance(entry, dict) or not entry.get("runner_dependency"):
+        return
+    declared = [key for key in _DERIVED_VERSION_KEYS if entry.get(key)]
+    if declared:
+        raise ValueError(
+            f"cache provider {name} declares runner_dependency "
+            f"'{entry['runner_dependency']}', so its versions come from the "
+            f"runner catalog; remove {', '.join(declared)}"
+        )
+
+
 def load_cache_providers_document(
     raw: Optional[str], strict: bool = False
 ) -> List[CacheProvider]:
@@ -185,6 +220,7 @@ def load_cache_providers_document(
         # what identifies it in the document.
         name = entry.get("name") if isinstance(entry, dict) else f"#{index}"
         try:
+            _reject_mixed_version_sources(name, entry)
             provider = CacheProvider(**entry)
         except (ValidationError, TypeError, ValueError, AttributeError) as e:
             if strict:
@@ -250,11 +286,16 @@ def merge_cache_providers(
 
 def build_cache_provider_entries(
     sources: List[SourceContent],
+    runners: Optional[List[Any]] = None,
 ) -> List[CacheProviderEntry]:
     """The catalog the ordered sources produce, as rows to materialize.
 
     Each row is stamped with the source that produced it, which is what the UI
     reads to tell a declaration of the admin's from a packaged one.
+
+    A provider reading its release line off ``runners`` has it filled in here,
+    so the row holds the images that will actually be pulled — the table is what
+    serves, and a reader of it never has to know a version was derived.
     """
     merged: List[CacheProvider] = []
     origin: Dict[str, SourceContent] = {}
@@ -273,6 +314,8 @@ def build_cache_provider_entries(
         for provider in loaded:
             origin[provider.name.lower()] = source
         merged = merge_cache_providers(merged, loaded)
+
+    merged = with_runner_versions(merged, runners)
 
     entries: List[CacheProviderEntry] = []
     for position, provider in enumerate(merged):
@@ -298,10 +341,16 @@ async def reconcile_cache_providers(
 
     Nothing readable raises before any write, so the table keeps serving
     whatever it held.
+
+    The runner catalog is read here rather than passed in: a provider deriving
+    its release line from it produces different rows as images come and go, so
+    the two have to be read together or the table would hold images from one
+    moment and declarations from another.
     """
+    runners = merged_runners(await RunnerOverrideEntry.all(session))
     # Off the loop: parsing and validating a catalog runs into tens of ms, and a
     # request handler awaiting the database during a reconcile would wait it out.
-    entries = await asyncio.to_thread(build_cache_provider_entries, sources)
+    entries = await asyncio.to_thread(build_cache_provider_entries, sources, runners)
     desired = {entry.name.lower(): entry for entry in entries}
     existing = {row.name.lower(): row for row in await CacheProviderEntry.all(session)}
 

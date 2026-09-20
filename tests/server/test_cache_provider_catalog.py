@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from gpustack.schemas.cache_providers import (
+    CPU_BACKEND,
     CacheProvider,
     CacheProviderL2Backend,
     CacheProviderL2Field,
@@ -17,7 +18,10 @@ from gpustack.schemas.cache_providers import (
     resolved_field_values,
     validate_injection_templates,
     validate_localized_text,
+    with_runner_versions,
 )
+from gpustack_runner import list_runners
+
 from gpustack.server import cache_provider_catalog
 from gpustack.server.cache_provider_catalog import (
     asset_providers,
@@ -433,38 +437,37 @@ def test_lmcache_provider_declaration():
     assert provider.health_check.path == "/healthcheck"
     assert provider.health_check.target == "metrics"
 
-    # One declared version, the release the runner images bundle; a
-    # service may still pin its own image via the reserved "custom"
-    # version.
-    assert provider.default_version == "v0.5.3"
-    assert set(provider.versions) == {"v0.5.3"}
+    # No declared release line: it is whichever runner images carry the
+    # wheel, which is what keeps the cache servers and the engines on one
+    # build as images come and go. A service may still pin its own image
+    # via the reserved "custom" version.
+    assert provider.runner_dependency == "lmcache"
+    assert provider.versions == {}
+    assert provider.default_version is None
     assert provider.custom_version is True
 
-    version_config, version = provider.get_version_config()
-    assert version_config is not None
-    assert version == provider.default_version
-    # The vLLM runners rather than upstream's image: P2P needs nixl,
-    # which upstream ships as an optional extra and does not bundle. The
-    # worker resolves per node, so a heterogeneous per_node fleet mixes
-    # images; unknown runtimes and accelerator-less workers get the plain
-    # one.
-    assert version_config.image == "gpustack/runner:cuda12.9-vllm0.27.1"
-    assert (
-        version_config.resolve_image("cuda", "13.0")
-        == "gpustack/runner:cuda13.0-vllm0.27.1"
-    )
-    assert (
-        version_config.resolve_image("cuda", "12.8")
-        == "gpustack/runner:cuda12.9-vllm0.27.1"
-    )
-    assert version_config.resolve_image(None, None) == (
-        "gpustack/runner:cuda12.9-vllm0.27.1"
-    )
+    # Derived against what this installation actually has, so the check is
+    # of the wiring and not of a version number that moves with the images.
+    derived = with_runner_versions([provider], list_runners())[0]
+    assert derived.versions, "the packaged runners should carry lmcache"
+    version_config, version = derived.get_version_config()
+    assert version == derived.default_version
+    # The vLLM runners rather than upstream's image: P2P needs nixl, which
+    # upstream ships as an optional extra and does not bundle. The worker
+    # resolves per node, so a heterogeneous per_node fleet mixes images.
+    for backend, images in version_config.runtime_images.items():
+        for runtime, image in images.items():
+            assert "gpustack/runner:" in image
+            assert version_config.resolve_image(backend, runtime) == image
+    # A node with no accelerator reads one entry of that matrix like any
+    # other node, rather than a slot of its own beside it.
+    assert CPU_BACKEND in version_config.runtime_images
+    assert version_config.image is None
     # Two components: the cache servers engines attach to, and the peer
     # registry P2P needs. A component owns its launch, so the version
     # slots carry none.
     assert set(provider.components) == {"server", "coordinator"}
-    for declared in provider.versions.values():
+    for declared in derived.versions.values():
         assert declared.run_command is None
         assert declared.run_args is None
     server = provider.components["server"]
@@ -755,8 +758,11 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
         "default_version",
         # MeshFusion images are not published, so it declares no image
         # layout at all; the custom version carries the service's own.
+        # LMCache's, by contrast, are the runner images, so it names the
+        # wheel and reads its release line off whichever carry it.
         "default_image",
         "default_runtime_images",
+        "runner_dependency",
         # The two launch through different slots: MeshFusion's image is
         # expected to start the cache server itself.
         "default_run_command",
@@ -783,7 +789,11 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
     assert custom_config.run_command is None
     assert custom_config.run_args == meshfusion.default_run_args
     assert "--supported-transfer-mode auto" not in custom_config.run_args
-    assert lmcache.versions
+    # LMCache has a release line, but reads it off the runner images rather
+    # than declaring one — the distinction from MeshFusion is where the
+    # versions come from, not whether there are any.
+    assert lmcache.runner_dependency == "lmcache"
+    assert meshfusion.runner_dependency is None
 
     # Every integration is framework-scoped — the catalog is the single
     # accelerator gate. MeshFusion diverges from LMCache only by the

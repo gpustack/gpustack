@@ -2,6 +2,7 @@
 satisfy to be stored, what it replaces once it is, and what a write may not take
 away."""
 
+import asyncio
 import logging
 import subprocess
 import sys
@@ -25,7 +26,14 @@ from gpustack.schemas.cache_provider_source import (
     normalize_cache_provider_yaml,
     reconcile_cache_providers,
 )
+from gpustack.schemas.runner_source import RunnerOverrideEntry
 from gpustack.schemas.source import SourceContent, SourceTypeEnum
+from gpustack.schemas.cache_providers import (
+    CPU_BACKEND,
+    CacheProvider,
+    CacheProviderVersionConfig,
+    with_runner_versions,
+)
 from gpustack.server.cache_provider_catalog import (
     asset_providers,
     builtin_catalog_text,
@@ -61,12 +69,17 @@ def _document(*providers: dict) -> str:
 
 @asynccontextmanager
 async def _entries_session():
-    """In-memory session over the entries table alone, matching the app's
-    ``expire_on_commit=False`` (required under async SQLAlchemy)."""
+    """In-memory session over the tables a reconcile touches, matching the app's
+    ``expire_on_commit=False`` (required under async SQLAlchemy).
+
+    The runner overrides are one of them: a provider reading its release line
+    off the runner catalog reads the admin's additions to it too, so the
+    reconcile queries that table whether or not any provider derives."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(
-            SQLModel.metadata.create_all, tables=[CacheProviderEntry.__table__]
+            SQLModel.metadata.create_all,
+            tables=[CacheProviderEntry.__table__, RunnerOverrideEntry.__table__],
         )
     async with AsyncSession(engine, expire_on_commit=False) as session:
         yield session
@@ -428,3 +441,324 @@ def test_both_source_tables_are_registered_for_migrations():
     assert result.stdout.strip() == str(
         ["cache_provider_entries", "cache_provider_sources"]
     )
+
+
+# --- a release line read off the runner catalog -----------------------------
+
+
+class _FakeRunner:
+    """The fields the derivation reads off a runner row."""
+
+    def __init__(
+        self,
+        backend,
+        backend_version,
+        image,
+        dependencies,
+        deprecated=False,
+        backend_variant="",
+        service_version="1.0.0",
+    ):
+        self.backend = backend
+        self.backend_version = backend_version
+        self.docker_image = image
+        self.dependencies = dependencies
+        self.deprecated = deprecated
+        self.backend_variant = backend_variant
+        self.service_version = service_version
+
+
+def _derived(*runners) -> CacheProvider:
+    provider = CacheProvider(name="Pool", runner_dependency="pool-engine")
+    return with_runner_versions([provider], list(runners))[0]
+
+
+def test_a_version_appears_for_each_build_the_images_carry():
+    """The release line is what the installation has, not what a document
+    claims: one version per distinct package version, carrying the images
+    probed to hold it, keyed by the runner's own backend version so a node
+    matches the newest image at or below its runtime."""
+    provider = _derived(
+        _FakeRunner("cuda", "12.9", "repo:cuda12.9", {"pool-engine": "1.2.0"}),
+        _FakeRunner("cuda", "13.0", "repo:cuda13.0", {"pool-engine": "1.2.0"}),
+        _FakeRunner("rocm", "7.2", "repo:rocm7.2", {"pool-engine": "1.3.0"}),
+    )
+
+    assert set(provider.versions) == {"1.2.0", "1.3.0"}
+    assert provider.versions["1.2.0"].runtime_images == {
+        "cuda": {"12.9": "repo:cuda12.9", "13.0": "repo:cuda13.0"},
+        CPU_BACKEND: {"13.0": "repo:cuda13.0"},
+    }
+    # Newest by version order, not by the order the rows arrived.
+    assert provider.default_version == "1.3.0"
+
+
+def test_an_image_without_the_package_contributes_no_version():
+    """The support matrix is the images themselves: an accelerator whose images
+    do not carry the package offers nothing, rather than an entry that would
+    fail once a container starts."""
+    provider = _derived(
+        _FakeRunner("cuda", "12.9", "repo:cuda12.9", {"pool-engine": "1.2.0"}),
+        _FakeRunner("cann", "9.1", "repo:cann9.1", {"something-else": "1.0"}),
+    )
+
+    assert set(provider.versions["1.2.0"].runtime_images) == {"cuda", CPU_BACKEND}
+
+
+@pytest.mark.parametrize(
+    "runner, why",
+    [
+        (
+            _FakeRunner("cuda", "12.9", "repo:x", {"pool-engine": "1.2.0"}, True),
+            "deprecated images are ones an installation still has and should "
+            "stop starting",
+        ),
+        (
+            _FakeRunner("cuda", "12.9", "repo:x", None),
+            "dependencies of None means the image was never probed, which is "
+            "not the same as the package being absent",
+        ),
+    ],
+)
+def test_a_row_that_says_nothing_usable_is_skipped(runner, why):
+    assert _derived(runner).versions == {}, why
+
+
+def test_a_node_with_no_accelerator_borrows_a_build_that_runs_without_one():
+    """Nothing publishes a device-free image, so that node's entry is borrowed
+    from a family measured to load without a driver — the first of them this
+    version has. A version built from none of those families gets no entry, and
+    the matrix reports the node as unserved rather than leaving it to a
+    container that cannot load."""
+    both = _derived(
+        _FakeRunner("rocm", "7.2", "repo:rocm7.2", {"pool-engine": "1.2.0"}),
+        _FakeRunner("cuda", "12.9", "repo:cuda12.9", {"pool-engine": "1.2.0"}),
+    )
+    version = both.versions["1.2.0"]
+    # cuda leads the order, and arrives second here.
+    assert version.runtime_images[CPU_BACKEND] == {"12.9": "repo:cuda12.9"}
+    assert version.supports_runtime(CPU_BACKEND) is True
+
+    rocm_only = _derived(
+        _FakeRunner("rocm", "7.2", "repo:rocm7.2", {"pool-engine": "1.2.0"}),
+    )
+    assert rocm_only.versions["1.2.0"].resolve_image(CPU_BACKEND) == "repo:rocm7.2"
+
+    cann_only = _derived(
+        _FakeRunner("cann", "9.1", "repo:cann9.1", {"pool-engine": "1.2.0"}),
+    )
+    version = cann_only.versions["1.2.0"]
+    assert CPU_BACKEND not in version.runtime_images
+    assert version.supports_runtime(CPU_BACKEND) is False
+    # The accelerator it does have is still served.
+    assert version.supports_runtime("cann") is True
+
+
+def test_a_declared_plain_image_still_answers_for_a_node_with_no_accelerator():
+    """A declaration naming one image for everything says it runs anywhere, so
+    it answers where the matrix has no device-free entry — and there alone: on
+    an accelerator whose family it was not built for, serving it is the
+    crash-loop the matrix exists to prevent."""
+    version = CacheProviderVersionConfig(
+        image="vendor/pool:1.2.0",
+        runtime_images={"cuda": {"12.9": "vendor/pool:1.2.0-cuda"}},
+    )
+
+    assert version.supports_runtime(CPU_BACKEND) is True
+    assert version.resolve_image(CPU_BACKEND) == "vendor/pool:1.2.0"
+    assert version.supports_runtime("cann") is False
+
+
+def test_each_soc_variant_keeps_its_own_build():
+    """Where a family builds one image per SoC generation, the generations are
+    not interchangeable and do not all carry the same packages. So each takes
+    its own key and a node is served its own — never another generation's, and
+    never one whose probe found nothing."""
+    provider = _derived(
+        _FakeRunner(
+            "cann",
+            "9.1",
+            "repo:cann9.1-910b",
+            {"pool-engine": "1.2.0"},
+            backend_variant="910b",
+        ),
+        _FakeRunner(
+            "cann",
+            "9.1",
+            "repo:cann9.1-a3",
+            {"pool-engine": "1.2.0"},
+            backend_variant="a3",
+        ),
+        # Probed, and the package is not in it.
+        _FakeRunner(
+            "cann",
+            "9.1",
+            "repo:cann9.1-310p",
+            {"torch": "2.13.0"},
+            backend_variant="310p",
+        ),
+    )
+
+    version = provider.versions["1.2.0"]
+    assert version.runtime_images == {
+        "cann-910b": {"9.1": "repo:cann9.1-910b"},
+        "cann-a3": {"9.1": "repo:cann9.1-a3"},
+    }
+    assert version.resolve_image("cann", "9.1", "a3") == "repo:cann9.1-a3"
+    assert version.supports_runtime("cann", "310p") is False
+
+
+def test_a_family_with_one_build_serves_every_variant_of_it():
+    """A provider with no per-variant build declares the family alone, which
+    every variant of it reads — the variant key is a refinement, not a
+    requirement."""
+    version = _derived(
+        _FakeRunner("cann", "9.1", "repo:cann9.1", {"pool-engine": "1.2.0"}),
+    ).versions["1.2.0"]
+
+    assert version.supports_runtime("cann", "910b") is True
+    assert version.resolve_image("cann", "9.1", "910b") == "repo:cann9.1"
+
+
+def test_one_package_version_across_engine_releases_takes_the_newest_build():
+    """Two engine releases can ship the same package version. Both serve it
+    equally, so the newer build wins rather than whichever row the catalog
+    lists last — the cache container then tracks the engines the fleet is
+    moving to."""
+    # The newer build arrives first, so arrival order would pick the older one.
+    version = _derived(
+        _FakeRunner(
+            "cuda",
+            "12.9",
+            "repo:cuda12.9-engine0.29.0",
+            {"pool-engine": "1.2.0"},
+            service_version="0.29.0",
+        ),
+        _FakeRunner(
+            "cuda",
+            "12.9",
+            "repo:cuda12.9-engine0.27.1",
+            {"pool-engine": "1.2.0"},
+            service_version="0.27.1",
+        ),
+    ).versions["1.2.0"]
+
+    assert version.runtime_images["cuda"] == {"12.9": "repo:cuda12.9-engine0.29.0"}
+
+
+def test_a_declared_release_line_is_left_alone():
+    """A provider whose images are not runner images keeps what it declares."""
+    declared = load_cache_providers_document(_document(_provider("Demo", "v1")))
+    out = with_runner_versions(
+        declared,
+        [_FakeRunner("cuda", "12.9", "repo:cuda12.9", {"pool-engine": "1.2.0"})],
+    )
+    assert list(out[0].versions) == ["v1"]
+
+
+def test_a_document_may_not_name_both_a_dependency_and_its_versions():
+    """The two answer the same question from different places, and a document
+    is validated without the runner catalog in hand — so the combination is
+    refused rather than reconciled."""
+    document = yaml.safe_dump(
+        [
+            {
+                "name": "Pool",
+                "runner_dependency": "pool-engine",
+                "default_version": "1.2.0",
+                "versions": {"1.2.0": {"image": "repo:x"}},
+            }
+        ]
+    )
+    with pytest.raises(ValueError, match="runner_dependency"):
+        normalize_cache_provider_yaml(document, strict=True)
+
+
+class _FakeSessionContext:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_the_catalog_is_rebuilt_once_the_overrides_are_written(monkeypatch):
+    """A provider reading its release line off the runner images reads the
+    admin's additions to those too, and the version they add appears only once
+    the catalog is rebuilt.
+
+    Driven by the materialization finishing rather than by the source those
+    overrides come from: both controllers see that source event, and nothing
+    orders two subscribers — this catalog would read the rows as they were
+    before the rewrite, and nothing would come back for it.
+    """
+    from gpustack.server import controllers
+
+    rebuilt = []
+
+    async def rebuild():
+        rebuilt.append(True)
+
+    async def materialize(session, model, reconcile):
+        return None
+
+    monkeypatch.setattr(controllers, "async_session", _FakeSessionContext)
+    monkeypatch.setattr(controllers, "gather_and_merge", materialize)
+
+    controller = controllers.RunnerSourceController(on_materialized=rebuild)
+    await controller._reconcile()
+
+    assert rebuilt == [True]
+
+
+@pytest.mark.asyncio
+async def test_two_rewrites_arriving_together_are_serialized(monkeypatch):
+    """A source change and the runner overrides landing both rewrite this
+    table, and on a first start they arrive together. Each reads the sources
+    and then writes every row, so interleaved one of them loses its inserts to
+    the name uniqueness constraint — and the runner one losing would leave the
+    table derived from the packaged catalog, with no event coming back for it.
+    """
+    from gpustack.server import controllers
+
+    overlapping = []
+    inside = 0
+
+    async def rewrite(session, model, reconcile):
+        nonlocal inside
+        inside += 1
+        overlapping.append(inside)
+        await asyncio.sleep(0)
+        inside -= 1
+
+    monkeypatch.setattr(controllers, "async_session", _FakeSessionContext)
+    monkeypatch.setattr(controllers, "gather_and_merge", rewrite)
+
+    controller = controllers.CacheProviderSourceController()
+    await asyncio.gather(controller.rebuild(), controller.rebuild())
+
+    assert overlapping == [1, 1], "one rewrite at a time, and both ran"
+
+
+@pytest.mark.asyncio
+async def test_a_materialization_that_failed_rebuilds_nothing(monkeypatch):
+    """The override table is as it was, so a catalog current with it still
+    is — and a rebuild would only write back what it already holds."""
+    from gpustack.server import controllers
+
+    rebuilt = []
+
+    async def rebuild():
+        rebuilt.append(True)
+
+    async def fail(session, model, reconcile):
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(controllers, "async_session", _FakeSessionContext)
+    monkeypatch.setattr(controllers, "gather_and_merge", fail)
+
+    controller = controllers.RunnerSourceController(on_materialized=rebuild)
+    await controller._reconcile()
+
+    assert rebuilt == []

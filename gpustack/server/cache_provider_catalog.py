@@ -26,6 +26,7 @@ from gpustack.schemas.cache_providers import (
     CacheProvider,
     render_injection as _render_injection,
     resolved_field_values,
+    with_runner_versions,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,9 @@ def builtin_catalog_text() -> str:
     return dump_cache_providers(asset_providers())
 
 
-def providers_from_documents(documents: List[Optional[str]]) -> List[CacheProvider]:
+def providers_from_documents(
+    documents: List[Optional[str]], runners: Optional[List[Any]] = None
+) -> List[CacheProvider]:
     """The catalog a sequence of documents produces, later documents replacing
     same-named declarations of earlier ones.
 
@@ -112,7 +115,7 @@ def providers_from_documents(documents: List[Optional[str]]) -> List[CacheProvid
             logger.error(f"Skipping unreadable cache provider document: {e}")
             continue
         providers = merge_cache_providers(providers, loaded)
-    return providers
+    return with_runner_versions(providers, runners)
 
 
 async def get_cache_providers(session: AsyncSession) -> List[CacheProvider]:

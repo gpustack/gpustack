@@ -484,14 +484,20 @@ class Server:
         inference_backend_controller = InferenceBackendController()
         tasks.append(asyncio.create_task(inference_backend_controller.start()))
 
-        runner_source_controller = RunnerSourceController()
-        tasks.append(asyncio.create_task(runner_source_controller.start()))
-
         catalog_source_controller = CatalogSourceController(self._config)
         tasks.append(asyncio.create_task(catalog_source_controller.start()))
 
         cache_provider_source_controller = CacheProviderSourceController()
         tasks.append(asyncio.create_task(cache_provider_source_controller.start()))
+
+        # The cache-provider catalog reads the materialized runner overrides,
+        # so it is rebuilt once they are written rather than when the source
+        # they come from changes: both controllers see that event, and nothing
+        # orders two subscribers.
+        runner_source_controller = RunnerSourceController(
+            on_materialized=cache_provider_source_controller.rebuild
+        )
+        tasks.append(asyncio.create_task(runner_source_controller.start()))
 
         gpu_instance_controller = GPUInstanceController(self._config)
         tasks.append(asyncio.create_task(gpu_instance_controller.start()))

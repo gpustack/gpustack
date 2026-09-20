@@ -22,6 +22,7 @@ from gpustack_runtime.deployer import (
     get_workload,
 )
 from gpustack_runtime.detector import detect_backend, detect_devices
+from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime.envs import (
     GPUSTACK_RUNTIME_DETECT_BACKEND_MAP_RESOURCE_KEY,
     to_bool,
@@ -33,6 +34,7 @@ from gpustack.client import ClientSet
 from gpustack.config import registration
 from gpustack.config.config import Config
 from gpustack.schemas.cache_providers import (
+    CPU_BACKEND,
     CUSTOM_VERSION,
     DEFAULT_PORT_NAME,
     CacheProvider,
@@ -64,6 +66,12 @@ from gpustack.utils.runtime import transform_workload_plan
 logger = logging.getLogger(__name__)
 
 HEALTH_PROBE_TIMEOUT_SECONDS = 2
+
+ASCEND_DEFAULT_VARIANT = "910b"
+"""The generation an Ascend node is served when its SoC matches no known
+variant, which is the inference path's own default (see ``_resolve_image``
+in worker/backends). Sharing the guess is the point: the cache server and
+the engines it serves land on one generation's build."""
 
 MAX_CONSECUTIVE_RESTARTS = 5
 """Consecutive crashes tolerated before the instance is parked in ERROR."""
@@ -508,46 +516,73 @@ class CacheServiceManager:
                 f"Unknown version '{resolved_version}' for cache provider "
                 f"{cache_service.provider_name}"
             )
-        backend, runtime_version = self._detect_runtime()
+        backend, runtime_version, variant = self._detect_runtime()
         # Fail fast on an unsupported accelerator: falling back to the
         # plain image (built for another accelerator family) would only
         # crash-loop the container without ever naming the real cause.
-        if not version_config.supports_runtime(backend):
+        if not version_config.supports_runtime(backend, variant):
+            named = f"{backend}-{variant}" if variant else backend
             raise ValueError(
                 f"Cache provider {cache_service.provider_name} "
-                f"({resolved_version}) has no image for {backend} workers; "
+                f"({resolved_version}) has no image for {named} workers; "
                 f"scope the service to supported workers via the worker "
                 f"selector"
             )
         return (
             version_config,
             resolved_version,
-            version_config.resolve_image(backend, runtime_version),
+            version_config.resolve_image(backend, runtime_version, variant),
         )
 
-    def _detect_runtime(self) -> Tuple[Optional[str], Optional[str]]:
+    def _detect_runtime(
+        self,
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
-        This node's (accelerator backend, runtime version), e.g.
-        ("cuda", "13.0") — the key into a version's runtime_images.
-        (None, None) on accelerator-less workers, where the plain image
-        serves.
+        This node's (accelerator backend, runtime version, variant), e.g.
+        ("cann", "8.2", "910b") — what a version's runtime_images is keyed
+        by. A worker with no accelerator reports the "cpu" backend, the
+        token the rest of the platform matches such a node under, so it
+        reads one entry of the matrix like every other node.
+
+        The variant is the SoC generation for a family that builds one image
+        per generation, read the way the inference path reads it — including
+        its fallback for an Ascend SoC no variant matches, so the two paths
+        do not disagree about what an unknown one runs.
         """
         backend = detect_backend()
         if not (isinstance(backend, str) and backend):
-            return None, None
+            return CPU_BACKEND, None, None
         version = None
+        variant = None
         try:
+            devices = detect_devices()
             version = next(
                 (
                     device.runtime_version
-                    for device in detect_devices()
+                    for device in devices
                     if device.runtime_version
                 ),
                 None,
             )
+            if backend == "cann":
+                # Filtered on the resolved generation rather than on the SoC
+                # string: a device whose SoC matches no generation answers
+                # nothing, and stopping there would leave the node without one
+                # while another device on it names the answer.
+                resolved = (
+                    get_ascend_cann_variant((device.appendix or {}).get("arch_family"))
+                    for device in devices
+                )
+                variant = next((name for name in resolved if name), None)
         except Exception as e:
             logger.warning(f"Failed to detect accelerator runtime version: {e}")
-        return backend, version
+        if backend == "cann" and not variant:
+            # A failed probe is not a node without a generation. Leaving it
+            # unresolved reads as one whose family has no per-generation build,
+            # and a version keyed per generation then has nothing for it —
+            # reported as an unsupported accelerator, which it is not.
+            variant = ASCEND_DEFAULT_VARIANT
+        return backend, version, variant
 
     @staticmethod
     def _host_ipc_enabled(cache_service: CacheServicePublic, component_spec) -> bool:
