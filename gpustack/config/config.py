@@ -48,6 +48,7 @@ from gpustack.config.registration import (
     determine_default_registry,
 )
 from gpustack.ssl_context import make_ssl_context
+from gpustack.utils.certificates import read_server_ca_bundle
 from gpustack.utils.network import (
     get_first_non_loopback_ip,
     use_proxy_env_for_url,
@@ -452,6 +453,9 @@ class Config(WorkerConfig, BaseSettings):
             raise Exception(
                 f'CA certificate file "{self.ssl_ca_certfile}" does not exist.'
             )
+
+        if self.ssl_ca_certfile:
+            read_server_ca_bundle(self.ssl_ca_certfile, self.ssl_certfile)
 
         if self.server_url:
             self.server_url = self.server_url.rstrip("/")

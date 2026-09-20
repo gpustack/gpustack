@@ -85,7 +85,7 @@ def test_registration_includes_ca_checksum_for_matching_cluster_server_override(
     )
 
 
-def test_registration_logs_unreadable_ca_bundle(monkeypatch, caplog):
+def test_registration_rejects_unreadable_ca_bundle(monkeypatch, caplog):
     request, cluster, config = _registration("https://server", ssl_ca_certfile="ca.pem")
     monkeypatch.setattr(clusters, "get_global_config", lambda: config)
     monkeypatch.setattr(clusters, "get_cluster_image_name", lambda *_: "image")
@@ -95,7 +95,7 @@ def test_registration_logs_unreadable_ca_bundle(monkeypatch, caplog):
         lambda *_: (_ for _ in ()).throw(OSError("permission denied")),
     )
 
-    registration = clusters.get_registration_from_cluster(request, cluster)
+    with pytest.raises(clusters.InternalServerErrorException):
+        clusters.get_registration_from_cluster(request, cluster)
 
-    assert "GPUSTACK_SERVER_CA_CERT_SHA256" not in registration.env
     assert "Failed to read the server CA bundle" in caplog.text

@@ -18,6 +18,7 @@ from gpustack.schemas.workers import (
 )
 from gpustack.schemas.config import PredefinedConfigNoDefaults
 from gpustack.security import API_KEY_PREFIX
+from gpustack.ssl_context import make_ssl_context
 from gpustack.utils import platform
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.config.registration import (
@@ -170,7 +171,9 @@ class WorkerManager:
         version_url = f"{server_url}/version"
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(
+                timeout=5.0, verify=make_ssl_context()
+            ) as client:
                 response = await client.get(version_url)
                 if response.status_code == 404:
                     logger.warning(
@@ -194,6 +197,8 @@ class WorkerManager:
         """
         try:
             await ensure_server_tls_trust(self._cfg.get_server_url())
+        except httpx.TransportError as error:
+            logger.warning("Server connection failed before version check: %s", error)
         except Exception as error:
             logger.warning(
                 "Failed to bootstrap server TLS before version check: %s", error
