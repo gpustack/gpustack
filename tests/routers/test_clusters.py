@@ -1,9 +1,17 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from gpustack.api.exceptions import AlreadyExistsException
+from gpustack.api.tenant import TenantContext
 from gpustack.config.config import Config
-from gpustack.routes.clusters import get_server_url
-from gpustack.schemas.clusters import ClusterUpdate
+from gpustack.routes.clusters import get_server_url, update_cluster
+from gpustack.schemas.clusters import Cluster, ClusterUpdate
+from gpustack.schemas.principals import PrincipalType
 
 
 def _request(url):
@@ -111,3 +119,59 @@ def test_config_normalizes_server_external_url(monkeypatch, tmp_path):
     )
 
     assert config.server_external_url == "http://example.com:30080"
+
+
+@pytest_asyncio.fixture
+async def engine():
+    e = create_async_engine("sqlite+aiosqlite://")
+    async with e.begin() as conn:
+        await conn.run_sync(Cluster.__table__.create)
+    yield e
+    await e.dispose()
+
+
+def _admin_ctx():
+    user = MagicMock()
+    user.id = 99
+    user.is_admin = True
+    user.kind = PrincipalType.USER
+    return TenantContext(
+        user=user,
+        is_platform_admin=True,
+        current_principal_id=None,
+        org_role=None,
+        accessible_cluster_ids=set(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_rename_keeps_cluster_names_unique_within_the_org(engine):
+    """Create already refuses a name the Org holds; without the same rule on
+    rename, resolving a cluster by name is left with two rows and no way to
+    choose."""
+    ctx = _admin_ctx()
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        session.add_all(
+            [
+                Cluster(id=1, name="alpha", owner_principal_id=1),
+                Cluster(id=2, name="beta", owner_principal_id=1),
+                # Names are unique within an Org, not globally.
+                Cluster(id=3, name="alpha", owner_principal_id=2),
+            ]
+        )
+        await session.commit()
+
+        with pytest.raises(AlreadyExistsException):
+            await update_cluster(session, ctx, 2, ClusterUpdate(name="alpha"))
+
+        config = SimpleNamespace(
+            server_external_url="http://example.com:30080",
+            system_default_container_registry=None,
+        )
+        with patch("gpustack.routes.clusters.get_global_config", return_value=config):
+            # Another Org holding the name is no obstacle, and a cluster does
+            # not collide with itself.
+            crossing = await update_cluster(session, ctx, 3, ClusterUpdate(name="beta"))
+            assert crossing.name == "beta"
+            kept = await update_cluster(session, ctx, 1, ClusterUpdate(name="alpha"))
+            assert kept.name == "alpha"

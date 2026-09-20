@@ -8,8 +8,9 @@ Fetching, ordering and materializing stay on the ``server`` side and import this
 """
 
 import enum
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Set, Type
 
+from pydantic import BaseModel
 from sqlalchemy import Text
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlmodel import SQLModel, Field as SQLField
@@ -67,6 +68,19 @@ class SourceContent(NamedTuple):
     name: str
     source_type: SourceTypeEnum
     content: str
+
+
+def unknown_keys(raw: dict, model: Type[BaseModel]) -> Set[str]:
+    """Keys ``model`` has no field for, as strings (a YAML key can be an int).
+
+    ``.``-prefixed keys host YAML anchors the document references, not fields;
+    catalog and deployment documents both allow them, so the rule is shared.
+    """
+    return {
+        str(key)
+        for key in raw
+        if key not in model.model_fields and not str(key).startswith(".")
+    }
 
 
 # --- Icon validation -------------------------------------------------------
