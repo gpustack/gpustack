@@ -926,6 +926,20 @@ class CacheProvider(BaseModel):
     has run this model carries both, which is what a reader of the catalog —
     and the row it was materialized into — is given."""
 
+    runner_frameworks: List[str] = []
+    """Accelerator families the derived release line is built from. Empty
+    takes every family whose images were probed to carry the package.
+
+    An image holding the package is not the same as the provider working on
+    that accelerator: the probe reads a version off a wheel, while whether the
+    engine attaches and the transport moves a block there is something someone
+    has to run. Naming the families keeps a version off an accelerator nobody
+    has run it on, instead of offering one and finding out at the first
+    attach. A family joins the list once it has been.
+
+    Named by family, so "cann" covers each of its per-SoC builds. Only a
+    provider reading its release line off the runner images has one."""
+
     default_run_command: Optional[str] = None
     default_run_args: Optional[str] = None
     """Launch template shared by versions that declare none of their own.
@@ -1064,6 +1078,21 @@ class CacheProvider(BaseModel):
                     f"provider '{self.name}' field '{field.name}' is gated by "
                     f"'{gate}', which it does not declare"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_runner_frameworks(self) -> "CacheProvider":
+        """Only a release line read off the runner images can be scoped to
+        accelerator families — there is nothing else for the list to narrow,
+        and one on a declaration that names its own versions would read as a
+        restriction while changing nothing about them."""
+        if self.runner_frameworks and not self.runner_dependency:
+            raise ValueError(
+                f"Cache provider '{self.name}' declares runner_frameworks "
+                f"without runner_dependency: the list scopes a release line "
+                f"read off the runner images, and this one declares its "
+                f"versions"
+            )
         return self
 
     @model_validator(mode="after")
@@ -1920,10 +1949,16 @@ def derive_runner_versions(
       different things — unknown, and absent — and yield the same nothing: an
       image nobody has looked inside is not one to build a release line from.
     """
+    families = {name.lower() for name in provider.runner_frameworks}
     by_version: Dict[str, Dict[str, Dict[str, str]]] = {}
     engine_of: Dict[Tuple[str, str, str], str] = {}
     for runner in runners:
         if getattr(runner, "deprecated", False):
+            continue
+        # An accelerator the declaration does not name is left out whatever
+        # its images hold: the probe finds the package, and the provider
+        # answers for whether it works there.
+        if families and runner.backend.lower() not in families:
             continue
         dependencies = getattr(runner, "dependencies", None)
         if not dependencies:
