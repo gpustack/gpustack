@@ -763,6 +763,9 @@ def test_meshfusion_provider_is_a_branded_lmcache_clone():
         "default_image",
         "default_runtime_images",
         "runner_dependency",
+        # and with no release line read off those images, no accelerators
+        # to hold one to
+        "runner_frameworks",
         # The two launch through different slots: MeshFusion's image is
         # expected to start the cache server itself.
         "default_run_command",

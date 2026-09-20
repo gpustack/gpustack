@@ -80,6 +80,10 @@
   # the one inside an engine attaching to it — the integration's version
   # range is the whole of what is checked there.
   runner_dependency: lmcache
+  # Held to what has been run: the wheel is in the ROCm images too, and
+  # whether the engine attaches and the transfer path works there is not
+  # something a probe can answer.
+  runner_frameworks: [cuda]
   components:
     # Peer discovery for P2P: cache servers register with it and poll it
     # for peers. It holds no cache and no GPU — an in-memory registry,

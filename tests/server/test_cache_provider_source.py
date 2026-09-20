@@ -12,6 +12,7 @@ from typing import List
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 import yaml
 from gpustack_runner import list_runners
 from sqlalchemy.dialects import mysql, postgresql
@@ -620,6 +621,40 @@ def test_a_family_with_one_build_serves_every_variant_of_it():
 
     assert version.supports_runtime("cann", "910b") is True
     assert version.resolve_image("cann", "9.1", "910b") == "repo:cann9.1"
+
+
+def test_a_declaration_holds_the_release_line_to_the_families_it_names():
+    """An image carrying the package does not make the provider work on that
+    accelerator — the probe reads a wheel, and the attach and the transfer are
+    someone's to run. A declaration naming the families it has been run on
+    keeps a version off the rest, images or no images."""
+    runners = [
+        _FakeRunner("cuda", "12.9", "repo:cuda12.9", {"pool-engine": "1.2.0"}),
+        _FakeRunner("rocm", "7.2", "repo:rocm7.2", {"pool-engine": "1.2.0"}),
+        _FakeRunner("cann", "9.1", "repo:cann9.1", {"pool-engine": "1.3.0"}),
+    ]
+    scoped = CacheProvider(
+        name="Pool", runner_dependency="pool-engine", runner_frameworks=["cuda"]
+    )
+
+    versions = with_runner_versions([scoped], runners)[0].versions
+
+    assert set(versions) == {"1.2.0"}, "the cann-only version is not offered"
+    assert set(versions["1.2.0"].runtime_images) == {"cuda", CPU_BACKEND}
+    # Unscoped, the same images produce both, ROCm included.
+    assert set(_derived(*runners).versions) == {"1.2.0", "1.3.0"}
+
+
+def test_naming_families_without_a_derived_line_is_refused():
+    """There is nothing for the list to narrow on a declaration that names its
+    own versions, where it would read as a restriction and be none."""
+    with pytest.raises(ValidationError, match="runner_frameworks"):
+        CacheProvider(
+            name="Pool",
+            runner_frameworks=["cuda"],
+            default_image="vendor/pool:{{version}}",
+            versions={"1.0": {}},
+        )
 
 
 def test_a_runner_source_in_service_keeps_the_derived_release_line():
