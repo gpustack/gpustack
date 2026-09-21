@@ -1,10 +1,12 @@
 """Shared CR plumbing for the LB capability-band plugins.
 
 A capability plugin (session-affinity, least-load, the enterprise
-prefix-affinity) runs between the LB context role (AUTHN/795) and the
-finisher (AUTHN/700); within that band the WasmPlugin priority carries
-no meaning for the outcome — opinions combine by weighted sum — but the
-conventional positions are kept (780 / 760 / 740).
+prefix-affinity) runs inside the LB band — after the context role
+(AUTHN/340) and before the finisher (AUTHN/325), which itself sits
+after every rejection point (ext-auth 360, ip-acl 350). Within the
+band the WasmPlugin priority carries no meaning for the outcome —
+opinions combine by weighted sum — but the conventional positions are
+kept (session-affinity 336, prefix-affinity 333, least-load 330).
 
 Conventions every capability plugin follows, enforced only by this
 module's shape (not by the framework):

@@ -157,6 +157,29 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
     return registry
 
 
+def _redis_registry_from_config(
+    cfg: Config, gateway_namespace: Optional[str]
+) -> Optional[McpBridgeRegistry]:
+    """The redis registry to register for ``--redis-url``, or None.
+
+    Gated on the same validation the plugin config path applies
+    (_redis_config_from_url): a credentialed or TLS url publishes
+    neither the redis block nor the registry, so the two writers never
+    disagree about whether the url is usable. None also covers an unset
+    url, which the caller reads as "prune any registry left behind"."""
+    from gpustack.routes.plugins.lb.gateway import (
+        _redis_config_from_url,
+        redis_registry_from_url,
+    )
+
+    redis_url = getattr(cfg, "redis_url", None)
+    if not redis_url:
+        return None
+    if _redis_config_from_url(redis_url, namespace=gateway_namespace) is None:
+        return None
+    return redis_registry_from_url(redis_url, namespace=gateway_namespace)
+
+
 async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
     api = gw_client.NetworkingHigressIoV1Api(api_client)
     # use default name for embedded mode
@@ -176,13 +199,7 @@ async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
     # --redis-url. Registered alongside the higress registry so the
     # WasmPlugin config (a service name, not a raw host) always has a
     # cluster behind it.
-    redis_registry = None
-    if getattr(cfg, "redis_url", None):
-        from gpustack.routes.plugins.lb.gateway import redis_registry_from_url
-
-        redis_registry = redis_registry_from_url(
-            cfg.redis_url, namespace=gateway_namespace
-        )
+    redis_registry = _redis_registry_from_config(cfg, gateway_namespace)
     registries_to_upsert = [r for r in (target_registry, redis_registry) if r]
     try:
         if not default_bridge:
@@ -216,6 +233,16 @@ async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
                     existing.domain = upsert.domain
                     existing.port = upsert.port
                     existing.protocol = upsert.protocol
+                    should_update = True
+            if redis_registry is None:
+                # A redis_url that was unset or became unusable must not
+                # leave its registry behind: nothing references it, and
+                # the stale gateway config outlives the feature.
+                from gpustack.routes.plugins.lb.gateway import REDIS_REGISTRY_NAME
+
+                remaining = [r for r in registries if r.name != REDIS_REGISTRY_NAME]
+                if len(remaining) != len(registries):
+                    default_bridge.spec.registries = remaining
                     should_update = True
             if should_update:
                 await api.edit_mcpbridge(

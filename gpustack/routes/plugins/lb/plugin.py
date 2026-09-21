@@ -98,16 +98,23 @@ class LBPlugin(RoutePlugin):
     async def _derive_lb_mode(
         self, route: ModelRoute, session: AsyncSession
     ) -> Optional[str]:
-        """What the route's targets currently add up to: weighted
+        """What the route's targets add up to: weighted
         (business split) / scoring (capability policies) / invalid
         (mixed — LB refuses to render). None when the route has neither
         weights nor capability policies: plain round-robin has nothing
-        to report."""
+        to report.
+
+        Deliberately state-independent: the mode describes the
+        configuration's shape, not the live render. A target's
+        ACTIVE/UNAVAILABLE transition never changes the classification
+        (an all-weighted route stays weighted while its instances are
+        down — it renders nothing, but it is still configured as
+        weighted), which also keeps instance-health flaps from
+        rewriting route.meta."""
         from sqlmodel import col
 
         from gpustack.schemas.model_routes import (
             ModelRouteTarget,
-            TargetStateEnum,
         )
 
         targets = await ModelRouteTarget.all_by_fields(
@@ -118,8 +125,6 @@ class LBPlugin(RoutePlugin):
         total = 0
         weighted = 0
         for target in targets:
-            if target.state != TargetStateEnum.ACTIVE:
-                continue
             if target.fallback_status_codes:
                 # fallback targets are not candidates — their weight
                 # column means nothing for the split
@@ -128,7 +133,7 @@ class LBPlugin(RoutePlugin):
             if target.weight and target.weight > 0:
                 weighted += 1
         if total == 0:
-            return None  # no usable targets — no mode to describe
+            return None  # no candidate targets configured — no mode to describe
 
         # Which capability plugins are effective on a route: ask the
         # plugins themselves (each knows its own storage). Registry-driven

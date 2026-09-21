@@ -127,9 +127,10 @@ class Config(WorkerConfig, BaseSettings):
         database_url: URL of the database.
         redis_url: URL of the Redis used by features that need shared,
                     fast state (e.g. LB plugin's shared state backend).
-                    Format: redis://[[user]:[pass]@]host[:port][/db].
-                    TLS (rediss://) is not supported: the LB plugin's
-                    redis client has no TLS knob.
+                    Format: redis://host[:port][/db]. No credentials
+                    (they would be materialized in the gateway CR) and
+                    no TLS (rediss://): the LB plugin's redis client
+                    has no TLS knob.
         disable_worker: (Deprecated) Disable embedded worker.
         enable_worker: Enable embedded worker.
         bootstrap_password: Password for the bootstrap admin user.
@@ -198,8 +199,9 @@ class Config(WorkerConfig, BaseSettings):
     # Redis URL for features that need shared, fast state (LB plugin's
     # shared-state backend, and enterprise features when the enterprise
     # edition is installed). May carry credentials
-    # (redis://[[user]:[pass]@]host[:port][/db]; rediss:// is refused —
-    # the LB plugin's redis client has no TLS knob) —
+    # (redis://host[:port][/db]; credentials are refused — they would be
+    # materialized in the gateway CR — and so is rediss://, the LB
+    # plugin's redis client has no TLS knob) —
     # never log it verbatim; redact first like database_url.
     redis_url: Optional[str] = None
     disable_worker: Optional[bool] = None  # Deprecated

@@ -18,7 +18,6 @@ from gpustack.gateway.utils import (
     provider_id_prefix,
 )
 from gpustack.schemas.model_provider import ModelProvider
-from gpustack.schemas.model_routes import ModelRoute
 from gpustack.schemas.models import Model
 
 ROUTE_A = "default/ai-route-route-1.internal"
@@ -418,12 +417,12 @@ def test_another_routes_legacy_entry_is_left_alone():
 
 @pytest.mark.asyncio
 async def test_startup_cleanup_drops_only_entries_nothing_will_reconcile():
-    """The startup pass keeps live providers, live deployments, and the legacy
-    entry of every live route — the last of those because the route retires it
-    itself moments later, and pruning it here would leave the route without a
-    provider until the replay reaches it. Only entries whose route, deployment or
-    provider is gone are dropped, since nothing will ever reconcile those.
-    """
+    """The startup pass keeps live providers and live deployments, and
+    retires every legacy per-route entry wholesale — running this pass
+    means control is already on this server version, so the per-route
+    entries are dropped in one deterministic write instead of racing
+    per-route retirements against sibling reconciles; the replay
+    rewrites each deployment's own entry moments later."""
     live_plugin = {
         "metadata": {"name": "gpustack-ai-proxy"},
         "spec": {
@@ -438,6 +437,7 @@ async def test_startup_cleanup_drops_only_entries_nothing_will_reconcile():
                 ]
             },
             "matchRules": [
+                # legacy entry of a LIVE route — retired here too
                 _rule(LEGACY_A, ROUTE_A, ["model-5-1.static"]).model_dump(),
                 _service_rule("gpustack-model-5", ["model-5-1.static"]).model_dump(),
                 _service_rule(
@@ -457,19 +457,16 @@ async def test_startup_cleanup_drops_only_entries_nothing_will_reconcile():
         await cleanup_ai_proxy_config(
             providers=[ModelProvider(id=3, name="p3")],
             models=[Model(id=5, name="m5")],
-            routes=[ModelRoute(id=1, name="r1")],
             k8s_config=MagicMock(),
             namespace="higress-system",
         )
 
     body = api.edit_wasmplugin.await_args.kwargs["body"]
     assert _provider_ids(body.spec) == [
-        LEGACY_A,
         "gpustack-model-5",
         "provider-3",
     ]
     assert _rule_keys(body.spec) == [
-        (LEGACY_A, (ROUTE_A,), ("model-5-1.static",)),
         ("gpustack-model-5", (), ("model-5-1.static",)),
     ]
 
@@ -510,7 +507,6 @@ async def test_startup_cleanup_drops_only_dead_providers():
         await cleanup_ai_proxy_config(
             providers=[ModelProvider(id=3, name="p3")],
             models=[Model(id=5, name="m5")],
-            routes=[ModelRoute(id=1, name="r1")],
             k8s_config=MagicMock(),
             namespace="higress-system",
         )

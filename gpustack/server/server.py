@@ -1223,7 +1223,6 @@ class Server:
             namespace=self.config.gateway_namespace,
             providers=providers,
             models=models,
-            routes=model_routes,
             k8s_config=k8s_config,
         )
         await cleanup_generic_proxy_router(

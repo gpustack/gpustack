@@ -26,10 +26,10 @@ class SessionKey(BaseModel):
 class SessionAffinityConfig(BaseModel):
     enabled: bool = True
 
-    sessionKeys: List[SessionKey]
-    """Ordered chain — required. Omitting it makes the gateway plugin
-    fail to parse the rule, so it is mandatory here rather than
-    discovering it at the gateway."""
+    sessionKeys: List[SessionKey] = Field(min_length=1)
+    """Ordered chain — required, and non-empty: an empty chain makes the
+    gateway plugin fail to parse the rule exactly like an omitted one,
+    so it is rejected here rather than discovered at the gateway."""
 
     enableOnPathSuffix: Optional[List[str]] = None
     """Body-source gate only. The plugin's default

@@ -37,7 +37,7 @@ async def _has_fallback_target(ctx: RouteReconcileContext) -> bool:
         ctx.session, "route_id", ctx.model_route.id
     )
     return any(
-        target.fallback_status_codes and len(target.fallback_status_codes) > 0
+        target.deleted_at is None and bool(target.fallback_status_codes)
         for target in targets
     )
 
@@ -66,12 +66,23 @@ class FallbackPlugin(RoutePlugin):
         must still resolve via modelMapping, and the rules dual-attach the
         main ingress (the main ingress may not exist when only a fallback
         model is set). Declared under the ``mapper`` owner so the collector
-        recycles exactly the previous mapper rules."""
+        recycles exactly the previous mapper rules. A delete event declares
+        the strip instead — the main ingress is being removed, and nothing
+        else would retire its rules before the startup cleanup pass."""
         from gpustack.gateway import utils as mcp_handler
 
         prefix = f"{ctx.cfg.get_namespace()}/"
         if ctx.cfg.get_namespace() == ctx.cfg.gateway_namespace:
             prefix = ""
+        full_ingress_name = f"{prefix}{ctx.ingress_name}"
+        if ctx.event_is_delete:
+            collector.set_rules(
+                cr_name=mcp_handler.gpustack_model_mapper_name,
+                owner=MAPPER_RULE_OWNER,
+                ingresses=[full_ingress_name],
+                rules=[],
+            )
+            return
         fallback_destinations = ctx.fallback_destinations or []
         fallback_model_name_to_registries: Dict[str, List[str]] = {}
         for _, model_name, registry in fallback_destinations:
@@ -89,7 +100,7 @@ class FallbackPlugin(RoutePlugin):
             owner=MAPPER_RULE_OWNER,
             # Everything the mapper attaches to this route hangs off the main
             # ingress (the fallback rules dual-attach it).
-            ingresses=[f"{prefix}{ctx.ingress_name}"],
+            ingresses=[full_ingress_name],
             rules=expected_rules,
         )
 

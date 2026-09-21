@@ -39,6 +39,7 @@ from gpustack.gateway.labels_annotations import managed_labels
 from gpustack.gateway.utils import DestinationTupleList
 from gpustack.routes.plugins.artifacts import RouteArtifactCollector
 from gpustack.routes.plugins.lb.config import LBPolicyConfig, lb_policy_from_meta
+from gpustack.routes.plugins.lb.gateway import lb_module_available
 from gpustack.schemas.model_routes import (
     ModelRoute,
     ModelRouteTarget,
@@ -51,8 +52,6 @@ logger = logging.getLogger(__name__)
 # A `.static` Higress registry name maps to an Envoy cluster whose
 # listener port is 80 whatever the backend speaks; the cluster name the
 # plugin wants is the full Envoy form of that service name.
-CLUSTER_PREFIX = "outbound|80||"
-
 TARGET_CLUSTERS_HEADER = "x-higress-target-cluster"
 
 # The context role keeps the model-mapper CR name (in-place upgrade);
@@ -65,8 +64,16 @@ def envoy_filter_name(ingress_name: str) -> str:
     return f"gpustack-lb-{ingress_name}"
 
 
+def candidate_cluster_name(registry: Any) -> str:
+    """The Envoy cluster a candidate points at, built from the
+    registry's real port — DNS-typed instance registries and provider
+    registries do not listen on 80, and the ingress path
+    (get_service_name_with_port) never assumes they do."""
+    return f"outbound|{registry.port or 80}||{registry.get_service_name()}"
+
+
 def _build_candidate(
-    service_name: str,
+    cluster: str,
     target_id: int,
     kind: str,
     model_name: str,
@@ -74,7 +81,7 @@ def _build_candidate(
     max_running_requests: Optional[int],
 ) -> Dict[str, Any]:
     candidate: Dict[str, Any] = {
-        "cluster": f"{CLUSTER_PREFIX}{service_name}",
+        "cluster": cluster,
         "targetId": str(target_id),
         "kind": kind,
         "modelName": model_name,
@@ -139,7 +146,9 @@ async def render_route(
     active_targets = [
         t
         for t in targets
-        if t.state == TargetStateEnum.ACTIVE and not _is_fallback_target(t)
+        if t.deleted_at is None
+        and t.state == TargetStateEnum.ACTIVE
+        and not _is_fallback_target(t)
     ]
     weighted = [t for t in active_targets if t.weight and t.weight > 0]
     if weighted and len(weighted) != len(active_targets):
@@ -163,7 +172,7 @@ async def render_route(
         for _, model_name, registry in registries:
             candidates.append(
                 _build_candidate(
-                    registry.get_service_name(),
+                    candidate_cluster_name(registry),
                     target.id,
                     kind,
                     model_name,
@@ -275,7 +284,7 @@ async def sync_model_route_lb(
 
     rule_config: Optional[Dict[str, Any]] = None
     policy_config: Optional[LBPolicyConfig] = None
-    if not event_is_delete:
+    if not event_is_delete and lb_module_available(cfg):
         # fresh read: the event's model_route may predate the latest
         # meta write, and the policy rides route.meta now
         fresh_route = await ModelRoute.one_by_id(session, model_route.id)
@@ -296,6 +305,12 @@ async def sync_model_route_lb(
                     "candidates": candidates,
                     "modelMappers": model_mappers,
                 }
+                if policy_config is not None:
+                    # the per-route policy knobs ride the same rule — a
+                    # matchRule config overrides the CR defaultConfig,
+                    # so health/reject/maxBodyBytes take effect per
+                    # route without a deployment-level precedence rule
+                    rule_config.update(policy_config.to_gateway_rule())
 
     collector.set_rules(
         cr_name=CONTEXT_CR_NAME,

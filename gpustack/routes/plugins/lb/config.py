@@ -30,13 +30,20 @@ class LBHealthConfig(BaseModel):
     ramp_ms: Optional[int] = Field(default=None, ge=1)
 
     def to_gateway(self) -> Dict[str, Any]:
+        # Gateway field names are lowerCamel; only include knobs that
+        # were actually set — an absent key keeps the plugin's
+        # compiled-in default, and an explicit null is not the same
+        # contract.
         dump = self.model_dump(exclude_none=True)
-        # gateway field names are lowerCamel
         return {
-            "failOpen": dump.pop("fail_open", None),
-            "unhealthyThreshold": dump.pop("unhealthy_threshold", None),
-            "cooldownMs": dump.pop("cooldown_ms", None),
-            "rampMs": dump.pop("ramp_ms", None),
+            camel: dump.pop(snake)
+            for camel, snake in (
+                ("failOpen", "fail_open"),
+                ("unhealthyThreshold", "unhealthy_threshold"),
+                ("cooldownMs", "cooldown_ms"),
+                ("rampMs", "ramp_ms"),
+            )
+            if snake in dump
         }
 
 
@@ -57,20 +64,24 @@ class LBPolicyConfig(BaseModel):
     """Body buffer ceiling shared by the lb plugin and any body-reading
     capability plugin; they must be configured together."""
 
-    def to_gateway_default(self) -> Dict[str, Any]:
-        """The deployment-level part for the finisher CR's
-        defaultConfig. Per-route parts (candidates, modelMappers,
-        capability weights) are rendered by the reconciler. The shared
-        state backend is deliberately not here: redis is
-        deployment-level only (``--redis-url`` / GPUSTACK_REDIS_URL,
-        rendered onto both gateway CRs by lb/gateway.py), because the
-        plugin requires it on both roles at once and a per-route
-        override cannot satisfy that."""
-        config: Dict[str, Any] = {
-            "mode": "finisher",
-            "health": self.health.to_gateway(),
-            "reject": self.reject.model_dump(),
-        }
+    def to_gateway_rule(self) -> Dict[str, Any]:
+        """The policy knobs for a route's matchRule config — health
+        windows (only the ones actually set; an absent key keeps the
+        plugin's compiled-in default), the reject response, and the
+        shared body-buffer ceiling. Rendered into the per-route rule by
+        the reconciler (a Higress matchRule config overrides the CR's
+        defaultConfig), so each route's ``plugins.lb`` knobs take
+        effect on that route alone. The shared state backend is
+        deliberately not here: redis is deployment-level only
+        (``--redis-url`` / GPUSTACK_REDIS_URL, rendered onto both
+        gateway CRs by lb/gateway.py), because the plugin requires it
+        on both roles at once and a per-route override cannot satisfy
+        that. ``mode`` is role-level, never per-route."""
+        config: Dict[str, Any] = {}
+        health = self.health.to_gateway()
+        if health:
+            config["health"] = health
+        config["reject"] = self.reject.model_dump()
         if self.max_body_bytes is not None:
             config["maxBodyBytes"] = self.max_body_bytes
         return config

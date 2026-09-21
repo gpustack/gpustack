@@ -16,7 +16,6 @@ running server.
 """
 
 import logging
-import warnings
 from importlib.metadata import entry_points
 from typing import Any, Dict, List, Optional
 
@@ -60,19 +59,20 @@ def _load_entry_point_plugins() -> None:
     for ep in entry_points(group=ENTRY_POINT_GROUP):
         try:
             obj = ep.load()
+            plugin = obj() if isinstance(obj, type) else obj
+            if not isinstance(plugin, RoutePlugin):
+                logger.error(
+                    "Route plugin entry point '%s' did not resolve to a "
+                    "RoutePlugin: %s",
+                    ep.name,
+                    type(plugin).__name__,
+                )
+                continue
         except Exception as e:  # noqa: BLE001
-            warnings.warn(
-                f"Failed to load route plugin entry point '{ep.name}': {e}",
-                stacklevel=2,
-            )
-            continue
-        plugin = obj() if isinstance(obj, type) else obj
-        if not isinstance(plugin, RoutePlugin):
-            warnings.warn(
-                f"Route plugin entry point '{ep.name}' did not resolve to a "
-                f"RoutePlugin: {type(plugin).__name__}",
-                stacklevel=2,
-            )
+            # Isolation covers construction too, not just ep.load(): a
+            # constructor exception must not take the community server
+            # down with the broken package.
+            logger.error("Failed to load route plugin entry point '%s': %s", ep.name, e)
             continue
         if plugin.name in _REGISTRY:
             logger.warning(
@@ -111,10 +111,12 @@ def get_route_plugin(name: str) -> Optional[RoutePlugin]:
 
 
 def route_plugin_sections(payload: Any) -> Dict[str, Any]:
-    """The ``plugins`` mapping off a CRUD payload, or {} when absent.
-    Tolerates any non-mapping value the same way: a plugin section the
-    dispatcher cannot find reads as "not mentioned", which is the
-    no-op for every hook."""
+    """The plugins mapping the dispatcher fans out over — callers hand
+    in the payload's ``plugins`` value directly (``input.plugins``),
+    never the whole CRUD payload, so a plugin named ``plugins`` stays
+    addressable. Tolerates any non-mapping value the same way: a plugin
+    section the dispatcher cannot find reads as "not mentioned", which
+    is the no-op for every hook."""
     if not isinstance(payload, dict):
         return {}
     return payload
