@@ -147,6 +147,39 @@ def test_created_samples_do_not_duplicate_counter_series():
     ]
 
 
+# An info family is named without the suffix its samples carry.
+OPENMETRICS_INFO = """\
+# HELP vllm:cache_config Cache configuration.
+# TYPE vllm:cache_config info
+vllm:cache_config_info{block_size="16"} 1.0
+# EOF
+"""
+
+
+def test_info_samples_keep_their_own_name():
+    """Info samples are named <family>_info, so they must survive the filter and
+    be added under that name — InfoMetricFamily.add_metric takes a mapping, not
+    the float the exposition gives us."""
+    families = _families(OPENMETRICS_INFO, OPENMETRICS_CONTENT_TYPE)
+    assert families["vllm:cache_config"].type == "info"
+
+    _, raw = _aggregate(families)
+
+    samples = [(s.name, s.value) for s in raw["vllm:cache_config"].samples]
+    assert samples == [("vllm:cache_config_info", 1.0)]
+    assert samples[0][0].startswith("vllm:cache_config")
+
+
+def test_content_type_match_is_case_insensitive():
+    """Media types are case-insensitive. Matching case-sensitively would send an
+    OpenMetrics payload down the text path, which is the original bug."""
+    families = _families(
+        OPENMETRICS_TEXT, "Application/OpenMetrics-Text; version=1.0.0"
+    )
+
+    assert [s.value for s in families["vllm:prompt_tokens"].samples] == [1234.0]
+
+
 def test_persistent_family_failure_warns_once(caplog):
     """Aggregation runs every few seconds; a family that always fails must not
     warn on every pass, but must warn again after recovering and failing anew."""
