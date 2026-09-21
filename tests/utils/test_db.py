@@ -140,6 +140,28 @@ async def test_probe_dsn_moves_a_host_list_into_the_netloc(monkeypatch):
         # The port already spelled out in the netloc is kept when the query
         # string carries no usable list of its own.
         ("postgresql://user:pw@node1:6000/db?host=a,b", "user:pw@node1:6000"),
+        # host=<host>:<port> repeated is the spelling SQLAlchemy documents for
+        # its asyncpg dialect; the tokens already are the netloc asyncpg reads.
+        (
+            "postgresql://user:pw@h:5432/db?host=db-a:5432&host=db-b:5433",
+            "user:pw@db-a:5432,db-b:5433",
+        ),
+        # A single token in that spelling names the node the engine will use
+        # in place of the one in the netloc.
+        ("postgresql://user:pw@h:5432/db?host=db-a:5432", "user:pw@db-a:5432"),
+        # The dialect requires a port on every token in this spelling and
+        # raises ArgumentError otherwise, so the probe does not guess one.
+        ("postgresql://user:pw@h:5432/db?host=a:5432&host=b", "user:pw@h:5432"),
+        # Mixing the two spellings is an ArgumentError in the dialect.
+        (
+            "postgresql://user:pw@h:5432/db?host=a:5432&host=b:5433&port=5432",
+            "user:pw@h:5432",
+        ),
+        # The dialect cannot split an IPv6 address out of a host:port token.
+        (
+            "postgresql://user:pw@h:5432/db?host=[fd00::1]:5432&host=[fd00::2]:5433",
+            "user:pw@h:5432",
+        ),
     ],
 )
 async def test_probe_dsn_rewrites_only_a_paired_host_list(

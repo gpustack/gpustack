@@ -46,6 +46,33 @@ def _netloc_host_list(hosts: str, ports: str) -> Optional[str]:
     )
 
 
+# One ``host=<host>:<port>`` token: a hostname or IPv4 address and a port. An
+# IPv6 address does not fit, and SQLAlchemy's dialect cannot split one in this
+# spelling either.
+_HOST_PORT_TOKEN = re.compile(r'^[^:,\[\]]+:\d+$')
+
+
+def _netloc_host_port_list(host_tokens: List[str]) -> Optional[str]:
+    """Render repeated ``host=<host>:<port>`` tokens as one netloc.
+
+    This is the multihost spelling SQLAlchemy documents for its asyncpg
+    dialect. Only a list in which every token carries a port is rendered: the
+    dialect raises ``ArgumentError`` when one does not, so such a list cannot
+    reach an engine either way.
+
+    Args:
+        host_tokens: Every ``host`` value from the query string, in order.
+
+    Returns:
+        The tokens joined with commas, which is already the
+        ``host:port,host:port`` form asyncpg's DSN parser reads, or None when
+        a token does not spell one host with a port.
+    """
+    if not all(_HOST_PORT_TOKEN.match(token) for token in host_tokens):
+        return None
+    return ','.join(host_tokens)
+
+
 def _probe_dsn(db_url: str) -> str:
     """Build the DSN the openGauss probe connects with.
 
@@ -54,14 +81,19 @@ def _probe_dsn(db_url: str) -> str:
     leave the probe talking to whichever one the netloc happens to name. That
     is the node most likely to be unreachable, since listing several is what an
     operator does when one of them may be, and the probe failing takes startup
-    down with it before an engine is ever built. Moving the lists into the
+    down with it before an engine is ever built. Moving the list into the
     netloc lets asyncpg try each node in turn.
+
+    Both spellings SQLAlchemy's dialect accepts are read: libpq's
+    ``host=a,b&port=1,2`` and the ``host=a:1&host=b:2`` form its own
+    documentation uses. Mixing the two is an error in the dialect and is left
+    for it to report.
 
     Args:
         db_url: The PostgreSQL URL as configured.
 
     Returns:
-        A DSN with ``PROBE_EXCLUDED_PARAMS`` removed and a paired host list
+        A DSN with ``PROBE_EXCLUDED_PARAMS`` removed and a usable host list
         moved into the netloc. The netloc is left as it stands otherwise.
     """
     parsed = urlparse(db_url)
@@ -72,7 +104,12 @@ def _probe_dsn(db_url: str) -> str:
     ]
     hosts = [v for k, v in params if k == 'host' and v]
     ports = [v for k, v in params if k == 'port' and v]
-    netloc_hosts = _netloc_host_list(hosts[-1], ports[-1]) if hosts and ports else None
+    if len(hosts) == 1 and ports:
+        netloc_hosts = _netloc_host_list(hosts[0], ports[-1])
+    elif hosts and not ports:
+        netloc_hosts = _netloc_host_port_list(hosts)
+    else:
+        netloc_hosts = None
     if netloc_hosts is None:
         return urlunparse(parsed._replace(query=urlencode(params)))
 
