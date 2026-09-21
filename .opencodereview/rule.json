@@ -19,12 +19,12 @@
     {
       "path": "gpustack/routes/**/*.py",
       "merge_system_rule": true,
-      "rule": "FastAPI route handlers. Treat every changed route as security-sensitive. Flag an endpoint without its deliberate authorization tier as wired in gpustack/routes/routes.py: authenticated user, tenant-scoped user, platform administrator, or worker/cluster system principal. For any tenant-reachable list query, require tenant_list_conditions from gpustack/api/tenant.py; for a single row, require assert_resource_visible or an established equivalent before returning or mutating it. Deny by default when ownership is unclear. Flag credentials, API keys, tokens, SAML assertions, or cloud secrets that can reach logs, responses, exceptions, or telemetry. A behavior change or bug fix requires a focused test under tests/routes/."
+      "rule": "FastAPI route handlers. Treat every changed route as security-sensitive. Flag an endpoint without its deliberate authorization tier as wired in gpustack/routes/routes.py: authenticated user, tenant-scoped user, platform administrator, or worker/cluster system principal. For any tenant-reachable list query, require tenant_list_conditions from gpustack/api/tenant.py; for a single row, require assert_resource_visible or an established equivalent before returning or mutating it. Deny by default when ownership is unclear. Flag credentials, API keys, tokens, SAML assertions, or cloud secrets that can reach logs, responses, exceptions, or telemetry. A behavior change or bug fix requires a focused test under tests/routes/. State it as a reminder only — tests/ is excluded from this review, so never claim a test is present or absent, and never infer absence from not having seen it."
     },
     {
       "path": "gpustack/api/**/*.py",
       "merge_system_rule": true,
-      "rule": "Authentication, authorization, tenancy, and API primitives. Flag an authorization bypass, confused principal type, tenant-context loss across a call boundary, or error response that distinguishes absent resources from resources the caller is not allowed to see. Never log, serialize, or return secrets. Keep changes compatible with the route dependency tiers in gpustack/routes/routes.py. A behavior change or bug fix needs a focused test under tests/api/."
+      "rule": "Authentication, authorization, tenancy, and API primitives. Flag an authorization bypass, confused principal type, tenant-context loss across a call boundary, or error response that distinguishes absent resources from resources the caller is not allowed to see. Never log, serialize, or return secrets. Keep changes compatible with the route dependency tiers in gpustack/routes/routes.py. A behavior change or bug fix needs a focused test under tests/api/. State it as a reminder only — tests/ is excluded from this review, so never claim a test is present or absent, and never infer absence from not having seen it."
     },
     {
       "path": "gpustack/schemas/**/*.py",
@@ -39,17 +39,17 @@
     {
       "path": "gpustack/server/**/*.py",
       "merge_system_rule": true,
-      "rule": "Server controllers, services, collectors, and event processing. Flag controller or background-loop work that is not idempotent, retries without bounded backoff or cancellation, leaks sessions/tasks/subprocesses, or leaves model, worker, cluster, cache, or GPU-instance state inconsistent after failure. Flag unbounded fan-out and per-object database or network calls in reconciliation hot paths. Preserve tenant isolation when controllers load resources outside request context. A behavior change or bug fix requires a focused test under tests/server/ or tests/controller/."
+      "rule": "Server controllers, services, collectors, and event processing. Flag controller or background-loop work that is not idempotent, retries without bounded backoff or cancellation, leaks sessions/tasks/subprocesses, or leaves model, worker, cluster, cache, or GPU-instance state inconsistent after failure. Flag unbounded fan-out and per-object database or network calls in reconciliation hot paths. Preserve tenant isolation when controllers load resources outside request context. A behavior change or bug fix requires a focused test under tests/server/ or tests/controller/. State it as a reminder only — tests/ is excluded from this review, so never claim a test is present or absent, and never infer absence from not having seen it."
     },
     {
       "path": "gpustack/scheduler/**/*.py",
       "merge_system_rule": true,
-      "rule": "Scheduling code. Flag candidate selection or scoring that violates requested resource constraints, worker availability, model compatibility, cluster/pool affinity, or multi-tenant visibility. Scheduling decisions must be deterministic for equivalent inputs and must not mutate shared state during evaluation. Flag resource arithmetic that can overcommit GPU, VRAM, RAM, or ports, and failure paths that strand reservations. Test changes with representative candidates and edge cases."
+      "rule": "Scheduling code. Flag candidate selection or scoring that violates requested resource constraints, worker availability, model compatibility, cluster/pool affinity, or multi-tenant visibility. Scheduling decisions must be deterministic for equivalent inputs and must not mutate shared state during evaluation. Flag resource arithmetic that can overcommit GPU, VRAM, RAM, or ports, and failure paths that strand reservations. Test changes with representative candidates and edge cases. State it as a reminder only — tests/ is excluded from this review, so never claim a test is present or absent, and never infer absence from not having seen it."
     },
     {
       "path": "gpustack/policies/**/*.py",
       "merge_system_rule": true,
-      "rule": "Scheduling policies: worker filters, candidate selectors, and scorers. Flag logic that violates requested resource constraints, worker availability, model compatibility, cluster or pool affinity, or multi-tenant visibility. Policy evaluation must be deterministic for equivalent inputs and must not mutate shared state. Flag resource arithmetic that can overcommit GPU, VRAM, RAM, or ports, and failure paths that strand reservations. Test changes with representative candidates and edge cases."
+      "rule": "Scheduling policies: worker filters, candidate selectors, and scorers. Flag logic that violates requested resource constraints, worker availability, model compatibility, cluster or pool affinity, or multi-tenant visibility. Policy evaluation must be deterministic for equivalent inputs and must not mutate shared state. Flag resource arithmetic that can overcommit GPU, VRAM, RAM, or ports, and failure paths that strand reservations. Test changes with representative candidates and edge cases. State it as a reminder only — tests/ is excluded from this review, so never claim a test is present or absent, and never infer absence from not having seen it."
     },
     {
       "path": "gpustack/worker/**/*.py",
