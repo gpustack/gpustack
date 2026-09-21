@@ -1,6 +1,7 @@
 import inspect
 
 import asyncpg
+import pytest
 from sqlalchemy.dialects.postgresql import asyncpg as sa_asyncpg
 from sqlalchemy.engine import make_url
 
@@ -51,6 +52,45 @@ def test_multi_host_dsn_reaches_the_driver_as_a_host_list():
     assert kwargs["host"] == ["db-a.example.com", "db-b.example.com"]
     assert kwargs["port"] == [5432, 5433]
     assert kwargs["target_session_attrs"] == "read-write"
+
+
+def test_repeated_host_tokens_reach_the_driver_as_a_host_list():
+    """host=<host>:<port> repeated is the multihost spelling SQLAlchemy
+    documents for its asyncpg dialect, and the dialect is what reads the list,
+    so every value has to survive the rewrite.
+    """
+    kwargs = effective_asyncpg_kwargs(
+        *build_postgres_connect_args(
+            f"{BASE_URL}?host=db-a.example.com:5432&host=db-b.example.com:5433",
+            opengauss=False,
+        )
+    )
+    assert kwargs["host"] == ["db-a.example.com", "db-b.example.com"]
+    assert kwargs["port"] == [5432, 5433]
+
+
+@pytest.mark.parametrize(
+    "query, asyncpg_name, expected",
+    [
+        (
+            "target_session_attrs=read-write&target_session_attrs=any",
+            "target_session_attrs",
+            "any",
+        ),
+        ("sslmode=require&sslmode=disable", "ssl", "disable"),
+    ],
+)
+def test_repeated_parameter_reaches_the_driver_as_its_last_value(
+    query, asyncpg_name, expected
+):
+    """SQLAlchemy hands a repeated query key to the driver as a tuple, which
+    asyncpg rejects at connect time. The last value wins, as it does in
+    asyncpg's own DSN parser.
+    """
+    kwargs = effective_asyncpg_kwargs(
+        *build_postgres_connect_args(f"{BASE_URL}?{query}", opengauss=False)
+    )
+    assert kwargs[asyncpg_name] == expected
 
 
 def test_sslmode_is_translated_to_the_name_asyncpg_accepts():

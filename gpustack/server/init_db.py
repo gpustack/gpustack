@@ -92,6 +92,13 @@ ASYNCPG_TYPED_PARAMS = {
     "timeout": float,
 }
 
+# Query parameters SQLAlchemy's asyncpg dialect reads as a list: repeating
+# host=<host>:<port> is the multihost spelling its documentation uses. Every
+# other parameter names one setting, and a repeated one would reach
+# asyncpg.connect() as a tuple it rejects, so only its last value is kept, as
+# asyncpg's own DSN parser does.
+MULTI_VALUE_URL_PARAMS = {"host", "port"}
+
 # Spellings libpq accepts for a boolean connection parameter.
 BOOLEAN_PARAM_VALUES = {
     "1": True,
@@ -283,7 +290,10 @@ def build_postgres_connect_args(
     """
     db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
     parsed = urlparse(db_url)
-    query_params = parse_qs(parsed.query, keep_blank_values=True)
+    query_params: Dict[str, List[str]] = {
+        name: values if name in MULTI_VALUE_URL_PARAMS else values[-1:]
+        for name, values in parse_qs(parsed.query, keep_blank_values=True).items()
+    }
 
     server_settings = _pop_server_settings(query_params, opengauss)
 
