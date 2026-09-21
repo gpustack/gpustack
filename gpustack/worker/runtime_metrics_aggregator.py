@@ -64,6 +64,24 @@ class RuntimeMetricsAggregator:
         # Cache for metrics config (refresh every 300 seconds)
         self._metrics_config_cache = TTLCache(maxsize=1, ttl=300)
 
+        # Failures already reported, so a persistent one is not logged every pass.
+        self._warned = set()
+
+    def _warn_once(self, key, message: str):
+        """
+        Warn the first time a failure shows up and stay quiet while it persists.
+
+        Aggregation runs every few seconds, so warning unconditionally would
+        repeat the same line hundreds of times an hour for a single bad family.
+        The key is cleared once that family or endpoint succeeds again, so a
+        failure that comes back is reported afresh.
+        """
+        if key in self._warned:
+            logger.debug(message, exc_info=True)
+            return
+        self._warned.add(key)
+        logger.warning(message, exc_info=logger.isEnabledFor(logging.DEBUG))
+
     def aggregate(self):
         """
         Fetch metrics from all model instances, normalize and aggregate both unified and raw metrics, and write results to cache.
@@ -117,12 +135,12 @@ class RuntimeMetricsAggregator:
                     raw_metrics,
                     metrics_config,
                 )
+                self._warned.discard(("endpoint", ep))
             except Exception as e:
                 # Keep one endpoint from discarding the metrics collected from
                 # the others on this worker.
-                logger.warning(
-                    f"Skipping metrics from endpoint {ep}: {e}",
-                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                self._warn_once(
+                    ("endpoint", ep), f"Skipping metrics from endpoint {ep}: {e}"
                 )
 
         self._cache["unified"] = unified_metrics
@@ -230,7 +248,9 @@ class RuntimeMetricsAggregator:
         """
         Process metrics for a single endpoint, aggregate to unified and raw.
         """
+        instance_id = base_labels.get("model_instance_id", "")
         for source_family_name, family in metrics.items():
+            warn_key = ("family", instance_id, source_family_name)
             try:
                 self._process_metric_family(
                     source_family_name,
@@ -242,12 +262,12 @@ class RuntimeMetricsAggregator:
                     raw_metrics,
                     metrics_config,
                 )
+                self._warned.discard(warn_key)
             except Exception as e:
                 # Keep a single unsupported family from discarding every metric
                 # collected on this worker.
-                logger.warning(
-                    f"Skipping metric family {source_family_name}: {e}",
-                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                self._warn_once(
+                    warn_key, f"Skipping metric family {source_family_name}: {e}"
                 )
 
     def _process_metric_family(
@@ -304,7 +324,22 @@ class RuntimeMetricsAggregator:
                     )
                 unified_family = unified_metrics[unified_metric_family_name]
 
+        # OpenMetrics keeps a counter's _created sample inside the family, where
+        # the Prometheus text parser splits it off into one of its own. add_metric
+        # appends the type's suffix itself, so handing it a _created sample emits
+        # a second _total series carrying a creation timestamp under the same
+        # labels, and Prometheus rejects an entire scrape over such a duplicate.
+        value_sample_names = {source_family_name}
+        if family.type == "counter":
+            value_sample_names.add(f"{source_family_name}_total")
+
         for sample in family.samples:
+            if (
+                family.type not in ("histogram", "summary")
+                and sample.name not in value_sample_names
+            ):
+                continue
+
             label_values = [
                 (
                     base_labels.get(k, sample.labels.get(k, ""))
