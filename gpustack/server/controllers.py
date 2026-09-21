@@ -1823,9 +1823,10 @@ async def sync_model_ai_proxy(
 
     The route reference read is an EXISTENCE gate only: no live target
     means no rule (and the provider goes unreferenced); one target or
-    many, aliased or not, produce the identical rule. The referencing
-    routes' legacy per-route provider ids ride the owned set, so an
-    upgrade retires them with the same write.
+    many, aliased or not, produce the identical rule. Legacy per-route
+    entries never ride this write — the startup cleanup pass retires
+    them wholesale, which trades a bounded upgrade window for the
+    absence of retirement races between sibling deployments.
 
     The caller is the Model controller: model and instance events own
     the ai-proxy CR, and route CRUD enqueues the affected models when a
@@ -1835,17 +1836,17 @@ async def sync_model_ai_proxy(
 
     group: Optional[mcp_handler.ModelAIProxyGroup] = None
     model = await Model.one_by_id(session, model_id)
+    targets = await ModelRouteTarget.all_by_field(session, "model_id", model_id)
+    live_targets = [
+        target
+        for target in targets
+        if target.deleted_at is None and target.state == TargetStateEnum.ACTIVE
+    ]
+    # The legacy per-route ids are retired wholesale by the startup
+    # cleanup pass (see cleanup_ai_proxy_config); retiring them here
+    # instead would race sibling deployments' reconciles on shared
+    # routes.
     if model is not None and model.deleted_at is None:
-        targets = await ModelRouteTarget.all_by_field(session, "model_id", model_id)
-        live_targets = [
-            target
-            for target in targets
-            if target.deleted_at is None and target.state == TargetStateEnum.ACTIVE
-        ]
-        owned_provider_ids.update(
-            mcp_handler.legacy_model_route_provider_id(target.route_id)
-            for target in live_targets
-        )
         if live_targets:
             destinations = await calculate_model_destinations(session, model)
             if destinations:
@@ -3776,6 +3777,21 @@ class ClusterController:
             raise
 
 
+def _changed_scalar(value: Any) -> Any:
+    """Normalize a ``changed_fields`` scalar side to its plain value.
+
+    The two producers of change events store different shapes for a
+    scalar column: the local ``find_history`` path records
+    ``(hist.deleted, hist.added)`` — sequences that are empty on the
+    None side of a None↔value transition — while the cross-instance
+    ``detect_changes`` path records a flat ``(old, new)``. Both
+    collapse to the scalar (None included).
+    """
+    if isinstance(value, (tuple, list)):
+        return value[0] if value else None
+    return value
+
+
 async def notify_model_ai_proxy_change(
     session: AsyncSession, model_ids: "Set[int]"
 ) -> None:
@@ -3872,7 +3888,12 @@ async def sync_categories_and_meta(session: AsyncSession, model: Model, event: E
         if route.created_model_id is None:
             continue
         merged_meta = {
-            **(model.meta or {}),
+            # A plugin-named key in model.meta is ordinary user data,
+            # not plugin state — it must not be able to forge or
+            # resurrect plugin-owned keys on the route row.
+            **{
+                k: v for k, v in (model.meta or {}).items() if k not in plugin_meta_keys
+            },
             **{k: v for k, v in (route.meta or {}).items() if k in plugin_meta_keys},
         }
         if route.categories != model.categories or route.meta != merged_meta:
@@ -4126,7 +4147,11 @@ class ModelRouteTargetController:
                 if "model_id" in changed:
                     old_model_id, new_model_id = changed["model_id"]
                     await notify_model_ai_proxy_change(
-                        session, {old_model_id, new_model_id}
+                        session,
+                        {
+                            _changed_scalar(old_model_id),
+                            _changed_scalar(new_model_id),
+                        },
                     )
         except Exception as e:
             logger.error(f"Failed to notify model route for target {target.name}: {e}")

@@ -29,8 +29,10 @@ points, and a plugin that fits them needs no changes in this package:
 Two rules keep plugins from stepping on each other, and the framework
 does not enforce them — it cannot:
 
-* A plugin's tables must be named ``model_route_plugin_<name>_…`` so
-  two plugins cannot collide on a table.
+* A built-in capability plugin stores its policy in the shared
+  ``model_route_capability_policies`` table (one row per capability +
+  route); a plugin shipping its own table must name it
+  ``model_route_plugin_<name>_…`` so two plugins cannot collide.
 * A plugin patches only the Envoy route fields it owns. Two plugins
   wanting the same field is a design error in one of them; there is no
   arbitration here.

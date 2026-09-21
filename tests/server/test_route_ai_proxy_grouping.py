@@ -132,13 +132,9 @@ async def test_lora_names_never_enter_the_rule(monkeypatch):
     (rule,) = captured["kwargs"]["expected_match_rules"]
     assert rule.config["activeProviderId"] == "gpustack-model-5"
     assert set(rule.service) == {"model-5-1.static"}
-    # the referencing routes' legacy per-route ids retire with this write
-    assert captured["kwargs"]["owned_provider_ids"] == {
-        "gpustack-model-5",
-        "ai-route-route-1",
-        "ai-route-route-2",
-        "ai-route-route-3",
-    }
+    # legacy per-route ids never ride this write — the startup cleanup
+    # pass owns their retirement
+    assert captured["kwargs"]["owned_provider_ids"] == {"gpustack-model-5"}
     (provider,) = captured["kwargs"]["expected_providers"]
     assert provider["apiTokens"] == ["cluster-token"]
 

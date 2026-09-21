@@ -78,8 +78,8 @@ provider_id_prefix = "provider-"
 model_id_prefix = "model-"
 # AI proxy provider id prefix for self-hosted deployments. One provider per
 # Model (deployment), shared by every ModelRoute pointing at it. Supersedes the
-# per-route ``ai-route-route-<route_id>`` ids, which a route retires itself when
-# it reconciles (see ``legacy_model_route_provider_id``).
+# per-route ``ai-route-route-<route_id>`` ids, which the startup cleanup pass
+# retires wholesale.
 model_ai_proxy_provider_prefix = "gpustack-model-"
 # Legacy per-route provider ids happen to reuse the route ingress prefix — alias
 # it so call sites read as provider ids rather than as ingress names.
@@ -280,11 +280,8 @@ def model_ai_proxy_provider_id(model_id: int) -> str:
 def legacy_model_route_provider_id(model_route_id: int) -> str:
     """AI proxy provider id written by versions that keyed providers per route.
 
-    Superseded by ``model_ai_proxy_provider_id``. A route drops its own legacy
-    entry when it reconciles — the legacy rule carries the same ingress the
-    reconcile owns, and the provider is then garbage collected as unreferenced —
-    so migration happens in one CR write per route, never leaving a route
-    without a provider.
+    Superseded by ``model_ai_proxy_provider_id`` and retired wholesale by the
+    startup cleanup pass (see cleanup_ai_proxy_config).
     """
     return f"{legacy_model_route_provider_prefix}{model_route_id}"
 
@@ -1158,6 +1155,11 @@ async def ensure_wasm_plugin(
             raise
     current_spec = getattr(current_plugin, 'spec', None)
     expected = spec_diff(copy.deepcopy(current_spec))
+    if expected is None:
+        # No owner can author this CR's spec (e.g. a capability whose
+        # module is unavailable): an absent CR stays absent rather than
+        # being created with an empty spec.
+        return
     if current_plugin is None:
         wasm_plugin_body = WasmPlugin(
             metadata={
@@ -1687,30 +1689,24 @@ def compare_and_append_proxy_match_rules(
 async def cleanup_ai_proxy_config(
     providers: List[ModelProvider],
     models: List[Model],
-    routes: List[ModelRoute],
     k8s_config: k8s_client.Configuration,
     namespace: str,
 ):
     """Prune the ai-proxy CR at startup, before the controllers replay routes.
 
-    Kept: one entry per live external provider, one per live deployment, and
-    the legacy per-route entry of every live route. Legacy entries are
-    deliberately *not* pruned here: each route retires its own when it
-    reconciles, in the same write that adds the deployment entry replacing it,
-    so no route is ever left without a provider. Pruning them here would open a
-    window between this pass and the route replay — which only starts after
-    leader election.
-
-    Dropped: everything whose route, deployment or provider no longer exists —
-    the case this pass exists for, since nothing will reconcile those. Retention
-    is judged by provider id alone: rules are per provider (per deployment or
-    per external provider), and a rule a deleted route left behind on a live
-    deployment is inert — no route leads traffic to those services — and
-    retires with the deployment.
+    Kept: one entry per live external provider and one per live
+    deployment. Dropped: everything else — including every legacy
+    per-route entry. Running this pass at all means control is already
+    on this server version, which writes per-deployment entries only;
+    the legacy entries are retired here in one deterministic write
+    rather than racing per-route retirements against sibling
+    reconciles. The accepted cost is the window until the replay writes
+    each deployment's own entry — bounded by the upgrade's own
+    recovery time, since a deployment whose instances are still
+    restarting has no traffic to authorize anyway.
     """
     ids_to_keep = {model_ai_proxy_provider_id(model.id) for model in models}
     ids_to_keep.update({provider_registry_name(provider.id) for provider in providers})
-    ids_to_keep.update({legacy_model_route_provider_id(route.id) for route in routes})
 
     def should_keep_rule(
         rule: WasmPluginMatchRule, kept_provider_ids: Set[str]

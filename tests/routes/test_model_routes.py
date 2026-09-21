@@ -26,6 +26,7 @@ from gpustack.schemas.model_routes import (
     ModelRoutesPublic,
     ModelRouteTarget,
     ModelRouteTargetUpdateItem,
+    ModelRouteUpdate,
     MyModel,
     TargetStateEnum,
 )
@@ -940,6 +941,98 @@ async def test_update_targets_provider_to_model_clears_provider_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_update_model_route_notifies_created_model_targets(monkeypatch):
+    # batch_handle_targets creates new targets on PUT; creation carries
+    # no UPDATED event of its own, so the handler must enqueue the
+    # ai-proxy reconcile for the created model-backed entries after the
+    # commit — same as the create and add-targets paths.
+    route = SimpleNamespace(
+        id=1,
+        name="r1",
+        targets=1,
+        owner_principal_id=None,
+        deleted_at=None,
+        meta=None,
+    )
+    notify_ai_proxy = AsyncMock()
+    monkeypatch.setattr(model_routes, "notify_model_ai_proxy_change", notify_ai_proxy)
+    monkeypatch.setattr(model_routes, "assert_resource_visible", lambda *a, **k: None)
+    monkeypatch.setattr(
+        model_routes, "revoke_model_access_cache", AsyncMock(return_value=None)
+    )
+
+    async def fake_one_by_fields(session, fields, **kw):
+        return None
+
+    async def fake_one_by_id(session=None, id=None, **kw):
+        return route
+
+    async def fake_batch_handle_targets(**kw):
+        return 2, []
+
+    async def fake_dispatch(action, route_, plugins, session):
+        return None
+
+    monkeypatch.setattr(ModelRoute, "one_by_fields", fake_one_by_fields)
+    monkeypatch.setattr(ModelRoute, "one_by_id", fake_one_by_id)
+    monkeypatch.setattr(model_routes, "batch_handle_targets", fake_batch_handle_targets)
+    monkeypatch.setattr(model_routes, "dispatch_route_hooks", fake_dispatch)
+    monkeypatch.setattr(
+        model_routes.ModelRouteService, "update", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        model_routes, "_route_with_fresh_lb_mode", AsyncMock(return_value=route)
+    )
+
+    result = await model_routes.update_model_route(
+        id=1,
+        session=MagicMock(commit=AsyncMock()),
+        ctx=MagicMock(),
+        input=ModelRouteUpdate(
+            name="r1",
+            targets=[
+                ModelRouteTargetUpdateItem(id=1, model_id=5, weight=2),
+                ModelRouteTargetUpdateItem(model_id=6, weight=1),
+            ],
+        ),
+    )
+    assert result is route
+    # the created entry (no id) is the only one notified
+    called = notify_ai_proxy.await_args
+    assert called.args[1] == {6}
+
+
+def test_apply_route_lb_mode_keeps_user_meta_and_strips_plugin_keys():
+    # The list response hoists lb_mode but must not drop the user-owned
+    # meta keys (the column existed on the list endpoint before); only
+    # the plugin-owned keys are hidden, same contract as the detail
+    # path.
+    item = SimpleNamespace(
+        meta={"lb": {"enabled": True}, "note": "user", "lb_mode": "weighted"}
+    )
+    model_routes._apply_route_lb_mode([item])
+    assert item.lb_mode == "weighted"
+    assert item.meta == {"note": "user"}
+
+
+def test_merge_meta_update_preserves_plugin_keys_and_clears():
+    # An explicit meta update — even a None "clear everything" — keeps
+    # the plugin-owned keys from the stored row (responses hide them, so
+    # a round-tripped or clearing request cannot delete a policy); the
+    # derived lb_mode never reaches the row.
+    existing = {"lb": {"enabled": True}, "note": "old", "lb_mode": "weighted"}
+    assert model_routes._merge_meta_update(existing, {"note": "new"}) == {
+        "note": "new",
+        "lb": {"enabled": True},
+    }
+    assert model_routes._merge_meta_update(existing, None) == {"lb": {"enabled": True}}
+    assert model_routes._merge_meta_update(None, {"lb_mode": "weighted"}) == {}
+    assert model_routes._merge_meta_update(None, {"lb_mode": "scoring", "a": 1}) == {
+        "a": 1
+    }
+
+
+@pytest.mark.asyncio
 async def test_update_targets_noop_does_not_write(monkeypatch):
     # Re-sending the same values must not trigger a spurious update/state reset.
     captured = _capture_target_updates(monkeypatch)
@@ -1115,6 +1208,8 @@ async def test_add_targets_refreshes_real_targets_only(monkeypatch):
         state=TargetStateEnum.ACTIVE,
     )
     _capture_target_updates(monkeypatch)
+    notify_ai_proxy = AsyncMock()
+    monkeypatch.setattr(model_routes, "notify_model_ai_proxy_change", notify_ai_proxy)
     session = MagicMock(commit=AsyncMock(), refresh=AsyncMock())
 
     async def fake_all_by_field(**kwargs):
@@ -1152,3 +1247,7 @@ async def test_add_targets_refreshes_real_targets_only(monkeypatch):
 
     assert result == [existing, created]
     assert session.refresh.await_args_list == [call(existing), call(created)]
+    # Target creation carries no UPDATED event of its own, so the
+    # handler enqueues the ai-proxy reconcile for the created
+    # model-backed entries only (the id=1 entry is an update).
+    notify_ai_proxy.assert_awaited_once_with(session, {6})

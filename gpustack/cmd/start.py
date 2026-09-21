@@ -284,9 +284,10 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         help=(
             "Redis URL used by features that need shared, fast state "
             "(e.g. the LB gateway plugin's shared-state backend). "
-            "Format: redis://[[user]:[pass]@]host[:port][/db]. "
-            "TLS (rediss://) is not supported: the LB plugin's redis "
-            "client has no TLS knob."
+            "Format: redis://host[:port][/db]. No credentials "
+            "(they would be materialized in the gateway CR) and no "
+            "TLS (rediss://): the LB plugin's redis client has no "
+            "TLS knob."
         ),
         default=get_gpustack_env("REDIS_URL"),
     )

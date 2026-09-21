@@ -482,6 +482,77 @@ def _drop_derived_meta_keys(meta: Optional[Dict[str, Any]]) -> Optional[Dict[str
     return {k: v for k, v in meta.items() if k != LB_MODE_META_KEY}
 
 
+def _merge_meta_update(
+    existing_meta: Optional[Dict[str, Any]], input_meta: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """The meta an explicit update writes: the client's keys (derived
+    ones dropped, None meaning "clear"), with plugin-owned keys carried
+    over from the stored row. Responses hide plugin-owned meta keys (see
+    _strip_plugin_meta_keys), so a client round-tripping a response or
+    editing unrelated metadata sends a meta without them — deleting a
+    policy is expressed through the plugins section, never through
+    meta."""
+    from gpustack.routes.plugins import route_plugins
+
+    cleaned = _drop_derived_meta_keys(input_meta) or {}
+    reserved = {p.name for p in route_plugins()}
+    preserved = {k: v for k, v in (existing_meta or {}).items() if k in reserved}
+    return {**cleaned, **preserved}
+
+
+async def _dispatch_route_hooks_or_400(
+    session: AsyncSession, action: str, route: ModelRoute, sections: Any
+) -> None:
+    """Dispatch the route-plugin hooks; a ValueError raised on the way
+    (pydantic ValidationError subclasses it, and _section_for's shape
+    check raises it) means the plugins section is client input — answer
+    400 rather than letting it surface as a 500 from the handler's
+    generic wrapper."""
+    try:
+        await dispatch_route_hooks(action, route, sections, session)
+    except ValueError as e:
+        await session.rollback()
+        raise InvalidException(
+            f"Invalid plugins section for ModelRoute '{route.name}': {e}"
+        )
+
+
+async def _dispatch_target_hooks_or_400(
+    session: AsyncSession, action: str, target: ModelRouteTarget, sections: Any
+) -> None:
+    """The target-level twin of _dispatch_route_hooks_or_400: a plugin
+    section that fails validation answers 400 instead of surfacing as a
+    500 from the handler's generic wrapper (or, on the add-targets path
+    where the batch runs before the handler's try, as an unhandled
+    exception)."""
+    try:
+        await dispatch_target_hooks(action, target, sections, session)
+    except ValueError as e:
+        await session.rollback()
+        raise InvalidException(
+            f"Invalid plugins section for target '{target.name}': {e}"
+        )
+
+
+async def _notify_ai_proxy_models(session: AsyncSession, model_ids: set) -> None:
+    """Enqueue the ai-proxy reconcile for models whose routes changed.
+
+    Always called AFTER the surrounding write committed, so a failure
+    here must degrade to the next Model event rather than surface as a
+    500 — the client would retry a write that actually succeeded (a
+    retried create then hits AlreadyExists)."""
+    if not model_ids:
+        return
+    try:
+        await notify_model_ai_proxy_change(session, model_ids)
+    except Exception:
+        logger.exception(
+            "Failed to enqueue the ai-proxy reconcile for models %s; "
+            "the write is committed and the next Model event reconciles",
+            sorted(model_ids),
+        )
+
+
 async def _refresh_route_lb_mode(session: AsyncSession, route_id: int) -> None:
     """Synchronously re-derive ``meta["lb_mode"]`` after a write
     commits. The API write path is the primary refresh point — the
@@ -499,6 +570,18 @@ async def _refresh_route_lb_mode(session: AsyncSession, route_id: int) -> None:
         if route is not None:
             await lb_plugin.refresh_lb_mode(route, session)
     except Exception:
+        # A DB error mid-refresh leaves the session in a failed state;
+        # without the rollback every subsequent use of the same session
+        # by the caller (the fresh read, target refreshes) would raise
+        # PendingRollbackError and turn the already-committed write
+        # into a 500.
+        try:
+            await session.rollback()
+        except Exception:
+            logger.exception(
+                "Rollback failed while recovering the lb_mode refresh for " "route %s",
+                route_id,
+            )
         logger.exception(
             "Failed to refresh lb_mode for route %s after write; "
             "the reconcile will retry",
@@ -508,21 +591,35 @@ async def _refresh_route_lb_mode(session: AsyncSession, route_id: int) -> None:
 
 async def _route_with_fresh_lb_mode(session: AsyncSession, route_id: int) -> ModelRoute:
     """Re-read the route for a write response with ``meta["lb_mode"]``
-    already refreshed."""
+    already refreshed and the same plugin strip/enrich the read path
+    applies, so a client round-tripping the response cannot echo the
+    derived storage keys back into the store."""
     await _refresh_route_lb_mode(session, route_id)
-    return await ModelRoute.one_by_id(session=session, id=route_id)
+    route = await ModelRoute.one_by_id(session=session, id=route_id)
+    if route is not None:
+        await _apply_route_plugin_sections(session, [route])
+        _strip_plugin_meta_keys([route])
+    return route
 
 
 def _apply_route_lb_mode(items: List[Any]) -> None:
     """Top-level ``lb_mode`` for list rows, read straight from the
     passively-derived ``meta`` copy (written by the lb plugin's
-    reconcile — see refresh_lb_mode), plus the meta drop (a browse view
-    shows neither plugin storage nor the row's grab-bag column).
-    Written through ``__dict__`` to keep the instances clean of
-    column-level dirt."""
+    reconcile — see refresh_lb_mode). The meta itself keeps its
+    user-owned keys with the plugin-owned ones stripped — the same
+    contract as the detail path, so a list response is not a breaking
+    change for clients that read route metadata from it. Written
+    through ``__dict__`` to keep the instances clean of column-level
+    dirt."""
     for item in items:
         item.__dict__["lb_mode"] = (item.meta or {}).get(LB_MODE_META_KEY)
-        item.__dict__["meta"] = None
+    _strip_plugin_meta_keys(items)
+    for item in items:
+        # the derived key is hidden alongside the plugin-owned ones —
+        # it is exposed as the top-level lb_mode above
+        meta = item.__dict__.get("meta")
+        if meta:
+            item.__dict__["meta"] = _drop_derived_meta_keys(meta)
 
 
 def _strip_plugin_meta_keys(items: List[Any]) -> None:
@@ -750,12 +847,25 @@ async def create_model_route(
                     principal_id=owner_org_id,
                 )
             )
-        await dispatch_route_hooks("create", route, input.plugins, session)
+        await _dispatch_route_hooks_or_400(session, "create", route, input.plugins)
         await session.commit()
+        # Target creation is the one write path with no UPDATED event of
+        # its own (_notify_parents returns early on CREATED), so enqueue
+        # the ai-proxy reconcile for the created model targets here.
+        created_model_ids = {t.model_id for t in targets if t.model_id is not None}
+        await _notify_ai_proxy_models(session, created_model_ids)
         await _refresh_route_lb_mode(session, route.id)
         await session.refresh(route)
+        # Same response shape as the read path: plugin sections added,
+        # plugin-owned meta keys hidden.
+        await _apply_route_plugin_sections(session, [route])
+        _strip_plugin_meta_keys([route])
         await revoke_model_access_cache(session=session)
         return route
+    except InvalidException:
+        # the plugin-section 400 from _dispatch_route_hooks_or_400,
+        # already rolled back there
+        raise
     except Exception as e:
         await session.rollback()
         raise InternalServerErrorException(
@@ -806,7 +916,7 @@ async def update_model_route(
         exclude={"targets", "plugins"}, include=input.model_fields_set
     )
     if "meta" in input_data:
-        input_data["meta"] = _drop_derived_meta_keys(input_data["meta"])
+        input_data["meta"] = _merge_meta_update(existing.meta, input_data["meta"])
     try:
         if input.targets is not None or input.name != existing.name:
             target_count, _ = await batch_handle_targets(
@@ -822,10 +932,25 @@ async def update_model_route(
         await ModelRouteService(session).update(
             existing, source=input_data, auto_commit=False
         )
-        await dispatch_route_hooks("update", existing, input.plugins, session)
+        await _dispatch_route_hooks_or_400(session, "update", existing, input.plugins)
         await session.commit()
+        # batch_handle_targets creates new targets here too, and target
+        # creation carries no UPDATED event of its own — same notify as
+        # the create and add-targets paths (entries with no id are the
+        # creates in this batch).
+        if input.targets is not None:
+            created_model_ids = {
+                t.model_id
+                for t in input.targets
+                if t.id is None and t.model_id is not None
+            }
+            await _notify_ai_proxy_models(session, created_model_ids)
         if existing_name != input_name:
             await revoke_model_access_cache(session=session)
+    except InvalidException:
+        # the plugin-section 400 from _dispatch_route_hooks_or_400,
+        # already rolled back there
+        raise
     except Exception as e:
         raise InternalServerErrorException(f"Failed to update ModelRoute '{id}': {e}")
     return await _route_with_fresh_lb_mode(session, id)
@@ -864,7 +989,7 @@ async def delete_model_route(
             if target.model_id is not None
         }
         await ModelRouteService(session).delete(existing)
-        await notify_model_ai_proxy_change(session, deleted_model_ids)
+        await _notify_ai_proxy_models(session, deleted_model_ids)
     except Exception as e:
         raise InternalServerErrorException(f"Failed to delete ModelRoute '{id}': {e}")
 
@@ -918,6 +1043,13 @@ async def add_model_route_targets(
         route.targets = target_count
         await ModelRouteService(session=session).update(route, auto_commit=True)
         await session.commit()
+        # New targets carry no UPDATED event of their own; enqueue the
+        # ai-proxy reconcile for the created model targets (entries with
+        # no id are the creates in this batch).
+        created_model_ids = {
+            t.model_id for t in targets if t.id is None and t.model_id is not None
+        }
+        await _notify_ai_proxy_models(session, created_model_ids)
         await _refresh_route_lb_mode(session, id)
         for target in touched_targets:
             await session.refresh(target)
@@ -1001,6 +1133,10 @@ async def batch_handle_targets(
             auto_commit=auto_commit,
         )
         targets_to_return.extend(created_targets)
+    except InvalidException:
+        # a plugin-section 400 from the target hook dispatch — already
+        # rolled back there
+        raise
     except Exception as e:
         raise InternalServerErrorException(
             f"Failed to batch handle ModelRouteTargets: {e}"
@@ -1103,8 +1239,8 @@ async def update_model_route_targets(
             )
             targets_to_return.append(existing_target)
         if input_target is not None:
-            await dispatch_target_hooks(
-                "update", existing_target, input_target.plugins, session
+            await _dispatch_target_hooks_or_400(
+                session, "update", existing_target, input_target.plugins
             )
 
     return targets_to_return
@@ -1134,7 +1270,9 @@ async def create_model_route_targets(
         route_target: ModelRouteTarget = await ModelRouteTarget.create(
             session=session, source=route_target, auto_commit=auto_commit
         )
-        await dispatch_target_hooks("create", route_target, target.plugins, session)
+        await _dispatch_target_hooks_or_400(
+            session, "create", route_target, target.plugins
+        )
         created_targets.append(route_target)
     if auto_commit:
         await session.commit()
@@ -1338,7 +1476,8 @@ async def update_model_route_target(
         )
     await _refresh_route_lb_mode(session, existing.route_id)
     result = await ModelRouteTarget.one_by_id(session=session, id=id)
-    await _apply_target_plugin_sections(session, [result])
+    if result is not None:
+        await _apply_target_plugin_sections(session, [result])
     return result
 
 
@@ -1413,7 +1552,12 @@ async def set_fallback_target(
         raise InternalServerErrorException(
             f"Failed to set fallback status codes for ModelRouteTarget '{id}': {e}"
         )
-    return await ModelRouteTarget.one_by_id(session=session, id=id)
+    target = await ModelRouteTarget.one_by_id(session=session, id=id)
+    # Same response shape as the other target endpoints: any plugin
+    # owning a target section is represented in the response.
+    if target is not None:
+        await _apply_target_plugin_sections(session, [target])
+    return target
 
 
 async def _list_route_users(session, route_id: int) -> List[ModelUserAccessExtended]:

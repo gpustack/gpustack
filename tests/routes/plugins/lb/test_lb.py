@@ -20,22 +20,26 @@ class TestLBPolicyConfig:
         config = LBPolicyConfig.model_validate({})
         assert config.enabled is True
 
-    def test_gateway_default_config(self):
+    def test_gateway_rule_config(self):
         config = LBPolicyConfig.model_validate(
             {
                 "health": {"fail_open": False, "unhealthy_threshold": 3},
                 "reject": {"status": 503, "message": "busy"},
+                "max_body_bytes": 4096,
             }
         )
-        gateway = config.to_gateway_default()
-        assert gateway["mode"] == "finisher"
-        assert gateway["health"] == {
-            "failOpen": False,
-            "unhealthyThreshold": 3,
-            "cooldownMs": None,
-            "rampMs": None,
+        rule = config.to_gateway_rule()
+        # mode is role-level and never rides a per-route rule
+        assert "mode" not in rule
+        # unset health knobs are omitted, not sent as explicit nulls:
+        # an absent key keeps the plugin's compiled-in default
+        assert rule["health"] == {"failOpen": False, "unhealthyThreshold": 3}
+        assert rule["reject"] == {"status": 503, "message": "busy"}
+        assert rule["maxBodyBytes"] == 4096
+        # an all-defaults policy contributes only the reject response
+        assert LBPolicyConfig.model_validate({}).to_gateway_rule() == {
+            "reject": {"status": 503, "message": "no healthy model instance available"}
         }
-        assert gateway["reject"] == {"status": 503, "message": "busy"}
 
 
 class TestBuildCandidate:
@@ -44,19 +48,38 @@ class TestBuildCandidate:
         # switch; 0 means "unset" here, matching the column default.
         for weight in (None, 0):
             candidate = _build_candidate(
-                "model-1-1.static", 1, "instance", "m", weight, None
+                "outbound|80||model-1-1.static", 1, "instance", "m", weight, None
             )
             assert "weight" not in candidate
         assert (
-            _build_candidate("model-1-1.static", 1, "instance", "m", 70, None)["weight"]
+            _build_candidate(
+                "outbound|80||model-1-1.static", 1, "instance", "m", 70, None
+            )["weight"]
             == 70
         )
 
-    def test_cluster_is_full_envoy_name(self):
-        candidate = _build_candidate("model-1-1.static", 2, "instance", "m", None, 8)
+    def test_cluster_is_carried_verbatim(self):
+        candidate = _build_candidate(
+            "outbound|80||model-1-1.static", 2, "instance", "m", None, 8
+        )
         assert candidate["cluster"] == "outbound|80||model-1-1.static"
         assert candidate["targetId"] == "2"
         assert candidate["maxRunningRequests"] == 8
+
+    def test_cluster_name_uses_the_registrys_real_port(self):
+        from types import SimpleNamespace
+
+        from gpustack.routes.plugins.lb.reconciler import candidate_cluster_name
+
+        # A DNS-typed instance registry (worker hostname, real port) or
+        # an https provider registry (443) must carry its port into the
+        # cluster name; only a portless registry falls back to 80.
+        dns = SimpleNamespace(port=8080, get_service_name=lambda: "worker-a.dns")
+        assert candidate_cluster_name(dns) == "outbound|8080||worker-a.dns"
+        https = SimpleNamespace(port=443, get_service_name=lambda: "p.dns")
+        assert candidate_cluster_name(https) == "outbound|443||p.dns"
+        portless = SimpleNamespace(port=None, get_service_name=lambda: "s.static")
+        assert candidate_cluster_name(portless) == "outbound|80||s.static"
 
 
 class TestSyncModelRouteLb:
@@ -73,6 +96,12 @@ class TestSyncModelRouteLb:
 
         class _Cfg:
             gateway_namespace = "ns"
+            gateway_plugin = {}
+            gateway_plugin_server_url = None
+            # non-embedded keeps use_local_plugin_modules() off the
+            # filesystem, so plugin_spec_overrides resolves purely from
+            # the (empty) operator overrides.
+            gateway_mode = "external"
 
             def get_namespace(self):
                 return "ns"
@@ -120,6 +149,25 @@ class TestSyncModelRouteLb:
         assert updates[0].rules[0].config["candidates"] == [{"cluster": "c"}]
         assert updates[0].create_base is None  # missing CR is not recreated
         assert filters == [True]
+
+    def test_policy_knobs_ride_the_rendered_rule(self, monkeypatch):
+        # health/reject/maxBodyBytes reach the gateway through the same
+        # matchRule as the candidates — a Higress rule config overrides
+        # the CR defaultConfig, so the knobs take effect per route.
+        collector, _ = self._run(
+            monkeypatch,
+            rendered=True,
+            meta={
+                "lb": {
+                    "health": {"unhealthy_threshold": 3},
+                    "reject": {"status": 503, "message": "busy"},
+                }
+            },
+        )
+        config = self._updates(collector)[0].rules[0].config
+        assert config["candidates"] == [{"cluster": "c"}]
+        assert config["health"] == {"unhealthyThreshold": 3}
+        assert config["reject"] == {"status": 503, "message": "busy"}
 
     def test_unusable_route_declares_strip(self, monkeypatch):
         collector, filters = self._run(monkeypatch, rendered=False)
@@ -178,14 +226,28 @@ class TestEnvoyFilter:
 
 
 class TestGatewayEntriesDegrade:
-    def test_unknown_module_degrades_to_empty(self, monkeypatch):
+    def test_unknown_module_degrades_to_plain_mapper(self, monkeypatch):
         # A manifest that does not know gpustack-lb (dependency older
-        # than the version packaging it) must not crash server startup.
+        # than the version packaging it) must not crash server startup,
+        # and the plain model-mapper CR must still be published so
+        # model-name rewrite keeps working on non-LB routes.
+        from gpustack.routes.plugins.lb.gateway import (
+            LB_CONTEXT_CR_NAME,
+            lb_gateway_entries,
+        )
         import gpustack.gateway.plugins as plugins_module
-        from gpustack.routes.plugins.lb.gateway import lb_gateway_entries
 
         monkeypatch.setattr(plugins_module, "supported_plugins", [])
         assert lb_gateway_entries(None) == []
+
+        mapper_only = [
+            plugins_module.HigressPlugin(name="gpustack-model-mapper", version="1.0.0")
+        ]
+        monkeypatch.setattr(plugins_module, "supported_plugins", mapper_only)
+        entries = lb_gateway_entries(None)
+        assert [e.name for e in entries] == [LB_CONTEXT_CR_NAME]
+        assert entries[0].create_only is True
+        assert entries[0].spec.defaultConfig == {"modelMapping": {}}
 
 
 class TestRedisFromUrl:
@@ -198,20 +260,60 @@ class TestRedisFromUrl:
         # An IP host becomes a static registry (address carried in the
         # domain as host:port) and the plugin config points at the
         # registry's service name, never the raw host.
-        registry = redis_registry_from_url("redis://u:p@192.168.32.199:30379/2")
+        registry = redis_registry_from_url("redis://192.168.32.199:30379/2")
         assert registry.name == "gpustack-redis"
         assert registry.type == "static"
         assert registry.domain == "192.168.32.199:30379"
         # The static cluster listens on 80 whatever the backend port is;
         # 6379 here would name a cluster Envoy never creates.
         assert registry.port == 80
-        assert _redis_config_from_url("redis://u:p@192.168.32.199:30379/2") == {
+        assert _redis_config_from_url("redis://192.168.32.199:30379/2") == {
             "service_name": "gpustack-redis.static",
             "service_port": 80,
-            "username": "u",
-            "password": "p",
             "database": 2,
         }
+
+    def test_ip_host_without_port_defaults_domain_to_6379(self):
+        from gpustack.routes.plugins.lb.gateway import redis_registry_from_url
+
+        # A static registry encodes the real backend port in the
+        # domain; an omitted port is Redis's own default, never 80.
+        registry = redis_registry_from_url("redis://10.0.0.1")
+        assert registry.domain == "10.0.0.1:6379"
+        assert registry.port == 80
+
+    def test_credentialed_url_is_refused(self):
+        from gpustack.routes.plugins.lb.gateway import _redis_config_from_url
+
+        # Credentials would be materialized verbatim in the WasmPlugin
+        # CR spec; until a secret-backed mechanism exists they are
+        # refused rather than leaked, and the deployment stays on
+        # per-process shared data.
+        assert _redis_config_from_url("redis://u:p@192.168.32.199:30379/2") is None
+        assert _redis_config_from_url("redis://:p@192.168.32.199:30379/2") is None
+        assert _redis_config_from_url("redis://u@192.168.32.199:30379/2") is None
+
+    def test_malformed_port_is_refused_not_degraded(self):
+        from gpustack.routes.plugins.lb.gateway import redis_registry_from_url
+
+        # urlparse raises ValueError on a non-numeric or out-of-range
+        # port; the refusal must read as an unusable redis_url, not
+        # escape as the misleading "plugin module missing" degrade.
+        assert redis_registry_from_url("redis://192.168.32.199:notaport/") is None
+        assert redis_registry_from_url("redis://192.168.32.199:99999/") is None
+
+    def test_ipv6_host_is_bracketed_in_the_static_domain(self):
+        from gpustack.routes.plugins.lb.gateway import redis_registry_from_url
+
+        # urlparse strips the brackets off an IPv6 literal; the
+        # host:port domain must carry them again or Envoy reads the
+        # colons as the port separator.
+        registry = redis_registry_from_url("redis://[2001:db8::1]:6379")
+        assert registry.type == "static"
+        assert registry.domain == "[2001:db8::1]:6379"
+        assert redis_registry_from_url("redis://[2001:db8::1]").domain == (
+            "[2001:db8::1]:6379"
+        )
 
     def test_bare_service_name_is_qualified_for_dns(self):
         from gpustack.routes.plugins.lb.gateway import (
@@ -429,8 +531,21 @@ class TestLbMode:
         # only-fallback routes have no candidates to describe
         assert self._mode([0], fallback_idx=(0,)) is None
 
-    def test_no_active_targets_no_section(self):
-        assert self._mode([70], active=False) is None
+    def test_unavailable_targets_keep_the_configured_mode(self):
+        # The mode describes the configuration's shape, not the live
+        # render: an all-weighted route stays weighted while its
+        # instances are down (it renders nothing, but it is still
+        # configured as weighted), and instance-health flaps never
+        # rewrite the classification.
+        assert self._mode([70], active=False) == "weighted"
+        assert self._mode([0], capability_on=True, active=False) == "scoring"
+
+    def test_state_transitions_never_flip_the_verdict(self):
+        # [70, 0] is mixed whether or not the zero-weight target is
+        # serving — the invalid verdict is a property of the weights,
+        # not of which instances happen to be up.
+        assert self._mode([70, 0]) == "invalid"
+        assert self._mode([70, 0], active=False) == "invalid"
 
 
 class TestRefreshLbMode:

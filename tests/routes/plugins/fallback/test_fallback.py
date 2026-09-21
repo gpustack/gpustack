@@ -127,6 +127,25 @@ class TestMapperRuleDeclaration:
         kwargs = _declarations(ctx)
         assert kwargs["rules"] == []
 
+    @pytest.mark.asyncio
+    async def test_delete_event_strips_mapper_rules_even_with_fallback(self):
+        # The main ingress is being removed with the route; re-declaring
+        # its mapper rules would leave them stale on the CR until the
+        # startup cleanup pass.
+        route, target = _route(fallback_codes=["5xx"])
+        ctx = _Ctx(
+            route,
+            fallback_destinations=[(1, "m1", _Registry("svc-a.static"))],
+            delete=True,
+        )
+        await fallback_plugin._declare_mapper_rules(ctx, ctx.collector)
+
+        kwargs = _declarations(ctx)
+        assert kwargs["cr_name"] == "gpustack-model-mapper"
+        assert kwargs["owner"] == "mapper"
+        assert kwargs["ingresses"] == ["gpustack/ai-route-route-1.internal"]
+        assert kwargs["rules"] == []
+
 
 class TestFallbackIngressAndFilter:
     @pytest.mark.asyncio
