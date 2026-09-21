@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 
 from gpustack.worker.runtime_metrics_aggregator import (
@@ -97,6 +98,75 @@ def _sample(name, value, labels=None):
 
 def _family(name, type_, samples):
     return SimpleNamespace(name=name, type=type_, documentation="d", samples=samples)
+
+
+# prometheus_client emits _created alongside every counter by default, and the
+# OpenMetrics parser keeps it inside the counter family rather than splitting it
+# into one of its own.
+OPENMETRICS_WITH_CREATED = """\
+# HELP vllm:prompt_tokens Number of prefill tokens processed.
+# TYPE vllm:prompt_tokens counter
+vllm:prompt_tokens_total{model_name="m",engine="0"} 1234.0
+vllm:prompt_tokens_created{model_name="m",engine="0"} 1700000000.0
+# EOF
+"""
+
+
+def _aggregate(metrics, aggregator=None):
+    aggregator = aggregator or RuntimeMetricsAggregator(
+        cache={}, worker_id_getter=lambda: 1
+    )
+    unified, raw = {}, {}
+    aggregator._process_endpoint_metrics(
+        metrics,
+        {"worker_id": "1", "model_name": "m", "model_instance_id": "1"},
+        "vLLM",
+        "0.11.0",
+        unified,
+        raw,
+        aggregator._get_metrics_config(),
+    )
+    return unified, raw
+
+
+def test_created_samples_do_not_duplicate_counter_series():
+    """A _created sample carries a creation timestamp, not a count. Passing it to
+    add_metric — which appends _total itself — would emit a second _total series
+    under identical labels, and Prometheus rejects a whole scrape over that."""
+    families = _families(OPENMETRICS_WITH_CREATED, OPENMETRICS_CONTENT_TYPE)
+    # The parser really does hand us both samples in one family.
+    assert len(families["vllm:prompt_tokens"].samples) == 2
+
+    unified, raw = _aggregate(families)
+
+    assert [(s.name, s.value) for s in raw["vllm:prompt_tokens"].samples] == [
+        ("vllm:prompt_tokens_total", 1234.0)
+    ]
+    assert [(s.name, s.value) for s in unified["gpustack:prompt_tokens"].samples] == [
+        ("gpustack:prompt_tokens_total", 1234.0)
+    ]
+
+
+def test_persistent_family_failure_warns_once(caplog):
+    """Aggregation runs every few seconds; a family that always fails must not
+    warn on every pass, but must warn again after recovering and failing anew."""
+    aggregator = RuntimeMetricsAggregator(cache={}, worker_id_getter=lambda: 1)
+    broken = {"broken": _family("broken", "stateset", [_sample("broken", 1.0)])}
+    working = {
+        "broken": _family("broken", "gauge", [_sample("broken", 1.0)]),
+    }
+
+    def warnings():
+        return [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            _aggregate(broken, aggregator)
+        assert len(warnings()) == 1
+
+        _aggregate(working, aggregator)  # recovers, clearing the reported state
+        _aggregate(broken, aggregator)
+        assert len(warnings()) == 2
 
 
 def test_unsupported_family_does_not_drop_the_endpoint():

@@ -35,8 +35,10 @@ def parse_metrics_text(text: str, content_type: Optional[str] = None):
             return list(openmetrics_text_string_to_metric_families(text))
         except Exception as e:
             logger.warning(
-                f"Failed to parse OpenMetrics exposition, "
-                f"falling back to the Prometheus text format: {e}"
+                f"Failed to parse OpenMetrics exposition, falling back to the "
+                f"Prometheus text format. Counter families will come back empty "
+                f"and their samples as untyped ones, so counter-derived metrics "
+                f"are expected to be missing until this parses: {e}"
             )
     try:
         return list(text_string_to_metric_families(text))
