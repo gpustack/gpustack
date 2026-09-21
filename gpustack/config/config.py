@@ -169,6 +169,8 @@ class Config(WorkerConfig, BaseSettings):
         gateway_namespace: The namespace where the gateway component is deployed.
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
         disable_builtin_observability: Disable embedded Grafana and Prometheus services.
+        builtin_prometheus_scrape_configs_dir: Directory containing additional Prometheus scrape configuration files.
+        builtin_prometheus_remote_write_receiver: Enable the embedded Prometheus remote-write receiver.
         grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
         grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
         grafana_model_dashboard_uid: Grafana dashboard UID for model dashboard.
@@ -301,6 +303,10 @@ class Config(WorkerConfig, BaseSettings):
 
     disable_builtin_observability: bool = False
     builtin_prometheus_port: int = 19090
+    builtin_prometheus_scrape_configs_dir: Optional[str] = (
+        "/etc/prometheus/scrape_configs.d"
+    )
+    builtin_prometheus_remote_write_receiver: bool = False
     builtin_grafana_port: int = 13000
     grafana_url: Optional[str] = None
     grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"

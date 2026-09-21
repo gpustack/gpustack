@@ -25,9 +25,14 @@ if [ ! -f "$PROMETHEUS_CONFIG_FILE" ]; then
 fi
 
 echo "[INFO] Starting Prometheus."
-exec /usr/local/bin/prometheus \
-    --config.file="$PROMETHEUS_CONFIG_FILE" \
-    --storage.tsdb.path="$PROMETHEUS_DATA_DIR" \
-    --web.listen-address="0.0.0.0:${PROMETHEUS_PORT}" \
-    --web.external-url="/prometheus" \
+PROM_ARGS=(
+    --config.file="$PROMETHEUS_CONFIG_FILE"
+    --storage.tsdb.path="$PROMETHEUS_DATA_DIR"
+    --web.listen-address="0.0.0.0:${PROMETHEUS_PORT}"
+    --web.external-url="/prometheus"
     --web.route-prefix="/prometheus"
+)
+if [ "${PROMETHEUS_ENABLE_REMOTE_WRITE_RECEIVER:-false}" = "true" ]; then
+    PROM_ARGS+=(--web.enable-remote-write-receiver)
+fi
+exec /usr/local/bin/prometheus "${PROM_ARGS[@]}"

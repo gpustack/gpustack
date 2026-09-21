@@ -15,6 +15,72 @@ By default, GPUStack starts with an embedded Prometheus and Grafana. You can acc
 
 Built-in Grafana is configured for anonymous Viewer access and has the login form disabled. Admin credentials remain `admin` / `grafana` by default.
 
+## Extending the Built-in Prometheus
+
+Place additional scrape jobs in `.yml` or `.yaml` files under `/etc/prometheus/scrape_configs.d`. Each file must contain only a `scrape_configs` section, as required by Prometheus [`scrape_config_files`](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#scrape_config_files):
+
+```yaml
+scrape_configs:
+  - job_name: node-exporter
+    static_configs:
+      - targets: ["node-exporter:9100"]
+```
+
+Mount the directory into the GPUStack server container. To use a different path, set `--builtin-prometheus-scrape-configs-dir` or `GPUSTACK_BUILTIN_PROMETHEUS_SCRAPE_CONFIGS_DIR`. GPUStack does not create the directory; Prometheus safely accepts the generated globs when the directory or matching files do not exist. The path must not contain a literal `*`, which Prometheus reserves for the file wildcard. Set the configuration-file value to `null` or the environment variable to an empty value to omit `scrape_config_files`.
+
+For the Helm chart, create a ConfigMap and mount it with the existing server volume settings:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-extra-scrape-configs
+data:
+  node-exporter.yml: |
+    scrape_configs:
+      - job_name: node-exporter
+        static_configs:
+          - targets: ["node-exporter.monitoring.svc:9100"]
+```
+
+```yaml
+server:
+  extraVolumeMounts:
+    - name: prometheus-extra-scrape-configs
+      mountPath: /etc/prometheus/scrape_configs.d
+      readOnly: true
+  extraVolumes:
+    - name: prometheus-extra-scrape-configs
+      configMap:
+        name: prometheus-extra-scrape-configs
+```
+
+After changing drop-in files, reload Prometheus with `SIGHUP` or restart the GPUStack server. This also works when adding the first file because the generated main configuration always contains the glob patterns. GPUStack does not enable the Prometheus lifecycle HTTP endpoint.
+
+For a single-replica Helm installation, reload the Prometheus process in the server pod with:
+
+```bash
+kubectl exec statefulset/<release-name>-server -- pkill -HUP -x prometheus
+```
+
+`kubectl exec` selects one Pod. When `server.replicas` is greater than one, restart the StatefulSet so every Prometheus replica loads the same files:
+
+```bash
+kubectl rollout restart statefulset/<release-name>-server
+```
+
+Before reloading, validate the main configuration and all matching drop-ins inside the server container:
+
+```bash
+/usr/local/bin/promtool check config /etc/prometheus/prometheus.yml
+```
+
+If Prometheus starts or restarts with an invalid drop-in, the built-in Prometheus service exits and the optional s6 service retries it; Prometheus-backed dashboards remain unavailable until the file is fixed or removed. If a `SIGHUP` reload finds an invalid drop-in, Prometheus keeps running with its last successful configuration and logs the validation error; the invalid changes do not take effect. Validate files before either operation and check the server container logs when validation or reload fails.
+
+Enable Prometheus's remote-write receiver with `--builtin-prometheus-remote-write-receiver` or `GPUSTACK_BUILTIN_PROMETHEUS_REMOTE_WRITE_RECEIVER=true`. This exposes a write endpoint at `/prometheus/api/v1/write`; restrict network access and require authentication at a trusted reverse proxy. The receiver is disabled by default.
+
+These settings have no effect when `--disable-builtin-observability` or `--grafana-url` disables the built-in Prometheus.
+
 ## External Observability (Optional)
 
 If you want an external Prometheus/Grafana stack, we recommend using the provided Docker Compose files:

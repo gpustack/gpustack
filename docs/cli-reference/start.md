@@ -113,6 +113,8 @@ gpustack start [OPTIONS]
 | `--gateway-concurrency` value                    | `16`                                             | Number of concurrent connections for the embedded gateway.                                                                                                                                                                                                                                                                                    |
 | `--disable-builtin-observability`                | `False`                                          | Disable embedded Grafana and Prometheus services.                                                                                                                                                                                                                                                                                             |
 | `--builtin-prometheus-port` value                | `19090`                                          | Port for the embedded Prometheus service.                                                                                                                                                                                                                                                                                                     |
+| `--builtin-prometheus-scrape-configs-dir` value  | `/etc/prometheus/scrape_configs.d`               | Directory containing additional Prometheus scrape configuration files. Prometheus accepts the generated globs when the directory is missing; GPUStack does not create it.                                                                                                    |
+| `--builtin-prometheus-remote-write-receiver`     | `False`                                          | Enable the embedded Prometheus remote-write receiver.                                                                                                                                                                                                                                                                                         |
 | `--builtin-grafana-port` value                   | `13000`                                          | Port for the embedded Grafana service.                                                                                                                                                                                                                                                                                                        |
 | `--grafana-url` value                            | (empty)                                          | Grafana base URL for dashboard redirects and proxying. Must be browser-reachable (not a container-only hostname). If set, embedded Grafana and Prometheus will be disabled. Only required for external Grafana.                                                                                                                               |
 | `--grafana-worker-dashboard-uid` value           | (empty)                                          | Grafana dashboard UID for worker dashboard redirects.                                                                                                                                                                                                                                                                                         |
@@ -144,7 +146,12 @@ gpustack start [OPTIONS]
 ### Available Environment Variables
 
 Most command line parameters can also be set via environment variables with the `GPUSTACK_` prefix and in uppercase
-format (e.g., `--data-dir` can be set via `GPUSTACK_DATA_DIR`).
+format (e.g., `--data-dir` can be set via `GPUSTACK_DATA_DIR`). For example:
+
+| Flag | Environment variable |
+|------|----------------------|
+| `--builtin-prometheus-scrape-configs-dir` | `GPUSTACK_BUILTIN_PROMETHEUS_SCRAPE_CONFIGS_DIR` |
+| `--builtin-prometheus-remote-write-receiver` | `GPUSTACK_BUILTIN_PROMETHEUS_REMOTE_WRITE_RECEIVER` |
 
 For environment variables beyond the command-line parameters mentioned above, please refer to
 the [environment variables documentation](../environment-variables.md).
@@ -207,6 +214,8 @@ server_external_url: http://your_gpustack_server_url_for_external_access
 trusted_hosts: [ "your_reverse_proxy_hostname" ]
 disable_builtin_observability: false
 builtin_prometheus_port: 19090
+builtin_prometheus_scrape_configs_dir: /etc/prometheus/scrape_configs.d
+builtin_prometheus_remote_write_receiver: false
 builtin_grafana_port: 13000
 # Per-plugin overrides for the API gateway, keyed by the plugin's manifest name
 # -- which for several of them is not the name of the WasmPlugin resource they

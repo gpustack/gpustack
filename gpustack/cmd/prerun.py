@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import argparse
 import logging
 from pathlib import Path
@@ -263,6 +264,10 @@ def prepare_observability_config(cfg: Config):
         f.write(f"DATA_DIR={cfg.data_dir}\n")
         f.write(f"LOG_DIR={cfg.log_dir}\n")
         f.write(f"PROMETHEUS_PORT={cfg.builtin_prometheus_port}\n")
+        f.write(
+            "PROMETHEUS_ENABLE_REMOTE_WRITE_RECEIVER="
+            f"{'true' if cfg.builtin_prometheus_remote_write_receiver else 'false'}\n"
+        )
         f.write(f"GF_SERVER_HTTP_PORT={cfg.builtin_grafana_port}\n")
         f.write(f"PROMETHEUS_DATA_DIR={os.path.join(cfg.data_dir, 'prometheus')}\n")
         f.write(f"GF_PATHS_DATA={os.path.join(cfg.data_dir, 'grafana')}\n")
@@ -310,6 +315,25 @@ scrape_configs:
         labels:
           higress: {cfg.gateway_namespace}-higress-gateway
 """
+
+    scrape_config_files = []
+    if cfg.builtin_prometheus_scrape_configs_dir:
+        drop_in_path = cfg.builtin_prometheus_scrape_configs_dir
+        if "*" in drop_in_path:
+            raise ValueError(
+                "The built-in Prometheus scrape configs directory must not "
+                "contain '*'."
+            )
+        for char in ("\\", "?", "["):
+            drop_in_path = drop_in_path.replace(char, f"\\{char}")
+        scrape_config_files = [
+            f"{drop_in_path}/*.yml",
+            f"{drop_in_path}/*.yaml",
+        ]
+    if scrape_config_files:
+        prometheus_config += "scrape_config_files:\n" + "".join(
+            f"  - {json.dumps(path)}\n" for path in scrape_config_files
+        )
 
     prometheus_config_path.write_text(prometheus_config)
 
