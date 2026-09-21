@@ -30,7 +30,9 @@ def parse_metrics_text(text: str, content_type: Optional[str] = None):
     text parser reports those samples as separate untyped families instead, which
     leaves every counter family empty and breaks the unified metric mapping.
     """
-    if content_type and OPENMETRICS_CONTENT_TYPE in content_type:
+    # Media types are case-insensitive, so a runtime answering with
+    # "Application/OpenMetrics-Text" must not be sent down the text path.
+    if content_type and OPENMETRICS_CONTENT_TYPE in content_type.lower():
         try:
             return list(openmetrics_text_string_to_metric_families(text))
         except Exception as e:

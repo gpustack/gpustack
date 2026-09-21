@@ -64,8 +64,10 @@ class RuntimeMetricsAggregator:
         # Cache for metrics config (refresh every 300 seconds)
         self._metrics_config_cache = TTLCache(maxsize=1, ttl=300)
 
-        # Failures already reported, so a persistent one is not logged every pass.
-        self._warned = set()
+        # Failures already reported, so a persistent one is not logged every
+        # pass. Bounded and expiring, since endpoints and families come and go
+        # over the lifetime of a worker.
+        self._warned = TTLCache(maxsize=1024, ttl=3600)
 
     def _warn_once(self, key, message: str):
         """
@@ -73,13 +75,14 @@ class RuntimeMetricsAggregator:
 
         Aggregation runs every few seconds, so warning unconditionally would
         repeat the same line hundreds of times an hour for a single bad family.
-        The key is cleared once that family or endpoint succeeds again, so a
-        failure that comes back is reported afresh.
+        The key is dropped once that family or endpoint succeeds again, and
+        expires on its own after an hour, so a lasting failure is still
+        reported from time to time rather than going quiet for good.
         """
         if key in self._warned:
             logger.debug(message, exc_info=True)
             return
-        self._warned.add(key)
+        self._warned[key] = True
         logger.warning(message, exc_info=logger.isEnabledFor(logging.DEBUG))
 
     def aggregate(self):
@@ -135,7 +138,7 @@ class RuntimeMetricsAggregator:
                     raw_metrics,
                     metrics_config,
                 )
-                self._warned.discard(("endpoint", ep))
+                self._warned.pop(("endpoint", ep), None)
             except Exception as e:
                 # Keep one endpoint from discarding the metrics collected from
                 # the others on this worker.
@@ -262,7 +265,7 @@ class RuntimeMetricsAggregator:
                     raw_metrics,
                     metrics_config,
                 )
-                self._warned.discard(warn_key)
+                self._warned.pop(warn_key, None)
             except Exception as e:
                 # Keep a single unsupported family from discarding every metric
                 # collected on this worker.
@@ -324,20 +327,20 @@ class RuntimeMetricsAggregator:
                     )
                 unified_family = unified_metrics[unified_metric_family_name]
 
-        # OpenMetrics keeps a counter's _created sample inside the family, where
-        # the Prometheus text parser splits it off into one of its own. add_metric
-        # appends the type's suffix itself, so handing it a _created sample emits
-        # a second _total series carrying a creation timestamp under the same
-        # labels, and Prometheus rejects an entire scrape over such a duplicate.
+        # Histogram, summary and info samples are added under the names the
+        # runtime gave them. Everything else goes through add_metric, which
+        # appends the type's own suffix: OpenMetrics keeps a counter's _created
+        # sample inside the family (the Prometheus text parser splits it off
+        # into one of its own), and passing that through would emit a second
+        # _total series carrying a creation timestamp under identical labels —
+        # a duplicate Prometheus rejects an entire scrape over.
+        keeps_sample_names = family.type in ("histogram", "summary", "info")
         value_sample_names = {source_family_name}
         if family.type == "counter":
             value_sample_names.add(f"{source_family_name}_total")
 
         for sample in family.samples:
-            if (
-                family.type not in ("histogram", "summary")
-                and sample.name not in value_sample_names
-            ):
+            if not keeps_sample_names and sample.name not in value_sample_names:
                 continue
 
             label_values = [
@@ -351,7 +354,7 @@ class RuntimeMetricsAggregator:
             labels = sample.labels.copy()
             labels.update(base_labels)
 
-            if family.type in ("histogram", "summary"):
+            if keeps_sample_names:
                 raw_family.add_sample(
                     name=sample.name,
                     labels=labels,
