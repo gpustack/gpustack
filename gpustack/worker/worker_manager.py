@@ -4,13 +4,13 @@ from typing import Optional, Tuple
 
 import httpx
 
-from gpustack import __version__, __git_commit__
 from gpustack.client import ClientSet
 from gpustack.client.worker_manager_clients import (
     WorkerStatusClient,
     WorkerRegistrationClient,
 )
 from gpustack.config.config import Config
+from gpustack.extension import resolve_version_info
 from gpustack.schemas.workers import (
     WorkerCreate,
     WorkerUpdate,
@@ -128,7 +128,7 @@ class WorkerManager:
                 **workerStatus.model_dump(),
                 **workerUpdate.model_dump(),
                 "external_id": external_id,
-                "worker_version": __version__,
+                "worker_version": resolve_version_info()[0],
             }
         )
         created = await self._registration_client.create_async(to_register)
@@ -222,17 +222,20 @@ class WorkerManager:
         server_version = server_version_info.get("version", "unknown")
         server_git_commit = server_version_info.get("git_commit", "unknown")
 
-        is_compatible = is_worker_version_compatible(__version__, server_version)
+        # The server's /version answers with the same helper, so a
+        # plugin-provided build string is compared with its peer.
+        worker_version, worker_git_commit = resolve_version_info()
+        is_compatible = is_worker_version_compatible(worker_version, server_version)
 
         if not is_compatible:
             warning_msg = (
                 f"Version mismatch detected:\n"
-                f"  Worker version: {__version__} (commit: {__git_commit__})\n"
+                f"  Worker version: {worker_version} (commit: {worker_git_commit})\n"
                 f"  Server version: {server_version} (commit: {server_git_commit})\n\n"
                 f"Please upgrade your worker to match the server version."
             )
             logger.warning(warning_msg)
         else:
             logger.info(
-                f"Version check passed: worker {__version__} matches server {server_version}"
+                f"Version check passed: worker {worker_version} matches server {server_version}"
             )

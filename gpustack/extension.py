@@ -13,6 +13,7 @@ coordinator via the ``coordinator`` attribute.
 """
 
 import logging
+from functools import lru_cache
 from typing import Any, Coroutine, Generator, List, Optional, TYPE_CHECKING, Tuple
 
 from fastapi import FastAPI
@@ -25,17 +26,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@lru_cache(maxsize=1)
 def resolve_version_info() -> Tuple[str, str]:
     """Let plugins override the reported version. First non-None wins; on
     any failure, fall back to core's baked-in values.
 
-    Used wherever core needs the *user-facing* version — ``gpustack version``,
-    the ``/version`` endpoint's response, OpenAPI ``info.version``, and the
-    worker image tag returned by the cluster registration-token endpoint.
-    Anything that surfaces an image reference or a build identifier to
-    operators should go through this helper so a downstream repackage can
-    present a consistent build string instead of the wheel's baked-in
-    ``__version__``.
+    Use this anywhere core reports a version to an operator, rather than
+    ``from gpustack import __version__`` — a module-level copy is bound at
+    import time and cannot reflect a plugin, so a downstream repackage would
+    surface its own build string in some places and the wheel's baked-in one
+    in others. Current callers: ``gpustack version``, the ``start`` /
+    ``reload-config`` banners, the ``/version`` endpoint, OpenAPI
+    ``info.version``, the worker version registered on join and checked
+    against the server's, the deployment-document export header, and the
+    worker image tag from the cluster registration-token endpoint.
+
+    Deliberately not used for two things. The outbound ``User-Agent`` sent to
+    model sources identifies the core client to a third party and has no
+    reason to carry a repackager's build string. The update check compares
+    against a release feed indexed by core's own versions, where a repackaged
+    build has no entry at all -- a plugin that reports its own version is
+    expected to serve ``/update`` itself.
+
+    Memoized: the entry-point scan reads package metadata off disk, and the
+    installed plugins cannot change within a process.
     """
     from gpustack import __version__, __git_commit__
 
