@@ -479,7 +479,7 @@ def test_dump_keeps_user_input_and_drops_server_state():
         exported_at=EXPORTED_AT,
     )
 
-    assert text.startswith("# Exported from GPUStack v")
+    assert text.startswith("# Exported from GPUStack ")
     assert "at 2026-09-07T10:00:00Z\n" in text
     # Each deployment starts at the left margin, never indented into a list.
     assert "\nname: qwen3-8b\n" in text

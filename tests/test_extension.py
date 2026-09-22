@@ -12,7 +12,7 @@ import gpustack.extension as extension
 from gpustack.config.config import Config
 from gpustack.extension import resolve_version_info
 
-PLUGIN_VERSION = "2.2.3-repack1"
+PLUGIN_VERSION = "v2.2.3-repack1"
 PLUGIN_COMMIT = "repackcommit"
 
 
@@ -106,7 +106,7 @@ class TestReportingSurfaces:
 
         document = dump_deployments([], set(), {})
 
-        assert document.startswith(f"# Exported from GPUStack v{PLUGIN_VERSION} ")
+        assert document.startswith(f"# Exported from GPUStack {PLUGIN_VERSION} ")
 
 
 class TestWorkerVersionCheck:
@@ -152,7 +152,7 @@ class TestWorkerVersionCheck:
     @pytest.mark.asyncio
     async def test_a_differing_server_build_warns(self, monkeypatch, temp_dir, caplog):
         _with_plugins(monkeypatch, _Plugin)
-        manager = self._manager(monkeypatch, temp_dir, "2.2.4-repack1")
+        manager = self._manager(monkeypatch, temp_dir, "v2.2.4-repack1")
 
         with caplog.at_level("WARNING"):
             await manager.check_server_version()
