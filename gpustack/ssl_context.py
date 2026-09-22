@@ -28,6 +28,8 @@ from functools import lru_cache
 
 import certifi
 
+from gpustack import envs
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,8 +113,32 @@ def make_ssl_context() -> ssl.SSLContext:
         leak across every caller (httpx clients, auth flows, etc.) and
         silently weaken TLS verification elsewhere in the process.
 
-        If you need a customized context (insecure mode, client cert,
-        pinned ciphers, ...), construct your own ``ssl.SSLContext`` --
-        don't reach for this factory.
+        If you need a customized context (client cert, pinned ciphers, ...),
+        construct your own ``ssl.SSLContext`` -- don't reach for this factory.
+
+    Under ``envs.INSECURE_TLS`` the returned context accepts any peer
+    certificate. That reaches every caller of this factory -- the worker's
+    ``ClientSet`` and ``/version`` probe, the server-CA bootstrap, the server's
+    external-auth handshakes, and the clients rebuilt inside spawned
+    subprocesses -- and nothing else: a client that builds its own context,
+    like the model-source and update-service ones, still verifies.
     """
+    if envs.INSECURE_TLS:
+        logger.warning(
+            "%s is set: certificates are not verified on GPUStack's own HTTPS "
+            "connections (the server, external-auth IdPs). Use only on trusted "
+            "networks.",
+            envs.INSECURE_TLS_ENV,
+        )
+        return _make_insecure_ssl_context()
     return ssl.create_default_context(cafile=resolve_ca_bundle())
+
+
+def _make_insecure_ssl_context() -> ssl.SSLContext:
+    """Return a context that trusts any peer."""
+    context = ssl.create_default_context()
+    # check_hostname must be cleared before verify_mode, otherwise ssl raises
+    # on the inconsistent pair.
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context

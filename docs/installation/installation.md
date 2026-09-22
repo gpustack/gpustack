@@ -98,6 +98,12 @@ bundle, the worker uses a temporary merged bundle via `SSL_CERT_FILE` for its
 process and child processes. Existing operator-provided certificates are retained;
 replacing an injected bootstrap CA does not retain earlier injected bundles.
 
+As a last resort, when the server certificate cannot be verified on a worker at
+all, set `GPUSTACK_INSECURE_TLS=true` on that worker to skip certificate
+verification on its connection to the server. Traffic stays encrypted but is no
+longer protected against interception, so use it only on trusted networks. See
+[Environment Variables](../environment-variables.md).
+
 ### Using an External Database
 
 By default, GPUStack uses an embedded PostgreSQL database. To use an external database such as PostgreSQL or MySQL, set the `GPUSTACK_DATABASE_URL` environment variable or use the `--database-url` argument when starting the GPUStack container. See [Database Requirements](requirements.md#database-requirements) for the list of compatible databases and verified versions.
