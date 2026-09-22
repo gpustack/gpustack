@@ -198,6 +198,16 @@ WORKER_UNREACHABLE_CHECK_MODE = os.getenv(
     "GPUSTACK_WORKER_UNREACHABLE_CHECK_MODE", "auto"
 ).lower()
 
+# Byte budget for one restart of one serving log; the main log, the workload
+# container's log and each sidecar's log are budgeted separately. 0 lifts the
+# cap and restores the unbounded files of earlier releases.
+SERVE_LOG_MAX_BYTES = int(os.getenv("GPUSTACK_SERVE_LOG_MAX_BYTES", 64 * 1024 * 1024))
+# How much of that budget the head keeps, written once and never rewritten:
+# what explains a failed start is emitted in the first seconds. The rest of the
+# budget rotates in shards of this same size, at most 64 of them; 0 keeps only
+# the first line.
+SERVE_LOG_HEAD_BYTES = int(os.getenv("GPUSTACK_SERVE_LOG_HEAD_BYTES", 8 * 1024 * 1024))
+
 # Opt-in (default off): drop a runner image's bundled cuda-compat and use the host
 # driver so consumer GPUs can run images built for a newer CUDA minor (same major).
 # Overridable per-model via the same env name in the model's env.

@@ -10,103 +10,37 @@ from fastapi.responses import StreamingResponse
 
 from gpustack_runtime.deployer import logs_workload
 
-from gpustack.api.exceptions import NotFoundException
+from gpustack.api.exceptions import BadRequestException, NotFoundException
 from gpustack.schemas.cache_services import cache_service_instance_workload_name
 from gpustack.schemas.models import (
     ModelInstanceLogRestartEntry,
     ServeLogOptionsResponse,
 )
-from gpustack.worker.logs import LogOptions, LogOptionsDep, log_generator
+from gpustack.worker.logs import (
+    LogOptions,
+    LogOptionsDep,
+    line_window_generator,
+    log_generator,
+    plan_line_window,
+    tail_log_generator,
+)
 from gpustack.worker.log_sources import (
     ContainerLogSource,
     DownloadLogSource,
-    LogSourceChain,
     MainLogSource,
-    existing_legacy_main_log,
-    extract_container_restart_count,
     extract_restart_count,
-    extract_sidecar_container_name,
-    extract_sidecar_container_restart_count,
+    get_all_log_files,
+    group_container_names_by_restart,
+    instance_log_files,
+    monitor_container_content,
+    resolve_restart_count,
+    select_log_files,
+    stream_log_files,
 )
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
-
-
-async def get_all_log_files(
-    log_dir: Path,
-    model_instance_id: int,
-    container: bool = False,
-    restart_count: Optional[int] = None,
-    container_name: Optional[str] = None,
-) -> List[Path]:
-    """Get all log files sorted by restart count.
-
-    Args:
-        log_dir: Directory containing log files
-        model_instance_id: Model instance ID
-        container: If True, get container logs; if False, get main logs
-        restart_count: If specified, only return logs for this restart count
-        container_name: If specified with container=True, get sidecar container
-            logs for this container name (e.g., "ray-head").
-            Pattern: {id}.container.{name}.{restart_count}.log
-
-    Returns:
-        List of log file paths sorted by restart count (oldest first)
-    """
-    if container and container_name:
-        # Sidecar container logs: {id}.container.{name}.{restart_count}.log
-        pattern = f"{model_instance_id}.container.{container_name}.*.log"
-        extract_fn = extract_sidecar_container_restart_count
-    elif container:
-        # Default container logs: {id}.container.{restart_count}.log
-        pattern = f"{model_instance_id}.container.*.log"
-        extract_fn = extract_container_restart_count
-    else:
-        pattern = f"{model_instance_id}.*.log"
-        extract_fn = extract_restart_count
-
-    def list_candidates() -> List[Path]:
-        files = list(log_dir.glob(pattern))
-        if container:
-            return files
-        # Exclude container log files when getting main logs.
-        files = [f for f in files if '.container.' not in f.name]
-        # {id}.log predates every numbered file, hence first.
-        legacy_log = existing_legacy_main_log(log_dir, model_instance_id)
-        return [legacy_log] + files if legacy_log else files
-
-    files = await asyncio.to_thread(list_candidates)
-
-    # When getting default container logs (no container_name),
-    # exclude sidecar container logs (those with non-numeric segment after "container.").
-    if container and not container_name:
-        files = [f for f in files if not extract_sidecar_container_name(f.name)]
-
-    # Filter by restart_count if specified
-    if restart_count is not None:
-        files = [f for f in files if extract_fn(f.name) == restart_count]
-
-    return sorted(files, key=lambda p: extract_fn(p.name))
-
-
-async def resolve_restart_count(
-    log_dir: Path, model_instance_id: int, previous: bool
-) -> Optional[int]:
-    """Resolve ``previous`` flag to an actual restart_count from disk files.
-
-    Returns:
-        The restart_count integer for the target log set, or ``None`` when
-        no log files exist on disk yet.
-    """
-    files = await get_all_log_files(log_dir, model_instance_id, container=False)
-    if not files:
-        return None
-    counts = sorted(set(extract_restart_count(f.name) for f in files))
-    if previous and len(counts) >= 2:
-        return counts[-2]
-    return counts[-1]
 
 
 def _path_started_at_utc(path: Path) -> datetime:
@@ -115,6 +49,33 @@ def _path_started_at_utc(path: Path) -> datetime:
     if ts is None or ts <= 0:
         ts = st.st_mtime
     return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+async def serve_log_paths(
+    log_dir: Path,
+    model_instance_id: int,
+    restart_count: Optional[int],
+    container_name: Optional[str] = None,
+) -> List[Path]:
+    """One restart's logs as a single ordered list of files.
+
+    The order a line number is counted against: the restart's main logs, then
+    its container logs. The follow path merges sources concurrently, which is
+    what a live tail wants and what a page number cannot have -- the same
+    offset has to name the same line on every request.
+
+    Args:
+        log_dir: Directory containing serve logs.
+        model_instance_id: Model instance ID.
+        restart_count: The restart to read, None for every one of them.
+        container_name: A sidecar's name to read only its logs; "default" or
+            None for the main and workload container logs.
+
+    Returns:
+        The files, in reading order.
+    """
+    entries = await asyncio.to_thread(instance_log_files, log_dir, model_instance_id)
+    return stream_log_files(entries, restart_count, container_name)
 
 
 def restart_entries_from_main_log_files(
@@ -128,7 +89,8 @@ def restart_entries_from_main_log_files(
     the second highest maps to ``previous=True``.
 
     When several files share a restart_count -- a pre-v2.2.0 {id}.log next to a
-    {id}.0.log -- take the earliest timestamp, not a representative by name.
+    migrated main.log -- take the earliest timestamp, not a representative by
+    name.
 
     Args:
         files: Main log file paths.
@@ -137,7 +99,7 @@ def restart_entries_from_main_log_files(
     """
     by_count: Dict[int, List[Path]] = defaultdict(list)
     for f in files:
-        by_count[extract_restart_count(f.name)].append(f)
+        by_count[extract_restart_count(f)].append(f)
 
     sorted_counts = sorted(by_count.keys(), reverse=True)
     entries: List[ModelInstanceLogRestartEntry] = []
@@ -154,35 +116,10 @@ def restart_entries_from_main_log_files(
         )
         entries.append(
             ModelInstanceLogRestartEntry(
-                previous=i > 0, started_at=started_at, containers=containers
+                previous=i > 0,
+                started_at=started_at,
+                containers=containers,
             )
-        )
-    return entries
-
-
-def restart_entries_from_sidecar_log_files(
-    files: List[Path],
-) -> List[ModelInstanceLogRestartEntry]:
-    """Build restart entries from sidecar container log paths.
-
-    Same logic as restart_entries_from_main_log_files but uses
-    extract_sidecar_container_restart_count for the file name pattern.
-    """
-    by_count: Dict[int, List[Path]] = defaultdict(list)
-    for f in files:
-        by_count[extract_sidecar_container_restart_count(f.name)].append(f)
-
-    sorted_counts = sorted(by_count.keys(), reverse=True)
-    entries: List[ModelInstanceLogRestartEntry] = []
-    for i, rc in enumerate(sorted_counts):
-        paths = sorted(by_count[rc], key=lambda p: p.name)
-        path = paths[0]
-        try:
-            started_at = _path_started_at_utc(path)
-        except OSError:
-            started_at = None
-        entries.append(
-            ModelInstanceLogRestartEntry(previous=i > 0, started_at=started_at)
         )
     return entries
 
@@ -227,18 +164,14 @@ async def historical_log_generator(
         return
 
     if options.tail > 0:
-        # Only read the last N lines from the most recent log file
-        if log_files:
-            file_options = LogOptions(
-                tail=options.tail, follow=options.follow, stop_event=stop_event
-            )
-            async for line in log_generator(str(log_files[-1]), file_options):
-                if stop_event and stop_event.is_set():
-                    logger.debug(
-                        "Historical log generator stopping due to stop event 1"
-                    )
-                    return
-                yield line
+        tail_options = LogOptions(
+            tail=options.tail, follow=options.follow, stop_event=stop_event
+        )
+        async for line in tail_log_generator(log_files, tail_options):
+            if stop_event and stop_event.is_set():
+                logger.debug("Historical log generator stopping due to stop event 1")
+                return
+            yield line
     else:
         # Read all logs in order
         for i, log_file in enumerate(log_files):
@@ -258,44 +191,62 @@ async def historical_log_generator(
                 yield line
 
 
+async def _group_log_generator(paths: List[str], options: LogOptions):
+    """Every line of one source's files in order, following only the last."""
+    for index, log_path in enumerate(paths):
+        is_last = index == len(paths) - 1
+        file_options = LogOptions(
+            tail=-1, follow=options.follow and is_last, stop_event=options.stop_event
+        )
+        async for line in log_generator(log_path, file_options):
+            yield line
+
+
 async def merged_log_generator(  # noqa: C901
-    log_paths: List[str],
+    log_path_groups: List[List[str]],
     options: LogOptions,
     stop_event: Optional[asyncio.Event] = None,
 ):
     """Merge multiple log sources and yield lines as they become available.
 
     Args:
-        log_paths: List of log file paths to read
+        log_path_groups: One group of file paths per source, in reading order.
+            A group is read start to finish and only its last file is followed,
+            since a source's earlier files are complete -- a capped log's
+            shards are one such group. Groups themselves are read concurrently.
         options: Log options (tail, follow)
         stop_event: Event to signal stopping
 
     Yields:
         Log lines from all sources in the order they become available
     """
-    if not log_paths:
+    if not log_path_groups:
         return
 
     queues: List[asyncio.Queue] = []
 
-    async def read_to_queue(queue: asyncio.Queue, log_path: str, opts: LogOptions):
+    async def read_to_queue(queue: asyncio.Queue, paths: List[str], opts: LogOptions):
         try:
-            async for line in log_generator(log_path, opts):
+            if opts.tail > 0:
+                lines = tail_log_generator([Path(p) for p in paths], opts)
+            else:
+                lines = _group_log_generator(paths, opts)
+            async for line in lines:
                 if stop_event and stop_event.is_set():
                     return
                 await queue.put(("data", line))
         except Exception as e:
-            logger.error(f"Error reading log {log_path}: {e}")
+            logger.error(f"Error reading logs {paths}: {e}")
             await queue.put(("error", str(e)))
         finally:
             await queue.put(None)  # Signal end of this source
 
     # Create tasks for all log generators
     tasks = []
-    for path in log_paths:
+    for paths in log_path_groups:
         queue = asyncio.Queue()
         queues.append(queue)
-        task = asyncio.create_task(read_to_queue(queue, path, options))
+        task = asyncio.create_task(read_to_queue(queue, paths, options))
         tasks.append(task)
 
     get_tasks = {}
@@ -356,7 +307,7 @@ async def combined_log_generator(
     model_instance_name: str,
     container_name: Optional[str] = None,
 ):
-    """Unified log streaming from three file sources using LogSourceChain.
+    """Unified log streaming from three file sources.
 
     Reads logs in order:
     1) Download logs (if exists)
@@ -395,51 +346,35 @@ async def combined_log_generator(
         return
 
     download_source = DownloadLogSource(download_log_path)
-    main_source = MainLogSource(
-        log_dir,
-        model_instance_id,
-        restart_count,
-        get_all_log_files_fn=get_all_log_files,
-    )
-    container_source = ContainerLogSource(
-        log_dir,
-        model_instance_id,
-        restart_count,
-        get_all_log_files_fn=get_all_log_files,
-        extract_restart_count_fn=extract_restart_count,
-    )
-
-    chain = LogSourceChain(
-        [download_source, main_source],
-        log_generator_fn=log_generator,
-    )
+    main_source = MainLogSource(log_dir, model_instance_id, restart_count)
+    container_source = ContainerLogSource(log_dir, model_instance_id, restart_count)
 
     has_any_logs = False
-    log_paths = []
+    log_path_groups = []
 
     # Download log
     download_files = await download_source.wait_for_files_if_needed(
         follow=options.follow
     )
     if download_files:
-        log_paths.append(str(download_files[0]))
+        log_path_groups.append([str(download_files[0])])
         has_any_logs = True
 
     # Main logs
     main_log_files = await main_source.wait_for_files_if_needed(follow=options.follow)
     if main_log_files:
-        log_paths.extend(str(f) for f in main_log_files)
+        log_path_groups.append([str(f) for f in main_log_files])
         has_any_logs = True
 
     # Stream download + main logs (merged)
-    if log_paths:
+    if log_path_groups:
         stop_event = asyncio.Event()
         monitor_task = None
 
         container_has_content = await container_source.has_content()
         if not container_has_content and options.follow:
             monitor_task = asyncio.create_task(
-                chain.monitor_container_content(container_source, stop_event)
+                monitor_container_content(container_source, stop_event)
             )
 
         merge_options = (
@@ -450,7 +385,7 @@ async def combined_log_generator(
 
         try:
             async for line in merged_log_generator(
-                log_paths, merge_options, stop_event
+                log_path_groups, merge_options, stop_event
             ):
                 yield line
         finally:
@@ -486,45 +421,10 @@ async def get_serve_log_options(request: Request, id: int):
     """List restart_count values for which main serve log files exist locally."""
     log_dir = request.app.state.config.log_dir
     serve_log_dir = Path(log_dir) / "serve"
-    files = await get_all_log_files(serve_log_dir, id, container=False)
-
-    # Discover sidecar container names grouped by restart_count.
-    container_pattern = f"{id}.container.*.*.log"
-    all_sidecar_files = await asyncio.to_thread(
-        lambda: list(serve_log_dir.glob(container_pattern))
-    )
-    sidecar_names_by_restart: Dict[int, List[str]] = defaultdict(list)
-    seen: set = set()
-    for f in all_sidecar_files:
-        cname = extract_sidecar_container_name(f.name)
-        if not cname:
-            continue
-        rc = extract_sidecar_container_restart_count(f.name)
-        key = (rc, cname)
-        if key not in seen:
-            sidecar_names_by_restart[rc].append(cname)
-            seen.add(key)
-
-    # Build per-restart container lists: "default" (main) + sidecar names.
-    # "default" is always included when container log files exist for that restart.
-    container_log_pattern = f"{id}.container.*.log"
-    all_container_files = await asyncio.to_thread(
-        lambda: list(serve_log_dir.glob(container_log_pattern))
-    )
-    container_names_by_restart: Dict[int, List[str]] = defaultdict(list)
-    for rc in sidecar_names_by_restart:
-        container_names_by_restart[rc] = ["default"] + sorted(
-            sidecar_names_by_restart[rc]
-        )
-    # Also add "default" for restarts that have container logs but no sidecars.
-    default_container_rcs = {
-        extract_container_restart_count(f.name)
-        for f in all_container_files
-        if not extract_sidecar_container_name(f.name)
-    }
-    for rc in default_container_rcs:
-        if rc not in container_names_by_restart:
-            container_names_by_restart[rc] = ["default"]
+    # One walk for both: the restarts and the streams each one has.
+    entries = await asyncio.to_thread(instance_log_files, serve_log_dir, id)
+    files = select_log_files(entries)
+    container_names_by_restart = group_container_names_by_restart(entries)
 
     restarts = await asyncio.to_thread(
         restart_entries_from_main_log_files, files, container_names_by_restart
@@ -552,6 +452,11 @@ async def get_serve_logs(
             serve_log_dir / f"model_file_{model_file_id}.download.log"
         )
 
+    if log_options.offset is not None:
+        return await serve_log_line_range(
+            serve_log_dir, id, download_log_path, log_options, container_name
+        )
+
     return StreamingResponse(
         combined_log_generator(
             serve_log_dir,
@@ -562,6 +467,66 @@ async def get_serve_logs(
             container_name=container_name,
         ),
         media_type="application/octet-stream",
+    )
+
+
+async def serve_log_line_range(
+    serve_log_dir: Path,
+    model_instance_id: int,
+    download_log_path: str,
+    options: LogOptions,
+    container_name: Optional[str] = None,
+) -> StreamingResponse:
+    """Serve one page of a restart's log, addressed by line number.
+
+    Args:
+        serve_log_dir: Directory containing serve logs.
+        model_instance_id: Model instance ID.
+        download_log_path: Path to the download log, empty when there is none.
+        options: Log options carrying offset and limit.
+        container_name: A sidecar's name, or "default"/None for the workload.
+
+    Returns:
+        The page as plain text, with the range and the stream's total on
+        X-Log-Offset, X-Log-Line-Count and X-Log-Total-Lines, and for a range
+        covering the whole stream, while the cap has dropped none of it, its
+        exact length on X-Log-Total-Bytes.
+
+    Raises:
+        BadRequestException: tail or follow was asked for alongside a range.
+    """
+    if options.follow or options.tail > 0:
+        raise BadRequestException(
+            message="offset cannot be combined with tail or follow"
+        )
+
+    restart_count = await resolve_restart_count(
+        serve_log_dir, model_instance_id, options.previous
+    )
+    paths = await serve_log_paths(
+        serve_log_dir, model_instance_id, restart_count, container_name
+    )
+    if download_log_path and (not container_name or container_name == "default"):
+        download = Path(download_log_path)
+        if await asyncio.to_thread(download.exists):
+            paths.insert(0, download)
+
+    window = await asyncio.to_thread(
+        plan_line_window, paths, options.offset, options.limit
+    )
+    headers = {
+        "X-Log-Offset": str(window.offset),
+        "X-Log-Line-Count": str(window.line_count),
+        "X-Log-Total-Lines": str(window.total_lines),
+    }
+    # Measured on the same look at the files the reads are pinned to, so a
+    # download can promise it.
+    if window.byte_count is not None:
+        headers["X-Log-Total-Bytes"] = str(window.byte_count)
+    return StreamingResponse(
+        line_window_generator(window),
+        media_type="application/octet-stream",
+        headers=headers,
     )
 
 

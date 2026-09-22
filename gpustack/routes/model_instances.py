@@ -1,10 +1,10 @@
 import asyncio
 import json
+import sys
 from typing import AsyncIterator, List, Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Request, status, HTTPException
 from fastapi.responses import (
-    PlainTextResponse,
     StreamingResponse,
     RedirectResponse,
 )
@@ -285,36 +285,24 @@ async def get_serving_logs(  # noqa: C901
             follow=log_options.follow,
             previous=log_options.previous,
             container_name=container_name,
+            offset=log_options.offset,
+            limit=log_options.limit,
         )
 
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
 
-    if log_options.follow:
-
-        def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
-            msg = (
-                str(e)
-                if not isinstance(e, TimeoutError)
-                else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
-            )
-            return f"\x1b[999;1H{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
-
-        return StreamingResponseWithStatusCode(
-            stream_to_worker(
-                worker=worker,
-                method="GET",
-                path=f"serveLogs/{model_instance.id}",
-                proxy_client=request.app.state.http_client,
-                no_proxy_client=request.app.state.http_client_no_proxy,
-                params=params,
-                timeout=timeout,
-                on_exception=on_exception,
-                raw=True,
-            ),
-            media_type="application/octet-stream",
+    def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
+        msg = (
+            str(e)
+            if not isinstance(e, TimeoutError)
+            else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
         )
-    else:
-        resp, body = await request_to_worker(
+        return f"\x1b[999;1H{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
+
+    # Both modes stream. Reading the whole body first would hold an entire
+    # serving log in the server process, and these run to gigabytes.
+    return StreamingResponseWithStatusCode(
+        stream_to_worker(
             worker=worker,
             method="GET",
             path=f"serveLogs/{model_instance.id}",
@@ -322,10 +310,11 @@ async def get_serving_logs(  # noqa: C901
             no_proxy_client=request.app.state.http_client_no_proxy,
             params=params,
             timeout=timeout,
-        )
-        return PlainTextResponse(
-            content=body.decode() if body else "", status_code=resp.status
-        )
+            on_exception=on_exception,
+            raw=True,
+        ),
+        media_type="application/octet-stream",
+    )
 
 
 @router.get(
@@ -371,23 +360,34 @@ async def download_serving_logs(
         )
 
     if len(streams) == 1:
-        return _stream_single_worker_log(request, model_instance, streams[0])
+        return await _stream_single_worker_log(request, model_instance, streams[0])
     return _stream_zipped_worker_logs(request, model_instance, streams)
 
 
-def _stream_single_worker_log(
+async def _stream_single_worker_log(
     request: Request,
     model_instance: ModelInstance,
     stream: dict,
 ) -> StreamingResponse:
-    """Stream one worker/container's logs straight through, without buffering."""
+    """Stream one worker/container's logs straight through, without buffering.
+
+    A stream the worker can measure is served with a Content-Length, which is
+    what turns a browser's download into a progress bar instead of a growing
+    byte count. The worker measures it on the same look at the files that its
+    reads are pinned to, so output arriving meanwhile cannot move it.
+    """
     filename = sanitize_filename(
         f"{model_instance.name or model_instance.id}.log", "logs"
     )
+    headers = attachment_headers(filename)
+    length, chunks = await _worker_log_download(request, model_instance, stream)
+    if length is not None:
+        headers["Content-Length"] = str(length)
+        chunks = _exact_length_chunks(chunks, length)
     return StreamingResponse(
-        _worker_log_chunks(request, model_instance, stream),
+        chunks,
         media_type="text/plain; charset=utf-8",
-        headers=attachment_headers(filename),
+        headers=headers,
     )
 
 
@@ -425,6 +425,101 @@ async def _zip_members(
         yield name, _worker_log_chunks(request, model_instance, stream)
 
 
+async def _worker_log_download(
+    request: Request,
+    model_instance: ModelInstance,
+    stream: dict,
+) -> Tuple[Optional[int], AsyncIterator[bytes]]:
+    """Start one stream's download, learning its length if the worker states it.
+
+    The whole stream is asked for as one line range. The worker answers with
+    its exact length on X-Log-Total-Bytes, measured when it planned the reads
+    the body comes from. A length measured any earlier, in a separate call,
+    would promise the files as they were then: a main log that grew meanwhile
+    pushes the newest container lines past the end. An older worker ignores
+    the range and sends the whole log, without a length.
+
+    Args:
+        request: The incoming request, for its HTTP clients.
+        model_instance: The instance being downloaded.
+        stream: One stream descriptor from _plan_log_streams.
+
+    Returns:
+        The length, or None when there is none to promise, and the body. With a
+        length, a transfer failing midway raises, so the body stops short of
+        what was promised; without one, the failure ends the file as a line.
+    """
+    # Nothing to ask, or a note of our own goes first: no length either way.
+    if stream["worker"] is None or stream["error"]:
+        return None, _worker_log_chunks(request, model_instance, stream)
+    upstream = _stream_worker_log(
+        request, model_instance, stream, offset=0, limit=_WHOLE_STREAM_LINES
+    )
+    try:
+        chunk, headers, status_code = await anext(upstream)
+    except Exception as e:
+        return None, _chunks_of(f"Failed to fetch logs: {e}\n".encode())
+    payload = chunk if isinstance(chunk, bytes) else chunk.encode()
+    if status_code >= 400:
+        failure = f"Failed to fetch logs: HTTP {status_code}: ".encode() + payload
+        return None, _chunks_of(failure)
+    declared = {name.lower(): value for name, value in headers.items()}.get(
+        "x-log-total-bytes"
+    )
+    length = (
+        int(declared)
+        if declared and declared.isascii() and declared.isdigit()
+        else None
+    )
+    return length, _download_body(payload, upstream, label_failure=length is None)
+
+
+async def _download_body(
+    first: bytes, upstream: AsyncIterator, label_failure: bool
+) -> AsyncIterator[bytes]:
+    if first:
+        yield first
+    try:
+        async for chunk, _, _ in upstream:
+            yield chunk if isinstance(chunk, bytes) else chunk.encode()
+    except Exception as e:
+        if not label_failure:
+            raise
+        yield f"\nFailed to fetch logs: {e}\n".encode()
+
+
+async def _chunks_of(*chunks: bytes) -> AsyncIterator[bytes]:
+    for chunk in chunks:
+        yield chunk
+
+
+def _stream_worker_log(
+    request: Request,
+    model_instance: ModelInstance,
+    stream: dict,
+    offset: Optional[int] = None,
+    limit: int = 1000,
+):
+    """The worker's (chunk, headers, status) stream of one log, for a download."""
+    return stream_to_worker(
+        worker=stream["worker"],
+        method="GET",
+        path=f"serveLogs/{model_instance.id}",
+        proxy_client=request.app.state.http_client,
+        no_proxy_client=request.app.state.http_client_no_proxy,
+        params=_build_serve_log_params(
+            model_instance,
+            container_name=stream["container_internal"],
+            offset=offset,
+            limit=limit,
+        ),
+        timeout=aiohttp.ClientTimeout(
+            total=None, sock_connect=5, sock_read=_LOG_DOWNLOAD_IDLE_TIMEOUT
+        ),
+        raw=True,
+    )
+
+
 async def _worker_log_chunks(
     request: Request,
     model_instance: ModelInstance,
@@ -444,20 +539,9 @@ async def _worker_log_chunks(
             "this log covers the main workload only.\n"
         ).encode()
 
-    params = _build_serve_log_params(
-        model_instance, container_name=stream["container_internal"]
-    )
-    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
     try:
-        async for chunk, _, status_code in stream_to_worker(
-            worker=worker,
-            method="GET",
-            path=f"serveLogs/{model_instance.id}",
-            proxy_client=request.app.state.http_client,
-            no_proxy_client=request.app.state.http_client_no_proxy,
-            params=params,
-            timeout=timeout,
-            raw=True,
+        async for chunk, _, status_code in _stream_worker_log(
+            request, model_instance, stream
         ):
             payload = chunk if isinstance(chunk, bytes) else chunk.encode()
             # Label an error body so it can't be read as real log output.
@@ -475,6 +559,8 @@ def _build_serve_log_params(
     follow: bool = False,
     previous: bool = False,
     container_name: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: int = 1000,
 ) -> dict:
     """Proxy params for one container's logs; defaults to a full, non-follow read."""
     params = {
@@ -485,13 +571,81 @@ def _build_serve_log_params(
     }
     if container_name:
         params["container_name"] = container_name
+    if offset is not None:
+        params["offset"] = offset
+        params["limit"] = limit
+    model_file_id = _downloading_model_file_id(model_instance)
+    if model_file_id is not None:
+        params["model_file_id"] = model_file_id
+    return params
+
+
+# A download has no deadline: a log the size cap does not bound legitimately
+# takes longer than any total timeout worth setting. What replaces it is a
+# liveness check -- this long without a byte and the transfer is dead, not slow.
+_LOG_DOWNLOAD_IDLE_TIMEOUT = 120
+
+_DOWNLOAD_SHORTFALL_NOTE = b"\n... the log changed while it was downloading ...\n"
+
+# Past this much missing, the transfer failed rather than the log moved, and
+# padding out the rest would hand the client a whole-looking file of filler.
+_MAX_SHORTFALL_PADDING = 64 * 1024
+
+# The line limit that asks for a whole stream: a range has no other way to say
+# it runs to the end.
+_WHOLE_STREAM_LINES = sys.maxsize
+
+
+def _downloading_model_file_id(model_instance: ModelInstance) -> Optional[int]:
+    """The model file whose download log belongs in this instance's logs.
+
+    Args:
+        model_instance: The instance being read.
+
+    Returns:
+        The model file id, or None once the weights are in place and the
+        download log has nothing left to say.
+    """
     if (
         model_instance.state != ModelInstanceStateEnum.RUNNING
         and model_instance.model_files
         and model_instance.model_files[0].state != ModelFileStateEnum.READY
     ):
-        params["model_file_id"] = model_instance.model_files[0].id
-    return params
+        return model_instance.model_files[0].id
+    return None
+
+
+async def _exact_length_chunks(chunks: AsyncIterator[bytes], expected: int):
+    """Hold the body to the length Content-Length promised, within reason.
+
+    The reads are pinned to the length, so the body can only fall short of it:
+    a file the reads had not reached yet was cut or rewritten under them. That
+    is a log that changed, not a broken connection, which is what a client
+    reads a short body as. A shortfall too large to be movement is a transfer
+    that failed, and there the broken connection is the honest answer -- as it
+    is for a transfer that raises.
+
+    Args:
+        chunks: The stream's bytes.
+        expected: The length already promised to the client.
+
+    Yields:
+        Exactly `expected` bytes, unless the stream fell so far short that the
+        body is better left incomplete.
+    """
+    written = 0
+    async for chunk in chunks:
+        if written + len(chunk) > expected:
+            chunk = chunk[: expected - written]
+        if chunk:
+            yield chunk
+            written += len(chunk)
+        if written >= expected:
+            return
+    shortfall = expected - written
+    if 0 < shortfall <= _MAX_SHORTFALL_PADDING:
+        note = _DOWNLOAD_SHORTFALL_NOTE[:shortfall]
+        yield note + b" " * (shortfall - len(note))
 
 
 async def _discover_worker_containers(

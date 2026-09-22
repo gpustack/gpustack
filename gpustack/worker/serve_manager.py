@@ -1,17 +1,17 @@
 import asyncio
-from collections import deque
 import contextlib
 from datetime import datetime, timezone
 import json
 import multiprocessing
 import re
+import shutil
 import threading
 import time
 
 import requests
 import setproctitle
 import os
-from typing import Dict, Optional, Set, List, Callable
+from typing import Dict, Optional, Set, List, Callable, Tuple
 from pathlib import Path
 import logging
 
@@ -47,10 +47,17 @@ from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.custom import CustomServer
 from gpustack.worker.log_sources import (
-    existing_legacy_main_log,
-    extract_container_restart_count,
-    extract_restart_count,
+    CappedLogWriter,
+    canonical_log_path,
+    container_log_path,
+    find_instance_log_dir,
+    flat_instance_logs,
+    instance_log_dir,
     legacy_main_log_path,
+    main_log_path,
+    restart_log_dirs,
+    sidecar_container_log_path,
+    tail_shard_log_paths,
 )
 from gpustack.worker.model_meta import get_meta_from_running_instance
 from gpustack.client import ClientSet
@@ -81,14 +88,14 @@ _WORKLOAD_FAILED_MESSAGE = "Inference server exited or unhealthy."
 # EOF; beyond that gpustack marks it ERROR and takes over recovery.
 LOG_RECONNECT_GRACE_SECONDS = envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL + 2
 
-# Tail read when seeding a resumed anchor; widened up to the max for a record
-# longer than one read.
+# Read behind the end of a log when trimming a fragment a killed worker left.
 _LOG_TAIL_CHUNK_SIZE = 8192
-_LOG_TAIL_MAX_READ = 1 << 20
 
-# How long a seeded anchor may hold back a followed stream before rewriting.
-# A line count cannot bound this: live output reaches the same skip as replay.
-_LOG_RESUME_SKIP_TIMEOUT = 30.0
+# Written into the archive where the runtime could not replay from the cursor.
+_LOG_GAP_MARKER = (
+    "... reconnected here; the container runtime could no longer replay from "
+    "{timestamp}, so some lines may be missing ...\n"
+)
 
 # Global lock for port assignment to avoid pickle serialization issues
 _port_lock = threading.Lock()
@@ -144,72 +151,248 @@ def _parse_allocated_accelerators(annotations: Optional[Dict[str, str]]) -> List
     return accelerators
 
 
-def _tail_lines(log_path: str, count: int) -> List[str]:
-    """The last `count` complete lines of a log file, or [] if unreadable.
+# The runtime prefixes every streamed line with an RFC3339Nano timestamp and a
+# space. Go trims the fraction's trailing zeros, so the prefix has no fixed
+# width and can only be split on the first space.
+_LOG_TIMESTAMP_RE = re.compile(
+    r'^(?P<stamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})'
+    r'(?:\.\d+)?(?P<offset>Z|[+-]\d{2}:\d{2})$'
+)
 
-    Splits on '\\n' alone to match the runtime's log framing: str.splitlines()
-    also splits on '\\r', so one progress-bar line would become several pieces
-    that can never equal one streamed line.
+
+def _split_log_timestamp(text: str) -> Tuple[Optional[int], str]:
+    """Take the runtime's timestamp prefix off one streamed chunk.
 
     Args:
-        log_path: Path to the log file.
-        count: Maximum number of lines to return.
+        text: One chunk as the runtime yielded it.
 
     Returns:
-        The trailing lines, newlines included, oldest first.
+        (epoch second, the chunk without its prefix). The epoch is None when
+        the chunk carries no prefix to read.
+    """
+    prefix, separator, rest = text.partition(' ')
+    if not separator:
+        return None, text
+    match = _LOG_TIMESTAMP_RE.match(prefix)
+    if not match:
+        return None, text
+    moment = datetime.strptime(match.group("stamp"), "%Y-%m-%dT%H:%M:%S")
+    epoch = int(moment.replace(tzinfo=timezone.utc).timestamp())
+    offset = match.group("offset")
+    if offset != 'Z':
+        minutes = int(offset[1:3]) * 60 + int(offset[4:6])
+        epoch += minutes * 60 if offset[0] == '-' else -minutes * 60
+    return epoch, rest
+
+
+def _streamed_lines(log_stream, stop_event: threading.Event):
+    """Strip the runtime's timestamp prefix off each chunk as it arrives.
+
+    One chunk is usually one line, but a line past 16 KiB arrives in several
+    and a progress bar redrawing in place may never end one at all. Text is
+    passed straight on so nothing waits on a newline that may be minutes away;
+    the flag is what tells a caller a line just finished.
+
+    Args:
+        log_stream: The runtime's chunk iterator.
+        stop_event: Event to signal the thread to stop.
+
+    Yields:
+        (epoch second, text, whether the text ends a line) triples.
+    """
+    for chunk in log_stream:
+        if stop_event.is_set():
+            return
+        text = (
+            chunk.decode('utf-8', errors='replace')
+            if isinstance(chunk, bytes)
+            else str(chunk)
+        )
+        epoch, content = _split_log_timestamp(text)
+        yield epoch, content, text.endswith('\n')
+
+
+def _log_archive_is_empty(log_path: str) -> bool:
+    """Whether an archive holds nothing yet -- the only case that may open 'w'.
+
+    Args:
+        log_path: Path to the archive's head.
+
+    Returns:
+        True when the file is missing or zero length.
     """
     try:
-        with open(log_path, 'rb') as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            read_size = _LOG_TAIL_CHUNK_SIZE
-            while True:
-                f.seek(max(0, size - read_size))
-                text = f.read().decode('utf-8', errors='replace')
-
-                # Drop whatever follows the final '\n', and the first line when
-                # the read boundary cut it.
-                lines = [line + '\n' for line in text.split('\n')[:-1]]
-                if read_size < size and lines:
-                    lines.pop(0)
-
-                # Widen instead of reporting "no anchor": the caller would then
-                # reopen in 'w' and delete the history it is adopting.
-                if lines or read_size >= size or read_size >= _LOG_TAIL_MAX_READ:
-                    return lines[-count:]
-                read_size *= 2
+        return Path(log_path).stat().st_size == 0
     except OSError:
-        return []
+        return True
+
+
+# Fixed-width, so an update overwrites the previous record whole.
+_CURSOR_RECORD = "{epoch:020d} {count:012d}\n"
+_CURSOR_RE = re.compile(r'^(?P<epoch>\d{20}) (?P<count>\d{12})\n$')
+
+# How often the cursor reaches disk. A worker killed between writes resumes at
+# most this far back, which costs duplicated lines -- never lost ones.
+_CURSOR_STORE_INTERVAL = 1.0
+
+
+class _LogCursor:
+    """Where the copier left off in a container's log stream.
+
+    An epoch second plus how many of that second's lines the archive already
+    holds. A runtime can only be asked to resume at a whole second, so the
+    count is what keeps the rest of that second from arriving twice. Counting
+    is enough because a stream and its replay are the same append-only file
+    read in the same order.
+
+    Stored beside the archive so a worker restart resumes the way a reconnect
+    does, and written through a temporary file so a kill cannot leave half a
+    record behind.
+    """
+
+    def __init__(self, log_path: str):
+        self.path = Path(f"{log_path}.cursor")
+        self.epoch: Optional[int] = None
+        self.count = 0
+        # Whether the position was invented rather than recorded: no line the
+        # archive holds sits behind it, so nothing a replay skips proves a seam.
+        self.synthesized = False
+        self._stored_at = 0.0
+
+    def load(self):
+        """Read the position a previous worker process left behind."""
+        try:
+            match = _CURSOR_RE.match(self.path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return
+        if match:
+            self.epoch = int(match.group("epoch"))
+            self.count = int(match.group("count"))
+            # Only an invented position is stored with nothing counted behind it.
+            self.synthesized = self.count == 0
+
+    def note(self, epoch: Optional[int]):
+        """Record that one more line has reached the archive."""
+        if epoch is None:
+            return
+        if epoch != self.epoch:
+            self.epoch, self.count = epoch, 0
+        self.count += 1
+        self.synthesized = False
+        if time.monotonic() - self._stored_at >= _CURSOR_STORE_INTERVAL:
+            self.store()
+
+    def clear(self):
+        """Forget the position, and the file holding it."""
+        self.epoch, self.count = None, 0
+        self.synthesized = False
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(f"Failed to remove the log cursor {self.path}: {e}")
+
+    def store(self):
+        """Put the current position on disk."""
+        if self.epoch is None:
+            return
+        self._stored_at = time.monotonic()
+        temporary = self.path.with_name(f"{self.path.name}.tmp")
+        try:
+            temporary.write_text(
+                _CURSOR_RECORD.format(epoch=self.epoch, count=self.count),
+                encoding='utf-8',
+            )
+            os.replace(temporary, self.path)
+        except OSError as e:
+            logger.warning(f"Failed to record the log cursor {self.path}: {e}")
+
+
+class _ReplaySkipper:
+    """Tells the lines a reconnect replays from the ones the archive lacks.
+
+    Everything before the cursor's second is already there, and so are the
+    first lines of that second -- the runtime replays them in the order it
+    streamed them, so counting them off is enough to find where to resume.
+    """
+
+    def __init__(self, cursor: _LogCursor):
+        self._epoch = cursor.epoch
+        self._remaining = cursor.count
+
+    def skip(self, epoch: Optional[int]) -> bool:
+        if self._epoch is None:
+            return False
+        # A line with no timestamp says nothing about where the replay is.
+        if epoch is None:
+            return False
+        if epoch > self._epoch:
+            self._replaying_done()
+            return False
+        if epoch < self._epoch:
+            return True
+        if self._remaining == 0:
+            self._replaying_done()
+            return False
+        self._remaining -= 1
+        return True
+
+    def _replaying_done(self):
+        # The replay is a prefix: once one line is new, so is every later one,
+        # whatever the clock stamps on it after stepping back.
+        self._epoch = None
 
 
 def _drop_partial_last_line(log_path: str):
-    """Truncate a log file's trailing line when it carries no newline.
+    """Truncate an archive's trailing line when it carries no newline.
 
     A worker killed mid-write leaves a fragment; the runtime replays that line
-    whole, so appending after the fragment would join the two.
+    whole, so appending after the fragment would join the two. A runtime sends
+    a long line in 16 KiB pieces, so the fragment can be any length: a segment
+    holding nothing but a fragment is emptied, and the fragment's start looked
+    for in the one before, as a line that never ends rolls over mid-line.
 
     Args:
-        log_path: Path to the log file.
+        log_path: Path to the archive's head.
+    """
+    head = Path(log_path)
+    for segment in reversed([head, *tail_shard_log_paths(head)]):
+        if _ends_at_a_line_end(segment):
+            return
+
+
+def _ends_at_a_line_end(log_path: Path) -> bool:
+    """Truncate one segment back to its last newline.
+
+    Returns:
+        Whether it now ends at one; False when no newline was left to keep.
     """
     try:
         with open(log_path, 'rb') as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            if size == 0:
-                return
-            f.seek(size - 1)
+            end = f.seek(0, os.SEEK_END)
+            if end == 0:
+                return False
+            f.seek(end - 1)
             if f.read(1) == b'\n':
-                return
-            f.seek(max(0, size - _LOG_TAIL_CHUNK_SIZE))
-            chunk = f.read()
-
-        last_newline = chunk.rfind(b'\n')
-        if last_newline < 0:
-            # No boundary within reach; resume degrades to a rewrite anyway.
-            return
-        os.truncate(log_path, size - (len(chunk) - last_newline - 1))
+                return True
+            keep = 0
+            position = end
+            while position > 0:
+                start = max(0, position - _LOG_TAIL_CHUNK_SIZE)
+                f.seek(start)
+                last_newline = f.read(position - start).rfind(b'\n')
+                if last_newline >= 0:
+                    keep = start + last_newline + 1
+                    break
+                position = start
+        os.truncate(log_path, keep)
+        return keep > 0
+    except FileNotFoundError:
+        # A fresh archive: nothing written yet, so nothing to trim.
+        return False
     except OSError as e:
         logger.warning(f"Failed to trim the partial last line of {log_path}: {e}")
+        # Trimming the segments before this one would not help.
+        return True
 
 
 class _LogPersistence:
@@ -221,38 +404,55 @@ class _LogPersistence:
     threads are joined, with no joined thread waiting on that lock.
     """
 
-    def __init__(self, stop_event: threading.Event, main_thread: threading.Thread):
+    def __init__(
+        self,
+        stop_event: threading.Event,
+        main_thread: threading.Thread,
+        restart_count: int,
+    ):
         self.stop_event = stop_event
         self.main_thread = main_thread
+        # Which restart's files the generation writes.
+        self.restart_count = restart_count
         self._lock = threading.Lock()
         self._stopping = False
         self._aux_threads: List[threading.Thread] = []
         self._aux_stop_events: List[threading.Event] = []
 
-    def add_aux_thread(
+    def start_aux_thread(
         self, thread: threading.Thread, stop_event: Optional[threading.Event] = None
-    ):
-        """Track a thread of this generation, or stop it if teardown has begun.
+    ) -> bool:
+        """Start a thread of this generation, unless teardown has begun.
+
+        Tracked and started in one step: a thread started outside it could
+        slip past a stop() already under way, which would then report the
+        generation gone while the thread still writes.
 
         Args:
-            thread: The thread to track.
+            thread: The thread to start.
             stop_event: Its own stop event, if it has one.
+
+        Returns:
+            Whether it was started.
         """
         with self._lock:
-            if not self._stopping:
-                self._aux_threads.append(thread)
-                if stop_event is not None:
-                    self._aux_stop_events.append(stop_event)
-                return
-        if stop_event is not None:
-            stop_event.set()
+            if self._stopping:
+                return False
+            self._aux_threads.append(thread)
+            if stop_event is not None:
+                self._aux_stop_events.append(stop_event)
+            thread.start()
+            return True
 
-    def stop(self, model_instance_id: int, timeout: float):
+    def stop(self, model_instance_id: int, timeout: float) -> bool:
         """Signal every thread of this generation and wait for it to finish.
 
         Args:
             model_instance_id: The model instance ID, for logging.
             timeout: Maximum time to wait for each thread (seconds).
+
+        Returns:
+            Whether every thread of the generation is now gone.
         """
         self.stop_event.set()
         with self._lock:
@@ -263,14 +463,17 @@ class _LogPersistence:
         for stop_event in stop_events:
             stop_event.set()
 
+        gone = True
         for thread in threads:
             if thread and thread.is_alive():
                 thread.join(timeout=timeout)
                 if thread.is_alive():
+                    gone = False
                     logger.warning(
                         f"Log persistence thread {thread.name} for model instance "
                         f"{model_instance_id} did not stop within {timeout}s"
                     )
+        return gone
 
 
 def _describe_workload_failure(workload) -> str:
@@ -994,7 +1197,8 @@ class ServeManager:
             headers=client_headers,
         )
 
-        with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
+        Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
+        with CappedLogWriter(log_file_path) as log_file:
             with RedirectStdoutStderr(log_file):
                 try:
                     server_cls = _SERVER_CLASS_MAPPING.get(backend, CustomServer)
@@ -1279,12 +1483,15 @@ class ServeManager:
             mi: The model instance.
 
         Returns:
-            Log file path with format: {log_dir}/{model_instance_id}.{restart_count}.log
+            Log file path with format:
+            {log_dir}/{name}.{model_instance_id}/{restart_count}/main.log
         """
         restart_count = mi.restart_count or 0
-        return f"{self._serve_log_dir}/{mi.id}.{restart_count}.log"
+        return str(
+            main_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
+        )
 
-    def _persist_container_logs(  # noqa: C901
+    def _persist_container_logs(
         self,
         workload_name: str,
         log_path: str,
@@ -1294,12 +1501,12 @@ class ServeManager:
     ):
         """Persist container logs to local file (runs in a separate thread).
 
-        Reconnects on stream EOF while the workload is still alive, resuming by
-        skipping already-written history (matched by an anchor window of the
-        last lines written). A manual/runtime restart briefly looks terminated
-        at EOF, so it waits a grace window for the container to return before
-        giving up. Exits only if the container stays terminated for that whole
-        window or the thread is asked to stop.
+        Reconnects on stream EOF while the workload is still alive, resuming
+        from a timestamp cursor rather than from the archive's contents. A
+        manual/runtime restart briefly looks terminated at EOF, so it waits a
+        grace window for the container to return before giving up. Exits only
+        if the container stays terminated for that whole window or the thread
+        is asked to stop.
 
         Args:
             workload_name: Name of the container workload
@@ -1311,89 +1518,36 @@ class ServeManager:
                 appending to it instead of rewriting it from the runtime's replay.
         """
         retry_count = 0
-        first_connect = True
-        # Anchor: a window of the last lines written. Matching a run of lines
-        # (not one) avoids false-matching a repeated line during replay.
-        anchor_window = deque(maxlen=5)
-
-        # Only an anchor seeded from the file may be absent from the replay, so
-        # only it needs a deadline. Cleared once it matches or is retired, and
-        # each connection derives its deadline from it.
-        anchor_is_seeded = False
-
+        cursor = _LogCursor(log_path)
         if resume:
-            # Seed the anchor from the file's tail so this connection behaves
-            # like a reconnect; an empty or unreadable file keeps first_connect.
-            _drop_partial_last_line(log_path)
-            anchor_window.extend(_tail_lines(log_path, anchor_window.maxlen))
-            first_connect = not anchor_window
-            anchor_is_seeded = not first_connect
+            cursor.load()
 
         while not stop_event.is_set():
             try:
+                # A connection cut mid-line left the archive ending mid-line, and
+                # the runtime replays that line whole, so the fragment goes
+                # first -- before the cursor, as an archive of nothing but a
+                # fragment is an empty one.
+                _drop_partial_last_line(log_path)
+                self._locate_cursor(cursor, log_path)
                 log_stream = logs_workload(
                     name=workload_name,
                     token=token,
                     tail=-1,
+                    timestamps=True,
+                    since=cursor.epoch,
                     follow=True,
                 )
+                # Stopped while the runtime was connecting: the instance may be
+                # gone, and copying now would recreate its purged directory.
+                if stop_event.is_set():
+                    break
 
                 if hasattr(log_stream, '__iter__'):
-                    # On reconnect the runtime replays history from the start;
-                    # skip it until the anchor window matches.
-                    anchor = list(anchor_window)
-                    skip_until_anchor = not first_connect and bool(anchor)
-                    replayed = deque(maxlen=len(anchor)) if anchor else None
-                    received_lines = False
-                    # A followed stream never EOFs while the container lives, so
-                    # an unreplayable anchor would hold live output back forever.
-                    skip_deadline = (
-                        time.monotonic() + _LOG_RESUME_SKIP_TIMEOUT
-                        if anchor_is_seeded
-                        else None
+                    self._copy_container_log_stream(
+                        log_stream, log_path, cursor, stop_event
                     )
-                    with open(
-                        log_path,
-                        'w' if first_connect else 'a',
-                        buffering=1,
-                        encoding='utf-8',
-                    ) as f:
-                        first_connect = False
-                        for line in log_stream:
-                            received_lines = True
-                            if stop_event.is_set():
-                                break
-
-                            if isinstance(line, bytes):
-                                line = line.decode('utf-8', errors='replace')
-                            else:
-                                line = str(line)
-
-                            if skip_until_anchor:
-                                replayed.append(line)
-                                if list(replayed) == anchor:
-                                    skip_until_anchor = False
-                                    anchor_is_seeded = False
-                                elif (
-                                    skip_deadline is not None
-                                    and time.monotonic() > skip_deadline
-                                ):
-                                    break
-                                continue
-
-                            f.write(line)
-                            f.flush()
-                            anchor_window.append(line)
                     retry_count = 0
-
-                    # Anchor never matched -> rotated out; restart fresh. An
-                    # empty reconnect must NOT reset, or the next round reopens
-                    # in 'w' and truncates the saved log.
-                    if skip_until_anchor and received_lines:
-                        first_connect = True
-                        anchor_window.clear()
-                        # The rewrite rebuilds the anchor from the stream.
-                        anchor_is_seeded = False
 
                 # A restart briefly looks terminated at EOF; wait for the
                 # container to return before giving up, so logs aren't dropped.
@@ -1418,6 +1572,95 @@ class ServeManager:
                 stop_event.wait(timeout=2)
 
         logger.debug(f"Log persistence thread for {workload_name} exiting")
+
+    def _locate_cursor(self, cursor: _LogCursor, log_path: str):
+        """Point the cursor at where the next connection should resume.
+
+        Args:
+            cursor: The copier's position, adjusted in place.
+            log_path: Path to the archive's head.
+        """
+        if _log_archive_is_empty(log_path):
+            # A cursor into an archive that is gone would relocate into a log
+            # that no longer exists.
+            cursor.clear()
+        elif cursor.epoch is None:
+            # An archive written before the cursor existed says nothing about
+            # where it ends. Resuming here keeps it whole, at the cost of
+            # whatever was logged meanwhile -- which the marker announces.
+            cursor.epoch, cursor.count = int(time.time()), 0
+            cursor.synthesized = True
+
+    def _copy_container_log_stream(
+        self,
+        log_stream,
+        log_path: str,
+        cursor: _LogCursor,
+        stop_event: threading.Event,
+    ):
+        """Write one connection's lines into the archive.
+
+        The archive is opened for append unless it holds nothing at all, so no
+        reconnect can ever shorten it. When the runtime cannot replay the
+        cursor's own second, what is appended does not continue what is already
+        there, and a marker says so.
+
+        Args:
+            log_stream: The runtime's chunk iterator.
+            log_path: Path to save container logs.
+            cursor: The copier's position, advanced as lines are written.
+            stop_event: Event to signal thread to stop.
+        """
+        skipper = _ReplaySkipper(cursor)
+        relocating = cursor.epoch is not None
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        with CappedLogWriter(
+            log_path, append=not _log_archive_is_empty(log_path)
+        ) as archive:
+            # A line arrives in one chunk or in several. Whether to skip it is
+            # decided once, on the chunk that starts it, and holds until it ends.
+            starting, replayed, line_epoch = True, False, None
+            wrote, stamped = False, False
+            for epoch, text, ends_line in _streamed_lines(log_stream, stop_event):
+                stamped = stamped or epoch is not None
+                if starting:
+                    line_epoch = epoch
+                    replayed = skipper.skip(epoch)
+                    if relocating:
+                        relocating = False
+                        # An invented position skips lines the archive never
+                        # held, so the skip says nothing about the seam.
+                        if not replayed or cursor.synthesized:
+                            moment = datetime.fromtimestamp(
+                                cursor.epoch, tz=timezone.utc
+                            )
+                            archive.write(
+                                _LOG_GAP_MARKER.format(timestamp=moment.isoformat())
+                            )
+                            logger.warning(
+                                f"Container log {log_path} could not resume at "
+                                f"{moment.isoformat()}; some lines may be missing"
+                            )
+                starting = ends_line
+                if replayed:
+                    continue
+                archive.write(text)
+                archive.flush()
+                wrote = True
+                # A line the stream cut short is on disk but not behind the
+                # cursor: the next connection trims it and takes it whole.
+                if ends_line:
+                    cursor.note(line_epoch)
+        if wrote and not stamped:
+            # Nothing carried a timestamp, so the cursor did not move, and the
+            # next connection would replay from where this one began.
+            cursor.epoch, cursor.count = int(time.time()), 0
+            cursor.synthesized = True
+            logger.warning(
+                f"Container log {log_path} carries no timestamps; the next "
+                f"connection resumes from now"
+            )
+        cursor.store()
 
     def _container_still_running(self, workload_name: str) -> bool:
         """Whether the workload is still alive (a dead stream should reconnect
@@ -1456,6 +1699,7 @@ class ServeManager:
     def _discover_sidecar_logs(
         self,
         mi_id: int,
+        mi_name: str,
         workload_name: str,
         restart_count: int,
         persistence: _LogPersistence,
@@ -1469,6 +1713,7 @@ class ServeManager:
 
         Args:
             mi_id: Model instance ID
+            mi_name: Model instance name, for the log file names
             workload_name: Workload name
             restart_count: Current restart count for log file naming
             persistence: The generation record this thread belongs to.
@@ -1479,11 +1724,14 @@ class ServeManager:
         while not stop_event.is_set():
             try:
                 workload = get_workload(workload_name)
+                if stop_event.is_set():
+                    return
                 if workload and workload.loggable:
                     sidecars = [op for op in workload.loggable if op.name != "default"]
                     if sidecars:
                         self._start_sidecar_log_threads(
                             mi_id,
+                            mi_name,
                             workload_name,
                             workload.loggable,
                             restart_count,
@@ -1499,6 +1747,7 @@ class ServeManager:
     def _start_sidecar_log_threads(
         self,
         mi_id: int,
+        mi_name: str,
         workload_name: str,
         loggable_ops: list,
         restart_count: int,
@@ -1512,6 +1761,7 @@ class ServeManager:
 
         Args:
             mi_id: Model instance ID
+            mi_name: Model instance name, for the log file names
             workload_name: Workload name
             loggable_ops: List of WorkloadStatusOperation from workload.loggable
             restart_count: Current restart count for log file naming
@@ -1524,9 +1774,14 @@ class ServeManager:
             if op.name == "default":
                 continue  # Main container handled by caller thread
 
-            log_path = (
-                f"{self._serve_log_dir}/{mi_id}.container."
-                f"{op.name}.{restart_count}.log"
+            log_path = str(
+                sidecar_container_log_path(
+                    Path(self._serve_log_dir),
+                    mi_name,
+                    mi_id,
+                    op.name,
+                    restart_count,
+                )
             )
             stop_event = threading.Event()
 
@@ -1537,10 +1792,9 @@ class ServeManager:
                 daemon=True,
                 name=f"log-persist-{workload_name}-{op.name}",
             )
-            thread.start()
-
             # Tracked on this generation's record, never on the shared registry.
-            persistence.add_aux_thread(thread, stop_event)
+            if not persistence.start_aux_thread(thread, stop_event):
+                break
             names.append(op.name)
 
         if names:
@@ -1567,7 +1821,9 @@ class ServeManager:
         workload_name = deployment_metadata.name if deployment_metadata else mi.name
 
         restart_count = mi.restart_count or 0
-        log_path = f"{self._serve_log_dir}/{mi.id}.container.{restart_count}.log"
+        log_path = str(
+            container_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
+        )
 
         stop_event = threading.Event()
 
@@ -1579,26 +1835,43 @@ class ServeManager:
             daemon=True,
             name=f"log-persist-{workload_name}",
         )
-        persistence = _LogPersistence(stop_event, thread)
+        persistence = _LogPersistence(stop_event, thread, restart_count)
 
         # Sidecar discovery thread — polls until sidecar containers appear,
         # then starts additional log threads for each.
         discovery_thread = threading.Thread(
             target=self._discover_sidecar_logs,
-            args=(mi.id, workload_name, restart_count, persistence),
+            args=(mi.id, mi.name, workload_name, restart_count, persistence),
             kwargs={"resume": resume},
             daemon=True,
             name=f"log-discover-{workload_name}",
         )
-        persistence.add_aux_thread(discovery_thread)
 
         # Retire, register and start in one critical section: a concurrent start
         # would otherwise leave one generation with nothing left to signal it.
         with self._log_persistence_lock:
-            self._retire_log_persistence(mi.id)
+            if not self._retire_log_persistence(mi.id):
+                stuck = self._log_persistence[mi.id]
+                if stuck.restart_count == restart_count:
+                    # The previous generation still holds these files, and a
+                    # second writer truncates the shards it is filling. The next
+                    # sync tries again, by when it has come back from the runtime.
+                    logger.warning(
+                        f"Deferred container log persistence for {mi.name}: the "
+                        f"previous one is still running"
+                    )
+                    return
+                # An earlier restart's generation writes other files, and it
+                # has been told to stop. Waiting on it would lose this restart's
+                # logs: nothing retries a start for a container not yet running.
+                logger.warning(
+                    f"Container log persistence for {mi.name} restart "
+                    f"{stuck.restart_count} is still stopping; starting restart "
+                    f"{restart_count} beside it"
+                )
             self._log_persistence[mi.id] = persistence
             thread.start()
-            discovery_thread.start()
+            persistence.start_aux_thread(discovery_thread)
         logger.debug(f"Started container log persistence thread for {mi.name}")
 
     def _ensure_container_log_persistence(self, mi: ModelInstance):
@@ -1619,7 +1892,11 @@ class ServeManager:
         if persistence and persistence.main_thread.is_alive():
             return
 
+        # The directory is renamed first: filing a legacy log under the current
+        # name beforehand would create a second directory for the same id.
+        self._align_instance_log_dir(mi)
         self._align_legacy_main_log(mi)
+        self._migrate_flat_logs(mi)
         logger.info(
             f"Re-attaching container log persistence for adopted model instance "
             f"{mi.name}"
@@ -1640,10 +1917,57 @@ class ServeManager:
             numbered_log = Path(self._get_numbered_log_path(mi))
             if not legacy_log.exists() or numbered_log.exists():
                 return
+            numbered_log.parent.mkdir(parents=True, exist_ok=True)
             legacy_log.rename(numbered_log)
             logger.info(f"Renamed legacy serve log {legacy_log} to {numbered_log}")
         except Exception as e:
             logger.warning(f"Failed to align legacy serve log for {mi.name}: {e}")
+
+    def _align_instance_log_dir(self, mi: ModelInstance):
+        """Rename an instance's log directory after its current name.
+
+        One rename moves every restart with it. Opportunistic: a directory that
+        cannot be renamed keeps its old name, which discovery still finds by id.
+
+        Args:
+            mi: The model instance.
+        """
+        log_dir = Path(self._serve_log_dir)
+        target = instance_log_dir(log_dir, mi.name, mi.id)
+        try:
+            current = find_instance_log_dir(log_dir, mi.id)
+            if current is None or current == target or target.exists():
+                return
+            current.rename(target)
+            logger.info(f"Renamed serve log directory {current.name} to {target.name}")
+        except OSError as e:
+            logger.warning(f"Failed to rename serve log directory to {target}: {e}")
+
+    def _migrate_flat_logs(self, mi: ModelInstance):
+        """Move logs an earlier release wrote into this instance's directory.
+
+        Safe under a live writer: the rename is atomic and an open handle
+        follows the inode. Opportunistic -- a file that cannot be moved keeps
+        its old place, which the reader still finds. The pre-v2.2.0 {id}.log is
+        left to _align_legacy_main_log, which files it under the current
+        restart rather than restart 0.
+
+        Args:
+            mi: The model instance.
+        """
+        log_dir = Path(self._serve_log_dir)
+        for path, parsed in flat_instance_logs(log_dir, mi.id):
+            if parsed.legacy:
+                continue
+            target = canonical_log_path(log_dir, mi.name, parsed)
+            if target == path or target.exists():
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                path.rename(target)
+                logger.info(f"Moved serve log {path.name} to {target}")
+            except OSError as e:
+                logger.warning(f"Failed to move serve log {path} to {target}: {e}")
 
     def _stop_container_log_persistence(
         self, model_instance_id: int, timeout: float = 2.0
@@ -1654,10 +1978,14 @@ class ServeManager:
             model_instance_id: The model instance ID
             timeout: Maximum time to wait for each thread to stop (seconds)
         """
+        # A thread still inside the runtime stays registered and exits on its
+        # stop event once the stream returns; nothing retries the stop.
         with self._log_persistence_lock:
             self._retire_log_persistence(model_instance_id, timeout)
 
-    def _retire_log_persistence(self, model_instance_id: int, timeout: float = 2.0):
+    def _retire_log_persistence(
+        self, model_instance_id: int, timeout: float = 2.0
+    ) -> bool:
         """Drop a model instance's log persistence generation and wait it out.
 
         The caller must hold ``_log_persistence_lock``; joining under it is safe
@@ -1666,10 +1994,20 @@ class ServeManager:
         Args:
             model_instance_id: The model instance ID
             timeout: Maximum time to wait for each thread to stop (seconds)
+
+        Returns:
+            Whether nothing of the generation is left running.
         """
-        persistence = self._log_persistence.pop(model_instance_id, None)
-        if persistence:
-            persistence.stop(model_instance_id, timeout)
+        persistence = self._log_persistence.get(model_instance_id)
+        if persistence is None:
+            return True
+        stopped = persistence.stop(model_instance_id, timeout)
+        if stopped:
+            del self._log_persistence[model_instance_id]
+        # A generation that outlasted the wait stays registered: it is still
+        # holding the log files, and dropping it here would leave the next
+        # start with nothing to find and nothing to wait for.
+        return stopped
 
     def _cleanup_old_logs(self, model_instance_id: int, current_restart_count: int):
         """Keep serve logs for restart_count in {R, R-1}.
@@ -1681,101 +2019,70 @@ class ServeManager:
             self._purge_instance_logs(model_instance_id)
             return
 
+        keep = {current_restart_count, current_restart_count - 1}
+        log_dir = Path(self._serve_log_dir)
+
+        # Runs before every start, and a failed listing must not stop one.
         try:
-            log_dir = Path(self._serve_log_dir)
-
-            # Separate main logs, container logs, and sidecar container logs
-            main_log_pattern = f"{model_instance_id}.*.log"
-            all_main_logs = [
-                f for f in log_dir.glob(main_log_pattern) if '.container.' not in f.name
-            ]
-
-            # The glob cannot match {id}.log; it takes part as restart 0.
-            legacy_log = existing_legacy_main_log(log_dir, model_instance_id)
-            if legacy_log:
-                all_main_logs.append(legacy_log)
-
-            container_log_pattern = f"{model_instance_id}.container.*.log"
-            all_container_files = list(log_dir.glob(container_log_pattern))
-
-            # Split into default container logs (e.g., 42.container.0.log)
-            # and sidecar container logs (e.g., 42.container.ray-head.0.log)
-            default_container_logs = [
-                f
-                for f in all_container_files
-                if extract_container_restart_count(f.name) > 0
-                or re.match(rf'{model_instance_id}\.container\.\d+\.log', f.name)
-            ]
-            sidecar_container_logs = [
-                f for f in all_container_files if f not in default_container_logs
-            ]
-
-            self._cleanup_log_type(all_main_logs, current_restart_count, "main")
-            self._cleanup_log_type(
-                default_container_logs, current_restart_count, "container"
-            )
-            self._cleanup_log_type(
-                sidecar_container_logs, current_restart_count, "sidecar_container"
-            )
-
+            restart_dirs = restart_log_dirs(log_dir, model_instance_id)
+            flat_logs = flat_instance_logs(log_dir, model_instance_id)
         except Exception as e:
             logger.error(f"Failed to cleanup old logs for {model_instance_id}: {e}")
+            return
 
-    def _cleanup_log_type(
-        self,
-        log_files: List[Path],
-        current_restart_count: int,
-        log_type: str,
-    ):
-        """Delete log files whose restart_count is not current or previous."""
-
-        keep = {current_restart_count}
-        if current_restart_count > 0:
-            keep.add(current_restart_count - 1)
-
-        def _extract_sidecar_restart_count(filename: str) -> int:
-            """Extract restart count from {id}.container.{name}.{restart_count}.log"""
-            match = re.match(r'\d+\.container\.[^.]+\.(\d+)\.log', filename)
-            return int(match.group(1)) if match else 0
-
-        extract_fns = {
-            "main": extract_restart_count,
-            "container": extract_container_restart_count,
-            "sidecar_container": _extract_sidecar_restart_count,
-        }
-        extract_fn = extract_fns.get(log_type, extract_container_restart_count)
-
-        for f in log_files:
-            rc = extract_fn(f.name)
-            if rc in keep:
+        for restart_count, path in restart_dirs.items():
+            if restart_count in keep:
                 continue
             try:
-                f.unlink()
-                logger.info(f"Deleted old {log_type} log file: {f}")
-            except Exception as e:
-                logger.warning(f"Failed to delete {log_type} log file {f}: {e}")
+                shutil.rmtree(path)
+                logger.info(f"Deleted serve logs of restart {restart_count}: {path}")
+            except OSError as e:
+                logger.warning(f"Failed to delete serve log directory {path}: {e}")
+
+        # Whatever an earlier release left flat is retired by the same window.
+        # An unreadable name never reaches here, so no window can retire it.
+        for path, parsed in flat_logs:
+            if parsed.restart_count in keep:
+                continue
+            try:
+                path.unlink()
+                logger.info(f"Deleted old serve log file: {path}")
+            except OSError as e:
+                logger.warning(f"Failed to delete serve log file {path}: {e}")
 
     def _purge_instance_logs(self, model_instance_id: int):
-        """Delete all serve logs (main/container/sidecar) for a model instance id."""
+        """Delete every serve log of a model instance id, wherever it lives.
+
+        Membership is decided by the parsed id, never by a glob: this feeds a
+        delete, so a name the layout cannot read is left alone.
+        """
+        log_dir = Path(self._serve_log_dir)
+
+        # Runs before a fresh start, and a failed listing must not stop it.
         try:
-            log_dir = Path(self._serve_log_dir)
-            files = list(log_dir.glob(f"{model_instance_id}.*.log"))
-
-            # The glob cannot match {id}.log, which a reused id would inherit.
-            legacy_log = existing_legacy_main_log(log_dir, model_instance_id)
-            if legacy_log:
-                files.append(legacy_log)
-
-            for f in files:
-                try:
-                    f.unlink()
-                    logger.info(f"Deleted serve log file: {f}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete serve log file {f}: {e}")
+            instance_dir = find_instance_log_dir(log_dir, model_instance_id)
+            flat_logs = flat_instance_logs(log_dir, model_instance_id)
         except Exception as e:
             logger.error(
                 f"Failed to purge logs for model instance {model_instance_id}: {e}"
             )
+            return
+
+        if instance_dir is not None:
+            try:
+                shutil.rmtree(instance_dir)
+                logger.info(f"Deleted serve log directory: {instance_dir}")
+            except OSError as e:
+                logger.warning(
+                    f"Failed to delete serve log directory {instance_dir}: {e}"
+                )
+
+        for path, _parsed in flat_logs:
+            try:
+                path.unlink()
+                logger.info(f"Deleted serve log file: {path}")
+            except OSError as e:
+                logger.warning(f"Failed to delete serve log file {path}: {e}")
 
     def _start_model_instance(self, mi: ModelInstance):  # noqa: C901
         """
@@ -1789,6 +2096,9 @@ class ServeManager:
             logger.warning(f"Model instance {mi.name} is provisioning. Skipping start.")
             return
 
+        # Follow a rename before anything writes under the new name, or the
+        # instance's logs end up split across two directories.
+        self._align_instance_log_dir(mi)
         # Clean up old log files before starting
         self._cleanup_old_logs(mi.id, mi.restart_count or 0)
 
