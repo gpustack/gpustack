@@ -189,6 +189,8 @@ warning.
 | `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`                  | Model instance health check interval in seconds.                                                                                | `3`     | Worker         |
 | `GPUSTACK_DISABLE_OS_FILELOCK`                                   | Disable OS file lock.                                                                                                           | `false` | Worker         |
 | `GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`               | Allow lower-minor CUDA devices to run higher-minor images. Set globally on the worker or per model; per-model takes precedence. | `false` | Worker & Model |
+| `GPUSTACK_SERVE_LOG_MAX_BYTES`                                   | Byte budget for one restart of one serving log. Past it the head is kept, the tail rotates, and a marker sits between them. `0` lifts the cap. | `67108864` | Worker |
+| `GPUSTACK_SERVE_LOG_HEAD_BYTES`                                  | How much of that budget the head keeps, written once and never rewritten. Capped at half the budget; `0` keeps no head.         | `8388608` | Worker |
 
 ### Benchmark Configuration
 

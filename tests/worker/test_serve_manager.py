@@ -1,13 +1,23 @@
+import asyncio
 from datetime import datetime, timezone
+import io
 from pathlib import Path
+import re
+import sys
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
+from gpustack.api.exceptions import BadRequestException, NotFoundException
 from gpustack.routes.worker.logs import (
+    combined_log_generator,
     get_all_log_files,
     get_serve_log_options,
+    get_serve_logs,
+    merged_log_generator,
     resolve_restart_count,
 )
 from gpustack.schemas.models import (
@@ -19,12 +29,29 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.server.bus import Event, EventType
+from gpustack.worker.log_sources import (
+    CappedLogWriter,
+    ServeLogKind,
+    ServeLogName,
+    ServeLogSegment,
+    container_log_path,
+    extract_restart_count,
+    instance_log_dir,
+    instance_log_files,
+    main_log_path,
+    marker_log_path,
+    newest_segment_log_path,
+    parse_serve_log_path,
+    restart_log_dir,
+    sanitize_instance_name,
+    sidecar_container_log_path,
+    tail_shard_log_paths,
+)
+from gpustack.worker.logs import LogOptions, log_generator
 from gpustack.worker.serve_manager import (
-    _LOG_TAIL_CHUNK_SIZE,
     ServeManager,
     _describe_workload_failure,
     _LogPersistence,
-    _tail_lines,
 )
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
 from tests.utils.model import new_model, new_model_instance
@@ -52,9 +79,15 @@ def _fake_stop_event(max_waits: int = 100):
     return stop_event
 
 
-def _fake_thread(alive: bool):
+def _fake_thread(alive: bool, ends_on_join: bool = True):
+    """A stand-in thread. Joining one ends it, the way a real log thread back
+    from the runtime does -- unless it is the kind that outlasts the wait."""
     thread = MagicMock()
     thread.is_alive.return_value = alive
+    if ends_on_join:
+        thread.join.side_effect = lambda timeout=None: setattr(
+            thread.is_alive, "return_value", False
+        )
     return thread
 
 
@@ -196,12 +229,33 @@ def test_restart_model_instance_preserves_transient_backoff_count():
 # --- serve log discovery across the pre-v2.2.0 {id}.log naming ---
 
 
+SIDECAR_LOG = "container.ray-head.log"
+
+
 def _write_serve_logs(tmp_path: Path, *names: str) -> Path:
+    """Write flat logs, the shape earlier releases left behind."""
     serve_dir = tmp_path / "serve"
-    serve_dir.mkdir(parents=True)
+    serve_dir.mkdir(parents=True, exist_ok=True)
     for name in names:
         (serve_dir / name).write_text("x", encoding="utf-8")
     return serve_dir
+
+
+def _write_restart_logs(
+    serve_dir: Path,
+    instance_name: str,
+    model_instance_id: int,
+    restart_count: int,
+    *names: str,
+) -> Path:
+    """Write logs into one restart's directory, the shape written today."""
+    directory = restart_log_dir(
+        serve_dir, instance_name, model_instance_id, restart_count
+    )
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (directory / name).write_text("x", encoding="utf-8")
+    return directory
 
 
 @pytest.mark.asyncio
@@ -261,6 +315,877 @@ async def test_serve_log_options_after_upgrade_from_legacy_naming(tmp_path: Path
     assert response.restarts[0].containers == ["default", "ray-head"]
     assert [f.name for f in container_logs] == ["1.container.0.log"]
     assert [f.name for f in sidecar_logs] == ["1.container.ray-head.0.log"]
+
+
+@pytest.mark.asyncio
+async def test_serve_log_options_orders_restarts_newest_first(tmp_path: Path):
+    """Newest restart first, one "previous", and containers listed per restart
+    so a sidecar that ran once does not appear under the other restart."""
+    serve_dir = _write_serve_logs(
+        tmp_path,
+        "1.0.log",
+        "1.1.log",
+        "1.2.log",
+        "1.container.1.log",
+        "1.container.2.log",
+        "1.container.ray-head.2.log",
+    )
+    config = SimpleNamespace(log_dir=str(tmp_path))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=config)))
+
+    response = await get_serve_log_options(request, 1)
+
+    assert [r.previous for r in response.restarts] == [False, True, True]
+    assert [r.containers for r in response.restarts] == [
+        ["default", "ray-head"],
+        ["default"],
+        [],
+    ]
+    assert serve_dir.exists()
+
+
+async def _collect(generator) -> str:
+    return "".join([line async for line in generator])
+
+
+def _log_request(tmp_path: Path):
+    config = SimpleNamespace(log_dir=str(tmp_path))
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=config)))
+
+
+async def _read_range(
+    tmp_path: Path,
+    model_instance_id: int,
+    model_file_id=None,
+    container_name=None,
+    **options,
+):
+    # Every query parameter is passed: called outside FastAPI, an omitted one
+    # keeps its Query() default object rather than resolving to None.
+    response = await get_serve_logs(
+        _log_request(tmp_path),
+        model_instance_id,
+        LogOptions(**options),
+        model_instance_name="",
+        model_file_id=model_file_id,
+        container_name=container_name,
+    )
+    chunks = [chunk async for chunk in response.body_iterator]
+    body = "".join(c if isinstance(c, str) else c.decode() for c in chunks)
+    return body, response.headers
+
+
+@pytest.mark.asyncio
+async def test_a_line_range_reads_one_deterministic_stream(tmp_path: Path):
+    """Page numbers only mean something if the same offset names the same line
+    every time. The follow path merges download and main concurrently, so the
+    range path has to concatenate instead of merge."""
+    serve_dir = tmp_path / "serve"
+    directory = restart_log_dir(serve_dir, "qwen", 1, 0)
+    directory.mkdir(parents=True)
+    (directory / "main.log").write_text("m1\nm2\n", encoding="utf-8")
+    (directory / "main.log.truncated").write_text("... omitted ...\n", encoding="utf-8")
+    (directory / "main.log.1").write_text("m3\n", encoding="utf-8")
+    (directory / "container.log").write_text("c1\nc2\n", encoding="utf-8")
+    (serve_dir / "model_file_9.download.log").write_text("d1\n", encoding="utf-8")
+
+    first, headers = await _read_range(tmp_path, 1, 9, offset=0, limit=10)
+    again, _ = await _read_range(tmp_path, 1, 9, offset=0, limit=10)
+
+    assert first == again
+    assert first == "d1\nm1\nm2\n... omitted ...\nm3\nc1\nc2\n"
+    assert headers["X-Log-Total-Lines"] == "7"
+
+    page, headers = await _read_range(tmp_path, 1, 9, offset=4, limit=2)
+    assert page == "m3\nc1\n"
+    assert (headers["X-Log-Offset"], headers["X-Log-Line-Count"]) == ("4", "2")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflicting", [{"follow": True}, {"tail": 50}])
+async def test_a_line_range_refuses_to_follow_or_tail(tmp_path: Path, conflicting):
+    """Both name a different line for the same offset on the next request, so
+    they cannot be combined with one."""
+    with pytest.raises(BadRequestException):
+        await _read_range(tmp_path, 1, offset=0, limit=10, **conflicting)
+
+
+@pytest.mark.asyncio
+async def test_serve_log_options_measures_each_stream(tmp_path: Path):
+    """The viewer sizes its pager off these, and has to be told when the size
+    cap means the log it is paging is not the whole log. A run that died before
+    its container started has only its main log, and is measured all the same:
+    it is the one a download is most often taken of."""
+    serve_dir = tmp_path / "serve"
+    directory = restart_log_dir(serve_dir, "qwen", 1, 0)
+    directory.mkdir(parents=True)
+    (directory / "main.log").write_text("m1\nm2\n", encoding="utf-8")
+    (directory / "container.log").write_text("c1\n", encoding="utf-8")
+    (directory / "container.log.truncated").write_text(
+        "... gone ...\n", encoding="utf-8"
+    )
+    (directory / SIDECAR_LOG).write_text("s1\ns2\ns3\n", encoding="utf-8")
+    _write_restart_logs(serve_dir, "qwen", 1, 1, "main.log")
+
+    response = await get_serve_log_options(_log_request(tmp_path), 1)
+
+    died_early, earlier = response.restarts
+    assert died_early.containers == []
+    assert list(died_early.container_stats) == ["default"]
+    assert died_early.container_stats["default"].size_bytes == 1
+
+    stats = earlier.container_stats
+    assert sorted(stats) == ["default", "ray-head"]
+    assert (stats["default"].line_count, stats["default"].truncated) == (4, True)
+    assert (stats["ray-head"].line_count, stats["ray-head"].truncated) == (3, False)
+    assert stats["ray-head"].size_bytes == 9
+
+
+@pytest.mark.asyncio
+async def test_combined_log_generator_streams_download_and_main_before_container(
+    tmp_path: Path,
+):
+    """Only the restart being viewed is streamed, and the container output
+    trails the rest. Download and main are merged concurrently, so asserting an
+    order between those two would be asserting a race."""
+    serve_dir = _write_serve_logs(tmp_path)
+    (serve_dir / "1.0.log").write_text("older-main\n", encoding="utf-8")
+    (serve_dir / "1.1.log").write_text("current-main\n", encoding="utf-8")
+    (serve_dir / "1.container.1.log").write_text(
+        "current-container\n", encoding="utf-8"
+    )
+    download_log = tmp_path / "download.log"
+    download_log.write_text("downloading\n", encoding="utf-8")
+
+    output = await _collect(
+        combined_log_generator(serve_dir, 1, str(download_log), LogOptions(), "inst")
+    )
+
+    assert sorted(output.splitlines()) == [
+        "current-container",
+        "current-main",
+        "downloading",
+    ]
+    assert output.splitlines()[-1] == "current-container"
+
+
+@pytest.mark.asyncio
+async def test_combined_log_generator_serves_the_previous_restart(tmp_path: Path):
+    """``previous`` selects the second highest restart_count, not the file
+    written second."""
+    serve_dir = _write_serve_logs(tmp_path)
+    (serve_dir / "1.0.log").write_text("older-main\n", encoding="utf-8")
+    (serve_dir / "1.1.log").write_text("current-main\n", encoding="utf-8")
+    (serve_dir / "1.container.0.log").write_text("older-container\n", encoding="utf-8")
+
+    output = await _collect(
+        combined_log_generator(
+            serve_dir,
+            1,
+            str(tmp_path / "absent.log"),
+            LogOptions(previous=True),
+            "inst",
+        )
+    )
+
+    assert output == "older-main\nolder-container\n"
+
+
+@pytest.mark.asyncio
+async def test_combined_log_generator_streams_only_the_named_sidecar(tmp_path: Path):
+    """Asking for a sidecar by name skips the download and main logs entirely,
+    and must not pick up the workload container's own log."""
+    serve_dir = _write_serve_logs(tmp_path)
+    (serve_dir / "1.0.log").write_text("main\n", encoding="utf-8")
+    (serve_dir / "1.container.0.log").write_text(
+        "default-container\n", encoding="utf-8"
+    )
+    (serve_dir / "1.container.ray-head.0.log").write_text("ray\n", encoding="utf-8")
+
+    output = await _collect(
+        combined_log_generator(
+            serve_dir,
+            1,
+            str(tmp_path / "absent.log"),
+            LogOptions(),
+            "inst",
+            container_name="ray-head",
+        )
+    )
+
+    assert output == "ray\n"
+
+
+@pytest.mark.asyncio
+async def test_combined_log_generator_reports_not_found_on_an_empty_directory(
+    tmp_path: Path,
+):
+    """No file of any kind is a 404, not an empty stream: "nothing was logged"
+    has to be distinguishable from "this instance is unknown here"."""
+    serve_dir = _write_serve_logs(tmp_path)
+
+    with pytest.raises(NotFoundException):
+        await _collect(
+            combined_log_generator(
+                serve_dir, 1, str(tmp_path / "absent.log"), LogOptions(), "inst"
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "relative_path, expected",
+    [
+        # The layout a current worker writes: identity in the directories, so
+        # the file name only has to say which stream it is.
+        (
+            "qwen3-6-35b-sn20w.42/7/main.log",
+            ServeLogName(42, 7, ServeLogKind.MAIN, instance_name="qwen3-6-35b-sn20w"),
+        ),
+        (
+            "qwen3-6-35b-sn20w.42/7/container.log",
+            ServeLogName(
+                42, 7, ServeLogKind.CONTAINER, instance_name="qwen3-6-35b-sn20w"
+            ),
+        ),
+        (
+            "qwen3-6-35b-sn20w.42/7/container.ray-head.log",
+            ServeLogName(
+                42,
+                7,
+                ServeLogKind.SIDECAR,
+                container_name="ray-head",
+                instance_name="qwen3-6-35b-sn20w",
+            ),
+        ),
+        # An instance whose name sanitizes to nothing keeps a bare id.
+        ("42/7/main.log", ServeLogName(42, 7, ServeLogKind.MAIN)),
+        # A size-capped log's other pieces carry the head's identity. Their
+        # suffix sits after ".log", on the other side of the name from a
+        # sidecar's container name -- which is what keeps the next two apart.
+        (
+            "qwen3-6-35b-sn20w.42/7/main.log.3",
+            ServeLogName(
+                42,
+                7,
+                ServeLogKind.MAIN,
+                instance_name="qwen3-6-35b-sn20w",
+                segment=ServeLogSegment.TAIL,
+                shard=3,
+            ),
+        ),
+        (
+            "qwen3-6-35b-sn20w.42/7/container.3.log",
+            ServeLogName(
+                42,
+                7,
+                ServeLogKind.SIDECAR,
+                container_name="3",
+                instance_name="qwen3-6-35b-sn20w",
+            ),
+        ),
+        (
+            "qwen3-6-35b-sn20w.42/7/container.ray-head.log.truncated",
+            ServeLogName(
+                42,
+                7,
+                ServeLogKind.SIDECAR,
+                container_name="ray-head",
+                instance_name="qwen3-6-35b-sn20w",
+                segment=ServeLogSegment.MARKER,
+            ),
+        ),
+        # Anything else after ".log" is not a segment.
+        ("qwen3-6-35b-sn20w.42/7/main.log.tmp", None),
+        # The three flat namings earlier releases wrote, still read so they can
+        # be migrated.
+        ("42.log", ServeLogName(42, 0, ServeLogKind.MAIN, flat=True, legacy=True)),
+        ("42.7.log", ServeLogName(42, 7, ServeLogKind.MAIN, flat=True)),
+        ("42.container.7.log", ServeLogName(42, 7, ServeLogKind.CONTAINER, flat=True)),
+        (
+            "42.container.ray-head.7.log",
+            ServeLogName(
+                42, 7, ServeLogKind.SIDECAR, container_name="ray-head", flat=True
+            ),
+        ),
+        # An all-digit container name is unambiguous once both ends are anchored:
+        # a sidecar carries two segments after "container", never one.
+        (
+            "42.container.2.7.log",
+            ServeLogName(42, 7, ServeLogKind.SIDECAR, container_name="2", flat=True),
+        ),
+        # Names that are not serve logs at all, and must stay unreadable rather
+        # than degrade to restart 0 -- retention deletes whatever sits outside
+        # the kept window, and restart 0 is outside it from restart 2 onwards.
+        ("model_file_42.download.log", None),
+        ("benchmark.log", None),
+        ("42.log.tmp", None),
+        # An unanchored pattern accepts trailing junk; this one must not.
+        ("42.7.logXYZ", None),
+        ("42.container.7.logXYZ", None),
+        # Inside a restart directory the parser is anchored to the known names,
+        # so anything else sharing the directory is not read as a log.
+        ("qwen3-6-35b-sn20w.42/7/unknown.json", None),
+        # A directory that is not an instance's, or a level that is not a
+        # restart, says nothing about any instance.
+        ("not-an-instance/7/main.log", None),
+        ("qwen3-6-35b-sn20w.42/latest/main.log", None),
+    ],
+)
+def test_serve_log_layout(relative_path, expected):
+    assert parse_serve_log_path(Path("/serve") / relative_path) == expected
+
+
+# A budget small enough to rotate within a test: a 20-byte head, 20-byte
+# shards and room for four of them.
+_TINY_CAP = {"max_bytes": 100, "head_bytes": 20}
+
+
+def _numbered_lines(start: int, stop: int) -> list:
+    return [f"line{i:03d}\n" for i in range(start, stop)]  # 8 bytes each
+
+
+def _omitted_bytes(head: Path) -> int:
+    return int(re.search(r'\.\.\. (\d+) bytes', marker_log_path(head).read_text())[1])
+
+
+def _restart_dir(tmp_path: Path) -> Path:
+    directory = restart_log_dir(tmp_path, "qwen", 42, 7)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+@pytest.mark.parametrize(
+    "build_head, kind",
+    [
+        (lambda d: main_log_path(d, "qwen", 42, 7), ServeLogKind.MAIN),
+        (lambda d: container_log_path(d, "qwen", 42, 7), ServeLogKind.CONTAINER),
+        (
+            lambda d: sidecar_container_log_path(d, "qwen", 42, "ray-head", 7),
+            ServeLogKind.SIDECAR,
+        ),
+    ],
+    ids=["main", "container", "sidecar"],
+)
+def test_a_capped_log_freezes_its_head_and_rotates_its_tail(
+    build_head, kind, tmp_path: Path
+):
+    """All three kinds are budgeted the same way: the earliest output is kept
+    verbatim, the newest keeps arriving, the disk stays inside the budget."""
+    _restart_dir(tmp_path)
+    head = build_head(tmp_path)
+
+    with CappedLogWriter(head, **_TINY_CAP) as writer:
+        writer.writelines(_numbered_lines(0, 40))
+
+    shards = tail_shard_log_paths(head)
+    assert head.read_text() == "line000\nline001\nline002\n"
+    assert shards and shards[-1].read_text().endswith("line039\n")
+    assert sum(p.stat().st_size for p in [head, *shards]) <= 100 + 20
+    assert {parse_serve_log_path(p).kind for p in [head, *shards]} == {kind}
+
+
+@pytest.mark.asyncio
+async def test_a_capped_log_reads_back_as_head_then_marker_then_tail(tmp_path: Path):
+    """Discovery hands the reader the parts in writing order, the marker
+    between them saying how much went missing."""
+    serve_dir = tmp_path / "serve"
+    head = main_log_path(serve_dir, "qwen", 42, 7)
+    head.parent.mkdir(parents=True)
+
+    with CappedLogWriter(head, **_TINY_CAP) as writer:
+        writer.writelines(_numbered_lines(0, 40))
+
+    files = await get_all_log_files(serve_dir, 42)
+    lines = "".join(f.read_text() for f in files).splitlines()
+
+    markers = [line for line in lines if "omitted here" in line]
+    assert len(markers) == 1
+    assert "216 bytes / 27 lines omitted" in markers[0]
+    marked = lines.index(markers[0])
+    assert lines[:marked] == ["line000", "line001", "line002"]
+    assert lines[marked + 1] == "line030" and lines[-1] == "line039"
+    # 3 kept at the front + 27 dropped + 10 kept at the back is the whole log.
+    assert len(lines[:marked]) + 27 + len(lines[marked + 1 :]) == 40
+
+
+def test_an_uncapped_log_is_written_exactly_as_before(tmp_path: Path):
+    """A budget of 0 leaves no trace of the mechanism: one file, byte for byte
+    what the plain line-buffered open it stands in for would write."""
+    written = ["a\n", "b" * 5000 + "\n", "no newline at the end"]
+    plain = tmp_path / "plain.log"
+    with open(plain, "w", buffering=1, encoding="utf-8") as f:
+        f.writelines(written)
+
+    head = _restart_dir(tmp_path) / "main.log"
+    with CappedLogWriter(head, max_bytes=0) as writer:
+        writer.writelines(written)
+
+    assert head.read_bytes() == plain.read_bytes()
+    assert [p.name for p in head.parent.iterdir()] == ["main.log"]
+
+
+def test_reopening_a_capped_log_continues_where_it_stopped(tmp_path: Path):
+    """A worker restart adopts the log: the frozen head stays frozen, new
+    output lands in the shard being written, and the dropped-bytes tally keeps
+    counting up from where the previous process left it."""
+    head = _restart_dir(tmp_path) / "main.log"
+    with CappedLogWriter(head, **_TINY_CAP) as writer:
+        writer.writelines(_numbered_lines(0, 40))
+    newest = newest_segment_log_path(head)
+    omitted = _omitted_bytes(head)
+
+    with CappedLogWriter(head, append=True, **_TINY_CAP) as writer:
+        writer.write("after\n")
+    assert newest.read_text().endswith("line039\nafter\n")
+    # What a resume reads back has to come from here too: the head's last line
+    # stopped being the log's last line long ago.
+    assert newest_segment_log_path(head).read_text().endswith("line039\nafter\n")
+
+    with CappedLogWriter(head, append=True, **_TINY_CAP) as writer:
+        writer.writelines(_numbered_lines(40, 80))
+    assert head.read_text() == "line000\nline001\nline002\n"
+    assert _omitted_bytes(head) > omitted
+
+    # Every byte ever written is either still on disk or counted as dropped.
+    # A tally that restarted at zero on reopening would lose the difference,
+    # and the marker would understate the hole it describes.
+    written = sum(
+        len(line)
+        for line in _numbered_lines(0, 40) + ["after\n"] + _numbered_lines(40, 80)
+    )
+    kept = head.stat().st_size + sum(
+        p.stat().st_size for p in tail_shard_log_paths(head)
+    )
+    assert kept + _omitted_bytes(head) == written
+
+
+def test_a_rewritten_log_does_not_begin_in_the_middle(tmp_path: Path):
+    """Starting a log over retires the previous one's parts too: a fresh head
+    beside an older run's tail reads as a log missing its first page."""
+    head = _restart_dir(tmp_path) / "main.log"
+    with CappedLogWriter(head, **_TINY_CAP) as writer:
+        writer.writelines(_numbered_lines(0, 40))
+
+    with CappedLogWriter(head, **_TINY_CAP) as writer:
+        writer.write("fresh\n")
+
+    assert [p.name for p in head.parent.iterdir()] == ["main.log"]
+    assert head.read_text() == "fresh\n"
+
+
+@pytest.mark.parametrize("head_bytes, head_text", [(0, ""), (1, "line000\n")])
+def test_a_small_head_does_not_cut_the_tail_into_a_file_per_write(
+    head_bytes, head_text, tmp_path: Path
+):
+    """A head of 0 keeps none. Shards sized by so small a head would each take
+    one write, so the tail is cut by the budget instead: never more than 64."""
+    head = _restart_dir(tmp_path) / "main.log"
+    with CappedLogWriter(head, max_bytes=6400, head_bytes=head_bytes) as writer:
+        writer.writelines(_numbered_lines(0, 1000))
+
+    shards = tail_shard_log_paths(head)
+    assert head.read_text() == head_text
+    assert 1 < len(shards) <= 64
+    assert shards[-1].read_text().endswith("line999\n")
+    # Each segment rolls on the write after it fills, so may hold one more line.
+    assert sum(p.stat().st_size for p in [head, *shards]) <= 6400 + 65 * 8
+
+
+def test_a_capped_log_stands_in_for_the_streams_it_replaces(tmp_path: Path):
+    """It becomes sys.stdout and sys.stderr of a serving process: any thread
+    may print while another's write rotates the file, and some libraries write
+    bytes to .buffer. Every byte is still kept or counted, and a character
+    split across two byte writes arrives whole."""
+    head = _restart_dir(tmp_path) / "main.log"
+    batches = [_numbered_lines(i * 250, (i + 1) * 250) for i in range(8)]
+    encoded = "加载完成\n".encode()
+    errors = []
+
+    def emit(writer, batch):
+        try:
+            for line in batch:
+                writer.write(line)
+        except Exception as e:
+            errors.append(e)
+
+    switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        with CappedLogWriter(head, max_bytes=2000, head_bytes=100) as writer:
+            assert isinstance(writer, io.TextIOBase)
+            writer.buffer.write(encoded[:2])
+            writer.buffer.write(encoded[2:])
+            threads = [
+                threading.Thread(target=emit, args=(writer, batch)) for batch in batches
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+    finally:
+        sys.setswitchinterval(switch_interval)
+
+    assert errors == []
+    assert head.read_text(encoding="utf-8").startswith("加载完成\n")
+    written = len(encoded) + sum(len(line) for batch in batches for line in batch)
+    kept = head.stat().st_size + sum(
+        p.stat().st_size for p in tail_shard_log_paths(head)
+    )
+    assert kept + _omitted_bytes(head) == written
+
+
+@pytest.mark.asyncio
+async def test_following_a_capped_log_crosses_a_rotation(tmp_path: Path):
+    """A follower pinned to one shard goes quiet exactly when the log is
+    busiest. Every line has to arrive, once, in order, across the rotations."""
+    head = _restart_dir(tmp_path) / "main.log"
+    # Room for nine shards, so the rotations under test drop nothing.
+    writer = CappedLogWriter(head, max_bytes=200, head_bytes=20)
+    writer.writelines(_numbered_lines(0, 5))
+
+    stop_event = asyncio.Event()
+    received = []
+
+    async def follow():
+        options = LogOptions(tail=-1, follow=True, stop_event=stop_event)
+        async for line in log_generator(str(head), options):
+            received.append(line)
+
+    async def until(count: int):
+        for _ in range(100):
+            if len(received) >= count:
+                return
+            await asyncio.sleep(0.05)
+
+    task = asyncio.create_task(follow())
+    try:
+        await until(5)
+        writer.writelines(_numbered_lines(5, 20))
+        await until(20)
+        # Asserted while the stream is still open: a follower that only catches
+        # up once the log is closed is not following it.
+        assert received == _numbered_lines(0, 20)
+    finally:
+        stop_event.set()
+        writer.close()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_a_source_is_followed_only_where_it_is_still_being_written(
+    tmp_path: Path,
+):
+    """A group is read in order, so following a file that is already finished
+    never ends and starves the rest of the group."""
+    older = tmp_path / "1.log"
+    older.write_text("old0\nold1\n", encoding="utf-8")
+    newer = tmp_path / "1.0.log"
+    newer.write_text("new0\n", encoding="utf-8")
+
+    stop_event = asyncio.Event()
+    received = []
+
+    async def read():
+        options = LogOptions(tail=-1, follow=True, stop_event=stop_event)
+        group = [str(older), str(newer)]
+        async for line in merged_log_generator([group], options, stop_event):
+            received.append(line)
+
+    task = asyncio.create_task(read())
+    try:
+        for _ in range(60):
+            if len(received) >= 3:
+                break
+            await asyncio.sleep(0.05)
+        assert received == ["old0\n", "old1\n", "new0\n"]
+    finally:
+        stop_event.set()
+        await task
+
+
+def test_a_sidecar_named_with_digits_is_not_read_as_another_instance():
+    """`1.container.2.3.log` ends in `.2.3.log`; a pattern anchored only at the
+    tail reads it as instance 2's main log, crossing instances."""
+    path = Path("/serve/1.container.2.3.log")
+    parsed = parse_serve_log_path(path)
+
+    assert parsed.model_instance_id == 1
+    assert parsed.kind is ServeLogKind.SIDECAR
+    assert extract_restart_count(path) is None
+
+
+@pytest.mark.asyncio
+async def test_log_discovery_spans_both_layouts_and_rejects_id_prefixes(
+    tmp_path: Path,
+):
+    """Both layouts are found together, and neither 12945 nor 29450 leaks in:
+    their ids contain 2945's digits, so only the parsed id decides."""
+    serve_dir = _write_serve_logs(
+        tmp_path,
+        "2945.log",
+        "2945.1.log",
+        "2945.container.1.log",
+        "2945.container.ray-head.1.log",
+        "12945.2.log",
+        "29450.2.log",
+        "12945.container.2.log",
+    )
+    _write_restart_logs(
+        serve_dir, "qwen3-6-35b", 2945, 2, "main.log", "container.log", SIDECAR_LOG
+    )
+    _write_restart_logs(serve_dir, "other", 12945, 2, "main.log")
+
+    main_logs = await get_all_log_files(serve_dir, 2945, container=False)
+    container_logs = await get_all_log_files(serve_dir, 2945, container=True)
+    sidecar_logs = await get_all_log_files(
+        serve_dir, 2945, container=True, container_name="ray-head"
+    )
+
+    assert [str(f.relative_to(serve_dir)) for f in main_logs] == [
+        "2945.log",
+        "2945.1.log",
+        "qwen3-6-35b.2945/2/main.log",
+    ]
+    assert [str(f.relative_to(serve_dir)) for f in container_logs] == [
+        "2945.container.1.log",
+        "qwen3-6-35b.2945/2/container.log",
+    ]
+    assert [str(f.relative_to(serve_dir)) for f in sidecar_logs] == [
+        "2945.container.ray-head.1.log",
+        f"qwen3-6-35b.2945/2/{SIDECAR_LOG}",
+    ]
+    assert await resolve_restart_count(serve_dir, 2945, previous=False) == 2
+    assert await resolve_restart_count(serve_dir, 2945, previous=True) == 1
+
+
+@pytest.mark.parametrize(
+    "instance_name, expected",
+    [
+        ("qwen3-0-6b-ab12x", "qwen3-0-6b-ab12x"),
+        # A model name may hold a dot; leaving it in would add a segment and
+        # make the file name impossible to read back.
+        ("qwen3.6-35b-a3b-fp8-3-sn20w", "qwen3-6-35b-a3b-fp8-3-sn20w"),
+        ("has space", "has-space"),
+        ("has/slash", "has-slash"),
+        ("中文模型-ab12x", "-----ab12x"),
+        # No length limit of its own, so the file name imposes one.
+        ("z" * 300, "z" * 96),
+    ],
+)
+def test_instance_name_sanitizing(instance_name, expected):
+    sanitized = sanitize_instance_name(instance_name)
+
+    assert sanitized == expected
+    assert "." not in sanitized
+    assert len(sanitized) <= 96
+
+
+def test_a_sidecar_name_cannot_lead_out_of_the_restart_directory(tmp_path: Path):
+    """The runtime names a sidecar, so its name is not this process's to trust:
+    interpolated raw, one holding a separator would place the log elsewhere."""
+    restart_dir = restart_log_dir(tmp_path, "qwen", 1, 0)
+
+    path = sidecar_container_log_path(tmp_path, "qwen", 1, "../../etc/ray", 0)
+
+    assert path.parent == restart_dir
+    assert path.name == "container.------etc-ray.log"
+
+
+def test_a_name_with_nothing_usable_falls_back_to_a_bare_id(tmp_path: Path):
+    """An empty name would leave a leading dot the grammar rejects, so such an
+    instance is filed under its id alone."""
+    assert instance_log_dir(tmp_path, "...", 42).name == "---.42"
+
+    path = main_log_path(tmp_path, "", 42, 7)
+    assert path.parent.parent.name == "42"
+    assert parse_serve_log_path(path) is not None
+
+
+def test_write_side_files_logs_under_a_directory_named_for_the_instance(
+    tmp_path: Path,
+):
+    """The point of #5858: `ls` on the serve directory alone says which
+    deployment is which, one line each however many logs it has."""
+    serve_dir = tmp_path / "serve"
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+    model_instance = new_model_instance(
+        1, "qwen3.6-35b-sn20w", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    model_instance.restart_count = 5
+
+    main = Path(manager._get_numbered_log_path(model_instance))
+    container = container_log_path(serve_dir, model_instance.name, 1, 5)
+    sidecar = sidecar_container_log_path(serve_dir, model_instance.name, 1, "ray", 5)
+
+    for path, expected in (
+        (main, "qwen3-6-35b-sn20w.1/5/main.log"),
+        (container, "qwen3-6-35b-sn20w.1/5/container.log"),
+        (sidecar, "qwen3-6-35b-sn20w.1/5/container.ray.log"),
+    ):
+        assert str(path.relative_to(serve_dir)) == expected
+        assert parse_serve_log_path(path).model_instance_id == 1
+
+
+def test_adoption_migrates_flat_logs_into_the_instance_directory(tmp_path: Path):
+    """Adoption is where an earlier release's files catch up with the layout.
+    Another instance's files, and names the grammar cannot read, stay put."""
+    serve_dir = _write_serve_logs(
+        tmp_path,
+        "1.4.log",
+        "1.container.4.log",
+        "1.container.ray-head.4.log",
+        "2.4.log",
+        "1.log.tmp",
+    )
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+    model_instance = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    model_instance.restart_count = 5
+
+    with patch.object(manager, "_start_container_log_persistence"):
+        manager._ensure_container_log_persistence(model_instance)
+
+    assert sorted(p.name for p in serve_dir.iterdir()) == [
+        "1.log.tmp",
+        "2.4.log",
+        "qwen3-0-6b.1",
+    ]
+    moved = restart_log_dir(serve_dir, "qwen3-0.6b", 1, 4)
+    assert sorted(p.name for p in moved.iterdir()) == [
+        "container.log",
+        SIDECAR_LOG,
+        "main.log",
+    ]
+
+
+def test_adoption_renames_the_directory_when_the_instance_is_renamed(tmp_path: Path):
+    """One rename moves every restart with it, so history does not split
+    across the name the instance used to have -- including when a pre-v2.2.0
+    log is filed under the new name on the same pass."""
+    serve_dir = _write_serve_logs(tmp_path, "1.log")
+    _write_restart_logs(serve_dir, "old-name", 1, 4, "main.log")
+    _write_restart_logs(serve_dir, "old-name", 1, 5, "main.log")
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+    model_instance = new_model_instance(
+        1, "new-name", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    model_instance.restart_count = 6
+
+    with patch.object(manager, "_start_container_log_persistence"):
+        manager._ensure_container_log_persistence(model_instance)
+
+    assert [p.name for p in serve_dir.iterdir()] == ["new-name.1"]
+    assert sorted(p.name for p in (serve_dir / "new-name.1").iterdir()) == [
+        "4",
+        "5",
+        "6",
+    ]
+
+
+def test_adoption_leaves_a_move_target_that_already_exists(tmp_path: Path):
+    """Moving onto an existing file would destroy it, so the flat one stays
+    where it is; the reader finds both."""
+    serve_dir = _write_serve_logs(tmp_path, "1.4.log")
+    _write_restart_logs(serve_dir, "qwen3-0-6b", 1, 4, "main.log")
+    target = restart_log_dir(serve_dir, "qwen3-0-6b", 1, 4) / "main.log"
+    target.write_text("newer", encoding="utf-8")
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+    model_instance = new_model_instance(
+        1, "qwen3-0.6b", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    model_instance.restart_count = 5
+
+    with patch.object(manager, "_start_container_log_persistence"):
+        manager._ensure_container_log_persistence(model_instance)
+
+    assert sorted(p.name for p in serve_dir.iterdir()) == ["1.4.log", "qwen3-0-6b.1"]
+    assert target.read_text(encoding="utf-8") == "newer"
+
+
+@pytest.mark.parametrize("restart_count", [0, 3], ids=["purge", "retention"])
+def test_a_log_directory_that_cannot_be_listed_does_not_stop_a_start(
+    restart_count, tmp_path: Path
+):
+    """Cleanup runs ahead of every start. A listing that fails -- a directory
+    removed underneath it, a stale NFS handle -- costs an error line, not the
+    start."""
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(_write_serve_logs(tmp_path, "1.2.log"))
+
+    with patch(
+        "gpustack.worker.serve_manager.flat_instance_logs",
+        side_effect=OSError("stale file handle"),
+    ):
+        manager._cleanup_old_logs(1, restart_count)
+
+
+def test_cleanup_leaves_unreadable_and_other_instances_names_alone(tmp_path: Path):
+    """Retention only removes what it can place in a restart; another
+    instance, a download log or an unreadable name is not ours to delete."""
+    serve_dir = _write_serve_logs(
+        tmp_path,
+        "2945.0.log",
+        "2945.1.log",
+        "12945.0.log",
+        "model_file_2945.download.log",
+        "2945.log.tmp",
+    )
+    _write_restart_logs(serve_dir, "qwen3-6-35b", 2945, 0, "main.log")
+    _write_restart_logs(serve_dir, "qwen3-6-35b", 2945, 2, "main.log")
+    _write_restart_logs(serve_dir, "other", 12945, 0, "main.log")
+    # A directory that names no restart cannot be outside the window either.
+    (serve_dir / "qwen3-6-35b.2945" / "scratch").mkdir()
+
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+
+    manager._cleanup_old_logs(2945, 2)
+
+    assert sorted(p.name for p in serve_dir.iterdir()) == [
+        "12945.0.log",
+        "2945.1.log",
+        "2945.log.tmp",
+        "model_file_2945.download.log",
+        "other.12945",
+        "qwen3-6-35b.2945",
+    ]
+    assert sorted(p.name for p in (serve_dir / "qwen3-6-35b.2945").iterdir()) == [
+        "2",
+        "scratch",
+    ]
+
+
+def test_purge_leaves_unreadable_and_other_instances_names_alone(tmp_path: Path):
+    """The fresh-start purge takes everything for the id, in either layout, and
+    nothing else."""
+    serve_dir = _write_serve_logs(
+        tmp_path,
+        "2945.log",
+        "2945.0.log",
+        "2945.container.0.log",
+        "12945.0.log",
+        "model_file_2945.download.log",
+        "2945.log.tmp",
+    )
+    _write_restart_logs(serve_dir, "qwen3-6-35b", 2945, 0, "main.log", SIDECAR_LOG)
+    _write_restart_logs(serve_dir, "other", 12945, 0, "main.log")
+
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+
+    manager._cleanup_old_logs(2945, 0)
+
+    assert sorted(p.name for p in serve_dir.iterdir()) == [
+        "12945.0.log",
+        "2945.log.tmp",
+        "model_file_2945.download.log",
+        "other.12945",
+    ]
 
 
 def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path):
@@ -564,25 +1489,61 @@ def test_updated_event_error_does_not_crash_watch():
         manager._handle_model_instance_event(Event(type=EventType.UPDATED, data=mi))
 
 
-def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):
-    """On stream EOF while the workload is still running, reconnect and resume
-    by skipping already-written history (anchor), appending only new lines."""
+# Stream timestamps are written as offsets from here. They have to sit in the
+# present: a copier with no cursor resumes at the current second, and lines
+# stamped in 1970 would silently be older than that.
+_STREAM_EPOCH = int(time.time())
+
+
+@pytest.fixture(autouse=True)
+def _stream_epoch_of_this_test():
+    """Rebase the stamped streams on each test's own start.
+
+    A cursor with nothing recorded behind it is invented from the wall clock,
+    so streams pinned to import time drift from it by however long the suite
+    took to reach this file -- and past 90s the drift flips which branch runs.
+    """
+    global _STREAM_EPOCH
+    _STREAM_EPOCH = int(time.time())
+
+
+def _moment(offset: int) -> str:
+    """One RFC3339Nano stamp, the shape the runtime puts in front of a line."""
+    stamp = datetime.fromtimestamp(_STREAM_EPOCH + offset, tz=timezone.utc)
+    return stamp.strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
+
+
+def _stamped(*lines) -> list:
+    """A stream of chunks: one (offset, text) pair becomes one prefixed chunk."""
+    return [f"{_moment(offset)} {text}" for offset, text in lines]
+
+
+def _cursor_of(log_path) -> tuple:
+    record = Path(f"{log_path}.cursor").read_text(encoding="utf-8").split()
+    return int(record[0]) - _STREAM_EPOCH, int(record[1])
+
+
+def test_a_reconnect_resumes_at_the_cursor_and_drops_the_replay(tmp_path: Path):
+    """The runtime replays from the cursor's whole second, so lines of that
+    second the archive already holds have to be counted off -- including ones
+    repeated verbatim, which no content match could tell apart."""
     manager, _clients = _build_serve_manager()
     log_path = str(tmp_path / "1.container.0.log")
+    asked = []
 
-    # First stream: initial history. Reconnect: full history replay + new line.
-    streams = [iter(["a\n", "b\n"]), iter(["a\n", "b\n", "c\n"])]
-    tails = []
-
-    def fake_logs_workload(**kwargs):
-        tails.append(kwargs["tail"])
-        return streams.pop(0)
-
-    # First EOF -> still RUNNING (reconnect); second EOF -> FAILED (exit).
+    streams = [
+        _stamped((10, "a\n"), (11, "dup\n"), (11, "dup\n")),
+        # The whole of second 11 comes back, plus what followed it.
+        _stamped((11, "dup\n"), (11, "dup\n"), (11, "late\n"), (12, "b\n")),
+    ]
     states = [
         SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
         SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
     ]
+
+    def fake_logs_workload(**kwargs):
+        asked.append((kwargs["since"], kwargs["timestamps"]))
+        return iter(streams.pop(0))
 
     with (
         patch(
@@ -596,8 +1557,112 @@ def test_persist_container_logs_reconnects_and_dedupes(tmp_path: Path):
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())
 
-    assert tails == [-1, -1]
-    assert Path(log_path).read_text(encoding="utf-8") == "a\nb\nc\n"
+    assert asked == [(None, True), (_STREAM_EPOCH + 11, True)]
+    assert Path(log_path).read_text(encoding="utf-8") == "a\ndup\ndup\nlate\nb\n"
+    assert _cursor_of(log_path) == (12, 1)
+
+
+def test_a_runtime_that_stamps_nothing_does_not_pin_the_cursor(tmp_path: Path):
+    """Without timestamps no line moves the cursor. Left where it was, every
+    reconnect would ask for the same second and the archive would take the
+    same stretch again each time; it moves to the end of each connection."""
+    manager, _clients = _build_serve_manager()
+    log_path = str(tmp_path / "1.container.0.log")
+    now = [1000.0]
+    asked = []
+    streams = [["a\n", "b\n"], ["c\n"], ["d\n"]]
+    states = [
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+    ]
+
+    def fake_logs_workload(**kwargs):
+        asked.append(kwargs["since"])
+        now[0] += 10
+        return iter(streams.pop(0))
+
+    with (
+        patch("gpustack.worker.serve_manager.time.time", lambda: now[0]),
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=fake_logs_workload,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=_get_workload_sequence(states),
+        ),
+    ):
+        manager._persist_container_logs("wl", log_path, _fake_stop_event())
+
+    assert asked == [None, 1010, 1020]
+
+
+def test_output_still_short_of_a_newline_reaches_the_archive(tmp_path: Path):
+    """A progress bar redraws in place for the whole of a weight load without
+    ever ending a line. Held back until the newline, the log viewer shows
+    nothing for exactly as long -- the phase a starting instance is watched."""
+    manager, _clients = _build_serve_manager()
+    log_path = str(tmp_path / "1.container.0.log")
+    midway = []
+
+    def one_stream():
+        yield from _stamped((10, "loading  0%\r"), (10, "loading 50%\r"))
+        # Read as bytes: universal newlines would rewrite the bare '\r'.
+        midway.append(Path(log_path).read_bytes().decode("utf-8"))
+        yield from _stamped((10, "loading done\n"))
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            return_value=one_stream(),
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=_get_workload_sequence(
+                [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
+            ),
+        ),
+    ):
+        manager._persist_container_logs("wl", log_path, _fake_stop_event())
+
+    assert midway == ["loading  0%\rloading 50%\r"]
+    assert (
+        Path(log_path).read_bytes().decode("utf-8")
+        == "loading  0%\rloading 50%\rloading done\n"
+    )
+    assert _cursor_of(log_path) == (10, 1)
+
+
+def test_one_uninterrupted_stream_neither_reconnects_nor_marks(tmp_path: Path):
+    """A runtime-side rotation does not end a followed stream, so nothing about
+    it reaches the copier: one connection, no gap marker."""
+    manager, _clients = _build_serve_manager()
+    log_path = str(tmp_path / "1.container.0.log")
+    # A cursor into an archive retention has already taken points nowhere; it
+    # must not send this connection looking for a second that never existed.
+    Path(f"{log_path}.cursor").write_text(
+        f"{_STREAM_EPOCH + 10:020d} {3:012d}\n", encoding="utf-8"
+    )
+    connections = []
+
+    def fake_logs_workload(**kwargs):
+        connections.append(kwargs["since"])
+        return iter(_stamped(*[(10 + i, f"l{i}\n") for i in range(6)]))
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=fake_logs_workload,
+        ),
+        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+    ):
+        manager._persist_container_logs("wl", log_path, _fake_stop_event(), resume=True)
+
+    assert connections == [None]
+    written = Path(log_path).read_text(encoding="utf-8")
+    assert written == "".join(f"l{i}\n" for i in range(6))
+    assert "may be missing" not in written
 
 
 def test_persist_container_logs_exits_when_workload_gone(tmp_path: Path):
@@ -608,7 +1673,7 @@ def test_persist_container_logs_exits_when_workload_gone(tmp_path: Path):
 
     def fake_logs_workload(**kwargs):
         tails.append(kwargs["tail"])
-        return iter(["a\n"])
+        return iter(_stamped((10, "a\n")))
 
     with (
         patch(
@@ -623,83 +1688,16 @@ def test_persist_container_logs_exits_when_workload_gone(tmp_path: Path):
     assert Path(log_path).read_text(encoding="utf-8") == "a\n"
 
 
-def test_persist_container_logs_resets_when_anchor_rotated(tmp_path: Path):
-    """If the anchor line was rotated out of the reconnect logs, restart from
-    scratch (full rewrite) instead of skipping new lines forever."""
+def test_a_line_the_stream_cut_short_is_completed_by_the_reconnect(tmp_path: Path):
+    """A connection can end in the middle of a line. That half is on disk but
+    not behind the cursor, so the reconnect replaces it with the whole line
+    instead of counting it off and dropping the rest."""
     manager, _clients = _build_serve_manager()
-    log_path = str(tmp_path / "1.container.0.log")
+    log_path = tmp_path / "1.container.0.log"
 
     streams = [
-        iter(["a\n", "b\n"]),  # round1: write a,b (anchor=b)
-        iter(["x\n", "c\n"]),  # round2: anchor 'b' rotated out -> skip all, reset
-        iter(["x\n", "c\n", "d\n"]),  # round3: fresh rewrite recovers
-    ]
-    states = [
-        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
-        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
-        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
-    ]
-
-    with (
-        patch(
-            "gpustack.worker.serve_manager.logs_workload",
-            side_effect=lambda **kwargs: streams.pop(0),
-        ),
-        patch(
-            "gpustack.worker.serve_manager.get_workload",
-            side_effect=_get_workload_sequence(states),
-        ),
-    ):
-        manager._persist_container_logs("wl", log_path, _fake_stop_event())
-
-    assert Path(log_path).read_text(encoding="utf-8") == "x\nc\nd\n"
-
-
-def test_persist_container_logs_empty_reconnect_keeps_history(tmp_path: Path):
-    """An empty reconnect (0 lines) must not reset first_connect; otherwise the
-    next reconnect reopens in 'w' and truncates already-persisted logs."""
-    manager, _clients = _build_serve_manager()
-    log_path = str(tmp_path / "1.container.0.log")
-
-    streams = [
-        iter(["a\n", "b\n"]),  # round1: write a,b
-        iter([]),  # round2: empty reconnect (0 lines) -> must NOT reset
-        iter(["b\n"]),  # round3: suffix replay; a,b already persisted survive
-    ]
-    states = [
-        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
-        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
-        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
-    ]
-
-    with (
-        patch(
-            "gpustack.worker.serve_manager.logs_workload",
-            side_effect=lambda **kwargs: streams.pop(0),
-        ),
-        patch(
-            "gpustack.worker.serve_manager.get_workload",
-            side_effect=_get_workload_sequence(states),
-        ),
-    ):
-        manager._persist_container_logs("wl", log_path, _fake_stop_event())
-
-    # Had the empty round2 reset first_connect, round3 would reopen in 'w' and
-    # truncate 'a'; a,b surviving proves it did not.
-    assert Path(log_path).read_text(encoding="utf-8") == "a\nb\n"
-
-
-def test_persist_container_logs_window_anchor_ignores_repeated_line(
-    tmp_path: Path,
-):
-    """The multi-line anchor window only matches the true tail: a single-line
-    anchor would false-match an earlier identical line and duplicate history."""
-    manager, _clients = _build_serve_manager()
-    log_path = str(tmp_path / "1.container.0.log")
-
-    streams = [
-        iter(["A\n", "B\n", "A\n", "B\n"]),  # round1: last line B repeats earlier
-        iter(["A\n", "B\n", "A\n", "B\n", "C\n"]),  # round2: full replay + new C
+        _stamped((10, "a\n"), (10, "half-lin")),
+        _stamped((10, "a\n"), (10, "half-line-whole\n"), (11, "b\n")),
     ]
     states = [
         SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
@@ -709,94 +1707,198 @@ def test_persist_container_logs_window_anchor_ignores_repeated_line(
     with (
         patch(
             "gpustack.worker.serve_manager.logs_workload",
-            side_effect=lambda **kwargs: streams.pop(0),
+            side_effect=lambda **kwargs: iter(streams.pop(0)),
         ),
         patch(
             "gpustack.worker.serve_manager.get_workload",
             side_effect=_get_workload_sequence(states),
         ),
     ):
-        manager._persist_container_logs("wl", log_path, _fake_stop_event())
+        manager._persist_container_logs("wl", str(log_path), _fake_stop_event())
 
-    # Window [A,B,A,B] matches only at the end; single-line 'B' would match
-    # index 1 and duplicate A,B.
-    assert Path(log_path).read_text(encoding="utf-8") == "A\nB\nA\nB\nC\n"
-
-
-def test_persist_container_logs_resume_appends_to_adopted_file(tmp_path: Path):
-    """Re-attaching must append: the runtime replays from the start, so a
-    rewrite would drop whatever it has already rotated away."""
-    manager, _clients = _build_serve_manager()
-    adopted = tmp_path / "1.container.0.log"
-    adopted.write_text("".join(f"l{i}\n" for i in range(1, 8)), encoding="utf-8")
-    fresh = tmp_path / "2.container.0.log"
-
-    # l1 and l2 rotated away, so the replay starts at l3 and still carries the
-    # anchor (the file's last five lines).
-    replay = [f"l{i}\n" for i in range(3, 9)]
-    states = [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
-
-    for log_path in (adopted, fresh):
-        with (
-            patch(
-                "gpustack.worker.serve_manager.logs_workload",
-                return_value=iter(replay),
-            ),
-            patch(
-                "gpustack.worker.serve_manager.get_workload",
-                side_effect=_get_workload_sequence(states),
-            ),
-        ):
-            manager._persist_container_logs(
-                "wl", str(log_path), _fake_stop_event(), resume=True
-            )
-
-    # l1 and l2 survive even though the runtime no longer has them, and the
-    # replayed l3..l7 are not written a second time.
-    assert adopted.read_text(encoding="utf-8") == "".join(
-        f"l{i}\n" for i in range(1, 9)
-    )
-    # Nothing to resume from: behaves exactly like a first connect.
-    assert fresh.read_text(encoding="utf-8") == "".join(replay)
+    assert log_path.read_text(encoding="utf-8") == "a\nhalf-line-whole\nb\n"
 
 
 @pytest.mark.parametrize(
-    "adopted_tail, replayed_tail",
+    "reconnects, resume",
     [
-        # A progress bar is one streamed line carrying bare '\r'; splitlines()
-        # would break it into pieces that can never equal one streamed line.
+        # The runtime no longer has the cursor's second: nothing to relocate.
+        ([_stamped((90, "far-later\n"))], False),
+        # Nothing came back at all.
+        ([[], _stamped((11, "more\n"))], False),
+        # A worker restart with no cursor beside the archive, as an upgrade
+        # from a release that did not write one leaves it.
+        ([_stamped((90, "far-later\n"))], True),
+    ],
+    ids=["unrelocatable", "empty-reconnect", "no-cursor"],
+)
+def test_an_archive_with_content_is_never_truncated(tmp_path: Path, reconnects, resume):
+    """The invariant the whole feature exists for: whatever a reconnect does
+    with the runtime's replay, it may only ever add to what is on disk -- and
+    where it cannot prove the two join up, it says so rather than start over."""
+    manager, _clients = _build_serve_manager()
+    log_path = tmp_path / "1.container.0.log"
+    history = "".join(f"kept-{i}\n" for i in range(5))
+    log_path.write_text(history, encoding="utf-8")
+
+    streams = [iter(s) for s in reconnects]
+    states = [SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING)] * len(streams)
+    states.append(SimpleNamespace(state=WorkloadStatusStateEnum.FAILED))
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=lambda **kwargs: streams.pop(0),
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=_get_workload_sequence(states),
+        ),
+    ):
+        manager._persist_container_logs(
+            "wl", str(log_path), _fake_stop_event(), resume=resume
+        )
+
+    written = log_path.read_text(encoding="utf-8")
+    assert written.startswith(history)
+    # None of these can prove what follows continues what is already there.
+    assert "may be missing" in written
+
+
+def test_a_cursor_invented_from_the_clock_always_marks_the_seam(tmp_path: Path):
+    """An archive from before the cursor existed resumes at "now", so every
+    line a replay skips is one the archive never held: skipping proves no seam,
+    and the downtime it hides is what the marker exists to announce."""
+    manager, _clients = _build_serve_manager()
+    log_path = tmp_path / "1.container.0.log"
+    log_path.write_text("before-the-restart\n", encoding="utf-8")
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            return_value=iter(
+                _stamped((-3600, "long-before\n"), (-1800, "also-before\n"))
+            ),
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=_get_workload_sequence(
+                [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
+            ),
+        ),
+    ):
+        manager._persist_container_logs(
+            "wl", str(log_path), _fake_stop_event(), resume=True
+        )
+
+    written = log_path.read_text(encoding="utf-8")
+    assert written.startswith("before-the-restart\n")
+    assert "may be missing" in written
+
+
+def test_a_reconnect_that_cannot_relocate_appends_behind_a_marker(tmp_path: Path):
+    """The runtime has dropped the cursor's second, so what follows does not
+    continue what is on disk. The archive says so and keeps both halves."""
+    manager, _clients = _build_serve_manager()
+    log_path = tmp_path / "1.container.0.log"
+
+    streams = [
+        _stamped((10, "early\n")),
+        _stamped((90, "much-later\n")),
+    ]
+    states = [
+        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+    ]
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=lambda **kwargs: iter(streams.pop(0)),
+        ),
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=_get_workload_sequence(states),
+        ),
+    ):
+        manager._persist_container_logs("wl", str(log_path), _fake_stop_event())
+
+    written = log_path.read_text(encoding="utf-8").splitlines()
+    assert written[0] == "early\n".strip()
+    assert "may be missing" in written[1] and _moment(10)[:19] in written[1]
+    assert written[2] == "much-later"
+
+
+def test_a_worker_restart_resumes_from_the_cursor_on_disk(tmp_path: Path):
+    """The restart path reads the same cursor a reconnect keeps in memory, and
+    reads it beside the newest shard once the size cap has rotated the log."""
+    manager, _clients = _build_serve_manager()
+    head = container_log_path(tmp_path, "qwen", 1, 0)
+    head.parent.mkdir(parents=True)
+    history = [(10, f"l{i:02d}\n") for i in range(18)] + [(11, "l18\n")]
+    replay = _stamped(*(history + [(11, "l19\n"), (12, "l20\n")]))
+
+    with (
+        patch("gpustack.worker.log_sources.envs.SERVE_LOG_MAX_BYTES", 1000),
+        patch("gpustack.worker.log_sources.envs.SERVE_LOG_HEAD_BYTES", 20),
+        patch(
+            "gpustack.worker.serve_manager.logs_workload",
+            side_effect=[iter(_stamped(*history)), iter(replay)],
+        ),
+        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+    ):
+        manager._persist_container_logs("wl", str(head), _fake_stop_event())
+        # A second thread, as a restarted worker starts one, over the same
+        # archive and the cursor the first one left behind.
+        manager._persist_container_logs(
+            "wl", str(head), _fake_stop_event(), resume=True
+        )
+
+    written = [head, *tail_shard_log_paths(head)]
+    assert "".join(p.read_text() for p in written) == "".join(
+        text for _epoch, text in history + [(11, "l19\n"), (12, "l20\n")]
+    )
+
+
+@pytest.mark.parametrize(
+    "adopted_tail, replayed_tail, written_lines",
+    [
+        # A progress bar is one streamed line carrying bare '\r'; the cursor
+        # counted it, and it must reach the archive as the runtime framed it.
         (
             "shards:  0%\rshards: 50%\rshards: 100%\n",
             "shards:  0%\rshards: 50%\rshards: 100%\n",
+            8,
         ),
-        # A worker killed mid-write leaves a fragment; the runtime replays that
-        # line whole, so the fragment has to go or the two would be joined.
-        ("INFO star", "INFO starting engine\n"),
+        # A worker killed mid-write leaves a fragment the cursor never counted;
+        # the runtime replays that line whole, so the fragment has to go.
+        ("INFO star", "INFO starting engine\n", 7),
     ],
+    ids=["progress-bar", "fragment"],
 )
-def test_persist_container_logs_resume_matches_the_runtime_line_framing(
-    tmp_path: Path, adopted_tail, replayed_tail
+def test_a_resumed_archive_keeps_the_runtime_line_framing(
+    tmp_path: Path, adopted_tail, replayed_tail, written_lines
 ):
-    """The anchor is compared against streamed items, so it has to be rebuilt on
-    the same '\\n' framing the runtime uses."""
+    """Resuming trims whatever the previous process left half-written, and the
+    replay's own framing -- bare '\r' included -- reaches disk untouched."""
     manager, _clients = _build_serve_manager()
     log_path = tmp_path / "1.container.0.log"
     head = "".join(f"l{i}\n" for i in range(1, 8))
     log_path.write_text(head + adopted_tail, encoding="utf-8")
+    Path(f"{log_path}.cursor").write_text(
+        f"{_STREAM_EPOCH + 10:020d} {written_lines:012d}\n", encoding="utf-8"
+    )
 
-    # l1 and l2 rotated away; the replay still carries the anchor window.
-    replay = [f"l{i}\n" for i in range(3, 8)] + [replayed_tail, "l8-NEW\n"]
-    states = [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
+    replay = _stamped(
+        *[(10, f"l{i}\n") for i in range(1, 8)], (10, replayed_tail), (11, "l8-NEW\n")
+    )
 
     with (
         patch(
             "gpustack.worker.serve_manager.logs_workload",
             return_value=iter(replay),
         ),
-        patch(
-            "gpustack.worker.serve_manager.get_workload",
-            side_effect=_get_workload_sequence(states),
-        ),
+        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
     ):
         manager._persist_container_logs(
             "wl", str(log_path), _fake_stop_event(), resume=True
@@ -807,71 +1909,42 @@ def test_persist_container_logs_resume_matches_the_runtime_line_framing(
     assert written == head + replayed_tail + "l8-NEW\n"
 
 
-def test_persist_container_logs_resume_gives_up_on_an_unmatchable_anchor(
-    tmp_path: Path,
-):
-    """An unreplayable anchor must not hold the live stream back, and giving up
-    on it must not disable the ordinary reconnect dedupe: otherwise every later
-    reconnect rewrites the file and loses what the runtime rotated away."""
+def test_a_line_split_across_chunks_reaches_the_archive_whole(tmp_path: Path):
+    """A line past 16 KiB arrives in several chunks, each carrying the same
+    prefix. Every piece lands as it arrives, none of them leaves a timestamp
+    inside the line, and the line is whole once the last one has."""
     manager, _clients = _build_serve_manager()
     log_path = tmp_path / "1.container.0.log"
-    log_path.write_text("".join(f"gone-{i}\n" for i in range(1, 8)), encoding="utf-8")
+    long_line = "x" * 40000
+    chunks = _stamped(
+        (10, "first\n"),
+        (10, long_line[:16384]),
+        (10, long_line[16384:32768]),
+        (10, long_line[32768:] + "\n"),
+        # A stream cut mid-line still lands what it has, at the very end.
+        (11, "tail-with-no-newline"),
+    )
+    midway = []
 
-    rewritten = [f"kept-{i}\n" for i in range(7)]
-    streams = [
-        # The runtime replays a different container generation entirely.
-        iter(["other-a\n", "other-b\n"]),
-        # Given up on, so this connection rewrites.
-        iter(rewritten),
-        # An ordinary reconnect, with kept-0 rotated away: the anchor built from
-        # the rewrite above still has to dedupe the replay.
-        iter(rewritten[1:] + ["kept-7\n"]),
-    ]
-    states = [
-        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
-        SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
-        SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
-    ]
+    def stream():
+        for index, chunk in enumerate(chunks):
+            if index == 3:
+                midway.append(log_path.read_text(encoding="utf-8"))
+            yield chunk
 
     with (
-        patch("gpustack.worker.serve_manager._LOG_RESUME_SKIP_TIMEOUT", -1),
         patch(
             "gpustack.worker.serve_manager.logs_workload",
-            side_effect=lambda **kwargs: streams.pop(0),
+            return_value=stream(),
         ),
-        patch(
-            "gpustack.worker.serve_manager.get_workload",
-            side_effect=_get_workload_sequence(states),
-        ),
+        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
     ):
-        manager._persist_container_logs(
-            "wl", str(log_path), _fake_stop_event(), resume=True
-        )
+        manager._persist_container_logs("wl", str(log_path), _fake_stop_event())
 
-    # kept-0 survives and kept-7 is appended: the anchor deduped the reconnect.
-    assert log_path.read_text(encoding="utf-8") == "".join(rewritten + ["kept-7\n"])
-
-
-def test_tail_lines_widens_past_a_record_longer_than_the_first_read(tmp_path: Path):
-    """A final record longer than the first read leaves no whole line behind.
-    Reporting "no anchor" there would reopen the adopted log in 'w'."""
-    log_path = tmp_path / "1.container.0.log"
-    head = [f"l{i}\n" for i in range(1, 5)]
-    oversized = "CONFIG " + "x" * (_LOG_TAIL_CHUNK_SIZE * 2) + "\n"
-    log_path.write_text("".join(head) + oversized)
-
-    assert log_path.stat().st_size > _LOG_TAIL_CHUNK_SIZE
-    assert _tail_lines(str(log_path), 5) == head + [oversized]
-
-
-def test_tail_lines_reads_only_the_end_of_a_large_file(tmp_path: Path):
-    """The chunked read must not hand back the line the chunk boundary cut."""
-    log_path = tmp_path / "big.log"
-    lines = [f"line-{i:06d}" + "x" * 80 + "\n" for i in range(1000)]
-    log_path.write_text("".join(lines), encoding="utf-8")
-
-    assert log_path.stat().st_size > _LOG_TAIL_CHUNK_SIZE
-    assert _tail_lines(str(log_path), 5) == lines[-5:]
+    assert midway == [f"first\n{long_line[:32768]}"]
+    assert log_path.read_text(encoding="utf-8") == (
+        f"first\n{long_line}\ntail-with-no-newline"
+    )
 
 
 def test_adoption_reattaches_container_log_persistence(tmp_path: Path):
@@ -1044,8 +2117,11 @@ def test_adoption_aligns_legacy_main_log_with_restart_count(tmp_path: Path):
 
     assert start_logs.call_count == 2
     start_logs.assert_called_with(model_instance, resume=True)
-    assert sorted(p.name for p in serve_dir.iterdir()) == ["1.5.log", "1.log"]
-    assert (serve_dir / "1.5.log").read_text(encoding="utf-8") == "x"
+    # The instance name holds a dot, which sanitizing turns into a dash so that
+    # the directory name keeps exactly two segments.
+    assert sorted(p.name for p in serve_dir.iterdir()) == ["1.log", "qwen3-0-6b.1"]
+    moved = restart_log_dir(serve_dir, "qwen3-0.6b", 1, 5) / "main.log"
+    assert moved.read_text(encoding="utf-8") == "x"
 
 
 # --- vGPU allocation read-back (gpu_type_selector) ---
@@ -1335,6 +2411,60 @@ def test_error_state_surfaces_the_container_exit_code():
         state=ModelInstanceStateEnum.ERROR,
         state_message="Error (exit code 7)",
     )
+
+
+def test_a_generation_that_will_not_stop_holds_off_the_next_one(tmp_path: Path):
+    """Two writers on one log truncate each other's shards, so a generation
+    still holding the files keeps the next one out -- and keeps its place in
+    the registry while it does, because that record is all the sync after it
+    has to recognise that there is still something to wait for."""
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(tmp_path / "serve")
+    blocked_in_the_runtime = SimpleNamespace(
+        name="log-persist-qwen", is_alive=lambda: True, join=lambda timeout: None
+    )
+    stuck = _LogPersistence(threading.Event(), blocked_in_the_runtime)
+    manager._log_persistence[1] = stuck
+
+    with patch.object(threading.Thread, "start") as started:
+        manager._start_container_log_persistence(new_model_instance(1, "qwen", 1))
+        manager._start_container_log_persistence(new_model_instance(1, "qwen", 1))
+
+    assert started.call_count == 0
+    assert manager._log_persistence[1] is stuck
+
+
+@pytest.mark.asyncio
+async def test_listing_the_restarts_does_not_walk_once_per_stream(tmp_path: Path):
+    """Every stream of every retained restart is measured on the request path.
+    A walk per stream multiplies the listing's cost by restarts times
+    containers, so the listing walks the instance's logs once, however many
+    there are."""
+
+    async def walks(serve_dir: Path, restarts, names) -> int:
+        for restart_count in restarts:
+            _write_restart_logs(serve_dir, "qwen", 1, restart_count, *names)
+        config = SimpleNamespace(log_dir=str(serve_dir.parent))
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(config=config))
+        )
+        # Counted at both names: the route holds its own reference to the walk.
+        counted = MagicMock(side_effect=instance_log_files)
+        with (
+            patch("gpustack.routes.worker.logs.instance_log_files", counted),
+            patch("gpustack.worker.log_sources.instance_log_files", counted),
+        ):
+            await get_serve_log_options(request, 1)
+        return counted.call_count
+
+    one = await walks(tmp_path / "one" / "serve", [2], ["main.log", "container.log"])
+    many = await walks(
+        tmp_path / "many" / "serve",
+        [2, 3, 4],
+        ["main.log", "container.log", "container.ray-head.log"],
+    )
+
+    assert (one, many) == (1, 1)
 
 
 def test_workload_failure_appends_the_exit_code():
