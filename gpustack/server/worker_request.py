@@ -271,8 +271,18 @@ async def stream_to_worker(
                 return
 
             if raw:
+                produced = False
                 async for chunk in resp.content.iter_any():
+                    produced = True
                     yield chunk, dict(resp.headers), resp.status
+                if not produced:
+                    # A log that exists but holds nothing yet is an ordinary
+                    # answer, and a caller reading only the chunks cannot tell
+                    # it from a worker that never answered: an empty iterator
+                    # reaches StreamingResponseWithStatusCode as a 503. Say the
+                    # status out loud instead. An SSE stream (raw=False) that
+                    # produced nothing really is anomalous, so it keeps the 503.
+                    yield b"", dict(resp.headers), resp.status
             else:
                 async for chunk in _stream_response_chunks(resp):
                     yield chunk, dict(resp.headers), resp.status
