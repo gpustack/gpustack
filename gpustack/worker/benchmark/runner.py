@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.config.registration import read_worker_token
+from gpustack import envs
 from gpustack.envs import BENCHMARK_DATASET_SHAREGPT_PATH, BENCHMARK_REQUEST_TIMEOUT
 from gpustack.logging import setup_logging
 from gpustack.ssl_context import resolve_ca_bundle
@@ -27,7 +28,7 @@ from gpustack.schemas.benchmark import (
 )
 from gpustack.utils.command import find_bool_parameter, sanitize_args
 from gpustack.utils.config import apply_registry_override_to_image
-from gpustack.utils.envs import filter_env_vars, get_gpustack_env_bool, sanitize_env
+from gpustack.utils.envs import filter_env_vars, sanitize_env
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 from gpustack_runtime import envs as runtime_envs
 from gpustack_runtime.deployer import ContainerFile, ContainerMount
@@ -56,22 +57,19 @@ PROGRESS_CA_BUNDLE_PATH = "/etc/gpustack/progress-ca-bundle.crt"
 def resolve_progress_insecure_tls() -> bool:
     """Whether the benchmark container should skip TLS verification on progress.
 
-    Driven by ``GPUSTACK_INSECURE_TLS`` alone, which a worker started with the
-    enterprise plugin's ``--insecure-tls`` sets (operators without that plugin
-    can set the variable directly). It means "this worker cannot verify the
-    server's certificate", and progress reporting is exactly the worker talking
-    to the server, so it already covers this case -- a benchmark-only switch
-    would let benchmarks skip verification while the worker's own connection to
-    the same server could not, which is not a distinction worth configuring.
+    Driven by ``GPUSTACK_INSECURE_TLS`` alone. It means "this worker cannot
+    verify the server's certificate", and progress reporting is exactly the
+    worker talking to the server, so it already covers this case -- a
+    benchmark-only switch would let benchmarks skip verification while the
+    worker's own connection to the same server could not, which is not a
+    distinction worth configuring.
 
-    It has to be read here because it cannot propagate on its own: the
-    enterprise shim carries it into spawned *interpreters* via
-    ``PYTHONPATH``/``sitecustomize``, which a separate benchmark image does not
-    have, and ``filter_env_vars`` strips ``GPUSTACK_*`` before the container env
-    is built. So this process (a spawn child, which does inherit the variable) is
-    the last place that can act on it.
+    It has to be resolved here because the variable cannot propagate on its own:
+    ``filter_env_vars`` strips ``GPUSTACK_*`` before the container env is built,
+    so this process (a spawn child, which does inherit it) is the last place
+    that can turn it into a runner flag.
     """
-    return bool(get_gpustack_env_bool("INSECURE_TLS"))
+    return envs.INSECURE_TLS
 
 
 class BenchmarkRunner:

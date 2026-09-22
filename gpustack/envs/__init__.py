@@ -53,6 +53,18 @@ PROXY_UPSTREAM_IDLE_TIMEOUT = int(
 # HTTP client TCP connector configuration
 TCP_CONNECTOR_LIMIT = int(os.getenv("GPUSTACK_TCP_CONNECTOR_LIMIT", 1000))
 
+# Accept any peer certificate on the connections GPUStack builds through
+# make_ssl_context(): the worker's to the server -- including the ones rebuilt
+# inside spawned subprocesses -- and the server's to an external-auth IdP. The
+# escape hatch for a deployment whose certificate cannot be verified where it
+# has to be, a private CA that cannot be distributed to every node. Traffic
+# stays encrypted but is no longer protected against interception, so it is for
+# trusted networks only. Clients that talk to a third party -- model sources,
+# the update service -- build their own context and keep verifying.
+# The name is exported for the warning that names it.
+INSECURE_TLS_ENV = "GPUSTACK_INSECURE_TLS"
+INSECURE_TLS = os.getenv(INSECURE_TLS_ENV, "false").lower() in ["true", "1"]
+
 # JWT Expiration
 JWT_TOKEN_EXPIRE_MINUTES = int(os.getenv("GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES", 120))
 

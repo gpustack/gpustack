@@ -70,9 +70,10 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Authentication & Security
 
-| Variable                            | Description                           | Default | Applies to |
-| ----------------------------------- | ------------------------------------- | ------- | ---------- |
-| `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES` | JWT token expiration time in minutes. | `120`   | Server     |
+| Variable                            | Description                                                                                                                                                                              | Default | Applies to      |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | --------------- |
+| `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES` | JWT token expiration time in minutes.                                                                                                                                                    | `120`   | Server          |
+| `GPUSTACK_INSECURE_TLS`             | Skip certificate verification on GPUStack's own HTTPS connections: the worker's to the server, including benchmark progress reporting, and the server's to an external-auth IdP. Connections to model sources and the update service keep verifying. Use only on trusted networks where the server certificate cannot be verified. | `false` | Server & Worker |
 
 ### Gateway Configuration
 
