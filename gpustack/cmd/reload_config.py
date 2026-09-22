@@ -4,7 +4,7 @@ import sys
 import requests
 from typing import Dict, Any
 
-from gpustack import __version__, __git_commit__
+from gpustack.extension import resolve_version_info
 from gpustack.api.auth import SESSION_COOKIE_NAME
 from gpustack.cmd.local_auth import (
     add_local_auth_arguments,
@@ -108,7 +108,8 @@ def run(args):
         cfg = Config(**config_data)
         setup_logging(cfg.debug)
         logger.info("Starting configuration reload...")
-        logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
+        version, git_commit = resolve_version_info()
+        logger.info(f"GPUStack version: {version} ({git_commit})")
 
         payload = build_runtime_update_payload(cfg, config_data)
         if not payload:
