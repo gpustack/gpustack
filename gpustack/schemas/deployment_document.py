@@ -210,7 +210,7 @@ def dump_deployments(
     if exported_at is None:
         exported_at = datetime.now(timezone.utc)
     header = (
-        f"# Exported from GPUStack v{resolve_version_info()[0]} "
+        f"# Exported from GPUStack {resolve_version_info()[0]} "
         f"at {exported_at:%Y-%m-%dT%H:%M:%SZ}\n"
     )
     entries = [
