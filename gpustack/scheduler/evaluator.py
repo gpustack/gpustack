@@ -32,15 +32,17 @@ from gpustack.schemas.models import (
     is_gguf_model,
     is_audio_model,
 )
-from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.schemas.workers import GPUDeviceStatus, Worker, WorkerStateEnum
 from gpustack.server.worker_selector import WorkerSelector
 
 from gpustack.utils.gpu import (
     all_gpu_match,
     any_gpu_match,
     find_one_gpu,
+    make_gpu_id,
     compare_compute_capability,
 )
+from gpustack.utils.vllm_kv_cache import ascend_local_kv_cache_unsupported_reason
 from gpustack.utils.hub import (
     auth_check,
     get_hugging_face_model_min_gguf_path,
@@ -336,7 +338,97 @@ async def evaluate_environment(
             )
         ]
 
+    if backend == BackendEnum.VLLM:
+        message = evaluate_local_extended_kv_cache(model, workers)
+        if message:
+            return False, [message]
+
     return True, []
+
+
+def candidate_gpus(model: ModelSpec, workers: List[Worker]) -> List[GPUDeviceStatus]:
+    """The GPUs a deployment could land on.
+
+    A manual GPU selection narrows this to the picked devices, so a
+    deployment pinned to one accelerator is not judged by another one
+    elsewhere in the cluster. The label / GPU-type / backend-framework
+    filters are not replayed here — they run in ``find_candidate``, further
+    down the evaluation.
+    """
+    selector = model.gpu_selector
+    selected = set(selector.gpu_ids or []) if selector else set()
+
+    gpus: List[GPUDeviceStatus] = []
+    for worker in workers:
+        if not worker.status or not worker.status.gpu_devices:
+            continue
+        for gpu in worker.status.gpu_devices:
+            if (
+                selected
+                and make_gpu_id(worker.name, gpu.type, gpu.index) not in selected
+            ):
+                continue
+            gpus.append(gpu)
+    return gpus
+
+
+def evaluate_local_extended_kv_cache(
+    model: ModelSpec,
+    workers: List[Worker],
+) -> Optional[str]:
+    """Why no GPU the deployment could land on runs vLLM's local extended
+    KV cache.
+
+    ``None`` when at least one does, which includes the deployment not asking
+    for it. Shared mode is out of scope: the provider catalog decides which
+    accelerators a cache service serves, and an unsupported one degrades to
+    running without the cache rather than failing the deployment.
+    """
+    extended_kv_cache = model.extended_kv_cache
+    if not (extended_kv_cache and extended_kv_cache.is_local()):
+        return None
+
+    def supported(gpu) -> bool:
+        if gpu.vendor in (
+            ManufacturerEnum.NVIDIA.value,
+            ManufacturerEnum.AMD.value,
+        ):
+            return True
+        if gpu.vendor == ManufacturerEnum.ASCEND.value:
+            return (
+                ascend_local_kv_cache_unsupported_reason(
+                    gpu.arch_family, model.backend_version
+                )
+                is None
+            )
+        return False
+
+    gpus = candidate_gpus(model, workers)
+    if not gpus:
+        # Nothing to judge: a pinned GPU whose worker was filtered out, or a
+        # fleet with no GPUs at all. Scheduling reports either accurately,
+        # and this check runs before it — a verdict here would take its place.
+        return None
+
+    if any(supported(gpu) for gpu in gpus):
+        return None
+
+    # Every reason among the candidates, not the first one: a 310P beside a
+    # 910B on a version below the floor blocks for two different reasons, and
+    # acting on one of them alone leaves the deployment where it was.
+    reasons = {
+        ascend_local_kv_cache_unsupported_reason(gpu.arch_family, model.backend_version)
+        for gpu in gpus
+        if gpu.vendor == ManufacturerEnum.ASCEND.value
+    }
+    reasons.discard(None)
+    if reasons:
+        return " ".join(sorted(reasons))
+
+    return (
+        "Extended KV cache with the vLLM backend requires NVIDIA, AMD or "
+        "Ascend devices but none are available."
+    )
 
 
 async def evaluate_model_metadata(
