@@ -205,6 +205,8 @@ These weights and windows apply to deployments that declare roles — a prefill-
 | `GPUSTACK_DISABLE_OS_FILELOCK`                                   | Disable OS file lock.                                                                                                           | `false` | Worker         |
 | `GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`               | Allow lower-minor CUDA devices to run higher-minor images. Set globally on the worker or per model; per-model takes precedence. | `false` | Worker & Model |
 | `GPUSTACK_RESTART_IN_FLIGHT_LAPSE_SECONDS`                       | How long `POST /models/{id}/restart` keeps rejecting a second request with HTTP 409 while the first restart is still rebuilding — without the guard, the second teardown deletes the replacements the first one just created. The guard lapses on its own so that a deployment which never reaches `running` can still be restarted; size it to outlast a cold start that pulls an image and reads weights off disk. | `900`   | Server         |
+| `GPUSTACK_SERVE_LOG_MAX_BYTES`                                   | Byte budget for one restart of one serving log. Past it the head is kept, the tail rotates, and a marker sits between them. `0` lifts the cap. | `67108864` | Worker |
+| `GPUSTACK_SERVE_LOG_HEAD_BYTES`                                  | How much of that budget the head keeps, written once and never rewritten. Capped at half the budget; `0` keeps only the first line. | `8388608` | Worker |
 
 ### Benchmark Configuration
 
