@@ -517,11 +517,45 @@ def test_set_cache_env_respects_user_override(
     assert not (tmp_path / subdirectory).exists()
 
 
-def _vllm_backend_with_kv_cache(extended_kv_cache, cache_config=None):
+def _vllm_backend_with_kv_cache(
+    extended_kv_cache,
+    cache_config=None,
+    device_info=("cuda", None, None),
+    backend_version=None,
+    vram_claim=0,
+    gpu_count=1,
+):
     backend = VLLMServer.__new__(VLLMServer)
-    backend._model = types.SimpleNamespace(extended_kv_cache=extended_kv_cache)
+    backend._model = types.SimpleNamespace(
+        extended_kv_cache=extended_kv_cache, backend_version=backend_version
+    )
     backend._model_instance = types.SimpleNamespace(cache_config=cache_config)
-    backend._get_device_info = lambda: ("cuda", None, None)
+    backend._get_device_info = lambda: device_info
+    backend._get_total_vram_claim = lambda: vram_claim
+    backend._get_selected_gpu_devices = lambda: [
+        types.SimpleNamespace(index=i) for i in range(gpu_count)
+    ]
+    return backend
+
+
+def _vllm_backend_claiming(worker_id, instance_worker_id, vram, subordinates=()):
+    """A backend reading its VRAM claim off the instance record, from the
+    perspective of one of the workers the instance is placed on."""
+    backend = VLLMServer.__new__(VLLMServer)
+    backend._worker = types.SimpleNamespace(id=worker_id)
+    backend._model_instance = types.SimpleNamespace(
+        worker_id=instance_worker_id,
+        computed_resource_claim=types.SimpleNamespace(vram=vram),
+        distributed_servers=types.SimpleNamespace(
+            subordinate_workers=[
+                types.SimpleNamespace(
+                    worker_id=sub_worker_id,
+                    computed_resource_claim=types.SimpleNamespace(vram=sub_vram),
+                )
+                for sub_worker_id, sub_vram in subordinates
+            ]
+        ),
+    )
     return backend
 
 
@@ -627,6 +661,128 @@ def test_vllm_legacy_local_kv_cache_behavior_unchanged():
     ]
 
 
+def test_vllm_local_kv_cache_ram_ratio_sizes_from_vram_claim():
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_ratio=1.5),
+        vram_claim=8 * 1024**3,
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {"LMCACHE_MAX_LOCAL_CPU_SIZE": "12"}
+
+
+def test_vllm_ascend_local_kv_cache_wires_npu_offload_connector():
+    """Ascend has no LMCache build, so local mode carries its sizing in
+    vllm-ascend's own connector instead of the LMCache variables. The
+    configured size is the worker's, so 4 GiB over 2 cards is 2 GiB a rank."""
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_size=4, chunk_size=256),
+        device_info=("cann", None, "Ascend910B3"),
+        backend_version="0.23.0",
+        gpu_count=2,
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {}
+
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both",'
+        '"kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":2147483648}}',
+    ]
+
+
+def test_vllm_ascend_local_kv_cache_ram_ratio_sizes_from_vram_claim():
+    """The ratio scales this worker's claim, and the per-rank share carries
+    it independently of the engine's parallelism."""
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_ratio=2.0),
+        device_info=("cann", None, "Ascend910B3"),
+        backend_version="0.23.0",
+        vram_claim=6 * 1024**3,
+        gpu_count=4,
+    )
+
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both",'
+        '"kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":3221225472}}',
+    ]
+
+
+def test_vllm_ascend_local_kv_cache_without_a_size_leaves_the_capacity_default():
+    """Neither size nor ratio: the connector still runs, on its own default,
+    the way LMCache does on the CUDA path."""
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_ratio=None, ram_size=None),
+        device_info=("cann", None, "Ascend910B3"),
+        backend_version="0.23.0",
+    )
+
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both",'
+        '"kv_connector_extra_config":{}}',
+    ]
+
+
+@pytest.mark.parametrize("worker_id", [1, 2])
+def test_vllm_total_vram_claim_is_the_claim_of_the_worker_reading_it(worker_id):
+    backend = _vllm_backend_claiming(
+        worker_id=worker_id,
+        instance_worker_id=1,
+        vram={0: 4 * 1024**3, 1: 4 * 1024**3},
+        subordinates=[(2, {0: 2 * 1024**3})],
+    )
+
+    expected = 8 * 1024**3 if worker_id == 1 else 2 * 1024**3
+    assert backend._get_total_vram_claim() == expected
+
+
+def test_vllm_total_vram_claim_tolerates_a_claim_without_vram():
+    """computed_resource_claim.vram is optional; a deployment sized by
+    ram_size must not trip over an instance that has none."""
+    backend = _vllm_backend_claiming(worker_id=1, instance_worker_id=1, vram=None)
+
+    assert backend._get_total_vram_claim() == 0
+
+
+@pytest.mark.parametrize(
+    "device_info, backend_version",
+    [
+        # 310P carries no KV offload component in the runner image.
+        (("cann", None, "Ascend310P3"), "0.23.0"),
+        # The NPU connector predates neither: it lands in vLLM Ascend 0.21.0.
+        (("cann", None, "Ascend910B3"), "0.20.0"),
+    ],
+)
+def test_vllm_ascend_local_kv_cache_unsupported_target_injects_nothing(
+    device_info, backend_version
+):
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_size=4),
+        device_info=device_info,
+        backend_version=backend_version,
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {}
+
+    assert backend._build_extended_kv_cache_arguments(None) == []
+
+
+def test_vllm_local_kv_cache_on_other_vendor_injects_nothing():
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_size=4),
+        device_info=("musa", None, None),
+    )
+
+    assert backend._build_extended_kv_cache_arguments(None) == []
+
+
 def test_sglang_shared_kv_cache_disables_hicache_arguments():
     backend = SGLangServer.__new__(SGLangServer)
     backend._model = types.SimpleNamespace(extended_kv_cache=_shared_kv_cache_config())
@@ -648,6 +804,24 @@ def test_sglang_local_kv_cache_hicache_arguments_unchanged():
         "64",
         "--hicache-size",
         "8",
+    ]
+
+
+def test_sglang_local_kv_cache_has_no_accelerator_gate():
+    """SGLang's hierarchical cache is engine-native on every framework it
+    ships for — on CANN it picks the Ascend IO backend and memory layout
+    itself — so the flags carry no accelerator condition, unlike the vLLM
+    connectors."""
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model = types.SimpleNamespace(
+        extended_kv_cache=ExtendedKVCacheConfig(enabled=True, ram_ratio=3.0)
+    )
+    backend._get_device_info = lambda: ("cann", None, "Ascend910B3")
+
+    assert backend._get_hicache_arguments() == [
+        "--enable-hierarchical-cache",
+        "--hicache-ratio",
+        "3.0",
     ]
 
 

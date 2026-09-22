@@ -37,6 +37,7 @@ from gpustack.utils.command import (
 )
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.vllm_kv_cache import ascend_local_kv_cache_unsupported_reason
 from gpustack.utils.vllm_topology import (
     MultinodeShape,
     MultinodeUserParallelism,
@@ -421,17 +422,42 @@ class VLLMServer(InferenceServer):
                 logger.warning(f"Starting without shared KV cache.{reason}")
             return
 
+        vendor, _, _ = self._get_device_info()
+        if vendor == manufacturer_to_backend(ManufacturerEnum.ASCEND):
+            # Ascend runs the connector vllm-ascend ships rather than LMCache,
+            # and takes its sizing from --kv-transfer-config; LMCache reads
+            # none of these variables there.
+            return
+
         if extended_kv_cache.chunk_size and extended_kv_cache.chunk_size > 0:
             env["LMCACHE_CHUNK_SIZE"] = str(extended_kv_cache.chunk_size)
 
+        ram_bytes = self._resolve_local_kv_cache_bytes()
+        if ram_bytes:
+            gib = byte_to_gib(ram_bytes)
+            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(
+                int(gib) if gib.is_integer() else gib
+            )
+
+    def _resolve_local_kv_cache_bytes(self) -> Optional[int]:
+        """Host RAM the local KV cache may occupy on this worker, in bytes.
+
+        The explicitly configured size wins; otherwise the ratio applies to
+        the instance's VRAM claim on this worker. ``None`` when the deployment
+        sets neither. Mirrors what the scheduler reserved for the instance
+        here (``get_computed_ram_claim``), which is a per-worker figure.
+        """
+        extended_kv_cache = self._model.extended_kv_cache
+        if not extended_kv_cache:
+            return None
+
         if extended_kv_cache.ram_size and extended_kv_cache.ram_size > 0:
-            # Explicitly specified RAM size for KV cache
-            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(extended_kv_cache.ram_size)
-        elif extended_kv_cache.ram_ratio and extended_kv_cache.ram_ratio > 0:
-            # Calculate RAM size based on ratio of total VRAM claim
-            vram_claim = self._get_total_vram_claim()
-            ram_size = int(vram_claim * extended_kv_cache.ram_ratio)
-            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(ram_size))
+            return extended_kv_cache.ram_size * 1024**3
+
+        if extended_kv_cache.ram_ratio and extended_kv_cache.ram_ratio > 0:
+            return int(self._get_total_vram_claim() * extended_kv_cache.ram_ratio)
+
+        return None
 
     def _resolve_multinode_shape(
         self,
@@ -584,7 +610,7 @@ class VLLMServer(InferenceServer):
         if not computed_resource_claim:
             return vram
 
-        for _, vram_claim in computed_resource_claim.vram.items():
+        for vram_claim in (computed_resource_claim.vram or {}).values():
             vram += vram_claim
 
         return vram
@@ -844,21 +870,81 @@ class VLLMServer(InferenceServer):
                 return list(cache_config.args or [])
             return []
 
-        # Local mode wires the in-process LMCache connector, which only
-        # supports CUDA/ROCm builds of vLLM.
-        vendor, _, _ = self._get_device_info()
+        # Local mode wires an in-process offload connector, and which one
+        # depends on the accelerator: LMCache has no CANN build in the runner
+        # images, so Ascend goes through the connector vllm-ascend ships.
+        vendor, _, arch_family = self._get_device_info()
+        if vendor == manufacturer_to_backend(ManufacturerEnum.ASCEND):
+            return self._build_ascend_local_kv_cache_arguments(arch_family)
+
         if vendor not in {
             manufacturer_to_backend(ManufacturerEnum.NVIDIA),
             manufacturer_to_backend(ManufacturerEnum.AMD),
         }:
             logger.warning(
-                "Local extended KV cache for vLLM is only supported on NVIDIA and AMD GPUs. Skipping LMCache configuration."
+                "Local extended KV cache for vLLM is only supported on NVIDIA, AMD and Ascend devices. Skipping KV cache offload configuration."
             )
             return []
 
         return [
             "--kv-transfer-config",
             '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}',
+        ]
+
+    def _build_ascend_local_kv_cache_arguments(
+        self, arch_family: Optional[str]
+    ) -> List[str]:
+        """Wire vllm-ascend's NPU-native CPU offload connector.
+
+        ``SimpleCPUOffloadConnector`` resolves to the NPU worker that
+        vllm-ascend registers over the upstream CUDA one, so local mode on
+        Ascend offloads KV blocks to host memory the way it does elsewhere —
+        the same deployment fields, a different engine-native mechanism, as
+        on SGLang with its hierarchical cache.
+
+        The capacity goes in as a per-rank budget. Its sibling
+        ``cpu_bytes_to_use`` is deployment-wide and the connector divides that
+        by ``world_size``, which counts TP x PP x PCP and leaves data
+        parallelism out: under ``--data-parallel-size N`` every DP engine
+        would reserve a full share and the host would hold N times the cache
+        the scheduler reserved for it. Dividing the worker's own budget by the
+        cards it was given keeps the sizing independent of the engine's
+        parallelism, and equal to what ``get_computed_ram_claim`` set aside.
+        """
+        reason = ascend_local_kv_cache_unsupported_reason(
+            arch_family, self._model.backend_version
+        )
+        if reason:
+            logger.warning(f"{reason} Skipping KV cache offload configuration.")
+            return []
+
+        extra_config = {}
+        ram_bytes = self._resolve_local_kv_cache_bytes()
+        if ram_bytes:
+            ranks = len(self._get_selected_gpu_devices()) or 1
+            extra_config["cpu_bytes_to_use_per_rank"] = ram_bytes // ranks
+
+        extended = self._model.extended_kv_cache
+        if extended.chunk_size and extended.chunk_size > 0:
+            # The connector carries no chunking of its own: it stores whole KV
+            # blocks and reads its block sizes off the engine. Mapping the
+            # chunk size onto --block-size would retune the engine's paging
+            # rather than the cache, and vllm-ascend overrides it anyway
+            # whenever prefix caching is on — the mode this connector requires.
+            logger.warning(
+                "Cache chunk size does not apply to extended KV cache on Ascend. Ignoring it."
+            )
+
+        return [
+            "--kv-transfer-config",
+            json.dumps(
+                {
+                    "kv_connector": "SimpleCPUOffloadConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": extra_config,
+                },
+                separators=(",", ":"),
+            ),
         ]
 
     def _build_ascend_310p_arguments(self, ctx: _VLLMArgsContext) -> List[str]:

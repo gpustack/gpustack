@@ -257,22 +257,24 @@ GPUStack provides the following configuration options to optimize model inferenc
 
 ### Extended KV Cache
 
-You can enable extended KV cache to offload the KV cache to CPU memory or remote storage. This feature is particularly useful for setups with limited GPU memory requiring long context lengths. Under the hood, GPUStack leverages [LMCache](https://github.com/LMCache/LMCache) to provide this functionality.
+You can enable extended KV cache to offload the KV cache to CPU memory or remote storage. This feature is particularly useful for setups with limited GPU memory requiring long context lengths. Under the hood, GPUStack configures the KV cache offloading that the selected backend and framework support, such as [LMCache](https://github.com/LMCache/LMCache) or HiCache.
 
 Available options:
 
 - **RAM-to-VRAM Ratio**: The ratio of system RAM to GPU VRAM used for KV cache. For example, 2.0 means the cache in RAM can be twice as large as the GPU VRAM.
 - **Maximum RAM Size**: The maximum size of the KV cache stored in system memory (GiB). If set, this value overrides `RAM-to-VRAM Ratio`.
-- **Size of Cache Chunks**: Number of tokens per KV cache chunk.
+- **Size of Cache Chunks**: Number of tokens per KV cache chunk. Not applicable to vLLM on CANN, where the connector offloads whole KV blocks and reuses them at the engine's block size.
 
 This feature works for certain backends and frameworks only.
 
 #### Compatibility Matrix
 
-| Backend | Framework  |
-| ------- | ---------- |
-| vLLM    | CUDA, ROCm |
-| SGLang  | CUDA, ROCm |
+| Backend | Framework        |
+| ------- | ---------------- |
+| vLLM    | CUDA, ROCm, CANN |
+| SGLang  | CUDA, ROCm, CANN |
+
+With vLLM on CANN, extended KV cache requires vLLM Ascend v0.21.0 or later and is not available on Atlas 300I Duo (310P).
 
 ## Scheduling Configuration
 
