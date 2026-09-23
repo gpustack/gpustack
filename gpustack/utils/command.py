@@ -113,12 +113,55 @@ def find_parameter(parameters: List[str], param_names: List[str]) -> Optional[st
     return None
 
 
+def find_last_parameter(parameters: List[str], param_names: List[str]) -> Optional[str]:
+    """
+    Return the value of the *last* parameter whose key is in ``param_names`` --
+    the one argparse would end up with.
+
+    A second reader rather than a change of mind about :func:`find_parameter`,
+    whose first-wins answer three dozen call sites already depend on. The
+    difference only shows when one argv names the same key twice, and there the
+    two answers disagree about which value the process runs: argparse keeps the
+    last, so ``--dtype auto --dtype float16`` runs float16 while the first-wins
+    read reports ``auto``.
+
+    That gap is harmless where a value is being *read* and load-bearing where
+    two argvs are being *compared*: a pairing check that compares values
+    neither engine will run can equally miss a real divergence and invent one.
+    """
+    if parameters is None:
+        return None
+    found = None
+    for key, value in _iter_param_pairs(parameters):
+        if key in param_names and value is not None:
+            found = value
+    return found
+
+
 def find_int_parameter(parameters: List[str], param_names: List[str]) -> Optional[int]:
     """
     Find specified integer parameter by name from the parameters.
     Return the integer value of the parameter if found, otherwise return None.
     """
     value = find_parameter(parameters, param_names)
+    if value is not None:
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def find_last_int_parameter(
+    parameters: List[str], param_names: List[str]
+) -> Optional[int]:
+    """
+    :func:`find_last_parameter` for an integer-valued key. ``None`` when the
+    key is absent or its last value is not an integer -- the same fail-quiet
+    :func:`find_int_parameter` takes, since a value the engine will reject is
+    not a value to draw conclusions from.
+    """
+    value = find_last_parameter(parameters, param_names)
     if value is not None:
         try:
             return int(value)
