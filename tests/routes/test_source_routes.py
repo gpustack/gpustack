@@ -105,6 +105,13 @@ _CACHE_PROVIDER_SPEC = cache_providers.CACHE_PROVIDER_SOURCE_SPEC
 _REMOTE = {"doc": ""}
 
 
+@pytest.fixture(autouse=True)
+def release_build(monkeypatch):
+    """This tree is versioned as a development build; the official defaults
+    these tests describe are a release's."""
+    monkeypatch.setattr(probe_module, "is_dev_version", lambda: False)
+
+
 def _upsert(
     official_hours: int = OFFICIAL_DEFAULT_HOURS,
     remote_enabled: bool = True,

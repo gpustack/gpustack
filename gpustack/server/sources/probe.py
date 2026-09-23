@@ -35,6 +35,7 @@ from gpustack.schemas.inference_backend_source import (
 from gpustack.schemas.runner_source import InferenceRunnerSource, normalize_runner_json
 from gpustack.server.catalog import get_builtin_model_catalog_file
 from gpustack.server.db import async_session
+from gpustack.server.update_check import is_dev_version
 
 from gpustack.schemas.source import SourceMixin, SourceTypeEnum
 
@@ -238,11 +239,16 @@ async def _ensure_official_row(
     )
 
 
+def ota_server_base(ota_server_url: Optional[str] = None) -> str:
+    """The OTA server every published file is read from. ``ota_server_url`` is
+    the configured override; ``None`` means the default OTA server. A trailing
+    slash is tolerated, since a configured URL commonly carries one."""
+    return (ota_server_url or OTA_SERVER_URL).rstrip('/')
+
+
 def _ota_url(filename: str, ota_server_url: Optional[str] = None) -> str:
-    """Where a published file lives — the only place the OTA URL is assembled.
-    ``ota_server_url`` is the configured override; ``None`` means the default OTA server.
-    A trailing slash is tolerated, since a configured URL commonly carries one."""
-    return f"{(ota_server_url or OTA_SERVER_URL).rstrip('/')}/{filename}"
+    """Where a published file lives — the only place the OTA URL is assembled."""
+    return f"{ota_server_base(ota_server_url)}/{filename}"
 
 
 @lru_cache(maxsize=1)
@@ -364,14 +370,19 @@ async def _due_official_rows(
     or turned off by the admin — is left out.
     """
     due: List[Tuple[OfficialKind, SourceMixin]] = []
+    # Left unset, a development build starts on its embedded content: what it
+    # packages is ahead of anything published.
+    start_embedded = (
+        envs.BOOTSTRAP_WITH_EMBEDDED_SOURCES
+        if envs.BOOTSTRAP_WITH_EMBEDDED_SOURCES is not None
+        else is_dev_version()
+    )
     for kind in OFFICIAL_KINDS:
         masked = await _has_enabled_custom(session, kind.source_cls)
         # Only the row this round may create is held to the configured starting
         # point. One that exists carries whatever the source configuration last
         # made of it, which outranks a default.
-        source = await _ensure_official_row(
-            session, kind, masked or envs.BOOTSTRAP_WITH_EMBEDDED_SOURCES
-        )
+        source = await _ensure_official_row(session, kind, masked or start_embedded)
         # Only ever disables: ``enabled`` is also the admin's fall-back switch, so
         # a round must not turn a slot back on that someone turned off. This
         # direction is the one protecting an invariant — OFFICIAL and a custom
