@@ -1,6 +1,6 @@
 import socket
 import logging
-from typing import Callable
+from typing import Callable, List
 from gpustack.config.config import Config
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.detectors.base import GPUDetectExepction
@@ -16,7 +16,7 @@ from gpustack.schemas.workers import (
     SystemInfo,
 )
 from gpustack.utils.profiling import time_decorator
-
+from gpustack.worker.topology_facts import facts_from_devices
 
 logger = logging.getLogger(__name__)
 
@@ -82,23 +82,41 @@ class WorkerStatusCollector:
     ) -> WorkerStatusPublic:  # noqa: C901
         """Collect worker status information."""
         status = WorkerStatus.get_default_status()
-        state_message = None
+        messages: List[str] = []
         try:
             system_info = self._detector_factory.detect_system_info()
             status = WorkerStatus.model_validate({**system_info.model_dump()})
         except Exception as e:
+            # Said out loud, not only logged. The default status is all
+            # zeros, and a worker that ships one is indistinguishable from a
+            # host with no memory and no CPU — which is a measurement the
+            # server then schedules against. Observed on a worker whose GPU
+            # detection was fine and whose system detection was not: it stayed
+            # READY with two idle cards while every group placement refused it,
+            # because each role wants some RAM and the host appeared to have
+            # none. The reason for that lived only in this worker's own log.
             logger.error(f"Failed to detect system info: {e}")
+            messages.append(
+                f"System information could not be detected, so this worker "
+                f"reports no CPU, memory or disk and cannot be scheduled "
+                f"onto: {e}"
+            )
 
         if not initial:
             try:
                 gpu_devices = self._detector_factory.detect_gpus()
                 status.gpu_devices = gpu_devices
             except GPUDetectExepction as e:
-                state_message = str(e)
+                messages.append(str(e))
             except Exception as e:
                 logger.error(f"Failed to detect GPU devices: {e}")
+        # Both halves can fail independently — the case above had exactly one
+        # of them fail — so the message carries whichever did.
+        state_message = "\n".join(messages) or None
         self._inject_unified_memory(status)
         self._inject_computed_filesystem_usage(status)
+        self._inject_topology_facts(status)
+        self._inject_kv_ifname(status)
 
         # If disable_worker_metrics is set, set metrics_port to -1
         metrics_port = self._cfg.worker_metrics_port
@@ -118,6 +136,26 @@ class WorkerStatusCollector:
             worker_uuid=self._worker_uuid_getter(),
             proxy_mode=self._cfg.proxy_mode,
         )
+
+    def _inject_topology_facts(self, status: WorkerStatus):
+        """Where this worker is, as its devices report it.
+
+        Left as None when nothing is known, so a worker whose runtime reports
+        no fabric at all looks exactly as it did before.
+        """
+        facts = facts_from_devices(status.gpu_devices or [])
+        status.topology_facts = facts or None
+
+    def _inject_kv_ifname(self, status: WorkerStatus):
+        """The KV-transfer NIC this worker was told to use, if it was told one.
+
+        Forwarded verbatim rather than normalised. The field is a record of
+        what was configured, and a whitespace-only value -- which
+        `derive_net_device` deliberately steps over and derives anyway -- is a
+        mistake someone wants to see, not one to launder into the `None` that
+        here means "nobody set this".
+        """
+        status.kv_ifname = self._cfg.kv_ifname
 
     def _inject_unified_memory(self, status: WorkerStatus):
         is_unified_memory = False

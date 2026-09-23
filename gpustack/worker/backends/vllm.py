@@ -22,6 +22,7 @@ from gpustack.schemas.models import (
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
     ModelInstanceDeploymentMetadata,
+    get_backend,
     is_audio_model,
     is_omni_model,
 )
@@ -44,6 +45,11 @@ from gpustack.utils.vllm_topology import (
     parse_user_parallelism,
     validate_multinode_topology,
 )
+from gpustack.worker.kv_transfer import (
+    TOP_LEVEL_ONLY_KEYS,
+    compose_kv_transfer_config,
+    descriptor_in,
+)
 from gpustack.worker.backends.base import (
     InferenceServer,
     is_ascend_310p,
@@ -57,6 +63,25 @@ logger = logging.getLogger(__name__)
 # vLLM only accepts a fixed set of values for --max-lora-rank; a rank in between
 # must be rounded up to the next allowed value.
 _VLLM_LORA_RANK_CHOICES = (8, 16, 32, 64, 128, 256, 320, 512)
+
+
+def _top_level_only_keys(model) -> Tuple[str, ...]:
+    """Settings this engine reads only off a top-level connector descriptor.
+
+    Declared in `pd-modes.yaml` under `composed_cache.top_level_only` and read
+    here rather than inside the composer, which stays a pure function over
+    descriptors. A catalog that cannot be reached is not a reason to fail a
+    launch: the composition still happens, just without lifting anything, which
+    is the behaviour of every release before the declaration existed.
+    """
+    try:
+        from gpustack.server.pd_mode_catalog import get_composed_cache
+
+        declared = get_composed_cache(get_backend(model))
+    except Exception as e:  # noqa: BLE001 - catalog is advisory here
+        logger.debug("Could not read the composed-cache declaration: %s", e)
+        return TOP_LEVEL_ONLY_KEYS
+    return tuple(declared.top_level_only) if declared else TOP_LEVEL_ONLY_KEYS
 
 
 def _round_up_vllm_lora_rank(rank: int) -> int:
@@ -662,7 +687,8 @@ class VLLMServer(InferenceServer):
         )
         arguments.extend(self._build_ray_distributed_arguments(ctx))
         arguments.extend(self._build_mp_multinode_arguments(ctx))
-        arguments.extend(self._build_extended_kv_cache_arguments(ctx))
+        cache_args = self._build_extended_kv_cache_arguments(ctx)
+        arguments.extend(cache_args)
         arguments.extend(self._build_ascend_310p_arguments(ctx))
 
         extend_vllm_mounted_lora_arguments(
@@ -681,6 +707,27 @@ class VLLMServer(InferenceServer):
             ("--host", self._worker.ip),
             ("--port", str(ctx.port)),
             ("--served-model-name", self._model_instance.model_name),
+        )
+
+        # Last, because it is the only point where every writer of
+        # --kv-transfer-config has contributed: the cache's arrives with the
+        # engine arguments far above, the PD connector's with the user's
+        # parameters just now. Placing it any earlier composes whatever has
+        # been assembled so far and lets the rest through un-merged, which is
+        # a duplicate flag rather than a composition — measured, and it
+        # reached a container.
+        #
+        # They are complementary rather than conflicting: a prefill asks the
+        # shared cache first (a prefix it already holds is prefill work that
+        # need not happen at all), a decode asks its own prefill first (the
+        # request already says the KV is waiting there). The cache's own
+        # descriptor is handed over so the order follows origin rather than
+        # whichever branch happened to append last.
+        arguments = compose_kv_transfer_config(
+            arguments,
+            getattr(self._model_instance, "role", None),
+            cache_first=descriptor_in(cache_args),
+            top_level_only=_top_level_only_keys(self._model),
         )
 
         injected = self._get_injected_backend_parameters(
@@ -1182,7 +1229,7 @@ def get_auto_parallelism_arguments(
 
     if is_distributed:
         # distributed across multiple workers (Ray sidecar path)
-        (tp, pp) = cal_distributed_parallelism_arguments(model_instance)
+        tp, pp = cal_distributed_parallelism_arguments(model_instance)
         return [
             "--tensor-parallel-size",
             str(tp),

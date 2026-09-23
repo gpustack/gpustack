@@ -105,6 +105,23 @@ class WorkerConfig(PredefinedConfig):
     server_url: Optional[str] = None
     worker_ip: Optional[str] = None
     worker_name: Optional[str] = None
+    # Escape hatch for the KV transfer plane of disaggregated serving. Only the
+    # management-plane NIC is auto-detected (``worker_ifname``), and on a
+    # multi-NIC host -- or when KV traffic belongs on a dedicated fabric -- that
+    # is not the answer, so this is the only way to say which NIC is. Left
+    # unset, the derivation falls back to the management NIC on a host with a
+    # single candidate interface and otherwise refuses outright: never a guess,
+    # since UCX guessing wrong yields an unroutable address in the NIXL metadata
+    # rather than a clean failure.
+    #
+    # Lives on ``WorkerConfig`` and not on ``PredefinedConfig`` on purpose.
+    # ``PredefinedConfig`` is the *cluster-wide* channel (``Cluster.worker_config``
+    # -> registration env -> every worker in the cluster), and a NIC name is a
+    # property of one machine. Broadcasting one value would set ``ib0`` on hosts
+    # that have no ``ib0``, converting a single-host ambiguity into a
+    # cluster-wide misconfiguration whose failure mode is the very
+    # ``NIXL_ERR_BACKEND`` this field exists to avoid.
+    kv_ifname: Optional[str] = None
 
 
 class Config(WorkerConfig, BaseSettings):
@@ -148,6 +165,9 @@ class Config(WorkerConfig, BaseSettings):
         worker_ip: IP address of the worker node. Auto-detected by default.
         worker_ifname: Network interface name of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
+        kv_ifname: Network interface name carrying the KV transfer plane of disaggregated serving.
+                   Falls back to worker_ifname when unset and this host has a single candidate
+                   interface; required on a multi-NIC host.
         disable_worker_metrics: Disable worker metrics.
         worker_metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
