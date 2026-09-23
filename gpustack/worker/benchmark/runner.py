@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.config.registration import read_worker_token
+from gpustack import envs
 from gpustack.envs import BENCHMARK_DATASET_SHAREGPT_PATH, BENCHMARK_REQUEST_TIMEOUT
 from gpustack.logging import setup_logging
 from gpustack.ssl_context import resolve_ca_bundle
@@ -137,7 +138,7 @@ class BenchmarkRunner:
 
             self._benchmark_dir = self._config.benchmark_dir
             self._model_path = instance_snapshot.resolved_path
-            self._model_endpoint = f"http://{instance_snapshot.worker_ip}:{instance_snapshot.ports[0] if instance_snapshot.ports else ''}"
+            self._model_endpoint = f"{envs.GPUSTACK_INSTANCE_SCHEME}://{instance_snapshot.worker_ip}:{instance_snapshot.ports[0] if instance_snapshot.ports else ''}"
             self._model_backend_parameters = instance_snapshot.backend_parameters
 
             _api_key = read_worker_token(self._config.data_dir)
