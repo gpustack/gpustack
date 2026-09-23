@@ -151,7 +151,7 @@ class RoutePrefix:
         for versioned_prefix in versioned_prefixes:
             for prefix in self.prefixes:
                 flattened.append(f"{versioned_prefix}{prefix}")
-        if getattr(self, "strip_version", False):
+        if self.strip_version:
             # Bare (unversioned) forms must also reach the gateway plugin
             # path whitelists so routing headers are injected for them.
             flattened.extend(self.prefixes)
