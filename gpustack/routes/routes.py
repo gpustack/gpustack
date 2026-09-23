@@ -27,6 +27,7 @@ from gpustack.routes import (
     organization_members,
     organizations,
     ota_sources,
+    pd_modes,
     probes,
     proxy,
     source_probe,
@@ -41,6 +42,7 @@ from gpustack.routes import (
     cloud_credentials,
     worker_pools,
     clusters,
+    cluster_topology,
     token,
     benchmarks,
     benchmark_profiles,
@@ -144,6 +146,12 @@ v1_base_router.include_router(
 # and friends, so platform-only operations (e.g. set-default) still
 # require is_admin inside the handler.
 v1_base_router.include_router(clusters.router, prefix="/clusters", tags=["Clusters"])
+# Same prefix, separate module: the topology preview is read-only and answers a
+# question about a declaration that has not been saved, which shares nothing
+# with cluster CRUD beyond the id in the path.
+v1_base_router.include_router(
+    cluster_topology.router, prefix="/clusters", tags=["Clusters"]
+)
 v1_base_router.include_router(
     cloud_credentials.router,
     prefix="/cloud-credentials",
@@ -327,6 +335,11 @@ tenant_routers = model_routers + [
         "router": cache_providers.router,
         "prefix": "/cache-providers",
         "tags": ["Cache Providers"],
+    },
+    {
+        "router": pd_modes.router,
+        "prefix": "/pd-modes",
+        "tags": ["PD Modes"],
     },
     # Inference backends are platform-wide (admin curates) but every Org
     # owner/manager needs to read them to pick a backend at deploy time.

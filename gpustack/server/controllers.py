@@ -1,10 +1,25 @@
+import hashlib
+import json
 import logging
 import random
 import string
 import asyncio
+from datetime import datetime, timezone
 from importlib.resources import files
 from functools import partial
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Tuple, Optional, Set
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    NamedTuple,
+    Sequence,
+    Tuple,
+    Optional,
+    Set,
+    Awaitable,
+    Callable,
+)
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -16,11 +31,12 @@ from gpustack.config.config import (
     get_cluster_image_name,
 )
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
+from gpustack.policies.scorers.pairing_affinity_scorer import PairingRetentionScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.scorers.score_chain import (
     ModelInstanceScoreChain,
 )
-from gpustack.policies.base import ModelInstanceScore
+from gpustack.policies.base import ModelInstanceScore, ModelInstanceScorer
 from gpustack.policies.worker_filters.label_matching_filter import label_matching
 from gpustack.policies.scorers.status_scorer import StatusScorer
 from gpustack.schemas.inference_backend import (
@@ -42,8 +58,10 @@ from gpustack.schemas.principals import (
     platform_principal_id,
 )
 from gpustack.schemas.models import (
+    servable_instances,
     BackendEnum,
     BackendSourceEnum,
+    DegradationReasonEnum,
     LoraListEntry,
     ModelSource,
     Model,
@@ -51,9 +69,18 @@ from gpustack.schemas.models import (
     ModelInstanceCreate,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
+    ModelSpecBase,
+    ModelStateEnum,
+    RoleNameEnum,
+    RoleSpec,
+    RoleStatus,
     SourceEnum,
     get_backend,
+    member_worker_ids,
+    role_effective_model,
 )
+from gpustack.schemas.gpu_instance_types import GPUInstanceType
+from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
 from gpustack.schemas.links import (
     ModelInstanceModelFileLink,
     ModelInstanceDraftModelFileLink,
@@ -79,10 +106,22 @@ from gpustack.schemas.cache_providers import (
     render_optional_template,
     resolved_field_values,
 )
+from gpustack.schemas.pd_modes import PDTensorParallelPairingEnum
 from gpustack.server.cache_provider_catalog import (
     builtin_catalog_text,
     get_cache_provider,
 )
+from gpustack.server.pd_pairing import (
+    PAIRING_ANY_PARALLELISM,
+    PAIRING_TP,
+    role_parameters,
+    tensor_parallel_rule,
+    undecidable_factors,
+    violates_tensor_parallel_direction,
+)
+from gpustack.utils.command import find_last_int_parameter, find_last_parameter
+from gpustack.server import pd_membership
+from gpustack.server.pd_membership import outcome_for as membership_outcome_for
 from gpustack.server.cache_services import resolve_instance_cache_config_safe
 from gpustack.schemas.workers import (
     Worker,
@@ -187,13 +226,104 @@ from gpustack.schemas.model_provider import (
 logger = logging.getLogger(__name__)
 
 
+def _gateway_registrable_instances(
+    model: Model, instances: List[ModelInstance]
+) -> List[ModelInstance]:
+    """The members whose addresses may become gateway upstreams.
+
+    For a role-bearing group that is the router alone. Every member of a PD
+    group serves an OpenAI-shaped API on its own port, so registering them all
+    is not a duplicate registration — it is a set of upstreams that answer the
+    same requests *wrongly*: a request balanced onto a prefill returns after
+    one token, and one onto a decode runs without the prefix its KV was
+    supposed to carry. Both return 200 with plausible text, which is the
+    failure mode PD is least able to absorb.
+
+    A group with no router role registers nothing here rather than falling
+    back to its GPU members, for the same reason: there is no member that can
+    correctly answer a whole request on its own.
+    """
+    return servable_instances(model, instances)
+
+
+# The bus speaks CREATED/UPDATED/DELETED and the work queue speaks
+# ADDED/MODIFIED/DELETED. Mapped rather than unified because the queue's
+# DELETED carries queue semantics — it jumps the ready queue and is sticky
+# under coalescing — which the bus's has no opinion about.
+_WORK_EVENT_TYPE_BY_BUS = {
+    EventType.CREATED: WorkEventType.ADDED,
+    EventType.UPDATED: WorkEventType.MODIFIED,
+    EventType.DELETED: WorkEventType.DELETED,
+}
+
+
 class ModelController:
+    """Reconciles a model's replicas, status, routes and gateway registration.
+
+    Events go through a per-model work queue rather than straight into
+    `_reconcile`, and for a role-bearing model that is a correctness
+    requirement rather than a throughput one. The trigger chain is "instance
+    DELETED -> Model UPDATED -> reconcile", so retiring a 4P4D generation is
+    nine deletions and nine reconciles — and each of the middle ones sees a
+    group short of members. Reconciling on every one of them recreates what
+    the deletion is still in the middle of removing. One reconcile per burst,
+    reading the settled state, cannot make that mistake.
+    """
+
     def __init__(self, cfg: Config):
         self._config = cfg
         self._k8s_config = get_async_k8s_config(cfg=cfg)
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
+        # Keyed by model id, so different models still reconcile concurrently
+        # while one model's events serialise.
+        self._queue: WorkQueue = WorkQueue(coalesce=self._merge_events)
+        self._inflight: Dict[Any, asyncio.Task] = {}
+        self._dispatch_task: Optional[asyncio.Task] = None
 
-        pass
+    @staticmethod
+    def _merge_events(existing: WorkEvent, incoming: WorkEvent) -> WorkEvent:
+        """Collapse a burst into one reconcile without losing what changed.
+
+        Plain latest-wins would be wrong here even though the row it carries is
+        the freshest one: `notify_model_route_target` decides whether to publish
+        by asking which fields moved, so dropping an intermediate event's
+        `changed_fields` drops the notification that event was carrying. A
+        `state` transition followed by an unrelated edit would leave the gateway
+        holding a target it was never told to update.
+
+        So the row is the newest and the changed-field set is the union — which
+        is what "one reconcile of everything that happened since the last one"
+        actually means. Per field the oldest before-value and the newest
+        after-value are kept, so the pair still describes the whole span rather
+        than its last step.
+
+        A pending DELETED stays sticky (the default policy): a model row that is
+        gone must not be reconciled as if it were merely updated.
+        """
+        if (
+            existing.type == WorkEventType.DELETED
+            and incoming.type != WorkEventType.DELETED
+        ):
+            return existing
+
+        old_event: Event = existing.object
+        new_event: Event = incoming.object
+        if (
+            old_event is None
+            or new_event is None
+            or not old_event.changed_fields
+            or new_event.changed_fields is None
+        ):
+            return incoming
+
+        merged = dict(new_event.changed_fields)
+        for field, (before, after) in old_event.changed_fields.items():
+            if field in merged:
+                merged[field] = (before, merged[field][1])
+            else:
+                merged[field] = (before, after)
+        new_event.changed_fields = merged
+        return incoming
 
     async def start(self):
         """
@@ -204,11 +334,52 @@ class ModelController:
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
             self._higress_extension_api = ExtensionsHigressIoV1Api(base_client)
 
-        async for event in Model.subscribe(source="model_controller"):
-            if event.type == EventType.HEARTBEAT:
-                continue
+        self._dispatch_task = asyncio.create_task(self._dispatch())
+        try:
+            async for event in Model.subscribe(source="model_controller"):
+                if event.type == EventType.HEARTBEAT:
+                    continue
+                model = event.data
+                if model is None:
+                    continue
+                self._queue.add(
+                    WorkEvent(
+                        keys=(model.id,),
+                        type=_WORK_EVENT_TYPE_BY_BUS.get(
+                            event.type, WorkEventType.MODIFIED
+                        ),
+                        object=event,
+                    )
+                )
+        finally:
+            tasks: List[asyncio.Task] = []
+            if self._dispatch_task is not None:
+                self._dispatch_task.cancel()
+                tasks.append(self._dispatch_task)
+            for task in list(self._inflight.values()):
+                task.cancel()
+                tasks.append(task)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
-            await self._reconcile(event)
+    async def _dispatch(self):
+        while True:
+            event = await self._queue.get()
+            self._inflight[event.keys] = asyncio.create_task(self._process(event))
+
+    async def _process(self, event: WorkEvent):
+        keys = event.keys
+        try:
+            await self._reconcile(event.object)
+            self._queue.forget(keys)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to reconcile model %s", keys)
+            self._queue.add_rate_limited(event)
+        finally:
+            self._queue.done(keys)
+            _ = self._inflight.pop(keys, None)
 
     async def _ensure_model_mcp_bridge(
         self, session: AsyncSession, event_type: EventType, model: Model
@@ -219,6 +390,7 @@ class ModelController:
             session,
             fields={"model_id": model.id, "deleted_at": None},
         )
+        model_instances = _gateway_registrable_instances(model, model_instances)
         worker_by_id = None
         worker_ids = {
             instance.worker_id for instance in model_instances if instance.worker_id
@@ -263,7 +435,42 @@ class ModelController:
             return
         try:
             async with async_session() as session:
-                await sync_replicas(session, model)
+                drain_due = await sync_replicas(session, model)
+                if drain_due is not None:
+                    # The only self-scheduled pass this controller books, and it
+                    # exists because nothing else would arrive: a drained member
+                    # publishes no further Model event and a settled deployment
+                    # publishes none either, so `_reap_drained` would wait on a
+                    # reconcile that never comes. `add_after` is
+                    # last-schedule-wins per key, so re-booking on every pass
+                    # keeps one timer rather than accumulating them.
+                    self._queue.add_after(
+                        WorkEvent(
+                            keys=(model.id,),
+                            type=WorkEventType.MODIFIED,
+                            object=event,
+                        ),
+                        drain_due,
+                    )
+                # The status owner has to run on the spec side too, not only on
+                # instance events. `role_status.desired` is read straight off
+                # `roles[].replicas`, so a spec edit changes it with no instance
+                # changing — and a model with no instances at all (a group
+                # parked at `replicas: 0`) would otherwise never have its status
+                # computed even once, leaving the UI with no declared shape to
+                # show. Safe to call from both sides: the change gate inside
+                # means a pass that finds nothing new writes nothing, so the
+                # update this may publish converges after one round.
+                #
+                # Load a session-attached row rather than writing through
+                # `event.data`: what arrives on the bus is a detached copy whose
+                # identity may already have been collected, and assigning to it
+                # raises "parent object of type <Model> has been garbage
+                # collected". `notify_model_route_target` below re-fetches for
+                # the same reason.
+                attached = await Model.one_by_id(session, model.id)
+                if attached is not None:
+                    await sync_model_status(session, attached)
                 await notify_model_route_target(
                     session=session, model=model, event=event
                 )
@@ -385,7 +592,7 @@ class ModelInstanceController:
                     )
 
                 await model.refresh(session)
-                replicas_updated = await sync_ready_replicas(session, model)
+                replicas_updated = await sync_model_status(session, model)
                 if any_lora_route_deleted and not replicas_updated:
                     await session.commit()
                 if any_lora_route_deleted:
@@ -637,6 +844,7 @@ class CacheServiceController:
                     model,
                     workers_by_id.get(mi.worker_id),
                     spans_workers=mi.spans_workers,
+                    role=mi.role,
                 )
                 if snapshot is None:
                     continue
@@ -1222,17 +1430,69 @@ class CacheServiceController:
         )
 
 
-async def sync_replicas(session: AsyncSession, model: Model):
+async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
     """
     Synchronize the replicas.
+
+    Returns the seconds until this model next needs a pass with nothing else
+    prompting one, or None when it does not. Only the role-bearing rule has
+    such a deadline today — a drain window — so the role-less path returns
+    None and behaves exactly as it did.
+
+    Two convergence rules live behind this one name, and the switch between
+    them is `model.roles`:
+
+    - No roles: the pre-PD rule, `model.replicas` interchangeable instances.
+      `_sync_replicas_legacy` below is that code unchanged.
+    - Roles: convergence is per role, because `Model.replicas` stops being a
+      count and becomes a 0/1 deployment switch (the counts move to
+      `roles[].replicas`). Running the legacy rule on a role-bearing model is
+      an *active* bug, not merely a gap: a 3P1D+router deployment is five
+      instance rows against `replicas == 1`, so `5 > 1` deletes four of them
+      and the victims are whichever the scale-down scorer ranks lowest.
     """
 
     # Re-fetch model from database to ensure we have latest state
     # (event data may be from a different session or stale)
     fresh_model = await Model.one_by_id(session, model.id)
     if not fresh_model or fresh_model.deleted_at is not None:
-        return
+        return None
     model = fresh_model
+
+    if model.roles:
+        return await _sync_replicas_per_role(session, model)
+
+    # Turning disaggregation off leaves the group's members behind, and they
+    # cannot simply be handed to the role-less rule. Two reasons, and either
+    # alone would be enough: that rule ranks every instance in one comparison,
+    # which an eight-card prefill and a cpu_only router cannot share, so it
+    # would pick a plausible-looking wrong victim; and the gateway filter keys
+    # on `model.roles`, so the moment roles are gone every leftover member
+    # becomes a registered upstream — and a request balanced onto a former
+    # prefill returns after one token, with a 200.
+    #
+    # So the group is retired first and the plain replicas are built on the
+    # next pass. Two passes rather than one because the deletion has to be
+    # settled before anything counts what is left.
+    orphans = [
+        instance
+        for instance in await ModelInstance.all_by_field(session, "model_id", model.id)
+        if instance.role
+    ]
+    if orphans:
+        logger.info(
+            f"Model {model.name} no longer declares roles; retiring "
+            f"{len(orphans)} group member(s) before rebuilding plain replicas"
+        )
+        await _release_and_delete(session, orphans)
+        return None
+
+    await _sync_replicas_legacy(session, model)
+    return None
+
+
+async def _sync_replicas_legacy(session: AsyncSession, model: Model):
+    """The role-less rule, byte-for-byte what it has always been."""
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
     if len(instances) < model.replicas:
@@ -1282,6 +1542,657 @@ async def sync_replicas(session: AsyncSession, model: Model):
             ).batch_delete(scale_down_instances)
             if scale_down_instance_names:
                 logger.debug(f"Deleted model instances: {scale_down_instance_names}")
+
+
+# Spec fields that must NOT enter a generation's digest. Everything else on
+# `ModelSpecBase` does, and that direction is deliberate: a field added later
+# joins the digest by default, which errs toward restarting a group that did
+# not need it rather than toward pairing two generations that must not meet.
+# A wrong restart is visible and costs a reload; a cross-generation pair is
+# silent and returns wrong answers (F7 3.3 — `max_model_len` mismatched across
+# P and D handshakes fine, transfers fine, and only a long prompt reveals it,
+# after prefill has already been paid for).
+# Distinguishes "no override" from "override with None", which is exactly the
+# case that matters here: an unset `backend_version` is a real spec value.
+_UNSET = "\x00unset"
+
+_DIGEST_EXCLUDED_SPEC_FIELDS = frozenset(
+    {
+        # Descriptive. Renaming the description must not restart a group.
+        "description",
+        "meta",
+        "categories",
+        # Counts, not shape. Convergence below handles them per role, and
+        # folding them in would make scaling 1P1D to 2P1D a full-group
+        # restart — exactly what per-role convergence exists to avoid.
+        "replicas",
+        "ready_replicas",
+        "scaling_schedule",
+        # Supervisor behaviour and routing, not container shape.
+        "restart_on_error",
+        "generic_proxy",
+        # Mounted at run time against a running engine.
+        "lora_list",
+        # Placement preference for the *next* scheduling decision, not
+        # container shape. Folding it in would make tightening gather a
+        # full-group restart that relocates nothing — the members already
+        # hold their workers, and nothing re-places a running group. The
+        # deployment form says so in as many words ("only affects later
+        # scheduling; running groups are not moved"), and a digest bump would
+        # make that sentence a lie.
+        "gather",
+    }
+)
+
+
+def _role_digest_payload(role: RoleSpec) -> Dict[str, Any]:
+    """A role's contribution to the digest, minus its replica count.
+
+    Same reason `replicas` is excluded at the model level: a role's count is
+    what per-role convergence adjusts, so folding it in would turn every
+    scale into a generation change.
+    """
+    payload = role.model_dump(mode="json", exclude_none=True)
+    payload.pop("replicas", None)
+    return payload
+
+
+async def _instance_type_snapshots(
+    session: AsyncSession, model: Model
+) -> Dict[str, Optional[str]]:
+    """The InstanceType identity snapshot behind every type name the model
+    selects, keyed by name.
+
+    A `gpu_type_selector` records only the type's *name*,
+    while the catalog behind that name is versioned by retire-and-insert — so
+    two members admitted at different moments can resolve one name to
+    different card specs. Without this in the digest that drift is invisible:
+    the group looks like one generation and is two.
+
+    An unresolvable name maps to None rather than being dropped, so "the type
+    is gone" is itself a digest input.
+    """
+    names = set()
+    for role in model.roles or []:
+        selector = role.gpu_type_selector or model.gpu_type_selector
+        if selector is not None and selector.type:
+            names.add(selector.type)
+    if not names and model.gpu_type_selector and model.gpu_type_selector.type:
+        names.add(model.gpu_type_selector.type)
+
+    snapshots: Dict[str, Optional[str]] = {}
+    for name in sorted(names):
+        matched = await GPUInstanceType.all_by_fields(
+            session,
+            fields={
+                "cluster_id": model.cluster_id,
+                "deleted_at": None,
+                "name": name,
+            },
+        )
+        snapshots[name] = matched[0].snapshot if matched else None
+    return snapshots
+
+
+async def model_spec_digest(
+    session: AsyncSession,
+    model: Model,
+    backend_version: Optional[str] = _UNSET,
+) -> str:
+    """The generation identity of `model`'s deployment shape.
+
+    Shaped after `GPUInstanceType.compute_snapshot`: a content
+    hash over the definitional spec with the mutable description fields
+    excluded, so an unchanged spec keeps its digest across restarts and a
+    changed one produces a new generation.
+
+    `backend_version` substitutes for the model's own, and exists for one
+    caller: asking whether a *particular member* is out of date with the spec.
+    See `_stale_members`.
+    """
+    payload: Dict[str, Any] = {}
+    for field in ModelSpecBase.model_fields:
+        if field in _DIGEST_EXCLUDED_SPEC_FIELDS:
+            continue
+        value = getattr(model, field, None)
+        if field == "backend_version" and backend_version is not _UNSET:
+            value = backend_version
+        if field == "roles":
+            value = [_role_digest_payload(role) for role in (value or [])] or None
+        elif isinstance(value, BaseModel):
+            value = value.model_dump(mode="json", exclude_none=True)
+        elif isinstance(value, list):
+            value = [
+                (
+                    item.model_dump(mode="json", exclude_none=True)
+                    if isinstance(item, BaseModel)
+                    else item
+                )
+                for item in value
+            ]
+        payload[field] = value
+
+    payload["_instance_types"] = await _instance_type_snapshots(session, model)
+
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return f"sha1:{hashlib.sha1(blob.encode('utf-8')).hexdigest()}"
+
+
+async def _stale_members(
+    session: AsyncSession,
+    model: Model,
+    instances: Sequence[ModelInstance],
+) -> Optional[bool]:
+    """Whether any running member predates the config it is shown with.
+
+    None where nothing can be said: a member created before `spec_digest`
+    existed carries None, and reading that as "differs" would mark every
+    pre-upgrade model stale on the first pass after an upgrade.
+
+    One exemption, and it is not a loophole -- it is the difference between
+    a config change and a record of what is already running.
+
+    The case it exists for is a model deployed with no version pinned. Once a
+    member starts, the worker reads the engine's version off it and writes it
+    back to the Model. That write is deliberate: without it a later replica
+    resolves its own, newer build and the group goes heterogeneous. But
+    `backend_version` is in the digest -- also correctly, since a different
+    engine build needs a new container -- so the digest changes and every
+    running member reads as stale seconds after it started, with nobody having
+    edited anything. Without the exemption the banner would tell the user to
+    restart a group in order to adopt a value read off that very group, and
+    restarting does clear it, so the advice appears to work and the reading is
+    never questioned.
+
+    So a member is excused when both hold:
+
+    - its stamp matches the spec with `backend_version` unset. Not a guess at
+      the old value -- the write-back only fires when the field was falsy, so
+      unset is precisely what the member was stamped against.
+    - the version now recorded is the one the member is actually running.
+      Without this, pinning 0.5.14 onto a group running 0.5.15 would also be
+      excused, and that edit genuinely needs a restart. A member that cannot
+      say what it runs stays stale, which is the conservative direction.
+
+    The stamps are deliberately *not* rewritten to match. `group_id` is derived
+    from the digest and is what the router matches its peers on, so re-stamping
+    would rename a running group's generation underneath it.
+    """
+    digested = [i for i in instances if i.spec_digest]
+    if not digested:
+        return None
+
+    current = await model_spec_digest(session, model)
+    if all(i.spec_digest == current for i in digested):
+        return False
+
+    unpinned = await model_spec_digest(session, model, backend_version=None)
+    recorded = model.backend_version
+
+    def is_current(instance: ModelInstance) -> bool:
+        if instance.spec_digest == current:
+            return True
+        return (
+            instance.spec_digest == unpinned
+            and recorded is not None
+            and instance.backend_version == recorded
+        )
+
+    return not all(is_current(i) for i in digested)
+
+
+def _generation_group_id(model: Model, digest: str) -> str:
+    """One `group_id` is one generation, and a generation is one digest.
+
+    Scoped by model id so the value is unique fleet-wide: `group_id` is what
+    the router matches its peers on, and two models that happen to share a
+    spec must not be able to resolve each other's members.
+    """
+    return f"{model.id}-{digest.split(':')[-1][:16]}"
+
+
+def _gpu_roles(model: Model) -> List[RoleSpec]:
+    """Every role that occupies accelerators — that is, everything but the
+    router.
+
+    This is the set that forms atomically and the set Kueue's
+    `pod-group-total-count` counts: a 4P4D is 8, not 9.
+    """
+    return [
+        role for role in (model.roles or []) if role.name != RoleNameEnum.ROUTER.value
+    ]
+
+
+def _role_dependencies(model: Model, role: RoleSpec) -> List[str]:
+    """Roles that must have a ready member before `role` may be created.
+
+    An explicit `dependencies` wins. Absent one, the router depends on every
+    GPU role — and that default is load-bearing rather than a convenience:
+    the router's command line is rendered from its peers' `ip:port`, ports are
+    assigned worker-side at start, so a router created alongside its peers has
+    nothing to render (F4 3.6, F3 3.4 ④). Creating it early does not merely
+    produce a slower start, it produces a router pointed at nothing.
+    """
+    if role.dependencies is not None:
+        return list(role.dependencies)
+    if role.name == RoleNameEnum.ROUTER.value:
+        return [gpu_role.name for gpu_role in _gpu_roles(model)]
+    return []
+
+
+def _dependencies_ready(
+    model: Model, role: RoleSpec, members: List[ModelInstance]
+) -> bool:
+    """Whether every role `role` depends on has at least one RUNNING member.
+
+    RUNNING rather than merely created, because what the dependent needs is
+    the *address*, and an instance only has one once its worker has assigned
+    ports and started it.
+    """
+    required = _role_dependencies(model, role)
+    if not required:
+        return True
+    running = {
+        member.role
+        for member in members
+        if member.state == ModelInstanceStateEnum.RUNNING and member.role
+    }
+    return all(name in running for name in required)
+
+
+async def _build_instance_create(
+    session: AsyncSession,
+    model: Model,
+    role: RoleSpec,
+    group_id: str,
+    digest: str,
+) -> ModelInstanceCreate:
+    """One member row of `role` in the generation `group_id`.
+
+    Everything outside the four PD columns is what `_sync_replicas_legacy`
+    builds, deliberately: a role's overrides are applied by the read-path
+    projection (`role_effective_model`), never written here, so that one
+    intent keeps one source of truth.
+
+    The exception is a column whose value is a *decision made once, at
+    creation*, and which the read path therefore cannot revisit — `backend`,
+    which picks the image, and `draft_model_source`, which picks the weights to
+    download. Those are resolved against the role-effective model here because
+    there is nowhere later to do it.
+    """
+    name_prefix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+    # Everything decided from a per-role override is decided from this, not
+    # from `model`. Projecting only some of the overrides is what admits a
+    # group that configures a draft model on decode alone: the engine argument
+    # names the draft model while no draft weights reach the machine. MTP hides
+    # that — its head travels inside the main weights — so only an eagle3 or an
+    # external draft model shows it.
+    effective = role_effective_model(model, role.name)
+    return ModelInstanceCreate(
+        name=f"{model.name}-{role.name}-{name_prefix}",
+        model_id=model.id,
+        model_name=model.name,
+        source=model.source,
+        huggingface_repo_id=model.huggingface_repo_id,
+        huggingface_filename=model.huggingface_filename,
+        model_scope_model_id=model.model_scope_model_id,
+        model_scope_file_path=model.model_scope_file_path,
+        local_path=model.local_path,
+        state=ModelInstanceStateEnum.PENDING,
+        cluster_id=model.cluster_id,
+        owner_principal_id=model.owner_principal_id,
+        draft_model_source=await get_draft_model_source(session, effective),
+        # The backend is a per-role override, so it is resolved against the
+        # role-effective model rather than the Model — a `custom` group may
+        # legitimately mix engines.
+        backend=get_backend(effective),
+        backend_version=role.backend_version or model.backend_version,
+        role=role.name,
+        group_id=group_id,
+        spec_digest=digest,
+    )
+
+
+async def _release_and_delete(
+    session: AsyncSession, instances: List[ModelInstance]
+) -> List[str]:
+    """The single exit for every member deletion — scale-down, generation
+    teardown and full teardown all pass through here.
+
+    The Kueue finalizer is NOT yet applied here. Deleting a member of an
+    admitted pod-group without marking `kueue.x-k8s.io/retriable-in-group:
+    "false"` leaves the Pod in Terminating and the Workload holding its quota.
+    That marking belongs to the k8s deployment path, which has no PD wiring
+    yet; collecting the deletions behind one function now is what makes adding
+    it a one-place change rather than three.
+    """
+    if not instances:
+        return []
+    names = await ModelInstanceService(session).batch_delete(instances)
+    if names:
+        # INFO because this is the other half of the `Formed group` line. A
+        # group that loses every member re-forms from scratch, and the solver
+        # is free to answer somewhere else -- so a group can move machines
+        # with nothing on the model row to show for it. Neither `stale` nor a
+        # degradation can carry that: one follows the spec digest, which did
+        # not change, and the other reads current state, which looks correct
+        # once the rebuild lands. The two log lines are the whole account
+        # there is, and they are only an account if both are visible.
+        logger.info(f"Deleted model instances: {names}")
+    return names
+
+
+async def _sync_replicas_per_role(
+    session: AsyncSession, model: Model
+) -> Optional[float]:
+    """Converge a role-bearing model, one role at a time.
+
+    Per role rather than per group because the group is not the unit of
+    change: turning a 1P1D into a 2P1D under group semantics would mean
+    deleting the group and recreating it — a full outage to add one prefill.
+
+    Returns the seconds until the earliest drain window closes, or None when
+    nothing is draining. The caller uses it to book the pass that reaps them:
+    see `_next_drain_due`.
+    """
+    instances = await ModelInstance.all_by_field(session, "model_id", model.id)
+
+    if model.replicas == 0:
+        # `Model.replicas` is a deployment switch for a role-bearing model,
+        # so zero means the whole group is parked, not "zero of each role".
+        await _release_and_delete(session, instances)
+        return None
+
+    digest = await model_spec_digest(session, model)
+
+    # Turning disaggregation ON leaves the previous single-role deployment's
+    # instances behind, and they cannot join a generation: they carry no role,
+    # so nothing counts them toward any role's tally, and the gateway filter —
+    # which registers only a group's router — has already stopped routing to
+    # them. What is left is a member of nothing that still holds its GPUs, and
+    # holding them is not passive: it is what keeps the new group's decode
+    # from being schedulable. Observed exactly that way on a two-card host.
+    #
+    # Retired in the same pass rather than left for an explicit restart,
+    # because enabling disaggregation is the most complete generation change
+    # there is — the deployment's shape, not its parameters — and the new
+    # generation is already being formed below.
+    orphans = [i for i in instances if not i.group_id]
+    if orphans:
+        logger.info(
+            f"Model {model.name} now declares roles; retiring "
+            f"{len(orphans)} instance(s) that predate the group"
+        )
+        await _release_and_delete(session, orphans)
+        instances = [i for i in instances if i.group_id]
+
+    # The live members define the current generation, not the model's present
+    # digest. A spec edit makes the running members stale; it does not by
+    # itself retire them — F7 3.3 requires the switch to be an explicit
+    # all-stop-then-all-start, because restarting members one at a time is
+    # precisely how a cross-generation pair is produced. So new members join
+    # the generation their peers are already in.
+    members = [i for i in instances if i.group_id]
+    if members:
+        group_id = max(
+            {i.group_id for i in members},
+            key=lambda gid: (
+                len([i for i in members if i.group_id == gid]),
+                max(i.created_at for i in members if i.group_id == gid),
+            ),
+        )
+        generation = [i for i in members if i.group_id == group_id]
+        generation_digest = next(
+            (i.spec_digest for i in generation if i.spec_digest), digest
+        )
+    else:
+        group_id = _generation_group_id(model, digest)
+        generation = []
+        generation_digest = digest
+
+    if not generation:
+        # First formation is atomic and contains ONLY the GPU roles. Two
+        # reasons, and they point the same way: Kueue's pod-group admission
+        # counts members against a declared total, so a group whose rows
+        # appear in batches is repeatedly judged incomplete; and the
+        # router cannot be in this transaction at all, since it has no peers
+        # to render yet (see `_role_dependencies`).
+        pending = []
+        for role in _gpu_roles(model):
+            for _ in range(role.replicas):
+                pending.append(
+                    await _build_instance_create(
+                        session, model, role, group_id, generation_digest
+                    )
+                )
+        if pending:
+            await ModelInstanceService(session).batch_create(pending)
+            # INFO rather than debug: a group forming is how a group also
+            # re-forms. Nothing on the model row records that its members were
+            # torn down and rebuilt elsewhere — not `stale`, which follows the
+            # spec digest, and not a degradation, which reads current state —
+            # so when an operator asks why a running group moved machines,
+            # this line is the only first-hand evidence there is.
+            logger.info(
+                f"Formed group {group_id} for model {model.name} "
+                f"with {len(pending)} members"
+            )
+            generation = await ModelInstance.all_by_field(session, "model_id", model.id)
+            generation = [i for i in generation if i.group_id == group_id]
+        # Deliberately no early return: the router still has to be considered
+        # below, and it becomes creatable the moment its dependencies report
+        # ready — which may already be true on a later pass.
+
+    # Before the per-role arithmetic, not after: a member whose window has
+    # passed is gone as far as the ratio is concerned, and leaving it in the
+    # count for one more pass would make the role look satisfied and stop the
+    # replacement that a re-scale-up is waiting for.
+    generation = await _reap_drained(session, generation)
+
+    for role in model.roles:
+        have = [i for i in generation if i.role == role.name]
+        if len(have) < role.replicas:
+            if not _dependencies_ready(model, role, generation):
+                continue
+            pending = [
+                await _build_instance_create(
+                    session, model, role, group_id, generation_digest
+                )
+                for _ in range(role.replicas - len(have))
+            ]
+            await ModelInstanceService(session).batch_create(pending)
+            logger.debug(
+                f"Created {len(pending)} {role.name} instance(s) for "
+                f"model {model.name} in group {group_id}"
+            )
+        elif len(have) > role.replicas:
+            await _scale_down_role(session, model, role, have, generation)
+
+    return _next_drain_due(generation)
+
+
+def _next_drain_due(instances: List[ModelInstance]) -> Optional[float]:
+    """Seconds until the earliest drain window closes, or None if none is open.
+
+    **Without this the drain has no second half.** `_reap_drained` runs off
+    the reconcile loop, and this controller is purely event-driven — nothing
+    ticks. A member marked for drain changes no field that `sync_model_status`
+    publishes, so the mark itself produces no further Model event, and a
+    deployment that has settled produces none either. The window would then
+    expire against a pass that never comes: the member stays out of the
+    router's registry, serving nothing, holding its accelerators, for as long
+    as the deployment goes unedited.
+
+    Floored at zero rather than clamped away, so a window that already elapsed
+    (a server that was down through it) books an immediate pass instead of a
+    negative delay the queue would read as "now, unconditionally".
+    """
+    now = datetime.now(timezone.utc)
+    window = envs.SCHEDULER_DRAIN_WINDOW_SECONDS
+    deadlines = []
+    for instance in instances:
+        since = instance.draining_since
+        if since is None:
+            continue
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        deadlines.append(max(0.0, window - (now - since).total_seconds()))
+    return min(deadlines) if deadlines else None
+
+
+async def _scale_down_role(
+    session: AsyncSession,
+    model: Model,
+    role: RoleSpec,
+    have: List[ModelInstance],
+    generation: Sequence[ModelInstance],
+):
+    """Take this role's surplus members out of rotation.
+
+    The excess is measured against the ROLE's count, not the model's. The
+    pre-PD line was `len(candidates) - model.replicas`, which assumed
+    `candidates` held every instance of the model; scoped to one role of a
+    4P4D that arithmetic deletes eight instances in one pass.
+
+    **Marks rather than deletes.** Deleting a prefill outright drops the KV
+    blocks the decodes are still fetching, and the engine has no shutdown that
+    waits for them. `_reap_drained` deletes it once the window has passed;
+    until then the member is out of the router's registry and still running.
+
+    `generation` is the whole group, not just this role: choosing which prefill
+    to drop is a question about the decodes beside it, and this role's members
+    cannot answer it (`PairingRetentionScorer`).
+    """
+    draining = [i for i in have if i.draining_since is not None]
+    excess = len(have) - len(draining) - role.replicas
+    if excess <= 0:
+        # Already enough on their way out. Picking a second victim while the
+        # first is still draining is how a burst of reconciles scales a role
+        # to zero one window at a time — the surplus has been acted on, it
+        # just has not finished.
+        return
+
+    keep = [i for i in have if i.draining_since is None]
+    candidates = await find_scale_down_candidates(keep, model, peers=generation)
+    if not candidates:
+        # `find_scale_down_candidates` returns [] on its internal exception,
+        # so an empty result is indistinguishable from a scoring failure.
+        # Not deleting is the fail-safe reading of that ambiguity.
+        return
+
+    if not _soft_scale_down_enabled(model):
+        await _release_and_delete(
+            session, [c.model_instance for c in candidates[:excess]]
+        )
+        return
+
+    now = datetime.now(timezone.utc)
+    for candidate in candidates[:excess]:
+        instance = candidate.model_instance
+        instance.draining_since = now
+        await instance.update(session)
+        logger.info(
+            f"Draining {instance.name} (role '{role.name}') of model "
+            f"{model.name}; it leaves the router now and is deleted in "
+            f"{envs.SCHEDULER_DRAIN_WINDOW_SECONDS}s"
+        )
+
+
+def _soft_scale_down_enabled(model: Model) -> bool:
+    """Only a group drains, and only when a window is configured.
+
+    A role-less model has no router registry to be removed from, so the wait
+    would be a wait with nothing happening during it — the member would keep
+    taking new requests for the whole window and then vanish mid-request,
+    which is strictly worse than deleting it now.
+    """
+    return bool(model.roles) and envs.SCHEDULER_DRAIN_WINDOW_SECONDS > 0
+
+
+async def _reap_drained(
+    session: AsyncSession, instances: List[ModelInstance]
+) -> List[ModelInstance]:
+    """Delete the members whose drain window has passed; return the rest.
+
+    Returns the survivors rather than the reaped so the caller can assign
+    straight through. What it must not do is hand back a list still containing
+    a deleted member: the per-role arithmetic that follows would count it,
+    find the role satisfied, and skip creating the replacement a re-scale-up
+    is waiting for.
+
+    Runs off the reconcile loop rather than a timer: a timer would have to be
+    re-armed on restart for every draining member, and the row already says
+    when each window ends.
+    """
+    window = envs.SCHEDULER_DRAIN_WINDOW_SECONDS
+    if window <= 0:
+        return list(instances)
+    now = datetime.now(timezone.utc)
+    due = []
+    for instance in instances:
+        since = instance.draining_since
+        if since is None:
+            continue
+        if since.tzinfo is None:
+            # `UTCDateTime` puts the zone back on the way out, so this is not
+            # the path a stored row takes. Kept for a value that reached here
+            # without passing through the column — it was written as UTC either
+            # way, and the alternative is a TypeError on the subtraction below.
+            since = since.replace(tzinfo=timezone.utc)
+        if (now - since).total_seconds() >= window:
+            due.append(instance)
+    if not due:
+        return list(instances)
+    logger.info(
+        f"Drain window elapsed for {len(due)} member(s): "
+        f"{', '.join(i.name for i in due)}"
+    )
+    await _release_and_delete(session, due)
+    return [i for i in instances if i not in due]
+
+
+async def cancel_drain(session: AsyncSession, instance: ModelInstance):
+    """Put a draining member back into rotation.
+
+    One field: the next membership reconcile sees an ordinary RUNNING member and
+    re-registers its address. Nothing has to be restarted because nothing was
+    stopped — which is what would make a wrong scale-down recoverable rather
+    than merely regrettable, *if* anything called this.
+
+    **GPUStack ships no rollback, and this is not one.** There is no rollback
+    feature anywhere in the product — not for a scale-down, not automatic, not
+    manual — and this function does not add one: it is the mechanism a rollback
+    would be built on, with no trigger attached. Read it as "the state is
+    reversible in principle", never as "the operator can reverse it".
+
+    No automatic trigger yet, and deliberately not one invented here. The
+    obvious one — "roll back if the group's TTFT degrades during the window" —
+    needs a threshold, and a threshold picked without data would fire on
+    ordinary load variance and undo correct scale-downs. What exists is the
+    mechanism and the audit trail; the judgement stays with the operator until
+    there are measurements to set it from.
+
+    **No caller in production code, and that is the shipped decision — not a
+    route someone forgot to wire.** Nothing but the tests reaches this: there is
+    no API endpoint, no UI, no controller path. The window is 60s by default,
+    which is not long enough for a human to notice a mis-scale, find the member
+    and press something; and the instance list does not surface
+    `draining_since`, so such a button would be pressed blind.
+
+    **Putting `replicas` back is not a rollback either.** It recovers the
+    *ratio*: the anti-flap arithmetic in `_scale_down_role` will not pick a second victim,
+    and the pass that reaps the drained member creates the replacement in the
+    same reconcile. But it does not recover the member — that one is still
+    deleted on schedule and the replacement is a cold start, which for a PD role
+    means loading weights again. Re-scaling up is the only thing an operator can
+    do; it is not undo.
+
+    Keep this callable: when a data-backed threshold exists, the trigger
+    attaches here.
+    """
+    instance.draining_since = None
+    await instance.update(session)
+    logger.info(f"Cancelled the drain of {instance.name}; it rejoins the router")
 
 
 async def distribute_models_to_user(
@@ -1696,11 +2607,34 @@ async def find_scale_down_candidates(
     instances: List[ModelInstance],
     model: Model,
     *,
+    peers: Optional[Sequence[ModelInstance]] = None,
     status_max_score: Optional[float] = None,
     offload_max_score: Optional[float] = None,
     placement_max_score: Optional[float] = None,
+    pairing_max_score: Optional[float] = None,
     total_max_score: Optional[float] = None,
 ) -> List[ModelInstanceScore]:
+    """Rank this role's members worst-first, so the caller can take from the front.
+
+    `peers` is the generation the candidates belong to — every role, not just
+    theirs. It is what `PairingRetentionScorer` counts the opposite role from,
+    and omitting it drops that scorer: the candidate list itself is single-role
+    by the check below, so it can never answer "how many decodes share this
+    prefill's worker". A role-less model has no peers and no pairing scorer.
+    """
+    roles = {instance.role for instance in instances}
+    if len(roles) > 1:
+        # This is a selector WITHIN a comparable set, not across one. Its
+        # `PlacementScorer` reads `_get_worker_model_instance_count()`, which
+        # aggregates per worker by `model_id` — so a prefill holding eight
+        # cards and a `cpu_only` router land in one distribution and their
+        # scores are not comparable. Ranking them together does not fail, it
+        # picks a plausible-looking wrong victim, which is the failure mode
+        # PD is least able to absorb -- a PD failure must be a hard one.
+        raise ValueError(
+            "find_scale_down_candidates requires instances of a single role, "
+            f"got {sorted(str(r) for r in roles)}"
+        )
     try:
         if status_max_score is None:
             status_max_score = envs.SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE
@@ -1708,18 +2642,40 @@ async def find_scale_down_candidates(
             offload_max_score = envs.SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE
         if placement_max_score is None:
             placement_max_score = envs.SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE
+        if pairing_max_score is None:
+            pairing_max_score = envs.SCHEDULER_SCALE_DOWN_PAIRING_MAX_SCORE
+
+        scorers: List[ModelInstanceScorer] = [
+            StatusScorer(model, max_score=status_max_score),
+            OffloadLayerScorer(model, max_score=offload_max_score),
+        ]
+
+        # One generation, so one group id — more than one means the caller
+        # mixed generations, and a `d_j` counted across two of them would rank
+        # a member by peers it can never pair with. Nothing is deleted on that
+        # reading; the scorer is simply left off.
+        group_ids = {i.group_id for i in instances if i.group_id}
+        if peers is not None and len(group_ids) == 1:
+            scorers.append(
+                PairingRetentionScorer(
+                    next(iter(group_ids)),
+                    next(iter(roles)),
+                    peers,
+                    max_score=pairing_max_score,
+                )
+            )
+
+        scorers.append(
+            PlacementScorer(
+                model,
+                instances,
+                scale_type=ScaleTypeEnum.SCALE_DOWN,
+                max_score=placement_max_score,
+            )
+        )
 
         chain = ModelInstanceScoreChain(
-            scorers=[
-                StatusScorer(model, max_score=status_max_score),
-                OffloadLayerScorer(model, max_score=offload_max_score),
-                PlacementScorer(
-                    model,
-                    instances,
-                    scale_type=ScaleTypeEnum.SCALE_DOWN,
-                    max_score=placement_max_score,
-                ),
-            ],
+            scorers=scorers,
             total_max_score=total_max_score,
         )
         final_candidates = await chain.score(instances)
@@ -1735,9 +2691,1183 @@ async def find_scale_down_candidates(
         return []
 
 
-async def sync_ready_replicas(session: AsyncSession, model: Model) -> bool:
+def upstream_registration_ready(model: Model) -> bool:
+    """The second half of the RUNNING predicate: whether the group's router
+    upstream is registered.
+
+    The predicate has exactly one definition::
+
+        Model.state == RUNNING  <=>  every role has >=1 ready
+                                     AND the upstream registration succeeded
+
+    Registration is a *precondition* of RUNNING rather than a consequence of
+    it — deriving "group ready, therefore register" the other way round is a
+    self-cycle. Every role gets a ready member, the server then tries to
+    register the router upstream, and only a successful registration flips the
+    group to RUNNING.
+
+    A model with no router role has no upstream to register, so the predicate
+    is vacuously true: a plain deployment and a role-less model are servable
+    as soon as their members are ready. This seam is the one place the
+    other half is decided — when the router registration step lands it
+    reports its recorded outcome here, and a group whose registration failed
+    stays PARTIAL with a message instead of silently claiming to serve.
     """
-    Synchronize the ready replicas.
+    has_router = any(
+        role.name == RoleNameEnum.ROUTER.value for role in (model.roles or [])
+    )
+    if not has_router:
+        return True
+    outcome = membership_outcome_for(model.id)
+    if outcome is None:
+        # No attempt recorded yet, and the answer is "servable" rather than
+        # "not yet" on purpose. A recipe that does not launch `--enable-igw`
+        # has no membership step at all: the router already knows its peers
+        # from the command line, so parking such a group in PARTIAL would
+        # break every deployment that works today.
+        #
+        # Under igw the reconcile runs on the same pass that computes this, so
+        # an unrecorded outcome there is the first pass only.
+        return True
+    return outcome.ok
+
+
+def is_model_servable(model: Model) -> bool:
+    """Whether requests may be routed to this model.
+
+    This is the boolean servability gate, and `Model.state` is what it reads
+    rather than `ready_replicas > 0`: under PD a count does not imply
+    servability (3P1D with the router still down is four RUNNING instances and
+    zero service). `ModelRouteTarget.state` is the only place
+    in this repo that evaluates it; `ModelRoute.ready_targets`, `/v1/models`
+    and `resolve_route_targets` all derive from that target state, so they
+    follow from this one predicate.
+
+    One predicate, no per-shape special case: RUNNING means servable and
+    nothing else does. That holds because `state` was defined to answer
+    exactly this question and running-but-worse-than-asked-for is expressed
+    beside it, in `degradations`, rather than inside it — a role-less model
+    with 2 of 3 replicas up is RUNNING with `ratio_unmet`, not PARTIAL. So
+    PARTIAL keeps a single meaning everywhere: members are up and the
+    deployment still cannot serve, which for a group is a role at zero and
+    for a role-less model cannot happen at all.
+
+    For a role-less model this is equivalent to `ready_replicas > 0`, which
+    `derive_model_state` is what makes true.
+    """
+    if model.state is None:
+        # A row carries NULL between its creation and the first
+        # `sync_model_status` pass over it. The migration backfills existing
+        # rows, so this is not about the upgrade — it is about newly created
+        # models, and about any row a reconcile has not reached yet. For those
+        # the replica counter gives the same answer.
+        return model.ready_replicas > 0
+    return model.state == ModelStateEnum.RUNNING
+
+
+def derive_route_target_state(
+    target: ModelRouteTarget, model: Optional[Model]
+) -> TargetStateEnum:
+    """The state a target should be in, from what it points at.
+
+    A pure function of the target and its model, so the answer can be
+    recomputed at any time from rows that are already loaded — which is what
+    makes the state correctable rather than only updatable.
+
+    A provider target is always ACTIVE: its availability belongs to the
+    provider, not to us. A target that points at neither a model nor a
+    provider is UNAVAILABLE rather than left as it was; the previous code left
+    that case's variable unbound.
+    """
+    if target.provider_id is not None:
+        return TargetStateEnum.ACTIVE
+    if target.model_id is not None and model is not None:
+        return (
+            TargetStateEnum.ACTIVE
+            if is_model_servable(model)
+            else TargetStateEnum.UNAVAILABLE
+        )
+    return TargetStateEnum.UNAVAILABLE
+
+
+async def reconcile_route_target_states(session: AsyncSession, model: Model) -> bool:
+    """Bring this model's route targets in line with its servability.
+
+    Level-triggered on purpose, and this is the point of the function.
+    Transitions alone are not enough: `notify_model_route_target` publishes
+    when `state` / `ready_replicas` / `replicas` change and
+    `ModelRouteTargetController` reacts, which works right up until the
+    transition and its consumer do not overlap in time. The bus does not
+    replay, so a transition published while the controller was not subscribed
+    is lost, and edge-triggered code never re-derives the answer.
+
+    A worker that goes unreachable and recovers while the `modelroutetarget`
+    subscription is being re-established loses its recovery event: the model
+    is back at RUNNING with nothing left to transition, so the target sits
+    UNAVAILABLE for good — `/v1/models` returns an empty list while the
+    deployment serves fine when addressed directly.
+
+    Called from `sync_model_status`, which already runs on every model and
+    instance event, so any subsequent event repairs a lost one. Writes only on
+    a difference, like every other gate here, so the common case costs one
+    comparison.
+
+    The targets are queried, not read off `model.model_route_targets`, and
+    that is what makes the repair fire at all. `sync_model_status` is always
+    reached with the Model already loaded in the session -- `_reconcile` fetches
+    it plainly and hands it over -- so a fetch *with*
+    `selectinload(model_route_targets)` hits SQLAlchemy's identity map, returns
+    that same instance and never applies the loader option. The relationship
+    stays unloaded, and an unloaded collection reads as `[]` rather than
+    raising: the emptiness check below would then return early on every pass,
+    silently, indistinguishably from "this model has no route targets". A
+    query cannot be short-circuited by an object that is already in the
+    session.
+    """
+    targets = await ModelRouteTarget.all_by_fields(
+        session, fields={"model_id": model.id, "deleted_at": None}
+    )
+    if not targets:
+        return False
+
+    changed = False
+    for target in targets:
+        desired = derive_route_target_state(target, model)
+        if target.state != desired:
+            logger.info(
+                "Route target %s of model %s: %s -> %s (re-derived from the "
+                "model's state)",
+                target.name,
+                model.name,
+                target.state,
+                desired,
+            )
+            target.state = desired
+            await target.update(session=session, auto_commit=True)
+            changed = True
+    return changed
+
+
+class PairingLocality(NamedTuple):
+    """The locality figure and why it reads the way it does.
+
+    Two fields rather than one because `None` was already carrying two
+    meanings and is about to carry a third, and they call for different
+    things on screen: "not yet" becomes a number later, "never" does not.
+    A code rather than a magic value, following `status` and
+    `request_count_source` on the same response -- a reader should not have
+    to know that -1 means anything.
+    """
+
+    value: Optional[float]
+    source: str
+
+
+#: The question has not been asked yet: no group, or a role with no running
+#: member. It will have an answer once the members are up.
+LOCALITY_UNKNOWN = "unknown"
+#: Measured from where the members landed. `value` is the figure.
+LOCALITY_MEASURED = "measured"
+#: The roles hold disjoint machines *and* at least one member spans more than
+#: one -- so the zero is a fact about the shape of the deployment rather than
+#: a placement that could have gone better. Rendering it as a verdict would
+#: put a permanent degradation on exactly the deployments that need to span,
+#: and it is not one an operator can act on.
+LOCALITY_SPANNING = "spanning_members"
+
+
+def pairing_locality(
+    model: Model, instances: Sequence[ModelInstance]
+) -> PairingLocality:
+    """The chance a request's KV transfer stays inside one host.
+
+    Not "how many pairs are local", because nothing pairs them: the router
+    picks a prefill and a decode *independently* (`--prefill-policy
+    cache_aware --decode-policy round_robin`), and topology-aware pairing is
+    an explicit non-goal of this phase. So the honest figure is the
+    probability that two independent picks land on the same worker:
+
+        P(local) = Σ_w  (prefill_w / prefill_total) × (decode_w / decode_total)
+
+    **The driver is how many MACHINES the group landed on, not how many
+    replicas it has.** Mixed evenly over `m` workers this comes out at `1/m`,
+    so the same 4P4D packed from four hosts onto two goes from 0.25 to 0.5,
+    and onto one host to 1.0. `1/x` is simply the case `m == x` — one prefill
+    and one decode per host, the most spread-out arrangement that still pairs
+    at all — which is why the deploy form, knowing only `x`, can offer it as a
+    floor and nothing better.
+
+    That floor holds only while the roles stay MIXED across those hosts.
+    Spread further, so a host carries one role and not the other, and this
+    falls below `1/x` all the way to 0 — which the group solver's round-robin
+    dealing exists to prevent, and which manual card selection still reaches.
+
+    `value` is None when the question does not apply — not a group, or a role
+    with no running member, where 0 would read as a verdict rather than as
+    silence — and `source` says which kind of silence it is.
+    """
+    if not model.roles:
+        return PairingLocality(None, LOCALITY_UNKNOWN)
+
+    by_role: Dict[str, Dict[int, int]] = {}
+    for instance in instances:
+        role = instance.role
+        if role not in (RoleNameEnum.PREFILL.value, RoleNameEnum.DECODE.value):
+            continue
+        if instance.state != ModelInstanceStateEnum.RUNNING:
+            continue
+        for worker_id in member_worker_ids(instance):
+            by_role.setdefault(role, {})
+            by_role[role][worker_id] = by_role[role].get(worker_id, 0) + 1
+
+    prefill = by_role.get(RoleNameEnum.PREFILL.value) or {}
+    decode = by_role.get(RoleNameEnum.DECODE.value) or {}
+    if not prefill or not decode:
+        return PairingLocality(None, LOCALITY_UNKNOWN)
+
+    prefill_total = sum(prefill.values())
+    decode_total = sum(decode.values())
+    value = sum(
+        (count / prefill_total) * (decode.get(worker_id, 0) / decode_total)
+        for worker_id, count in prefill.items()
+    )
+
+    # **The formula does not survive a member that spans machines**, and the
+    # first cut of this guard only caught the case where it happened to bottom
+    # out at zero. It is wrong more widely than that.
+    #
+    # The sum assumes the router's two picks are independent *and* that each
+    # pick lands somewhere — true while an instance is one machine. KV is
+    # sharded by TP rank, so a decode rank needs particular prefill ranks'
+    # shards; once the ranks of one member are spread over several machines,
+    # whether a pair is local depends on the rank mapping, which this sum
+    # cannot see. Worked example: prefill on {1,2} and decode on {2,3} at equal
+    # TP, ranks laid out in order — every rank pair is remote, and the sum says
+    # 0.25.
+    #
+    # Absent beats wrong, and this figure is not decoration: `pairing_remote`
+    # is derived from it. So a spanning member is reported as a kind of
+    # silence, whatever the arithmetic came to.
+    if _spans_machines(model, instances):
+        return PairingLocality(None, LOCALITY_SPANNING)
+    return PairingLocality(value, LOCALITY_MEASURED)
+
+
+def _spans_machines(model: Model, instances: Sequence[ModelInstance]) -> bool:
+    """Whether any weight-bearing member occupies more than one worker.
+
+    Read through `member_worker_ids`, the one place that knows a member is not
+    only the machine its row is filed under.
+    """
+    from gpustack.schemas.models import role_takes_no_accelerator
+
+    for instance in instances:
+        if role_takes_no_accelerator(model, instance.role):
+            continue
+        if len(member_worker_ids(instance)) > 1:
+            return True
+    return False
+
+
+async def _gather_unmet(
+    session: AsyncSession, model: Model, instances: Sequence[ModelInstance]
+) -> bool:
+    """Whether the group landed looser than the layer it asked for.
+
+    Under `PreferGather` that pair means "aim for this, ship it either way",
+    and without an answer afterwards the ask is recorded in the spec while the
+    outcome is recorded nowhere.
+
+    **`MustGather` reaches here too.** Admission refuses only the formation,
+    which goes through the solver; a scaled-out member and the router are
+    placed by the per-instance path, so excluding `MustGather` here would
+    leave the one strategy whose point is strictness with no report at all.
+    `GatherFloorFilter` is the enforcement; this is what
+    catches the cases the filter deliberately declines to force — members
+    already spread across domains, or sitting in the unclassified bucket, where
+    refusing a new member would not put back a floor that is already gone.
+    Under `MustGather` this should therefore always be false, which makes it an
+    invariant check rather than a report.
+
+    Computed from where the members actually are, not from what the solver
+    decided. The solver's verdict is not kept, and it would go stale anyway:
+    a rescheduled member can loosen a group that was placed tightly, and this
+    runs on every reconcile.
+    """
+    from gpustack.schemas.models import GatherStrategyEnum, role_takes_no_accelerator
+    from gpustack.topology.tree import ROOT_LAYER, common_layer, order_layers
+    from gpustack.topology.view import build_view
+
+    gather = getattr(model, "gather", None)
+    layer = getattr(gather, "layer", None)
+    strategy = getattr(gather, "strategy", None)
+    if not layer or strategy not in (
+        GatherStrategyEnum.PREFER_GATHER,
+        GatherStrategyEnum.MUST_GATHER,
+    ):
+        return False
+
+    # Accelerator-bearing members only, which for today's shapes means
+    # prefill and decode. The router is excluded for the same reason the
+    # solver excludes it (`role_demands`): it holds no weights, so it
+    # "neither competes for cards nor constrains which domain the group lands
+    # in". Counting it here would report a group as having missed its target
+    # because the *proxy* landed on another host — a placement the solver
+    # never constrained and would make again.
+    worker_ids = {
+        worker_id
+        for instance in instances
+        if instance.state == ModelInstanceStateEnum.RUNNING
+        and not role_takes_no_accelerator(model, instance.role)
+        for worker_id in member_worker_ids(instance)
+    }
+    # One member, or none placed yet: there is no distance between members to
+    # be wrong about. Silence rather than a pass — the question has not been
+    # asked yet.
+    if len(worker_ids) < 2:
+        return False
+
+    cluster = await Cluster.one_by_id(session, model.cluster_id)
+    workers = await Worker.all_by_field(session, "cluster_id", model.cluster_id)
+    try:
+        view = build_view(getattr(cluster, "topology", None), workers)
+    except Exception:
+        # A declaration that cannot become a tree is the cluster's problem and
+        # is reported there. Claiming a placement degradation off the back of
+        # it would point at the wrong thing.
+        return False
+
+    placed = [
+        node
+        for node in _leaves_of(view.root)
+        if worker_ids.intersection(node.worker_ids)
+    ]
+    if len(placed) < 2:
+        return False
+
+    # The tightest layer containing every member: fold pairwise and keep the
+    # LOOSEST answer, since a layer holding all of them has to hold each pair.
+    order = [spec.layer for spec in order_layers(view.specs)] + [ROOT_LAYER]
+    rank = {name: index for index, name in enumerate(order)}
+    actual = placed[0].layer
+    for node in placed[1:]:
+        shared = common_layer(placed[0], node) or ROOT_LAYER
+        if rank.get(shared, 0) < rank.get(actual, len(order)):
+            actual = shared
+
+    # Looser means *earlier* in a root-to-leaf order.
+    return rank.get(actual, 0) < rank.get(layer, len(order))
+
+
+def _gather_blocked_scale_out(model: Model, instances: Sequence[ModelInstance]) -> bool:
+    """Whether a member is sitting unplaced under an active `MustGather` floor.
+
+    **The successful refusal had no reporter at all.** `GatherFloorFilter`
+    does exactly what `MustGather` asks -- it drops every worker outside the
+    domain the group's running members occupy, so a scaled-out member is not
+    placed rather than placed elsewhere -- and the entire trace of that is one
+    pending instance's `state_message`. The model stays `running` with an empty
+    `degradations` list, which is the same thing it says about a scale-up that
+    is merely still in flight. Measured in an e2e round: a 1P1D told to grow to
+    2P sat with a pending prefill and a model row that reported nothing, and
+    the only way to learn why was to open each member in turn.
+
+    `_gather_unmet` above is not this and cannot be made into it. It fires when
+    the floor has already been BROKEN, which under `MustGather` is an invariant
+    check -- the case where the filter deliberately declines to force. The case
+    where the filter succeeds is the common one and was silent.
+
+    **This does not prove the floor is the cause, and must not read as if it
+    did.** A cluster with no free cards anywhere presents identically: a
+    weight-bearing member placed, a sibling pending, nothing moving. Separating
+    the two would mean re-running the filter chain against every worker from
+    here, and the answer would be stale by the time it was published. So the
+    marker states what is certainly true -- a member is unplaced, and this
+    deployment would rather wait than spread -- and leaves the discrimination
+    to the member's own `state_message`, which names whichever filter emptied
+    the list.
+
+    Three conditions, each excluding a case that would make the marker lie:
+
+    * `MustGather` with a layer. `PreferGather` never refuses, so an unplaced
+      member there is a capacity fact with nothing to do with gather.
+    * A weight-bearing member already placed. That is what makes the floor
+      *active*: the filter anchors on the group's placed members, so with none
+      of them placed there is no domain to be kept inside. It is also what
+      excludes formation, which is refused by the solver rather than the filter
+      and fails scheduling with the shortfall named -- a different report.
+    * An unplaced member older than the dwell, so an ordinary scale-up does not
+      wear the marker during the seconds between its row being created and the
+      scheduler reaching it.
+    """
+    from gpustack.schemas.models import GatherStrategyEnum, role_takes_no_accelerator
+
+    gather = getattr(model, "gather", None)
+    layer = getattr(gather, "layer", None)
+    if not layer or getattr(gather, "strategy", None) != GatherStrategyEnum.MUST_GATHER:
+        return False
+
+    # Weight-bearing only, and for the same reason the filter anchors on
+    # those alone (`role_demands` excludes the router): a router holds no
+    # weights, so it is subject to the floor without being what defines it.
+    # A group whose router happened to be placed first has established no
+    # domain, and treating it as an anchor would arm the marker during
+    # formation -- the one case this has to stay quiet through.
+    #
+    # Collected as generations rather than as a yes/no, because the scope of
+    # the second question follows from it: a generation being torn down and
+    # rebuilt has unplaced rows of its own, and counting those would put the
+    # marker on a restart -- which is a group forming again, i.e. exactly the
+    # case above. An orphan carrying no `group_id` anchors nothing for the same
+    # reason it is not a member of anything.
+    anchored_groups = {
+        instance.group_id
+        for instance in instances
+        if instance.worker_id is not None
+        and instance.group_id is not None
+        and not role_takes_no_accelerator(model, instance.role)
+    }
+    if not anchored_groups:
+        return False
+
+    now = datetime.now(timezone.utc)
+    dwell = envs.SCHEDULER_GATHER_BLOCKED_DWELL_SECONDS
+    for instance in instances:
+        if instance.worker_id is not None or instance.group_id not in anchored_groups:
+            continue
+        created = getattr(instance, "created_at", None)
+        if created is None:
+            # A row with no stamp cannot be shown to have waited. Silence is
+            # the honest answer -- the alternative reports every such member as
+            # blocked the instant it appears, which is the flashing this dwell
+            # exists to prevent.
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if (now - created).total_seconds() >= dwell:
+            return True
+    return False
+
+
+def _engine_version_below_recipe_floor(model: Model) -> bool:
+    """Whether a pinned engine version sits under the recipe's declared floor.
+
+    `backend_versions` in `pd-modes.yaml` was carrying no weight at all: an
+    e2e round created PD models pinned to SGLang 0.5.5, vLLM 0.19.0, a
+    nonexistent 9.9.9 and the string `not-a-version`, and all four were
+    accepted with HTTP 200 and nothing said afterwards.
+
+    The `>=0.5.7` on the two SGLang recipes is a correctness floor, not a
+    preference. A member's id stopped being its URL and became a UUID the
+    registry mints at that version (2a098200), so on an older build
+    `DELETE /workers/{url}` answers 400 -- a scaled-down member stays in the
+    router's registry and keeps taking traffic while GPUStack reports it gone.
+
+    **Reported, not refused**, which is the deliberate difference from the
+    cache provider's `versions` next door in `create_model`. That one rejects
+    with a 400 because an out-of-range engine there receives injected args it
+    cannot parse (`--shutdown-timeout`) and never starts, so refusing costs a
+    deployment that was not going to run anyway. Here the group runs, and the
+    number may belong to a self-built image with a private version that
+    carries the fix; a 400 would break those to prevent a failure they do not
+    have.
+
+    Same fail-open as that check, and for the same reason: only a version
+    `version_in_range` positively reports as OUT of range counts. None,
+    unparseable and unpinned all leave the marker unset -- an exotic version
+    string must never be the thing that condemns a deployment. A local version
+    or a pre-release is let through on top of that, for the reason
+    `_is_self_described_build` gives.
+    """
+    from packaging.version import Version
+
+    from gpustack.schemas.models import role_takes_no_accelerator
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+    from gpustack.utils.version import version_in_range
+
+    def _is_self_described_build(pinned_version: str) -> bool:
+        """Whether the number describes a build of the user's own, which the
+        recipe's floor has no standing to rank.
+
+        The self-built image this check promises not to condemn only gets
+        that promise kept when its version fails to parse at all
+        (`0.23.0-ascend-router-custom`, `latest`). Two forms that do parse are
+        the same situation and were being marked anyway, and both say in PEP
+        440's own vocabulary that the version is not the release it sorts next
+        to: `+ourfix` means the official 0.5.6 with something of the packager's
+        applied on top, and `0.5.7rc1` means a build handed out before 0.5.7
+        exists. Either one may already carry the fix `>=0.5.7` is asking for --
+        backporting it is exactly why someone cuts a `+local` -- and nothing in
+        the string can say whether it does.
+
+        So passing them is the platform admitting it cannot tell, not declaring
+        them sound. The marker's claim is "below the declared floor", and a
+        number that is not describing the floor's release line was never
+        measured against it to begin with.
+
+        `.dev0` lands here too, as a pre-release: packaging counts dev releases
+        among them, and a build cut off someone's branch is the same
+        unanswerable question an rc is.
+        """
+        try:
+            parsed = Version(pinned_version)
+        except Exception:
+            # Unparseable already failed open a line below, so nothing that
+            # cannot be parsed reaches this predicate. Swallowed regardless,
+            # because this must never be the thing that turns a version string
+            # the check has always tolerated into a raise mid-reconcile.
+            return False
+        return parsed.local is not None or parsed.is_prerelease
+
+    disaggregation = getattr(model, "disaggregation", None)
+    if disaggregation is None:
+        return False
+
+    mode_name = disaggregation.mode.value
+    mode = get_pd_mode(mode_name)
+    if mode is None or not mode.backend_versions:
+        # `custom` declares no range because it injects nothing, and a recipe
+        # that has not stated a floor has not claimed one. Both are "no answer",
+        # never "compatible".
+        return False
+
+    # Per role, not per model, and the same expression `_build_instance_create`
+    # writes onto the member row -- `role.backend_version or
+    # model.backend_version` -- because that row is what actually starts. A
+    # group whose model-level pin is fine can still run one decode on a build
+    # that cannot be scaled down, and one is enough: that member is the one
+    # that keeps serving after GPUStack believes it removed it.
+    #
+    # Spelled out rather than taken from `role_effective_model`, which resolves
+    # the identical value: the projection validates a whole Model per role, and
+    # this runs on every reconcile of every PD deployment for one string.
+    #
+    # **Weight-bearing roles only, and the router is the reason that is not
+    # pedantry.** `backend_versions` describes the *engine* -- `>=0.5.7` is a
+    # statement about SGLang -- and the router is the one role whose engine is
+    # genuinely its own: the deploy form keeps an image-and-version section for
+    # it precisely because "a `vllm-router` is not the model's engine". The
+    # built-in recipes run it out of the model's own runner image, so its
+    # version is usually the engine's and comparing them is merely redundant;
+    # a hand-written router image is where it stops being redundant and starts
+    # being wrong, because that version number answers a different question and
+    # would condemn a deployment whose engine is perfectly in range.
+    pinned = {
+        getattr(role, "backend_version", None)
+        or getattr(model, "backend_version", None)
+        for role in (model.roles or [])
+        if not role_takes_no_accelerator(model, role.name)
+    }
+    pinned.add(getattr(model, "backend_version", None))
+
+    return any(
+        version_in_range(version, mode.backend_versions) is False
+        and not _is_self_described_build(version)
+        for version in pinned
+        if version
+    )
+
+
+def _pd_pairing_roles(model: Model) -> Tuple[Optional[RoleSpec], Optional[RoleSpec]]:
+    """This deployment's prefill and decode, or two Nones for anything that is
+    not a disaggregated group carrying both."""
+    if getattr(model, "disaggregation", None) is None:
+        return None, None
+    roles = getattr(model, "roles", None) or []
+    prefill = next((r for r in roles if r.name == RoleNameEnum.PREFILL.value), None)
+    decode = next((r for r in roles if r.name == RoleNameEnum.DECODE.value), None)
+    return prefill, decode
+
+
+def _pairing_unverified(model: Model) -> bool:
+    """Whether a pairing factor was declared on one role and left silent on the
+    other, so admission could not judge it.
+
+    Placement has nothing to do with this one: like
+    `_engine_version_below_recipe_floor` it is a property of the spec and is
+    true from the moment the group is created. What it buys is an honest answer
+    to a question the user believes was already settled -- the pairing
+    pre-check refuses mismatched context windows and tensor parallelisms, so a
+    group that was accepted reads as a group that was checked, and until now a
+    single silent role was enough to make that untrue.
+
+    Not "the pair is wrong". `server.pd_pairing` spells out why the silent
+    side's value cannot be resolved here for any of these factors, and most
+    deployments this marks are correct. The claim is only that nothing verified
+    them.
+    """
+    prefill, decode = _pd_pairing_roles(model)
+    if prefill is None or decode is None:
+        return False
+    return bool(
+        undecidable_factors(prefill, decode, getattr(model, "backend_parameters", None))
+    )
+
+
+def _placed_tensor_parallelism(
+    model: Model, role: RoleSpec, instances: Sequence[ModelInstance]
+) -> List[int]:
+    """The tensor parallelism each placed member of this role actually runs.
+
+    A declared `--tensor-parallel-size` is the answer for every member of the
+    role. Absent one, a single-worker member runs the cards it was given --
+    that is `get_auto_parallelism_arguments` in both backends, not a guess --
+    which is precisely the number the spec could not supply at admission.
+
+    Two shapes contribute nothing rather than a number: a member spanning
+    workers, where `cal_distributed_parallelism_arguments` splits the world
+    size into tp and pp further down, and a role that writes dp or pp without
+    tp, which suppresses the injection entirely and falls back to the engine's
+    own default.
+    """
+    parameters = role_parameters(role, getattr(model, "backend_parameters", None))
+    declared = find_last_int_parameter(parameters, PAIRING_TP)
+    if declared is None and find_last_parameter(parameters, PAIRING_ANY_PARALLELISM):
+        return []
+
+    widths: List[int] = []
+    for instance in instances:
+        if instance.role != role.name or instance.worker_id is None:
+            continue
+        if declared is not None:
+            widths.append(declared)
+            continue
+        servers = getattr(instance, "distributed_servers", None)
+        if servers is not None and getattr(servers, "subordinate_workers", None):
+            continue
+        cards = len(getattr(instance, "gpu_indexes", None) or [])
+        if cards:
+            widths.append(cards)
+    return widths
+
+
+def _pairing_tp_misplaced(model: Model, instances: Sequence[ModelInstance]) -> bool:
+    """Whether the cards the members actually got break the recipe's
+    tensor-parallel direction.
+
+    The admission check reads the spec, and for this one factor the spec is
+    routinely silent: a role that writes no parallelism and pins no cards runs
+    whatever the scheduler hands it. That is the gap this closes -- the same
+    rule, applied where the number finally exists.
+
+    Compared at the extremes rather than pairwise, because the router pairs at
+    random: a group is only as good as its narrowest decode against its widest
+    prefill, and one member of each is enough for a transfer to land on the
+    shape the connector cannot serve.
+    """
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    prefill, decode = _pd_pairing_roles(model)
+    if prefill is None or decode is None:
+        return False
+
+    disaggregation = model.disaggregation
+    mode_name = disaggregation.mode.value
+    rule = tensor_parallel_rule(get_pd_mode(mode_name))
+    if rule == PDTensorParallelPairingEnum.ANY:
+        return False
+
+    prefill_widths = _placed_tensor_parallelism(model, prefill, instances)
+    decode_widths = _placed_tensor_parallelism(model, decode, instances)
+    if not prefill_widths or not decode_widths:
+        return False
+
+    if rule == PDTensorParallelPairingEnum.DECODE_GE_PREFILL:
+        return violates_tensor_parallel_direction(
+            rule, prefill_tp=max(prefill_widths), decode_tp=min(decode_widths)
+        )
+    return violates_tensor_parallel_direction(
+        rule, prefill_tp=min(prefill_widths), decode_tp=max(decode_widths)
+    )
+
+
+def _leaves_of(node) -> List:
+    """Every host node under `node`."""
+    if not node:
+        return []
+    if not node.children:
+        return [node]
+    return [leaf for child in node.children for leaf in _leaves_of(child)]
+
+
+def _pairing_remote(model: Model, instances: Sequence[ModelInstance]) -> bool:
+    """Whether *no* request can keep its KV off the network.
+
+    The threshold is zero, not a fraction, and that is the whole design of
+    this marker.
+
+    A partial locality is not a misconfiguration — it is the arithmetic of a
+    router that pairs at random, where an evenly spread xPxD tops out at 1/x
+    however well it was placed. Warning at "below some fraction" would fire on
+    every correctly placed 4P4D and teach people to ignore the marker.
+
+    Zero is different in kind: prefill and decode share no host at all, so
+    every single transfer crosses the network, and it is reachable by ordinary
+    manual selection — pick host A's cards for prefill and host B's for
+    decode and nothing today says a word. That is the case worth a marker,
+    and on a link without RDMA it is the difference between PD helping and PD
+    being strictly worse than not disaggregating.
+    """
+    locality = pairing_locality(model, instances)
+    return locality.value is not None and locality.value == 0
+
+
+async def _degradation_reasons(
+    session: AsyncSession,
+    model: Model,
+    instances: Sequence[ModelInstance],
+    *,
+    state: ModelStateEnum,
+    ready_replicas: int,
+    role_status: Optional[Dict[str, RoleStatus]],
+    cache_not_injected: bool,
+    cache_reason: Optional[str],
+    state_message: Optional[str],
+) -> Tuple[List[str], Optional[str]]:
+    """Every way this deployment is up but worse than it was asked for.
+
+    Degradations coexist with RUNNING by construction -- `derive_model_state`
+    looks at neither the cache nor the ratio -- which is the whole reason they
+    are a separate list rather than a state.
+
+    `state` is taken rather than re-derived, and only the ratio reads it: the
+    markers below describe placement or configuration and are true whether or
+    not the deployment is serving, while "short of the shape you asked for"
+    says something about the service itself.
+
+    Returns the reasons and a possibly-extended `state_message`: one of them
+    (the cache) carries a detail worth putting in front of the user, and
+    threading it back is cheaper than a second pass to recover it.
+    """
+    reasons: List[str] = []
+
+    if _ratio_unmet(
+        model, state=state, ready_replicas=ready_replicas, role_status=role_status
+    ):
+        reasons.append(DegradationReasonEnum.RATIO_UNMET.value)
+
+    if cache_not_injected:
+        # A resolved cache the instance could not attach to only makes it
+        # slower, so it is a marker and never a lifecycle value.
+        reasons.append(DegradationReasonEnum.CACHE_NOT_INJECTED.value)
+        detail = "shared cache not injected"
+        if cache_reason:
+            detail = f"{detail}: {cache_reason}"
+        state_message = "; ".join(m for m in (state_message, detail) if m) or None
+
+    if _pairing_remote(model, instances):
+        # Placement-only, so it is knowable the moment the members are placed
+        # rather than after traffic has shown it. That is the point: on a link
+        # without RDMA an all-remote pairing makes PD strictly worse than not
+        # disaggregating, and the user should not have to learn that from a
+        # TTFT regression.
+        reasons.append(DegradationReasonEnum.PAIRING_REMOTE.value)
+
+    if await _gather_unmet(session, model, instances):
+        # Says what the spec cannot: the ask is stored, the outcome was not.
+        reasons.append(DegradationReasonEnum.GATHER_UNMET.value)
+
+    if _gather_blocked_scale_out(model, instances):
+        # The complement of the marker above, and the case that actually
+        # happens: `GatherFloorFilter` refusing a member *successfully*. That
+        # refusal is the strategy working, which is why it is a marker and not
+        # an error -- but it was reported nowhere on the model, so a scale-up
+        # that will never complete looked exactly like one still in flight.
+        reasons.append(DegradationReasonEnum.GATHER_BLOCKED_SCALE_OUT.value)
+
+    if _engine_version_below_recipe_floor(model):
+        # Placement has nothing to do with this one: it is true of the spec
+        # from the moment the group is created. What it buys is that the
+        # consequence is invisible until it
+        # bites -- on SGLang below 0.5.7 a scaled-down member is never removed
+        # from the router's registry and goes on taking traffic, which reads as
+        # a routing bug and not as a version pin.
+        reasons.append(DegradationReasonEnum.ENGINE_VERSION_BELOW_RECIPE_FLOOR.value)
+
+    if _pairing_unverified(model):
+        # Spec-only, like the floor above: true from the moment the group is
+        # created. It reports an absence rather than a fault -- one role
+        # declared a pairing factor, the other went silent, and the silent
+        # side's default is not resolvable without the checkpoint or the
+        # placement. Worth saying because the pre-check refuses the mismatches
+        # it CAN see, so acceptance reads as verification.
+        reasons.append(DegradationReasonEnum.PAIRING_UNVERIFIED.value)
+
+    if _pairing_tp_misplaced(model, instances):
+        # The other half of the same gap, and the half that can be answered:
+        # once the members are placed their cards are the tensor parallelism,
+        # so the direction the recipe declares finally applies to a deployment
+        # rather than to a description. Marked and not enforced -- these
+        # members are already running, and taking them down to report their
+        # shape would cost more than the report is worth.
+        reasons.append(DegradationReasonEnum.PAIRING_TP_MISPLACED.value)
+
+    return reasons, state_message
+
+
+def _ratio_unmet(
+    model: Model,
+    *,
+    state: ModelStateEnum,
+    ready_replicas: int,
+    role_status: Optional[Dict[str, RoleStatus]],
+) -> bool:
+    """Whether the deployment is short of the shape it was asked for.
+
+    Reported as a degradation rather than a state, because a deployment short
+    of its count **is still serving** — reduced throughput, not an outage.
+    That premise is the whole meaning of the marker, and it is why the gate is
+    `state == RUNNING`: RUNNING is the one predicate in this module for "can
+    this serve" (`_model_is_servable`), so asking it here is asking whether
+    the sentence this marker renders is true at all.
+
+    Gated on the state rather than on a count, because a count cannot answer
+    it under PD. A 1P1D whose router is down is two RUNNING instances and zero
+    service: `ready_replicas` is 2, every arithmetic guard passes, and the
+    marker claimed reduced capacity for a group serving nothing — beside a
+    PARTIAL state saying the opposite. Not an edge case either: the router is
+    created only once every GPU role has a RUNNING member
+    (`_role_dependencies`), so that window opens on every PD start.
+
+    For a group the question is per role, since the declared ratio is what
+    makes a group a 3P1D rather than a 4P4D, and one role at half staff is
+    exactly the case the marker exists to surface.
+
+    Unchanged for a role-less model: `derive_model_state` makes RUNNING
+    exactly `ready_replicas > 0` there, which is the guard this replaces.
+    """
+    if state != ModelStateEnum.RUNNING:
+        return False
+    if role_status is not None:
+        return any(status.ready < status.desired for status in role_status.values())
+    return ready_replicas < model.replicas
+
+
+def _requires_every_member(model: Model) -> bool:
+    """Whether this group is servable only at full staffing.
+
+    Guarded rather than read straight through: a role-only deployment
+    (multi-role orchestration with no PD) has no `disaggregation` at all, and
+    that must mean the default rather than raise.
+
+    Not exposed in the deployment form yet. The semantics live here so that
+    the value a user can already set through the API is the value the group
+    is judged by -- a stored setting that changes nothing is worse than an
+    absent one, because it reads back as if it took effect.
+    """
+    disaggregation = model.disaggregation
+    if disaggregation is None:
+        return False
+    return disaggregation.readiness == "all"
+
+
+def derive_model_state(
+    model: Model,
+    *,
+    ready_replicas: int,
+    instance_count: int,
+    role_status: Optional[Dict[str, RoleStatus]],
+    error_count: int,
+) -> Tuple[ModelStateEnum, Optional[str]]:
+    """Fold one instance scan into the model-level lifecycle value and its
+    message (F7 3.1 / 3.2).
+
+    This is an aggregate, not a copy of `ModelInstanceStateEnum`: there are no
+    download or start phases here.
+
+    `state` answers one question — can this serve — and nothing else. Being
+    up but worse than asked for lives beside it in `degradations`, never
+    inside it: a group serving without its shared cache is RUNNING with
+    `cache_not_injected`, and a deployment short of its declared replica count
+    or role ratio is RUNNING with `ratio_unmet`. That is what lets PARTIAL
+    keep one meaning everywhere — members are up and it still cannot serve —
+    and lets the servability gate be a plain `state == RUNNING` with no
+    per-shape special case.
+
+    Readiness is decided before failure: a deployment with members up is
+    serving whatever else has failed, so ERROR is reserved for "nothing is
+    ready and something failed". That ordering is what keeps
+    `state == RUNNING` equivalent to `ready_replicas > 0` for a role-less
+    model, which the servability gate and the `GET /v2/models?state=` filter
+    both depend on.
+    """
+    if role_status is not None:
+        # A group is servable when every role has at least one ready member,
+        # not when every role is fully staffed: requiring the latter would
+        # make a 2P3D deployment unservable for the whole duration of a
+        # scale-up (F7 3.1). Falling short of the declared ratio while every
+        # role is covered is a degradation, not a lifecycle value.
+        #
+        # `readiness: all` is the other answer to the same question, for a
+        # deployment sized so that a partial group is worse than no group --
+        # a ratio tuned to a known load degrades into queueing rather than
+        # into reduced throughput. It moves the shortfall from `degradations`
+        # into `state`, which is a real behaviour change: the endpoint stops
+        # accepting traffic during a scale-up instead of serving through it.
+        # Hence per-deployment and defaulting to the forgiving one.
+        require_full = _requires_every_member(model)
+        roles_missing = sorted(
+            name
+            for name, status in role_status.items()
+            if (status.ready < status.desired if require_full else status.ready == 0)
+        )
+        if not roles_missing and upstream_registration_ready(model):
+            return ModelStateEnum.RUNNING, None
+        if ready_replicas > 0:
+            # Members up, still not servable — the one meaning PARTIAL has.
+            if roles_missing:
+                return (
+                    ModelStateEnum.PARTIAL,
+                    f"roles not ready: {', '.join(roles_missing)}",
+                )
+            return ModelStateEnum.PARTIAL, "waiting for upstream registration"
+        if error_count:
+            return (
+                ModelStateEnum.ERROR,
+                f"{error_count}/{instance_count} members failed",
+            )
+        return ModelStateEnum.PENDING, None
+
+    # No roles: the backward-compatibility baseline. The model is its own
+    # single implicit role, so "every role has a ready member" degenerates to
+    # `ready_replicas > 0` — which is therefore exactly when it is RUNNING.
+    # PARTIAL is unreachable here on purpose: one ready replica serves, so
+    # there is no state in which a role-less model has members up and cannot
+    # serve. Short of the requested count is `ratio_unmet`, carried by
+    # `sync_model_status`, with the count itself in the message.
+    if ready_replicas == 0:
+        if error_count:
+            # Only ERROR is counted as a failure. UNREACHABLE is a worker
+            # comms fault that clears when the worker comes back, so it reads
+            # as not-ready-yet, the same way it does per instance today.
+            return (
+                ModelStateEnum.ERROR,
+                f"{error_count}/{instance_count} instances failed",
+            )
+        return ModelStateEnum.PENDING, None
+    if ready_replicas < model.replicas:
+        return (
+            ModelStateEnum.RUNNING,
+            f"{ready_replicas}/{model.replicas} replicas ready",
+        )
+    return ModelStateEnum.RUNNING, None
+
+
+async def _router_dial(
+    session: AsyncSession, router_instance: ModelInstance
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """`(host, proxy, token)`: how to reach this router.
+
+    `host` is what goes in front of the port, and the two paths want different
+    answers:
+
+    - Through the tunnel proxy the request leaves from the WORKER's own side,
+      so the worker's `ip` is exactly what resolves there.
+    - Direct, the server has to route to the worker itself, and `ip` is
+      routinely an address only that worker's network can reach. Measured on a
+      cloud worker whose `ip` was a VPC address: every `GET /workers` failed
+      to read the registry while the same router answered on the worker's
+      `advertise_address`, so the group never got its members registered and
+      served 503s while every member reported RUNNING.
+
+    Direct is also the answer for a worker not in `tunnel` mode and for a
+    worker row that cannot be loaded — dialling direct is what the product did
+    before the proxy existed, so an unreadable row degrades to the old
+    behaviour rather than to no attempt at all. Such a row falls back to the
+    instance's own `worker_ip`, the only address left once the worker is
+    unreadable.
+
+    The token comes back with the address because the proxy authenticates
+    every request it forwards. Returning the address alone would produce a
+    hop that answers 401, which `reconcile` cannot tell apart from a router
+    whose registry is unreadable — and that reading is what orders a router
+    restart, so a missing credential would present as a restart loop.
+    """
+    fallback = router_instance.worker_ip
+    if not router_instance.worker_id:
+        return fallback, None, None
+    try:
+        worker = await Worker.one_by_id(session, router_instance.worker_id)
+    except Exception as e:
+        logger.debug(
+            "Could not load worker %s for the router's address: %s",
+            router_instance.worker_id,
+            e,
+        )
+        return fallback, None, None
+    if worker is None:
+        return fallback, None, None
+    proxy = worker.get_proxy_address()
+    if proxy:
+        return fallback, proxy, worker.token
+    return worker.get_dial_address() or fallback, None, None
+
+
+async def _reconcile_router_membership(
+    session: AsyncSession, model: Model, instances: List[ModelInstance]
+) -> None:
+    """Tell every running router of this group who its members are.
+
+    Records the outcome for `upstream_registration_ready`, which is what keeps
+    a group whose registration failed out of RUNNING — it stays PARTIAL with
+    the router's own words instead of claiming to serve.
+
+    Never raises. A failure here has to read as "not registered yet" and be
+    retried on the next pass, because the alternative is a controller loop
+    that stops syncing every other status field over one unreachable router.
+    """
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    if model.disaggregation is None:
+        pd_membership.forget(model.id)
+        return
+
+    mode_name = model.disaggregation.mode.value
+    mode = get_pd_mode(mode_name)
+    if mode is None or not mode.router.membership_api_usable:
+        # Command-line path: the router knows its peers already. Recording
+        # nothing is what lets `upstream_registration_ready` stay vacuously
+        # true for these groups.
+        pd_membership.forget(model.id)
+        return
+
+    routers = pd_membership.router_instances(instances)
+    if not routers:
+        pd_membership.record(
+            model.id,
+            pd_membership.MembershipOutcome(
+                ok=False, reason="no router is running yet"
+            ),
+        )
+        return
+
+    # Every router, and the worst outcome wins: one router with an empty
+    # registry serves 503s while another serves fine, and a group is only
+    # servable when the thing in front of it is.
+    worst = None
+    for router_instance in routers:
+        # Per router, because both the proxy and the address belong to the
+        # WORKER the router runs on: a `tunnel` worker only ever dials out, so
+        # the server cannot reach the router's port directly and every call in
+        # `reconcile` has to ride the same forward proxy the gateway uses for
+        # that worker's model instances. Off the tunnel the server dials the
+        # worker itself, where the address it has to use is the one the worker
+        # publishes for outside access rather than the one it sees itself at.
+        host, proxy, proxy_token = await _router_dial(session, router_instance)
+        address = f"{host}:{router_instance.port}"
+        try:
+            outcome = await pd_membership.reconcile(
+                model, mode, instances, address, proxy=proxy, proxy_token=proxy_token
+            )
+        except Exception as e:
+            logger.warning(
+                "Router membership reconcile failed for model %s at %s: %s",
+                model.name,
+                address,
+                e,
+            )
+            outcome = pd_membership.MembershipOutcome(
+                ok=False, reason=f"membership reconcile raised: {e}"
+            )
+        if worst is None or (worst.ok and not outcome.ok):
+            worst = outcome
+    if worst is not None:
+        pd_membership.record(model.id, _explain_unreadable(model, worst))
+
+
+def _explain_unreadable(
+    model: Model, outcome: "pd_membership.MembershipOutcome"
+) -> "pd_membership.MembershipOutcome":
+    """Re-word an unreadable registry according to what happens next.
+
+    The bare reason — "the member list could not be read" — is the same
+    sentence whether the platform is about to recreate the router, has already
+    tried and got nowhere, or has been told not to try at all. Those are three
+    different situations for whoever is watching the deployment, so each gets
+    its own account; anything else is returned untouched.
+    """
+    if not outcome.unreadable:
+        return outcome
+
+    if pd_membership.restarts_exhausted(model.id):
+        # The message changes because the suspicion does. Up to here
+        # "unreadable" could have been a wedged router, and the repair was to
+        # restart it. Having restarted it and read nothing, what is left is
+        # the path: the server cannot reach the router's port. On a
+        # `tunnel`-mode worker that is the proxy — the only route inward —
+        # and no further restart can discover that for the operator.
+        reason = (
+            "the router's member list cannot be read from the server, "
+            "and restarting the router did not change that — so the "
+            "router's port is not reachable rather than the process "
+            "being stuck. On a worker in `tunnel` proxy mode the only "
+            "route inward is the server's proxy port; check that it is "
+            "running and that the worker's tunnel is connected."
+        )
+    elif not model.restart_on_error:
+        # Say that the repair exists and was not taken, rather than leaving
+        # a group parked with no account of why. Without this the deployment
+        # reads the same whether the platform is about to recreate the router
+        # or has decided not to.
+        reason = (
+            "the router's member list could not be read. Recreating the "
+            "router is what usually repairs this, and the platform did NOT "
+            "do it because this deployment has «restart on error» off — so "
+            "the group stays as it is. Restart it manually once you have "
+            "looked, or turn the switch on to let the platform try."
+        )
+    else:
+        return outcome
+
+    return pd_membership.MembershipOutcome(
+        ok=False,
+        unreadable=True,
+        reason=reason,
+        registered=outcome.registered,
+    )
+
+
+async def _restart_unreachable_routers(
+    session: AsyncSession, model: Model, instances: Sequence[ModelInstance]
+) -> None:
+    """Delete the router members so convergence recreates them.
+
+    Deleting rather than restarting in place: the router's command line is
+    rendered from its peers' live addresses at creation, so a recreated router
+    picks up the current ones — which is also the repair for the case this
+    path exists for, a member whose port changed under a router that still
+    holds its previous address.
+    """
+    from gpustack.schemas.models import ModelInstanceStateEnum
+
+    for instance in instances:
+        if instance.role != RoleNameEnum.ROUTER.value:
+            continue
+        if instance.state != ModelInstanceStateEnum.RUNNING:
+            continue
+        logger.warning(
+            "Router %s of model %s has been unreachable for %d passes; "
+            "deleting it so a fresh one is created with the group's current "
+            "member addresses.",
+            instance.name,
+            model.name,
+            pd_membership.RESTART_AFTER_UNREADABLE_PASSES,
+        )
+        try:
+            await instance.delete(session)
+        except Exception as e:
+            logger.warning("Could not delete router %s: %s", instance.name, e)
+
+
+async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noqa: C901
+    """
+    Synchronize the model's server-owned status from its instances.
+
+    The single owner of every status field on the Model row: the
+    counter, the lifecycle, the per-role detail and the degradation markers
+    are four different questions about the same scan, so one scan answers
+    them, one change gate writes them and one transaction commits them.
+    Nothing else writes them.
 
     Returns True if the model row was updated (and the session was committed).
     """
@@ -1747,16 +3877,180 @@ async def sync_ready_replicas(session: AsyncSession, model: Model) -> bool:
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
 
+    # `ready_replicas` keeps its exact pre-PD meaning: a plain count of
+    # RUNNING instances, router included. `exporter.py` publishes it as
+    # `model_running_instances`, so it is a counter and nothing else —
+    # servability is `state`, per-role detail is `role_status`.
     ready_replicas: int = 0
-    for _, instance in enumerate(instances):
+    ready_by_role: Dict[str, int] = {}
+    draining_by_role: Dict[str, int] = {}
+    error_count: int = 0
+    cache_not_injected: bool = False
+    cache_reason: Optional[str] = None
+    for instance in instances:
+        draining = instance.draining_since is not None
+        if instance.role and draining:
+            draining_by_role[instance.role] = draining_by_role.get(instance.role, 0) + 1
         if instance.state == ModelInstanceStateEnum.RUNNING:
+            # The model-level count keeps its pre-PD meaning — a plain count of
+            # RUNNING instances, router and draining members included — because
+            # `model_running_instances` publishes it and `derive_model_state`
+            # reads it for role-less models.
             ready_replicas += 1
+            # The per-role one does not: a draining member left the router's
+            # member list when its window opened, so it is running without
+            # being reachable. Counting it as ready is what made a role scaled
+            # from 3 to 2 report `3 / 2` until the window closed.
+            if instance.role and not draining:
+                ready_by_role[instance.role] = ready_by_role.get(instance.role, 0) + 1
+        elif instance.state == ModelInstanceStateEnum.ERROR:
+            error_count += 1
+        # A resolved cache the instance could not attach to is a degradation,
+        # not a failure: the instance starts anyway, just without the shared
+        # cache. `cache_config` is None when no cache service was
+        # selected at all, which is not a degradation.
+        if instance.cache_config is not None and not instance.cache_config.injected:
+            cache_not_injected = True
+            if cache_reason is None:
+                cache_reason = instance.cache_config.reason
 
-    if model.ready_replicas != ready_replicas:
+    role_status: Optional[Dict[str, RoleStatus]] = None
+    if model.roles:
+        # `desired` can only come from `roles[].replicas`: an instance that was
+        # never created has no state, so the ratio is not derivable from the
+        # scan alone (F7 3.2). `ready` is counted per role out of the same
+        # scan.
+        #
+        # A group is one generation at a time -- no blue-green -- so
+        # counting a role across the model's instances is counting it within
+        # the live `group_id`. If that ever stops being true, scoping the
+        # count to a generation belongs right here.
+        role_status = {
+            role.name: RoleStatus(
+                desired=role.replicas,
+                ready=ready_by_role.get(role.name, 0),
+                draining=draining_by_role.get(role.name, 0),
+            )
+            for role in model.roles
+        }
+
+    # Reconcile BEFORE deriving the state. A router process that is up is
+    # not the same as a router that can serve: what its registry already holds
+    # is version-dependent and has to be read rather than assumed (see fact 2
+    # in `pd_membership`), and a member this group adds through the API takes
+    # traffic only once the router's own read-back reports it. Deriving RUNNING
+    # first and registering after would publish an upstream that cannot serve.
+    #
+    # A no-op for any group whose recipe does not launch what its membership
+    # API needs: `reconcile` returns ok immediately when
+    # `membership_api_usable` is false.
+    await _reconcile_router_membership(session, model, instances)
+
+    # The one failure a restart can fix, and only after it has persisted.
+    #
+    # The shipped recipes run ONE router per group and it is the gateway's only
+    # upstream, so recreating it interrupts the whole group until the
+    # replacement is up and has finished probing its peers. That price is worth
+    # paying only when the router is not answering at all, which is what
+    # `unreadable` means; a router that refuses a member is alive and
+    # disagreeing, and the replacement would be handed the same members to
+    # refuse again.
+    #
+    # And only when the deployment asked to be repaired at all.
+    # `restart_on_error` is the deployment's answer to "recover by yourself or
+    # stop and let me look", and recreating the router is a recovery like any
+    # other — more disruptive than most, since the replacement is a NEW member
+    # with a fresh name and a zeroed restart count, which is precisely why a
+    # group with the switch off looked like it was restarting forever and
+    # never settled into a state anyone could inspect. With it off the group
+    # stays where it failed and says why; `POST /{id}/restart` is the manual
+    # way out.
+    if model.restart_on_error and pd_membership.should_restart_router(model.id):
+        pd_membership.note_restart_ordered(model.id)
+        await _restart_unreachable_routers(session, model, instances)
+
+    state, state_message = derive_model_state(
+        model,
+        ready_replicas=ready_replicas,
+        instance_count=len(instances),
+        role_status=role_status,
+        error_count=error_count,
+    )
+
+    reasons, state_message = await _degradation_reasons(
+        session,
+        model,
+        instances,
+        state=state,
+        ready_replicas=ready_replicas,
+        role_status=role_status,
+        cache_not_injected=cache_not_injected,
+        cache_reason=cache_reason,
+        state_message=state_message,
+    )
+    degradations = reasons or None
+
+    # `stale`: the running members predate the config they are shown with.
+    # Orthogonal to `state` — a stale group is usually still serving, which is
+    # exactly what makes it worth surfacing: without it, a user who edits a
+    # config and sees the model still RUNNING has no way to learn the edit has
+    # not taken effect: changing `Model.env` returns the new value from the
+    # API while `StartedAt` never moves.
+    #
+    # Only members that carry a digest count. A row created before this column
+    # existed has None, and reading that as "differs" would mark every
+    # pre-upgrade model stale on the first pass after an upgrade.
+    stale = await _stale_members(session, model, instances)
+
+    # The restart guard's other half. Set by the endpoint before it tears the
+    # generation down, released here the moment the rebuilt one is serving —
+    # which is the only event that actually means "the replacements are no
+    # longer at risk". It rides the same change gate rather than getting its
+    # own write, so releasing the guard costs nothing on a pass that was
+    # already publishing the transition into RUNNING.
+    restarting_since = model.restarting_since
+    if restarting_since is not None and state == ModelStateEnum.RUNNING:
+        restarting_since = None
+
+    if (
+        model.ready_replicas != ready_replicas
+        or model.state != state
+        or model.state_message != state_message
+        or model.role_status != role_status
+        or model.stale != stale
+        or model.degradations != degradations
+        or model.restarting_since != restarting_since
+    ):
         model.ready_replicas = ready_replicas
+        model.state = state
+        model.state_message = state_message
+        model.role_status = role_status
+        model.stale = stale
+        model.degradations = degradations
+        model.restarting_since = restarting_since
         await ModelService(session).update(model)
-        return True
-    return False
+        updated = True
+    else:
+        updated = False
+
+    # After the state is settled, not inside the gate above: the target has
+    # to be corrected even on a pass that found the model unchanged, because
+    # the case this exists for is exactly "the model is right and the target
+    # is not". Gating it on `updated` would reproduce the edge-triggered
+    # behaviour it replaces.
+    try:
+        await reconcile_route_target_states(session, model)
+    except Exception as e:
+        # A target left stale is a routing outage, but so is a status pass that
+        # raises: this is a repair, and it must not be able to break the thing
+        # it rides on.
+        logger.warning(
+            "Could not re-derive route target states for model %s: %s",
+            model.name,
+            e,
+        )
+
+    return updated
 
 
 async def get_cluster_registry(
@@ -2111,6 +4405,13 @@ async def calculate_model_destinations(
         and instance.worker_ip != ""
         and instance.state == ModelInstanceStateEnum.RUNNING
     ]
+    # Same narrowing as the registry side in `_ensure_model_mcp_bridge`. The
+    # registry decides which addresses *exist* as upstreams; this annotation
+    # decides how traffic is *split* across them, and a weight naming a member
+    # the registry never registered is what Envoy hangs on. Measured: a 1P1D
+    # group got `34% router / 33% prefill / 33% decode`, the router answered
+    # correctly and the other two thirds of requests never returned.
+    instances = _gateway_registrable_instances(model, instances)
     worker_list = await Worker.all_by_fields(
         session=session,
         fields={
@@ -3827,7 +6128,16 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
         # entry is built, and that only runs off a route event -- so without it
         # here, flipping the selector would change nothing until the deployment
         # happened to scale.
-        related_fields = ["ready_replicas", "replicas", "native_anthropic_api"]
+        #
+        # `state` is what the target's ACTIVE gate reads, so a state change
+        # has to reach the target even when the RUNNING count did not move
+        # (a group whose upstream registration flips, for instance).
+        related_fields = [
+            "state",
+            "ready_replicas",
+            "replicas",
+            "native_anthropic_api",
+        ]
         for field in related_fields:
             if field in event.changed_fields:
                 should_notify = True
@@ -3856,6 +6166,7 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
                             {
                                 "id": model.id,
                                 "name": model.name,
+                                "state": model.state,
                                 "ready_replicas": model.ready_replicas,
                                 "replicas": model.replicas,
                             },
@@ -3866,18 +6177,43 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
 
 
 async def sync_categories_and_meta(session: AsyncSession, model: Model, event: Event):
+    """Propagate a model's derived ``categories`` / ``meta`` onto the route it
+    created.
+
+    Neither field is known when the route is born: `POST /models` copies
+    whatever the caller sent (the UI sends neither, they are auto-detected)
+    and the scheduler fills them in a second later, off `evaluate_gguf_model`
+    / `evaluate_pretrained_config`. Only the Model is written there, so
+    without this the route keeps the empty list it was created with -- and
+    `/v1/models?categories=llm` filters on `ModelRoute.categories`, so the
+    deployment silently stops being listed as an LLM.
+
+    Queries `ModelRoute` directly rather than walking `model.model_routes`,
+    for the reason `reconcile_route_target_states` spells out at length:
+    `_reconcile` has already loaded this Model row twice by the time we get
+    here (plainly for `sync_model_status`, then with
+    `selectinload(model_route_targets)` inside `notify_model_route_target`),
+    so a third fetch asking for `selectinload(model_routes)` hits the
+    identity map, returns that same instance and never applies the loader
+    option. `model_routes` is `lazy="noload"`, and an unloaded collection
+    reads as `[]` rather than raising -- so the loop below found nothing to
+    do, every time, for every model, without a single log line. Confirmed
+    against a live database: a clean session yields the route, a session in
+    `_reconcile`'s state yields none.
+
+    `created_model_id` is also the more honest filter. The relationship goes
+    through `ModelRouteTarget`, so a multi-target route reached from model A
+    would have had A's categories written onto it even when B created it.
+    """
     if event.type == EventType.DELETED:
         return
-    model: Model = await Model.one_by_id(
-        session=session,
-        id=model.id,
-        options=[
-            selectinload(Model.model_routes),
-        ],
-    )
+    model: Model = await Model.one_by_id(session=session, id=model.id)
     if not model:
         return
-    routes = model.model_routes
+    routes = await ModelRoute.all_by_fields(
+        session,
+        fields={"created_model_id": model.id, "deleted_at": None},
+    )
     # Plugins keep per-route state in meta under their registered names
     # (the lb base capability). The model-sync wholesale meta replace
     # would clobber those keys, so they are carried over from the
@@ -3886,8 +6222,6 @@ async def sync_categories_and_meta(session: AsyncSession, model: Model, event: E
 
     plugin_meta_keys = {p.name for p in route_plugins()}
     for route in routes:
-        if route.created_model_id is None:
-            continue
         merged_meta = {
             # A plugin-named key in model.meta is ordinary user data,
             # not plugin state — it must not be able to forge or
@@ -4086,6 +6420,17 @@ class ModelRouteTargetController:
         self._config = config
 
     async def start(self):
+        # Before the subscription, because the gap between them is the hole
+        # this closes. The bus does not replay: a model that changed state
+        # while this controller was down published an event nobody consumed,
+        # and since the state then stops changing there is nothing left to
+        # react to. A target can therefore sit UNAVAILABLE against a RUNNING
+        # model indefinitely, with `/v1/models` empty.
+        #
+        # One sweep at startup answers it for every target at once, and costs
+        # one pass over a table with as many rows as there are route targets.
+        await self._resync_all_targets()
+
         async for event in ModelRouteTarget.subscribe(
             source="model_route_target_controller"
         ):
@@ -4093,6 +6438,43 @@ class ModelRouteTargetController:
                 await self._reconcile(event)
             except Exception as e:
                 logger.exception(f"Failed to reconcile model route target: {e}")
+
+    async def _resync_all_targets(self):
+        """Re-derive every target's state from what it points at.
+
+        Idempotent and write-on-difference, so a healthy fleet logs nothing
+        and writes nothing.
+        """
+        try:
+            async with async_session() as session:
+                targets = await ModelRouteTarget.all(session)
+                repaired = 0
+                for target in targets:
+                    model = None
+                    if target.model_id is not None:
+                        model = await Model.one_by_id(session, target.model_id)
+                    desired = derive_route_target_state(target, model)
+                    if target.state != desired:
+                        logger.info(
+                            "Startup resync: route target %s %s -> %s",
+                            target.name,
+                            target.state,
+                            desired,
+                        )
+                        target.state = desired
+                        await target.update(session=session, auto_commit=True)
+                        repaired += 1
+                if repaired:
+                    logger.info(
+                        "Startup resync corrected %d route target(s) whose "
+                        "state had drifted from their model's.",
+                        repaired,
+                    )
+        except Exception as e:
+            # Never fatal: the controller's steady-state job is more important
+            # than this repair, and the per-model pass in `sync_model_status`
+            # is a second chance at the same correction.
+            logger.warning("Route target startup resync failed: %s", e)
 
     async def _notify_parents(
         self, session: AsyncSession, target: ModelRouteTarget, event: Event
@@ -4179,9 +6561,14 @@ class ModelRouteTargetController:
             model = await Model.one_by_id(session, target.model_id)
             if not model:
                 return
+            # The servability gate: `Model.state`, not the RUNNING count.
+            # `ModelRoute.ready_targets`, `/v1/models` and
+            # `resolve_route_targets` are all defined off this target state,
+            # so they follow from here. The route's weight / fallback / alias
+            # mechanics are untouched.
             target_state = (
                 TargetStateEnum.ACTIVE
-                if model.ready_replicas > 0
+                if is_model_servable(model)
                 else TargetStateEnum.UNAVAILABLE
             )
         if target.state != target_state:

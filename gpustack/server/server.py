@@ -50,6 +50,7 @@ from gpustack.server.services import provision_bootstrap_admin_orgs
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.config import registration
+from gpustack.server.pd_mode_catalog import load_pd_modes
 from gpustack.server.controllers import (
     CacheServiceController,
     ModelController,
@@ -284,6 +285,11 @@ class Server:
         await self._prepare_data()
 
         self._validate_configured_model_catalog()
+        # Validate the PD-mode catalog here rather than on first lookup: a
+        # mode name or engine set that disagrees with the schema would
+        # otherwise surface as a table miss at deploy time, injecting
+        # nothing and coming up looking healthy.
+        load_pd_modes()
 
         # it's safe to determine server_role after migration
         if self._config.server_role() == Config.ServerRole.BOTH:
