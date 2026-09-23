@@ -263,7 +263,11 @@ async def proxy_request_by_model(
     extra_headers = {
         router_header_key: f"{model_instance_prefix(instance)}.static",
     }
-    path = endpoint if endpoint in ("tokenize", "detokenize") else f"v1/{endpoint}"
+    path = (
+        endpoint
+        if endpoint in ("tokenize", "detokenize")
+        else f"v1/{endpoint}"
+    )
     logger.debug(
         f"proxying to {instance.worker_ip}:{instance.port}, instance port: {instance.port}"
     )
