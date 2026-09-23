@@ -314,7 +314,9 @@ class CacheServiceManager:
             # first, so restart and first start share this code path.
             deployment_metadata = instance.get_deployment_metadata()
             try:
-                delete_workload(deployment_metadata.name)
+                delete_workload(
+                    deployment_metadata.name,
+                )
             except Exception as e:
                 # The workload may not exist yet.
                 logger.debug(

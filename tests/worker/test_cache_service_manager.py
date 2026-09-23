@@ -410,7 +410,7 @@ def test_start_instance_removes_stale_workload_first():
         ),
         patch(
             "gpustack.worker.cache_service_manager.delete_workload",
-            side_effect=lambda name: call_order.append(("delete", name)),
+            side_effect=lambda name, **kwargs: call_order.append(("delete", name)),
         ),
         patch(
             "gpustack.worker.cache_service_manager.create_workload",
@@ -2315,6 +2315,24 @@ def test_probe_targets_metrics_port_for_http_health_check(monkeypatch):
         assert manager._probe_ready(instance, "mooncake") is True
 
     assert http_get.call_args[0][0] == "http://127.0.0.1:40011/healthcheck"
+
+
+def test_a_custom_version_uses_the_providers_default_command():
+    """A custom version brings its own image, and takes the command that the
+    provider's default version declares."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        provider_version="custom",
+        config=CacheServiceConfig(
+            fields={"ram_size": 8, "chunk_size": 256}, image="i:1"
+        ),
+    )
+
+    create, _ = _run_start(
+        manager, clientset, cache_service, _new_provider(custom_version=True)
+    )
+
+    assert create.call_args[0][0].containers[0].execution.command[0] == "cache-server"
 
 
 def test_host_ipc_follows_the_component_s_gpu_access():

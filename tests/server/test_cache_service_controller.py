@@ -76,6 +76,7 @@ def _service(**overrides):
         provider_version="v0.5.2",
         config=None,
         cluster_id=1,
+        owner_principal_id=1,
         worker_id=5,
         worker_selector=None,
         state=CacheServiceStateEnum.PENDING,
@@ -1163,6 +1164,9 @@ def _model_instance(state, injected=False, reason="not ready", worker_id=5):
         worker_id=worker_id,
         state=state,
         spans_workers=False,
+        # Which sides of a disaggregated pair take a cache is per role, so the
+        # refresh carries the member's role through to the resolver.
+        role=None,
         cache_config=CacheConfigSnapshot(
             cache_service_id=9, injected=injected, reason=reason
         ),
@@ -1329,6 +1333,7 @@ async def test_refresh_tracks_endpoint_liveness_on_running_instance():
         worker_id=5,
         state=ModelInstanceStateEnum.RUNNING,
         spans_workers=False,
+        role=None,
         cache_config=CacheConfigSnapshot(
             cache_service_id=9,
             injected=True,

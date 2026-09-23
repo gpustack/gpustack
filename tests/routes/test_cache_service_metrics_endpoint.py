@@ -31,6 +31,7 @@ from gpustack.schemas.cache_providers import (
 from gpustack.schemas.cache_services import CacheServiceAttachedMetrics
 from gpustack.schemas.principals import OrgRole, PrincipalType
 from gpustack.server import cache_service_metrics as metrics_module
+from gpustack.server import prometheus_query
 from gpustack.server.cache_service_metrics import (
     build_aggregate_query,
     build_metric_query,
@@ -243,11 +244,7 @@ class _FakeHTTPClient:
 
 
 def _patch_prometheus(monkeypatch, client, url="http://127.0.0.1:19090"):
-    monkeypatch.setattr(
-        metrics_module,
-        "get_global_config",
-        lambda: SimpleNamespace(get_builtin_prometheus_url=lambda: url),
-    )
+    monkeypatch.setattr(metrics_module, "_prometheus_url", lambda: url)
     monkeypatch.setattr(
         metrics_module.aiohttp,
         "ClientSession",
@@ -326,14 +323,41 @@ async def test_collect_filters_by_worker_names(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_collect_without_observability(monkeypatch):
-    monkeypatch.setattr(
-        metrics_module,
-        "get_global_config",
-        lambda: SimpleNamespace(get_builtin_prometheus_url=lambda: None),
-    )
+    monkeypatch.setattr(metrics_module, "_prometheus_url", lambda: None)
     result = await collect_cache_service_metrics(_declaration(), 5, 3600)
     assert result.available is False
-    assert "observability is disabled" in result.reason
+    assert "No Prometheus is reachable" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_collect_queries_the_configured_prometheus(monkeypatch):
+    """A deployment that delegates observability to its own stack keeps
+    these charts: the queries go to the configured Prometheus, and an
+    external one is addressed at its bare `/api/v1` — the `/prometheus`
+    route prefix belongs to the embedded one only, and sending it to an
+    external server 404s into what looks like "no data"."""
+    payload = {"status": "success", "data": {"result": []}}
+    client = _FakeHTTPClient(payload)
+    monkeypatch.setattr(
+        prometheus_query,
+        "get_global_config",
+        lambda: SimpleNamespace(
+            get_builtin_prometheus_url=lambda: "http://127.0.0.1:19090"
+        ),
+    )
+
+    _patch_prometheus(monkeypatch, client, url="http://prometheus.example:9090")
+    await collect_cache_service_metrics(_declaration(), 5, 3600)
+    assert client.requests
+    for url, _ in client.requests:
+        assert url.startswith("http://prometheus.example:9090/api/v1/")
+
+    client.requests.clear()
+    _patch_prometheus(monkeypatch, client, url="http://127.0.0.1:19090")
+    await collect_cache_service_metrics(_declaration(), 5, 3600)
+    assert client.requests
+    for url, _ in client.requests:
+        assert url.startswith("http://127.0.0.1:19090/prometheus/api/v1/")
 
 
 @pytest.mark.asyncio
@@ -679,11 +703,7 @@ async def test_model_cache_metrics_reads_the_same_accounting(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_model_cache_metrics_without_observability(monkeypatch):
-    monkeypatch.setattr(
-        metrics_module,
-        "get_global_config",
-        lambda: SimpleNamespace(get_builtin_prometheus_url=lambda: None),
-    )
+    monkeypatch.setattr(metrics_module, "_prometheus_url", lambda: None)
     result = await collect_model_cache_metrics(
         1, [CacheServiceAttachedMetrics(model_id=3)], 3600
     )
