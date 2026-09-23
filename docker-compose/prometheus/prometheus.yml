@@ -17,6 +17,22 @@ scrape_configs:
   http_sd_configs:
   - url: 'http://gpustack-server:10161/metrics/targets'
     refresh_interval: 1m
+# Workers the server cannot reach directly -- anything registered with
+# `proxy_mode: tunnel`, i.e. behind NAT or a firewall. Prometheus is a PULL
+# system, so without this job those workers are simply never scraped and every
+# metric they own goes missing with no error anywhere: the worker exposes them,
+# the server serves the target list, and nothing joins the two. The cost when
+# it is absent: `GET /v2/models/{id}/pd-metrics` answers `unmeasurable`
+# with zero members for a PD group that is actively serving, which is the one
+# signal that separates "PD works" from "PD silently stopped disaggregating".
+# Mirrors the job `gpustack/cmd/prerun.py` writes for the built-in Prometheus;
+# keep the two in step.
+- job_name: gpustack-proxy-worker-discovery
+  scrape_interval: 5s
+  proxy_url: 'http://gpustack-server:30079'
+  http_sd_configs:
+  - url: 'http://gpustack-server:10161/metrics/proxy-targets'
+    refresh_interval: 1m
 - job_name: gpustack-server
   scrape_interval: 10s
   static_configs:

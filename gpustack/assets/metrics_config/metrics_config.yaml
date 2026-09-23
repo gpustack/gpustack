@@ -123,10 +123,181 @@ gpustack_metrics:
     type: Counter
     description: "Total number of speculative draft tokens."
 
+  gpustack:spec_decode_drafts:
+    type: Counter
+    description: "Draft STEPS proposed, not draft tokens. The denominator for accepted-tokens-per-step, which is the figure that says whether speculative decoding is paying for itself: a rate that looks healthy can still gain under one token per step, and then the draft model is pure overhead."
+
+  gpustack:spec_decode_accept_length:
+    type: Gauge
+    description: "Mean tokens accepted per draft step, as the engine reports it. 1.0 means every draft was rejected and the draft model bought nothing. Exposed directly by SGLang; on vLLM it is `1 + accepted_tokens / drafts` from the two counters above."
+
 
 # -----------------------------
 # Runtime Metrics Mapping (user-configurable)
 # -----------------------------
+  # --- Prefill/decode disaggregation -------------------------------------
+  # Read on the role that actually records the transfer, which `pd-modes.yaml`
+  # declares per connector. NIXL pulls and records on decode. SGLang pushes and
+  # records the byte and wire-time families on prefill -- but writes none of
+  # them, nor the handshake timings sharing their code path, unless the
+  # connector reports a transfer size, so it too is read on decode, the side
+  # that records the handshake unconditionally. The unread side reports zero
+  # forever, which turns a working group into a silent-degradation alarm.
+  gpustack:pd_kv_transfer_bytes:
+    type: Histogram
+    unit: bytes
+    description: "KV bytes transferred between prefill and decode. Its _count is the number of transfers."
+
+  gpustack:pd_kv_transfer_seconds:
+    type: Histogram
+    unit: seconds
+    description: "Time spent transferring KV between prefill and decode. Divided into the bytes above this is throughput while transferring, not throughput per wall second."
+
+  gpustack:pd_kv_transfer_failed:
+    type: Counter
+    description: "Failed KV transfers reported by the engine."
+
+  gpustack:pd_kv_lease_expired:
+    type: Counter
+    description: "Requests whose KV lease expired unread: their prefill was computed and thrown away. Tracked on the PREFILL instance."
+
+  gpustack:pd_router_prefill_requests:
+    type: Counter
+    description: "Requests the router dispatched to a prefill worker. Per worker, so a low ratio points at one member rather than at the group."
+
+  gpustack:pd_router_decode_requests:
+    type: Counter
+    description: "Requests the router dispatched to a decode worker."
+
+  gpustack:pd_router_decode_errors:
+    type: Counter
+    description: "Decode dispatches the router saw fail, per worker. Counted before the router's own retry, so a non-zero value against a window where every request returned 200 is the share of traffic a retry covered up -- the only place that is visible."
+
+  gpustack:pd_prompt_tokens_by_source:
+    type: Counter
+    description: "Prompt tokens split by where they came from, on the `source` label: `local_compute` (this engine prefilled them), `local_cache_hit` (its own prefix cache), `external_kv_transfer` (they arrived from a KV connector). vLLM guarantees the three sum to the prompt total, which is what makes the external share a ratio rather than a count."
+
+  gpustack:pd_router_requests:
+    type: Counter
+    description: "Requests the router handled, aggregated by route. The coarse denominator, used when no per-worker counter exists."
+
+  gpustack:pd_router_prefill_errors:
+    type: Counter
+    description: "Prefill dispatches the router saw fail, per worker. The prefill-side twin of the decode counter above, and the same reading: non-zero against a window where every request returned 200 is the share a retry covered up."
+
+  gpustack:pd_router_worker_selections:
+    type: Counter
+    description: "Dispatch decisions the gateway made, split by role on the `worker_type` label (`prefill` / `decode`). The per-role dispatch counter for a gateway that exposes one name with a role label instead of one name per role; it carries no per-worker dimension, so it answers 'did both roles get traffic', not 'which member got it'."
+
+  gpustack:pd_router_worker_requests_active:
+    type: Gauge
+    description: "Requests the gateway currently has in flight against one upstream engine, on the `worker` label (the engine URL, not a GPUStack worker). The only per-member signal a gateway with no per-worker dispatch counter still gives: an xPyD member taking none of the traffic sits at zero here while the group total looks healthy."
+
+  # --- PD queues, engine-side -------------------------------------------
+  # These are scheduler state, not connector state: the engine counts them
+  # whatever the transport does, so they are the one PD signal that survives a
+  # connector exporting nothing at all. Each queue is a distinct stage of the
+  # handoff, and which one backs up says which side is the constraint --
+  # a verdict no ratio over transfer counters can give.
+  gpustack:pd_prefill_bootstrap_queue_requests:
+    type: Gauge
+    description: "Requests on PREFILL waiting to finish the bootstrap handshake with a decode peer. Backing up means decode is not registering receive slots fast enough -- the pair is blocked before any KV moves."
+
+  gpustack:pd_prefill_inflight_queue_requests:
+    type: Gauge
+    description: "Requests on PREFILL whose KV is being written to a decode peer. Backing up means the transport, not the scheduler, is the constraint."
+
+  gpustack:pd_decode_prealloc_queue_requests:
+    type: Gauge
+    description: "Requests on DECODE waiting for KV-cache slots to be preallocated. Backing up means decode is KV-memory bound, which is the usual reason to add decode replicas rather than prefill ones."
+
+  gpustack:pd_decode_transfer_queue_requests:
+    type: Gauge
+    description: "Requests on DECODE whose slots are allocated and which are waiting for prefill to write into them. Backing up with prefill's inflight queue empty points at the fabric between the two."
+
+  gpustack:pd_decode_pending_prealloc_token_usage:
+    type: Gauge
+    description: "Share of DECODE's KV cache already promised to requests in the prealloc queue but not yet allocated. Read next to the plain KV-cache usage ratio: the two together say how much headroom decode really has."
+
+  # --- PD failures, engine-side -----------------------------------------
+  gpustack:pd_bootstrap_failed:
+    type: Counter
+    description: "Requests whose bootstrap handshake failed, so no KV was ever going to move for them. Counted separately from a failed transfer because the two have different causes: a handshake fails on peer discovery and registration, a transfer on the fabric."
+
+  gpustack:pd_prefill_retries:
+    type: Counter
+    description: "Prefill attempts the engine retried. Non-zero while every request still returns 200 is work being done twice -- the prefill-side analogue of the router's covered-up retries."
+
+  # --- KV transfer, the parts `pd_kv_transfer_seconds` is not ------------
+  # `gpustack:pd_kv_transfer_seconds` carries the duration each engine
+  # reports for EVERY transfer, which on SGLang is the bootstrap handshake --
+  # the only one of its duration histograms that a connector reporting no byte
+  # count still records. These three are the finer split, present only where
+  # the connector hands the engine a byte count.
+  gpustack:pd_kv_transfer_latency_seconds:
+    type: Histogram
+    unit: seconds
+    description: "Time the KV bytes themselves spent on the wire, excluding the handshake and the slot allocation that precede them. The figure to divide the bytes into for a true transfer throughput."
+
+  gpustack:pd_kv_transfer_alloc_seconds:
+    type: Histogram
+    unit: seconds
+    description: "Time a request spent waiting for its receive buffers after the handshake completed, before any byte moved. Rising while the transfer latency holds steady is a memory-pressure signal on the receiving side, not a fabric one."
+
+  gpustack:pd_kv_transfer_post_seconds:
+    type: Histogram
+    unit: seconds
+    description: "Time spent submitting a transfer to the transport, before any byte is acknowledged as moved. The setup half of a transfer, next to the wire half: rising here with the wire time flat is the transport's own submission path, not the fabric."
+
+  gpustack:pd_kv_transfer_descriptors:
+    type: Histogram
+    description: "Memory descriptors one transfer was cut into -- the scatter-gather segments the transport had to submit separately. The explanatory variable for the submission time beside it: the same byte volume arriving in many more descriptors costs more per-segment work, so throughput falls with the transfer size unchanged. A jump means the KV block layout changed (page size, TP/DP split, heterogeneous TP), which is a configuration cause rather than a fabric one."
+
+  gpustack:pd_kv_notification_failed:
+    type: Counter
+    description: "Completion notifications the transport failed to deliver. Distinct from a failed transfer: the bytes may have arrived and the sender never learned it, which strands the request rather than erroring it."
+
+  gpustack:pd_router_request_duration_seconds:
+    type: Histogram
+    unit: seconds
+    description: "End-to-end request latency as the ROUTER saw it, by route. Worth having beside the engines' own latency histograms because it is the only one that includes the second hop and the router's own overhead -- a gap between this and the engines' sum is time the handoff cost."
+
+  gpustack:pd_router_worker_health:
+    type: Gauge
+    description: "Whether the router currently considers one upstream engine healthy, on the `worker` label. 1 healthy, 0 not. The per-member liveness signal, which is not the same as the instance being RUNNING: a member the router has ejected still runs and still reports healthy to GPUStack while taking no traffic."
+
+  # --- Cross-engine engine-efficiency counters ---------------------------
+  # The rare case where two engines chose the same spelling: vLLM and SGLang
+  # expose these three under identical names AND gate them behind an
+  # identically named flag, `--enable-mfu-metrics`, off by default on both. So
+  # one unified name really is one measurement rather than two forced together.
+  #
+  # How the flag being off looks differs, and the vLLM shape is the dangerous
+  # one. SGLang does not register the counters at all, so they are absent --
+  # which reads as "not measured". vLLM registers them unconditionally and
+  # leaves them at 0, which reads as "measured, and it was nothing" -- a flat
+  # zero on vLLM means the flag is missing, not that the GPUs were idle.
+  #
+  # Aggregate with avg(), never sum(). The value is already per GPU, so a sum
+  # over a group's engines divided by one device's peak is meaningless --
+  # vLLM's own multi-engine logger refuses to aggregate them for this reason.
+  gpustack:estimated_flops_per_gpu:
+    type: Counter
+    description: "Floating-point operations one GPU has been estimated to have performed. Its rate divided by the device's peak FLOP/s is model FLOPs utilization (MFU), the figure prefill is judged on -- prefill is compute bound. Requires `--enable-mfu-metrics`; zero without it on vLLM, absent on SGLang."
+
+  gpustack:estimated_read_bytes_per_gpu:
+    type: Counter
+    description: "Bytes one GPU has been estimated to have read from memory. Added to the write counter, its rate divided by the device's HBM bandwidth is memory bandwidth utilization (MBU) -- the figure that matters for DECODE, which is memory bound rather than compute bound. Requires `--enable-mfu-metrics`."
+
+  gpustack:estimated_write_bytes_per_gpu:
+    type: Counter
+    description: "Bytes one GPU has been estimated to have written to memory. The other half of the MBU numerator. Requires `--enable-mfu-metrics`."
+
+  gpustack:num_requests_waiting_by_reason:
+    type: Gauge
+    description: "Queue depth split by WHY each request is waiting, on the `reason` label (`capacity` -- no KV-cache or batch room; `deferred` -- held back by the scheduler's own policy). The plain queue depth says a role is behind; this says whether adding replicas would help."
+
+
 runtime_mapping:
   vLLM:
     "*": # 0.21.0
@@ -158,7 +329,53 @@ runtime_mapping:
       vllm:request_generation_tokens: gpustack:request_generation_tokens
       vllm:inter_token_latency_seconds: gpustack:inter_token_latency_seconds
       vllm:spec_decode_num_accepted_tokens: gpustack:spec_decode_accepted_tokens
+      # PD: already in base units, so a plain rename.
+      vllm:nixl_bytes_transferred: gpustack:pd_kv_transfer_bytes
+      vllm:nixl_xfer_time_seconds: gpustack:pd_kv_transfer_seconds
+      vllm:nixl_num_failed_transfers: gpustack:pd_kv_transfer_failed
+      vllm:nixl_num_kv_expired_reqs: gpustack:pd_kv_lease_expired
+      # The router's own counters. It is a model instance like any other; its
+      # exposition just lives on a separate port band (see `_metrics_port`).
+      vllm_router_pd_prefill_requests: gpustack:pd_router_prefill_requests
+      vllm_router_pd_decode_requests: gpustack:pd_router_decode_requests
+      vllm_router_pd_requests: gpustack:pd_router_requests
+      # The `worker` label these three and the errors counter carry is the
+      # UPSTREAM ENGINE URL (`http://ip:port`), not a GPUStack worker -- the
+      # host is separately on `worker_name`, added by the aggregator. Grouping
+      # a per-member chart on the wrong one collapses every member of a host
+      # into one series, which on a single-host xPyD is all of them.
+      vllm_router_pd_decode_errors: gpustack:pd_router_decode_errors
+      # Deliberately NOT mapped: `vllm_router_active_workers`. The router does
+      # not maintain the gauge -- it reads 0 even on a group that is serving --
+      # so surfacing it would show "no members" on a healthy group, and an
+      # unmapped name is the honest way to say a counter cannot be trusted.
       vllm:spec_decode_num_draft_tokens: gpustack:spec_decode_draft_tokens
+      # Draft steps, the denominator accept LENGTH needs. Accept rate
+      # divides by draft tokens and answers a different question.
+      vllm:spec_decode_num_drafts: gpustack:spec_decode_drafts
+      # PD effectiveness, per token rather than per transfer. The engine
+      # itself says how much of each prompt it did NOT compute, so this needs
+      # no connector counter and no router denominator -- see the
+      # `external_token_share` query below.
+      vllm:prompt_tokens_by_source: gpustack:pd_prompt_tokens_by_source
+      # The rest of NIXL's connector families. When transfers fail,
+      # `num_failed_transfers` rises on decode and `num_kv_expired_reqs` on
+      # prefill while every `bytes_transferred` stays at 0 -- the two halves of
+      # the same failure, reported on opposite roles, which is why neither
+      # alone is enough.
+      vllm:nixl_post_time_seconds: gpustack:pd_kv_transfer_post_seconds
+      vllm:nixl_num_descriptors: gpustack:pd_kv_transfer_descriptors
+      vllm:nixl_num_failed_notifications: gpustack:pd_kv_notification_failed
+      vllm_router_pd_request_duration_seconds: gpustack:pd_router_request_duration_seconds
+      # Why a role is queueing, not just that it is. Present on vLLM only;
+      # SGLang's queue gauge carries no reason.
+      vllm:num_requests_waiting_by_reason: gpustack:num_requests_waiting_by_reason
+      # Needs `--enable-mfu-metrics` on the engine. vLLM registers these three
+      # whether or not the flag is set and leaves them at 0.0 when it is not,
+      # so their presence says nothing -- see the family declarations.
+      vllm:estimated_flops_per_gpu: gpustack:estimated_flops_per_gpu
+      vllm:estimated_read_bytes_per_gpu: gpustack:estimated_read_bytes_per_gpu
+      vllm:estimated_write_bytes_per_gpu: gpustack:estimated_write_bytes_per_gpu
     "<0.11.1":
       vllm:num_requests_swapped: gpustack:num_requests_swapped
     "<0.11.0":
@@ -169,20 +386,133 @@ runtime_mapping:
        vllm:gpu_cache_usage_perc: gpustack:kv_cache_usage_ratio
 
   SGLang:
-    "*": # 0.5.12.post1
+    "*": # 0.5.15.post1
+      # PD: NOT in base units. SGLang reports duration in MILLISECONDS and
+      # volume in MEGABYTES where vLLM reports seconds and bytes, so `scale` is
+      # not optional -- two units under one name is worse than two names,
+      # because a reader can no longer tell which they have.
+      #
+      # `bootstrap` is the handshake, not the wire time, and DECODE is the side
+      # that records it: `set_decode_transfer_queue_entry_time` observes it
+      # unconditionally, so it is the only transfer-side histogram left when
+      # the connector hands the engine no byte count.
+      #
+      # Caution: its `_count` is NOT one per request. It also counts the
+      # gateway's own `/health_generate` probes, which climb on an idle group
+      # while `num_requests_total` stands still. Those probes are real
+      # transfers, so the histogram is honest about the transport -- but any
+      # ratio that divides it by routed requests reads orders of magnitude
+      # high on an idle group.
+      sglang:kv_transfer_bootstrap_ms:
+        name: gpustack:pd_kv_transfer_seconds
+        scale: 0.001
+      # Gated on the CONNECTOR, not on the version. These four have carried the
+      # same names since 0.5.12 and are still registered on current builds, but
+      # PREFILL observes them -- and `alloc`/`bootstrap` with them -- only for a
+      # request whose `transfer_metric.transfer_total_bytes` came back set.
+      #
+      # Caution: on a connector that reports no size, prefill exports no
+      # kv_transfer family AT ALL -- decode is left with `bootstrap_ms` and
+      # `alloc_ms` and nothing else.
+      # This is why `pd-modes.yaml` reads the SGLang modes on DECODE even
+      # though prefill is the sender: prefill owns the byte and speed counters,
+      # and on a connector that reports no size it owns nothing at all.
+      sglang:kv_transfer_total_mb:
+        name: gpustack:pd_kv_transfer_bytes
+        scale: 1048576
+      sglang:kv_transfer_latency_ms:
+        name: gpustack:pd_kv_transfer_latency_seconds
+        scale: 0.001
+      sglang:kv_transfer_alloc_ms:
+        name: gpustack:pd_kv_transfer_alloc_seconds
+        scale: 0.001
+      # Scheduler state, so it survives a connector that publishes nothing.
+      # On Mooncake -- the transport the Ascend recipes use -- this is the only
+      # per-stage PD evidence there is, and it is better evidence than a
+      # transfer ratio: it says WHICH side is the constraint.
+      sglang:num_prefill_bootstrap_queue_reqs: gpustack:pd_prefill_bootstrap_queue_requests
+      sglang:num_prefill_inflight_queue_reqs: gpustack:pd_prefill_inflight_queue_requests
+      sglang:num_decode_prealloc_queue_reqs: gpustack:pd_decode_prealloc_queue_requests
+      sglang:num_decode_transfer_queue_reqs: gpustack:pd_decode_transfer_queue_requests
+      sglang:pending_prealloc_token_usage: gpustack:pd_decode_pending_prealloc_token_usage
+      # Counters, so the exposed name carries `_total`; the aggregator keys on
+      # the parsed FAMILY name, which does not.
+      sglang:num_transfer_failed_reqs: gpustack:pd_kv_transfer_failed
+      sglang:num_bootstrap_failed_reqs: gpustack:pd_bootstrap_failed
+      sglang:num_prefill_retries: gpustack:pd_prefill_retries
+      # --- The router, which is two different programs ---------------------
+      # `sglang_router.launch_router` resolves inside the model's own runner
+      # image, and the wheel there changed shape: images built on SGLang below
+      # 0.5.8 carry `sgl-router` and emit `sgl_router_*`, 0.5.8 and above carry
+      # `sgl-model-gateway` and emit `smg_*`. Both are mapped because both are
+      # in the field, and only one of them can be answering on any one group,
+      # so the two sets never collide into the same unified family.
+      #
+      # The older wheel has the per-worker PD counters, with the same `worker`
+      # = UPSTREAM ENGINE URL label and the same caveat as the vLLM fork's.
+      sgl_router_pd_requests: gpustack:pd_router_requests
+      sgl_router_pd_prefill_requests: gpustack:pd_router_prefill_requests
+      sgl_router_pd_decode_requests: gpustack:pd_router_decode_requests
+      sgl_router_pd_prefill_errors: gpustack:pd_router_prefill_errors
+      sgl_router_pd_decode_errors: gpustack:pd_router_decode_errors
+      # The gateway dropped every `*_pd_*` counter. What replaced the per-role
+      # pair is one counter with the role on a `worker_type` label, and what
+      # replaced the per-worker dimension is a gauge of in-flight requests --
+      # which is a different question (how many now, not how many since) but
+      # the only per-member one this gateway still answers.
+      smg_router_requests: gpustack:pd_router_requests
+      smg_worker_selection: gpustack:pd_router_worker_selections
+      smg_worker_requests_active: gpustack:pd_router_worker_requests_active
+      smg_router_request_duration_seconds: gpustack:pd_router_request_duration_seconds
+      # The per-member signals this gateway has that the vLLM fork does not.
+      # `smg_worker_health` is what `vllm_router_active_workers` was supposed
+      # to be and is not: it reads 1 per live engine, keyed by URL, where the
+      # vLLM router's gauge reads 0 even on a group that is serving.
+      smg_worker_health: gpustack:pd_router_worker_health
+      # Deliberately NOT mapped: `sglang:uncached_prompt_tokens_histogram`
+      # onto `gpustack:request_prefill_kv_computed_tokens`. The arithmetic
+      # matches -- both are prompt tokens minus cache hits -- but the vLLM
+      # counter it would join is read on the RECEIVING role, where vLLM counts
+      # KV that arrived over the connector as not-computed. SGLang's decode
+      # subtracts only its own prefix-cache hits, so a healthy disaggregated
+      # group would report its full prompt length as recomputed and the p95/p99
+      # degradation band would fire on every correct deployment.
       sglang:num_running_reqs: gpustack:num_requests_running
       sglang:num_queue_reqs: gpustack:num_requests_waiting
-      sglang:num_retracted_requests: gpustack:request_preemptions
+      sglang:num_retracted_reqs: gpustack:request_preemptions
       sglang:cache_hit_rate: gpustack:prefix_cache_hit_rate
       sglang:token_usage: gpustack:kv_cache_usage_ratio
       sglang:prompt_tokens: gpustack:prompt_tokens
-      sglang:cached_tokens: gpustack:prompt_tokens_cached
       sglang:generation_tokens: gpustack:generation_tokens
       sglang:time_to_first_token_seconds: gpustack:time_to_first_token_seconds
       sglang:e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
       sglang:queue_time_seconds: gpustack:request_queue_time_seconds
       sglang:inter_token_latency_seconds: gpustack:inter_token_latency_seconds
       sglang:spec_accept_rate: gpustack:spec_decode_accept_rate
+      # SGLang reports accept length outright; vLLM has to be divided.
+      sglang:spec_accept_length: gpustack:spec_decode_accept_length
+      # The exposed name is `sglang:cached_tokens_total` and it carries an
+      # extra `cache_source` label (device / host / storage_<backend>), so the
+      # unified family has one series per source and the PD query's sum over
+      # them is the whole cached total. Feeds `cache_missed_prompt_tokens`,
+      # which is prefill's only compute-bound scaling signal.
+      sglang:cached_tokens: gpustack:prompt_tokens_cached
+      # --- Where the two engines already agree ----------------------------
+      # Per-request token histograms. vLLM spells them `request_*`, SGLang
+      # `*_histogram`; the observation is the same, so one unified name makes
+      # the model dashboard's token-distribution panels work on both engines
+      # instead of only on vLLM.
+      sglang:prompt_tokens_histogram: gpustack:request_prompt_tokens
+      sglang:generation_tokens_histogram: gpustack:request_generation_tokens
+      sglang:spec_num_draft_tokens: gpustack:spec_decode_draft_tokens
+      # Identical spelling to vLLM's, down to the suffix, and behind the same
+      # `--enable-mfu-metrics` flag. SGLang leaves them unregistered when the
+      # flag is off, so here absence is the honest signal rather than a zero.
+      sglang:estimated_flops_per_gpu: gpustack:estimated_flops_per_gpu
+      sglang:estimated_read_bytes_per_gpu: gpustack:estimated_read_bytes_per_gpu
+      sglang:estimated_write_bytes_per_gpu: gpustack:estimated_write_bytes_per_gpu
+    "<0.5.13":
+      sglang:num_retracted_requests: gpustack:request_preemptions
     "<=0.4.4":
       sglang:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
       

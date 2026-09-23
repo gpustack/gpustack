@@ -197,9 +197,12 @@ class Config(WorkerConfig, BaseSettings):
         gateway_namespace: The namespace where the gateway component is deployed.
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
         disable_builtin_observability: Disable embedded Grafana and Prometheus services.
+        prometheus_url: Base URL of an external Prometheus to query. When unset, the embedded one is used if it is enabled. Set this to keep the server's own metric queries working on a deployment that delegates observability to its own stack.
         grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
         grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
         grafana_model_dashboard_uid: Grafana dashboard UID for model dashboard.
+        grafana_pd_dashboard_uid: Grafana dashboard UID for the prefill/decode dashboard,
+            which a disaggregated model's monitoring link goes to instead of the model one.
         grafana_cache_service_dashboard_uid: Grafana dashboard UID for cache service dashboard.
         gateway_plugin_server_url: URL to fetch gateway plugin manifest for embedded gateway.
         shuihua_api_base_url: Base URL of the Shuihua API.
@@ -343,10 +346,12 @@ class Config(WorkerConfig, BaseSettings):
 
     disable_builtin_observability: bool = False
     builtin_prometheus_port: int = 19090
+    prometheus_url: Optional[str] = None
     builtin_grafana_port: int = 13000
     grafana_url: Optional[str] = None
     grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"
     grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
+    grafana_pd_dashboard_uid: Optional[str] = "gpustack-pd"
     grafana_cache_service_dashboard_uid: Optional[str] = "gpustack-cache-service"
 
     # Server-wide default for the GPUStack Operator image. Cluster-level
@@ -529,6 +534,23 @@ class Config(WorkerConfig, BaseSettings):
         if self.disable_builtin_observability or self.grafana_url is not None:
             return None
         return f"http://127.0.0.1:{self.builtin_prometheus_port}"
+
+    def get_prometheus_url(self) -> Optional[str]:
+        """Where to send PromQL, external first.
+
+        An explicit `prometheus_url` wins over the embedded one, and that
+        ordering is the point of the setting: a deployment that delegates
+        observability to its own stack disables the embedded Prometheus, and
+        without this every metric-backed feature would go dark there — not
+        just the charts, but the checks that read metrics to decide whether a
+        deployment is working at all.
+
+        `None` means no Prometheus is reachable. Callers must treat that as
+        "cannot tell", never as "nothing is wrong".
+        """
+        if self.prometheus_url:
+            return self.prometheus_url.rstrip("/")
+        return self.get_builtin_prometheus_url()
 
     @staticmethod
     def check_port_range(port_range: str, diff: Optional[int] = None):
