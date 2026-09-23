@@ -165,6 +165,18 @@ warning.
 | `GPUSTACK_SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE` | Scale-down max contribution for placement scorer (normalized).              | `1`     | Server     |
 | `GPUSTACK_SCALING_SCHEDULER_INTERVAL`               | Interval in seconds at which scheduled scaling recomputes each model's replica count from its windows. The reconcile is level-triggered, so this bounds only how long a window boundary can go unnoticed, never correctness. Clamped to a minimum of `1` second. | `30`    | Server     |
 
+#### Multi-Role Group Scheduling
+
+These weights and windows apply to deployments that declare roles — a prefill-decode disaggregated group and its router. They have no effect on a plain single-role deployment. Every score below is a maximum contribution to the scheduler's score chain; setting one to `0` removes that consideration entirely.
+
+| Variable                                             | Description                                                                 | Default | Applies to |
+| ---------------------------------------------------- | --------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_SCHEDULER_TOPOLOGY_PROXIMITY_MAX_SCORE`    | Max score per topology rung a candidate worker shares with the group's already-placed members, when scaling a role out or placing the router. Set above the placement scorer's 100-point spread so that spare capacity cannot outvote a whole rung of the declared topology. `0` places later members by resource fit alone. | `150`   | Server     |
+| `GPUSTACK_SCHEDULER_PAIRING_AFFINITY_MAX_SCORE`      | Max score per opposite-role member already on a candidate worker, when scaling one role of a disaggregated group out — this is what makes KV transfer stay on the host. It is a **floor**, not the weight used: the scheduler takes the larger of this value and one more than the combined ceiling of the other scorers on the chain, so that "most opposite-role siblings wins, capacity breaks the tie" holds no matter which scorers are active. `0` is read as an off switch and is never raised to the floor. | `200`   | Server     |
+| `GPUSTACK_SCHEDULER_SCALE_DOWN_PAIRING_MAX_SCORE`    | Max contribution to a member's keep-score from the opposite-role members sharing its worker, when scaling one role of a group in. It decides the victim in the ordinary case, where every surplus member is healthy and the status and offload scores tie. Keep it **below 50**, the status scorer's step between "starting" and "running" — at or above that, a starting member surrounded by peers outranks a healthy one sitting alone, and the scheduler stops deleting the already-broken member first. `0` chooses the victim by status and placement alone. | `20`    | Server     |
+| `GPUSTACK_SCHEDULER_DRAIN_WINDOW_SECONDS`            | How long a scaled-down group member keeps running after it leaves the router's registry. Not a process grace period: it is the time the decodes still fetching KV cache from that member need to finish, which the engine has no way to wait for on its own. `0` deletes immediately, which is what a role-less deployment does regardless. | `60`    | Server     |
+| `GPUSTACK_SCHEDULER_GATHER_BLOCKED_DWELL_SECONDS`    | How long a member of a `MustGather` group may sit unplaced before the deployment reports `gather_blocked_scale_out`. Nothing expires when it passes — it only separates "the scheduler has not run yet" from "the scheduler has run and there is nowhere inside the gather domain to put this". Every scale-up spends the first of those, so without the dwell the marker would appear on all of them. `0` reports the refusal as soon as an unplaced member exists. | `120`   | Server     |
+
 ### GPU Instance Configuration
 
 | Variable                                               | Description                                                                                                                                                                                               | Default | Applies to |
@@ -189,6 +201,7 @@ warning.
 | `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`                  | Model instance health check interval in seconds.                                                                                | `3`     | Worker         |
 | `GPUSTACK_DISABLE_OS_FILELOCK`                                   | Disable OS file lock.                                                                                                           | `false` | Worker         |
 | `GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`               | Allow lower-minor CUDA devices to run higher-minor images. Set globally on the worker or per model; per-model takes precedence. | `false` | Worker & Model |
+| `GPUSTACK_RESTART_IN_FLIGHT_LAPSE_SECONDS`                       | How long `POST /models/{id}/restart` keeps rejecting a second request with HTTP 409 while the first restart is still rebuilding — without the guard, the second teardown deletes the replacements the first one just created. The guard lapses on its own so that a deployment which never reaches `running` can still be restarted; size it to outlast a cold start that pulls an image and reads weights off disk. | `900`   | Server         |
 
 ### Benchmark Configuration
 
