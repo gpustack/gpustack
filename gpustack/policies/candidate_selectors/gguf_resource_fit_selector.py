@@ -34,7 +34,6 @@ from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id, group_gpu_ids_by_worker
 from gpustack.utils.unit import byte_to_gib, byte_to_kib
 
-
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_RPC_SERVER_COUNT = 8

@@ -75,6 +75,19 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self._largest_multi_gpu_vram: int = 0
         self._largest_multi_gpu_total = 0
         self._largest_multi_gpu_utilization_satisfied_count = 0
+        # What one member would actually reserve on a card it lands on, as
+        # opposed to what the model's weights need. For an engine that takes a
+        # fraction of the whole card (vLLM's `--gpu-memory-utilization`, SGLang's
+        # `--mem-fraction-static`) the two differ by an order of magnitude: a
+        # 0.6B model whose weights want 3.68 GiB still books 86% of a 48 GiB card.
+        # Reporting the weights figure as "what this member costs" told an
+        # operator their group needed 7 GiB on a cluster of 48 GiB cards, which
+        # reads as room to spare.
+        #
+        # Recorded while scanning cards rather than taken off a candidate,
+        # because the refusal path has no candidate -- that is the whole reason
+        # it needs this.
+        self._reserved_vram: int = 0
         self._unsatisfied_gpu_messages: Dict[str, List[int]] = {}
         self._is_diffusion = CategoryEnum.IMAGE in self._model.categories
 
@@ -462,10 +475,14 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             if allocatable_vram > largest_single_gpu_vram:
                 largest_single_gpu_vram = allocatable_vram
                 largest_single_gpu_utilization = allocatable_gpu_utilization
+            fraction = self._mem_fraction_static_by_gpu_type.get(gpu_type)
+            if fraction and not self._is_diffusion:
+                self._reserved_vram = max(
+                    self._reserved_vram, int(gpu.memory.total * fraction)
+                )
+
             exceeds_vram = self._vram_claim > gpu.memory.total * (
-                self._mem_fraction_static_by_gpu_type.get(gpu_type)
-                if not self._is_diffusion
-                else 1
+                fraction if not self._is_diffusion else 1
             )
             exceeds_memory_utilization = (
                 not self._is_diffusion
@@ -646,7 +663,24 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         ):
             event_msg_list.append(message)
 
-        if len(event_msg_list) == 0:
+        # Nothing was measured: no worker offered a GPU set this branch could
+        # size, so the counters are still at their initial zero. Printing them
+        # says "this cluster has 0 of 0 GPUs and 0.00 GiB", which reads as an
+        # empty fleet and contradicts the filter lines above it ("Matched 1/2
+        # workers by READY status"). An absence of measurement has to say so.
+        #
+        # Diffusion is exempt: its sentence is built from the per-GPU claim
+        # rather than from these counters, so it says something true whether
+        # or not any worker was sized.
+        if (
+            len(event_msg_list) == 0
+            and not self._is_diffusion
+            and self._largest_multi_gpu_total == 0
+        ):
+            event_msg_list.append(
+                "No worker offered a GPU set that could be sized for this model."
+            )
+        elif len(event_msg_list) == 0:
             event_msg = (
                 f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram):.2f} GiB allocatable VRAM."
                 if not self._is_diffusion
@@ -999,8 +1033,40 @@ class MemFractionStaticCalculator:
         Args:
             workers: List of workers used to determine GPU memory characteristics, the input workers should only contain same type GPUs.
         """
+        # The same-type precondition above, enforced rather than trusted.
+        # Every branch below reads the fleet as one kind of machine: `_is_npu`
+        # answers `any(...)`, so a single Ascend worker in the list sends
+        # NVIDIA cards down the NPU thresholds, and `_get_min_gpu_sum` takes a
+        # minimum across the whole list, so the smallest card sizes the
+        # largest. Neither fails — together they return a plausible wrong
+        # fraction, and a wrong `mem_fraction_static` is an OOM at startup or
+        # VRAM left unused, discovered nowhere near here.
+        #
+        # Today's only caller groups by GPU type first. This is what keeps that
+        # true for the next one, and it degrades rather than raises: 0 is the
+        # value this field is initialised with and the one `_cal_effective_vram`
+        # reads as «no adjustment», so a violated precondition costs SGLang's
+        # own default instead of a scheduling pass.
+        gpu_types = {
+            gpu.type
+            for worker in workers
+            for gpu in ((worker.status and worker.status.gpu_devices) or [])
+        }
+        if len(gpu_types) > 1:
+            logger.warning(
+                "mem_fraction_static was asked for across more than one GPU "
+                "type (%s); leaving it unset rather than sizing every card by "
+                "one of them.",
+                ", ".join(sorted(str(t) for t in gpu_types)),
+            )
+            return 0
+
+        # Not dead despite the caller consulting `_param_mem_fraction_static`
+        # first: that gate is `> 0`, so an explicit `--mem-fraction-static=0`
+        # arrives here. Returning None then divided by None in
+        # `_cal_effective_vram`.
         if find_parameter(self._model.backend_parameters, ["mem-fraction-static"]):
-            return
+            return 0
 
         is_npu = self._is_npu(workers)
         gpu_mem_bytes = self._get_min_gpu_sum(workers)

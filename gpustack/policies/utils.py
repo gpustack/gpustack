@@ -254,6 +254,78 @@ def group_workers_by_gpu_type(workers: List[Worker]) -> Dict[str, List[Worker]]:
     return gpu_type_to_workers
 
 
+def worker_largest_gpu_memory(worker: Worker) -> Optional[int]:
+    """The total memory of the biggest GPU a worker reports.
+
+    Reads `total` rather than what is free, because that is the figure a
+    member's VRAM reservation is a fraction of: two cards of one model are the
+    same kind of card whether one of them is busy or idle. The biggest card
+    stands for the worker because the candidate selectors take cards in
+    descending order of allocatable memory, so it is the first one a member
+    lands on.
+
+    Args:
+        worker: The worker whose GPU telemetry to read.
+
+    Returns:
+        The biggest GPU's total memory in bytes, or None when the worker
+        reports no GPU with a readable total.
+    """
+    status = getattr(worker, "status", None)
+    devices = getattr(status, "gpu_devices", None) if status else None
+    totals = [
+        gpu.memory.total
+        for gpu in devices or []
+        if getattr(gpu, "memory", None) and getattr(gpu.memory, "total", None)
+    ]
+    return max(totals) if totals else None
+
+
+def group_workers_by_gpu_memory_size(
+    workers: List[Worker], tolerance: float = 0.9
+) -> List[List[Worker]]:
+    """Band workers whose biggest GPU is the same size.
+
+    Two cards count as one size when the smaller is at least `tolerance` of the
+    bigger, which absorbs the few hundred MiB between boards of one model: a
+    48 GiB card reporting 47.4 GiB is not a different kind of card.
+
+    Workers reporting no GPU total are left out of the result altogether. Their
+    size is not known, and an unknown is not a size to band them under.
+
+    Args:
+        workers: The workers to band.
+        tolerance: How much smaller a band's smallest card may be than its
+            biggest, as a fraction of the biggest.
+
+    Returns:
+        Bands ordered by size, smallest first; within a band the workers are
+        ordered by size and then by id, so an unchanged fleet bands the same
+        way twice.
+    """
+    sized = []
+    for worker in workers:
+        size = worker_largest_gpu_memory(worker)
+        if size:
+            sized.append((size, getattr(worker, "id", 0) or 0, worker))
+    if not sized:
+        return []
+    sized.sort(key=lambda entry: (entry[0], entry[1]))
+
+    bands: List[List[Worker]] = []
+    current: List[Worker] = []
+    smallest = 0
+    for size, _worker_id, worker in sized:
+        if current and smallest < size * tolerance:
+            bands.append(current)
+            current = []
+        if not current:
+            smallest = size
+        current.append(worker)
+    bands.append(current)
+    return bands
+
+
 def get_vram_claim_from_model_env(model: Model) -> Optional[int]:
     """
     Get the VRAM claim from model environment variable 'GPUSTACK_MODEL_VRAM_CLAIM' if set.
@@ -818,6 +890,9 @@ def ram_not_enough(ram_claim: int, allocatable: Allocatable) -> bool:
 def get_model_ram_claim(model: Model) -> int:
     """
     Get the RAM requirement for the model in bytes.
+
+    Only a LOCAL extended KV cache reserves host RAM here -- see
+    :func:`get_computed_ram_claim` for why "shared" must not.
     """
     extended_kv_cache = model.extended_kv_cache
     if (
@@ -840,8 +915,9 @@ def get_computed_ram_claim(
     Get the computed RAM claim for the model based on the provided model and vram_claim.
     The priority is as follows:
     1. If static_ram is provided, use it.
-    2. If RAM size for extended KV cache is available, use it.
-    3. If RAM ratio for extended KV cache is set and vram_claim is available, calculate RAM as ram_ratio * total_vram_claim.
+    2. If RAM size for a LOCAL extended KV cache is available, use it.
+    3. If RAM ratio for a LOCAL extended KV cache is set and vram_claim is available,
+       calculate RAM as ram_ratio * total_vram_claim.
     4. If neither is available, return None.
 
     Only the in-process mode claims here. A deployment attached to a cache
