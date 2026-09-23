@@ -327,6 +327,18 @@ GATEWAY_PORT_CHECK_RETRY_COUNT = int(
 GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
     "GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME", "gpustack"
 )
+# Scheme used for server->worker and worker->model-instance traffic.
+# "http" (default) keeps legacy plaintext behavior; "https" switches every
+# internal hop (gateway McpBridge registries, server->worker forwarding,
+# health/inference checks, metadata & metrics scraping) to TLS.
+# Example: point GPUSTACK_INSTANCE_SCHEME at "https" after enabling
+# vLLM --ssl-keyfile/--ssl-certfile on model instances.
+GPUSTACK_INSTANCE_SCHEME = os.getenv("GPUSTACK_INSTANCE_SCHEME", "http")
+# When the scheme is https and instances use self-signed certificates,
+# disable peer certificate verification for internal health/metadata probes.
+GPUSTACK_INSTANCE_TLS_INSECURE = (
+    os.getenv("GPUSTACK_INSTANCE_TLS_INSECURE", "true").lower() == "true"
+)
 
 # TLS protocol version floor and ceiling for the gateway's HTTPS listeners,
 # stamped onto every Ingress gpustack manages (the mirror Ingress and every
