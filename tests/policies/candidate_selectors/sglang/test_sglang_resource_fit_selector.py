@@ -1980,3 +1980,102 @@ async def test_select_candidates_from_different_gpu_types(
                 )
         except AssertionError as e:
             raise AssertionError(f"Test case '{case_name}' failed: {str(e)}") from e
+
+
+# ---------------------------------------------------------------------------
+# «the input workers should only contain same type GPUs» — enforced, not hoped.
+# ---------------------------------------------------------------------------
+
+
+def _calculator(model=None, gpu_type="cuda"):
+    return MemFractionStaticCalculator(
+        model=model
+        or new_model(
+            1,
+            "m1",
+            huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        ),
+        model_instances=[],
+        model_params=SimpleNamespace(),
+        gpu_type=gpu_type,
+        selected_gpu_indexes_by_gpu_type_and_worker={},
+    )
+
+
+def _worker_with(gpu_type, vendor, total_bytes):
+    from gpustack.schemas.workers import (
+        GPUDeviceStatus,
+        MemoryInfo,
+        Worker,
+        WorkerStatus,
+    )
+
+    return Worker(
+        name=f"w-{gpu_type}",
+        hostname="h",
+        ip="127.0.0.1",
+        status=WorkerStatus(
+            gpu_devices=[
+                GPUDeviceStatus(
+                    index=0,
+                    type=gpu_type,
+                    vendor=vendor,
+                    memory=MemoryInfo(total=total_bytes, allocated=0, used=0),
+                )
+            ]
+        ),
+    )
+
+
+def test_two_gpu_types_in_one_call_leave_the_fraction_unset():
+    """The precondition the docstring states, made true by the code.
+
+    Every branch of the calculation reads the fleet as one kind of machine:
+    `_is_npu` answers `any(...)`, so one Ascend worker sends NVIDIA cards down
+    the NPU thresholds, and `_get_min_gpu_sum` takes a minimum across the whole
+    list, so the smallest card sizes the largest. Neither raises — together
+    they return a *plausible* wrong fraction, and a wrong
+    `mem_fraction_static` is an OOM at startup or VRAM left unused, discovered
+    nowhere near this function.
+
+    Today's only caller groups by GPU type first, which is exactly why this
+    cannot be left to the docstring: the next caller is the one that gets it
+    wrong, and nothing would tell it.
+    """
+    mixed = [
+        _worker_with("cuda", "nvidia", 80 * 1024**3),
+        _worker_with("cann", "ascend", 32 * 1024**3),
+    ]
+
+    assert _calculator()._cal_mem_fraction_static(mixed) == 0
+
+
+def test_one_gpu_type_is_still_answered():
+    """The guard must not be a blanket refusal — the whole path has to keep
+    working for the call that satisfies the precondition."""
+    same = [
+        _worker_with("cuda", "nvidia", 80 * 1024**3),
+        _worker_with("cuda", "nvidia", 80 * 1024**3),
+    ]
+
+    assert _calculator()._cal_mem_fraction_static(same) > 0
+
+
+def test_an_explicit_zero_fraction_returns_a_number_rather_than_none():
+    """Not a dead branch. The caller consults `_param_mem_fraction_static`
+    first, but that gate is `> 0`, so `--mem-fraction-static=0` falls through
+    to here, and it must answer with a number: `_cal_effective_vram` divides
+    by whatever comes back, so None raises."""
+    model = new_model(
+        1,
+        "m1",
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        backend_parameters=["--mem-fraction-static=0"],
+    )
+
+    answer = _calculator(model)._cal_mem_fraction_static(
+        [_worker_with("cuda", "nvidia", 80 * 1024**3)]
+    )
+
+    assert answer == 0
+    assert answer is not None

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Any, List, Tuple, Optional, Dict
 
 from gpustack_runtime.detector import ManufacturerEnum
@@ -22,10 +23,14 @@ from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from gpustack.server.catalog import get_catalog_spec_by_source_key
 from gpustack.server.cache_provider_catalog import get_cache_provider
 from gpustack.schemas.cache_services import CacheService
+from gpustack.schemas.clusters import Cluster
+from gpustack.policies.base import MemberResourceClaim
 from gpustack.schemas.model_evaluations import (
     ModelEvaluationResult,
     ModelSpec,
     ResourceClaim,
+    RoleResourceClaim,
+    RoleResourceDemand,
 )
 from gpustack.schemas.models import (
     ModelInstance,
@@ -34,7 +39,27 @@ from gpustack.schemas.models import (
     get_backend,
     is_gguf_model,
     is_audio_model,
+    role_container_resources,
+    role_takes_no_accelerator,
 )
+from gpustack.schemas.principals import _platform_principal_id
+from gpustack.scheduler.group_capacity import (
+    GroupCapacity,
+    attendant_demands,
+    role_demands,
+)
+from gpustack.scheduler.group_schedule import (
+    cache_instances_in,
+    gather_request,
+    stand_in,
+)
+from gpustack.scheduler.group_solver import (
+    GroupPlacement,
+    RoleDemand,
+    solve_group_placement,
+)
+from gpustack.topology.tree import TopologyError
+from gpustack.topology.view import build_view
 from gpustack.schemas.workers import GPUDeviceStatus, Worker, WorkerStateEnum
 from gpustack.server.worker_selector import WorkerSelector
 
@@ -338,11 +363,39 @@ async def evaluate_model(
 
     overcommit_clusters = []
     result.resource_claim_by_cluster_id = {}
+    role_claims_by_cluster_id: Dict[int, List[RoleResourceClaim]] = {}
+    role_demands_by_cluster_id: Dict[int, List[RoleResourceDemand]] = {}
 
     for cluster_id, cluster_workers in workers_by_cluster.items():
         cluster_model_instances = [
             inst for inst in model_instances if inst.cluster_id == cluster_id
         ]
+
+        # A role-bearing deployment is a group, and a group is placed all at
+        # once. Asking `find_candidate` instead answers a question the
+        # deployment never asks -- "where would ONE instance of the model-level
+        # spec go" -- and its answer is wrong in three directions at the same
+        # time: it ignores the role overrides (a decode's tensor parallelism is
+        # not the model's), it counts one member where the group has x+y+1, and
+        # it never checks that prefill and decode fit *together*.
+        if model.roles:
+            group = await evaluate_group(
+                config,
+                session,
+                model,
+                cluster_workers,
+                cluster_model_instances,
+                cluster_id,
+            )
+            if group.total is None:
+                result.scheduling_messages.extend(group.messages)
+                if group.demands:
+                    role_demands_by_cluster_id[cluster_id] = group.demands
+                continue
+            result.resource_claim_by_cluster_id[cluster_id] = group.total
+            role_claims_by_cluster_id[cluster_id] = group.claims
+            continue
+
         candidate, schedule_messages = await scheduler.find_candidate(
             session, config, model, cluster_workers, cluster_model_instances
         )
@@ -358,14 +411,307 @@ async def evaluate_model(
         )
 
     if result.resource_claim_by_cluster_id:
-        result.resource_claim = next(iter(result.resource_claim_by_cluster_id.values()))
+        first_cluster_id = next(iter(result.resource_claim_by_cluster_id))
+        result.resource_claim = result.resource_claim_by_cluster_id[first_cluster_id]
+        if role_claims_by_cluster_id:
+            # Kept in step with `resource_claim` above rather than derived
+            # separately: the two describe the same cluster's placement, and a
+            # reader that took the total from one cluster and the breakdown
+            # from another would show a breakdown that does not add up.
+            result.role_resource_claims_by_cluster_id = role_claims_by_cluster_id
+            result.role_resource_claims = role_claims_by_cluster_id.get(
+                first_cluster_id
+            )
     else:
         result.resource_claim = None
         result.compatible = False
         result.compatibility_messages.append(
             "Unable to find a schedulable worker for the model."
         )
+        if role_demands_by_cluster_id:
+            # Only when nothing fit anywhere. A cluster that refused the group
+            # while another accepted it is not the deployment's problem, and a
+            # breakdown of the refusing one beside a claim for the accepting
+            # one would be two answers to one question.
+            result.role_resource_demands_by_cluster_id = role_demands_by_cluster_id
     return result
+
+
+@dataclass
+class GroupEvaluation:
+    """What one cluster's evaluation of a role-bearing deployment found.
+
+    ``total`` and ``claims`` are filled when the group fits, and are read off
+    the placement that was proved. ``demands`` is filled when it does not: the
+    same breakdown, priced by each role's own selector before anything is
+    placed, so a refusal describes the group in the units an approval does
+    rather than only counting the members it is short of.
+    """
+
+    total: Optional[ResourceClaim] = None
+    claims: List[RoleResourceClaim] = field(default_factory=list)
+    messages: List[str] = field(default_factory=list)
+    demands: List[RoleResourceDemand] = field(default_factory=list)
+
+
+async def evaluate_group(
+    config: Config,
+    session: AsyncSession,
+    model: ModelSpec,
+    workers: List[Worker],
+    model_instances: List[ModelInstance],
+    cluster_id: int,
+) -> GroupEvaluation:
+    """What the whole group would claim in this cluster, or why it cannot land.
+
+    A ``None`` total means the group does not fit, and ``messages`` then
+    carries the solver's own refusal -- which names the shortfall, the role the
+    walk stopped on and the roomiest domain -- rather than a generic "no
+    suitable worker", with ``demands`` carrying what each role asked for.
+
+    **The scheduler's own solver, asked the feasibility half of its question.**
+    An answer computed a different way can be right and still disagree with
+    what happens at deploy time, and the one thing an evaluation must not do is
+    promise a placement the scheduler then refuses. So this goes through
+    `solve_group_placement` over the cluster's own topology, with the group's
+    gather requirement applied, and reads the claim off the candidates
+    `GroupCapacity.commit` produces -- the very objects the group scheduler
+    writes onto instance rows.
+
+    What it does not pass is the ranking the scheduler adds: no warm-worker
+    preference, no locality score, no candidate limit. Those choose *among* the
+    domains that fit, and this answers whether any does. So the domain proved
+    here can differ from the one a deployment then lands in -- which costs
+    nothing, because the result carries resource claims and refusals, never a
+    location.
+
+    **The router is priced here and checked, but still not placed.** It
+    stays out of `role_demands` -- counting it among the gang would make a 4P4D
+    need nine placements in one domain -- so this function adds its container
+    memory to the total afterwards. What changed is that it now travels as an
+    `attendant`: the solver verifies a worker can host it before calling the
+    group placeable. Until then a cluster with room for the GPU members and
+    none for the router evaluated as compatible, in both places for the same
+    reason, and the deployment it promised then sat with a router that could
+    not be scheduled -- which is a group that serves nothing, since a router
+    answers every request.
+    """
+    # A `ModelSpec` is not quite a `Model`, and the role projection
+    # revalidates it through `ModelBase` — where two of these fields are not
+    # optional. Left as they arrive, `role_effective_model` raises and the
+    # whole evaluation reports "invalid role specification" for a spec that is
+    # perfectly valid:
+    #
+    # - `name` is optional on a spec, because the deployment form evaluates
+    #   while it is still being filled in;
+    # - `owner_principal_id` is stamped by the route from the caller's context
+    #   and is legitimately None there — that is the Platform-only view (an
+    #   admin in "All" mode) — while `ModelBase` declares it a plain int.
+    #
+    # `cluster_id` is stamped for a different reason: `ClusterFilter` reads it,
+    # and this call is already scoped to the cluster whose workers we hold.
+    group_model = model.model_copy(
+        update={
+            "cluster_id": cluster_id,
+            "name": model.name or "model-evaluation",
+            "owner_principal_id": (
+                model.owner_principal_id or _platform_principal_id()
+            ),
+        }
+    )
+
+    # Ordered like the deployment declares them, so the breakdown reads
+    # prefill, decode, router rather than in whatever order the solver found
+    # convenient (it sorts by weight) or a dict happened to keep.
+    order = {spec.name: index for index, spec in enumerate(group_model.roles or [])}
+
+    try:
+        demands = [RoleDemand(**d) for d in role_demands(group_model)]
+    except Exception as e:
+        return GroupEvaluation(messages=[f"Invalid role specification: {e}"])
+
+    free_claims = _accelerator_free_claims(group_model)
+    if not demands:
+        # Nothing in this group occupies an accelerator. There is no placement
+        # to solve, but the group still has an honest footprint -- a router's
+        # container memory -- and reporting it beats reporting nothing.
+        if not free_claims:
+            return GroupEvaluation(
+                messages=["The group has no member that occupies an accelerator."]
+            )
+        return GroupEvaluation(total=_total_claim(free_claims), claims=free_claims)
+
+    cluster = await Cluster.one_by_id(session, cluster_id) if cluster_id else None
+    try:
+        view = build_view(cluster.topology if cluster else None, workers)
+    except TopologyError as e:
+        return GroupEvaluation(messages=[f"Cluster topology is invalid: {e}"])
+
+    cache_instances = await cache_instances_in(session, cluster_id)
+    capacity = GroupCapacity(
+        config, group_model, workers, model_instances, cache_instances
+    )
+    placement = await solve_group_placement(
+        view.root,
+        demands,
+        capacity,
+        view.scopes(),
+        gather_request(group_model),
+        attendants=[RoleDemand(**d) for d in attendant_demands(group_model)],
+    )
+    if not isinstance(placement, GroupPlacement):
+        reason = getattr(placement, "reason", "The group does not fit.")
+        blocked = getattr(placement, "role", None)
+        notes = capacity.notes_for(blocked)
+        messages = [reason]
+        if blocked:
+            # The notes below are one role's and they name no role themselves:
+            # they come from the selectors, which are shared with the
+            # single-instance path and speak of "the model". In a group of
+            # three roles that reads as the whole deployment's footprint --
+            # the one number it is not -- and the figure they quote is what
+            # the model's *weights* want, not what a member reserves. So this
+            # line has to scope them on both counts.
+            messages.append(
+                f"Blocked on the '{blocked}' role; the lines below describe "
+                f"one of its members, and the VRAM they quote is what the "
+                f"model's weights need rather than what the member reserves."
+            )
+        return GroupEvaluation(
+            messages=messages + notes,
+            demands=await _role_asks(group_model, capacity, view, order),
+        )
+
+    # `already` accumulates across roles for the same reason the capacity count
+    # does: the second role has to see what the first one took, or both are
+    # priced against the same free cards.
+    already: List[object] = []
+    claims: List[RoleResourceClaim] = []
+    for role, worker_ids in placement.assignments.items():
+        candidates = await capacity.commit(role, worker_ids, already)
+        if len(candidates) != len(worker_ids):
+            return GroupEvaluation(
+                messages=[
+                    "The group's placement could not be turned into GPU "
+                    f"assignments for role '{role}'."
+                ]
+            )
+        claims.append(
+            _role_claim(
+                role, [summarize_candidate_resource_claim(c) for c in candidates]
+            )
+        )
+        already.extend(stand_in(c) for c in candidates)
+
+    claims.extend(free_claims)
+    claims.sort(key=lambda claim: order.get(claim.role, len(order)))
+    return GroupEvaluation(total=_total_claim(claims), claims=claims)
+
+
+async def _role_asks(
+    model,
+    capacity: GroupCapacity,
+    view,
+    order: Dict[str, int],
+) -> List[RoleResourceDemand]:
+    """What every role of a refused group asked for, and how much of it fits.
+
+    The refusal's counterpart to the breakdown an approval shows. Each role is
+    priced by its own selector and measured on its own in this cluster, which
+    is the one question still answerable once the solve has failed -- the
+    placement that would have carried the real claims is precisely what does
+    not exist.
+
+    Best-effort by design: a breakdown is an explanation, and losing it must
+    never cost the refusal itself, which is what the deployment form acts on.
+
+    Runs only after the solve has been abandoned. `demand_for` re-measures
+    against an empty placement set, so a `commit` afterwards would be handing
+    out cards priced for a different solve.
+    """
+    worker_ids = view.root.descendant_worker_ids()
+    asks: List[RoleResourceDemand] = []
+    try:
+        for spec in model.roles or []:
+            replicas = max(int(spec.replicas or 0), 0)
+            claim, placeable = await capacity.demand_for(spec.name, worker_ids)
+            if claim is None and role_takes_no_accelerator(model, spec.name):
+                # No worker was eligible, so no selector ever ran and priced it
+                # -- but an accelerator-free role is a declared floor rather
+                # than a computed size, so the declaration still answers. Same
+                # source the selector would have read.
+                memory = role_container_resources(model, spec.name).memory or 0
+                claim = MemberResourceClaim(vram=0, ram=memory)
+            asks.append(
+                RoleResourceDemand(
+                    role=spec.name,
+                    replicas=replicas,
+                    placeable=placeable,
+                    ram=(claim.ram if claim else 0) * replicas,
+                    vram=(claim.vram if claim else 0) * replicas,
+                    per_replica=(
+                        ResourceClaim(ram=claim.ram, vram=claim.vram) if claim else None
+                    ),
+                )
+            )
+    except Exception as e:
+        logger.warning(
+            "Could not break down what the group's roles asked for; the "
+            "refusal stands without it: %s",
+            e,
+        )
+        return []
+    asks.sort(key=lambda ask: order.get(ask.role, len(order)))
+    return asks
+
+
+def _accelerator_free_claims(model) -> List[RoleResourceClaim]:
+    """The roles the solver does not place, priced from what they declare.
+
+    Today that is the router alone, and its claim is a declared floor rather
+    than an estimate -- it holds no weights, so there is nothing to size.
+    """
+    claims: List[RoleResourceClaim] = []
+    for spec in model.roles or []:
+        if not role_takes_no_accelerator(model, spec.name):
+            continue
+        replicas = max(int(spec.replicas or 0), 0)
+        ram = role_container_resources(model, spec.name).memory or 0
+        claims.append(
+            RoleResourceClaim(
+                role=spec.name,
+                replicas=replicas,
+                ram=ram * replicas,
+                vram=0,
+                per_replica=ResourceClaim(ram=ram, vram=0),
+            )
+        )
+    return claims
+
+
+def _role_claim(role: str, per_member: List[ResourceClaim]) -> RoleResourceClaim:
+    first = per_member[0] if per_member else None
+    uniform = first is not None and all(
+        claim.ram == first.ram and claim.vram == first.vram for claim in per_member
+    )
+    return RoleResourceClaim(
+        role=role,
+        replicas=len(per_member),
+        ram=sum(claim.ram for claim in per_member),
+        vram=sum(claim.vram for claim in per_member),
+        # None rather than the first member's numbers when the members
+        # disagree: a heterogeneous role has no "per replica" figure, and
+        # showing one member's as if it were every member's is how a 2P4D on
+        # mixed cards would read as half its real size.
+        per_replica=first if uniform else None,
+    )
+
+
+def _total_claim(claims: List[RoleResourceClaim]) -> ResourceClaim:
+    return ResourceClaim(
+        ram=sum(claim.ram for claim in claims),
+        vram=sum(claim.vram for claim in claims),
+    )
 
 
 def summarize_candidate_resource_claim(

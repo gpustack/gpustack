@@ -148,3 +148,67 @@ async def test_failed_cases_auto_schedule(
         _ = await placement_scorer.score(candidates)
 
         assert resource_fit_selector._messages == expect_msg
+
+
+# --- an engine that seizes a fraction of the card ------------------------- #
+#
+# A custom backend booked at what its weights need is under-booked: vLLM behind
+# it seizes its configured fraction of the card regardless. The ledger then
+# reports free memory the engine has already taken, admits the group, and the
+# member dies of `torch.OutOfMemoryError`.
+
+
+def _selector(config, params):
+    model = make_model(1, None, "Qwen/Qwen3-8B")
+    model.backend_parameters = params
+    return CustomBackendResourceFitSelector(config, model, [])
+
+
+class _Card:
+    def __init__(self, total):
+        self.memory = type("Mem", (), {"total": total})()
+
+
+_24G = 24 * 1024**3
+
+
+def test_no_fraction_declared_leaves_the_claim_exactly_as_it_was(config):
+    """The bound on this change. A custom backend is by definition an engine
+    GPUStack does not model; most pre-allocate nothing, and assuming vLLM's
+    default would make every one of them ask for most of a card."""
+    selector = _selector(config, ["--some-unrelated-flag=1"])
+    selector._vram_claim = 7 * 1024**3
+    assert selector._whole_card_fraction is None
+    assert selector._vram_claim_on(_Card(_24G)) == 7 * 1024**3
+
+
+def test_a_declared_fraction_raises_the_claim_to_what_the_engine_will_seize(config):
+    selector = _selector(config, ["--gpu-memory-utilization=0.9"])
+    selector._vram_claim = 7 * 1024**3
+    assert selector._whole_card_fraction == 0.9
+    assert selector._vram_claim_on(_Card(_24G)) == int(_24G * 0.9)
+
+
+def test_sglang_says_the_same_thing_with_another_name(config):
+    selector = _selector(config, ["--mem-fraction-static=0.75"])
+    assert selector._whole_card_fraction == 0.75
+    assert selector._vram_claim_on(_Card(_24G)) == int(_24G * 0.75)
+
+
+def test_the_weights_still_win_when_they_need_more_than_the_fraction(config):
+    """The maximum, not the fraction alone: a fraction below what the weights
+    need would under-book a model that does not fit — the same failure this
+    fixes, pointed the other way."""
+    selector = _selector(config, ["--gpu-memory-utilization=0.2"])
+    selector._vram_claim = 20 * 1024**3
+    assert selector._vram_claim_on(_Card(_24G)) == 20 * 1024**3
+
+
+@pytest.mark.parametrize("raw", ["not-a-number", "0", "-0.5", "1.5"])
+def test_a_value_the_engine_would_reject_is_not_acted_on(config, raw):
+    """Clamping would book a number the engine will never honour, and the
+    engine is the one that gets to reject its own argument."""
+    assert (
+        _selector(config, [f"--gpu-memory-utilization={raw}"])._whole_card_fraction
+        is None
+    )

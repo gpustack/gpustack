@@ -78,6 +78,19 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._largest_multi_gpu_vram = 0
         self._largest_multi_gpu_total = 0
         self._largest_multi_gpu_utilization_satisfied_count = 0
+        # What one member would actually reserve on a card it lands on, as
+        # opposed to what the model's weights need. For an engine that takes a
+        # fraction of the whole card (vLLM's `--gpu-memory-utilization`, SGLang's
+        # `--mem-fraction-static`) the two differ by an order of magnitude: a
+        # 0.6B model whose weights want 3.68 GiB still books 86% of a 48 GiB card.
+        # Reporting the weights figure as "what this member costs" told an
+        # operator their group needed 7 GiB on a cluster of 48 GiB cards, which
+        # reads as room to spare.
+        #
+        # Recorded while scanning cards rather than taken off a candidate,
+        # because the refusal path has no candidate -- that is the whole reason
+        # it needs this.
+        self._reserved_vram: int = 0
 
         self._messages = []
         self._event_collector = EventCollector(self._model, logger)
@@ -433,6 +446,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if gpu.memory is None or gpu.memory.total == 0:
                 continue
 
+            if self._gpu_memory_utilization > 0:
+                self._reserved_vram = max(
+                    self._reserved_vram,
+                    int(gpu.memory.total * self._gpu_memory_utilization),
+                )
+
             exceeds_vram = (
                 self._vram_claim > gpu.memory.total * self._gpu_memory_utilization
                 if self._gpu_memory_utilization > 0  # LLMs
@@ -541,7 +560,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 satisfied_gpu_count += 1
                 gpu_list.append(gpu)
 
-        if total_allocatable_vram > self._largest_multi_gpu_total:
+        if total_allocatable_vram > self._largest_multi_gpu_vram:
             self._largest_multi_gpu_vram = total_allocatable_vram
             self._largest_multi_gpu_utilization_satisfied_count = satisfied_gpu_count
             self._largest_multi_gpu_total = len(worker.status.gpu_devices)
@@ -598,12 +617,23 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             self._largest_multi_gpu_utilization_satisfied_count
         ):
             event_msg_list.append(msg)
-        event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM."
-        if self._gpu_memory_utilization != 0:
+        # Nothing was measured: no worker offered a GPU set this branch
+        # could size, so the counters are still at their initial zero.
+        # Printing them says "this cluster has 0 of 0 GPUs and 0.00 GiB",
+        # which reads as an empty fleet and contradicts the filter lines
+        # above it ("Matched 1/2 workers by READY status"). An absence of
+        # measurement has to say so.
+        if self._largest_multi_gpu_total == 0:
             event_msg = (
-                event_msg.rstrip(".")
-                + f", {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
+                "No worker offered a GPU set that could be sized for this " "model."
             )
+        else:
+            event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM."
+            if self._gpu_memory_utilization != 0:
+                event_msg = (
+                    event_msg.rstrip(".")
+                    + f", {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
+                )
         event_msg_list.append(event_msg)
 
         self._event_collector.add(

@@ -16,6 +16,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
     ExtendedKVCacheConfig,
+    KVCacheModeEnum,
     LoraListEntry,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
@@ -1787,3 +1788,108 @@ async def test_lora_vram_claim_in_output_schedule_msg(config):
 - The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
     ]
     assert resource_fit_selector._messages == expect_msg
+
+
+@pytest.mark.asyncio
+async def test_a_shared_kv_cache_books_no_host_ram(config):
+    """`ram_ratio` sizes the cache the engine offloads into host memory, and a
+    shared deployment has none — the cache service holds it, and
+    `_set_lmcache_env` returns before it ever sets
+    `LMCACHE_MAX_LOCAL_CPU_SIZE`. Booked anyway, and with the field defaulting
+    to 1.2, a deployment whose author only picked a cache service reserved
+    1.2x its VRAM claim of memory no process would take.
+
+    Both modes in one test because the pair is the assertion: the local
+    booking has to survive the change that removes the shared one.
+    """
+    workers = [linux_nvidia_1_4090_24gx1()]
+
+    def _with_cache(name, **cache):
+        m = new_model(
+            1,
+            name,
+            1,
+            huggingface_repo_id="Qwen/Qwen3-0.6B",
+            cpu_offloading=False,
+            extended_kv_cache=ExtendedKVCacheConfig(
+                enabled=True, ram_ratio=2.0, **cache
+            ),
+        )
+        m.backend = BackendEnum.VLLM.value
+        return m
+
+    local = _with_cache("local-cache")
+    shared = _with_cache(
+        "shared-cache", mode=KVCacheModeEnum.SHARED, cache_service_id=1
+    )
+
+    with (
+        patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
+        patch('gpustack.schemas.workers.Worker.all', return_value=workers),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=mock_async_session(),
+        ),
+    ):
+        local_candidates = await VLLMResourceFitSelector(
+            config, local, []
+        ).select_candidates(workers)
+        shared_candidates = await VLLMResourceFitSelector(
+            config, shared, []
+        ).select_candidates(workers)
+
+    assert len(local_candidates) == 1 and len(shared_candidates) == 1
+    vram = sum(local_candidates[0].computed_resource_claim.vram.values())
+    assert local_candidates[0].computed_resource_claim.ram == int(vram * 2.0)
+    assert shared_candidates[0].computed_resource_claim.ram is None
+    # The cards themselves are untouched by any of this.
+    assert (
+        shared_candidates[0].computed_resource_claim.vram
+        == local_candidates[0].computed_resource_claim.vram
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_member_is_priced_by_what_it_reserves_not_by_its_weights(config):
+    """The two differ by an order of magnitude on a fraction-based engine, and
+    the refusal path has only this to go on: a 0.6B model whose weights want
+    ~4 GiB still books 90% of a 24 GiB card. Reported as the weights figure, a
+    group of two read as needing 8 GiB on a cluster of 24 GiB cards -- which
+    looks like room to spare and is the opposite of the truth.
+    """
+    workers = [linux_nvidia_1_4090_24gx1()]
+    m = new_model(
+        1,
+        "priced",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-0.6B",
+        cpu_offloading=False,
+    )
+    m.backend = BackendEnum.VLLM.value
+    selector = VLLMResourceFitSelector(config, m, [])
+
+    with (
+        patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
+        patch('gpustack.schemas.workers.Worker.all', return_value=workers),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=mock_async_session(),
+        ),
+    ):
+        candidates = await selector.select_candidates(workers)
+
+    claim = selector.get_resource_claim()
+    card_total = workers[0].status.gpu_devices[0].memory.total
+    booked = int(card_total * selector._gpu_memory_utilization)
+
+    # What the card will actually hold, not what the weights measure.
+    assert claim.vram == booked
+    assert claim.vram > selector._vram_claim * 2
+    # And it is the same number the placement itself carries.
+    assert sum(candidates[0].computed_resource_claim.vram.values()) == booked

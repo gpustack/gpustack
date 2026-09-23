@@ -22,7 +22,11 @@ from gpustack.utils.gpu import (
     group_gpu_ids_by_worker,
     group_gpu_indexes_by_gpu_type_and_worker,
 )
-from gpustack.policies.base import Allocatable, ModelInstanceScheduleCandidate
+from gpustack.policies.base import (
+    Allocatable,
+    MemberResourceClaim,
+    ModelInstanceScheduleCandidate,
+)
 from gpustack.policies.utils import (
     ListMessageBuilder,
     get_computed_ram_claim,
@@ -214,6 +218,35 @@ class ScheduleCandidatesSelector(ABC):
         :return: A list of diagnostic messages.
         """
         pass
+
+    def get_resource_claim(self) -> Optional[MemberResourceClaim]:
+        """What one instance of this model costs, as this selector priced it.
+
+        Only meaningful after ``select_candidates`` has run -- that is where the
+        resource-fit selectors compute the claim -- and it is the *same* number
+        their refusal quotes, not a second estimate of it.
+
+        The **reservation**, not the weights: an engine that takes a fraction
+        of the whole card books far more than the model needs, and the figure
+        a reader acts on is the one that will be held. Falls back to the
+        weights claim for a selector that reserves exactly what it needs.
+
+        ``None`` when this selector does not price a deployment as one pair of
+        totals: GGUF sizes per layer and per GPU, so there is no single figure
+        to hand back, and a caller must be able to say nothing rather than show
+        a zero it invented. No backend that can be disaggregated is in that
+        group today (see ``PD_BACKENDS``), which is why the group refusal path
+        is the only caller.
+
+        :return: The per-instance VRAM and RAM claim, or None.
+        """
+        vram = getattr(self, "_reserved_vram", None) or getattr(
+            self, "_vram_claim", None
+        )
+        ram = getattr(self, "_ram_claim", None)
+        if vram is None and ram is None:
+            return None
+        return MemberResourceClaim(vram=int(vram or 0), ram=int(ram or 0))
 
     @abstractmethod
     async def select_candidates(
