@@ -101,6 +101,13 @@ class RuntimeMetricsAggregator:
             self._find_active_model_endpoints(worker_id, metrics_config)
         )
         if not endpoints:
+            # No active instances left on this worker (e.g. the last one was
+            # removed). Clear the cached metrics: otherwise the exporter keeps
+            # re-exporting the last batch of the removed instance, so dashboards
+            # and alerts keep showing an instance that no longer exists.
+            if self._cache is not None:
+                self._cache["unified"] = {}
+                self._cache["raw"] = {}
             logger.trace(
                 "No valid endpoints found for model instances. Skipping runtime metrics fetch."
             )

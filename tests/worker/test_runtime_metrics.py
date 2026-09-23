@@ -1,6 +1,11 @@
 import logging
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from prometheus_client.core import GaugeMetricFamily
+
+from gpustack.utils.metrics import get_builtin_metrics_config
+from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.runtime_metrics_aggregator import (
     RuntimeMetricsAggregator,
     create_prom_metric_family,
@@ -230,3 +235,120 @@ def test_unsupported_family_does_not_drop_the_endpoint():
     assert "broken" not in raw
     assert [s.value for s in raw["vllm:num_requests_running"].samples] == [3.0]
     assert "gpustack:num_requests_running" in unified
+
+
+# ---------------------------------------------------------------------------
+# Cache lifecycle: metrics of a model instance that is gone must stop being
+# exported. The worker cache is shared with ``MetricExporter``, which re-exports
+# whatever is in it, so a stale entry keeps showing up as a live instance.
+# ---------------------------------------------------------------------------
+
+_RUNTIME_ENDPOINT = "10.0.0.1:40034"
+_WAITING_METRIC = "gpustack:num_requests_waiting"
+_SOURCE_WAITING_METRIC = "sglang:num_queue_reqs"
+
+
+class _FakeModelInstance:
+    """Only the attributes used by ``aggregate()``/``_build_base_labels()``."""
+
+    def __init__(self, instance_id: int = 999, model_id: int = 26):
+        self.id = instance_id
+        self.name = f"test-instance-{instance_id}"
+        self.model_id = model_id
+        self.worker_id = 77
+        self.worker_name = "test-worker"
+        self.worker_ip = "10.0.0.1"
+        self.ports = [40034]
+        # Non-None keeps aggregate() from probing the backend over HTTP.
+        self.api_detected_backend_version = "0.6.18"
+
+
+class _FakeModel:
+    id = 26
+    name = "test-model"
+
+
+class _ExporterProbe:
+    """Minimal ``self`` to call the real ``MetricExporter.collect_runtime_metrics``."""
+
+    def __init__(self, cache):
+        self._cache = cache
+
+
+def _gauge(name, value):
+    family = GaugeMetricFamily(name, "test")
+    family.add_metric([], value)
+    return family
+
+
+def _active_endpoints(instance, model):
+    return (
+        {_RUNTIME_ENDPOINT},
+        {_RUNTIME_ENDPOINT: instance},
+        {instance.id: model},
+    )
+
+
+def _cache_aggregator(cache, endpoints_provider):
+    """Aggregator wired to stubbed endpoints/metrics so tests stay offline."""
+    aggregator = RuntimeMetricsAggregator(
+        cache=cache, worker_id_getter=lambda: 77, clientset=None
+    )
+    # Pre-seed the builtin metrics config to avoid the online config fetch.
+    aggregator._metrics_config_cache["config"] = get_builtin_metrics_config()
+    aggregator._find_active_model_endpoints = (
+        lambda worker_id, metrics_config: endpoints_provider()
+    )
+    aggregator._metrics_client.fetch_metrics_from_endpoints = lambda endpoints: {
+        endpoint: {_SOURCE_WAITING_METRIC: _gauge(_SOURCE_WAITING_METRIC, 10.0)}
+        for endpoint in endpoints
+    }
+    return aggregator
+
+
+def test_aggregate_fills_cache_for_an_active_instance():
+    """An active instance populates the shared cache and gets exported."""
+    cache = {}
+    instance, model = _FakeModelInstance(), _FakeModel()
+    aggregator = _cache_aggregator(cache, lambda: _active_endpoints(instance, model))
+
+    with patch(
+        "gpustack.worker.runtime_metrics_aggregator.get_backend",
+        return_value="SGLang",
+    ):
+        aggregator.aggregate()
+
+    assert _WAITING_METRIC in cache["unified"]
+    exported = list(MetricExporter.collect_runtime_metrics(_ExporterProbe(cache)))
+    assert [family.name for family in exported] == [_WAITING_METRIC]
+
+
+def test_aggregate_clears_cache_when_the_last_instance_is_removed():
+    """The last instance of a worker disappearing must drop its cached metrics:
+    otherwise the exporter keeps re-exporting the frozen values of a model
+    instance that no longer exists."""
+    cache = {}
+    instance, model = _FakeModelInstance(), _FakeModel()
+    state = {"has_instance": True}
+
+    def endpoints_provider():
+        if state["has_instance"]:
+            return _active_endpoints(instance, model)
+        # The instance is gone: this worker has no endpoint of its own anymore.
+        return set(), {}, {}
+
+    aggregator = _cache_aggregator(cache, endpoints_provider)
+
+    with patch(
+        "gpustack.worker.runtime_metrics_aggregator.get_backend",
+        return_value="SGLang",
+    ):
+        aggregator.aggregate()
+        assert _WAITING_METRIC in cache["unified"]
+
+        state["has_instance"] = False
+        aggregator.aggregate()
+
+    assert cache["unified"] == {}
+    assert cache["raw"] == {}
+    assert list(MetricExporter.collect_runtime_metrics(_ExporterProbe(cache))) == []
