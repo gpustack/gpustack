@@ -19,6 +19,28 @@ logger = logging.getLogger(__name__)
 _DEFAULT_GROUP = "worker.gpustack.ai"
 _DEFAULT_VERSION = "v1"
 
+_NAMESPACE_LABELS = {
+    # Pod Security Admission, which is built into Kubernetes and enforced at
+    # Pod *creation*: a Pod that does not fit the level is rejected outright,
+    # not left Pending. GPUStack's own workloads legitimately need what the
+    # stricter levels forbid — host networking (RDMA binds its GID to a NIC
+    # address), hostPort, host IPC (CUDA-IPC KV buffer sharing), and device
+    # mounts — so this family of namespaces has to sit at `privileged`.
+    #
+    # All three keys, not just `enforce`: with `warn`/`audit` left on the
+    # cluster default, every Pod creation still returns a warning and writes an
+    # audit annotation, which is noise that hides real ones.
+    #
+    # Blast radius, stated deliberately: `privileged` means every Pod in the
+    # namespace is exempt from PSA. That is a reason these are namespaces
+    # GPUStack creates and owns, rather than ones shared with a customer's
+    # own workloads. It also does nothing about Kyverno / Gatekeeper / OPA,
+    # which are separate webhooks that these labels do not address.
+    "pod-security.kubernetes.io/enforce": "privileged",
+    "pod-security.kubernetes.io/audit": "privileged",
+    "pod-security.kubernetes.io/warn": "privileged",
+}
+
 
 class _Scope(Enum):
     """Where a resource's objects live, which decides *which* namespace the
@@ -533,13 +555,14 @@ class ClusterOps:
     async def create_namespace(self, name: str, ignore_existed: bool = True):
         """
         Create the namespace in the cluster if it does not exist.
-        If the namespace already exists, do nothing.
+        If the namespace already exists, reconcile its labels.
         """
         core = client.CoreV1Api(self.api_client)
 
         if ignore_existed:
             try:
-                await core.read_namespace(name=name)
+                existing = await core.read_namespace(name=name)
+                await self._reconcile_namespace_labels(core, name, existing)
                 return
             except client.exceptions.ApiException as e:
                 if e.status != http.HTTPStatus.NOT_FOUND:
@@ -547,13 +570,53 @@ class ClusterOps:
 
         try:
             await core.create_namespace(
-                body=client.V1Namespace(metadata=client.V1ObjectMeta(name=name)),
+                body=client.V1Namespace(
+                    metadata=client.V1ObjectMeta(
+                        name=name,
+                        labels=dict(_NAMESPACE_LABELS),
+                    )
+                ),
             )
             logger.info("Created namespace %s in cluster %s", name, self.cluster_id)
         except client.exceptions.ApiException as e:
             if ignore_existed and e.status == http.HTTPStatus.CONFLICT:
                 return
             raise
+
+    async def _reconcile_namespace_labels(self, core, name: str, existing) -> None:
+        """Bring an existing namespace's labels up to what we require.
+
+        Namespaces created before these labels existed — and every namespace on
+        a cluster upgraded into this version — would otherwise never get them,
+        and this is the one server-side path that runs on every use of a
+        namespace, so it is where the backfill belongs. Patching only when
+        something is actually missing keeps the common case a single read.
+
+        A cluster that does not let us label namespaces is not a reason to
+        refuse the deployment: the labels only relax admission, so failing to
+        set them shows up later as a rejected Pod with a message that says so.
+        """
+        current = (existing.metadata.labels or {}) if existing.metadata else {}
+        missing = {k: v for k, v in _NAMESPACE_LABELS.items() if current.get(k) != v}
+        if not missing:
+            return
+        try:
+            await core.patch_namespace(
+                name=name, body={"metadata": {"labels": missing}}
+            )
+            logger.info(
+                "Patched labels %s onto namespace %s in cluster %s",
+                sorted(missing),
+                name,
+                self.cluster_id,
+            )
+        except client.exceptions.ApiException as e:
+            logger.warning(
+                "Failed to patch labels onto namespace %s in cluster %s: %s",
+                name,
+                self.cluster_id,
+                e,
+            )
 
     async def delete_namespace(self, name: str) -> bool:
         """
