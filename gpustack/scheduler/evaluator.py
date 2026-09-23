@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from collections import defaultdict
-from typing import List, Tuple, Optional, Dict
+from typing import Any, List, Tuple, Optional, Dict
 
 from gpustack_runtime.detector import ManufacturerEnum
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -18,7 +18,10 @@ from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack import envs
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
+from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from gpustack.server.catalog import get_catalog_spec_by_source_key
+from gpustack.server.cache_provider_catalog import get_cache_provider
+from gpustack.schemas.cache_services import CacheService
 from gpustack.schemas.model_evaluations import (
     ModelEvaluationResult,
     ModelSpec,
@@ -42,6 +45,11 @@ from gpustack.utils.gpu import (
     make_gpu_id,
     compare_compute_capability,
 )
+from gpustack.utils.command import flatten_to_argv
+from gpustack.utils.hybrid_attention import (
+    HYBRID_MODEL_DOC_URL,
+    is_hybrid_attention,
+)
 from gpustack.utils.vllm_kv_cache import ascend_local_kv_cache_unsupported_reason
 from gpustack.utils.hub import (
     auth_check,
@@ -61,6 +69,37 @@ evaluate_cache = TTLCache(
 # To reduce the likelihood of hitting the Hugging Face API rate limit (600 RPM)
 # Limit the number of concurrent evaluations to 50 per 10 seconds
 evaluate_model_limiter = AsyncLimiter(50, 10)
+
+LMCACHE_PROVIDER_NAME = "LMCache"
+"""The cache provider whose connector constrains hybrid models: vLLM
+raises the attention block size until an attention page holds a whole
+recurrent-state page, and the cache server registers a chunk only when
+its own chunk size is a multiple of that block size."""
+
+LMCACHE_HYBRID_SERVICE_FIELD = "chunk_size"
+LMCACHE_HYBRID_SERVICE_PARAMETER = "--separate-object-groups"
+"""What an LMCache service needs before a hybrid model can attach to it.
+Neither is a default, so a service created and left alone fails the
+engine's chunk/block assertion at startup."""
+
+
+def _doc_link(text: str = "documentation") -> str:
+    """The hybrid-model procedure as a link a message can carry.
+
+    An anchor rather than a bare URL, the way worker state messages carry
+    theirs: the address is long enough to be cut off where a message is
+    rendered, and it is the words around it the reader acts on.
+    """
+    return f"<a href='{HYBRID_MODEL_DOC_URL}'>{text}</a>"
+
+
+LMCACHE_HYBRID_SERVICE_NOTE = (
+    "Set the cache service's 'Chunk Size' to a multiple of the model's vLLM "
+    f"attention block size, and add '{LMCACHE_HYBRID_SERVICE_PARAMETER}' to "
+    "the cache server's parameters."
+)
+"""What to do about it, quoted the way the message quotes the service's
+name: what the reader types or picks out of a form is a literal."""
 
 
 @time_decorator
@@ -116,10 +155,15 @@ async def evaluate_models(
     return results
 
 
-def make_hashable_key(model: ModelSpec, workers: List[Worker]) -> str:
+def make_hashable_key(
+    model: ModelSpec, workers: List[Worker], extra: Optional[str] = None
+) -> str:
     key_data = json.dumps(
         {
             "model": model.model_dump(mode="json"),
+            # State outside the spec and the workers that a verdict depends
+            # on, rendered by the caller.
+            "extra": extra,
             # Excluded from model_dump (response-hidden field), but it
             # changes which Org-scoped backend versions the evaluation
             # sees — without it cached results would leak across Orgs.
@@ -157,6 +201,60 @@ def make_hashable_key(model: ModelSpec, workers: List[Worker]) -> str:
     return hashlib.md5(key_data.encode()).hexdigest()
 
 
+async def visible_cache_service(
+    session: AsyncSession, model: ModelSpec
+) -> Optional[CacheService]:
+    """The cache service a spec attaches to, as the spec's Org may see it.
+
+    The Org is a condition on the query rather than a test on the row, so
+    another Org's service is never loaded at all: evaluation runs no
+    shared-cache validation of its own, and what is built from this row
+    carries the service's name back to the caller. A spec with no owner
+    resolved is the platform admin's, and matches by id alone.
+
+    Returns:
+        The service, or None when the spec attaches to none, when it is
+        deleted, or when it belongs to another Org.
+    """
+    ext = getattr(model, "extended_kv_cache", None)
+    if not (ext and ext.is_shared() and ext.cache_service_id):
+        return None
+
+    fields: Dict[str, Any] = {"id": ext.cache_service_id, "deleted_at": None}
+    owner_principal_id = getattr(model, "owner_principal_id", None)
+    if owner_principal_id is not None:
+        fields["owner_principal_id"] = owner_principal_id
+    return await CacheService.one_by_fields(session, fields)
+
+
+def cache_service_verdict_key(service: Optional[CacheService]) -> Optional[str]:
+    """Everything a verdict about the attached cache service reads, for the
+    evaluation cache key.
+
+    The model spec carries none of it, so without this a user who acts on a
+    verdict — configures the service, renames it, moves it to another
+    provider — gets the stale one back until the entry expires. The one
+    case where the cache would answer a question the user has just changed
+    the answer to.
+    """
+    if service is None:
+        return None
+    return json.dumps(
+        {
+            # Carried in the message the verdict produces.
+            "name": service.name,
+            # Decides whether the service is one whose connector constrains
+            # hybrid models at all.
+            "provider_name": service.provider_name,
+            # The settings the verdict is about.
+            "config": (
+                service.config.model_dump(mode="json") if service.config else None
+            ),
+        },
+        sort_keys=True,
+    )
+
+
 async def evaluate_model_with_cache(
     config: Config,
     session: AsyncSession,
@@ -165,17 +263,30 @@ async def evaluate_model_with_cache(
     model_instances: List[ModelInstance],
     cluster_id: Optional[int] = None,
 ) -> ModelEvaluationResult:
-    cache_key = make_hashable_key(model, workers)
-    if cache_key in evaluate_cache:
-        logger.trace(
-            f"Evaluation cache hit for model: {model.name or model.readable_source}"
-        )
-        return evaluate_cache[cache_key]
-
+    # Everything that can fail belongs inside: specs are evaluated
+    # concurrently over one session, so a query raising here would take the
+    # whole request down instead of reporting the one spec it belongs to.
     try:
+        # Fetched once: it keys the cache, and the evaluation reads it again.
+        cache_service = await visible_cache_service(session, model)
+        cache_key = make_hashable_key(
+            model, workers, cache_service_verdict_key(cache_service)
+        )
+        if cache_key in evaluate_cache:
+            logger.trace(
+                f"Evaluation cache hit for model: {model.name or model.readable_source}"
+            )
+            return evaluate_cache[cache_key]
+
         async with evaluate_model_limiter:
             result = await evaluate_model(
-                config, session, model, workers, model_instances, cluster_id=cluster_id
+                config,
+                session,
+                model,
+                workers,
+                model_instances,
+                cluster_id=cluster_id,
+                cache_service=cache_service,
             )
             evaluate_cache[cache_key] = result
     except Exception as e:
@@ -197,6 +308,7 @@ async def evaluate_model(
     workers: List[Worker],
     model_instances: List[ModelInstance],
     cluster_id: Optional[int] = None,
+    cache_service: Optional[CacheService] = None,
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
@@ -209,6 +321,9 @@ async def evaluate_model(
         (evaluate_model_input, (session, model, cluster_id)),
         (evaluate_model_metadata, (config, model, workers)),
         (evaluate_environment, (model, workers)),
+        # Last: it reads the pretrained config, which the metadata step
+        # ahead of it has already proven readable.
+        (evaluate_hybrid_model_kv_cache, (session, model, workers, cache_service)),
     ]
     for evaluation, args in evaluations:
         compatible, messages = await evaluation(*args)
@@ -428,6 +543,194 @@ def evaluate_local_extended_kv_cache(
     return (
         "Extended KV cache with the vLLM backend requires NVIDIA, AMD or "
         "Ascend devices but none are available."
+    )
+
+
+async def evaluate_hybrid_model_kv_cache(
+    session: AsyncSession,
+    model: ModelSpec,
+    workers: List[Worker],
+    cache_service: Optional[CacheService] = None,
+) -> Tuple[bool, List[str]]:
+    """Report a hybrid-attention model whose extended KV cache cannot work
+    as configured.
+
+    Hybrid models (recurrent Mamba / linear-attention layers beside full
+    attention) need a connector built for them, and a shared one needs its
+    cache service configured for the model's block size. Neither is
+    something the platform can arrange on the user's behalf: the block size
+    comes out of the engine's own startup, so this reports what to do while
+    the deployment is still being configured rather than guessing at
+    runtime.
+
+    The verdict errs toward silence — an unreadable config, a backend or
+    accelerator this was never observed on, a provider declaring no caveat,
+    or a service already carrying what its provider asks for all report
+    nothing.
+    """
+    if not hybrid_verdict_possible(model, cache_service):
+        return True, []
+
+    try:
+        # A second read of a config the metadata step already fetched, and
+        # so a local cache hit: worth it over threading the config through
+        # every evaluation for the one deployment shape that needs it.
+        pretrained_config = await get_pretrained_config_with_workers(
+            model, workers=workers
+        )
+    except Exception as e:
+        logger.debug(
+            f"Skipping the hybrid-model KV cache check for "
+            f"{model.name or model.readable_source}: {e}"
+        )
+        return True, []
+
+    if not is_hybrid_attention(pretrained_config):
+        return True, []
+
+    message = (
+        evaluate_local_hybrid_kv_cache(model, workers)
+        if model.extended_kv_cache.is_local()
+        else await evaluate_shared_hybrid_kv_cache(session, cache_service)
+    )
+    return (False, [message]) if message else (True, [])
+
+
+def hybrid_verdict_possible(
+    model: ModelSpec, cache_service: Optional[CacheService]
+) -> bool:
+    """Whether a verdict could come out of this deployment at all.
+
+    Answered from the spec and the already-resolved service, ahead of
+    reading the model's config: that read is a local cache hit on the happy
+    path but a hub round-trip on a cold or evicted one, and a deployment
+    the checks below can only stay silent about — an SGLang backend, a
+    service from another provider — should not pay for it on every
+    evaluation that misses the cache.
+    """
+    ext = model.extended_kv_cache
+    if not (ext and ext.enabled) or is_gguf_model(model):
+        return False
+
+    # Both verdicts are about vLLM's connectors. SGLang's in-process mode
+    # runs its own hierarchical cache, and its LMCache adapter has not been
+    # run against a hybrid model.
+    if get_backend(model) != BackendEnum.VLLM:
+        return False
+
+    if ext.is_local():
+        return True
+
+    # None means the spec names no service, or names one its Org cannot see
+    # (``visible_cache_service`` resolves both). Another provider's
+    # connector has not been run against a hybrid model.
+    return (
+        cache_service is not None
+        and (cache_service.provider_name or "").lower() == LMCACHE_PROVIDER_NAME.lower()
+    )
+
+
+def evaluate_local_hybrid_kv_cache(
+    model: ModelSpec,
+    workers: List[Worker],
+) -> Optional[str]:
+    """Why a hybrid-attention model cannot run vLLM's local extended KV
+    cache. ``None`` when the verdict does not apply to this deployment.
+
+    The in-process connector does not declare support for vLLM's hybrid
+    memory allocator, so the engine turns the allocator off and then has to
+    unify every layer onto one cache spec — which the recurrent and
+    full-attention layers have none in common. No setting changes that, so
+    the message points at the shared mode instead of at a knob.
+    """
+    gpus = candidate_gpus(model, workers)
+    if not gpus:
+        # Nothing to judge: a pinned GPU whose worker was filtered out, or a
+        # fleet with no GPUs at all. Scheduling reports either accurately,
+        # and a verdict here would take its place — this check returns
+        # before scheduling ever runs.
+        return None
+
+    if any(gpu.vendor == ManufacturerEnum.ASCEND.value for gpu in gpus):
+        # An Ascend placement runs the connector vllm-ascend ships rather
+        # than this one. The label, GPU-type and backend-framework filters
+        # are not replayed here, so one Ascend candidate is a placement this
+        # cannot rule out — and reporting a deployment that would have run
+        # costs more than staying quiet about one that will not.
+        return None
+
+    return (
+        "Hybrid-attention models (recurrent layers beside full attention) "
+        "cannot run with the local extended KV cache: its connector does "
+        "not support vLLM's hybrid memory allocator, so the engine turns "
+        "the allocator off and fails to start. Attach the deployment to a "
+        "cache service configured for the model instead, or turn extended "
+        f"KV cache off. See the {_doc_link()}."
+    )
+
+
+async def evaluate_shared_hybrid_kv_cache(
+    session: AsyncSession,
+    service: CacheService,
+) -> Optional[str]:
+    """Why the attached LMCache service cannot serve this hybrid-attention
+    model. ``None`` when it can.
+
+    LMCache is named here rather than declared in the provider catalog:
+    it is the only provider whose connector has been run against a hybrid
+    model, and the catalog is a document admins write — a field added
+    there is a schema every later version has to keep reading. The cost
+    is that a provider an extension ships cannot state a caveat of its
+    own; it stays silent, which is what an unverified provider should do
+    anyway.
+    """
+    if await lmcache_service_serves_hybrid_models(session, service):
+        return None
+
+    return (
+        f"Cache service '{service.name}' is not configured for "
+        f"hybrid-attention models, and the deployment would fail to start. "
+        f"{LMCACHE_HYBRID_SERVICE_NOTE} See the {_doc_link()}."
+    )
+
+
+async def lmcache_service_serves_hybrid_models(
+    session: AsyncSession,
+    service: CacheService,
+) -> bool:
+    """Whether an LMCache service carries what a hybrid model needs.
+
+    Read from what the user set, never from a declared default: the
+    question is whether someone configured this service for a hybrid
+    model, and a value the catalog supplies on its own is no evidence of
+    that. Whether the chunk size is the right multiple is not answerable
+    here — the block size comes out of the engine's own startup — so a
+    service carrying both settings is taken at its word.
+    """
+    config = service.config
+    fields = (config.fields if config else None) or {}
+    if not fields.get(LMCACHE_HYBRID_SERVICE_FIELD):
+        return False
+
+    # The flag belongs to the component engines attach to: the cache
+    # server, whose parser is the one that takes it. The catalog names
+    # that component, so a renamed one is followed rather than guessed.
+    provider = await get_cache_provider(session, service.provider_name)
+    if provider is None:
+        # An admin's own catalog no longer declaring the provider, or an
+        # extension's that is not installed here. Which component the
+        # parameters belong to is then unknown, and reading the wrong one
+        # reports a configured service as unconfigured — so the service is
+        # taken at its word, as everywhere else this cannot tell.
+        return True
+
+    component = provider.attach_component()
+    parameters = ((config.parameters if config else None) or {}).get(component) or []
+    argv = flatten_to_argv(list(parameters))
+    return any(
+        token == LMCACHE_HYBRID_SERVICE_PARAMETER
+        or token.startswith(f"{LMCACHE_HYBRID_SERVICE_PARAMETER}=")
+        for token in argv
     )
 
 

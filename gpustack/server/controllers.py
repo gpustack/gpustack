@@ -169,13 +169,16 @@ from gpustack.gateway.client.networking_higress_io_v1_api import (
 )
 from gpustack.gateway.client.extensions_higress_io_v1_api import (
     ExtensionsHigressIoV1Api,
-    WasmPluginMatchRule,
-    WasmPluginSpec,
 )
 from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
     NetworkingIstioIoV1Alpha3Api,
 )
 from gpustack.gateway import utils as mcp_handler
+from gpustack.routes.plugins import (
+    RouteArtifactCollector,
+    RouteReconcileContext,
+    dispatch_route_reconcile,
+)
 from gpustack.gateway import get_async_k8s_config
 from gpustack.schemas.model_provider import (
     ModelProvider,
@@ -199,6 +202,7 @@ class ModelController:
         if not self._disable_gateway:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
+            self._higress_extension_api = ExtensionsHigressIoV1Api(base_client)
 
         async for event in Model.subscribe(source="model_controller"):
             if event.type == EventType.HEARTBEAT:
@@ -265,8 +269,24 @@ class ModelController:
                 )
                 await sync_categories_and_meta(session, model, event)
                 await self._ensure_model_mcp_bridge(session, event.type, model)
+                await self._sync_model_ai_proxy(session, model)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
+
+    async def _sync_model_ai_proxy(self, session: AsyncSession, model: Model):
+        """The Model controller owns the ai-proxy CR: the entry's content
+        is a pure function of the deployment, and instance changes arrive
+        here as model events (ready-replica sync). Route CRUD enqueues the
+        affected models when a reference appears or disappears; a deleted
+        or soft-deleted row strips the deployment's entry."""
+        if self._disable_gateway:
+            return
+        await sync_model_ai_proxy(
+            cfg=self._config,
+            session=session,
+            extensions_api=self._higress_extension_api,
+            model_id=model.id,
+        )
 
 
 class ModelInstanceController:
@@ -1757,64 +1777,6 @@ async def get_cluster_registry(
     return cluster_registry
 
 
-async def sync_model_route_mapper(
-    cfg: Config,
-    extensions_api: ExtensionsHigressIoV1Api,
-    ingress_name: str,
-    route_name: str,
-    destinations: mcp_handler.DestinationTupleList,
-    fallback_destinations: mcp_handler.DestinationTupleList,
-):
-    """
-    Synchronize the model route mapper.
-    """
-    ingress_prefix = f"{cfg.get_namespace()}/"
-    if cfg.get_namespace() == cfg.gateway_namespace:
-        ingress_prefix = ""
-    model_name_to_registries: Dict[str, List[str]] = {}
-    for _, model_name, registry in destinations:
-        if route_name == model_name:
-            # Skip self mapping
-            continue
-        registries = model_name_to_registries.setdefault(model_name, [])
-        registries.append(registry.get_service_name())
-    fallback_model_name_to_registries: Dict[str, List[str]] = {}
-    for _, model_name, registry in fallback_destinations:
-        registries = fallback_model_name_to_registries.setdefault(model_name, [])
-        registries.append(registry.get_service_name())
-
-    expected_rules = mcp_handler.get_expected_match_list(
-        route_name=route_name,
-        ingress_prefix=ingress_prefix,
-        ingress_name=ingress_name,
-        model_name_to_registries=model_name_to_registries,
-        fallback_model_name_to_registries=fallback_model_name_to_registries,
-    )
-
-    def spec_diff(current_spec: Optional[WasmPluginSpec]) -> WasmPluginSpec:
-        # the current spec must exist. If not, it means the plugin has been deleted manually,
-        # we should not recreate it until next update event to avoid potential misconfiguration.
-        if current_spec is None:
-            return current_spec
-        to_keep_rules: List[WasmPluginMatchRule] = []
-        full_ingress_name = f"{ingress_prefix}{ingress_name}"
-
-        for rule in current_spec.matchRules or []:
-            if full_ingress_name not in rule.ingress:
-                to_keep_rules.append(rule)
-        to_keep_rules.extend(expected_rules)
-        to_keep_rules.sort(key=lambda r: r.ingress[0] if r.ingress else "")
-        current_spec.matchRules = to_keep_rules
-        return current_spec
-
-    await mcp_handler.ensure_wasm_plugin(
-        api=extensions_api,
-        name=mcp_handler.gpustack_model_mapper_name,
-        namespace=cfg.gateway_namespace,
-        spec_diff=spec_diff,
-    )
-
-
 async def ensure_route_generic_proxy_router_config(
     cfg: Config,
     model_route: ModelRoute,
@@ -1845,35 +1807,63 @@ async def ensure_route_generic_proxy_router_config(
     )
 
 
-async def ensure_route_ai_proxy_config(
+async def sync_model_ai_proxy(
     cfg: Config,
-    model_route_id: int,
+    session: AsyncSession,
     extensions_api: ExtensionsHigressIoV1Api,
-    model_groups: List[mcp_handler.ModelAIProxyGroup],
-):
-    """Reconcile this route's slice of the ai-proxy CR, grouped by deployment.
+    model_id: int,
+) -> None:
+    """Reconcile ONE deployment's ai-proxy entry.
 
-    Provider entries are keyed by Model, so a Model targeted by several routes
-    has exactly one of them and route-level changes never rewrite it. Ownership
-    of the *rules* is therefore expressed by ingress rather than by provider id
-    — see ``compare_and_append_proxy_match_rules``.
+    The content is a pure function of the deployment — its instances'
+    registries, its cluster's registration token, its anthropic selector.
+    Model names a deployment serves (LoRA aliases, overrides) never enter:
+    they are expressed on the mapper/lb CR, while ai-proxy only attaches
+    the per-deployment credential to the deployment's own services.
 
-    External model providers are not handled here: ``ModelProviderController``
-    owns their ``provider-<id>`` entries, whose rules match on service only.
+    The route reference read is an EXISTENCE gate only: no live target
+    means no rule (and the provider goes unreferenced); one target or
+    many, aliased or not, produce the identical rule. Legacy per-route
+    entries never ride this write — the startup cleanup pass retires
+    them wholesale, which trades a bounded upgrade window for the
+    absence of retirement races between sibling deployments.
+
+    The caller is the Model controller: model and instance events own
+    the ai-proxy CR, and route CRUD enqueues the affected models when a
+    reference appears or disappears (see notify_model_ai_proxy_change).
     """
-    prefixed_ingress_name, prefixed_fallback_ingress_name = (
-        mcp_handler.route_ingress_names_for_plugins(
-            model_route_id=model_route_id,
-            resource_namespace=cfg.get_namespace(),
-            gateway_namespace=cfg.gateway_namespace,
-        )
-    )
-    expected_providers, expected_match_rules = mcp_handler.model_ai_proxy_plugin_spec(
-        groups=model_groups,
-        main_ingress=prefixed_ingress_name,
-        fallback_ingress=prefixed_fallback_ingress_name,
-    )
+    owned_provider_ids = {mcp_handler.model_ai_proxy_provider_id(model_id)}
 
+    group: Optional[mcp_handler.ModelAIProxyGroup] = None
+    model = await Model.one_by_id(session, model_id)
+    targets = await ModelRouteTarget.all_by_field(session, "model_id", model_id)
+    live_targets = [
+        target
+        for target in targets
+        if target.deleted_at is None and target.state == TargetStateEnum.ACTIVE
+    ]
+    # The legacy per-route ids are retired wholesale by the startup
+    # cleanup pass (see cleanup_ai_proxy_config); retiring them here
+    # instead would race sibling deployments' reconciles on shared
+    # routes.
+    if model is not None and model.deleted_at is None:
+        if live_targets:
+            destinations = await calculate_model_destinations(session, model)
+            if destinations:
+                group = mcp_handler.ModelAIProxyGroup(
+                    model_id=model.id,
+                    api_tokens=await cluster_registration_tokens(
+                        session, model.cluster_id
+                    ),
+                    native_anthropic_api=model.native_anthropic_api,
+                )
+                group.service_names.update(
+                    {registry.get_service_name() for _, _, registry in destinations}
+                )
+
+    expected_providers, expected_match_rules = mcp_handler.model_ai_proxy_plugin_spec(
+        groups=[group] if group is not None else [],
+    )
     await mcp_handler.ensure_wasm_plugin(
         api=extensions_api,
         name=mcp_handler.gpustack_ai_proxy_name,
@@ -1882,10 +1872,7 @@ async def ensure_route_ai_proxy_config(
             mcp_handler.ai_proxy_diff_spec,
             expected_providers=expected_providers,
             expected_match_rules=expected_match_rules,
-            owned_ingresses={
-                prefixed_ingress_name,
-                prefixed_fallback_ingress_name,
-            },
+            owned_provider_ids=owned_provider_ids,
         ),
     )
 
@@ -1905,22 +1892,13 @@ async def sync_gateway(
         model_route.id,
         options=[selectinload(ModelRoute.route_targets)],
     )
-    targets: List[ModelRouteTarget] = (
-        getattr(model_route_from_db, "route_targets", []) if model_route_from_db else []
-    )
-    has_fallback_target = any(
-        target
-        for target in targets
-        if target.fallback_status_codes and len(target.fallback_status_codes) > 0
-    )
     destinations = []
     fallback_destinations = []
-    model_groups: List[mcp_handler.ModelAIProxyGroup] = []
     if not model_route_from_db:
         event_type = EventType.DELETED
     if event.type != EventType.DELETED:
-        destinations, fallback_destinations, model_groups = (
-            await calculate_destinations(session, model_route)
+        destinations, fallback_destinations = await calculate_destinations(
+            session, model_route
         )
     # Effective model name = `<owner-name>/<route.name>` for non-platform
     # Orgs (so two Orgs can use the same `route.name` without colliding
@@ -1933,13 +1911,27 @@ async def sync_gateway(
         getattr(route_owner, "id", None) == platform_principal_id(),
     )
     ingress_name = mcp_handler.model_route_ingress_name(model_route.id)
-    await sync_model_route_mapper(
-        cfg=cfg,
-        extensions_api=extensions_api,
-        ingress_name=ingress_name,
-        route_name=effective_name,
-        destinations=destinations,
-        fallback_destinations=fallback_destinations,
+    # One collector across every route plugin: the flush after dispatch turns
+    # all their declarations into a single read-modify-write per shared CR.
+    # The mapper's fallback rules and the fallback ingress/filter are the
+    # fallback plugin's; this function keeps the shared inputs (the
+    # destinations pass, the effective name) and the core-path artifacts.
+    collector = RouteArtifactCollector()
+    await dispatch_route_reconcile(
+        RouteReconcileContext(
+            cfg=cfg,
+            session=session,
+            model_route=model_route,
+            ingress_name=ingress_name,
+            event_is_delete=event_type == EventType.DELETED,
+            extensions_api=extensions_api,
+            istio_networking_api=istio_networking_api,
+            collector=collector,
+            networking_api=networking_api,
+            effective_name=effective_name,
+            fallback_destinations=fallback_destinations,
+            destinations=destinations,
+        )
     )
     # FIXME: Copy the fallback destination to the main ingress for now to make sure the fallback
     # route is always hit when fallback is configured, even if the main route has no valid
@@ -1956,31 +1948,6 @@ async def sync_gateway(
         included_generic_route=False,
         included_proxy_route=model_route.generic_proxy,
     )
-    fallback_event_type = event_type
-    if not has_fallback_target:
-        fallback_event_type = EventType.DELETED
-    # Fallback ingress
-    await mcp_handler.ensure_model_ingress(
-        ingress_class_name=cfg.gateway_ingress_class,
-        event_type=fallback_event_type,
-        ingress_name=mcp_handler.fallback_ingress_name(ingress_name),
-        route_name=effective_name,
-        namespace=cfg.get_namespace(),
-        destinations=fallback_destinations,
-        networking_api=networking_api,
-        included_generic_route=False,
-        included_proxy_route=model_route.generic_proxy,
-        extra_annotations=mcp_handler.higress_http_header_matcher(
-            "exact", "x-higress-fallback-from", ingress_name
-        ),
-    )
-    # Fallback filter
-    await mcp_handler.ensure_fallback_filter(
-        event_type=fallback_event_type,
-        ingress_name=ingress_name,
-        namespace=cfg.get_namespace(),
-        networking_istio_api=istio_networking_api,
-    )
     # Generic-proxy router: inject x-higress-llm-model when /model/proxy/<id>/
     # is hit, so the existing main ingress header matcher + fallback chain apply.
     await ensure_route_generic_proxy_router_config(
@@ -1991,13 +1958,6 @@ async def sync_gateway(
         generic_proxy_enabled=(
             event_type != EventType.DELETED and bool(model_route.generic_proxy)
         ),
-    )
-    # ensure ai proxy config
-    await ensure_route_ai_proxy_config(
-        cfg=cfg,
-        model_route_id=model_route.id,
-        extensions_api=extensions_api,
-        model_groups=model_groups,
     )
 
 
@@ -2026,29 +1986,22 @@ async def calculate_destinations(
 ) -> Tuple[
     mcp_handler.DestinationTupleList,
     mcp_handler.DestinationTupleList,
-    List[mcp_handler.ModelAIProxyGroup],
 ]:
     """
     Return the percentage tuple for each registry with model name and the
-    fallback registry, plus the route's self-hosted destinations grouped by
-    deployment (Model) for the ai-proxy provider config. External provider
-    targets are excluded from the groups — they carry their own credentials and
-    their own provider entry.
+    fallback registry. The ai-proxy provider config is per deployment and
+    is refreshed by ``sync_model_ai_proxy`` from the model's full
+    reference set, not from this route's pass.
     """
     weight_to_count: List[Tuple[int, int, mcp_handler.DestinationTupleList]] = []
     fallback_weight_to_count: List[
         Tuple[int, int, mcp_handler.DestinationTupleList]
     ] = []
-    model_groups: Dict[int, mcp_handler.ModelAIProxyGroup] = {}
-    # Routes commonly fan out to several deployments of one cluster; cache the
-    # token per cluster so the group build stays at one query per cluster.
-    cluster_api_tokens: Dict[Optional[int], List[str]] = {}
     targets = await ModelRouteTarget.all_by_field(session, "route_id", model_route.id)
     for target in targets:
         if target.state != TargetStateEnum.ACTIVE:
             continue
         to_extend: mcp_handler.DestinationTupleList = []
-        model: Optional[Model] = None
         if target.model_id is not None:
             model = await Model.one_by_id(session, target.model_id)
             if model is None:
@@ -2069,23 +2022,25 @@ async def calculate_destinations(
             target.fallback_status_codes is not None
             and len(target.fallback_status_codes) > 0
         )
-        if model is not None:
-            await accumulate_model_ai_proxy_group(
-                session=session,
-                model_groups=model_groups,
-                cluster_api_tokens=cluster_api_tokens,
-                model=model,
-                destinations=to_extend,
-                is_fallback_target=is_fallback_target,
-            )
         count = sum([count for count, _, _ in to_extend])
         weight_to_count.append((target.weight, count, to_extend))
         if is_fallback_target:
             fallback_weight_to_count.append((target.weight, count, to_extend))
     if len(weight_to_count) == 0:
-        return [], [], []
+        return [], []
 
-    flatten_registry_list = flatten_destinations(weight_to_count)
+    # All-zero weights are the LB scoring / round-robin mode: candidate
+    # selection is the gateway plugin's job (the cluster_header
+    # EnvoyFilter displaces Envoy's weighted_clusters), but the ingress
+    # still needs a destination entry to exist at all — flatten with
+    # max_weight=1 so every registry gets an equal placeholder share,
+    # the same trick the fallback list already uses for its zero-weight
+    # members. Dropping them (a plain flatten) deletes the route's
+    # ingress entirely.
+    all_zero = all(weight == 0 or weight is None for weight, _, _ in weight_to_count)
+    flatten_registry_list = flatten_destinations(
+        weight_to_count, max_weight=1 if all_zero else 0
+    )
     fallback_registry_list = []
     if len(fallback_weight_to_count) > 0:
         # fallback might have 0 weight, so set max_weight to 1
@@ -2093,45 +2048,7 @@ async def calculate_destinations(
             fallback_weight_to_count, max_weight=1
         )
 
-    return flatten_registry_list, fallback_registry_list, list(model_groups.values())
-
-
-async def accumulate_model_ai_proxy_group(
-    session: AsyncSession,
-    model_groups: Dict[int, mcp_handler.ModelAIProxyGroup],
-    cluster_api_tokens: Dict[Optional[int], List[str]],
-    model: Model,
-    destinations: mcp_handler.DestinationTupleList,
-    is_fallback_target: bool,
-):
-    """Fold one route target's upstream services into its deployment's group.
-
-    A Model can appear under several targets of the same route (e.g. one target
-    per LoRA, each aliasing the same instances), so services accumulate instead
-    of overwriting. The credential is the deployment's cluster registration
-    token: it is the only existing credential every worker of that cluster
-    accepts, and ai-proxy holds one ``apiTokens`` list per provider while the
-    backend worker is picked independently by Envoy.
-
-    ``cluster_api_tokens`` is the caller's per-reconcile cache, so a route with
-    many deployments in one cluster resolves the token once.
-    """
-    group = model_groups.get(model.id)
-    if group is None:
-        if model.cluster_id not in cluster_api_tokens:
-            cluster_api_tokens[model.cluster_id] = await cluster_registration_tokens(
-                session, model.cluster_id
-            )
-        group = mcp_handler.ModelAIProxyGroup(
-            model_id=model.id,
-            api_tokens=cluster_api_tokens[model.cluster_id],
-            native_anthropic_api=model.native_anthropic_api,
-        )
-        model_groups[model.id] = group
-    service_names = {registry.get_service_name() for _, _, registry in destinations}
-    group.service_names.update(service_names)
-    if is_fallback_target:
-        group.fallback_service_names.update(service_names)
+    return flatten_registry_list, fallback_registry_list
 
 
 async def cluster_registration_tokens(
@@ -2171,18 +2088,16 @@ async def calculate_model_destinations(
 ) -> mcp_handler.DestinationTupleList:
     """Build destinations for a local-model target. LoRA child routes pass
     ``overridden_model_name=<base>:<lora>`` so the gateway's modelMapping
-    becomes a self-map (skipped at sync_model_route_mapper), letting the
+    becomes a self-map (skipped at the fallback rule render), letting the
     LoRA module name reach vLLM intact.
     """
     downstream_model_name = overridden_model_name or model.name
-    # LoRA targets share the base model's instances; route them to a per-LoRA
-    # aliased service (same address, distinct name) registered in ensure_model_mcp_bridge
-    # so the gateway can weight and rewrite per LoRA instead of collapsing onto one.
-    registry_name_suffix = (
-        mcp_handler.lora_registry_name_suffix(overridden_model_name)
-        if overridden_model_name is not None and ":" in overridden_model_name
-        else None
-    )
+    # The model name rides the destination tuple and is expressed on the
+    # mapper/lb CR (candidate.modelName, modelMappers) — never as a
+    # distinct service name. Every name a deployment serves, LoRA
+    # included, routes over the deployment's own registries; the wasm
+    # plugin weights and rewrites per candidate, so per-name alias
+    # clusters are not needed.
     cluster_registry = await get_cluster_registry(session, model.cluster_id)
     if cluster_registry is not None:
         return [(1, downstream_model_name, cluster_registry)]
@@ -2217,7 +2132,6 @@ async def calculate_model_destinations(
         instances,
         workers,
         downstream_model_name=downstream_model_name,
-        registry_name_suffix=registry_name_suffix,
     )
 
 
@@ -3864,6 +3778,46 @@ class ClusterController:
             raise
 
 
+def _changed_scalar(value: Any) -> Any:
+    """Normalize a ``changed_fields`` scalar side to its plain value.
+
+    The two producers of change events store different shapes for a
+    scalar column: the local ``find_history`` path records
+    ``(hist.deleted, hist.added)`` — sequences that are empty on the
+    None side of a None↔value transition — while the cross-instance
+    ``detect_changes`` path records a flat ``(old, new)``. Both
+    collapse to the scalar (None included).
+    """
+    if isinstance(value, (tuple, list)):
+        return value[0] if value else None
+    return value
+
+
+async def notify_model_ai_proxy_change(
+    session: AsyncSession, model_ids: "Set[int]"
+) -> None:
+    """Enqueue the models whose ai-proxy reference set may have changed.
+
+    Route CRUD does not write the ai-proxy CR — the Model controller owns
+    it — so when a target appears or disappears (route create/update/
+    delete, target add/remove, a state flip through the ACTIVE gate), the
+    affected models are enqueued here and rebuilt from their full
+    reference set. Deleted models need no event: their own delete event
+    strips the entry.
+    """
+    for model_id in model_ids:
+        if model_id is None:
+            continue
+        model = await Model.one_by_id(session, model_id)
+        if model is None or model.deleted_at is not None:
+            continue
+        copied = Model.model_validate(model.model_dump())
+        await event_bus.publish(
+            Model.__name__.lower(),
+            Event(type=EventType.UPDATED, data=copied),
+        )
+
+
 async def notify_model_route_target(session: AsyncSession, model: Model, event: Event):
     if event.type == EventType.DELETED:
         return
@@ -3924,13 +3878,29 @@ async def sync_categories_and_meta(session: AsyncSession, model: Model, event: E
     if not model:
         return
     routes = model.model_routes
+    # Plugins keep per-route state in meta under their registered names
+    # (the lb base capability). The model-sync wholesale meta replace
+    # would clobber those keys, so they are carried over from the
+    # current row — model metadata owns the rest.
+    from gpustack.routes.plugins import route_plugins
+
+    plugin_meta_keys = {p.name for p in route_plugins()}
     for route in routes:
         if route.created_model_id is None:
             continue
-        if route.categories != model.categories or route.meta != model.meta:
+        merged_meta = {
+            # A plugin-named key in model.meta is ordinary user data,
+            # not plugin state — it must not be able to forge or
+            # resurrect plugin-owned keys on the route row.
+            **{
+                k: v for k, v in (model.meta or {}).items() if k not in plugin_meta_keys
+            },
+            **{k: v for k, v in (route.meta or {}).items() if k in plugin_meta_keys},
+        }
+        if route.categories != model.categories or route.meta != merged_meta:
             await ModelRouteService(session).update(
                 model_route=route,
-                source={"categories": model.categories, "meta": model.meta},
+                source={"categories": model.categories, "meta": merged_meta},
                 auto_commit=True,
             )
 
@@ -4138,6 +4108,13 @@ class ModelRouteTargetController:
             "model_id",
             "overridden_model_name",
             "model",
+            # LB candidate-shaping columns — a change here must re-render
+            # the gateway candidates config, same as a weight or name edit
+            "weight",
+            "max_running_requests",
+            # The fallback path (fallback ingress, filter, mapper rules)
+            # turns on and off with a target's fallback codes
+            "fallback_status_codes",
         ]
         should_notify = event.type == EventType.DELETED
         if not should_notify:
@@ -4158,6 +4135,25 @@ class ModelRouteTargetController:
                 ModelRoute.__name__.lower(),
                 Event(type=EventType.UPDATED, data=copied_route),
             )
+            # A state flip crosses the ai-proxy existence gate, and a
+            # model_id change crosses it for both models — enqueue them
+            # so the Model controller rebuilds their entries from the new
+            # reference set.
+            if event.type == EventType.DELETED:
+                await notify_model_ai_proxy_change(session, {target.model_id})
+            else:
+                changed = changed_fields or {}
+                if "state" in changed:
+                    await notify_model_ai_proxy_change(session, {target.model_id})
+                if "model_id" in changed:
+                    old_model_id, new_model_id = changed["model_id"]
+                    await notify_model_ai_proxy_change(
+                        session,
+                        {
+                            _changed_scalar(old_model_id),
+                            _changed_scalar(new_model_id),
+                        },
+                    )
         except Exception as e:
             logger.error(f"Failed to notify model route for target {target.name}: {e}")
 

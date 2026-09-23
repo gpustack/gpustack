@@ -1119,7 +1119,16 @@ async def _create_model_route(
         generic_proxy=model.generic_proxy,
         model_route=model_route,
         model=model,
-        weight=100,
+        # Policy load-balancing out of the box: with more than one
+        # replica the gateway picks among the deployment's instances
+        # per request, so the auto-created target carries no split
+        # weight (capability scoring decides the instance). Single
+        # replica deployments keep the weighted shape — there is
+        # nothing to schedule between instances. This default is a
+        # creation-time convenience only: scaling an existing deployment
+        # across the 1-replica boundary later leaves the stored shape
+        # alone, and an explicit edit wins either way.
+        weight=0 if (model.replicas or 0) > 1 else 100,
         state=TargetStateEnum.UNAVAILABLE,
     )
     await ModelRouteTarget.create(
@@ -1127,6 +1136,31 @@ async def _create_model_route(
         source=model_route_target,
         auto_commit=False,
     )
+    if (model.replicas or 0) > 1:
+        from gpustack.routes.plugins import get_route_plugin
+
+        least_load = get_route_plugin("least-load")
+        if least_load is not None:
+            # Best-effort by design: through the plugin's own write path
+            # so the default lands exactly as a client's plugins section
+            # would, but a missing or partially-migrated plugin table must
+            # not turn the whole deployment create into a 500 — the
+            # route works without the capability, and the next write can
+            # add it back. The savepoint isolates the plugin write: a
+            # DB-level failure rolls back to here without poisoning the
+            # caller's uncommitted transaction.
+            try:
+                async with session.begin_nested():
+                    await least_load.on_route_write(
+                        "create", model_route, {"enabled": True}, session
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to enable the least-load capability on the route "
+                    "for model %s; the route is created without it",
+                    model.name,
+                    exc_info=True,
+                )
     if grant_owning_org:
         # Auto-grant the owning Org on the primary route so its
         # members see it out of the box. The route is brand new,

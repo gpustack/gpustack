@@ -108,7 +108,6 @@ from gpustack.gateway.utils import (
     model_route_ingress_prefix,
     model_route_ingress_name,
     fallback_ingress_name,
-    route_ingress_names_for_plugins,
     cleanup_ingresses,
     cleanup_model_mapper,
     cleanup_fallback_filters,
@@ -256,6 +255,7 @@ class Server:
         # Coordination components
         self._coordinator = None
         self._leader_election_task = None
+        self._leader_ai_proxy_cleanup_task = None
 
     @property
     def all_processes(self):
@@ -1167,10 +1167,6 @@ class Server:
             session=session,
             fields={"deleted_at": None},
         )
-        models = await Model.all_by_fields(
-            session=session,
-            fields={"deleted_at": None},
-        )
         model_instances = await ModelInstance.all_by_fields(
             session=session,
             fields={"deleted_at": None},
@@ -1220,27 +1216,14 @@ class Server:
             reason="orphaned",
             k8s_config=k8s_config,
         )
-        # Both ingress names of every live route, spelled as the plugin's match
-        # rules store them, so rules left behind by a route deleted while the
-        # server was down are pruned even when the deployment they point at is
-        # still alive.
-        expected_plugin_ingresses = {
-            name
-            for model_route in model_routes
-            for name in route_ingress_names_for_plugins(
-                model_route_id=model_route.id,
-                resource_namespace=self.config.get_namespace(),
-                gateway_namespace=self.config.gateway_namespace,
-            )
-        }
-        await cleanup_ai_proxy_config(
-            namespace=self.config.gateway_namespace,
-            providers=providers,
-            models=models,
-            routes=model_routes,
-            expected_ingresses=expected_plugin_ingresses,
-            k8s_config=k8s_config,
-        )
+        # NOTE: cleanup_ai_proxy_config deliberately does NOT run here.
+        # It is version-semantic (it retires legacy per-route entries
+        # wholesale), and this pass runs on every server at startup,
+        # before leader election — a new-version standby executing it
+        # while an old-version leader still serves would strip that
+        # leader's routes of their ai-proxy rules. It runs from
+        # _start_leader_tasks instead, where leadership guarantees the
+        # control plane is already on this version.
         await cleanup_generic_proxy_router(
             routes=model_routes,
             k8s_config=k8s_config,
@@ -1253,6 +1236,49 @@ class Server:
             workers=workers,
             k8s_config=k8s_config,
         )
+
+    async def _cleanup_ai_proxy_config(self):
+        """Leader-only ai-proxy prune (see the note in
+        _cleanup_orphaned_gateway_data for why it does not run on every
+        server at startup). This pass is the ONLY thing retiring legacy
+        per-route entries, so a transient failure at leader startup must
+        not leave them stale forever: the prune is idempotent and
+        retried with bounded backoff."""
+        if self.config.gateway_mode == GatewayModeEnum.disabled:
+            return
+        delays = (5, 10, 30, 60, 120)
+        for attempt, delay in enumerate((*delays, None)):
+            try:
+                async with async_session() as session:
+                    providers = await ModelProvider.all_by_fields(
+                        session=session,
+                        fields={"deleted_at": None},
+                    )
+                    models = await Model.all_by_fields(
+                        session=session,
+                        fields={"deleted_at": None},
+                    )
+                await cleanup_ai_proxy_config(
+                    namespace=self.config.gateway_namespace,
+                    providers=providers,
+                    models=models,
+                    k8s_config=get_async_k8s_config(cfg=self.config),
+                )
+                return
+            except Exception:
+                if delay is None:
+                    logger.exception(
+                        "Leader ai-proxy cleanup failed after all retries; "
+                        "legacy entries stay until the next leader restart"
+                    )
+                    return
+                logger.warning(
+                    "Leader ai-proxy cleanup failed (attempt %d), retrying in %ss",
+                    attempt + 1,
+                    delay,
+                    exc_info=True,
+                )
+                await asyncio.sleep(delay)
 
     def _should_create_default_cluster(self) -> bool:
         # only server or both will get into this logic
@@ -1500,6 +1526,19 @@ class Server:
 
         # Controllers
         self._start_controllers()
+
+        # The ai-proxy cleanup is version-semantic (retiring legacy
+        # per-route entries wholesale): it must not run on a standby
+        # while an old-version leader may still serve. Leadership is
+        # the gate — by the time this node runs leader tasks, the
+        # control plane is on this version.
+        # The event loop holds only a weak reference to a bare task, and
+        # this pass (retry loop included) can sleep for minutes — keep a
+        # strong reference so it is neither garbage-collected mid-run nor
+        # lost track of for shutdown.
+        self._leader_ai_proxy_cleanup_task = asyncio.create_task(
+            self._cleanup_ai_proxy_config()
+        )
 
         # System Load Collector
         self._start_system_load_collector()

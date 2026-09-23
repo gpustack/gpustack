@@ -38,7 +38,6 @@ from gpustack.gateway.utils import (
     openai_model_prefixes,
     anthropic_model_exact,
     gpustack_ai_proxy_name,
-    gpustack_model_mapper_name,
     gpustack_generic_proxy_router_name,
     mcp_ingress_equal,
     get_default_mcpbridge_ref,
@@ -54,6 +53,7 @@ from gpustack.gateway.ext_auth import (
     ext_auth_spec,
 )
 from gpustack.gateway.plugins import plugin_entry, plugin_spec_overrides
+from gpustack.routes.plugins import route_plugins
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +157,29 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
     return registry
 
 
+def _redis_registry_from_config(
+    cfg: Config, gateway_namespace: Optional[str]
+) -> Optional[McpBridgeRegistry]:
+    """The redis registry to register for ``--redis-url``, or None.
+
+    Gated on the same validation the plugin config path applies
+    (_redis_config_from_url): a credentialed or TLS url publishes
+    neither the redis block nor the registry, so the two writers never
+    disagree about whether the url is usable. None also covers an unset
+    url, which the caller reads as "prune any registry left behind"."""
+    from gpustack.routes.plugins.lb.gateway import (
+        _redis_config_from_url,
+        redis_registry_from_url,
+    )
+
+    redis_url = getattr(cfg, "redis_url", None)
+    if not redis_url:
+        return None
+    if _redis_config_from_url(redis_url, namespace=gateway_namespace) is None:
+        return None
+    return redis_registry_from_url(redis_url, namespace=gateway_namespace)
+
+
 async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
     api = gw_client.NetworkingHigressIoV1Api(api_client)
     # use default name for embedded mode
@@ -172,11 +195,17 @@ async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
         else:
             raise
     target_registry = get_gpustack_higress_registry(cfg=cfg)
+    # The redis service the LB plugin's redis block points at, from
+    # --redis-url. Registered alongside the higress registry so the
+    # WasmPlugin config (a service name, not a raw host) always has a
+    # cluster behind it.
+    redis_registry = _redis_registry_from_config(cfg, gateway_namespace)
+    registries_to_upsert = [r for r in (target_registry, redis_registry) if r]
     try:
         if not default_bridge:
             bridge = McpBridge(
                 metadata={"name": "default", "namespace": gateway_namespace},
-                spec=McpBridgeSpec(registries=[target_registry]),
+                spec=McpBridgeSpec(registries=registries_to_upsert),
             )
             await api.create_mcpbridge(namespace=gateway_namespace, body=bridge)
         else:
@@ -186,24 +215,34 @@ async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
                 if default_bridge.spec and default_bridge.spec.registries
                 else []
             )
-            if not any(r.name == target_registry.name for r in registries):
-                if default_bridge.spec is None:
-                    default_bridge.spec = McpBridgeSpec()
-                registries.append(target_registry)
-                default_bridge.spec.registries = registries
-                should_update = True
-            else:
-                registry = next(r for r in registries if r.name == target_registry.name)
-                if (
-                    registry.type != target_registry.type
-                    or registry.domain != target_registry.domain
-                    or registry.port != target_registry.port
-                    or registry.protocol != target_registry.protocol
+            for upsert in registries_to_upsert:
+                existing = next((r for r in registries if r.name == upsert.name), None)
+                if existing is None:
+                    if default_bridge.spec is None:
+                        default_bridge.spec = McpBridgeSpec()
+                    registries.append(upsert)
+                    default_bridge.spec.registries = registries
+                    should_update = True
+                elif (
+                    existing.type != upsert.type
+                    or existing.domain != upsert.domain
+                    or existing.port != upsert.port
+                    or existing.protocol != upsert.protocol
                 ):
-                    registry.type = target_registry.type
-                    registry.domain = target_registry.domain
-                    registry.port = target_registry.port
-                    registry.protocol = target_registry.protocol
+                    existing.type = upsert.type
+                    existing.domain = upsert.domain
+                    existing.port = upsert.port
+                    existing.protocol = upsert.protocol
+                    should_update = True
+            if redis_registry is None:
+                # A redis_url that was unset or became unusable must not
+                # leave its registry behind: nothing references it, and
+                # the stale gateway config outlives the feature.
+                from gpustack.routes.plugins.lb.gateway import REDIS_REGISTRY_NAME
+
+                remaining = [r for r in registries if r.name != REDIS_REGISTRY_NAME]
+                if len(remaining) != len(registries):
+                    default_bridge.spec.registries = remaining
                     should_update = True
             if should_update:
                 await api.edit_mcpbridge(
@@ -390,18 +429,6 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         **plugin_spec_overrides("gpustack-set-header-pre-route", cfg=cfg),
     )
     return resource_name, expected_spec
-
-
-def model_mapper_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
-    return gpustack_model_mapper_name, WasmPluginSpec(
-        phase="AUTHN",
-        priority=800,
-        **plugin_spec_overrides("gpustack-model-mapper", cfg=cfg),
-        defaultConfigDisable=False,
-        defaultConfig={"modelMapping": {}},
-        matchRules=[],
-        failStrategy="FAIL_OPEN",
-    )
 
 
 class HeaderRule(BaseModel):
@@ -810,6 +837,81 @@ def validate_ai_statistics_plugin_content_types(cfg: Config):
             )
 
 
+def _spec_diff_for(
+    plugin_name: str,
+    plugin_spec: WasmPluginSpec,
+    route_plugin_diffs: Dict[str, Any],
+) -> Any:
+    """Pick the diff policy for one WasmPlugin publication. Route
+    plugins carry their own; the built-ins are keyed by resource name."""
+    if plugin_name == gpustack_generic_proxy_router_name:
+        return partial(generic_proxy_router_spec_diff, expected_spec=plugin_spec)
+    if plugin_name == ext_auth_resource_name:
+        # Hybrid resource: the static base is rewritten from cfg on
+        # every start, the key tables and route rules are carried
+        # over from the live CR because the database owns them.
+        return partial(ext_auth_init_spec_diff, expected_spec=plugin_spec)
+    if plugin_name in route_plugin_diffs:
+        entry = route_plugin_diffs[plugin_name]
+        if entry.spec_diff is not None:
+            if entry.create_only:
+                logger.warning(
+                    "Route gateway entry '%s' carries both spec_diff and "
+                    "create_only; create_only is ignored",
+                    plugin_name,
+                )
+            return entry.spec_diff
+        return partial(
+            spec_replace,
+            expected_spec=plugin_spec,
+            create_only=entry.create_only,
+        )
+    create_only = plugin_name in [
+        gpustack_ai_proxy_name,
+    ]
+    return partial(spec_replace, expected_spec=plugin_spec, create_only=create_only)
+
+
+def _append_route_plugin_entries(
+    cfg: Config, plugin_list: List[Tuple[str, WasmPluginSpec]]
+) -> Dict[str, Any]:
+    """Route plugins append their own WasmPlugin CRs to the same
+    publication pass. They carry their own diff policy (an init pass
+    that leaves the route-driven sections of the live CR alone is what
+    keeps this static pass and the plugin's reconciler from fighting
+    over one resource); only when a plugin provides none does the
+    default replace apply. Returns the name-to-entry map the diff
+    selection in ``initialize_gateway`` consults.
+
+    A route plugin may take over a CR name the built-in list already
+    carries — the LB context role keeps ``gpustack-model-mapper`` for
+    its in-place upgrade. The route plugin's entry wins and the
+    built-in's is dropped, so one name is published exactly once and
+    ownership is unambiguous."""
+    route_plugin_diffs: Dict[str, Any] = {}
+    entry_owners: Dict[str, str] = {}
+    for route_plugin in route_plugins():
+        for entry in route_plugin.gateway_entries(cfg):
+            owner = entry_owners.get(entry.name)
+            if owner is not None:
+                # Same conflict policy as register_route_plugin's
+                # duplicate-name check: two plugins writing one CR is a
+                # packaging bug, and last-registered-wins would hide it.
+                raise ValueError(
+                    f"Route plugins '{owner}' and '{route_plugin.name}' both "
+                    f"declare the gateway entry '{entry.name}'"
+                )
+            entry_owners[entry.name] = route_plugin.name
+            route_plugin_diffs[entry.name] = entry
+    if route_plugin_diffs:
+        plugin_list[:] = [
+            (name, spec) for name, spec in plugin_list if name not in route_plugin_diffs
+        ]
+        for entry in route_plugin_diffs.values():
+            plugin_list.append((entry.name, entry.spec))
+    return route_plugin_diffs
+
+
 def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
     if cfg.gateway_mode == GatewayModeEnum.disabled:
         return
@@ -872,11 +974,11 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             generic_proxy_router_plugin(cfg=cfg),
             ai_proxy_plugin(cfg=cfg),
             model_pre_route_plugin(cfg=cfg),
-            model_mapper_plugin(cfg=cfg),
         ]
         if cfg.server_role() != Config.ServerRole.WORKER:
             plugin_list.append(transformer_plugin(cfg=cfg))
             plugin_list.append(token_usage_plugin(cfg=cfg))
+        route_plugin_diffs = _append_route_plugin_entries(cfg, plugin_list)
 
         async def prepare():
             api_client = k8s_client.ApiClient(
@@ -888,27 +990,9 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
                 await ensure_gateway_timeout(cfg=cfg, api_client=api_client)
                 await ensure_ingress_resources(cfg=cfg, api_client=api_client)
             for plugin_name, plugin_spec in plugin_list:
-                if plugin_name == gpustack_generic_proxy_router_name:
-                    spec_diff_func = partial(
-                        generic_proxy_router_spec_diff, expected_spec=plugin_spec
-                    )
-                elif plugin_name == ext_auth_resource_name:
-                    # Hybrid resource: the static base is rewritten from cfg on
-                    # every start, the key tables and route rules are carried
-                    # over from the live CR because the database owns them.
-                    spec_diff_func = partial(
-                        ext_auth_init_spec_diff, expected_spec=plugin_spec
-                    )
-                else:
-                    create_only = plugin_name in [
-                        gpustack_ai_proxy_name,
-                        gpustack_model_mapper_name,
-                    ]
-                    spec_diff_func = partial(
-                        spec_replace,
-                        expected_spec=plugin_spec,
-                        create_only=create_only,
-                    )
+                spec_diff_func = _spec_diff_for(
+                    plugin_name, plugin_spec, route_plugin_diffs
+                )
                 await ensure_wasm_plugin(
                     api=gw_client.ExtensionsHigressIoV1Api(api_client),
                     name=plugin_name,

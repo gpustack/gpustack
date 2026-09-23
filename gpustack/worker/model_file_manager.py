@@ -958,7 +958,7 @@ class ModelFileDownloadTask:
             cache_dir=self._config.cache_dir,
         )
 
-        (size, file_paths) = hub.match_file_and_calculate_size(
+        size, file_paths = hub.match_file_and_calculate_size(
             files=repo_file_list,
             model=self._model_file,
             cache_dir=self._config.cache_dir,

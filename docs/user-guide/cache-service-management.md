@@ -29,9 +29,49 @@ Cache services attach to the built-in vLLM and SGLang backends only, and a deplo
 
 Each instance reports the cache service it attached to and its recent hit rate. An instance that started without the cache — because no cache instance was available on its worker, for example — reports the shared KV cache as not active rather than failing.
 
-## Customize the Provider Catalog
+## Running Hybrid Attention Models with LMCache
 
-The providers you can pick from are the ones this release carries, plus any an installed extension adds. Platform admins can replace that catalog with a document of their own — to pin a different image, add a version, or declare a provider GPUStack does not ship.
+A hybrid model interleaves recurrent layers — Mamba, or Gated-DeltaNet (GDN) linear attention — with full-attention layers. The Qwen3.5 and Qwen3.6 series, Qwen3-Next, Kimi-Linear and Kimi K3 are all of this kind.
+
+A recurrent layer holds a fixed-size state instead of one key/value pair per token, and that state can only be snapshotted where a block ends. The engine therefore works in blocks far larger than the usual handful of tokens, sized from the model itself, and LMCache can serve the model only if it stores cache in units those block boundaries agree with. Neither side arranges this on its own: left as they come, the engine either refuses to start or attaches and never records a hit.
+
+### Step 1: Find the block size the engine chose
+
+vLLM raises the attention block size until an attention page is at least as large as a recurrent-state page, and logs the result when the deployment starts:
+
+```
+Setting attention block size to 544 tokens to ensure that attention page size is >= mamba page size.
+```
+
+That number is `N`. It follows from the model, the data type and the parallelism, so read it from the deployment's own log rather than assuming it. The values below were read from single-GPU runs at the model's own precision — a sanity check on what you see, not a lookup table:
+
+| Model                                     | `N` |
+| ----------------------------------------- | --- |
+| `Qwen/Qwen3.5-0.8B`                       | 544 |
+| `Qwen/Qwen3.6-27B`                        | 784 |
+| `moonshotai/Kimi-Linear-48B-A3B-Instruct` | 944 |
+| `moonshotai/Kimi-K3`                      | 768 |
+
+### Step 2: Configure the cache service
+
+- Set `Chunk Size` to `N`, or to a multiple of it. The cache server's chunk size must be a multiple of the engine's block size or cache registration fails.
+- Add `--separate-object-groups` to the cache server's `Parameters`, so each attention window is stored as its own object group. The server keeps this off by default.
+
+!!! note
+
+    Chunk size belongs to the cache service, not to a deployment. A service tuned for one `N` still serves ordinary models whose block size divides it, but two hybrid models with different `N` need a cache service each.
+
+### Step 3: Deploy the model against the service
+
+Deploy the model as in [Attach a Deployment](#attach-a-deployment), choosing the cache service from step 2 as its `Cache Backend`. A running instance reports the service it attached to and the hit rate it is seeing.
+
+### Reference
+
+[Hybrid Attention Models](https://docs.lmcache.ai/mp/hybrid_models.html) — LMCache's own account of the same requirement, and the flags its server takes for it.
+
+## Customize Cache Providers
+
+The providers you can pick from are the ones this release carries, plus any an installed extension adds. Platform admins can replace that set with a document of their own — to pin a different image, add a version, or declare a provider GPUStack does not ship.
 
 1. Navigate to the `Cache Service` page.
 2. Click the `Manage Providers` button.
@@ -45,7 +85,7 @@ The providers you can pick from are the ones this release carries, plus any an i
 
 !!! warning
 
-    **Start from the built-in file, not from an empty editor.** A document of your own replaces the catalog outright — every provider it does not declare goes out of service, including the ones an installed extension contributes. Click `Built-in File` in the editor header to download what this installation currently serves, and edit that.
+    **Start from the built-in file, not from an empty editor.** A document of your own replaces the whole set outright — every provider it does not declare goes out of service, including the ones an installed extension contributes. Click `Built-in File` in the editor header to download what this installation currently serves, and edit that.
 
 Your document is validated when you save it, and refused as a whole if anything in it will not serve — a declaration this version cannot read, a placeholder that would render literally, or a field name that does not exist. The last one matters more than it looks: an unknown key is simply ignored, so a component whose `run_command` was spelled `run_cmd` would otherwise launch with no command at all.
 
@@ -55,68 +95,4 @@ A save is also refused when it would take away a provider, or the version, that 
 
     Running instances keep the declaration they started with. A new one takes effect when an instance is recreated, the same way a provider changes across a GPUStack upgrade.
 
-    Nothing updates this catalog on a schedule: a URL source is read when you save it and when you click `Update Now`. While a document of your own is configured, providers added by a GPUStack upgrade or by a newly installed extension do not appear until you fold them in — download the built-in file again to see what they added.
-
-## Hybrid Models
-
-A hybrid model interleaves recurrent layers — Mamba, or Gated-DeltaNet (GDN) linear attention — with full-attention layers. The Qwen3.5 and Qwen3.6 series, Qwen3-Next, Kimi-Linear and Kimi K3 are all of this kind.
-
-Their recurrent layers hold a fixed-size state rather than one key/value pair per token, and that state can only be snapshotted at block boundaries. Attaching such a model to a cache service therefore needs matching settings on both sides. With the defaults, the engine either fails to start or attaches and never records a hit.
-
-### Step 1: Find the unified block size
-
-vLLM raises the attention block size until an attention page is at least as large as a recurrent-state page, and logs the result when the deployment starts:
-
-```
-Setting attention block size to 544 tokens to ensure that attention page size is >= mamba page size.
-```
-
-That number is `N`. It depends on the model, the data type and the parallelism, so read it from the deployment's own log rather than assuming it. Known values:
-
-| Model                                      | `N`   |
-| ------------------------------------------ | ----- |
-| `Qwen/Qwen3.5-0.8B`                        | 544   |
-| `Qwen/Qwen3.6-27B`                         | 784   |
-| `moonshotai/Kimi-Linear-48B-A3B-Instruct`  | 944   |
-| `moonshotai/Kimi-K3`                       | 768   |
-
-### Step 2: Configure the cache service
-
-- Set `Chunk Size` to `N`, or to a multiple of it. The cache server's chunk size must be a multiple of the engine's block size or cache registration fails.
-- Add `--separate-object-groups` to the cache server's `Parameters`, so each attention window is stored as its own object group. The server keeps this off by default.
-
-!!! note
-
-    Chunk size belongs to the cache service, not to a deployment. A service tuned for one `N` still serves ordinary models whose block size divides it, but two hybrid models with different `N` need a cache service each.
-
-### Step 3: Configure the deployment
-
-Add these backend parameters to the model deployment:
-
-```
---mamba-cache-mode align
---enable-prefix-caching
---max-num-batched-tokens <N>
-```
-
-- `align` is mandatory: GDN backends do not support the `all` mode.
-- `--enable-prefix-caching` is mandatory. vLLM enables prefix caching by default for ordinary models but keeps it opt-in for hybrid ones, and it reports the decision at debug level — without this flag the deployment starts cleanly, attaches to the cache and never hits.
-- `--max-num-batched-tokens` must be at least `N`, so every prefill step advances at least one whole block. Setting it to exactly `N` is always valid; values up to `2 * N - 1` let a step cover a block boundary sooner, at the cost of a longer cold start.
-
-!!! note
-
-    Generation is not bit-exact between a cached and an uncached run of a hybrid model, because GDN backends do not support vLLM's batch-invariant mode.
-
-## Troubleshooting
-
-**`ValueError: Failed to promote local KV cache specs to one unified type.`**
-
-The engine started with its hybrid KV cache manager disabled, which a hybrid model cannot run with: its recurrent and full-attention layers have no common cache specification. Remove `--disable-hybrid-kv-cache-manager` from the deployment's backend parameters. The connector reports hybrid support to vLLM on its own, so the flag is never needed.
-
-**The engine reports `max_num_batched_tokens` is below the block size.**
-
-Follow step 3: the value must be at least the `N` from step 1.
-
-**The deployment attaches but the hit rate stays at zero.**
-
-Check that prefix caching is on (step 3), and that `Chunk Size` is a multiple of `N` (step 2).
+    Nothing updates the providers on a schedule: a URL source is read when you save it and when you click `Update Now`. While a document of your own is configured, providers added by a GPUStack upgrade or by a newly installed extension do not appear until you fold them in — download the built-in file again to see what they added.
