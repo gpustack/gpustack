@@ -2268,8 +2268,10 @@ def is_ready(
         # Reasons:
         # 1. Connectivity to the loopback address does not work with Ascend MindIE.
         # 2. More adaptable to container networks.
-        health_check_url = f"http://{mi.worker_ip}:{mi.port}{health_check_path}"
-        response = requests.get(health_check_url, timeout=1)
+        scheme = envs.GPUSTACK_INSTANCE_SCHEME
+        verify = not envs.GPUSTACK_INSTANCE_TLS_INSECURE if scheme == "https" else True
+        health_check_url = f"{scheme}://{mi.worker_ip}:{mi.port}{health_check_path}"
+        response = requests.get(health_check_url, timeout=1, verify=verify)
         if response.status_code == 200:
             return True
     except Exception as e:
@@ -2360,10 +2362,12 @@ def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bo
         return True
 
     endpoint_path, payload = result
-    inference_url = f"http://{mi.worker_ip}:{mi.port}{endpoint_path}"
+    scheme = envs.GPUSTACK_INSTANCE_SCHEME
+    verify = not envs.GPUSTACK_INSTANCE_TLS_INSECURE if scheme == "https" else True
+    inference_url = f"{scheme}://{mi.worker_ip}:{mi.port}{endpoint_path}"
 
     try:
-        response = requests.post(inference_url, json=payload, timeout=timeout)
+        response = requests.post(inference_url, json=payload, timeout=timeout, verify=verify)
         if response.status_code == 200:
             return True
         else:
