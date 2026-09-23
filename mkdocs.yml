@@ -164,6 +164,7 @@ nav:
               - Rerank: user-guide/playground/rerank.md
           - Model Catalog: user-guide/model-catalog.md
           - Model Deployment Management: user-guide/model-deployment-management.md
+          - PD Disaggregation: user-guide/pd-disaggregation.md
           - Model Route Management: user-guide/model-route-management.md
           - Model Provider Management: user-guide/model-provider-management.md
           - Inference Backend Management: user-guide/inference-backend-management.md
