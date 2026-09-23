@@ -49,12 +49,38 @@ class BenchmarkLoadTypeEnum(str, Enum):
     - concurrency: guidellm `concurrent` — closed-loop, N requests in flight.
 
     An enum rather than a free string because both the runner and the analysis
-    compare it exactly: a typo used to fall through to the fixed_rate branch, so
-    a run labelled "concurrency" silently executed as a rate sweep.
+    compare it exactly: a typo in a free string falls through to the fixed_rate
+    branch, so a run labelled "concurrency" silently executes as a rate sweep.
     """
 
     FIXED_RATE = "fixed_rate"
     CONCURRENCY = "concurrency"
+
+
+class BenchmarkTargetModeEnum(str, Enum):
+    r"""What the load is aimed at: one instance, or the deployment's entrance.
+
+    The two are different measurements, and the difference is not overhead —
+    it is what the number means.
+
+    ``instance`` measures an ENGINE. The load goes straight at a member's own
+    port, so nothing but the engine is in the path. It is the right mode for
+    tuning engine parameters. For a group the member is its router (no other
+    member can answer a whole request); for a plain model it is one replica.
+
+    ``route`` measures a DEPLOYMENT, through the route clients actually call.
+    A plain model with four replicas is four replicas here and one replica in
+    ``instance`` mode — which is the whole reason this exists: comparing a
+    2P2D group against a four-replica deployment is only meaningful when both
+    sides are driven as deployments.
+
+    ``route`` puts the server's proxy in the path, and at high rates the
+    proxy can be the bottleneck rather than the deployment. That is the reason
+    ``instance`` stays the default and stays available for groups.
+    """
+
+    INSTANCE = "instance"
+    ROUTE = "route"
 
 
 class BenchmarkLoadModeEnum(str, Enum):
@@ -112,9 +138,9 @@ class SLOThreshold:
     - the analysis, to decide whether a measured point meets the SLO and how much
       of its budget the point used (`metric`, `scale`).
 
-    Each of those used to carry its own hand-written copy of the nine rows, so
-    adding an aggregation meant editing several lists and silently losing the
-    threshold in whichever one was missed.
+    One table rather than a hand-written copy of the nine rows in each of
+    those: with several lists, adding an aggregation silently loses the
+    threshold in whichever one is missed.
 
     `scale` takes the stored metric to milliseconds: request_latency is stored in
     seconds, TTFT / TPOT already in ms.
@@ -146,11 +172,11 @@ SLO_THRESHOLDS: List[SLOThreshold] = [
     # under `inter_token_latency_ms` — (last_token - first_token) / (tokens - 1),
     # the quantity vLLM and genai-perf report as TPOT.
     #
-    # They used to bound `time_per_output_token_*` alone, which is guidellm's OTHER
-    # per-token metric: (last_token - request_start) / tokens, i.e. TTFT folded
-    # into the decode average. That charged prefill and queue wait to the decode
-    # loop; the error is TTFT / (n * TPOT), so ~5% on a 128-token run and ~40% at
-    # 16 output tokens, and it grew with load exactly where the SLO decides
+    # Deliberately NOT `time_per_output_token_*`, guidellm's OTHER per-token
+    # metric: (last_token - request_start) / tokens, i.e. TTFT folded into the
+    # decode average. That charges prefill and queue wait to the decode loop;
+    # the error is TTFT / (n * TPOT), so ~5% on a 128-token run and ~40% at 16
+    # output tokens, and it grows with load exactly where the SLO decides
     # capacity.
     #
     # It stays as the FALLBACK because the decode-only metric is not always
@@ -162,25 +188,32 @@ SLO_THRESHOLDS: List[SLOThreshold] = [
     # judged instead of failing it (a threshold that fails wherever the server
     # batched its stream would bracket the ramp on its first point) and without
     # waiving it (0 ms would clear every budget).
+    # This table is also where gpustack's vocabulary meets benchmark-runner's.
+    # gpustack says TPOT (the API field, the CLI, the form, the column), the
+    # runner and guidellm below it say ITL — both names for the decode-only
+    # per-token time. The flag column carries the translation, so it happens
+    # once, here, instead of being re-derived at each call site: everything to
+    # the left of it is gpustack's own naming, everything sent to the right is
+    # the runner's.
     SLOThreshold(
         "slo_avg_tpot_ms",
         "inter_token_latency_mean",
         1.0,
-        "--slo-avg-tpot-ms",
+        "--slo-avg-itl-ms",
         fallback="time_per_output_token_mean",
     ),
     SLOThreshold(
         "slo_p95_tpot_ms",
         "inter_token_latency_p95",
         1.0,
-        "--slo-p95-tpot-ms",
+        "--slo-p95-itl-ms",
         fallback="time_per_output_token_p95",
     ),
     SLOThreshold(
         "slo_p99_tpot_ms",
         "inter_token_latency_p99",
         1.0,
-        "--slo-p99-tpot-ms",
+        "--slo-p99-itl-ms",
         fallback="time_per_output_token_p99",
     ),
     SLOThreshold(
@@ -241,6 +274,11 @@ class ModelInstanceSnapshot(ModelInstanceRuntimeInfo):
     id: int
     name: str
     resolved_path: Optional[str] = None
+    # Which role of its model this member served. None for a plain deployment,
+    # and the only thing that tells a group's members apart once the run is
+    # over: a report that lists three machines cannot otherwise say which one
+    # was the router the load was sent to and which held the cards.
+    role: Optional[str] = None
 
     # resource info
     state: Optional[str] = None
@@ -256,7 +294,8 @@ class ModelInstanceSnapshot(ModelInstanceRuntimeInfo):
     run_command: Optional[str] = Field(sa_type=Text, default=None)
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
 
-    # Extended KV Cache configuration. Maps to LMCache in vLLM, and to SGLang's native HiCache (LMCache in shared mode).
+    # Extended KV Cache configuration. Maps to LMCache in vLLM, and to SGLang's
+    # native HiCache (LMCache in shared mode).
     extended_kv_cache: Optional[ExtendedKVCacheConfig] = Field(
         sa_type=pydantic_column_type(ExtendedKVCacheConfig), default=None
     )
@@ -336,6 +375,20 @@ class BenchmarkBase(SQLModel):
     dataset_output_max: Optional[int] = Field(default=None)
 
     cluster_id: int = Field(default=None)
+    # What the load is aimed at. A column rather than a derivation: it is part
+    # of the configuration a clone or an export has to carry, and two runs of
+    # one model in different modes are not comparable, so the report has to be
+    # able to say which one it was.
+    # Stored as a plain string for the same reason as `load_type` below: the
+    # default enum column keys on member NAMES (`INSTANCE`), while the
+    # migration backfills, the API accepts and the UI sends the VALUE
+    # (`instance`). Measured consequence of the mismatch: every read of a
+    # pre-existing row raised `'instance' is not among the defined enum
+    # values`, which killed the benchmark watch stream and left the worker
+    # re-subscribing every five seconds.
+    target_mode: BenchmarkTargetModeEnum = Field(
+        default=BenchmarkTargetModeEnum.INSTANCE, sa_type=AutoString
+    )
     model_id: Optional[int] = Field(default=None)
     model_name: Optional[str] = Field(
         default=None
@@ -390,9 +443,9 @@ class BenchmarkBase(SQLModel):
     # Latency SLO: optional "<= threshold" targets used to pick the max load that
     # still meets the SLO. Each is independent; a point meets the SLO when every
     # SET threshold holds (AND) and success >= 95%. `slo_avg_ttft_ms` / `slo_avg_tpot_ms`
-    # are the average TTFT / TPOT (kept from the original 2-field model); the p95 /
-    # p99 and end-to-end latency targets extend it (EvalScope-style latency metrics),
-    # giving 3 metrics x 3 aggregations = 9 optional thresholds.
+    # are the average TTFT / TPOT; the p95 / p99 and end-to-end latency targets
+    # extend them (EvalScope-style latency metrics), giving 3 metrics x 3
+    # aggregations = 9 optional thresholds.
     #
     # The columns are declared individually (they are queryable/sortable scalars),
     # but everything that WALKS the grid — the runner's CLI forwarding, the SLO
@@ -462,6 +515,16 @@ class BenchmarkSnapshot(BaseModel):
     instances: Optional[ModelInstanceSnapshots] = None
     workers: Optional[WorkerSnapshots] = None
     gpus: Optional[GPUSnapshots] = None
+    # The deployment generation the run measured, for a model that carries one.
+    # Not a scalar column: nothing queries or sorts by it, it is read with the
+    # rest of the snapshot when a reader asks what a report was measuring.
+    spec_digest: Optional[str] = None
+    # The route the load entered through, in `route` mode. Recorded because a
+    # route is not a fixed view of a model: its targets and their weights can
+    # be edited, and a canary route can send a share of the load somewhere
+    # else entirely — so "which route, under what name" is part of what the
+    # numbers mean.
+    route_name: Optional[str] = None
 
 
 class BenchmarkMetricsLite(SQLModel):
@@ -527,6 +590,35 @@ class BenchmarkMetricsLite(SQLModel):
     )
     request_latency_p99: Optional[float] = Field(
         default=None, description="P99 request latency (unit: seconds)"
+    )
+    # ── Real ITL: the per-INTERVAL distribution ───────────────────────────────
+    # Everything above is one value per REQUEST. These four summarize the
+    # measured gaps BETWEEN consecutive streamed outputs — one sample per gap,
+    # pooled across requests — which is what vLLM / SGLang / evalscope report as
+    # ITL, and the only reading here that can show a single decode stall (a
+    # per-request average divides it away by that request's other gaps).
+    #
+    # Deliberately not named `inter_token_latency_*`: those columns above hold
+    # guidellm's field of that name, which is the industry's TPOT. Two names one
+    # letter apart for two different metrics is how a report ends up comparing
+    # the wrong pair.
+    #
+    # None means NOT MEASURED — a point from before benchmark-runner started
+    # recording the gaps, or a non-streaming run — never "the gaps were 0 ms".
+    # `_max` is carried (unlike every other metric here) because the worst
+    # single gap IS the finding for a stall hunt; SGLang reports Max ITL for the
+    # same reason.
+    itl_per_chunk_mean: Optional[float] = Field(
+        default=None, description="Mean measured inter-token gap (unit: ms)"
+    )
+    itl_per_chunk_p95: Optional[float] = Field(
+        default=None, description="P95 measured inter-token gap (unit: ms)"
+    )
+    itl_per_chunk_p99: Optional[float] = Field(
+        default=None, description="P99 measured inter-token gap (unit: ms)"
+    )
+    itl_per_chunk_max: Optional[float] = Field(
+        default=None, description="Largest measured inter-token gap (unit: ms)"
     )
     tokens_per_second_mean: Optional[float] = Field(
         default=None, description="Mean tokens per second (unit: tok/s)"
@@ -702,7 +794,6 @@ class Benchmark(BenchmarkWithSnapshots, BenchmarkMetrics, BaseModelMixin, table=
         default=None,
         sa_column=Column(Integer, ForeignKey("principals.id"), nullable=True),
     )
-
     __tablename__ = 'benchmarks'
 
 
@@ -720,6 +811,16 @@ class BenchmarkListParams(ListParams):
         "time_per_output_token_mean",
         "inter_token_latency_mean",
         "time_to_first_token_mean",
+        # Tails of the latency metrics the list shows, and the measured
+        # per-interval ITL. "Which run has the worst TTFT p99" is a sort, not a
+        # read of every row.
+        "time_to_first_token_p95",
+        "time_to_first_token_p99",
+        "inter_token_latency_p95",
+        "inter_token_latency_p99",
+        "itl_per_chunk_mean",
+        "itl_per_chunk_p95",
+        "itl_per_chunk_p99",
         "tokens_per_second_mean",
         "output_tokens_per_second_mean",
         "input_tokens_per_second_mean",
@@ -733,7 +834,24 @@ class BenchmarkListParams(ListParams):
 
 
 class BenchmarkCreate(BenchmarkBase):
-    pass
+    # The route to drive, in `route` mode. Input only — the row keys on the
+    # model, and the name is recorded on the snapshot rather than as a column:
+    # what a route resolves to is editable (targets, weights, a canary), so it
+    # is a fact about the run, not a handle the run is addressed by.
+    #
+    # Optional, because an API client that names only a model still gets the
+    # route derived for it. The form sends it because it lists routes: a model
+    # can sit behind more than one, and picking for the user would measure
+    # whichever the server happened to choose.
+    route_name: Optional[str] = None
+
+    # A run targets a MODEL. Naming a member is still accepted — the instance
+    # list page's "run benchmark" action does exactly that, and a client that
+    # names one is naming its model too — but it is not required, and under
+    # PD it is not a choice a client can make correctly: a group answers
+    # only through its router. The server resolves the endpoint and writes the
+    # name it resolved, so the column stays as non-null as it ever was.
+    model_instance_name: Optional[str] = None
 
 
 class BenchmarkUpdate(SQLModel):

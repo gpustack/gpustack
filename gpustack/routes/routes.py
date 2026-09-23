@@ -1,6 +1,6 @@
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from gpustack.routes import (
     api_keys,
@@ -480,6 +480,56 @@ inference_router.include_router(
     rerank.router,
     prefix="/v1",
     tags=["Rerank"],
+)
+
+
+async def mark_internal_inference(request: Request):
+    """Marks a request as coming from the benchmark proxy, not from a client.
+
+    The OpenAI handler gates on the caller's accessible model names, which a
+    load generator has none of: it authenticates with the worker token, which
+    is a cluster credential rather than anyone's account. The exemption lives
+    on this prefix rather than inside the check so it cannot be reached from
+    `/v1` -- a request that did not come through here never has the flag.
+    """
+    request.state.internal_inference = True
+
+
+# The deployment's own entrance, for a benchmark run in `route` mode: the same
+# route resolution and the same load balancer as `/v1`, so a plain model's
+# replicas are all measured rather than one of them, and a group is measured
+# through its router. Worker-authenticated, because the caller is a container
+# this server asked a worker to start.
+benchmark_proxy_router = APIRouter(
+    dependencies=[Depends(get_worker_principal), Depends(mark_internal_inference)]
+)
+
+
+@benchmark_proxy_router.get("/health", include_in_schema=False)
+async def benchmark_proxy_health():
+    """What the load generator probes before it starts.
+
+    guidellm validates a backend by GETting `{target}/health` with the auth
+    headers, and treats a non-200 as "cannot reach or configure this backend"
+    -- so without this the whole run dies before its first request. Serving it
+    on the prefix rather than switching the check off keeps the probe worth
+    making: reaching this handler proves both that the proxy is up and that
+    the worker token authenticates, which is the failure it would otherwise
+    discover as a wall of 401s mid-ramp.
+    """
+    return {"status": "ok"}
+
+
+benchmark_proxy_router.include_router(
+    openai.get_api_router(),
+    prefix="/v1",
+    responses=openai_api_error_responses,
+    tags=["Benchmark inference proxy"],
+)
+
+api_router.include_router(
+    benchmark_proxy_router,
+    prefix=f"{versioned_prefix}/benchmark-proxy",
 )
 
 # Following routes should not check api scope as it is publicly accessible and used for authentication by external services.

@@ -265,6 +265,24 @@ class GenerativeMetrics(BaseModel):
             "streaming iteration"
         )
     )
+    # The real ITL, and the only per-INTERVAL distribution here: one sample per
+    # gap between consecutive streamed outputs, flattened across requests. Every
+    # other per-token metric above is one value per REQUEST, so a single decode
+    # stall is divided away by that request's other gaps; here it survives into
+    # the tail. Same measurement point and formula as vLLM's ITL.
+    #
+    # Not produced by guidellm — benchmark-runner records the gaps in its
+    # streaming loop and aggregates them (guidellm keeps only the first and last
+    # token timestamp, and reconstructs the rest with np.linspace). Hence
+    # Optional: absent from every point measured before that landed, and from a
+    # non-streaming run. None means NOT MEASURED, which is not zero.
+    inter_token_latency_per_chunk_ms: Optional[StatusDistributionSummary] = Field(
+        default=None,
+        description=(
+            "Distribution of measured gaps between consecutive streamed outputs "
+            "(the industry's ITL), in milliseconds"
+        ),
+    )
 
 
 class RequestTimings(BaseModel):
@@ -586,6 +604,18 @@ class GenerativeBenchmarksReport(BaseModel):
     def _point_metrics_kwargs(bm: "GenerativeBenchmark") -> dict:
         """Flat BenchmarkMetricsLite kwargs for one benchmark point."""
         m = bm.metrics
+        # Absent on any point measured before benchmark-runner started recording
+        # the per-interval gaps, and on a non-streaming run. Left as None rather
+        # than 0.0 so "not measured" cannot read as "no latency between tokens".
+        #
+        # The count check is the same guard one level down: a stage where only
+        # errored/incomplete requests produced gaps still carries a `successful`
+        # summary, and every field on it reads 0.0 — which would land in the
+        # report as a perfect decode.
+        itl = m.inter_token_latency_per_chunk_ms
+        itl_ok = itl.successful if itl is not None else None
+        if itl_ok is not None and not itl_ok.count:
+            itl_ok = None
         return dict(
             requests_per_second_mean=m.requests_per_second.successful.mean,
             request_latency_mean=m.request_latency.successful.mean,
@@ -615,6 +645,12 @@ class GenerativeBenchmarksReport(BaseModel):
                 m.time_per_output_token_ms.successful.percentiles.p99
             ),
             request_latency_p99=m.request_latency.successful.percentiles.p99,
+            # The measured per-interval ITL — a different metric from the
+            # inter_token_latency_* above, which is the per-request TPOT.
+            itl_per_chunk_mean=(itl_ok.mean if itl_ok else None),
+            itl_per_chunk_p95=(itl_ok.percentiles.p95 if itl_ok else None),
+            itl_per_chunk_p99=(itl_ok.percentiles.p99 if itl_ok else None),
+            itl_per_chunk_max=(itl_ok.max if itl_ok else None),
             tokens_per_second_mean=m.tokens_per_second.successful.mean,
             output_tokens_per_second_mean=m.output_tokens_per_second.successful.mean,
             input_tokens_per_second_mean=m.prompt_tokens_per_second.successful.mean,
